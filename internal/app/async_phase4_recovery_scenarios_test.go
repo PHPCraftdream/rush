@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -381,21 +383,38 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	requestsAtCancel := requestsA.Load()
 	require.EqualValues(t, 3, requestsAtCancel, "Ctrl-C must not have produced any further turn")
 
-	// No new turn appears afterward either (belt-and-braces against a
-	// delayed background goroutine still trying).
-	require.Never(t, func() bool { return requestsA.Load() > requestsAtCancel }, 300*time.Millisecond, 10*time.Millisecond,
-		"no request may reach A's provider after cancellation")
-
-	// Graceful exit (the real production host-lock release path) -- doc
-	// sec.3.7: "graceful exit = crash" for the ROWS (still 'running'), even
-	// though the HOST's own lock is released cleanly here, unlike scenario а.
-	require.NoError(t, appA.asyncJobStore.Close(context.Background()))
+	// Graceful exit through the REAL App shutdown path (W-DRAIN B4 fix,
+	// docs/reviews/2026-09-29-async-phase4-round1.md "Tests (B-b, C-b)": the
+	// old version called appA.asyncJobStore.Close directly here, bypassing
+	// AgentCoordinator.CancelAll entirely. CancelAll -- via
+	// coordinator.CancelAll's `c.asyncJobs.close()` -- is what actually
+	// cancels the STILL-RUNNING async bash job's own executor context (the
+	// real `ping`/`sleep` subprocess two jobs above are running for real,
+	// independent of ctxA, which only governs the CLI loop's own turn); a
+	// bare store.Close leaves that real OS process running to completion in
+	// the background, unkilled. Shutdown() runs CancelAgents() (== CancelAll)
+	// before releasing the host lock, then closes the async job store itself
+	// (idempotent with the harness's own deferred appA.Shutdown cleanup, via
+	// app.shutdownOnce) -- exactly what a real `rush run` process does on
+	// exit.
+	appA.Shutdown()
 	row1, err := appA.asyncJobStore.Get(context.Background(), sessionID, "call-1")
 	require.NoError(t, err)
 	require.Equal(t, "running", row1.State, "a graceful exit must never transition a live row")
 	row2, err := appA.asyncJobStore.Get(context.Background(), sessionID, "call-2")
 	require.NoError(t, err)
 	require.Equal(t, "running", row2.State)
+
+	// The Never window must OUTLAST the jobs' own real duration
+	// (recoveryBuildCommand's ~3s sleep/ping): the original 300ms window
+	// could never distinguish "CancelAll genuinely killed the subprocess"
+	// from "the job simply hasn't finished naturally yet" -- only a window
+	// past the job's natural completion proves the KILL, not the clock, is
+	// what keeps A silent (and that the rows above stayed 'running' because
+	// the executor was actually cancelled, not because we didn't wait long
+	// enough to see it finish and transition on its own).
+	require.Never(t, func() bool { return requestsA.Load() > requestsAtCancel }, 5*time.Second, 50*time.Millisecond,
+		"no request may reach A's provider after a real CancelAll, even once the killed job's own natural duration has fully elapsed")
 
 	ctxB, cancelB := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelB()
@@ -412,5 +431,154 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 		row, err := appB.asyncJobStore.Get(context.Background(), sessionID, id)
 		require.NoError(t, err)
 		require.Equal(t, "interrupted", row.State, "job %s must be interrupted", id)
+	}
+}
+
+// TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts is
+// the multi-process-shaped version of internal/agent's
+// TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts (W-DRAIN B5,
+// docs/reviews/2026-09-29-async-phase4-round1.md "Tests (B-b, C-b)": that
+// test is flagged "single-process" -- it proves the SQL-level fact (a pull
+// only ever touches `delivery`, never `reacted` -- see PullPendingAsyncJob
+// Notice's own SQL) within ONE process/connection. This proves the SAME
+// property survives a GENUINELY SEPARATE process: App B, its own *sql.DB
+// connection (db.Connect, refcounted onto the same file, exactly like the
+// other two-App scenarios in this file) and its own message.Service,
+// independently pulls the session's notice into history -- matching doc
+// sec.3.4's policy-table row "web-tab that opened the session: only pull, no
+// turn" -- while App A (the CLI root, a DIFFERENT process/connection driving
+// the SAME session) still reacts to it on its own next turn, and that
+// reaction is visible in THAT turn's own JSON result ("gets it in the
+// result").
+func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *testing.T) {
+	var requestsA, requestsB atomic.Int32
+	toolStarted := make(chan struct{})
+	var toolStartedOnce sync.Once
+	handlerA := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, _, lastTool := lastTurnParts(body)
+		switch {
+		case strings.Contains(string(body), "call-1 (bash)"):
+			// The SECOND call's reacting turn is a REAL "continue please" user
+			// turn (A's own loop already exited on Ctrl-C, so there is no
+			// empty-prompt Drain to react via) -- the pulled notice text sits
+			// BEFORE "continue please" chronologically, so it is NOT
+			// lastTurnParts' lastUser (that's the fresh prompt); check the
+			// whole body instead, matching scenario B's own handlerB
+			// technique for the identical shape. Checked BEFORE lastTool
+			// below: once the FIRST call's tool result ever lands in history,
+			// it stays the LAST tool-role message forever (no new tool call
+			// happens in the second call), so lastTool alone would keep
+			// matching the first branch on every later request too.
+			requestsA.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEText("reacted", "root reacted to the job"), admissionSSEStop("reacted", "stop")})
+		case strings.Contains(lastTool, "Async bash job call-1 started"):
+			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
+			toolStartedOnce.Do(func() { close(toolStarted) })
+		default:
+			admissionWriteSSE(w, []string{
+				admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(recoveryBuildCommand())+`,"description":"job 1"}`),
+				admissionSSEStop("start", "tool_calls"),
+			})
+		}
+	}
+	handlerB := func(w http.ResponseWriter, r *http.Request) {
+		requestsB.Add(1)
+		http.Error(w, "App B must never need its own provider turn in this scenario (pull only)", http.StatusBadRequest)
+	}
+
+	appA, appB, sessionID := newRecoveryTwoAppHarness(t, handlerA, handlerB)
+
+	// Ctrl-C A's OWN loop before the (real, ~3s) async job finishes -- the
+	// job's executor is NOT tied to ctxA (doc sec.3.4/3.7: async work
+	// survives the turn/loop that started it) and keeps running for real in
+	// the background, unattended, exactly like scenario C's own technique.
+	// This is what opens a genuine race window: nobody (not even A) reacts
+	// to the job's own eventual completion until this test says so.
+	ctxA, cancelA := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(runDone)
+		_, runErr = appA.RunNonInteractiveWithResult(ctxA, io.Discard, "run a job", RunOverrides{
+			Origin: message.OriginCLI,
+		}, true, RunModeJSON, sessionID, false)
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the job never reached the provider")
+	}
+	require.Eventually(t, func() bool {
+		row, getErr := appA.asyncJobStore.Get(context.Background(), sessionID, "call-1")
+		return getErr == nil && row.State == "running"
+	}, 5*time.Second, 20*time.Millisecond, "the job must be claimed and running before cancellation")
+
+	cancelA()
+	select {
+	case <-runDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never returned after ctx cancellation")
+	}
+	require.Error(t, runErr)
+
+	// Wait for the job to finish NATURALLY (a real subprocess, unattended --
+	// A's own loop already exited) -- open, unreacted debt nobody is
+	// watching yet.
+	require.Eventually(t, func() bool {
+		row, getErr := appA.asyncJobStore.Get(context.Background(), sessionID, "call-1")
+		return getErr == nil && row.State == "completed" && row.Wake != 0 && row.Reacted == 0
+	}, 10*time.Second, 20*time.Millisecond, "the job must finish naturally with open (unreacted) debt")
+
+	// App B -- a GENUINELY SEPARATE process/connection on the same data dir
+	// -- independently pulls the SAME notice into history. Must not erase
+	// the debt, and must never itself provoke a provider turn.
+	pulled, err := appB.asyncJobStore.PullJobNotices(context.Background(), appB.Messages, sessionID, recoveryScenarioEBuildJobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "App B's independent pull must actually move the row into history")
+	require.Zero(t, requestsB.Load(), "App B's own pull must never itself trigger a provider turn")
+
+	debtStillOpen, err := appB.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.True(t, debtStillOpen, "another process's independent pull must not erase the debt it just made visible")
+
+	// The CLI root (App A, a DIFFERENT process/connection from B) still
+	// reacts to it on its own next turn, and the reaction is visible in
+	// THAT turn's own JSON result.
+	ctxA2, cancelA2 := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelA2()
+	resA2, err := appA.RunNonInteractiveWithResult(ctxA2, io.Discard, "continue please", RunOverrides{
+		Origin: message.OriginCLI,
+	}, true, RunModeJSON, sessionID, false)
+	require.NoError(t, err)
+	require.NotNil(t, resA2)
+	require.Equal(t, "end_turn", resA2.ExitReason, "warnings=%v", resA2.Warnings)
+	// requestsA only increments in the "call-1 (bash)" (reacting) branch --
+	// the tool-call-start and yield branches from the first (cancelled) call
+	// do not touch it -- so exactly 1 here means exactly one real reacting
+	// turn happened, on this second call, never during the first.
+	require.EqualValues(t, 1, requestsA.Load(), "the root must have made exactly one real reacting turn")
+	require.Contains(t, resA2.FinalText, "root reacted to the job", "the root's reaction must be visible in ITS OWN JSON result")
+
+	debtAfter, err := appA.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.False(t, debtAfter, "the root's own turn must clear the debt")
+}
+
+// recoveryScenarioEBuildJobNoticeParams is a minimal, App-package-local
+// stand-in for internal/agent's unexported buildJobNoticeMessageParams:
+// enough to prove "the row moved into history" without needing that
+// package's exact formatting (agent.FormatAsyncCompletion is exported but
+// this test only needs A's OWN later turn to be able to match the row's
+// tool_call_id in a user-role message, which lastTurnParts already checks
+// for via the literal "call-1 (bash)" substring app_run_admission_race_test.
+// go's sibling scenarios rely on -- reproduced verbatim here).
+func recoveryScenarioEBuildJobNoticeParams(row session.JobNoticeRow) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:                message.User,
+		Parts:               []message.ContentPart{message.TextContent{Text: "Async job call-1 (bash) finished: " + row.ResultContent}},
+		AutoResumed:         true,
+		BackgroundJobNotice: true,
 	}
 }
