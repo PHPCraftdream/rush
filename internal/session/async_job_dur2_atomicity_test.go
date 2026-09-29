@@ -62,6 +62,12 @@ func TestTransitionAsyncJobTerminal_RolledBackTransactionChangesNothing(t *testi
 		UpdatedAt:      claimed.Row.UpdatedAt + 1,
 		OwnerSessionID: "owner-1",
 		ToolCallID:     "call-1",
+		// A11: the CAS now also requires claim_id to match -- this raw query
+		// call bypasses Transition's own empty-ClaimID resolution (it exists
+		// specifically to call "the exact CAS query Transition uses" without
+		// going through the wrapper), so it must supply the row's real
+		// claim_id itself, exactly like Transition would.
+		ClaimID: claimed.Row.ClaimID,
 	})
 	require.NoError(t, err, "the CAS statement itself must succeed inside the transaction")
 

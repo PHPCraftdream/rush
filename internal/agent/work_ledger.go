@@ -255,6 +255,7 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	l.mu.Unlock()
 
 	var claimExisting bool
+	var claimID string
 	if !sync {
 		if store == nil {
 			return nil, false, errors.New("async job store is unavailable; cannot start an async job")
@@ -273,6 +274,11 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 			return nil, false, err // fail-closed (DUR-8)
 		}
 		claimExisting = claim.Existing
+		// A11: this claim's own claim_id, carried by the executor for the
+		// job's whole lifetime and threaded into every future commitTransition
+		// call (work_ledger_transition.go). Meaningless when claimExisting
+		// (Start refuses that case below, never creating a job for it).
+		claimID = claim.Row.ClaimID
 	}
 
 	l.mu.Lock()
@@ -300,7 +306,7 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	job := &asyncJob{
 		owner: owner, toolCallID: toolCallID, input: input, toolName: toolName,
 		childSession: childSession, cli: cli, cancel: cancel,
-		sync: sync, announced: sync, startedAt: time.Now(),
+		sync: sync, announced: sync, startedAt: time.Now(), claimID: claimID,
 	}
 	if sync {
 		job.done = make(chan struct{})
@@ -357,6 +363,27 @@ func (l *workLedger) deliverLocked(owner string, job *asyncJob) (AsyncCompletion
 			l.clearSupervisionIfPresent(owner)
 		}
 		close(job.done)
+		return AsyncCompletion{}, false
+	}
+	if job.stoppedBySession && job.childSession == "" {
+		// Doc sec.3.4: a plain job cancelled by Stop produces no in-memory
+		// notice regardless of which cause actually won the CAS -- only the
+		// DB row records the fact (review finding P2). This guard used to
+		// live in transition()'s own caller and fire unconditionally the
+		// instant the CAS committed, BEFORE this job was ever necessarily
+		// announced (B10): Stop landing between Claim and the "started" ack
+		// would drop the row from memory right then, so when the ack later
+		// arrived there was no job left to mark announced=true on, orphaning
+		// the DB row at announced=0/delivery=pending forever. Living HERE
+		// instead means the top guard's own `!job.announced` check already
+		// withholds this until announced actually flips (finishAcknowledgeLocally
+		// calls deliverLocked again once it does) -- so the drop now happens
+		// exactly once, whenever announced first becomes true, never before.
+		delete(s.jobs, job.toolCallID)
+		if len(s.jobs) == 0 {
+			l.clearSupervisionIfPresent(owner)
+		}
+		signalWorkSession(s)
 		return AsyncCompletion{}, false
 	}
 	completion := AsyncCompletion{
@@ -577,6 +604,33 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 	return job.shellID, nil
 }
 
+// completionFromSnapshot builds the AsyncCompletion a caller that LOST its
+// own terminal-transition attempt must answer with (B11): snap reflects
+// whatever cause actually committed, so the wording must come from IT, not
+// from the losing caller's own intent. Cancelled (not Stopped) for a
+// phaseCancelled snapshot -- reaching here at all means THIS caller's own
+// causeJobKill did not win, so any cancellation already committed came from
+// something else (session Stop is the only other source of a plain job's
+// 'cancelled' state that still reaches a snapshot here; deliverLocked drops
+// a Stop-caused cancellation before commitAndDeliver ever returns a
+// found=true snapshot for one of ITS OWN transitions, but this snapshot is
+// read directly from the job, before delivery's own drop, so it still
+// reflects the truth here).
+func completionFromSnapshot(toolCallID, toolName string, snap jobOutcomeSnapshot, timeoutSeconds int) AsyncCompletion {
+	c := AsyncCompletion{
+		ToolCallID: toolCallID, ToolName: toolName,
+		Content: snap.result.content, IsError: snap.result.isError,
+	}
+	switch snap.state {
+	case phaseTimedOut:
+		c.TimedOut = true
+		c.TimeoutSeconds = timeoutSeconds
+	case phaseCancelled:
+		c.Cancelled = true
+	}
+	return c
+}
+
 // MarkJobStopped implements tools.JobShellResolver. See that interface's doc.
 //
 // Phase-4 step 2 (doc sec.3.1's external-cause order, "snapshot output ->
@@ -592,19 +646,31 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 // FormatAsyncCompletion(Stopped: true) exactly like the contract's "stopped
 // (job_kill)" notice text, so job_kill never again answers with a content-
 // free "terminated successfully" while the row's own notice (now
-// delivery='done', never pulled) carries the real output nobody sees. ok is
-// false when jobID does not resolve to a live, ledger-tracked job still
-// running: job_kill then falls back to its pre-existing bgManager-driven
-// flow/wording, which for a REPEAT call on an already-terminal job
-// naturally answers "not found"/"already delivered" -- the "already
-// stopped" outcome the doc's ASYNC-01 sibling rule (§1.5 idempotency)
-// requires, without a second bespoke wording path here. killRequested
-// (set before any of the DB/kill I/O below runs) closes the narrow window
-// where a truly concurrent second call could otherwise race ahead of the
-// first's own transitioning latch and be handed the same "proceed" verdict.
-func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok bool) {
+// delivery='done', never pulled) carries the real output nobody sees.
+//
+// B11: that "stopped" answer is only correct when THIS call's own
+// causeJobKill transition actually won the CAS -- a concurrent natural
+// finish/timeout/Stop can commit first in the window between the initial
+// guard above and commitAndDeliver's own store write (capturePartial's I/O
+// runs in between, unlocked). The verdict (tools.JobStopVerdict) tells
+// job_kill exactly what happened, so it never has to guess:
+//   - JobStopStopped: this call's own transition won; job_kill kills the
+//     shell and answers with text.
+//   - JobStopAlreadyTerminal: the row already reached a terminal state via
+//     another cause; text is worded from that COMMITTED row and job_kill must
+//     NOT touch bgManager.
+//   - JobStopNotFound: jobID is not a live tracked job (gone/delivered, a
+//     concurrent job_kill already claimed it via killRequested, or another
+//     transition is mid-flight); text is empty and job_kill refuses with the
+//     idempotent "already stopped" shape (§1.5), again without bgManager.
+//
+// killRequested (set before any of the DB/kill I/O below runs) closes the
+// narrow window where a truly concurrent second call could otherwise race
+// ahead of the first's own transitioning latch and be handed the same
+// "proceed" verdict.
+func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verdict tools.JobStopVerdict) {
 	if l == nil {
-		return "", false
+		return "", tools.JobStopNotFound
 	}
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -612,13 +678,21 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok b
 	if s != nil {
 		job = s.jobs[toolCallID]
 	}
-	if job == nil || job.state.terminal() || job.transitioning || job.killRequested {
+	if job == nil || job.transitioning || job.killRequested {
 		l.mu.Unlock()
-		return "", false
+		return "", tools.JobStopNotFound
+	}
+	if job.state.terminal() {
+		// Already terminal via another cause but not yet delivered (e.g.
+		// still awaiting its ack): answer from the committed row.
+		snap := jobOutcomeSnapshot{found: true, state: job.state, result: job.result}
+		name, timeoutSeconds := job.toolName, job.timeoutSeconds
+		l.mu.Unlock()
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, name, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
 	}
 	job.killRequested = true
 	sync := job.sync
-	toolName, shellID := job.toolName, job.shellID
+	toolName, shellID, timeoutSeconds := job.toolName, job.shellID, job.timeoutSeconds
 	l.mu.Unlock()
 
 	partial := l.capturePartial(owner, toolCallID, toolName, "", shellID, nil)
@@ -626,15 +700,27 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, ok b
 		// Review finding P2 (regression of #1023 for library/SDK mode): a
 		// sync job never touches the store, so it must reach its "stopped
 		// (job_kill)" outcome via the OLD memory-only path -- otherwise a
-		// blocked awaitSync caller silently loses that outcome.
+		// blocked awaitSync caller silently loses that outcome. A sync job's
+		// own transitionSyncStopped has no CAS to lose (in-memory only,
+		// guarded by the SAME top check above under the SAME lock it never
+		// releases in between) -- B11's race does not apply to it.
 		l.transitionSyncStopped(owner, toolCallID, partial)
-	} else {
-		l.transition(owner, toolCallID, causeJobKill, partial)
+		return FormatAsyncCompletion(AsyncCompletion{
+			ToolCallID: toolCallID, ToolName: toolName,
+			Content: partial.content, IsError: partial.isError, Stopped: true,
+		}), tools.JobStopStopped
+	}
+	outcome, snap := l.commitAndDeliver(owner, toolCallID, causeJobKill, partial)
+	if outcome != commitWon {
+		if !snap.found {
+			return "", tools.JobStopNotFound
+		}
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, toolName, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
 	}
 	return FormatAsyncCompletion(AsyncCompletion{
 		ToolCallID: toolCallID, ToolName: toolName,
 		Content: partial.content, IsError: partial.isError, Stopped: true,
-	}), true
+	}), tools.JobStopStopped
 }
 
 // setRunCommandBuffer records a run_command job's live output sink, as soon
@@ -697,6 +783,11 @@ func (l *workLedger) RunCommandOutput(owner, jobID string, cursor int64) (string
 // placeholder. The error return keeps its pre-existing shape/wording
 // unchanged (idempotency rule, contract §1.5): a repeat stop answers with
 // the same "not found ... or already stopped" text as before this task.
+//
+// B11: like MarkJobStopped, this call's own causeJobKill transition can lose
+// the race to a concurrent natural finish/timeout/Stop in the window between
+// the guard above and commitAndDeliver's store write -- the returned text
+// must reflect what actually committed, never assume this call caused it.
 func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err error) {
 	if l == nil {
 		return "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
@@ -719,6 +810,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 	}
 	job.killRequested = true
 	sync := job.sync
+	timeoutSeconds := job.timeoutSeconds
 	var partial string
 	if job.outputBuf != nil {
 		partial = job.outputBuf.String()
@@ -728,13 +820,26 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 
 	result := jobResult{content: partial}
 	if sync {
-		// Review finding P2: same sync/memory-only path as MarkJobStopped.
+		// Review finding P2: same sync/memory-only path as MarkJobStopped --
+		// no CAS to lose (B11 does not apply to a sync job).
 		l.transitionSyncStopped(owner, jobID, result)
-	} else {
-		l.transition(owner, jobID, causeJobKill, result)
+		if cancel != nil {
+			cancel()
+		}
+		return FormatAsyncCompletion(AsyncCompletion{
+			ToolCallID: jobID, ToolName: tools.RunCommandToolName,
+			Content: result.content, IsError: result.isError, Stopped: true,
+		}), nil
 	}
+	outcome, snap := l.commitAndDeliver(owner, jobID, causeJobKill, result)
 	if cancel != nil {
-		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess)
+		cancel() // triggers run_command's cmd.Cancel tree-kill (configureRunCommandProcess); harmless no-op if the process already exited via another cause
+	}
+	if outcome != commitWon {
+		if !snap.found {
+			return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
+		}
+		return FormatAsyncCompletion(completionFromSnapshot(jobID, tools.RunCommandToolName, snap, timeoutSeconds)), nil
 	}
 	return FormatAsyncCompletion(AsyncCompletion{
 		ToolCallID: jobID, ToolName: tools.RunCommandToolName,
@@ -767,6 +872,13 @@ func (l *workLedger) finish(owner, toolCallID string, result jobResult) {
 		l.mu.Unlock()
 		return
 	}
+	// B9: mark this job's executor as having genuinely returned BEFORE
+	// releasing l.mu for the first time -- close() consults this so it never
+	// latches shutdownCancelled onto a job whose real, natural outcome is
+	// already known (or about to be committed below) just because it
+	// happens to still be non-terminal in memory at the instant close()
+	// scans. See executorReturned's own doc (work_job.go) and close()'s.
+	job.executorReturned = true
 	if job.sync {
 		job.transitionToTerminal(phaseFor(result), result)
 		completion, callback := l.deliverLocked(owner, job)
@@ -810,23 +922,36 @@ func (l *workLedger) running(sessionID string) bool {
 // write and leaves the row 'running' for the next host to recover. Only
 // cancels executors and stops the timeout service -- it does NOT call
 // cancelSession or otherwise write a terminal state.
+//
+// B9: the latch is set ONLY for a job close() is actually about to cancel --
+// one that is both non-terminal (job.state.terminal() false: a terminal job
+// has nothing left for close() to interrupt) and not executorReturned (its
+// real, natural outcome is not already known/in flight, see that field's own
+// doc). The old code marked EVERY job present in the map unconditionally,
+// including ones whose executor had already returned with a real result and
+// was merely waiting its turn for l.mu to report it: that natural
+// completion's own (unrelated-to-shutdown) commitTransition call would then
+// see shuttingDown=true on its very first attempt and abandon it entirely,
+// leaving the row 'running' forever for a later recovery sweep to mark
+// 'interrupted' -- discarding a result that was never actually lost to
+// shutdown at all (violates §3.1).
 func (l *workLedger) close() {
 	l.mu.Lock()
 	l.closed = true
-	var jobs []*asyncJob
+	var toCancel []*asyncJob
 	for _, s := range l.bySession {
 		for _, job := range s.jobs {
-			jobs = append(jobs, job)
+			if !job.state.terminal() && !job.executorReturned {
+				job.shutdownCancelled = true
+				toCancel = append(toCancel, job)
+			}
 		}
 		signalWorkSession(s)
-	}
-	for _, job := range jobs {
-		job.shutdownCancelled = true
 	}
 	l.mu.Unlock()
 	l.closeOnce.Do(func() { close(l.closedCh) })
 	l.timeouts.close()
-	for _, job := range jobs {
+	for _, job := range toCancel {
 		if job.cancel != nil {
 			job.cancel()
 		}

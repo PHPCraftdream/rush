@@ -193,7 +193,15 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		// text and NoticeKind are selected by notifyAsyncCompletion/
 		// FormatAsyncCompletion, keyed off completion.TimedOut.
 	case timeoutWakeOnly:
-		if job.timeoutNotified {
+		if job.timeoutNotified || job.sync {
+			// B-dev9: a sync job (SDK/library caller blocked in awaitSync,
+			// doc sec.3.1) has no async_jobs row and no session_notices
+			// concept -- a wake_only check-in has nothing to attach to
+			// (job_tool_call_id would name a row that was never claimed) and
+			// nobody to wake (there is no session-driven turn for it, only
+			// the ONE blocked caller). Only terminate_and_wake, via the
+			// ordinary ctx cancellation above, applies to a sync call at
+			// all.
 			l.mu.Unlock()
 			return
 		}

@@ -54,12 +54,19 @@ WHERE id NOT IN (SELECT DISTINCT host_id FROM async_jobs);
 -- two-step): the id is deterministic and child_session_id carries no FK,
 -- so there is nothing blocking writing it at claim time. Callers pass NULL
 -- for plain (kind='command') jobs.
+--
+-- claim_id (A11, migration 20260929000002): a random id minted once per
+-- claim, carried by the executor for this claim's lifetime and threaded
+-- into TransitionAsyncJobTerminalPreserveVoid's CAS -- closes the ABA where
+-- a deleted-then-re-claimed row would otherwise let a stale executor's late
+-- result commit onto the NEW claim just because both share
+-- (owner_session_id, tool_call_id) and state='running'.
 INSERT INTO async_jobs (
     owner_session_id, tool_call_id, kind, tool_name, timeout_seconds, input_hash, child_session_id,
-    origin_cli, state, host_id, announced, delivery, wake, reacted,
+    origin_cli, state, host_id, claim_id, announced, delivery, wake, reacted,
     deadline_at, timeout_kind, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, 'none', 0, 0, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, 'none', 0, 0, ?, ?, ?, ?
 )
 ON CONFLICT (owner_session_id, tool_call_id) DO NOTHING
 RETURNING *;
@@ -111,11 +118,19 @@ DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND annou
 -- anything while still running) except job_kill, which passes 1 in the SAME
 -- statement -- so a job_kill row is neither debt nor a future notice the
 -- instant it commits, with no separate write.
+--
+-- claim_id (A11): the CALLER always supplies a concrete value -- either the
+-- claim_id its own executor captured at Claim time (the real ABA guard), or
+-- -- for a caller with no claim_id of its own (recovery, test seeding) --
+-- the store's Go layer (AsyncJobStore.Transition) first reads the row's
+-- CURRENT claim_id in the SAME transaction and passes that back in, so the
+-- predicate below is a no-op for them (always matches whatever is already
+-- there) and their pre-A11 "any running row matches" behavior is unchanged.
 UPDATE async_jobs
 SET state = ?, notice_kind = ?, result_summary = ?, result_is_error = ?,
     delivery = CASE delivery WHEN 'void' THEN 'void' ELSE ? END,
     wake = ?, reacted = ?, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running'
+WHERE owner_session_id = ? AND tool_call_id = ? AND state = 'running' AND claim_id = ?
 RETURNING *;
 
 -- name: RependAsyncJobsByNoticeMessageIDs :execrows
@@ -168,6 +183,23 @@ RETURNING *;
 -- Second half of the pull transaction: records where the notice landed.
 UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ?;
+
+-- name: SetAsyncJobNoticeMessageIDIfDone :execrows
+-- A3 (docs/reviews/2026-09-29-async-phase4-round1.md): job_kill's own
+-- Transition call sets delivery='done' directly, bypassing the ordinary
+-- pull (doc sec.3.2) -- so nothing else ever calls SetAsyncJobNoticeMessageID
+-- for that row. This fuses job_kill's own tool-result message id onto it in
+-- the SAME transaction as that message's insert (AnnounceJobKillResult),
+-- satisfying the law "delivery='done' => the row names the message that
+-- carries its result" (Rerun's RependAsyncJobsByNoticeMessageIDs, matched by
+-- notice_message_id, could otherwise never find a job_kill'd tool call in a
+-- deleted tail). Guarded to delivery='done' AND notice_message_id IS NULL:
+-- a row whose OWN causeJobKill transition lost the race to a different
+-- cause (still 'pending', to be pulled normally instead) is left
+-- completely alone -- 0 rows affected is not an error, the caller's
+-- tool-result message is persisted either way.
+UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
+WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'done' AND notice_message_id IS NULL;
 
 -- name: VoidPendingAsyncJobNotice :execrows
 -- A pulled notice whose task-still-running condition failed (doc sec.3.4,

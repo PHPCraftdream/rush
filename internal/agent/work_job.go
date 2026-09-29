@@ -85,6 +85,13 @@ type asyncJob struct {
 	toolName     string // "bash"/"run_command"/"agent"/"agentic_fetch" -- AsyncCompletion.ToolName
 	childSession string // non-empty only for a delegation (agent/agentic_fetch); see Start
 	cli          bool   // origin, verbatim today's asyncJobState.cli -- delivery routing unchanged (see deliverLocked)
+	// claimID (A11) is the claim_id store.Claim minted for THIS job's row,
+	// carried for the job's whole lifetime and threaded into every
+	// commitTransition call's TransitionParams.ClaimID -- closes the ABA
+	// where a deleted-then-re-claimed row lets a stale executor's late
+	// result commit onto a DIFFERENT (fresh) claim of the same (owner,
+	// toolCallID) key. Empty for a sync job (never touches the store).
+	claimID string
 	// startedAt is when Start registered this job. Used only by supervision's
 	// summary (supervision.go) to report how long each open job has run --
 	// no other reader needs it, so it is not threaded into AsyncCompletion.
@@ -135,8 +142,20 @@ type asyncJob struct {
 	// by process shutdown" is workLedger.closed AND this flag, checked inside
 	// transition's retry loop. A transition suppressed this way writes
 	// nothing to the DB -- the row stays 'running' for the next host to
-	// recover.
+	// recover. close() only sets this for a job that is BOTH non-terminal
+	// and not executorReturned (B9): a job whose real, natural outcome is
+	// already known (or being committed) must never be mistaken for one
+	// close() itself is cancelling, or its legitimate result is silently
+	// discarded and the row is left 'running' for no reason.
 	shutdownCancelled bool
+	// executorReturned is set by finish() (the plain-job natural-completion
+	// path) the INSTANT it acquires l.mu, before any DB work (B9): close()
+	// consults this so it never latches shutdownCancelled onto a job whose
+	// executor has ALREADY produced its real result and is merely waiting
+	// its turn for l.mu to report it -- a job cancelled by close() strictly
+	// BEFORE this flag exists to be checked. Not set by armDelegation's own
+	// (separate file, out of this fix's scope) equivalent path.
+	executorReturned bool
 	// stoppedBySession is set by cancelSession, under l.mu, for every job it
 	// targets, BEFORE releasing the lock to do its (now durable) DB I/O
 	// (review finding P2). This closes a race a plain, non-delegation job
@@ -154,10 +173,15 @@ type asyncJob struct {
 	// snapshot/transition/kill sequence runs -- distinct from transitioning
 	// (which only covers the DB-write window inside commitTransition): this
 	// closes the true-concurrency window where a second job_kill call could
-	// otherwise race ahead of the first's own transitioning flag and attempt
-	// a second kill of an already-detached shell. A racer that observes this
-	// already true answers with the job_kill tool's "already stopped" text
-	// and performs no kill of its own.
+	// otherwise race ahead of the first's own transitioning flag and answer
+	// as if it, too, were the fresh stop. A racer that observes this already
+	// true gets JobStopNotFound from MarkJobStopped/an error from
+	// StopRunCommandJob. For run_command this also means no second kill
+	// attempt (StopRunCommandJob refuses before touching cancel()). For a
+	// bash job_id, job_kill.go acts on the verdict (B11): NotFound and
+	// AlreadyTerminal both return WITHOUT calling bgManager.KillOwned, only
+	// JobStopStopped kills -- so a racer performs no kill of its own on
+	// either path.
 	killRequested bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):

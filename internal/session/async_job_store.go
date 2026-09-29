@@ -132,6 +132,16 @@ type TransitionParams struct {
 	// the debt predicate, this is belt-and-suspenders for any future reader
 	// that only checks reacted/delivery.
 	Reacted bool
+	// ClaimID (A11) is the claim_id the CALLER's own executor captured at
+	// Claim time, included in the CAS's WHERE so a stale executor from a
+	// deleted-then-re-claimed row loses against the row's CURRENT claim_id
+	// instead of overwriting it just because both share (owner, tool_call_id)
+	// and state='running'. "" (the zero value) means the caller has no
+	// claim_id of its own to assert (recovery, test seeding) -- Transition
+	// then resolves it from the row's OWN current value in the same
+	// transaction, preserving that caller's pre-A11 "any running row
+	// matches" behavior exactly.
+	ClaimID string
 }
 
 // TransitionResult is Transition's output.
@@ -376,8 +386,14 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 		TimeoutSeconds: int64(p.TimeoutSeconds),
 		InputHash:      inputHash,
 		HostID:         hostID,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		// ClaimID (A11): a random id minted for THIS claim alone, carried by
+		// the executor and later threaded back into Transition's CAS so a
+		// stale executor from a deleted-then-re-claimed row cannot commit
+		// onto the row this fresh claim just created (see the migration's
+		// own doc for the ABA scenario this closes).
+		ClaimID:   uuid.NewString(),
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if p.ChildSessionID != "" {
 		params.ChildSessionID = sql.NullString{String: p.ChildSessionID, Valid: true}
@@ -449,6 +465,20 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 	if p.Reacted {
 		reacted = 1
 	}
+	claimID := p.ClaimID
+	if claimID == "" {
+		// A11: no claim_id of the caller's own to assert -- resolve the
+		// row's CURRENT claim_id in this SAME transaction so the predicate
+		// below is a no-op (matches whatever is already there) and this
+		// caller's pre-A11 "any running row matches" behavior is preserved.
+		// sql.ErrNoRows (row already gone) is not an error here: the CAS
+		// below will simply affect 0 rows and the existing lost/gone
+		// handling underneath takes over exactly as before this field
+		// existed.
+		if current, getErr := q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: p.Owner, ToolCallID: p.ToolCallID}); getErr == nil {
+			claimID = current.ClaimID
+		}
+	}
 	row, err := q.TransitionAsyncJobTerminalPreserveVoid(ctx, db.TransitionAsyncJobTerminalPreserveVoidParams{
 		State:          p.State,
 		Delivery:       delivery,
@@ -460,6 +490,7 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 		UpdatedAt:      time.Now().Unix(),
 		OwnerSessionID: p.Owner,
 		ToolCallID:     p.ToolCallID,
+		ClaimID:        claimID,
 	})
 	if err == nil {
 		if err := tx.Commit(); err != nil {

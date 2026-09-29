@@ -139,9 +139,26 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 // race coverage with MarkJobStopped racing finish -- a job_kill call landing
 // at (almost) the same moment the job finishes on its own. Whichever wins,
 // transitionToTerminal's CAS must still yield exactly one delivered outcome.
+//
+// B11: additionally asserts job_kill's OWN answer (text/ok, not just what
+// was delivered) is honest about which side actually won -- the pre-fix
+// code always answered "stopped (job_kill)" regardless, because MarkJobStopped
+// called the plain l.transition wrapper and threw away commitTransition's
+// own outcome. Over enough iterations of a true, unsynchronized release both
+// orderings occur; sawFinishWon guards against the race window silently
+// closing (e.g. a future change serializing these two calls) and no longer
+// exercising the losing branch this test exists to cover.
+//
+// Revert-check performed: reverted MarkJobStopped to answer unconditionally
+// with Stopped:true (ignoring commitAndDeliver's outcome) -- this test
+// FAILED on every iteration where `got[0].Stopped` was false (markText still
+// contained "was stopped (job_kill)"). Restored the outcome-based answer;
+// re-ran, passed. Diffed work_ledger.go against git HEAD after restoring:
+// matches the committed fix.
 func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 	t.Parallel()
-	for i := 0; i < 30; i++ {
+	sawFinishWon := false
+	for i := 0; i < 60; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
 		l.store = newTestAsyncJobStore(t)
@@ -149,13 +166,15 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		require.NoError(t, err)
 		l.acknowledged("owner", "call")
 
+		var markText string
+		var markVerdict tools.JobStopVerdict
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			<-start
-			l.MarkJobStopped("owner", "call")
+			markText, markVerdict = l.MarkJobStopped("owner", "call")
 		}()
 		go func() {
 			defer wg.Done()
@@ -167,7 +186,18 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 
 		got := drainCompletions(delivered)
 		require.Len(t, got, 1, "exactly one terminal outcome must be delivered per race (iteration %d)", i)
+
+		if got[0].Stopped {
+			require.Equal(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill won the race but did not report JobStopStopped", i)
+			require.Contains(t, markText, "was stopped (job_kill)", "iteration %d", i)
+		} else {
+			sawFinishWon = true
+			require.NotEqual(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill lost the race but reported JobStopStopped", i)
+			require.NotContains(t, markText, "was stopped (job_kill)",
+				"iteration %d: job_kill lost the race to natural finish but its own answer still claimed it stopped the job", i)
+		}
 	}
+	require.True(t, sawFinishWon, "the race must be tight enough for finish to occasionally win; widen the window if this becomes flaky")
 }
 
 // TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent pins §1.5's
@@ -318,8 +348,8 @@ func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *
 	require.NoError(t, err)
 	l.acknowledged("owner", "call")
 
-	text, ok := l.MarkJobStopped("owner", "call")
-	require.True(t, ok)
+	text, verdict := l.MarkJobStopped("owner", "call")
+	require.Equal(t, tools.JobStopStopped, verdict)
 	require.Contains(t, text, "job_kill")
 
 	ctx := context.Background()
@@ -379,8 +409,8 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 			go func() {
 				defer wg.Done()
 				<-start
-				_, ok := l.MarkJobStopped("owner", "call")
-				results[g] = ok
+				_, verdict := l.MarkJobStopped("owner", "call")
+				results[g] = verdict == tools.JobStopStopped
 			}()
 		}
 		close(start)

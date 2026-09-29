@@ -343,6 +343,48 @@ func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Se
 	return msg, nil
 }
 
+// AnnounceJobKillResult is job_kill's own fused transaction (A3, doc
+// sec.3.2's law "delivery='done' => the row names the message that carries
+// its result"): job_kill's Transition call (causeJobKill) already set
+// delivery='done'/reacted=1 directly, bypassing the ordinary pull -- so
+// nothing else ever writes notice_message_id for that row. This mirrors
+// AnnounceStarted's pattern: the tool-result message insert and the
+// notice_message_id write commit in ONE transaction, so a crash between them
+// can never leave the row 'done' with no named message.
+//
+// jobToolCallID is the TARGET async_jobs row's tool_call_id (the job that
+// was killed) -- distinct from params' own tool_call_id (job_kill's own
+// call). 0 rows affected by the guarded write (SetAsyncJobNoticeMessageIDIfDone)
+// is not an error: it means THIS job_kill call's own transition lost the
+// race to a different cause (the row is still 'pending', to be pulled
+// normally instead) -- job_kill's tool-result message is persisted
+// regardless, since a tool_use must always get a tool_result.
+func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages message.Service, owner, jobToolCallID string, params message.CreateMessageParams) (message.Message, error) {
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	q := db.New(tx)
+
+	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	if err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: create message: %w", err)
+	}
+	if _, err := q.SetAsyncJobNoticeMessageIDIfDone(ctx, db.SetAsyncJobNoticeMessageIDIfDoneParams{
+		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
+		OwnerSessionID: owner, ToolCallID: jobToolCallID,
+	}); err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: set notice message id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: commit: %w", err)
+	}
+	// Publish AFTER commit (doc sec.3.3's same rule applied here).
+	messages.PublishCreated(msg)
+	return msg, nil
+}
+
 // ListSessionNotices is a thin read-only wrapper for tests and diagnostics
 // (the full `sessions why`/`sessions jobs` reader is doc sec.5 step 7's
 // job) -- every row for owner, oldest first, regardless of delivery state.

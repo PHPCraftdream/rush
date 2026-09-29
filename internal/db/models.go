@@ -40,6 +40,7 @@ type AsyncJob struct {
 	ResultIsError   sql.NullInt64  `json:"result_is_error"`
 	CreatedAt       int64          `json:"created_at"`
 	UpdatedAt       int64          `json:"updated_at"`
+	ClaimID         string         `json:"claim_id"`
 }
 
 type File struct {

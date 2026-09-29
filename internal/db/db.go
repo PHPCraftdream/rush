@@ -360,6 +360,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.setAsyncJobNoticeMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageID); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageID: %w", err)
 	}
+	if q.setAsyncJobNoticeMessageIDIfDoneStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageIDIfDone); err != nil {
+		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageIDIfDone: %w", err)
+	}
 	if q.setAsyncJobsWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setAsyncJobsWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobsWakeZeroPendingForOwners: %w", err)
 	}
@@ -1006,6 +1009,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDStmt: %w", cerr)
 		}
 	}
+	if q.setAsyncJobNoticeMessageIDIfDoneStmt != nil {
+		if cerr := q.setAsyncJobNoticeMessageIDIfDoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDIfDoneStmt: %w", cerr)
+		}
+	}
 	if q.setAsyncJobsWakeZeroPendingForOwnersStmt != nil {
 		if cerr := q.setAsyncJobsWakeZeroPendingForOwnersStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setAsyncJobsWakeZeroPendingForOwnersStmt: %w", cerr)
@@ -1292,6 +1300,7 @@ type Queries struct {
 	rependAsyncJobsByNoticeMessageIDsStmt          *sql.Stmt
 	rependSessionNoticesByMessageIDsStmt           *sql.Stmt
 	setAsyncJobNoticeMessageIDStmt                 *sql.Stmt
+	setAsyncJobNoticeMessageIDIfDoneStmt           *sql.Stmt
 	setAsyncJobsWakeZeroPendingForOwnersStmt       *sql.Stmt
 	setParentCostAccountedStmt                     *sql.Stmt
 	setSessionNoticeMessageIDStmt                  *sql.Stmt
@@ -1437,6 +1446,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		rependAsyncJobsByNoticeMessageIDsStmt:          q.rependAsyncJobsByNoticeMessageIDsStmt,
 		rependSessionNoticesByMessageIDsStmt:           q.rependSessionNoticesByMessageIDsStmt,
 		setAsyncJobNoticeMessageIDStmt:                 q.setAsyncJobNoticeMessageIDStmt,
+		setAsyncJobNoticeMessageIDIfDoneStmt:           q.setAsyncJobNoticeMessageIDIfDoneStmt,
 		setAsyncJobsWakeZeroPendingForOwnersStmt:       q.setAsyncJobsWakeZeroPendingForOwnersStmt,
 		setParentCostAccountedStmt:                     q.setParentCostAccountedStmt,
 		setSessionNoticeMessageIDStmt:                  q.setSessionNoticeMessageIDStmt,

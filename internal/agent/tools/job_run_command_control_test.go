@@ -22,9 +22,9 @@ func (f *fakeRunCommandJobResolver) ResolveJobShellID(_, jobID string) (string, 
 	return "", &RunCommandJobError{JobID: jobID}
 }
 
-func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) (string, bool) {
+func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) (string, JobStopVerdict) {
 	f.stoppedSession, f.stoppedJob = sessionID, jobID
-	return "", false
+	return "", JobStopNotFound
 }
 
 // fakeDelegationJobResolver always classifies a job_id as a delegation.
@@ -33,7 +33,10 @@ type fakeDelegationJobResolver struct{}
 func (f *fakeDelegationJobResolver) ResolveJobShellID(_, jobID string) (string, error) {
 	return "", &DelegationJobError{JobID: jobID, ChildSessionID: "child-session-x"}
 }
-func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) (string, bool) { return "", false }
+
+func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) (string, JobStopVerdict) {
+	return "", JobStopNotFound
+}
 
 // fakeRunCommandController is a minimal RunCommandController for testing.
 type fakeRunCommandController struct {
@@ -218,7 +221,10 @@ func TestJobKillTool_MarksJobStoppedBeforeKilling(t *testing.T) {
 	bgShell, err := bgManager.StartOwned(ctx, "session-a", workingDir, nil, "sleep 30", "")
 	require.NoError(t, err)
 
-	resolver := &fakeJobShellResolver{shellID: bgShell.ID}
+	// markVerdict: JobStopStopped -- see job_shell_resolver_test.go's
+	// TestJobKillTool_ResolvesJobIDToShellID for why (B11: job_kill now
+	// refuses outright on ok=false instead of falling through to bgManager).
+	resolver := &fakeJobShellResolver{shellID: bgShell.ID, markVerdict: JobStopStopped}
 	tool := NewJobKillTool(resolver, nil, bgManager)
 
 	input, err := json.Marshal(JobKillParams{JobID: "call-1"})

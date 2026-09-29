@@ -92,6 +92,35 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		}
 		return t.startedResponse(call.ID, job.childSession), nil
 	}
+	return t.launchExecutor(ctx, jobCtx, cancel, sessionID, childSessionID, call, sync, job)
+}
+
+// launchExecutor runs the fresh-job setup (permission inheritance,
+// supervision noteWorkStarted) and launches t.run -- everything between
+// Start succeeding and the executor goroutine actually existing. B15: Start
+// already claimed this job's durable row (announced=0, state='running')
+// before this is ever called, so a panic anywhere in this window, before
+// "go t.run" ever runs, must not leave that row looking like a
+// legitimately started, live job forever -- the model would see this
+// panic's own recovered error response (fused as the job's "started" ack by
+// onToolResult, since the ledger has no way to tell "the executor is about
+// to run" apart from "something panicked before it could"), while nothing
+// will ever call finish()/transition() for the row again. The recover here
+// finalizes it exactly as if t.run's OWN panic recovery (below) had caught
+// it, having never actually reached "go t.run" at all -- same ordering
+// (finalize, then cancel) as that path's paired defers.
+func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool, job *asyncJob) (resp fantasy.ToolResponse, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.finalize(ctx, sessionID, childSessionID, AsyncCompletion{
+				SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name,
+				IsError: true, Content: fmt.Sprintf("async %s failed to start: %v", t.name, recovered),
+			})
+			cancel()
+			resp = fantasy.NewTextErrorResponse(fmt.Sprintf("async %s failed to start: %v", t.name, recovered))
+			err = nil
+		}
+	}()
 	if childSessionID != "" && t.coordinator.permissions != nil {
 		t.coordinator.permissions.InheritSessionAutoApprove(sessionID, childSessionID)
 		if mgr, ok := t.coordinator.permissions.(permission.SessionRunAllowlistManager); ok {

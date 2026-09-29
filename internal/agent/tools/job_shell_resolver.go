@@ -22,16 +22,34 @@ type JobShellResolver interface {
 	// MarkJobStopped records that jobID (owned by sessionID) is being
 	// stopped by an explicit job_kill call, BEFORE job_kill actually kills
 	// the underlying shell (task #1023 §2.2), and returns job_kill's own
-	// final answer text (task #1063): the real output snapshot taken before
-	// the kill, already worded to distinguish this cause (stopped/job_kill)
-	// from Stop-cancel or a timeout. ok is false when jobID does not resolve
-	// to a live, ledger-tracked job still running -- job_kill then falls
-	// back to its own bgManager-driven flow/wording (which, for a REPEAT
-	// call on an already-delivered job, naturally answers "not found ... or
-	// already delivered" -- the idempotent "already stopped" outcome
-	// contract §1.5 requires).
-	MarkJobStopped(sessionID, jobID string) (text string, ok bool)
+	// final answer text (task #1063) plus a verdict (B11):
+	//   - JobStopStopped: this call's own transition won; text is the real
+	//     output snapshot worded "stopped (job_kill)" and job_kill must now
+	//     kill the shell.
+	//   - JobStopAlreadyTerminal: the ledger row already reached a terminal
+	//     state via another cause (natural finish, timeout, Stop) -- text is
+	//     worded from that COMMITTED row, and job_kill must return it as is
+	//     WITHOUT touching the shell manager.
+	//   - JobStopNotFound: jobID is not a live, ledger-tracked job (unknown,
+	//     already delivered, or a concurrent job_kill already claimed it) --
+	//     text is empty and job_kill refuses with the idempotent "not found
+	//     ... or already stopped" answer (contract §1.5), again without
+	//     touching the shell manager.
+	MarkJobStopped(sessionID, jobID string) (text string, verdict JobStopVerdict)
 }
+
+// JobStopVerdict is MarkJobStopped's three-way outcome.
+type JobStopVerdict int
+
+const (
+	// JobStopNotFound: no live tracked job to stop; refuse.
+	JobStopNotFound JobStopVerdict = iota
+	// JobStopStopped: this call won the stop; kill the shell, answer with text.
+	JobStopStopped
+	// JobStopAlreadyTerminal: the row is already terminal via another cause;
+	// answer with text, do not kill.
+	JobStopAlreadyTerminal
+)
 
 // RunCommandController lets job_kill/job_output act on a run_command job,
 // which has no background shell for BackgroundShellManager to operate on
