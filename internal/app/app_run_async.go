@@ -228,7 +228,17 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		debt, debtErr := source.ReactionDebtExists(ctx, sessionID)
+		// B8/C5b,c fix: VISIBLE debt (delivery='done'), the SAME predicate
+		// decideDrainTurn uses to decide whether a Drain call actually
+		// reaches the provider -- one predicate for "turn needed" (here) and
+		// "turn run" (decideDrainTurn), so this loop never claims a turn is
+		// owed that decideDrainTurn will just no-op. Before this fix, the
+		// pending-inclusive predicate returned true immediately from a
+		// permanently-pending row (a stuck pull) -- hasNext=true above
+		// without ever calling WaitForHint below -- while decideDrainTurn's
+		// own no-turn branch made every such "turn" produce ErrRunQueued: a
+		// 100%-CPU tight loop with no pause, never exiting.
+		debt, debtErr := source.VisibleReactionDebtExists(ctx, sessionID)
 		if debtErr != nil {
 			slog.Warn("rush run: reaction debt check failed; retrying", "session_id", sessionID, "err", debtErr)
 			if !sleepOrCtxDone(ctx, cliDBRetryPause) {

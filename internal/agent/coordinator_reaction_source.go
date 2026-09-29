@@ -22,8 +22,19 @@ type ReactionDebtSource interface {
 	ClaimExternalDriver(sessionID string)
 	// ReleaseExternalDriver clears the marker once the loop exits.
 	ReleaseExternalDriver(sessionID string)
-	// ReactionDebtExists reads doc sec.3.4's debt predicate for sessionID.
+	// ReactionDebtExists reads doc sec.3.4's debt predicate for sessionID
+	// (pending-inclusive: delivery IN {pending, done}).
 	ReactionDebtExists(ctx context.Context, sessionID string) (bool, error)
+	// VisibleReactionDebtExists reads the VISIBLE-only debt predicate
+	// (delivery='done') -- the SAME one decideDrainTurn (agent_turn.go)
+	// uses to decide whether a Drain call actually reaches the provider.
+	// B8/C5b,c fix: the CLI loop's own "is another turn owed" decision
+	// (waitForNextCLITurn) must use this, not the plain predicate, or a
+	// permanently-pending row (pull stuck) makes the loop believe a turn is
+	// owed on every iteration while every such turn actually taken silently
+	// no-ops (decideDrainTurn's own visible-only check) -- spinning at 100%
+	// CPU with no pause, never exiting.
+	VisibleReactionDebtExists(ctx context.Context, sessionID string) (bool, error)
 	// ScopeOpen evaluates doc sec.3.5's scope predicate for sessionID: a
 	// running task row on a live host, OR (since this is always called
 	// BETWEEN turns, never mid-turn) a reaction debt this session's own
@@ -69,6 +80,14 @@ func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) 
 		return false, nil
 	}
 	return c.asyncJobs.reactionDebtExists(ctx, sessionID)
+}
+
+// VisibleReactionDebtExists implements ReactionDebtSource.
+func (c *coordinator) VisibleReactionDebtExists(ctx context.Context, sessionID string) (bool, error) {
+	if c.asyncJobs == nil {
+		return false, nil
+	}
+	return c.asyncJobs.visibleReactionDebtExists(ctx, sessionID)
 }
 
 // reactionDebtSourceHintFallback bounds WaitForHint's own wait even without
