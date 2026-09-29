@@ -22,8 +22,9 @@ func (f *fakeRunCommandJobResolver) ResolveJobShellID(_, jobID string) (string, 
 	return "", &RunCommandJobError{JobID: jobID}
 }
 
-func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) {
+func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) (string, bool) {
 	f.stoppedSession, f.stoppedJob = sessionID, jobID
+	return "", false
 }
 
 // fakeDelegationJobResolver always classifies a job_id as a delegation.
@@ -32,7 +33,7 @@ type fakeDelegationJobResolver struct{}
 func (f *fakeDelegationJobResolver) ResolveJobShellID(_, jobID string) (string, error) {
 	return "", &DelegationJobError{JobID: jobID, ChildSessionID: "child-session-x"}
 }
-func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) {}
+func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) (string, bool) { return "", false }
 
 // fakeRunCommandController is a minimal RunCommandController for testing.
 type fakeRunCommandController struct {
@@ -46,6 +47,10 @@ type fakeRunCommandController struct {
 	calledCursor             int64
 	stopCalledSession        string
 	stopCalledJob            string
+	// stopText is StopRunCommandJob's own success return value (task
+	// #1063). Empty in every test that does not set it, reproducing
+	// job_kill's pre-existing generic-wording fallback.
+	stopText string
 }
 
 func (f *fakeRunCommandController) RunCommandOutput(sessionID, jobID string, cursor int64) (string, bool, int64, error) {
@@ -56,9 +61,12 @@ func (f *fakeRunCommandController) RunCommandOutput(sessionID, jobID string, cur
 	return f.data, f.done, f.nextCursor, nil
 }
 
-func (f *fakeRunCommandController) StopRunCommandJob(sessionID, jobID string) error {
+func (f *fakeRunCommandController) StopRunCommandJob(sessionID, jobID string) (string, error) {
 	f.stopCalledSession, f.stopCalledJob = sessionID, jobID
-	return f.stopErr
+	if f.stopErr != nil {
+		return "", f.stopErr
+	}
+	return f.stopText, nil
 }
 
 // TestJobOutputTool_RunCommandJobRoutesToController proves job_output routes
@@ -121,6 +129,26 @@ func TestJobKillTool_RunCommandJobRoutesToController(t *testing.T) {
 	require.Contains(t, resp.Content, "call-1")
 	require.Equal(t, "session-a", runCtl.stopCalledSession)
 	require.Equal(t, "call-1", runCtl.stopCalledJob)
+}
+
+// TestJobKillTool_RunCommandJobUsesControllerTextAsFinalAnswer proves task
+// #1063's wiring for run_command: job_kill returns StopRunCommandJob's own
+// success text verbatim, not the old "kill requested; result will arrive as
+// a message" placeholder -- job_kill produces no second, later notice for a
+// run_command job either.
+func TestJobKillTool_RunCommandJobUsesControllerTextAsFinalAnswer(t *testing.T) {
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
+	resolver := &fakeRunCommandJobResolver{}
+	runCtl := &fakeRunCommandController{stopText: "Async job call-1 (run_command) was stopped (job_kill). Partial output before the stop:\n\nline one"}
+	tool := NewJobKillTool(resolver, runCtl)
+
+	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Equal(t, runCtl.stopText, resp.Content)
+	require.NotContains(t, resp.Content, "will arrive as a message", "a fresh stop's real output IS the answer, not a promise of a later one")
 }
 
 // TestJobKillTool_RunCommandStopErrorSurfacesAsRecoverableResponse proves a

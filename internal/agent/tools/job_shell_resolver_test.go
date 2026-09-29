@@ -20,6 +20,11 @@ type fakeJobShellResolver struct {
 	err                        error
 	calledSession, calledJob   string
 	stoppedSession, stoppedJob string
+	// markText/markOK are MarkJobStopped's own return values (task #1063).
+	// Zero values (ok=false) reproduce job_kill's pre-existing fallback
+	// flow/wording for every test in this file that does not set them.
+	markText string
+	markOK   bool
 }
 
 func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (string, error) {
@@ -30,8 +35,9 @@ func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (strin
 	return f.shellID, nil
 }
 
-func (f *fakeJobShellResolver) MarkJobStopped(sessionID, jobID string) {
+func (f *fakeJobShellResolver) MarkJobStopped(sessionID, jobID string) (string, bool) {
 	f.stoppedSession, f.stoppedJob = sessionID, jobID
+	return f.markText, f.markOK
 }
 
 func TestResolveShellID_NeitherGivenIsRejected(t *testing.T) {
@@ -117,6 +123,36 @@ func TestJobKillTool_JobIDResolverErrorSurfacesAsRecoverableResponse(t *testing.
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "not owned by this session")
+}
+
+// TestJobKillTool_UsesResolverTextAsFinalAnswer proves task #1063's wiring
+// in job_kill.go itself: when MarkJobStopped reports a fresh stop (ok=true)
+// with its own text, job_kill returns that text VERBATIM as the tool's
+// final answer instead of its generic "terminated successfully" wording --
+// the real output snapshot the resolver captured is what the model sees.
+func TestJobKillTool_UsesResolverTextAsFinalAnswer(t *testing.T) {
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
+
+	bgManager := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
+	bgShell, err := bgManager.StartOwned(ctx, "session-a", workingDir, nil, "sleep 30", "")
+	require.NoError(t, err)
+
+	resolver := &fakeJobShellResolver{
+		shellID:  bgShell.ID,
+		markText: "Async job call-1 (bash) was stopped (job_kill). Partial output before the stop:\n\nline one\nline two",
+		markOK:   true,
+	}
+	tool := NewJobKillTool(resolver, nil, bgManager)
+
+	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Equal(t, resolver.markText, resp.Content, "job_kill's own final answer must be the resolver's real-output text, not the generic wording")
+	require.True(t, bgShell.IsDone(), "the shell must still actually be killed on a fresh stop")
 }
 
 func TestJobKillTool_BothJobIDAndShellIDRejected(t *testing.T) {

@@ -21,10 +21,16 @@ type JobShellResolver interface {
 	ResolveJobShellID(sessionID, jobID string) (string, error)
 	// MarkJobStopped records that jobID (owned by sessionID) is being
 	// stopped by an explicit job_kill call, BEFORE job_kill actually kills
-	// the underlying shell (task #1023 §2.2). Best-effort: a jobID that
-	// does not resolve is silently ignored, since job_kill's actual kill
-	// call is the operation of record, not this bookkeeping.
-	MarkJobStopped(sessionID, jobID string)
+	// the underlying shell (task #1023 §2.2), and returns job_kill's own
+	// final answer text (task #1063): the real output snapshot taken before
+	// the kill, already worded to distinguish this cause (stopped/job_kill)
+	// from Stop-cancel or a timeout. ok is false when jobID does not resolve
+	// to a live, ledger-tracked job still running -- job_kill then falls
+	// back to its own bgManager-driven flow/wording (which, for a REPEAT
+	// call on an already-delivered job, naturally answers "not found ... or
+	// already delivered" -- the idempotent "already stopped" outcome
+	// contract §1.5 requires).
+	MarkJobStopped(sessionID, jobID string) (text string, ok bool)
 }
 
 // RunCommandController lets job_kill/job_output act on a run_command job,
@@ -38,11 +44,13 @@ type RunCommandController interface {
 	// call. err is model-safe (not found / not owned / already delivered).
 	RunCommandOutput(sessionID, jobID string, cursor int64) (data string, done bool, nextCursor int64, err error)
 	// StopRunCommandJob marks jobID stopped-on-request (§2.2) and cancels
-	// its executor context -- the only way to stop a run_command job. err
-	// is model-safe; a second call on an already-stopped job returns the
-	// same "not found" shape as any other refusal (contract §1.5's
-	// idempotency rule).
-	StopRunCommandJob(sessionID, jobID string) error
+	// its executor context -- the only way to stop a run_command job. On
+	// success, text is job_kill's own final answer (task #1063): the real
+	// output snapshot taken before the kill, worded like
+	// JobShellResolver.MarkJobStopped's. err is model-safe; a second call on
+	// an already-stopped job returns the same "not found" shape as any other
+	// refusal (contract §1.5's idempotency rule).
+	StopRunCommandJob(sessionID, jobID string) (text string, err error)
 }
 
 // RunCommandJobError is returned by JobShellResolver.ResolveJobShellID when

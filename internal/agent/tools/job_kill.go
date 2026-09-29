@@ -57,12 +57,20 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 			if err != nil {
 				var rcErr *RunCommandJobError
 				if errors.As(err, &rcErr) && runCtl != nil {
-					if stopErr := runCtl.StopRunCommandJob(sessionID, params.JobID); stopErr != nil {
+					// Task #1063: the result IS the tool's own answer, with
+					// the real output snapshotted before the stop -- not a
+					// placeholder promising a later message (job_kill now
+					// produces no second notice for a run_command job
+					// either).
+					stopText, stopErr := runCtl.StopRunCommandJob(sessionID, params.JobID)
+					if stopErr != nil {
 						return fantasy.NewTextErrorResponse(stopErr.Error()), nil
 					}
-					result := fmt.Sprintf("Async job %s (run_command) kill requested; it will stop shortly and its result will arrive as a message.", params.JobID)
+					if stopText == "" {
+						stopText = fmt.Sprintf("Async job %s (run_command) kill requested; it will stop shortly and its result will arrive as a message.", params.JobID)
+					}
 					metadata := JobKillResponseMetadata{JobID: params.JobID}
-					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
+					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stopText), metadata), nil
 				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -85,12 +93,21 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				Description: bgShell.Description,
 			}
 
+			// Task #1063: markText, when ok, IS the tool's own final answer
+			// -- the real output snapshot taken BEFORE the kill below,
+			// already worded to distinguish this cause (stopped/job_kill)
+			// from Stop-cancel or a timeout. !ok means jobID isn't a live,
+			// ledger-tracked job (unknown, already delivered, or job_kill
+			// was called via a raw shell_id) -- the pre-existing generic
+			// wording below is used instead, exactly as before this task.
+			var markText string
+			var marked bool
 			if resolver != nil && params.JobID != "" {
 				// Records the ledger's stop-on-request marker BEFORE the
 				// kill below, so the job's own finish() call (task #1023
-				// §2.2) produces a distinct "stopped (job_kill)" notice
+				// §2.2) produces a distinct "stopped (job_kill)" outcome
 				// instead of describing the killed process's own exit.
-				resolver.MarkJobStopped(sessionID, params.JobID)
+				markText, marked = resolver.MarkJobStopped(sessionID, params.JobID)
 			}
 
 			if owned {
@@ -102,6 +119,9 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
+			if marked && markText != "" {
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(markText), metadata), nil
+			}
 			result := fmt.Sprintf("Background shell %s terminated successfully", shellID)
 			if params.JobID != "" {
 				result = fmt.Sprintf("Background job %s (shell %s) terminated successfully", params.JobID, shellID)
