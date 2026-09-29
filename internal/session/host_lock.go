@@ -279,11 +279,56 @@ type HostIdentity struct {
 	lock *FileLock
 }
 
+// registerHostAttempts bounds RegisterHost's retry loop: each retry follows
+// a lock file a reaper or prober touched between its creation and our lock
+// (see acquireFreshHostLock), which needs a peer active at that instant.
+const registerHostAttempts = 16
+
+// errHostLockReplaced means the lock file this attempt created was unlinked
+// (or replaced) by a reaper before the attempt held the lock on it.
+var errHostLockReplaced = errors.New("host lock: lock file was removed before it was locked")
+
+// registerHostAfterCreateSeam is a test-only hook fired between creating a
+// host lock file and locking it -- the window a reaper can win. nil in
+// production.
+var registerHostAfterCreateSeam func(lockPath string)
+
+// acquireFreshHostLock creates lockPath, locks it exclusively and proves the
+// path still names the locked file. Creating and locking are two steps, so a
+// reaper (purgeOrphanHostLockFiles/purgeEmptyDeadHostFiles: "a file nobody
+// holds") can win the lock on the new file first and unlink it; the caller
+// would then hold a lock on a file no probe can find (every probe of the id
+// sees ENOENT = dead). Two halves close it: after locking, the path is
+// re-checked against the held handle (errHostLockReplaced otherwise), and
+// every remover unlinks only while holding the lock (RemoveDeadHostFile), so
+// a file held-and-verified here can no longer be unlinked. Losing the lock
+// race itself is *ErrLockContended.
+func acquireFreshHostLock(lockPath string) (*FileLock, error) {
+	f, err := openLockFile(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if registerHostAfterCreateSeam != nil {
+		registerHostAfterCreateSeam(lockPath)
+	}
+	lock, err := classifyAndLock(f, lockPath)
+	if err != nil {
+		return nil, err
+	}
+	held, statErr := lock.f.Stat()
+	pathInfo, pathErr := os.Stat(lockPath)
+	if statErr != nil || pathErr != nil || !os.SameFile(held, pathInfo) {
+		_ = lock.Release()
+		return nil, errHostLockReplaced
+	}
+	return lock, nil
+}
+
 // RegisterHost is the registration primitive doc sec.3.6 describes: a fresh
 // random uuid, an exclusive OS lock acquired on its lock file (created
-// fresh -- never pre-existing, so contention here would mean an
-// astronomically unlikely uuid collision, not a real host), and a
-// display-only async_hosts row.
+// fresh -- never pre-existing, so the only contention here is a reaper or
+// prober touching the just-created file, which costs one retry under a new
+// id, see acquireFreshHostLock), and a display-only async_hosts row.
 //
 // RegisterHost is NOT idempotent -- every call registers a brand-new host
 // id and lock file, even if this process already holds one. Doc sec.3.6's
@@ -300,9 +345,23 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 	if dataDir == "" {
 		return nil, fmt.Errorf("host lock: RegisterHost: empty dataDir")
 	}
-	id := uuid.NewString()
-	lockPath := HostLockPath(dataDir, id)
-	lock, err := TryAcquireFileLock(lockPath)
+	var (
+		id       string
+		lockPath string
+		lock     *FileLock
+		err      error
+	)
+	for attempt := 0; attempt < registerHostAttempts; attempt++ {
+		id = uuid.NewString()
+		lockPath = HostLockPath(dataDir, id)
+		lock, err = acquireFreshHostLock(lockPath)
+		if err == nil {
+			break
+		}
+		if !isContentionError(err) && !errors.Is(err, errHostLockReplaced) {
+			break
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("host lock: register: acquire %s: %w", lockPath, err)
 	}
@@ -365,9 +424,14 @@ func (h *HostIdentity) Close(ctx context.Context, store AsyncHostStore) error {
 // not an error -- the file this process holds open is simply released and
 // left alone; retention reaps whatever, if anything, is left.
 //
-// Order is release-then-remove on every platform (doc sec.3.6: "на Windows
-// — закрыть, затем удалить"), which is also safe on POSIX since flock is
-// keyed off the inode, not the path.
+// Order is platform-specific. POSIX unlinks WHILE STILL HOLDING the lock and
+// releases afterwards (unlinkBeforeUnlock): a registrant that created this
+// same path and is about to lock it can then never lock-and-verify the file in
+// the gap between our release and our unlink (acquireFreshHostLock), which
+// would leave it holding an unlinked inode. Windows cannot delete an open file
+// (no FILE_SHARE_DELETE), so it closes first (doc sec.3.6: "на Windows —
+// закрыть, затем удалить"); there a registrant's open handle makes the remove
+// fail with a sharing violation instead, leaving its file intact.
 func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 	if held == nil {
 		return fmt.Errorf("host lock: RemoveDeadHostFile: nil lock")
@@ -391,6 +455,17 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 		// alone -- release our (now-orphaned) handle and let retention
 		// reap it if it's ever empty.
 		_ = held.Release()
+		return nil
+	}
+	if unlinkBeforeUnlock {
+		rmErr := os.Remove(lockPath)
+		relErr := held.Release()
+		if rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("host lock: remove %s: %w", lockPath, rmErr)
+		}
+		if relErr != nil {
+			return fmt.Errorf("host lock: release after remove: %w", relErr)
+		}
 		return nil
 	}
 	if err := held.Release(); err != nil {

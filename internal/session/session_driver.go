@@ -170,8 +170,10 @@ func (s *AsyncJobStore) ForeignLiveDriver(ctx context.Context, sessionID string)
 
 // purgeDeadSessionDrivers deletes every marker whose host is provably dead
 // (a crashed `rush run` never released it). Host ids are uuids never reused
-// and death is irreversible, so no lock is needed to delete; a host that is
-// alive, unknown, or this process's own is left alone.
+// and death is irreversible (RegisterHost publishes an id only while holding a
+// verified lock on its file, and removers unlink only under the lock), so no
+// lock is needed to delete; a host that is alive, unknown, or this process's
+// own is left alone.
 func (s *AsyncJobStore) purgeDeadSessionDrivers(ctx context.Context) error {
 	hosts, err := s.q.ListSessionDriverHostIDs(ctx)
 	if err != nil {
