@@ -183,32 +183,37 @@ func TestExecuteRunMailboxCancelDuringAdmissionHoldAborts(t *testing.T) {
 	seenMu.Unlock()
 }
 
-// clearCancelGateSessions parks ExecuteRun inside ClearCancelRequest —
-// the first Sessions write AFTER the gate that guards it (the stale
-// cancel-flag clear) and BEFORE the budget/ended_reason/title block and
-// the final pre-handoff gate — giving the test a deterministic window in
-// which a mailbox cancel lands after every explicit gate but before the
+// systemPromptGateSessions parks ExecuteRun inside UpdateSystemPrompt —
+// a Sessions write after its own pre-write gate and BEFORE the final
+// pre-handoff gate (#1101 moved the cancel-flag/budget/ended_reason writes
+// to admission, past these gates) — giving the test a deterministic window
+// in which a mailbox cancel lands after every explicit gate but before the
 // turn handoff.
-type clearCancelGateSessions struct {
+type systemPromptGateSessions struct {
 	session.Service
-	entered chan struct{} // closed when ClearCancelRequest is entered
+	entered chan struct{} // closed when UpdateSystemPrompt is entered
 	proceed chan struct{} // closed by the test to release the parked write
 	once    sync.Once
 }
 
-func (s *clearCancelGateSessions) ClearCancelRequest(ctx context.Context, sessionID string) error {
+func (s *systemPromptGateSessions) UpdateSystemPrompt(ctx context.Context, sessionID, prompt string) error {
 	s.once.Do(func() { close(s.entered); <-s.proceed })
-	return s.Service.ClearCancelRequest(ctx, sessionID)
+	// #1101: this write is now one of the LAST pre-handoff mutations, so a
+	// cancel released from the park must not fail it — the bail-out has to
+	// come from the final pre-handoff gate ("canceled during run admission"),
+	// exactly where it came from when ClearCancelRequest was the parked write.
+	detached := context.WithoutCancel(ctx)
+	return s.Service.UpdateSystemPrompt(detached, sessionID, prompt)
 }
 
 // TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites
 // covers the F6 window the first-gate test cannot reach: the cancel
-// lands AFTER the ClearCancelRequest gate, inside the first post-gate
-// Sessions write, so every remaining pre-handoff mutation fails on the
-// canceled mutCtx — and the ended_reason/on-finish-hook defers, which
-// deliberately use Background-derived contexts, must skip instead of
-// overwriting the previous run's ended_reason or firing the hook for a
-// run that never started.
+// lands AFTER the UpdateSystemPrompt gate, inside the post-gate Sessions
+// write, so the final pre-handoff gate fails on the canceled mutCtx — and
+// the ended_reason/on-finish-hook defers, which deliberately use
+// Background-derived contexts, must skip instead of overwriting the
+// previous run's ended_reason or firing the hook for a run that never
+// started.
 func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testing.T) {
 	var seenMu sync.Mutex
 	var seen []string
@@ -237,7 +242,7 @@ func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testi
 	// Stage the ended_reason a PREVIOUS, unrelated run would have left.
 	require.NoError(t, application.Sessions.SetEndedReason(context.Background(), sessionID, "previous-run"))
 
-	spy := &clearCancelGateSessions{
+	spy := &systemPromptGateSessions{
 		Service: application.Sessions,
 		entered: make(chan struct{}),
 		proceed: make(chan struct{}),
@@ -256,6 +261,7 @@ func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testi
 	start := make(chan struct{})
 	admissionLaunch(t, application, sessionID, outcomes, start, 1,
 		"F6_CANCELLED this must never run", RunOverrides{
+			SystemPrompt: "F6 system prompt",
 			OnFinishHook: hook,
 		}, true)
 	close(start)
@@ -263,7 +269,7 @@ func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testi
 	select {
 	case <-spy.entered:
 	case <-time.After(60 * time.Second):
-		t.Fatal("the victim never reached ClearCancelRequest; cannot stage the post-gate window")
+		t.Fatal("the victim never reached UpdateSystemPrompt; cannot stage the post-gate window")
 	}
 
 	// Cancel while the victim is parked between the ClearCancelRequest

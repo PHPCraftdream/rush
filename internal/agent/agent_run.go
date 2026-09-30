@@ -440,6 +440,18 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}()
 	}
 
+	// Admission-time session setup (#1101): the caller's preparatory writes
+	// (the one-shot cancel flag, budget, ended_reason) run only now that the
+	// mailbox and the inter-process lock are ours. Every refusal above
+	// returned before this point, so a refused call leaves the session's
+	// state untouched.
+	if setup := admissionSetupFrom(ctx); setup != nil {
+		if err := setup(runCtx); err != nil {
+			a.noteRefusal(call.SessionID, err)
+			return nil, notAttempted(call, fmt.Errorf("session %q: admission setup failed: %w", call.SessionID, err))
+		}
+	}
+
 	// R3-4: drop THIS dispatch loop's policy entry when the loop ends —
 	// identified by the LAST call whose policy was armed below, so a
 	// later owner's (or later turn's) freshly armed entry is never

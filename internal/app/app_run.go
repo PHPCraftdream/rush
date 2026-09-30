@@ -356,22 +356,19 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
+	// #1101: the invocation's preparatory session writes (the one-shot
+	// cancel flag, the operator-visible budget, ended_reason) run at
+	// ADMISSION, not before it: runOwned invokes the callback once the
+	// mailbox and the inter-process session lock are ours, so a first turn
+	// refused by another process's lock leaves the owner's unread cancel,
+	// budget and ended_reason untouched. A follow-up turn (mutationFree)
+	// is setup-free, as before.
 	if !req.mutationFree() {
-		if err := app.Sessions.ClearCancelRequest(mutCtx, sess.ID); err != nil {
-			slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
-		}
-	}
-
-	// Fork patch (operator UX): persist budget at run start so
-	// `sessions show` / `sessions locks` can display "cost vs limit".
-	// Also clear ended_reason since the session is being (re)started.
-	if !req.mutationFree() {
-		if err := app.Sessions.SetBudget(mutCtx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
-			slog.Warn("Failed to persist budget", "session_id", sess.ID, "err", err)
-		}
-		if err := app.Sessions.SetEndedReason(mutCtx, sess.ID, ""); err != nil {
-			slog.Warn("Failed to clear ended_reason", "session_id", sess.ID, "err", err)
-		}
+		sessID := sess.ID
+		ctx = agent.WithAdmissionSetup(ctx, func(actx context.Context) error {
+			app.prepareAdmittedRun(actx, sessID, overrides)
+			return nil
+		})
 	}
 
 	// Fork patch (operator UX): auto-title from first user prompt. If the

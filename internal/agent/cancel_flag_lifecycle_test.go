@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -218,4 +219,34 @@ func TestRunSubAgent_ResumeClearsAStaleCancelFlag(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, flagAtStart, "the resumed child starts with the request spent")
+}
+
+// TestCancelFlag_HumanTurnClearsTheFlagAtAdmission (#1101, Q2a): a human turn
+// (web/SDK: no per-call options) spends a stale `sessions cancel` request at
+// ADMISSION, not before it — a turn refused by another process's session lock
+// leaves the flag for that owner; once the lock is free the same turn is
+// admitted and the flag is spent.
+//
+// Revert-check: restoring the eager clearCancelRequest at the top of
+// runInternal clears the flag on the refused (locked-out) call and the first
+// assertion below goes red; deleting the runOwned admission invocation keeps
+// the flag after the admitted turn and the last one goes red.
+func TestCancelFlag_HumanTurnClearsTheFlagAtAdmission(t *testing.T) {
+	ctx := context.Background()
+	f := newTwoStepFixture(t, attemptFixtureOpts{noIdle: true, noDriver: true})
+	coord := f.webCoordinator()
+	require.NoError(t, f.env.sessions.RequestCancel(ctx, f.sessID))
+
+	foreignLock, err := session.TryAcquireSessionLock(f.env.workingDir, f.sessID)
+	require.NoError(t, err)
+	_, err = coord.Run(ctx, f.sessID, "blocked by the lock")
+	require.Error(t, err, "the locked-out turn is refused")
+	require.True(t, f.cancelRequested(), "a turn refused by the session lock does not spend the flag")
+	require.Zero(t, f.requests.Load(), "the refused turn never reaches the provider")
+	require.NoError(t, foreignLock.Release())
+
+	_, err = coord.Run(ctx, f.sessID, "admitted")
+	require.NoError(t, err)
+	require.EqualValues(t, 2, f.steps.Load(), "the admitted turn runs its two steps")
+	require.False(t, f.cancelRequested(), "an admitted human turn spends the flag")
 }

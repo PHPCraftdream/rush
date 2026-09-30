@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
@@ -16,6 +18,26 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/term"
 )
+
+// prepareAdmittedRun performs ExecuteRun's admission-time session writes
+// (#1101): clear a stale one-shot cancel request, persist the budget so
+// `sessions show` / `sessions locks` can display "cost vs limit", and clear
+// ended_reason since the session is being (re)started. Best effort, like the
+// pre-admission writes it replaced; runs on a context detached from the
+// turn's so a cancelled run cannot silently drop the bookkeeping.
+func (app *App) prepareAdmittedRun(ctx context.Context, sessionID string, overrides RunOverrides) {
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := app.Sessions.ClearCancelRequest(actx, sessionID); err != nil {
+		slog.Warn("Failed to clear cancel request flag", "session_id", sessionID, "err", err)
+	}
+	if err := app.Sessions.SetBudget(actx, sessionID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
+		slog.Warn("Failed to persist budget", "session_id", sessionID, "err", err)
+	}
+	if err := app.Sessions.SetEndedReason(actx, sessionID, ""); err != nil {
+		slog.Warn("Failed to clear ended_reason", "session_id", sessionID, "err", err)
+	}
+}
 
 // runExecSetup bundles the values ExecuteRun's request-to-config setup
 // computes and everything after it reads. Every field here is written

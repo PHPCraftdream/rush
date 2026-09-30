@@ -8,6 +8,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **#1101: a refused first turn no longer touches the session's state.** The
+  preparatory writes a `rush run` / SDK turn performed before admission —
+  clearing a stale `sessions cancel` request, persisting the budget, clearing
+  `ended_reason` — now run at ADMISSION, once the turn owns the session's
+  mailbox and inter-process lock (`sessionAgent.runOwned`). A first turn
+  refused by another process's session lock leaves the owner's unread cancel
+  request, budget and `ended_reason` untouched, and a web/SDK human turn that
+  is locked out no longer spends the one-shot cancel flag (it is spent by the
+  turn that is actually admitted).
+
 ### Added
 
 - **Durable wake schedules (stage 4a)**: a `wake_schedules` table (migration

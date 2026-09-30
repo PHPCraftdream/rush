@@ -195,11 +195,17 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
 	callOpts := callOptionsFrom(ctx)
-	// A human-initiated turn (web/SDK: no per-call options, not a Drain) starts
-	// with a stale `sessions cancel` request spent (R8A-2); the `rush run` loop's
-	// own turns (per-call options) and Drains leave it to the loop.
+	// A human-initiated turn (web/SDK: no per-call options, not a Drain) spends
+	// a stale `sessions cancel` request AT ADMISSION (#1101, R8A-2): runOwned
+	// runs the callback once the mailbox and session lock are ours, so a turn
+	// refused by another owner leaves the flag for that owner. The `rush run`
+	// loop's own turns (per-call options) and Drains leave it to the loop.
 	if callOpts == nil && !isDrainCallFrom(ctx) {
-		clearCancelRequest(ctx, c.sessions, sessionID)
+		sessions := c.sessions
+		ctx = WithAdmissionSetup(ctx, func(ctx context.Context) error {
+			clearCancelRequest(ctx, sessions, sessionID)
+			return nil
+		})
 	}
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
 
