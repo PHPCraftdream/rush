@@ -57,13 +57,16 @@ func (e *ErrAsyncChildSessionBusy) Error() string {
 
 // ErrAsyncJobInputMismatch is returned when a (owner, tool_call_id) key is
 // reused with a DIFFERENT input hash: a distinct call colliding on the id,
-// not an idempotent retry (doc sec.3.1).
+// not an idempotent retry (doc sec.3.1). The row holding the key is either
+// running or terminal but not yet announced (its "started" result is still to
+// be written; a terminal row that is already history is archived instead), so
+// the text says "unfinished", not "running".
 type ErrAsyncJobInputMismatch struct {
 	ToolCallID string
 }
 
 func (e *ErrAsyncJobInputMismatch) Error() string {
-	return fmt.Sprintf("async job %s is already running with different input", e.ToolCallID)
+	return fmt.Sprintf("async job %s is already in use by an unfinished call with different input", e.ToolCallID)
 }
 
 // ErrAsyncJobGone is returned by MarkAnnounced when the target row no
@@ -584,9 +587,6 @@ func (s *AsyncJobStore) DeleteUnannounced(ctx context.Context, owner, toolCallID
 	return nil
 }
 
-// Get reads the current row for (owner, toolCallID), or sql.ErrNoRows if
-// none exists. A thin read-only wrapper for tests and any caller that
-// needs a direct row read (e.g. diagnostics); the cross-process readers are
 // deleteUnannouncedForClaim is DeleteUnannounced for a caller that read the row
 // first (dead-host recovery): it removes that incarnation only. Two recoverers
 // can list the same unannounced row; if one deletes it and a live host claims
@@ -602,6 +602,9 @@ func (s *AsyncJobStore) deleteUnannouncedForClaim(ctx context.Context, owner, to
 	return rows > 0, nil
 }
 
+// Get reads the current row for (owner, toolCallID), or sql.ErrNoRows if
+// none exists. A thin read-only wrapper for tests and any caller that
+// needs a direct row read (e.g. diagnostics); the cross-process readers are
 // in async_job_reader.go.
 func (s *AsyncJobStore) Get(ctx context.Context, owner, toolCallID string) (db.AsyncJob, error) {
 	return s.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: toolCallID})

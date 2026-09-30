@@ -157,35 +157,33 @@ func (d DebtSnapshot) Empty() bool {
 	return len(d.Jobs) == 0 && len(d.Notices) == 0
 }
 
-// CaptureDebtSnapshot reads owner's current debt row ids from both tables --
-// the id set a Drain turn's eventual failure handling must act on, captured
-// BEFORE the turn runs (doc: "the id set is captured at the start of the
-// turn", so a notice arriving mid-retry is never silently absorbed by a
-// later settle).
+// CaptureDebtSnapshot reads owner's VISIBLE reaction debt from both tables:
+// the row-id set a Drain attempt's accounting acts on. The Drain's own turn
+// preamble takes it (agent.visibleDebtSnapshot, agent_turn.go) AFTER that
+// turn's notice pull, so a row this Drain just pulled -- or an earlier failed
+// attempt pulled -- is in it and a row still pending is not. The attempt
+// counter, MaxWakeAttempts and the settle-by-failure close
+// (IncrementWakeAttempts, settleSnapshotRows in drain_attempt.go) touch these
+// rows only, and only while each is still the same row (claim, message,
+// wake=1, reacted=0).
+//
 // Doc sec.3.4: "закрытие долга неудачей ... и только для строк, которые
-// были done на момент его начала" -- settle-by-failure (and the stuck-
-// progress success-path variant, checkStuckDrainProgress) may only ever act
-// on rows that were ALREADY VISIBLE (delivery='done') when the turn started,
-// never delivery='pending'. A pending row's pull has not (yet, or ever)
-// succeeded -- it was never in the model's prompt, so a failed/stuck-Drain
-// classification has no evidence about it at all; including it here would
-// let a permanently failing pull (a corrupt row, an unmarshalable payload,
-// whatever ReactionDebtExists' own pending branch worries about) get
-// wake_attempts bumped and eventually SETTLED BY FAILURE purely because a
-// same-owner turn kept failing/succeeding for an unrelated reason -- closing
-// debt the model never got a chance to react to. Review finding C18/B-dev1
+// были done на момент его начала": delivery='done' only, never 'pending'. A
+// pending row was never in the model's prompt, so a failed Drain says nothing
+// about it; counting it would let a permanently failing pull (a corrupt row,
+// an unmarshalable payload) accumulate attempts and be SETTLED BY FAILURE
+// though the model never saw it. Review finding C18/B-dev1
 // (docs/reviews/2026-09-29-async-phase4-round1.md): this used to be
 // `Delivery != "void"` (pending+done), which is right for
-// VisibleReactionDebtExists' SIBLING predicates (deciding whether a turn is
-// NEEDED at all can and should count pending) but wrong for THIS capture,
-// whose whole contract is "what did the turn actually see". A permanently
-// failing pull is bounded elsewhere: a Drain decides by VISIBLE debt
-// (decideDrainTurn), so with only 'pending' rows it ends without a provider
-// turn, and the no-turn release rule plus the 60s pass allow at most one such
-// Drain per hint or pass. An empty snapshot makes settle-by-failure and
-// checkStuckDrainProgress no-ops -- debt it never saw is never settled.
-// async_jobs also requires announced=1, matching AsyncReactionDebtExists'
-// own guard (DUR-7: an unannounced row can never produce a notice).
+// ReactionDebtExists (whether a turn is NEEDED counts pending) but wrong for
+// THIS capture, whose contract is "what did the turn actually see". A
+// permanently failing pull is bounded elsewhere: decideDrainTurn refuses a
+// provider turn on an empty snapshot, that Drain ends as a no-turn leg, and
+// pending debt left behind puts the session in the 60s re-check set. An empty
+// snapshot makes the accounting a no-op -- debt it never saw is never counted
+// or closed. async_jobs also requires announced=1, matching
+// AsyncReactionDebtExists' own guard (DUR-7: an unannounced row can never
+// produce a notice).
 func (s *AsyncJobStore) CaptureDebtSnapshot(ctx context.Context, owner string) (DebtSnapshot, error) {
 	jobs, err := s.q.ListAsyncJobsForOwner(ctx, owner)
 	if err != nil {
