@@ -25,7 +25,9 @@ func shellResolverWithPath(t *testing.T, overrides map[string]string) config.Var
 }
 
 func TestMCPSession_CancelOnClose(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	// Only goroutines started by this test count: earlier tests (or earlier
+	// -count iterations) may legitimately leave server goroutines behind.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 

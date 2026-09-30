@@ -83,10 +83,13 @@ func requireMCPNotUncertain(t *testing.T, owner *Owner, name string) {
 
 func closeCommitOutcomeTestOwner(t *testing.T, owner *Owner) {
 	t.Helper()
+	// Close through the owner first: it adopts and clears ownerless test
+	// sessions, which a manual Close beforehand would leave orphaned in the
+	// registry for the next test (or the next -count iteration).
+	require.NoError(t, owner.Close(context.Background()))
 	for _, session := range sessions.Seq2() {
 		_ = session.Close()
 	}
-	require.NoError(t, owner.Close(context.Background()))
 }
 
 func fakeMCPInitializer(
