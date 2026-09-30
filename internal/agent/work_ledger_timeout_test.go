@@ -68,13 +68,13 @@ func TestTimeoutService_FiresNearestFirst(t *testing.T) {
 		Deadline: now.Add(200 * time.Millisecond), Kind: timeoutTerminateAndWake, Seconds: 1,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "far")
+	l.acknowledged(jobOf(l, "owner", "far"))
 
 	_, _, err = l.Start("owner", "near", "", "bash", "", false, false, &TimeoutSpec{
 		Deadline: now.Add(50 * time.Millisecond), Kind: timeoutTerminateAndWake, Seconds: 1,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "near")
+	l.acknowledged(jobOf(l, "owner", "near"))
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -100,7 +100,7 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
 	}, func() { cancelled = true })
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call"]
@@ -190,7 +190,7 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call-1")
+	l.acknowledged(jobOf(l, "owner", "call-1"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call-1"]
@@ -290,7 +290,7 @@ func TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning(t *testing.T) {
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call-1")
+	l.acknowledged(jobOf(l, "owner", "call-1"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call-1"]
@@ -318,7 +318,7 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 			Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
 		}, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		l.mu.Lock()
 		job := l.bySession["owner"].jobs["call"]
@@ -330,7 +330,7 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()

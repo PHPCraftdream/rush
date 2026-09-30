@@ -42,7 +42,7 @@ func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	_, existing, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
-	l.finish("session", "call", jobResult{content: "done"})
+	l.finish(jobOf(l, "session", "call"), jobResult{content: "done"})
 
 	l.mu.Lock()
 	pending := len(l.bySession["session"].jobs)
@@ -54,7 +54,7 @@ func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	default:
 	}
 
-	l.acknowledged("session", "call")
+	l.acknowledged(jobOf(l, "session", "call"))
 	select {
 	case got := <-completed:
 		require.Equal(t, "session", got.SessionID)
@@ -83,9 +83,9 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", false, false, nil, nil)
 	require.NoError(t, err)
-	l.acknowledged("session", "call")
-	l.finish("session", "call", jobResult{})
-	l.finish("session", "call", jobResult{})
+	l.acknowledged(jobOf(l, "session", "call"))
+	l.finish(jobOf(l, "session", "call"), jobResult{})
+	l.finish(jobOf(l, "session", "call"), jobResult{})
 	require.EqualValues(t, 1, calls.Load())
 	require.False(t, l.running("session"))
 }
@@ -101,8 +101,8 @@ func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	var wg sync.WaitGroup
-	wg.Go(func() { l.finish("session", "call", jobResult{}) })
-	wg.Go(func() { l.acknowledged("session", "call") })
+	wg.Go(func() { l.finish(jobOf(l, "session", "call"), jobResult{}) })
+	wg.Go(func() { l.acknowledged(jobOf(l, "session", "call")) })
 	wg.Wait()
 	select {
 	case <-completed:
@@ -216,7 +216,7 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	// childScopeDrained is trivially true here: l.coord is nil, and the
 	// child owns no jobs of its own, so arming should be release-ready
 	// immediately -- announce is the only thing withholding delivery.
-	l.armDelegation("parent", "call", jobResult{content: "child yielded: done"})
+	l.armDelegation(jobOf(l, "parent", "call"), jobResult{content: "child yielded: done"})
 
 	select {
 	case <-delivered:
@@ -225,7 +225,7 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	}
 	require.True(t, l.running("parent"), "the job must still be present, waiting for announce")
 
-	l.acknowledged("parent", "call")
+	l.acknowledged(jobOf(l, "parent", "call"))
 	select {
 	case got := <-delivered:
 		require.Equal(t, "child yielded: done", got.Content)
@@ -272,7 +272,7 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", AgentToolName, "child", false, false, nil, nil)
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -280,12 +280,12 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "boom", isError: true})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "boom", isError: true})
 		}()
 		go func() {
 			defer wg.Done()
@@ -321,7 +321,7 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	require.False(t, existing)
 	require.NotNil(t, job.done)
 
-	l.finish("session", "call", jobResult{content: "sync result"})
+	l.finish(jobOf(l, "session", "call"), jobResult{content: "sync result"})
 
 	select {
 	case <-job.done:

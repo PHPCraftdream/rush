@@ -75,14 +75,14 @@ func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testi
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	l.MarkJobStopped("owner", "call")
 	// The executor's own finish() call still happens exactly once (the
 	// caller always calls it after killing the process), but it is now a
 	// no-op: the job is already terminal from MarkJobStopped's own
 	// transition, so this must NOT change the recorded outcome.
-	l.finish("owner", "call", jobResult{content: "killed: exit status 1", isError: true})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "killed: exit status 1", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -116,18 +116,18 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("line 1\nline 2\n")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
-	_, stopErr := l.StopRunCommandJob("owner", "call")
+	_, _, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 	// Simulates run_command.go's own ctx-cancellation branch, which discards
 	// its own partial buffer content and returns a bare error (see
 	// run_command.go's `case ctx.Err() == context.Canceled`).
-	l.finish("owner", "call", jobResult{content: "context canceled", isError: true})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "context canceled", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -164,7 +164,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		var markText string
 		var markVerdict tools.JobStopVerdict
@@ -174,12 +174,12 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			markText, markVerdict = l.MarkJobStopped("owner", "call")
+			markText, _, markVerdict = l.MarkJobStopped("owner", "call")
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		close(start)
 		wg.Wait()
@@ -212,12 +212,12 @@ func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() { cancelCalls++ })
 	require.NoError(t, err)
 
-	stopText, stopErr := l.StopRunCommandJob("owner", "call")
+	stopText, _, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 	require.Contains(t, stopText, "job_kill", "task #1063: the fresh stop's own answer carries the real output/wording, not a placeholder")
 	require.Equal(t, 1, cancelCalls)
 
-	_, err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 	require.Equal(t, 1, cancelCalls, "a repeat stop must not cancel a second time")
@@ -233,7 +233,7 @@ func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
-	_, err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -248,11 +248,11 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("hello ")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
 	data, done, next, err := l.RunCommandOutput("owner", "call", 0)
 	require.NoError(t, err)
@@ -275,7 +275,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello world", data)
 
-	l.finish("owner", "call", jobResult{content: "hello world"})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "hello world"})
 	// Terminal but not yet delivered would show done=true; here finish's own
 	// deliverLocked already removed the job (task #1023 item 5's retention
 	// bound), so a subsequent call correctly reports not-found.
@@ -346,9 +346,9 @@ func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *
 	l.store = store
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
-	text, verdict := l.MarkJobStopped("owner", "call")
+	text, _, verdict := l.MarkJobStopped("owner", "call")
 	require.Equal(t, tools.JobStopStopped, verdict)
 	require.Contains(t, text, "job_kill")
 
@@ -373,9 +373,9 @@ func TestWorkLedger_StopRunCommandJob_RowGoesStraightToDone(t *testing.T) {
 	l.store = store
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
-	text, err := l.StopRunCommandJob("owner", "call")
+	text, _, err := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, err)
 	require.Contains(t, text, "job_kill")
 
@@ -398,7 +398,7 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -409,7 +409,7 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 			go func() {
 				defer wg.Done()
 				<-start
-				_, verdict := l.MarkJobStopped("owner", "call")
+				_, _, verdict := l.MarkJobStopped("owner", "call")
 				results[g] = verdict == tools.JobStopStopped
 			}()
 		}
@@ -442,7 +442,7 @@ func TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop(t 
 			mu.Unlock()
 		})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -453,7 +453,7 @@ func TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop(t 
 			go func() {
 				defer wg.Done()
 				<-start
-				_, err := l.StopRunCommandJob("owner", "call")
+				_, _, err := l.StopRunCommandJob("owner", "call")
 				errs[g] = err
 			}()
 		}

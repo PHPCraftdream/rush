@@ -172,7 +172,7 @@ func TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn(t *testing.T) {
 	const owner, childSession, callID = "owner-session", "child-session", "call-1"
 	_, _, err := coord.asyncJobs.Start(owner, callID, "", AgentToolName, childSession, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(owner, callID)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, owner, callID))
 
 	wrapped := &asyncTool{
 		inner:       newYieldedInnerTool(AgentToolName, "delegation result"),
@@ -180,7 +180,7 @@ func TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn(t *testing.T) {
 		name:        AgentToolName,
 	}
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
-	wrapped.run(ctx, func() {}, owner, childSession, fantasy.ToolCall{
+	wrapped.run(ctx, func() {}, jobOf(coord.asyncJobs, owner, callID), owner, childSession, fantasy.ToolCall{
 		ID: callID, Name: AgentToolName, Input: `{}`,
 	}, false)
 

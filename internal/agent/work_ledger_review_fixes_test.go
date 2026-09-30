@@ -47,7 +47,7 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 
 	_, _, err = l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	// Simulate "App shutdown closes the DB" (review Scenario A): every
 	// subsequent store call now fails immediately (sql: database is
@@ -58,7 +58,7 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		l.finish("owner-1", "call-1", jobResult{content: "ok"})
+		l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "ok"})
 	}()
 
 	// Let several failed attempts accumulate (10+20+40+80ms ~= 150ms) so the
@@ -114,7 +114,7 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -122,7 +122,7 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()
@@ -190,9 +190,9 @@ func TestWorkLedger_StopRunCommandJob_SyncJobPreservesStoppedOutcome(t *testing.
 	job, existing, err := l.Start("owner", "call", "", "run_command", "", false, true, nil, func() {})
 	require.NoError(t, err)
 	require.False(t, existing)
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
-	_, stopErr := l.StopRunCommandJob("owner", "call")
+	_, _, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -249,7 +249,7 @@ func TestWorkLedger_StopBeforeAckDoesNotOrphanRow(t *testing.T) {
 	require.EqualValues(t, 0, row.Announced, "not yet announced at this point")
 
 	// The "started" ack finally arrives.
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	row, err = store.Get(context.Background(), "owner", "call")
 	require.NoError(t, err)
@@ -289,7 +289,7 @@ func TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob(t *testing.T) {
 
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	// Simulate finish()'s own ordering: it marks executorReturned BEFORE
 	// doing any DB work. Reproduces the window where the executor's real
@@ -303,7 +303,7 @@ func TestWorkLedger_CloseDoesNotLatchOntoExecutorReturnedJob(t *testing.T) {
 
 	// The natural finish's own (unrelated-to-shutdown) transition call now
 	// proceeds -- must still commit the real result.
-	l.transition("owner", "call", causeNaturalFinish, jobResult{content: "real output"})
+	l.transition(jobOf(l, "owner", "call"), causeNaturalFinish, jobResult{content: "real output"})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "a natural completion racing close() must still be delivered, not silently dropped")

@@ -25,6 +25,10 @@ type asyncToolMetadata struct {
 	JobID          string `json:"job_id"`
 	ChildSessionID string `json:"child_session_id,omitempty"`
 	Status         string `json:"status"`
+	// ClaimID tags this as the job's OWN "started" result (ackTag): the ack
+	// gate fuses only a result carrying the job's claim, never one that
+	// merely shares its tool_call_id.
+	ClaimID string `json:"claim_id,omitempty"`
 }
 
 func (t *asyncTool) Info() fantasy.ToolInfo {
@@ -90,7 +94,7 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 		if sync {
 			return t.awaitAndFinish(ctx, job)
 		}
-		return t.startedResponse(call.ID, job.childSession), nil
+		return t.startedResponse(call.ID, job.childSession, job.claimID), nil
 	}
 	return t.launchExecutor(ctx, jobCtx, cancel, sessionID, childSessionID, call, sync, job)
 }
@@ -101,23 +105,19 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 // already claimed this job's durable row (announced=0, state='running')
 // before this is ever called, so a panic anywhere in this window, before
 // "go t.run" ever runs, must not leave that row looking like a
-// legitimately started, live job forever -- the model would see this
-// panic's own recovered error response (fused as the job's "started" ack by
-// onToolResult, since the ledger has no way to tell "the executor is about
-// to run" apart from "something panicked before it could"), while nothing
-// will ever call finish()/transition() for the row again. The recover here
-// finalizes it exactly as if t.run's OWN panic recovery (below) had caught
-// it, having never actually reached "go t.run" at all -- same ordering
-// (finalize, then cancel) as that path's paired defers.
+// legitimately started, live job forever: nothing would ever call
+// finish()/transition() for it again. The recover here fails the job with
+// the launch error directly (failLaunch) and answers with an error response
+// tagged with the job's claim (failedStartResponse), which the ack gate
+// treats as the job's own result, so the row is announced and its failure
+// delivered like any other.
 func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool, job *asyncJob) (resp fantasy.ToolResponse, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.finalize(ctx, sessionID, childSessionID, AsyncCompletion{
-				SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name,
-				IsError: true, Content: fmt.Sprintf("async %s failed to start: %v", t.name, recovered),
-			})
+			msg := fmt.Sprintf("async %s failed to start: %v", t.name, recovered)
+			t.failLaunch(job, msg)
 			cancel()
-			resp = fantasy.NewTextErrorResponse(fmt.Sprintf("async %s failed to start: %v", t.name, recovered))
+			resp = failedStartResponse(msg, job.claimID)
 			err = nil
 		}
 	}()
@@ -144,11 +144,11 @@ func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.C
 		// supervision is disabled -- see noteWorkStarted's own doc.
 		t.coordinator.asyncJobs.noteWorkStarted(ctx, sessionID)
 	}
-	go t.run(jobCtx, cancel, sessionID, childSessionID, call, sync)
+	go t.run(jobCtx, cancel, job, sessionID, childSessionID, call, sync)
 	if sync {
 		return t.awaitAndFinish(ctx, job)
 	}
-	return t.startedResponse(call.ID, childSessionID), nil
+	return t.startedResponse(call.ID, childSessionID, job.claimID), nil
 }
 
 // awaitAndFinish blocks until job's sync outcome is ready (workLedger.
@@ -168,10 +168,10 @@ func (t *asyncTool) awaitAndFinish(ctx context.Context, job *asyncJob) (fantasy.
 // Shared by the fresh-start and idempotent-retry (existing job) paths, so a
 // retried tool call reports the SAME child session id the first Start call
 // registered.
-func (t *asyncTool) startedResponse(jobID, childSessionID string) fantasy.ToolResponse {
+func (t *asyncTool) startedResponse(jobID, childSessionID, claimID string) fantasy.ToolResponse {
 	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work.", t.name, jobID)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), asyncToolMetadata{
-		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running",
+		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running", ClaimID: claimID,
 	})
 }
 
@@ -199,7 +199,7 @@ func (t *asyncTool) childSessionID(ctx context.Context, parentID string, call fa
 	return t.coordinator.sessions.CreateAgentToolSessionID(messageID, call.ID), nil
 }
 
-func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool) {
+func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, job *asyncJob, sessionID, childSessionID string, call fantasy.ToolCall, sync bool) {
 	defer cancel()
 	// No `defer ClearSessionRunAllowlist` here (phase 2, §6.2): the child
 	// may still own async jobs/background shells after this turn returns
@@ -213,7 +213,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 			completion.IsError = true
 			completion.Content = fmt.Sprintf("async %s panicked: %v", t.name, recovered)
 		}
-		t.finalize(ctx, sessionID, childSessionID, completion)
+		t.finalize(job, childSessionID, completion)
 	}()
 	if t.name == tools.BashToolName && !sync {
 		// Unchanged for CLI/web: forcing run_in_background is what lets
@@ -242,7 +242,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 		// can read progressive output and job_kill's stopped notice can
 		// quote it while the job is still running.
 		ctx = tools.WithLiveOutputSink(ctx, func(buf tools.LiveOutputBuffer) {
-			t.coordinator.asyncJobs.setRunCommandBuffer(sessionID, call.ID, buf)
+			t.coordinator.asyncJobs.setRunCommandBuffer(job, buf)
 		})
 	}
 	response, err := t.inner.Run(ctx, call)
@@ -255,7 +255,7 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 	completion.Content = response.Content
 	completion.Metadata = response.Metadata
 	if t.name == tools.BashToolName && !sync {
-		t.awaitShell(ctx, sessionID, response, &completion)
+		t.awaitShell(ctx, job, sessionID, response, &completion)
 	}
 	completion.Content = tools.TruncateOutput(strings.TrimSpace(completion.Content))
 }
@@ -271,19 +271,23 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, sessionI
 // Every other tool — bash, run_command — has no child session and no
 // self-directed follow-on work, so its completion is finished immediately,
 // exactly as before.
-func (t *asyncTool) finalize(_ context.Context, _, childSessionID string, completion AsyncCompletion) {
+//
+// job is the executor's own ledger entry (A11): the completion is reported
+// for THAT job only, never for whatever job the key names by the time the
+// executor returns.
+func (t *asyncTool) finalize(job *asyncJob, childSessionID string, completion AsyncCompletion) {
 	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
 		return
 	}
 	result := jobResult{content: completion.Content, isError: completion.IsError, metadata: completion.Metadata}
 	if childSessionID != "" && (t.name == AgentToolName || t.name == tools.AgenticFetchToolName) {
-		t.coordinator.asyncJobs.armDelegation(completion.SessionID, completion.ToolCallID, result)
+		t.coordinator.asyncJobs.armDelegation(job, result)
 		return
 	}
-	t.coordinator.asyncJobs.finish(completion.SessionID, completion.ToolCallID, result)
+	t.coordinator.asyncJobs.finish(job, result)
 }
 
-func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {
+func (t *asyncTool) awaitShell(ctx context.Context, job *asyncJob, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {
 	var metadata tools.BashResponseMetadata
 	if json.Unmarshal([]byte(response.Metadata), &metadata) != nil || metadata.ShellID == "" {
 		return
@@ -292,7 +296,7 @@ func (t *asyncTool) awaitShell(ctx context.Context, sessionID string, response f
 	// so job_kill/job_output can resolve the job id the model saw to it.
 	// Before this the shell id stayed inside this goroutine until the job
 	// was already terminal, making both tools unusable for a live job.
-	t.coordinator.asyncJobs.setShellID(sessionID, completion.ToolCallID, metadata.ShellID)
+	t.coordinator.asyncJobs.setShellID(job, metadata.ShellID)
 	manager := t.coordinator.background
 	if manager == nil {
 		completion.IsError = true
@@ -406,4 +410,28 @@ func (c *coordinator) wrapAsyncTools(list []fantasy.AgentTool) []fantasy.AgentTo
 		}
 	}
 	return list
+}
+
+// failLaunch ends a job whose executor never started: straight to a failed
+// outcome carrying msg. It deliberately bypasses the delegation re-check
+// (armDelegation -> recheckChild), whose refresh would read a resumed
+// child's OLD last message as this call's result while the tool result says
+// "failed to start" (R2B-14).
+func (t *asyncTool) failLaunch(job *asyncJob, msg string) {
+	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
+		return
+	}
+	t.coordinator.asyncJobs.finish(job, jobResult{content: msg, isError: true})
+}
+
+// failedStartResponse is the error response of a launch that panicked. When
+// the job has a durable claim it carries the claim tag, so the ack gate
+// treats it as the job's own result (see ackTag); a sync job has no row to
+// acknowledge and gets the plain error.
+func failedStartResponse(msg, claimID string) fantasy.ToolResponse {
+	resp := fantasy.NewTextErrorResponse(msg)
+	if claimID == "" {
+		return resp
+	}
+	return fantasy.WithResponseMetadata(resp, ackTag{ClaimID: claimID})
 }

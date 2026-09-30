@@ -35,7 +35,11 @@ type JobShellResolver interface {
 	//     text is empty and job_kill refuses with the idempotent "not found
 	//     ... or already stopped" answer (contract §1.5), again without
 	//     touching the shell manager.
-	MarkJobStopped(sessionID, jobID string) (text string, verdict JobStopVerdict)
+	// claimID is the claim of the row a JobStopStopped call stopped (empty
+	// otherwise, and for a job that has no durable row): job_kill puts it in
+	// its result metadata so the ledger can fuse that result onto exactly that
+	// row, or re-pend exactly that row if the result is not recorded (R2A-8).
+	MarkJobStopped(sessionID, jobID string) (text, claimID string, verdict JobStopVerdict)
 }
 
 // JobStopVerdict is MarkJobStopped's three-way outcome.
@@ -67,8 +71,9 @@ type RunCommandController interface {
 	// output snapshot taken before the kill, worded like
 	// JobShellResolver.MarkJobStopped's. err is model-safe; a second call on
 	// an already-stopped job returns the same "not found" shape as any other
-	// refusal (contract §1.5's idempotency rule).
-	StopRunCommandJob(sessionID, jobID string) (text string, err error)
+	// refusal (contract §1.5's idempotency rule). claimID is as for
+	// MarkJobStopped.
+	StopRunCommandJob(sessionID, jobID string) (text, claimID string, err error)
 }
 
 // RunCommandJobError is returned by JobShellResolver.ResolveJobShellID when

@@ -115,12 +115,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   its result stays the tool's answer (the real output captured before the
   stop) and is also recorded as delivered, so it is never pulled into
   history a second time. Applies to a background `bash` job and a
-  `run_command` job.
+  `run_command` job. If that result cannot be recorded with the row (an
+  error result, a failed write, a cancelled turn) the row goes back to the
+  ordinary pull, so the captured output is delivered instead of lost; a
+  stop whose shell is already gone (a concurrent Stop or timeout) still
+  answers with the captured output.
 - **Rerun (web "rerun from here") is one atomic step.** The target message,
   the tail after it and the ledger reconciliation commit in a single
   transaction. If the transaction fails, nothing was changed and the error
   says to retry; a cancel before the commit point also changes nothing. Only
-  the deleted tail's jobs are stopped, after the commit; jobs started before
+  the deleted tail's jobs are stopped, after the commit (recorded as stopped by
+  the session, like Stop: `cancelled`, no wake, the row stays void); jobs started before
   the rerun point keep running and their result reaches the new branch as a
   notice. A delivered notice whose message was in the deleted tail is
   delivered again to the new branch; a `wake_failed` marker in the tail is
@@ -361,7 +366,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   now go through the same job registry, CAS, and explicit-timeout support
   as CLI/web calls**, instead of a separate synchronous branch with no
   registry and no timeout support. The response returned to the caller is
-  unchanged.
+  unchanged; a `terminate_and_wake` timeout on such a call returns a timed-out error
+  result carrying the partial output.
 
 ### Added
 

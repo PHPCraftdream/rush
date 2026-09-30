@@ -39,7 +39,7 @@ func TestWorkLedger_AckGate_FusesMessageAndAnnouncedInOneTransaction(t *testing.
 	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
-	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "call-1", messages, startedParams("started"))
+	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "call-1"), messages, startedParams("started"))
 	require.NoError(t, err)
 	require.True(t, handled)
 	require.NotEmpty(t, msg.ID)
@@ -58,8 +58,8 @@ func TestWorkLedger_AckGate_FusesMessageAndAnnouncedInOneTransaction(t *testing.
 // happy-path test above only checks the END state (message exists AND
 // announced=1), which would ALSO pass for two separate, non-transactional
 // writes; this test fails the SECOND half (MarkAsyncJobAnnounced, via a row
-// deleted out from under the in-memory job -- the real "a Rerun truncation
-// raced this call" shape) and proves the FIRST half (the message insert)
+// deleted out from under the in-memory job -- what the owner session's
+// cascade delete does; a Rerun only voids rows, it never deletes them) and proves the FIRST half (the message insert)
 // rolled back too, which only a single shared transaction guarantees.
 // (2) the caller-visible contract: handled must be false (not true-with-
 // swallowed-error) so onToolResult falls through to its own plain Create --
@@ -82,13 +82,13 @@ func TestWorkLedger_AckGate_ErrAsyncJobGoneRollsBackAndFallsBackToPlainCreate(t 
 	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
-	// Simulate "a Rerun truncation raced this call": the DURABLE row is gone
+	// Simulate the owner session's cascade delete racing this call: the DURABLE row is gone
 	// (deleted directly at the store level, bypassing the ledger's own
 	// abort() so the IN-MEMORY job entry survives, exactly as a concurrent
-	// Rerun would leave it -- see acknowledgeWithMessageTx's own doc).
+	// delete would leave it -- see acknowledgeWithMessageTx's own doc).
 	require.NoError(t, store.DeleteUnannounced(context.Background(), "owner-1", "call-1"))
 
-	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "call-1", messages, startedParams("started"))
+	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "call-1"), messages, startedParams("started"))
 	require.NoError(t, err)
 	require.False(t, handled, "ErrAsyncJobGone must fall back to the caller's own plain Create, not swallow the result")
 	require.Empty(t, msg.ID)
@@ -104,7 +104,7 @@ func TestWorkLedger_AckGate_ErrAsyncJobGoneRollsBackAndFallsBackToPlainCreate(t 
 	// exactly one message must end up persisted.
 	created, err := messages.Create(context.Background(), "owner-1", startedParams("started"))
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1") // tolerates the still-gone row (MarkAnnounced's own ErrAsyncJobGone handling)
+	l.acknowledged(jobOf(l, "owner-1", "call-1")) // tolerates the still-gone row (MarkAnnounced's own ErrAsyncJobGone handling)
 
 	msgs, err = messages.List(context.Background(), "owner-1")
 	require.NoError(t, err)
@@ -124,13 +124,13 @@ func TestWorkLedger_AckGate_SyncAndUntrackedCallsAreNotHandled(t *testing.T) {
 	l := newWorkLedger(nil)
 	l.store = store
 
-	_, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "no-such-call", messages, startedParams("x"))
+	_, handled, err := l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "no-such-call"), messages, startedParams("x"))
 	require.NoError(t, err)
 	require.False(t, handled, "an ordinary tool call with no ledger entry must not be handled by the fused path")
 
 	_, _, err = l.Start("owner-1", "sync-call", "", "bash", "", false, true, nil, func() {})
 	require.NoError(t, err)
-	_, handled, err = l.acknowledgeWithMessageTx(context.Background(), "owner-1", "sync-call", messages, startedParams("x"))
+	_, handled, err = l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "sync-call"), messages, startedParams("x"))
 	require.NoError(t, err)
 	require.False(t, handled, "a sync job has no durable row to fuse with")
 }
@@ -159,7 +159,7 @@ func TestWorkLedger_AckGate_FailedTransactionDeletesRowAndNeverProducesANotice(t
 	_, _, err := l.Start("owner-1", "call-1", "echo hi", "bash", "", false, false, nil, func() { cancelled = true })
 	require.NoError(t, err)
 
-	_, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "call-1", failing, startedParams("started"))
+	_, handled, err := l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "call-1"), failing, startedParams("started"))
 	require.True(t, handled)
 	require.Error(t, err)
 
@@ -194,11 +194,11 @@ func TestWorkLedger_AckGate_FastJobFinishingBeforeAckDeliversExactlyOnceAtAck(t 
 	// The job finishes naturally BEFORE its own "started" result is ever
 	// announced -- deliverLocked's `!job.announced` guard must withhold
 	// delivery here.
-	l.finish("owner-1", "call-1", jobResult{content: "done"})
+	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "done"})
 	require.Empty(t, drainCompletions(delivered), "must not deliver before the started result is announced")
 	require.True(t, l.running("owner-1"), "the terminal-but-unannounced job must still be present")
 
-	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), "owner-1", "call-1", messages, startedParams("Async bash job call-1 started."))
+	msg, handled, err := l.acknowledgeWithMessageTx(context.Background(), jobOf(l, "owner-1", "call-1"), messages, startedParams("Async bash job call-1 started."))
 	require.NoError(t, err)
 	require.True(t, handled)
 	require.NotEmpty(t, msg.ID)

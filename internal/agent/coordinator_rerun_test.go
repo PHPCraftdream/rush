@@ -41,7 +41,7 @@ func (f *rerunCoordFx) start(t *testing.T, owner, callID, tool, child string) {
 	t.Helper()
 	_, _, err := f.coord.asyncJobs.Start(owner, callID, "", tool, child, false, false, nil, func() {})
 	require.NoError(t, err)
-	f.coord.asyncJobs.acknowledged(owner, callID)
+	f.coord.asyncJobs.acknowledged(jobOf(f.coord.asyncJobs, owner, callID))
 }
 
 func (f *rerunCoordFx) row(t *testing.T, owner, callID string) db.AsyncJob {
@@ -62,7 +62,7 @@ func TestCancelTurn_LeavesJobsWakeAndAutonomy(t *testing.T) {
 	f := newRerunCoordFx(t)
 	f.start(t, "root", "call-run", "bash", "")
 	f.start(t, "root", "call-debt", "bash", "")
-	f.coord.asyncJobs.finish("root", "call-debt", jobResult{content: "out"})
+	f.coord.asyncJobs.finish(jobOf(f.coord.asyncJobs, "root", "call-debt"), jobResult{content: "out"})
 	require.EqualValues(t, 1, f.row(t, "root", "call-debt").Wake, "precondition: unreacted debt")
 
 	f.coord.CancelTurn("root")
@@ -145,7 +145,7 @@ func TestRerunKeptRunningJob_ResultReachesNewBranch(t *testing.T) {
 	f.start(t, "root", "call-kept", "bash", "")
 
 	f.coord.CancelTurn("root") // the rerun's cancel
-	f.coord.asyncJobs.finish("root", "call-kept", jobResult{content: "kept result"})
+	f.coord.asyncJobs.finish(jobOf(f.coord.asyncJobs, "root", "call-kept"), jobResult{content: "kept result"})
 
 	row := f.row(t, "root", "call-kept")
 	require.Equal(t, "completed", row.State, "the kept job must run to its natural end")
@@ -173,7 +173,7 @@ func TestRerun_TruncateThenStop_TailJobVoidedAndStoppedKeptJobSurvives(t *testin
 	announce := func(callID string) message.Message {
 		_, _, err := f.coord.asyncJobs.Start("root", callID, "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		msg, handled, err := f.coord.asyncJobs.acknowledgeWithMessageTx(ctx, "root", callID, f.messages, message.CreateMessageParams{
+		msg, handled, err := f.coord.asyncJobs.acknowledgeWithMessageTx(ctx, jobOf(f.coord.asyncJobs, "root", callID), f.messages, message.CreateMessageParams{
 			Role: message.Tool, Parts: []message.ContentPart{message.ToolResult{ToolCallID: callID, Name: "bash", Content: "started"}},
 		})
 		require.NoError(t, err)

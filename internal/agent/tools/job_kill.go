@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/shell"
@@ -27,6 +28,10 @@ type JobKillResponseMetadata struct {
 	ShellID     string `json:"shell_id"`
 	Command     string `json:"command"`
 	Description string `json:"description"`
+	// KilledClaimID is the claim of the row THIS call stopped (empty when it
+	// stopped nothing tracked): the ledger fuses the result onto exactly that
+	// row, and re-pends exactly that row if the fused write does not happen.
+	KilledClaimID string `json:"killed_claim_id,omitempty"`
 }
 
 // NewJobKillTool builds the job_kill tool. resolver resolves a job_id (the
@@ -62,14 +67,14 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 					// placeholder promising a later message (job_kill now
 					// produces no second notice for a run_command job
 					// either).
-					stopText, stopErr := runCtl.StopRunCommandJob(sessionID, params.JobID)
+					stopText, killedClaimID, stopErr := runCtl.StopRunCommandJob(sessionID, params.JobID)
 					if stopErr != nil {
 						return fantasy.NewTextErrorResponse(stopErr.Error()), nil
 					}
 					if stopText == "" {
 						stopText = fmt.Sprintf("Async job %s (run_command) kill requested; it will stop shortly and its result will arrive as a message.", params.JobID)
 					}
-					metadata := JobKillResponseMetadata{JobID: params.JobID}
+					metadata := JobKillResponseMetadata{JobID: params.JobID, KilledClaimID: killedClaimID}
 					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stopText), metadata), nil
 				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -88,7 +93,7 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 			// lost race or a gone job never surfaces the manager's generic
 			// "background shell not found" wording, and never kills a shell
 			// the ledger has already moved past.
-			var markText string
+			var markText, killedClaimID string
 			var marked bool
 			if resolver != nil && params.JobID != "" {
 				// Records the ledger's stop-on-request marker BEFORE the
@@ -96,7 +101,7 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				// §2.2) produces a distinct "stopped (job_kill)" outcome
 				// instead of describing the killed process's own exit.
 				var verdict JobStopVerdict
-				markText, verdict = resolver.MarkJobStopped(sessionID, params.JobID)
+				markText, killedClaimID, verdict = resolver.MarkJobStopped(sessionID, params.JobID)
 				switch verdict {
 				case JobStopAlreadyTerminal:
 					// This call lost the race -- the ledger row already
@@ -117,6 +122,18 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				}
 			}
 
+			metadata := JobKillResponseMetadata{JobID: params.JobID, ShellID: shellID, KilledClaimID: killedClaimID}
+			// R2B-11: once the ledger verdict is "stopped" the job IS stopped
+			// and its output is captured in markText, whatever the shell
+			// manager says next (a concurrent Stop/timeout/close() may have
+			// removed the shell already, or the kill may be cut short by the
+			// caller's ctx). The answer must still be markText WITH the
+			// metadata, or the result cannot be fused to the row and the
+			// captured output is lost.
+			stopped := func() fantasy.ToolResponse {
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(markText), metadata)
+			}
+
 			var bgShell *shell.BackgroundShell
 			var ok bool
 			if owned {
@@ -125,15 +142,12 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				bgShell, ok = bgManager.Get(shellID)
 			}
 			if !ok {
+				if marked && markText != "" {
+					return stopped(), nil
+				}
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", shellID)), nil
 			}
-
-			metadata := JobKillResponseMetadata{
-				JobID:       params.JobID,
-				ShellID:     shellID,
-				Command:     bgShell.Command,
-				Description: bgShell.Description,
-			}
+			metadata.Command, metadata.Description = bgShell.Command, bgShell.Description
 
 			if owned {
 				err = bgManager.KillOwned(ctx, sessionID, shellID)
@@ -141,11 +155,16 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				err = bgManager.Kill(ctx, shellID)
 			}
 			if err != nil {
+				if marked && markText != "" {
+					slog.Debug("job_kill: shell kill reported an error after the job was already stopped",
+						"job_id", params.JobID, "shell_id", shellID, "err", err)
+					return stopped(), nil
+				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
 			if marked && markText != "" {
-				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(markText), metadata), nil
+				return stopped(), nil
 			}
 			result := fmt.Sprintf("Background shell %s terminated successfully", shellID)
 			if params.JobID != "" {

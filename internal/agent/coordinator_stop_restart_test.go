@@ -43,10 +43,10 @@ func TestSweepDeadHosts_RestartAfterStopAddsNoExtraFacts(t *testing.T) {
 		children[i] = child
 		_, _, err := ledger.Start(root, "delegate-"+child, "do work", AgentToolName, child, false, false, nil, func() {})
 		require.NoError(t, err)
-		ledger.acknowledged(root, "delegate-"+child)
+		ledger.acknowledged(jobOf(ledger, root, "delegate-"+child))
 		_, _, err = ledger.Start(child, "bash-call", "sleep", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		ledger.acknowledged(child, "bash-call")
+		ledger.acknowledged(jobOf(ledger, child, "bash-call"))
 	}
 
 	coord.Cancel(root) // the real Stop

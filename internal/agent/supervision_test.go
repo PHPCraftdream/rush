@@ -67,7 +67,7 @@ func startOpenJob(t *testing.T, l *workLedger, sessionID, toolCallID string) {
 	t.Helper()
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", true, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged(sessionID, toolCallID)
+	l.acknowledged(jobOf(l, sessionID, toolCallID))
 }
 
 // TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot: a session
@@ -483,7 +483,7 @@ func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
 	l.supervision.byRoot["closing-root"] = &supervisionState{rootSessionID: "closing-root", cfg: DefaultSupervisionConfig(), generation: 1}
 	require.True(t, l.running("closing-root"), "the job must still be open before it finishes")
 
-	l.finish("closing-root", "call-1", jobResult{content: "done"})
+	l.finish(jobOf(l, "closing-root", "call-1"), jobResult{content: "done"})
 
 	l.supervision.mu.Lock()
 	_, present := l.supervision.byRoot["closing-root"]

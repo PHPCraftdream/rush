@@ -132,7 +132,7 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 	t.Helper()
 	_, _, err := coord.asyncJobs.Start(parkedParentSession, parkedParentCall, "", AgentToolName, childSession, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(parkedParentSession, parkedParentCall)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parkedParentSession, parkedParentCall))
 
 	wrapped := &asyncTool{
 		inner:       newYieldedInnerTool(AgentToolName, childYields),
@@ -140,7 +140,7 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 		name:        AgentToolName,
 	}
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
-	wrapped.run(ctx, func() {}, parkedParentSession, childSession, fantasy.ToolCall{
+	wrapped.run(ctx, func() {}, jobOf(coord.asyncJobs, parkedParentSession, parkedParentCall), parkedParentSession, childSession, fantasy.ToolCall{
 		ID: parkedParentCall, Name: AgentToolName, Input: `{}`,
 	}, false)
 }
@@ -156,7 +156,7 @@ func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID strin
 	t.Helper()
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", cli, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged(sessionID, toolCallID)
+	l.acknowledged(jobOf(l, sessionID, toolCallID))
 }
 
 // finishChildJob completes a job the child owns and plays out the turn that
@@ -165,7 +165,7 @@ func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID strin
 // the armed delegation.
 func finishChildJob(t *testing.T, coord *coordinator, delivered chan AsyncCompletion, completion AsyncCompletion) {
 	t.Helper()
-	coord.asyncJobs.finish(completion.SessionID, completion.ToolCallID, jobResult{content: completion.Content, isError: completion.IsError})
+	coord.asyncJobs.finish(jobOf(coord.asyncJobs, completion.SessionID, completion.ToolCallID), jobResult{content: completion.Content, isError: completion.IsError})
 	select {
 	case got := <-delivered:
 		require.Equal(t, completion.SessionID, got.SessionID, "the child's own job result must wake the child")
@@ -464,14 +464,14 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	const secondParentCall = "parent-call-2"
 	_, _, err = coord.asyncJobs.Start(parkedParentSession, secondParentCall, "", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(parkedParentSession, secondParentCall)
+	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parkedParentSession, secondParentCall))
 	wrapped := &asyncTool{
 		inner:       newYieldedInnerTool(AgentToolName, "yield B"),
 		coordinator: coord,
 		name:        AgentToolName,
 	}
 	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
-	wrapped.run(ctx, func() {}, parkedParentSession, child.ID, fantasy.ToolCall{
+	wrapped.run(ctx, func() {}, jobOf(coord.asyncJobs, parkedParentSession, secondParentCall), parkedParentSession, child.ID, fantasy.ToolCall{
 		ID: secondParentCall, Name: AgentToolName, Input: `{}`,
 	}, false)
 
@@ -557,14 +557,14 @@ func TestWorkLedger_ConcurrentRecheckAndCancelDeliversOnce(t *testing.T) {
 
 		_, _, err := coord.asyncJobs.Start("parent-race", "call-race", "", AgentToolName, "child-race", false, false, nil, nil)
 		require.NoError(t, err)
-		coord.asyncJobs.acknowledged("parent-race", "call-race")
-		coord.asyncJobs.armDelegation("parent-race", "call-race", jobResult{content: "child final answer"})
+		coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, "parent-race", "call-race"))
+		coord.asyncJobs.armDelegation(jobOf(coord.asyncJobs, "parent-race", "call-race"), jobResult{content: "child final answer"})
 		require.True(t, coord.asyncJobs.hasParked())
 
 		// Drain the child's own scope so childScopeDrained becomes true,
 		// WITHOUT going through recheckChild yet -- finish() only delivers
 		// the child's own job, it does not itself walk byChild.
-		coord.asyncJobs.finish("child-race", "child-job", jobResult{content: "child job ok"})
+		coord.asyncJobs.finish(jobOf(coord.asyncJobs, "child-race", "child-job"), jobResult{content: "child job ok"})
 		drainCompletions(delivered) // discard the child's own job notice
 
 		start := make(chan struct{})
@@ -670,7 +670,7 @@ func TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation(t *testing.T) {
 
 	// Release the child's own job so the ledger doesn't leak the armed entry
 	// past this test.
-	coord.asyncJobs.finish(parkedChildSession, parkedChildJob, jobResult{content: "done"})
+	coord.asyncJobs.finish(jobOf(coord.asyncJobs, parkedChildSession, parkedChildJob), jobResult{content: "done"})
 	coord.noteSubAgentChildRunEnded(parkedChildSession)
 }
 

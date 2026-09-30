@@ -45,3 +45,17 @@ func newTestAsyncJobStore(t *testing.T) *session.AsyncJobStore {
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	return store
 }
+
+// jobOf returns the ledger's current entry for (owner, toolCallID): the
+// identity a real executor carries from Start into finish/armDelegation.
+func jobOf(l *workLedger, owner, toolCallID string) *asyncJob {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s := l.bySession[owner]; s != nil {
+		return s.jobs[toolCallID]
+	}
+	return nil
+}

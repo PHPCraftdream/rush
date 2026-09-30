@@ -36,7 +36,9 @@ func TestWorkLedger_StartCapturesClaimIDMatchingTheStore(t *testing.T) {
 }
 
 // TestWorkLedger_CommitTransitionLosesToFreshClaimWithoutFalseFailure pins
-// A11's ledger-side correctness bar: when this job's own commitTransition
+// A11's STORE-level backstop (the in-process half is closed earlier, by
+// executor identity: TestAsyncTool_StaleExecutorAfterAckAbortCannotCommitOntoReclaimedKey;
+// this row-changed-behind-the-ledger case needs an external writer): when this job's own commitTransition
 // call loses because the row was deleted and re-claimed out from under it
 // (claim_id mismatch, row still 'running' under the fresh claim -- NOT
 // because some other cause already finished it), the stale in-memory job
@@ -79,7 +81,7 @@ func TestWorkLedger_CommitTransitionLosesToFreshClaimWithoutFalseFailure(t *test
 	require.NotEqual(t, staleClaimID, fresh.Row.ClaimID)
 	require.NoError(t, store.MarkAnnounced(context.Background(), "owner", "call"))
 
-	outcome := l.commitTransition("owner", "call", causeNaturalFinish, jobResult{content: "stale result"})
+	outcome := l.commitTransition(job, causeNaturalFinish, jobResult{content: "stale result"})
 	require.Equal(t, commitGone, outcome, "a claim_id mismatch against a still-running fresh claim must be treated like a gone row, not a false terminal outcome")
 
 	select {

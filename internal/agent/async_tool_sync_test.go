@@ -102,7 +102,9 @@ func TestAsyncTool_SDKOriginBashDoesNotForceBackground(t *testing.T) {
 }
 
 // TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout: while a sync
-// call executes, it must be a REAL ledger entry (running(sessionID) true),
+// call executes, it must be a REAL ledger entry (running(sessionID) true)
+// with its explicit timeout ARMED on the job and the timer service (a
+// far-off deadline: firing is TestAsyncTool_SyncTimeoutReturnsTimedOut...),
 // and its delivery must never reach onWebDone (spy counter stays 0).
 func TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout(t *testing.T) {
 	t.Parallel()
@@ -116,6 +118,8 @@ func TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout(t *testing.T) {
 	var webDoneCalls int
 	registry := newWorkLedger(func(AsyncCompletion) { webDoneCalls++ })
 	registry.store = newTestAsyncJobStore(t)
+	registry.timeouts = newTimeoutService(registry)
+	t.Cleanup(registry.close)
 	wrapped := &asyncTool{inner: inner, coordinator: &coordinator{asyncJobs: registry}, name: "run_command"}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginSDK)
@@ -123,7 +127,7 @@ func TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: "run_command", Input: `{}`})
+		_, _ = wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: "run_command", Input: `{"timeout_seconds":3600}`})
 	}()
 
 	select {
@@ -132,6 +136,15 @@ func TestAsyncTool_SyncJobRegisteredInLedgerWithCASAndTimeout(t *testing.T) {
 		t.Fatal("inner tool never started")
 	}
 	require.True(t, registry.running("session"), "the sync job must be a real ledger entry while running")
+	job := jobOf(registry, "session", "call")
+	registry.mu.Lock()
+	armed := !job.deadline.IsZero() && job.timeoutKind == timeoutTerminateAndWake && job.timeoutSeconds == 3600
+	registry.mu.Unlock()
+	require.True(t, armed, "the explicit timeout must be armed on the sync job")
+	registry.timeouts.mu.Lock()
+	timers := registry.timeouts.heap.Len()
+	registry.timeouts.mu.Unlock()
+	require.Equal(t, 1, timers, "and registered with the timer service")
 
 	close(release)
 	select {

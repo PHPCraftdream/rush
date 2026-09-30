@@ -58,7 +58,7 @@ func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 	// this process's own in-process triggers never got a chance to react to
 	// (e.g. dead-host recovery in a DIFFERENT process, which never wakes or
 	// delivers by design).
-	coord.asyncJobs.finish(parkedChildSession, parkedChildJob, jobResult{content: "gate ok"})
+	coord.asyncJobs.finish(jobOf(coord.asyncJobs, parkedChildSession, parkedChildJob), jobResult{content: "gate ok"})
 	select {
 	case <-delivered:
 	default:

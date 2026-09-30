@@ -46,7 +46,7 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 	require.Equal(t, "call", metadata.JobID)
 	<-started
 	require.True(t, registry.running("session"))
-	registry.acknowledged("session", "call")
+	registry.acknowledged(jobOf(registry, "session", "call"))
 	releaseOnce.Do(func() { close(release) })
 	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -157,7 +157,7 @@ func TestAsyncTool_PanicBetweenStartAndExecutorLaunchFinalizesJob(t *testing.T) 
 		t.Fatalf("must not deliver before the ack gate runs: %+v", got)
 	default:
 	}
-	registry.acknowledged("session", "call")
+	registry.acknowledged(jobOf(registry, "session", "call"))
 
 	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -217,7 +217,7 @@ func TestAsyncToolWebCompletionWaitsForToolResult(t *testing.T) {
 		t.Fatalf("must not deliver before acknowledged: %+v", got)
 	default:
 	}
-	registry.acknowledged("session", "call")
+	registry.acknowledged(jobOf(registry, "session", "call"))
 	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	select {

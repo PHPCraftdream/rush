@@ -7,7 +7,9 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +23,7 @@ func TestStopToolCallsForRerun_StopsPlainJobWithWakeZero(t *testing.T) {
 	l.store = store
 	_, _, err := l.Start("owner-1", "call-1", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "call-1")
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
 	l.stopToolCallsForRerun("owner-1", []string{"call-1"})
 
@@ -43,10 +45,10 @@ func TestStopToolCallsForRerun_DelegationStoppedChildTreeIsCallersJob(t *testing
 
 	_, _, err := l.Start("owner-1", "deleg-call", "", AgentToolName, "child-1", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner-1", "deleg-call")
+	l.acknowledged(jobOf(l, "owner-1", "deleg-call"))
 	_, _, err = l.Start("child-1", "child-call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("child-1", "child-call")
+	l.acknowledged(jobOf(l, "child-1", "child-call"))
 
 	l.stopToolCallsForRerun("owner-1", []string{"deleg-call"})
 
@@ -71,4 +73,37 @@ func TestStopToolCallsForRerun_UnknownOrTerminalToolCallIDIsANoOp(t *testing.T) 
 	require.NotPanics(t, func() {
 		l.stopToolCallsForRerun("owner-1", []string{"never-started"})
 	})
+}
+
+// TestStopToolCallsForRerun_RecordsStopSemanticsAndKeepsVoid pins what
+// `sessions jobs` shows for a Rerun-stopped row (R2B-20): Stop semantics --
+// state cancelled, notice_kind session_cancel, no wake -- and the void that
+// Rerun already set survives the terminal transition. (The stop is NOT
+// job_kill's: that would be notice_kind job_kill, delivery done.)
+//
+// Revert-check: stopping with causeJobKill instead of causeSessionCancel
+// changed notice_kind to job_kill and failed the assertion.
+func TestStopToolCallsForRerun_RecordsStopSemanticsAndKeepsVoid(t *testing.T) {
+	t.Parallel()
+	l := newWorkLedger(nil)
+	store, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	l.store = store
+	_, _, err := l.Start("owner-1", "call-1", "", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	l.acknowledged(jobOf(l, "owner-1", "call-1"))
+	// What TruncateForRerun does to a running row of the deleted tail.
+	rows, err := db.New(conn).VoidAsyncJobsByToolCallIDs(context.Background(), db.VoidAsyncJobsByToolCallIDsParams{
+		UpdatedAt: time.Now().Unix(), OwnerSessionID: "owner-1", ToolCallIds: []string{"call-1"},
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	l.stopToolCallsForRerun("owner-1", []string{"call-1"})
+
+	row, err := store.Get(context.Background(), "owner-1", "call-1")
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", row.State)
+	require.Equal(t, "session_cancel", row.NoticeKind)
+	require.EqualValues(t, 0, row.Wake)
+	require.Equal(t, "void", row.Delivery, "a terminal transition preserves the void Rerun set")
 }
