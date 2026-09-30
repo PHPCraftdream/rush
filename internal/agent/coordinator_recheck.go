@@ -125,8 +125,7 @@ func (c *coordinator) launchRecheckWake(ctx context.Context, sessionID string) b
 			delete(c.recheckWakeInFlight, sessionID)
 			c.recheckMu.Unlock()
 		}()
-		id := jobIdentity{owner: sessionID, toolCallID: "recheck-pass"}
-		if err := c.wakeSession(ctx, id, true); err != nil {
+		if err := c.wakeSession(ctx, sessionID, false); err != nil {
 			slog.Debug("coordinator: recheck pass wake attempt did not complete", "session_id", sessionID, "err", err)
 		}
 	}()

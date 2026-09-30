@@ -249,8 +249,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   provider failure is no longer retried at once: the retry comes from the
   next hint or 60s pass, and three failed passes (or a quota/401-class
   error) close the debt with a visible wake-failure marker. Stop, shutdown,
-  Ctrl-C, `--timeout`, a watchdog stall and a pending question no longer
-  close debt as failed; only rows already visible in history when the turn
+  Ctrl-C, `--timeout` and a pending question no longer close debt as
+  failed; only rows already visible in history when the turn
   started can be closed, settle and marker are one transaction, and the
   marker names a real tool call id, never an internal placeholder. An
   auto-summarize inside a reaction turn keeps its continuation instead of
@@ -258,6 +258,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   itself on a row whose pull keeps failing instead of spinning, and a
   reaction write that always fails is bounded by the same three-pass
   counter.
+- **A reaction turn is one counted attempt, retried at a pace, never
+  hot-looped.** Each reaction turn is accounted once, by the turn loop that
+  ran it, from what the database says: a turn that reached the provider and
+  left its notices unreacted (an error, an empty reply, a reaction write that
+  never landed, a watchdog stall, a `--max-tokens`/`--max-cost` cut) counts
+  as one attempt, waits 60s (a newer event or a human message reopens it
+  sooner) and, on the third, or at once on a quota/401-class error, closes
+  the debt with the visible wake-failure marker. Ctrl-C, `--timeout`, Stop,
+  interrupts, shutdown and any refusal before the provider (lock busy, peak
+  hours, provider not configured) count as nothing. A reaction turn makes one
+  provider attempt (no coordinator retry loop). If both the reaction write
+  and the settle keep failing, launches stop after three attempts until a new
+  event or a human message. A question the assistant asks while reacting is
+  its reaction: the notice is closed, automatic turns pause until you answer,
+  and a delegated child's question reaches its parent as the delegation
+  result. A step that crosses `--max-tokens`/`--max-cost` is recorded as the
+  reaction, and `rush run` ends with an error instead of paying for the same
+  reaction again. `rush run` now also retries a delegated child's failed
+  reaction turn with the same 60s pass the web process runs, and its loop
+  follows the same launch decision as the web wake (run, wait for the retry,
+  or stop on stuck debt with one stderr line; `sessions why` shows the
+  stuck notice). Interrupting a reaction turn keeps the previous answer and
+  still adds the turn's usage to the run total.
+- **A Rerun no longer races a reaction turn.** From the moment the live turn
+  is cancelled until the replacement turn takes over, automatic reaction
+  turns are held off the session; stopping the voided jobs no longer keeps
+  the rerun waiting.
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the

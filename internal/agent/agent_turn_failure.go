@@ -33,6 +33,11 @@ func (ts *turnStream) handleStreamFailure(
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
 	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	if ts.att != nil {
+		// A watchdog stall surfaces as context.Canceled but is a real,
+		// paid attempt (accountDrainAttempt does not exempt it).
+		ts.att.stalled.Store(isWatchdogStall)
+	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires
 	// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT
@@ -255,7 +260,7 @@ func (ts *turnStream) handleStreamFailure(
 	// MUST land on disk — without it the assistant message has tool
 	// calls but no finish part, and the WUI/recovery sees it as still
 	// in-flight forever.
-	updateErr := ts.a.messages.Update(flushCtx, snap)
+	updateErr := ts.persistFailureFinish(flushCtx, snap, awaitingErr != nil)
 	if updateErr != nil {
 		slog.Error(
 			"agent: failed to persist final finish part",
@@ -281,4 +286,21 @@ func (ts *turnStream) handleStreamFailure(
 	// userMessageCreated), so return it directly rather than wrapping
 	// it a second time.
 	return nil, SessionAgentCall{}, false, err
+}
+
+// persistFailureFinish writes the error-path final finish. A question the
+// agent asked is a reaction (it answered the notices visible in its prompt
+// with real content), so its finish goes through the same one-transaction
+// write as a normal step and marks the owner's delivered debt reacted; a
+// failed mark falls back to the plain update so the finish still lands.
+func (ts *turnStream) persistFailureFinish(ctx context.Context, snap message.Message, awaiting bool) error {
+	if awaiting && hasReactionContent(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		err := ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, ts.a.messages, ts.call.SessionID, snap)
+		if err == nil {
+			return nil
+		}
+		slog.Warn("agent: recording the question as a reaction failed; writing the finish alone",
+			"session_id", ts.call.SessionID, "err", err)
+	}
+	return ts.a.messages.Update(ctx, snap)
 }

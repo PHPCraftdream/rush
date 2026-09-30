@@ -8,7 +8,7 @@
 // Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §3) deleted
 // DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork. Phase 4
 // replaced their successor workLedger.next() with the DB scope predicate
-// (coordinator.ScopeOpen) -- see app_run_async.go's
+// (coordinator.CLIScope) -- see app_run_async.go's
 // runNonInteractiveWithAsyncResults and docs/async-invariants.md's ASYNC-02
 // row.
 package agent
@@ -82,6 +82,13 @@ func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completio
 		}
 		if text := strings.TrimSpace(msg.FullText()); text != "" {
 			completion.Content = tools.TruncateOutput(text)
+		} else if question, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); ok {
+			// The child asked a question in a Drain turn: the parent gets the
+			// question (as a paused sub-agent, not a failure), like the
+			// first-turn path of runSubAgent does.
+			completion.Content = tools.TruncateOutput(question)
+			completion.IsError = false
+			return completion
 		} else {
 			// Doc sec.3.8 ("Итог делегации"): the child's last finished
 			// message has no text at all (only reasoning and/or tool

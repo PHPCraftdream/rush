@@ -209,6 +209,10 @@ type RunRequest struct {
 	onSessionResolved func(string) error
 	// captureResult returns a structured outcome even in terse or stream mode.
 	captureResult bool
+	// drainTurn marks a `rush run` loop Drain iteration: mutation-free setup (the
+	// invocation's own setup ran once with the first turn) and no ended_reason
+	// write when it ran no turn.
+	drainTurn bool
 
 	// Credentials, when non-nil, runs THIS invocation on the given
 	// provider credentials instead of whatever rush.json/env would

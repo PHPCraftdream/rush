@@ -86,7 +86,7 @@ func TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts(t *testing.T) {
 
 	// The legitimate leader (a wakeSession call, standing in for `rush run`'s
 	// own loop reacting to its hint) still runs a real turn over it.
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.NotZero(t, f.requests.Load(), "the root must still get a real turn despite another holder's pull")
 	require.False(t, f.debtVisible(t, ctx), "the root's own turn must react and clear the debt")
@@ -134,7 +134,7 @@ func (f *failingThenOKUpdateTxMessages) UpdateTx(ctx context.Context, tx *sql.Tx
 // drives BOTH Drain attempts itself, explicitly and sequentially, and needs
 // each to be the only thing touching the mailbox. With OnSessionIdle wired,
 // the FIRST call's own release (a real turn ran, so onSessionIdleHook always
-// spawns `go c.recheckDebtOnRelease`, doc sec.3.4 item 3) races this test's
+// spawns `go c.afterRelease`, doc sec.3.4 item 3) races this test's
 // own second wakeSession call for mailbox ownership. If that background
 // goroutine wins, the test's call is queued behind it; the SAME goroutine's
 // own turn-end can then find it still queued at release and hand it to
@@ -165,12 +165,14 @@ func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, f.debtVisible(t, ctx))
 
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err, "fantasy discards a bare OnStepFinish error -- wakeSession must not surface one either")
 	require.True(t, f.debtVisible(t, ctx), "the debt must survive an unwritten step-finish")
 
-	// Exactly one more Drain, now that the write succeeds, resolves it.
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	// The retry pause elapses (the gate reopens); exactly one more Drain, now
+	// that the write succeeds, resolves it.
+	f.ledger.resetDrainGate(f.sessID)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.False(t, f.debtVisible(t, ctx), "the very next attempt must clear the debt -- no further chain needed")
 }

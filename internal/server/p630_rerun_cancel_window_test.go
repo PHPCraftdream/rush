@@ -231,6 +231,7 @@ func TestHandleRerunMessage_CancelAfterCommit_Proceeds(t *testing.T) {
 	require.False(t, f.exists(t, f.target.ID), "the target is deleted by the committed rerun")
 	require.False(t, f.exists(t, f.tail.ID))
 	require.Equal(t, "void", f.jobDelivery(t))
+	mockCoord.waitStopRerun(t, 1)
 	_, _, stopRerun, voided, _ := mockCoord.counters()
 	require.Equal(t, 1, stopRerun, "the voided job must be stopped after the commit")
 	require.Len(t, voided, 1)
@@ -307,8 +308,20 @@ func TestHandleRerunMessage_UsesCancelTurnNotStop(t *testing.T) {
 	env := f.run(t)
 
 	require.Equal(t, EventResponse, env.Type)
+	mockCoord.waitStopRerun(t, 1)
 	cancelTurn, stop, stopRerun, _, _ := mockCoord.counters()
 	require.GreaterOrEqual(t, cancelTurn, 1, "rerun must cancel the live generation")
 	require.Zero(t, stop, "rerun must not run the full Stop")
 	require.Equal(t, 1, stopRerun)
+}
+
+// waitStopRerun waits for the rerun's detached StopRerunJobs call(s): the
+// handler no longer runs it inline.
+func (m *mailboxLikeCoordinator) waitStopRerun(t *testing.T, want int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.stopRerunCalls >= want
+	}, 5*time.Second, 5*time.Millisecond, "the detached stop of the voided jobs must run")
 }

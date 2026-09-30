@@ -47,6 +47,8 @@ type turnStreamConfig struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	// att is the Drain leg being accounted (nil for any other call).
+	att *drainAttempt
 
 	smartModel     Model
 	promptPrefix   string
@@ -109,6 +111,7 @@ type turnStream struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	att    *drainAttempt
 
 	smartModel   Model
 	promptPrefix string
@@ -169,6 +172,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		genCtx:               cfg.genCtx,
 		cancel:               cfg.cancel,
 		call:                 cfg.call,
+		att:                  cfg.att,
 		genID:                cfg.genID,
 		smartModel:           cfg.smartModel,
 		promptPrefix:         cfg.promptPrefix,

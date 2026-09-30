@@ -2,7 +2,7 @@
 // released or expired delegation child must never get further Drain turns
 // on the root coder agent. Two mechanisms, tested independently:
 //
-//  1. sessionDrainPolicy keys the child refusal on DURABLE identity
+//  1. drainPolicy keys the child refusal on DURABLE identity
 //     (ParentSessionID, set at creation by CreateTaskSession) instead of
 //     falling through to the generic web/default policy once no RUNNING
 //     delegation row claims the session -- the in-memory subAgentDrivers
@@ -47,7 +47,7 @@ func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *se
 // headroom.
 //
 // Revert-check performed: removed the isDurableDelegationChild branch from
-// sessionDrainPolicy (coordinator_drain_policy.go), letting the "no running
+// drainPolicy (coordinator_drain_policy.go), letting the "no running
 // delegation" case fall straight through to the generic policy -- this
 // test's `require.False(t, allowed)` FAILED (allowed was true, counted
 // true: the child was granted the SAME auto-turn headroom as a plain web
@@ -80,10 +80,9 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	})
 	require.NoError(t, err)
 
-	allowed, counted, err := coord.sessionDrainPolicy(ctx, child.ID)
+	allowed, err := policyAllowed(coord, ctx, child.ID)
 	require.NoError(t, err)
 	require.False(t, allowed, "a durable delegation child with no running delegation must be refused a Drain turn")
-	require.False(t, counted)
 }
 
 // TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused: a durable
@@ -124,12 +123,11 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 			})
 			require.NoError(t, err)
 
-			allowed, counted, err := coord.sessionDrainPolicy(ctx, child.ID)
+			allowed, err := policyAllowed(coord, ctx, child.ID)
 			require.NoError(t, err)
 			require.False(t, allowed, "a released %s delegation child must be refused a Drain turn", kind)
-			require.False(t, counted)
 
-			allowed, _, err = coord.sessionDrainPolicy(ctx, fork.ID)
+			allowed, err = policyAllowed(coord, ctx, fork.ID)
 			require.NoError(t, err)
 			require.True(t, allowed, "a fork of the same parent (no row names it) stays on the ordinary policy")
 		})
@@ -161,7 +159,7 @@ func TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy(t *testing.T)
 	require.NoError(t, err)
 	require.Equal(t, src.ID, fork.ParentSessionID, "fixture sanity: fork must carry ParentSessionID like sessions fork --child")
 
-	allowed, _, err := coord.sessionDrainPolicy(ctx, fork.ID)
+	allowed, err := policyAllowed(coord, ctx, fork.ID)
 	require.NoError(t, err)
 	require.True(t, allowed, "a forked (non-delegation) session with ParentSessionID set must use the ordinary web/default policy, not the delegation-child refusal")
 }
@@ -178,7 +176,7 @@ func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.Ag
 // TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent is
 // W-DRAIN item C's end-to-end version of TestSessionDrainPolicy_
 // DurableDelegationChildWithNoRunningDelegation_Refused above: that test
-// calls sessionDrainPolicy directly; this drives the exact same scenario
+// calls drainPolicy directly; this drives the exact same scenario
 // through the REAL wakeSession entry point (coordinator_wake.go) -- the
 // thing an actual completion/hint calls -- with NO driver registered for the
 // child (releaseDriverIfScopeClosed's real effect once scope closes) and
@@ -186,11 +184,11 @@ func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.Ag
 // the security-relevant danger the review names directly: a released child
 // falling through to agentFor's currentAgent fallback (the ROOT coder agent:
 // full tool set, no RunAllowlist, no child system prompt) never happens --
-// sessionDrainPolicy's refusal short-circuits wakeSession before agentFor is
+// drainPolicy's refusal short-circuits wakeSession before agentFor is
 // ever consulted at all.
 //
 // Revert-check performed: removed the isDurableDelegationChild branch from
-// sessionDrainPolicy (coordinator_drain_policy.go), same as the unit-level
+// drainPolicy (coordinator_drain_policy.go), same as the unit-level
 // test's own revert-check -- this test PANICKED (panicIfCalledAgent.Run was
 // actually invoked: wakeSession fell through to the generic web/default
 // policy, which allowed the turn, which then reached agentFor's currentAgent
@@ -237,7 +235,7 @@ func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *t
 	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
 	require.NoError(t, err)
 
-	err = coord.wakeSession(ctx, jobIdentity{owner: child.ID, toolCallID: "call-x"}, true)
+	err = coord.wakeSession(ctx, child.ID, true)
 	require.NoError(t, err, "a policy-refused Drain is a silent no-op, never an error")
 }
 
@@ -257,7 +255,7 @@ func TestSessionDrainPolicy_PlainSessionWithNoDelegationHistory_UsesWebPolicy(t 
 	sess, err := env.sessions.Create(ctx, "plain-web-session")
 	require.NoError(t, err)
 
-	allowed, _, err := coord.sessionDrainPolicy(ctx, sess.ID)
+	allowed, err := policyAllowed(coord, ctx, sess.ID)
 	require.NoError(t, err)
 	require.True(t, allowed, "a plain session with no delegation history must use the web/default policy")
 }

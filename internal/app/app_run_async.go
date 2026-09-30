@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -18,27 +17,25 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// cliDBRetryPause/cliLockBusyRetryPause bound how fast the `rush run` loop
-// re-polls after a transient failure (doc sec.3.5): "a DB read error is a
-// retry with a pause, never a silent skip", and "a session-lock-busy
-// refusal on its own session retries after a short bounded pause instead of
-// exiting". Both are short enough that a real `rush run --timeout` still
-// has room to fire, long enough that a genuinely stuck DB/lock doesn't spin
-// the CPU.
-// cliLockBusyRetryPause/cliLockBusyRetryOverallLimit are vars (not consts) so
-// a test can shrink them and exercise the overall-limit branch at test
-// timescale instead of a real 30s wait.
+// The `rush run` loop follows the coordinator's launch decision (docs/reviews/
+// 2026-09-30-async-phase4-round2-attempts-design.md sec.1.6): CLIScope answers
+// what to do next -- run a Drain (Owed), wait for a paced retry, exit on
+// deferred/stuck debt -- and the loop never accounts an attempt itself: the
+// turn loop that ran the Drain does (agent/drain_attempt.go).
 var (
-	cliDBRetryPause       = 500 * time.Millisecond
-	cliLockBusyRetryPause = 500 * time.Millisecond
-	// cliLockBusyRetryOverallLimit bounds a Drain-context retry's total
-	// budget for waiting out ANOTHER PROCESS's hold on this session's OS
-	// lock (C1 fix): unlike the first (real user) turn, which now fails
-	// fast on a busy lock, a Drain retry (this loop's own reaction-debt
-	// turn) may legitimately race a short-lived foreign holder (e.g. a web
-	// tab pulling notices) and is worth a bounded wait -- but never an
-	// unbounded one.
+	// cliDBRetryPause bounds how fast the loop re-polls after a transient
+	// scope-read failure (doc sec.3.5: "a DB read error is a retry with a
+	// pause, never a silent skip").
+	cliDBRetryPause = 500 * time.Millisecond
+	// cliLockBusyRetryOverallLimit bounds how long a run of consecutive Drain
+	// REFUSALS (session lock held by another process, an unwritable lock dir,
+	// a provider that is not configured, peak hours, ...) is retried before the
+	// run gives up with that refusal's error. The retries themselves are paced
+	// by the launch gate (drainRefusalPauseLoop), not by this loop.
 	cliLockBusyRetryOverallLimit = 30 * time.Second
+	// cliQueuedDrainPause is the wait after a Drain that queued behind another
+	// owner (it ran no turn of its own and cannot be accounted here).
+	cliQueuedDrainPause = 500 * time.Millisecond
 )
 
 // cliLoopTurnDoneSeam is a test-only hook called right after each loop turn's
@@ -48,16 +45,10 @@ var (
 var cliLoopTurnDoneSeam func()
 
 // flushLoopExit renders final's envelope through output exactly the way the
-// loop's normal "scope closed" exit always did (C17 fix, docs/reviews/
-// 2026-09-29-async-phase4-round1.md): every exit from runNonInteractive-
-// WithAsyncResults's loop -- lock-busy give-up, ctx cancellation, a wait
-// error, or the ordinary scope-closed end -- must flush a REAL prior turn's
-// terse text or JSON envelope through the SAME path. Before this fix only
-// the scope-closed exit did; every other early return skipped straight past
-// it, so cmd/run.go (which never re-renders anything itself) silently
-// printed nothing on stdout for those exits even when final already carried
-// a completed turn's result. final == nil is a no-op, matching the
-// non-loop single-call path's own nil guard just above this loop.
+// loop's normal "scope closed" exit always did: every exit from the loop --
+// refusal give-up, ctx cancellation, a wait error, a stuck debt, or the
+// ordinary scope-closed end -- flushes a REAL prior turn's terse text or JSON
+// envelope through the SAME path. final == nil is a no-op.
 func flushLoopExit(output io.Writer, mode RunMode, final *RunResult, lastBuffered *bytes.Buffer) error {
 	if final == nil {
 		return nil
@@ -87,6 +78,78 @@ func sleepOrCtxDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// loopTotals accumulates what EVERY real turn of one invocation did, so any
+// exit path reports the whole run and not only its last turn: usage, tool
+// calls, warnings and sub-agent outputs (a cancelled or failed Drain adds its
+// usage without replacing the last completed answer).
+type loopTotals struct {
+	tokens          int64
+	cost            float64
+	counts          map[string]int
+	warnings        []string
+	subAgentOutputs []SubAgentOutput
+}
+
+func (t *loopTotals) add(r *RunResult) {
+	if r == nil {
+		return
+	}
+	if t.counts == nil {
+		t.counts = make(map[string]int)
+	}
+	t.tokens += r.Usage.DeltaTokens
+	t.cost += r.Usage.DeltaCostUSD
+	t.warnings = append(t.warnings, r.Warnings...)
+	t.subAgentOutputs = append(t.subAgentOutputs, r.SubAgentOutputs...)
+	for _, stat := range r.ToolCalls {
+		t.counts[stat.Name] += stat.Count
+	}
+}
+
+func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
+	final.Usage.DeltaTokens = t.tokens
+	final.Usage.DeltaCostUSD = t.cost
+	final.Warnings = t.warnings
+	final.SubAgentOutputs = t.subAgentOutputs
+	final.DurationMs = time.Since(started).Milliseconds()
+	final.ToolCalls = final.ToolCalls[:0]
+	for name, count := range t.counts {
+		final.ToolCalls = append(final.ToolCalls, ToolCallStat{Name: name, Count: count})
+	}
+	slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
+}
+
+// cliLoop is one `rush run` invocation that follows the coordinator's launch
+// decisions: a first turn (the user's request), then Drain turns while the
+// session owes a reaction and work is still running.
+type cliLoop struct {
+	app    *App
+	source agent.ReactionDebtSource
+	ctx    context.Context
+	output io.Writer
+	mode   RunMode
+
+	hideSpinner       bool
+	overrides         RunOverrides // the caller's, incl. OnFinishHook (run by the caller)
+	turnOverrides     RunOverrides // per-turn: no OnFinishHook
+	prompt            string
+	continueSessionID string
+	useLast           bool
+	started           time.Time
+
+	sessionID        string
+	driverClaimed    bool
+	claimedSessionID string
+
+	final        *RunResult    // the last COMPLETED turn's result (carries the answer)
+	runErr       error         // the last real turn's outcome
+	lastFailed   *RunResult    // the last real Drain's result, when it failed
+	lastBuffered *bytes.Buffer // terse output of the last completed turn
+	tot          loopTotals
+
+	refusalSince time.Time
+}
+
 func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (final *RunResult, runErr error) {
 	if output == nil {
 		output = io.Discard
@@ -107,13 +170,9 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		return final, runErr
 	}
 
-	// B12/C14 fix, part 3: a non-persistent coordinator (this one) never
-	// starts the recurring 60s ticker, so a CLI-only install would otherwise
-	// never sweep dead hosts or purge expired rows at all -- contradicting
-	// the CHANGELOG/`--jobs-older-than` help's documented promise. Run the
-	// sweep/purge halves once, best-effort, per invocation instead of a
-	// recurring background ticker (which would keep an otherwise-short-lived
-	// `rush run` process alive doing nothing between ticks).
+	// B12/C14 fix, part 3: run the dead-host sweep and retention purge once,
+	// best-effort, per invocation (the 60s pass started by the driver claim
+	// repeats them while the loop waits).
 	source.RunMaintenanceSweep(ctx)
 
 	started := time.Now()
@@ -125,363 +184,332 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 				final.Usage.DeltaCostUSD, final.Usage.DeltaTokens, time.Since(started))
 		}
 	}()
-	counts := make(map[string]int)
-	var warnings []string
-	var subAgentOutputs []SubAgentOutput
-	var totalTokens int64
-	var totalCost float64
-	firstTurn := true
-	// lockBusyRetryStart marks the beginning of the CURRENT run of
-	// consecutive session-lock-busy retries (C1 fix) -- reset to zero the
-	// instant a turn actually runs, so an overall bound applies to one
-	// contiguous busy streak, not the whole (possibly long-lived) rush run
-	// invocation.
-	var lockBusyRetryStart time.Time
-	// lastBuffered is the terse output of the last REAL turn (a no-turn Drain
-	// iteration prints nothing and must not blank it).
-	lastBuffered := &bytes.Buffer{}
-	sessionID := continueSessionID
-	// Doc sec.3.4: this loop IS the external driver for sessionID -- claimed
+	l := &cliLoop{
+		app: app, source: source, ctx: ctx, output: output, mode: mode,
+		hideSpinner: hideSpinner, overrides: overrides, turnOverrides: turnOverrides,
+		prompt: prompt, continueSessionID: continueSessionID, useLast: useLast,
+		started: started, sessionID: continueSessionID, lastBuffered: &bytes.Buffer{},
+	}
+	// Doc sec.3.4: this loop IS the external driver for its session -- claimed
 	// (durably, so no other process starts a reaction turn for it) as soon as
-	// the session id resolves (onSessionResolved below), released on every exit
-	// that claimed it so a later web-driven wake for the same session id goes
-	// back to ordinary Drain-turn routing. The release runs on a context
-	// detached from ctx: Ctrl-C must still delete the marker.
-	driverClaimed := false
-	claimedSessionID := ""
+	// the session id resolves, released on every exit on a context detached
+	// from ctx: Ctrl-C must still delete the marker.
 	defer func() {
-		if driverClaimed {
+		if l.driverClaimed {
 			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 			defer relCancel()
-			source.ReleaseExternalDriver(relCtx, claimedSessionID)
+			source.ReleaseExternalDriver(relCtx, l.claimedSessionID)
 		}
 	}()
+	return l.run()
+}
+
+// claim is ExecuteRun's onSessionResolved: it claims the driver marker once.
+func (l *cliLoop) claim(resolved string) error {
+	if !l.driverClaimed {
+		if err := l.source.ClaimExternalDriver(l.ctx, resolved); err != nil {
+			return err
+		}
+		l.driverClaimed = true
+		l.claimedSessionID = resolved
+	}
+	l.sessionID = resolved
+	return nil
+}
+
+// runTurn runs one ExecuteRun: the first call carries the user's request, every
+// later one is a Drain (empty prompt, mutation-free setup).
+func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
+	buffered := &bytes.Buffer{}
+	turnOutput := l.output
+	switch l.mode {
+	case RunModeTerse:
+		turnOutput = buffered
+	case RunModeJSON:
+		turnOutput = io.Discard
+	}
+	turnCtx := l.ctx
+	if !first {
+		// Doc sec.3.4: an empty-prompt Drain call: lifts ErrEmptyPrompt, skips
+		// createUserMessage, reacts only to what its own turn-start pull moves
+		// into history.
+		turnCtx = agent.WithDrainCall(agent.WithBackgroundJobNotice(l.ctx))
+	}
+	result, err := l.app.ExecuteRun(turnCtx, RunRequest{
+		Prompt: l.prompt, Overrides: l.turnOverrides, Mode: l.mode,
+		ContinueSessionID: l.continueSessionID, UseLast: l.useLast,
+		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: os.Stderr,
+		HideSpinner:       l.hideSpinner,
+		captureResult:     true,
+		drainTurn:         !first,
+		onSessionResolved: l.claim,
+	})
+	if cliLoopTurnDoneSeam != nil {
+		cliLoopTurnDoneSeam()
+	}
+	return result, buffered, err
+}
+
+func (l *cliLoop) run() (*RunResult, error) {
+	result, buffered, err := l.runTurn(true)
+	// The session never resolved or its driver claim was refused (another live
+	// loop drives it): the first turn never ran, so there is no scope of ours to
+	// wait on -- fail now, having changed nothing.
+	if err != nil && !l.driverClaimed {
+		return nil, err
+	}
+	l.final, l.runErr, l.lastBuffered = result, err, buffered
+	l.tot.add(result)
+	if result != nil {
+		l.sessionID = result.SessionID
+	}
+	// Every later turn is a Drain: empty prompt, on the resolved session.
+	l.prompt, l.continueSessionID, l.useLast = "", l.sessionID, false
+	// Doc sec.3.8: a "session lock busy" refusal of the user's own turn fails
+	// fast (pre-phase-4 contract, sessionBusyGuidance): the envelope is still
+	// flushed and --on-finish still runs (R2C-2).
+	var lockBusy *session.SessionLockBusyError
+	if errors.As(err, &lockBusy) {
+		return l.exit(err, "")
+	}
+	if l.sessionID == "" || l.ctx.Err() != nil {
+		return l.exitCanceled()
+	}
+
 	for {
-		buffered := &bytes.Buffer{}
-		turnOutput := output
-		switch mode {
-		case RunModeTerse:
-			turnOutput = buffered
-		case RunModeJSON:
-			turnOutput = io.Discard
+		step, why, waitErr := l.nextStep()
+		switch {
+		case waitErr != nil:
+			return l.exitWait(waitErr)
+		case step == stepExit:
+			return l.exit(l.runErr, "")
+		case step == stepStuck:
+			fmt.Fprintf(os.Stderr, "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
+			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
 		}
-		turnCtx := ctx
-		var drainSnapshot session.DebtSnapshot
-		if !firstTurn {
-			// Phase-4 (doc sec.3.4): this turn carries an empty prompt
-			// (below) and must be built as a Drain call -- lifts
-			// ErrEmptyPrompt, skips createUserMessage, and reacts only to
-			// whatever this turn's own turn-start pull moves into history.
-			turnCtx = agent.WithDrainCall(agent.WithBackgroundJobNotice(ctx))
-			// Doc sec.6: the root's own turns never go through wakeSession,
-			// so this loop captures/records settle-by-failure accounting
-			// itself -- see RecordDrainTurnOutcome below.
-			drainSnapshot = source.CaptureDrainSnapshot(ctx, sessionID)
-		}
-		result, err := app.ExecuteRun(turnCtx, RunRequest{
-			Prompt: prompt, Overrides: turnOverrides, Mode: mode,
-			ContinueSessionID: continueSessionID, UseLast: useLast,
-			Origin: overrides.Origin, Stdout: turnOutput, Stderr: os.Stderr,
-			HideSpinner:   hideSpinner,
-			captureResult: true,
-			onSessionResolved: func(resolved string) error {
-				if !driverClaimed {
-					if err := source.ClaimExternalDriver(ctx, resolved); err != nil {
-						return err
-					}
-					driverClaimed = true
-					claimedSessionID = resolved
-				}
-				sessionID = resolved
-				return nil
-			},
-		})
-		if cliLoopTurnDoneSeam != nil {
-			cliLoopTurnDoneSeam()
-		}
-		// The session never resolved or its driver claim was refused (another
-		// live loop drives it): the first turn never ran, so there is no scope
-		// of ours to wait on -- fail now, having changed nothing.
-		if err != nil && !driverClaimed {
-			return final, err
+		if err := l.precheck(); err != nil {
+			return l.exitPrecheck(err)
 		}
 
-		// Doc sec.3.8: a "session lock busy" refusal on OUR OWN session
-		// (another live process -- typically a web tab pulling notices --
-		// holds the OS-level lock right now) retries this exact turn after
-		// a short bounded pause instead of ending the run. Checked before
-		// the ErrRunQueued/drainNoTurn classification below: this is a
-		// DIFFERENT, cross-process refusal, never the normal in-process
-		// "Drain queued behind an active call" signal.
-		//
-		// C1 fix: ExecuteRun is a per-invocation primitive that mutates the
-		// session on every call (UpdateSystemPrompt, UpdateReasoningEffort,
-		// ClearCancelRequest, SetBudget, SetEndedReason, ...) -- retrying it
-		// silently and without bound against a session another process
-		// currently owns repeats every one of those writes each pass,
-		// including erasing a `sessions cancel` request landed in the same
-		// window. The FIRST turn (the user's actual request; `rush run
-		// --session <busy>`) fails fast instead, matching pre-phase-4
-		// behavior and sessionBusyGuidance's own documented contract. Only a
-		// Drain-context retry (this loop's own reaction-debt turn, which can
-		// legitimately race a web tab mid-pull on the same session) keeps
-		// retrying -- bounded overall, and visibly (stderr), never silently
-		// forever.
-		var lockBusy *session.SessionLockBusyError
-		if errors.As(err, &lockBusy) {
-			if firstTurn {
-				return final, err
+		usageBefore := l.sessionUsage()
+		result, buffered, err = l.runTurn(false)
+		if l.ctx.Err() != nil {
+			l.tot.add(result)
+			if result == nil {
+				// An interrupted Drain returns no envelope; its usage is what the
+				// session totals gained meanwhile.
+				l.tot.addSince(usageBefore, l.sessionUsage())
 			}
-			if lockBusyRetryStart.IsZero() {
-				lockBusyRetryStart = time.Now()
-			}
-			if elapsed := time.Since(lockBusyRetryStart); elapsed > cliLockBusyRetryOverallLimit {
-				fmt.Fprintf(os.Stderr, "rush run: session %q still locked by another process after %s; giving up\n",
-					sessionID, cliLockBusyRetryOverallLimit)
-				if final != nil {
-					final.ExitReason = "error"
-					final.Error = err.Error()
-				}
-				if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
-					return final, flushErr
-				}
-				return final, err
-			}
-			fmt.Fprintf(os.Stderr, "rush run: session %q is locked by another process; retrying\n", sessionID)
-			if !sleepOrCtxDone(ctx, cliLockBusyRetryPause) {
-				if final != nil {
-					final.ExitReason = "canceled"
-					final.Error = ctx.Err().Error()
-				}
-				if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
-					return final, flushErr
-				}
-				return final, ctx.Err()
-			}
-			continue
+			return l.exitCanceled()
 		}
-		lockBusyRetryStart = time.Time{}
-
-		// A Drain iteration that ran no provider turn -- nothing wake-worthy
-		// was pending (typically the notice was already pulled at a step
-		// boundary of the previous turn), or it queued behind another owner
-		// that pulls it itself -- surfaces as ErrRunQueued with an empty
-		// envelope. Not a turn: it must neither replace the last turn's
-		// result nor become the run's error.
-		drainNoTurn := !firstTurn && errors.Is(err, ErrRunQueued)
-		if !firstTurn && !drainNoTurn {
-			// Item 2/C5c fix: a non-empty final answer is this loop's only
-			// available signal that the turn actually produced content (it
-			// has no per-attempt assistant-message evidence the way
-			// wakeSession does) -- passed through so RecordDrainTurnOutcome
-			// can bound a "success but the reaction write silently failed"
-			// loop exactly like the web path does.
-			producedContent := result != nil && strings.TrimSpace(result.FinalText) != ""
-			source.RecordDrainTurnOutcome(ctx, sessionID, drainSnapshot, err, producedContent)
-		}
-		if result != nil && !drainNoTurn {
-			final = result
-			sessionID = result.SessionID
-			totalTokens += result.Usage.DeltaTokens
-			totalCost += result.Usage.DeltaCostUSD
-			warnings = append(warnings, result.Warnings...)
-			subAgentOutputs = append(subAgentOutputs, result.SubAgentOutputs...)
-			for _, stat := range result.ToolCalls {
-				counts[stat.Name] += stat.Count
+		// A Drain that crossed the run's budget ends the run: its result is not the
+		// answer, and no further paid turn follows.
+		if !agent.IsDrainNotAttempted(err) && !errors.Is(err, ErrRunQueued) {
+			if capErr := l.capError(); capErr != nil {
+				l.tot.add(result)
+				return l.exitPrecheck(capErr)
 			}
 		}
-		if !drainNoTurn {
-			runErr = err
-			lastBuffered = buffered
+		if done, exitErr := l.afterDrain(result, err, buffered); done {
+			return l.exit(exitErr, "error")
 		}
-		if sessionID == "" || ctx.Err() != nil {
-			if final != nil && ctx.Err() != nil {
-				final.ExitReason = "canceled"
-				final.Error = ctx.Err().Error()
-			}
-			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
-				return final, flushErr
-			}
-			// A cancellation that lands after the last turn finished cleanly
-			// (runErr == nil) still ends the run as a cancellation: the
-			// envelope says "canceled", so the error must not be nil (exit 0).
-			// A non-nil runErr (the turn's own failure) is kept as is.
-			if runErr == nil && ctx.Err() != nil {
-				runErr = ctx.Err()
-			}
-			return final, runErr
-		}
-
-		waitAfterNoTurnDrain(ctx, source, sessionID, drainNoTurn)
-
-		// Doc sec.3.5: turn <=> the root's reaction debt (or the initial
-		// request, already run above); exit <=> the root's scope is
-		// closed. waitForNextCLITurn owns the DB predicate/wait/retry loop
-		// entirely -- see its own doc.
-		hasNext, waitErr := app.waitForNextCLITurn(ctx, source, sessionID)
-		if waitErr != nil {
-			if final != nil {
-				final.ExitReason = "canceled"
-				if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
-					// A persistent DB-read failure (cliDBErrorRetryOverallLimit
-					// exceeded) is not a cancellation -- "error" describes it
-					// more accurately in the JSON envelope's vocabulary.
-					final.ExitReason = "error"
-				}
-				final.Error = waitErr.Error()
-			}
-			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
-				return final, flushErr
-			}
-			return final, waitErr
-		}
-		if !hasNext {
-			if final == nil {
-				return nil, runErr
-			}
-			final.Usage.DeltaTokens = totalTokens
-			final.Usage.DeltaCostUSD = totalCost
-			final.Warnings = warnings
-			final.SubAgentOutputs = subAgentOutputs
-			final.DurationMs = time.Since(started).Milliseconds()
-			final.ToolCalls = final.ToolCalls[:0]
-			for name, count := range counts {
-				final.ToolCalls = append(final.ToolCalls, ToolCallStat{Name: name, Count: count})
-			}
-			slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
-			if flushErr := flushLoopExit(output, mode, final, lastBuffered); flushErr != nil {
-				return final, flushErr
-			}
-			return final, runErr
-		}
-		// Empty prompt: a Drain-kind turn (doc sec.3.4). Its own turn-start
-		// pull moves whatever pending notice(s) constitute the debt into
-		// history and reacts to it -- never to this loop's own (there is
-		// none) captured text.
-		prompt = ""
-		continueSessionID = sessionID
-		useLast = false
-		firstTurn = false
 	}
 }
 
-// waitAfterNoTurnDrain implements the B8/C5b,c fix (docs/reviews/2026-09-29-
-// async-phase4-round1.md): a no-turn Drain (ErrRunQueued -- decideDrainTurn
-// found no VISIBLE debt for a row waitForNextCLITurn's own pending-inclusive
-// predicate just said WAS owed) must not loop straight back into an
-// identical immediate re-check. If the row is still 'pending' because its
-// pull keeps failing, the very next waitForNextCLITurn call would see the
-// SAME pending debt and relaunch instantly again -- a 100%-CPU tight loop
-// with no pause, never exiting. Waiting for a hint (or its own bounded
-// fallback) first paces every SUBSEQUENT no-turn iteration without slowing
-// down the common case at all: a genuinely fresh pending notice's FIRST
-// Drain attempt pulls and reacts to it successfully (drainNoTurn is false),
-// so this wait is never reached for it.
-func waitAfterNoTurnDrain(ctx context.Context, source agent.ReactionDebtSource, sessionID string, drainNoTurn bool) {
-	if drainNoTurn {
-		source.WaitForHint(ctx, sessionID)
+// afterDrain classifies one finished Drain iteration. done reports that the
+// loop must end now (the refusal budget ran out) with exitErr.
+func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffer) (done bool, exitErr error) {
+	switch {
+	case errors.Is(err, ErrRunQueued):
+		// It queued behind another owner (or the Drain found nothing visible to
+		// react to): no turn of ours to account -- the owner's loop already did.
+		l.refusalSince = time.Time{}
+		l.source.WaitForHint(l.ctx, l.sessionID, time.Now().Add(cliQueuedDrainPause))
+		return false, nil
+	case agent.IsDrainNotAttempted(err):
+		// A refusal is never counted or settled: the launch gate paces the retry
+		// (0.5s for this loop's own session); the loop only bounds the streak.
+		if l.refusalSince.IsZero() {
+			l.refusalSince = time.Now()
+			fmt.Fprintf(os.Stderr, "rush run: session %q: the reaction turn was refused (%v); retrying\n", l.sessionID, err)
+		}
+		if time.Since(l.refusalSince) > cliLockBusyRetryOverallLimit {
+			fmt.Fprintf(os.Stderr, "rush run: session %q: the reaction turn is still refused after %s (%v); giving up\n",
+				l.sessionID, cliLockBusyRetryOverallLimit, err)
+			return true, err
+		}
+		return false, nil
 	}
+	l.refusalSince = time.Time{}
+	l.tot.add(result)
+	var awaiting *agent.AwaitingAnswerError
+	switch {
+	case err == nil || errors.As(err, &awaiting):
+		// A completed turn (or a question -- an answer of its own kind): it is
+		// now the run's answer.
+		if result != nil {
+			l.final = result
+			l.lastBuffered = buffered
+		}
+		l.runErr, l.lastFailed = err, nil
+	default:
+		// A failed Drain never replaces the last completed answer; the error
+		// exit carries its classification.
+		l.runErr, l.lastFailed = err, result
+	}
+	return false, nil
 }
 
-// cliOpenScopeWaitNoticeInterval bounds how often waitForNextCLITurn prints
-// its "still waiting on open scope" stderr heartbeat (C17 fix, docs/reviews/
-// 2026-09-29-async-phase4-round1.md): an `Unknown` host-liveness verdict
-// (io error probing the lock file) keeps a session's scope reported open
-// for up to `sessions gc`'s 6h horizon with NO observable signal at all --
-// an operator watching the process sees only silence. A var, not a const,
-// so a test can shrink it instead of waiting a real interval.
+// cliStep is what nextStep decided.
+type cliStep int
+
+const (
+	stepExit cliStep = iota
+	stepDrain
+	stepStuck
+)
+
+// cliOpenScopeWaitNoticeInterval bounds how often the loop prints its "still
+// waiting on open scope" stderr heartbeat (C17 fix): an `Unknown` host-liveness
+// verdict keeps a session's scope reported open for up to `sessions gc`'s 6h
+// horizon with NO observable signal otherwise. A var so a test can shrink it.
 var cliOpenScopeWaitNoticeInterval = 60 * time.Second
 
-// cliDBErrorRetryOverallLimit bounds waitForNextCLITurn's DB-read-error
-// retry loop (C17 fix, docs/reviews/2026-09-29-async-phase4-round1.md): a
+// cliDBErrorRetryOverallLimit bounds the DB-read-error retry loop (C17 fix): a
 // persistent DB failure (disk issue, corruption) was previously retried
-// forever with only a slog.Warn line, no stderr message and no bound --
-// indistinguishable from a hang to whoever is watching the process. A var,
-// not a const, so a test can shrink it.
+// forever with only a slog.Warn line. A var so a test can shrink it.
 var cliDBErrorRetryOverallLimit = 30 * time.Second
 
-// waitForNextCLITurn implements doc sec.3.5's CLI-loop predicate through the
-// coordinator's single CLIScope answer: another turn is owed iff sessionID has
-// reaction debt AND the session policy (the one wakeSession and the Drain
-// turn-start re-check apply) allows a turn for it; otherwise the loop waits
-// (a hint, or a bounded same-process fallback tick) while a running task row
-// keeps the scope open, and exits (hasNext=false) when nothing is running.
-// Debt the policy will not allow a turn for (CLIScopeState.DeferredDebt) is
-// neither waited on nor settled: it stays for the next human turn, the exit
-// reason is unaffected, and a one-line stderr note says so. A DB read error
-// retries with a pause rather than silently treating the scope as open or
-// closed, bounded overall by cliDBErrorRetryOverallLimit and visible on
-// stderr, mirroring the lock-busy retry's own bounded-and-visible shape
-// above. Only ctx cancellation or that bound ends the wait with an error.
-func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDebtSource, sessionID string) (hasNext bool, err error) {
-	var lastOpenScopeNotice time.Time
-	var dbErrorRetryStart time.Time
-	giveUpOnPersistentDBError := func(cause error) (bool, error, bool) {
-		if dbErrorRetryStart.IsZero() {
-			dbErrorRetryStart = time.Now()
-		}
-		if elapsed := time.Since(dbErrorRetryStart); elapsed > cliDBErrorRetryOverallLimit {
-			fmt.Fprintf(os.Stderr, "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
-				sessionID, cliDBErrorRetryOverallLimit, cause)
-			return false, cause, true
-		}
-		return false, nil, false
-	}
+// nextStep implements doc sec.3.5's CLI-loop decision through the
+// coordinator's single CLIScope answer, waiting as long as it must: Owed --
+// run a Drain (the pre-launch caps are checked by the caller); Paced -- wait
+// until the gate reopens (a newer event may reopen it sooner); running work --
+// wait (heartbeat on stderr); Stuck with nothing running -- give up; Deferred
+// or no debt with nothing running -- the scope is closed. A DB read error
+// retries with a pause, bounded overall and visible on stderr.
+func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
+	var lastOpenScopeNotice, dbErrorRetryStart time.Time
 	for {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
+		if l.ctx.Err() != nil {
+			return stepExit, "", l.ctx.Err()
 		}
-		// CLIScope's debt read is pending-inclusive: a freshly-arrived
-		// notice is normally still 'pending' here (nothing has pulled it
-		// into history yet) and MUST still be reported as a turn owed -- the
-		// next turn's own preamble pull is what moves it to 'done' and reacts
-		// to it. Using the VISIBLE-only predicate here instead (an earlier
-		// version of the B8/C5b,c fix) broke this common case: it is never
-		// visible until AFTER a turn already pulled it, so the check saw no
-		// debt and blocked on WaitForHint's fallback for a hint that had
-		// already fired before this call started watching for it -- several
-		// seconds of pure waste on every single async completion.
-		// The actual tight-loop case (a permanently-pending row whose pull
-		// keeps failing) is bounded below instead, at the one place that can
-		// tell "this specific attempt already ran and found nothing to
-		// react to" (drainNoTurn) without misclassifying a fresh notice.
-		state, stateErr := source.CLIScope(ctx, sessionID)
+		state, stateErr := l.source.CLIScope(l.ctx, l.sessionID)
 		if stateErr != nil {
-			slog.Warn("rush run: scope check failed; retrying", "session_id", sessionID, "err", stateErr)
-			if hasNext, giveUpErr, giveUp := giveUpOnPersistentDBError(stateErr); giveUp {
-				return hasNext, giveUpErr
+			slog.Warn("rush run: scope check failed; retrying", "session_id", l.sessionID, "err", stateErr)
+			if dbErrorRetryStart.IsZero() {
+				dbErrorRetryStart = time.Now()
 			}
-			if !sleepOrCtxDone(ctx, cliDBRetryPause) {
-				return false, ctx.Err()
+			if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
+				fmt.Fprintf(os.Stderr, "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
+					l.sessionID, cliDBErrorRetryOverallLimit, stateErr)
+				return stepExit, "", stateErr
+			}
+			if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
+				return stepExit, "", l.ctx.Err()
 			}
 			continue
 		}
 		dbErrorRetryStart = time.Time{}
-		if state.TurnOwed {
-			return true, nil
-		}
-		if !state.WorkOpen {
-			if state.DeferredDebt {
-				fmt.Fprintf(os.Stderr, "rush run: session %q has a notice no automatic turn is allowed for (e.g. a background-shell completion with auto-resume off); it stays for the next turn\n", sessionID)
+		switch {
+		case state.Drain == agent.DrainOwed:
+			return stepDrain, "", nil
+		case state.Drain == agent.DrainPaced:
+			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
+			continue
+		case state.WorkOpen:
+			if now := time.Now(); lastOpenScopeNotice.IsZero() || now.Sub(lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
+				lastOpenScopeNotice = now
+				fmt.Fprintf(os.Stderr, "rush run: session %q still has open work (a running job/delegation, or an unreachable host); waiting\n", l.sessionID)
 			}
-			return false, nil
+			l.source.WaitForHint(l.ctx, l.sessionID, time.Time{})
+			continue
+		case state.Drain == agent.DrainStuck:
+			return stepStuck, state.Reason, nil
+		case state.Drain == agent.DrainDeferred:
+			fmt.Fprintf(os.Stderr, "rush run: session %q has a notice no automatic turn is allowed for (%s); it stays for the next turn\n", l.sessionID, state.Reason)
 		}
-		// Scope is open on running work, not debt (e.g. a delegation still
-		// armed, or a bash job still running) -- wait for a hint (or the
-		// bounded 5s fallback inside WaitForHint) and re-check. Hints are
-		// same-process; a job on another process's host is noticed by that
-		// bounded re-read (a `rush run` has no 60s pass).
-		//
-		// C17 fix: a periodic stderr heartbeat so a session stuck open on an
-		// `Unknown` host-liveness verdict (or a genuinely long-running job)
-		// is visible to whoever is watching the process, instead of silent
-		// waiting all the way out to `sessions gc`'s retention horizon.
-		if now := time.Now(); lastOpenScopeNotice.IsZero() || now.Sub(lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
-			lastOpenScopeNotice = now
-			fmt.Fprintf(os.Stderr, "rush run: session %q still has open work (a running job/delegation, or an unreachable host); waiting\n", sessionID)
-		}
-		source.WaitForHint(ctx, sessionID)
+		return stepExit, "", nil
 	}
+}
+
+// precheck refuses to launch a paid reaction turn once the run's own budget or
+// an operator cancel already ended it: --max-cost/--max-tokens compare exactly
+// like enforceRunawayCaps, and `sessions cancel` between turns ends the run.
+func (l *cliLoop) precheck() error {
+	if err := l.capError(); err != nil {
+		return err
+	}
+	if canceled, err := l.app.Sessions.IsCancelRequested(l.ctx, l.sessionID); err == nil && canceled {
+		return &runIncompleteError{reason: "canceled", detail: fmt.Sprintf("session %s cancelled by user", l.sessionID)}
+	}
+	return nil
+}
+
+// exit ends the loop: totals of every real turn are applied to the final
+// envelope, the envelope is flushed through the one common path, and the
+// caller gets (final, err). reason, when set, is the exit_reason to record for
+// err; otherwise a failed last Drain's own classification is carried over.
+func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
+	final := l.final
+	if final != nil {
+		l.tot.applyTo(final, l.started)
+		switch {
+		case err != nil && reason != "":
+			final.ExitReason = reason
+			final.Error = err.Error()
+		case err != nil && l.lastFailed != nil && errors.Is(err, l.runErr):
+			final.ExitReason = l.lastFailed.ExitReason
+			final.Error = l.lastFailed.Error
+		}
+	}
+	if flushErr := flushLoopExit(l.output, l.mode, final, l.lastBuffered); flushErr != nil {
+		return final, flushErr
+	}
+	return final, err
+}
+
+func (l *cliLoop) exitCanceled() (*RunResult, error) {
+	err := l.runErr
+	if err == nil {
+		err = l.ctx.Err()
+	}
+	if l.final != nil && l.ctx.Err() != nil {
+		l.final.ExitReason = "canceled"
+		l.final.Error = l.ctx.Err().Error()
+	}
+	return l.flushed(err)
+}
+
+// flushed applies the totals and flushes without touching the exit reason.
+func (l *cliLoop) flushed(err error) (*RunResult, error) {
+	if l.final != nil {
+		l.tot.applyTo(l.final, l.started)
+	}
+	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
+		return l.final, flushErr
+	}
+	return l.final, err
+}
+
+func (l *cliLoop) exitWait(waitErr error) (*RunResult, error) {
+	if l.final != nil {
+		l.final.ExitReason = "canceled"
+		if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
+			// A persistent DB-read failure is not a cancellation.
+			l.final.ExitReason = "error"
+		}
+		l.final.Error = waitErr.Error()
+	}
+	return l.flushed(waitErr)
+}
+
+func (l *cliLoop) exitPrecheck(err error) (*RunResult, error) {
+	var inc *runIncompleteError
+	reason := "error"
+	if errors.As(err, &inc) {
+		reason = inc.reason
+	}
+	return l.exit(err, reason)
 }
 
 func cmpName(a, b string) int {
@@ -493,4 +521,54 @@ func cmpName(a, b string) int {
 	default:
 		return 0
 	}
+}
+
+// capError reports the run's --max-cost/--max-tokens as exceeded, comparing
+// the session totals exactly like the agent's enforceRunawayCaps. A single-step
+// turn that crosses a cap is not cut short (fantasy ignores the step
+// callback's error), so the loop checks after every Drain too.
+func (l *cliLoop) capError() error {
+	if l.overrides.MaxCost <= 0 && l.overrides.MaxTokens <= 0 {
+		return nil
+	}
+	sess, err := l.app.Sessions.Get(l.ctx, l.sessionID)
+	if err != nil {
+		return nil
+	}
+	if l.overrides.MaxCost > 0 && sess.Cost > l.overrides.MaxCost {
+		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
+			"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, sess.Cost, l.overrides.MaxCost)}
+	}
+	if total := sess.PromptTokens + sess.CompletionTokens; l.overrides.MaxTokens > 0 && total > l.overrides.MaxTokens {
+		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
+			"session %s aborted: %d tokens exceeds max %d", l.sessionID, total, l.overrides.MaxTokens)}
+	}
+	return nil
+}
+
+// usageMark is the session's token and cost totals at one instant.
+type usageMark struct {
+	tokens int64
+	cost   float64
+	ok     bool
+}
+
+// sessionUsage reads the session totals on a context that survives Ctrl-C.
+func (l *cliLoop) sessionUsage() usageMark {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
+	defer cancel()
+	sess, err := l.app.Sessions.Get(ctx, l.sessionID)
+	if err != nil {
+		return usageMark{}
+	}
+	return usageMark{tokens: sess.PromptTokens + sess.CompletionTokens, cost: sess.Cost, ok: true}
+}
+
+// addSince adds what the session totals gained between two marks.
+func (t *loopTotals) addSince(before, after usageMark) {
+	if !before.ok || !after.ok {
+		return
+	}
+	t.tokens += max(after.tokens-before.tokens, 0)
+	t.cost += max(after.cost-before.cost, 0)
 }

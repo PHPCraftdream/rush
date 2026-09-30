@@ -412,17 +412,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 					"holder_pid", busyErr.HolderPID,
 					"lock_path", busyErr.Path,
 				)
-				// B2/C2 fix: this mailbox reservation is about to be abandoned
-				// (the deferred abandonOwnershipWithHandoff above) WITHOUT any
-				// turn ever starting. Mark the release so onSessionIdleHook
-				// skips its own automatic relaunch -- otherwise a Drain
-				// re-check that lands here immediately re-triggers itself via
-				// onSessionIdle on every single failed attempt, an unbounded
-				// hot loop with no pause (doc sec.3.4 rule (b)).
-				if a.asyncJobs != nil {
-					a.asyncJobs.markAdmissionRefusedRelease(call.SessionID)
-				}
-				return nil, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr)
+				// This reservation is abandoned WITHOUT any turn: the gate
+				// (noteDrainRefused) keeps the release that follows from
+				// relaunching a Drain at once (doc sec.3.4 rule (b)).
+				a.noteRefusal(call.SessionID, lockErr)
+				return nil, notAttempted(call, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr))
 			}
 			// Unidentified error (not "busy") — e.g. permission denied,
 			// IO error, or any other failure that isn't "someone else
@@ -435,7 +429,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			// proceed unprotected.
 			slog.Error("agent.Run: failed to acquire inter-process session lock, refusing to run unprotected",
 				"session_id", call.SessionID, "err", lockErr)
-			return nil, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr)
+			a.noteRefusal(call.SessionID, lockErr)
+			return nil, notAttempted(call, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr))
 		}
 		// Release the lock in the abandonOwnershipWithHandoff defer above.
 		defer func() {
@@ -532,10 +527,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		call = mb.reclaimReplacementOrKeep(call)
 		inheritReplacementIdentityCallback(&previousCall, &call)
 		if err := persistCallModels(call); err != nil {
+			a.noteRefusal(call.SessionID, err)
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				return nil, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+				return nil, notAttempted(call, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr))
 			}
-			return nil, err
+			return nil, notAttempted(call, err)
 		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
@@ -582,33 +578,15 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
-		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
+		att := a.newDrainAttempt(call)
+		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		err = a.afterTurn(call, att, err)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}
 		mb.clearCurrentCall(epoch)
 		turnCancel()
 		if !hasNext {
-			// B6/C5a fix: extend rule (a) to a Drain that reached the
-			// provider and failed. The turn-loop's own defer
-			// (abandonOwnershipWithHandoff below) fires onSessionIdle
-			// SYNCHRONOUSLY as part of this Run() call unwinding -- marking
-			// AFTER Run returns (wakeSession's own recordDrainOutcome) would
-			// be too late, since onSessionIdleHook's relaunch decision for
-			// THIS release has already been made by then. Mark it here,
-			// before that defer runs, and add to the recheck set so a
-			// genuinely open debt is retried by the 60s pass (or a new
-			// hint) instead of never again -- never via an immediate
-			// relaunch (doc sec.3.4 rule (c), sec.6 "one-minute outage does
-			// not close the debt"). Admission refusals are excluded: those
-			// are B2/C2's own admissionRefusedRelease marker, set deeper
-			// inside this function before the turn loop even starts.
-			if call.IsDrain && err != nil && !turnAttemptRefused(err) && a.asyncJobs != nil {
-				a.asyncJobs.markNoTurnDrainRelease(call.SessionID, a.asyncJobs.hintSeqOf(call.SessionID))
-				if a.asyncJobs.coord != nil {
-					a.asyncJobs.coord.addToRecheckSet(call.SessionID)
-				}
-			}
 			return result, err
 		}
 		inheritReplacementIdentityCallback(&call, &next)

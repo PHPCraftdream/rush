@@ -16,14 +16,12 @@ import (
 
 // pullPendingNotices pulls every pending notice row for sessionID into
 // history (one DB transaction per row, doc sec.3.3) and reports which
-// messages were newly inserted plus whether any of them carries wake=1
-// (decideDrainTurn uses that only as a fallback when its own debt check
-// errors). A pull error never fails the caller's
+// messages were newly inserted. A pull error never fails the caller's
 // turn: the affected row simply stays pending and is retried on the next
 // pull (this turn's own step boundary, or a later turn).
-func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message, anyWake bool) {
+func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message) {
 	if a.asyncJobs == nil || a.asyncJobs.store == nil || sessionID == "" {
-		return nil, false
+		return nil
 	}
 	store := a.asyncJobs.store
 
@@ -33,7 +31,6 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 	}
 	for _, p := range jobPulled {
 		pulled = append(pulled, p.Message)
-		anyWake = anyWake || p.Wake
 	}
 
 	noticePulled, err := store.PullSessionNotices(ctx, a.messages, sessionID, buildSessionNoticeMessageParams)
@@ -42,7 +39,6 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 	}
 	for _, p := range noticePulled {
 		pulled = append(pulled, p.Message)
-		anyWake = anyWake || p.Wake
 	}
 	// Doc sec.3.4: moving a notice into history is progress for the
 	// supervision countdown -- except a supervision check-in itself, which
@@ -53,17 +49,13 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 			break
 		}
 	}
-	return pulled, anyWake
+	return pulled
 }
 
 // pullPendingNoticesForStep is PrepareStep's step-boundary pull (doc
-// sec.3.3): same underlying pull as pullPendingNotices, but callers at this
-// point already decided whether this turn runs (that decision is made once,
-// at turn start) -- so only the newly-inserted messages matter here, not
-// the wake bit.
+// sec.3.3): the same pull, at a point where the turn already runs.
 func (a *sessionAgent) pullPendingNoticesForStep(ctx context.Context, sessionID string) []message.Message {
-	pulled, _ := a.pullPendingNotices(ctx, sessionID)
-	return pulled
+	return a.pullPendingNotices(ctx, sessionID)
 }
 
 // buildJobNoticeMessageParams converts a pulled async_jobs row into the

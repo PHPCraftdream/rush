@@ -15,24 +15,39 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// CLIScopeState is the CLI loop's ONE answer to "what now" between turns
-// (CLIScope). TurnOwed and DeferredDebt are the two outcomes of a pending-
-// inclusive reaction debt, split by the SAME session policy (sessionDrainPolicy)
-// that wakeSession and the Drain turn-start re-check apply, so the loop never
-// waits for a turn the policy will not allow.
+// DrainState is the launch verdict for a session's pending-inclusive reaction
+// debt (drainPermitted): policy first, then the per-session launch gate.
+type DrainState uint8
+
+const (
+	// DrainNone: no reaction debt.
+	DrainNone DrainState = iota
+	// DrainOwed: debt, and a Drain may be launched now.
+	DrainOwed
+	// DrainPaced: debt, retrying after an unreacted attempt or a refusal; the
+	// gate opens at CLIScopeState.RetryAt (a newer event may open it sooner).
+	DrainPaced
+	// DrainDeferred: debt the policy will not allow a turn for (bg-shell-only
+	// with AutoResumeOnJobDone off, a released delegation child, another live
+	// driver, Stop's suspension, a pending question).
+	DrainDeferred
+	// DrainStuck: repeated unreacted attempts; no launch until a newer event or
+	// a human message.
+	DrainStuck
+)
+
+// CLIScopeState is the ONE answer to "what now" for a session between turns
+// (CLIScope), read by the CLI loop and by a delegation child's release.
 type CLIScopeState struct {
-	// TurnOwed: reaction debt exists AND the session policy allows a Drain
-	// turn for it -- run the next turn.
-	TurnOwed bool
 	// WorkOpen: the session has a running task row on a host not provably
 	// dead -- wait for it.
 	WorkOpen bool
-	// DeferredDebt: reaction debt exists but the policy will not allow a turn
-	// for it (bg-shell-only debt with AutoResumeOnJobDone off, a released
-	// delegation child, another live driver, Stop's suspension). The loop
-	// neither waits on it nor settles it: the notice stays for the next human
-	// turn and the run's exit reason is unaffected.
-	DeferredDebt bool
+	// Drain is the launch verdict for its reaction debt.
+	Drain DrainState
+	// RetryAt is when a Paced gate reopens by itself.
+	RetryAt time.Time
+	// Reason names why the debt is Deferred/Stuck/Paced.
+	Reason string
 }
 
 // ReactionDebtSource is implemented by *coordinator; internal/app type-
@@ -41,7 +56,7 @@ type ReactionDebtSource interface {
 	// ClaimExternalDriver marks sessionID as externally driven for the
 	// lifetime of one `rush run` loop: the durable session_drivers marker
 	// first (so no OTHER process starts a reaction turn for it -- see
-	// sessionDrainPolicy), then the in-memory one wakeSession hints against.
+	// drainPolicy), then the in-memory one wakeSession hints against.
 	// A session already driven by another live loop is refused with
 	// *session.ErrSessionDrivenElsewhere and nothing is set. A data dir that
 	// cannot host the host lock (session.ErrDriverMarkerUnavailable) is not
@@ -50,57 +65,29 @@ type ReactionDebtSource interface {
 	// ReleaseExternalDriver releases the durable marker once the loop exits
 	// (always), and the in-memory one for a persistent coordinator (C4).
 	ReleaseExternalDriver(ctx context.Context, sessionID string)
-	// CLIScope is the CLI loop's between-turns decision (doc sec.3.5): it
-	// reads doc sec.3.4's debt predicate PENDING-INCLUSIVE (delivery IN
-	// {pending, done} -- a freshly-arrived notice is still 'pending' until a
-	// turn's own preamble pull, so VISIBLE-only would wrongly report no debt;
-	// waitForNextCLITurn's doc has the B8/C5b,c stuck-pull bound) and splits it
-	// by the session policy into TurnOwed vs DeferredDebt. Running rows are
+	// CLIScope is the CLI loop's between-turns decision (doc sec.3.5), also
+	// read by a delegation child's release: it reads doc sec.3.4's debt
+	// predicate PENDING-INCLUSIVE (delivery IN {pending, done} -- a
+	// freshly-arrived notice is still 'pending' until a turn's own preamble
+	// pull, so VISIBLE-only would wrongly report no debt) and answers with the
+	// ONE launch predicate every Drain launch reads (policy, then the
+	// per-session launch gate): Owed/Paced/Deferred/Stuck. Running rows are
 	// read BEFORE debt: a job's terminal transition and its debt commit
 	// atomically, so "row not running" then implies its debt is already
 	// visible to the debt read that follows -- reversing the order could let
 	// the loop exit between the two.
 	CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error)
-	// ScopeOpen evaluates doc sec.3.5's scope predicate for sessionID, always
-	// BETWEEN turns: true iff the session has a running task row on a host
-	// not provably dead, or a reaction debt (pending-inclusive). It checks
-	// neither "mid-turn" nor the session's policy: debt a policy would refuse
-	// a turn on still keeps the scope open. Policy-blind on purpose: the
-	// reviewer-pass gate and a delegation child's release (childScopeDrained)
-	// want "anything outstanding"; the CLI loop uses CLIScope instead.
-	ScopeOpen(ctx context.Context, sessionID string) (bool, error)
 	// WaitForHint blocks until sessionID's hint counter advances, ctx is
-	// done, or a bounded same-process fallback elapses. The caller must
-	// still re-derive its decision from ReactionDebtExists/ScopeOpen
+	// done, until (when non-zero) passes, or a bounded same-process fallback
+	// elapses. The caller must still re-derive its decision from CLIScope
 	// afterward -- a returned hint is a reason to re-check, not itself an
 	// answer.
-	WaitForHint(ctx context.Context, sessionID string)
-	// CaptureDrainSnapshot snapshots sessionID's current debt id set --
-	// call BEFORE a Drain-context (empty-prompt) loop turn runs, pair with
-	// RecordDrainTurnOutcome afterward (doc sec.6's launch-counter bound:
-	// the CLI root's own turns never go through wakeSession, so this is the
-	// loop's own equivalent of wakeSession's pre-Run capture).
-	CaptureDrainSnapshot(ctx context.Context, sessionID string) session.DebtSnapshot
-	// RecordDrainTurnOutcome applies settle-by-failure/stuck-progress
-	// accounting to a Drain-context loop turn that actually ran (never call
-	// this for a turn that was merely queued/never attempted -- doc
-	// sec.3.4/sec.6, mirrors wakeSession's own post-Run handling exactly).
-	// producedContent reports whether the turn's own result carried a
-	// non-empty final answer (item 2/C5c fix: a "successful" Drain turn
-	// whose reaction write silently failed must not relaunch unbounded paid
-	// turns forever -- see checkStuckDrainProgress's doc). false is always
-	// safe (a no-op for this accounting), so a caller unsure of the signal
-	// should pass false rather than guess true.
-	RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error, producedContent bool)
+	WaitForHint(ctx context.Context, sessionID string, until time.Time)
 	// RunMaintenanceSweep runs the dead-host sweep and retention purge halves
-	// of the 60s host-level pass ONCE, best-effort (B12/C14 fix, part 3): a
-	// non-persistent coordinator (`rush run`) never starts the recurring
-	// ticker (StartRecheckTicker), so without this, a CLI-only install would
-	// never sweep dead hosts or purge expired rows at all -- contradicting
-	// the CHANGELOG/`--jobs-older-than` help's documented promise. Does NOT
-	// run the recheck-child/recheck-set halves: those are process-wide
-	// concerns for the long-lived ticker, out of scope for a single-session
-	// CLI invocation.
+	// of the 60s host-level pass ONCE, best-effort (B12/C14 fix, part 3), at
+	// the start of a `rush run` invocation; the 60s pass ClaimExternalDriver
+	// starts repeats them (with the recheck-child/recheck-set halves) while
+	// the loop waits.
 	RunMaintenanceSweep(ctx context.Context)
 }
 
@@ -122,6 +109,10 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 		}
 	}
 	c.asyncJobs.claimExternalDriver(sessionID)
+	// The same 60s pass the web process runs (recheck set, parked children,
+	// maintenance): the CLI root itself is a hint-only no-op for it, but its
+	// delegated children's retries and refusals ride it. Stopped by CancelAll.
+	c.StartRecheckTicker()
 	return nil
 }
 
@@ -171,59 +162,28 @@ func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) 
 
 // reactionDebtSourceHintFallback bounds WaitForHint's wait even without a
 // hint or ctx cancellation. Hints live inside one process, so this is also
-// the CLI loop's only cross-process fallback: a `rush run` has no 60s ticker
-// (only the web process runs RecheckPass) and re-reads the DB at least this
+// the CLI loop's cross-process fallback: it re-reads the DB at least this
 // often while its scope is open.
 const reactionDebtSourceHintFallback = 5 * time.Second
 
 // WaitForHint implements ReactionDebtSource.
-func (c *coordinator) WaitForHint(ctx context.Context, sessionID string) {
+func (c *coordinator) WaitForHint(ctx context.Context, sessionID string, until time.Time) {
 	if c.asyncJobs == nil {
 		return
 	}
 	since := c.asyncJobs.hintSeqOf(sessionID)
-	waitCtx, cancel := context.WithTimeout(ctx, reactionDebtSourceHintFallback)
+	wait := reactionDebtSourceHintFallback
+	if !until.IsZero() {
+		wait = min(wait, max(time.Until(until), 0))
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	c.asyncJobs.waitForHint(waitCtx, sessionID, since)
 }
 
-// CaptureDrainSnapshot implements ReactionDebtSource.
-func (c *coordinator) CaptureDrainSnapshot(ctx context.Context, sessionID string) session.DebtSnapshot {
-	if c.asyncJobs == nil {
-		return session.DebtSnapshot{}
-	}
-	snap, err := c.asyncJobs.captureDebtSnapshot(ctx, sessionID)
-	if err != nil {
-		return session.DebtSnapshot{}
-	}
-	return snap
-}
-
-// RecordDrainTurnOutcome implements ReactionDebtSource.
-func (c *coordinator) RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error, producedContent bool) {
-	job := jobIdentity{owner: sessionID, toolCallID: "cli-loop"}
-	// "" (no per-attempt assistant-message evidence): the CLI loop's own
-	// turns go through ExecuteRun/coordinator.Run, which does not currently
-	// thread an OnAssistantMessageCreated hook back out to this caller (item
-	// 1, docs/reviews/2026-09-29-async-phase4-round1.md W-DRAIN). settleOr-
-	// RetryDrainFailure's isProviderClassifiable fallback still refuses to
-	// settle on a non-provider-shaped error (e.g. a DB error in the loop's
-	// own turn-start preamble) even without per-attempt evidence.
-	c.recordDrainOutcome(ctx, job, snapshot, true, turnErr, "")
-	// Item 2/C5c fix: the CLI loop's OWN turns are never no-op/queued by the
-	// time they reach here (ExecuteRun already ran a real turn) -- a nil
-	// turnErr with real final text is exactly checkStuckDrainProgress's
-	// "success but did the reaction write actually land" case.
-	if turnErr == nil {
-		c.checkStuckDrainProgress(ctx, job, snapshot, producedContent)
-	}
-}
-
 // RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and
 // retention purge halves of the 60s pass (doc sec.3.6/3.7), factored out of
-// RecheckPass so a non-persistent (CLI) coordinator can run them once per
-// invocation without also running the recheck-child/recheck-set halves,
-// which are process-wide concerns for the long-lived ticker.
+// RecheckPass so a `rush run` can run them once at its start.
 func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return
@@ -239,26 +199,6 @@ func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
 	if err := c.asyncJobs.store.PurgeExpired(ctx, session.AsyncDataRetentionAge); err != nil {
 		slog.Debug("coordinator: maintenance sweep: retention purge failed", "err", err)
 	}
-}
-
-// ScopeOpen implements ReactionDebtSource. Doc sec.3.5's predicate also lists
-// "mid-turn" and "policy allows a turn"; neither is evaluated here: every
-// caller runs strictly BETWEEN its own turns (a child's in-process turn is
-// covered by childScopeDrained's IsSessionBusy check) and any reaction debt
-// counts, whatever the session policy would allow.
-func (c *coordinator) ScopeOpen(ctx context.Context, sessionID string) (bool, error) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return false, nil
-	}
-	workOpen, err := c.runningWorkOpen(ctx, sessionID)
-	if err != nil || workOpen {
-		return workOpen, err
-	}
-	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	return debt, nil
 }
 
 // CLIScope implements ReactionDebtSource (see the interface doc for the
@@ -279,18 +219,22 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if !debt {
 		return state, nil
 	}
-	allowed, _, polErr := c.sessionDrainPolicy(ctx, sessionID)
-	if polErr != nil {
-		// Same fail-open as decideDrainTurn/wakeSession: an unreadable
-		// policy input is not authoritative, the turn's own re-check is.
-		slog.Warn("cli scope: session policy check failed; treating the turn as allowed",
-			"session_id", sessionID, "err", polErr)
-		allowed = true
+	v := c.drainPermitted(ctx, sessionID)
+	if v.err != nil {
+		// An unreadable policy input is a read error the loop retries with a
+		// pause, never a silent exit.
+		return CLIScopeState{}, v.err
 	}
-	if allowed {
-		state.TurnOwed = true
-	} else {
-		state.DeferredDebt = true
+	state.RetryAt, state.Reason = v.retryAt, v.reason
+	switch v.kind {
+	case drainAllow:
+		state.Drain = DrainOwed
+	case drainPaced:
+		state.Drain = DrainPaced
+	case drainDeferred:
+		state.Drain = DrainDeferred
+	default:
+		state.Drain = DrainStuck
 	}
 	return state, nil
 }

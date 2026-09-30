@@ -75,7 +75,6 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	// NoticeKind itself, and a Drain never creates a user message (empty
 	// Prompt), so there is no Origin left for a caller-supplied ctx to
 	// influence either.
-	id := jobIdentity{owner: completion.SessionID, toolCallID: completion.ToolCallID}
 	// Supervision progress is recorded when the notice moves into history
 	// (agent_notice_pull.go), not here.
 	go func() {
@@ -88,7 +87,9 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 		// a visible marker on failure; there is nothing else to do with its
 		// error here.
 		defer c.noteSubAgentChildRunEnded(completion.SessionID)
-		_ = c.wakeSession(context.Background(), id, completion.Wake)
+		if completion.Wake {
+			_ = c.wakeSession(context.Background(), completion.SessionID, true)
+		}
 	}()
 }
 
@@ -97,7 +98,7 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 // `rush run`'s loop (internal/app/app_run_async.go) now claims/releases the
 // external-driver marker directly via ClaimExternalDriver/ReleaseExternalDriver
 // (coordinator_reaction_source.go) and re-derives its next turn from
-// ReactionDebtExists/ScopeOpen against the DB, waiting on WaitForHint (with
+// CLIScope against the DB, waiting on WaitForHint (with
 // its bounded 5s fallback) instead of draining a memory queue.
 
 // backgroundJobSummary formats a finished background command for injection
@@ -136,29 +137,20 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 		}
 	}
 
-	id := jobIdentity{owner: sessionID, toolCallID: sh.ID}
-	if c.autoResumeEligible(sessionID) {
+	if c.claimAutoResume(sessionID) {
 		// Autonomous idle-resume: start (or, if busy, queue) a Drain call
-		// over the just-persisted notice. The bound is incremented per
-		// completion (conservative: a coalesced queued completion still
-		// counts toward the cap, which only makes runaway protection
-		// stricter). Reset by any human message.
-		c.bumpConsecutiveResume(sessionID)
+		// over the just-persisted notice. The bound was spent by
+		// claimAutoResume (reset by any human message).
 		slog.Info("Phase 4: auto-resuming session on background job completion",
 			"session_id", sessionID, "shell_id", sh.ID,
 			"consecutive", c.consecutiveResume(sessionID))
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-		// This call site already bumped the cap counter synchronously,
-		// BEFORE spawning wakeSession's goroutine, so a burst of
-		// near-simultaneous completions is bounded deterministically (doc
-		// sec.3.4's session-policy table: "only with AutoResumeOnJobDone,
-		// as today" -- unchanged by step 4). wakeSession's own generic
-		// on-success increment (doc: "failed Drains do not consume the web
-		// auto-turn cap", the NEW rule for the plain async/delegation
-		// category) would double-count this SAME wake if not suppressed.
-		ctx = context.WithValue(ctx, capAlreadyCountedCtxKey{}, true)
-		ctx = context.WithValue(ctx, autoTurnCapAppliesCtxKey{}, true)
+		// The bound is bumped ONCE, synchronously, here (before the wake's
+		// goroutine spawns), so a burst of near-simultaneous completions is
+		// bounded deterministically: exactly maxConsecutiveAutoResumes
+		// submissions per human message. The launch predicate does not
+		// re-check the counter (R2B-16).
 		go func() {
 			// Re-check trigger (iii): a job owned by this session just
 			// became terminal and this goroutine is the delivery it woke.
@@ -166,7 +158,7 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 			// wakeSession returns, so the release cannot fire in the window
 			// between "job done" and "child claimed its next turn".
 			defer c.noteSubAgentChildRunEnded(sessionID)
-			_ = c.wakeSession(ctx, id, true)
+			_ = c.wakeSession(ctx, sessionID, true)
 		}()
 		return
 	}

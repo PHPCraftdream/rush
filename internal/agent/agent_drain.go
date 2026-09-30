@@ -40,7 +40,6 @@ func newDrainCall(base SessionAgentCall) SessionAgentCall {
 	base.FromDurableQueue = false
 	base.FailIfSessionBusy = false
 	base.onQueueResolved = nil
-	base.onDrainTurnStarting = nil
 	return base
 }
 

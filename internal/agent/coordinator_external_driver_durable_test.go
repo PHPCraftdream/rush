@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -81,7 +82,7 @@ func (f *foreignDriverFx) inRecheckSet(id string) bool {
 // foreign driver the policy refuses, no provider call happens, and the session
 // is parked in the recheck set exactly when reaction debt exists.
 //
-// Revert-check: remove the foreign-driver branch from sessionDrainPolicy --
+// Revert-check: remove the foreign-driver branch from drainPolicy --
 // the wake submits a Drain and the provider is called.
 func TestSessionDrainPolicy_ForeignDriver_NoDrainParkedWhileDebt(t *testing.T) {
 	t.Parallel()
@@ -92,10 +93,9 @@ func TestSessionDrainPolicy_ForeignDriver_NoDrainParkedWhileDebt(t *testing.T) {
 		f := newForeignDriverFx(t, "foreign-no-debt")
 		require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
-		allowed, counted, err := f.coord.sessionDrainPolicy(ctx, f.sessID)
+		allowed, err := policyAllowed(f.coord, ctx, f.sessID)
 		require.NoError(t, err)
 		require.False(t, allowed)
-		require.False(t, counted)
 		require.False(t, f.inRecheckSet(f.sessID), "without debt there is nothing to retry later")
 	})
 
@@ -105,7 +105,7 @@ func TestSessionDrainPolicy_ForeignDriver_NoDrainParkedWhileDebt(t *testing.T) {
 		f.claimAndFinish(t, ctx, "call-1") // pending, wake=1
 		require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
-		require.NoError(t, f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true))
+		require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true))
 
 		require.Zero(t, f.requests.Load(), "no reaction turn may start in a process that does not drive the session")
 		require.True(t, f.inRecheckSet(f.sessID), "debt must keep the session in the 60s recheck set")
@@ -120,7 +120,7 @@ func TestSessionDrainPolicy_ForeignDriver_NoDrainParkedWhileDebt(t *testing.T) {
 // turn start, but decideDrainTurn refuses the provider turn: notices are
 // transferred, nothing is reacted to, and the debt stays for the driver.
 //
-// Revert-check: remove the foreign-driver branch from sessionDrainPolicy --
+// Revert-check: remove the foreign-driver branch from drainPolicy --
 // the Drain calls the provider and marks the debt reacted.
 func TestDecideDrainTurn_ForeignDriver_TransferOnly(t *testing.T) {
 	t.Parallel()
@@ -156,14 +156,18 @@ func TestSessionDrainPolicy_OwnLoopNotBlocked(t *testing.T) {
 	require.NoError(t, f.store.ClaimSessionDriver(ctx, f.sessID)) // durable row, own host
 	require.False(t, f.ledger.isExternalDriver(f.sessID), "precondition: in-memory marker not set")
 
-	allowed, _, err := f.coord.sessionDrainPolicy(ctx, f.sessID)
+	allowed, err := policyAllowed(f.coord, ctx, f.sessID)
 	require.NoError(t, err)
 	require.True(t, allowed, "the loop's own durable marker must not block its own turns")
 }
 
 // TestSessionDrainPolicy_DriverMarkerUnreadable: a marker read error fails
-// CLOSED in the web coordinator (parked for the 60s pass) and OPEN in a CLI
-// coordinator (no recheck ticker).
+// CLOSED for every coordinator (web and CLI alike -- there is no persistentMode
+// split any more): the policy refuses, names the read error and asks for a
+// re-check tick, and a wake with debt parks the session in the recheck set.
+//
+// Revert-check: answering "allow" on the marker read error (the old CLI
+// fail-open) turns the cli case red.
 func TestSessionDrainPolicy_DriverMarkerUnreadable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -175,24 +179,23 @@ func TestSessionDrainPolicy_DriverMarkerUnreadable(t *testing.T) {
 		return f
 	}
 
-	t.Run("web_fails_closed", func(t *testing.T) {
-		t.Parallel()
-		f := broken(t)
-		f.coord.persistentMode.Store(true)
-		allowed, _, err := f.coord.sessionDrainPolicy(ctx, f.sessID)
-		require.NoError(t, err)
-		require.False(t, allowed)
-		require.True(t, f.inRecheckSet(f.sessID), "the 60s pass must retry")
-	})
+	for _, mode := range []string{"web", "cli"} {
+		t.Run(mode+"_fails_closed", func(t *testing.T) {
+			t.Parallel()
+			f := broken(t)
+			f.coord.persistentMode.Store(mode == "web")
+			f.claimAndFinish(t, ctx, "call-1")
 
-	t.Run("cli_fails_open", func(t *testing.T) {
-		t.Parallel()
-		f := broken(t)
-		allowed, _, err := f.coord.sessionDrainPolicy(ctx, f.sessID)
-		require.NoError(t, err)
-		require.True(t, allowed, "a CLI coordinator keeps the existing fail-open")
-		require.False(t, f.inRecheckSet(f.sessID))
-	})
+			v := f.coord.drainPolicy(ctx, f.sessID)
+			require.Equal(t, drainDeferred, v.kind)
+			require.True(t, v.recheck)
+			require.Error(t, v.err)
+
+			require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true))
+			require.Zero(t, f.requests.Load(), "an unreadable policy must never start a turn")
+			require.True(t, f.inRecheckSet(f.sessID), "the tick must retry")
+		})
+	}
 }
 
 // TestClaimExternalDriver_DurableClaimAndRefusal: the claim writes the durable
@@ -250,4 +253,30 @@ func TestReleaseExternalDriver_DurableReleasedEvenWhenNonPersistent(t *testing.T
 	require.NoError(t, err)
 	require.False(t, foreign, "the durable marker must be gone")
 	require.True(t, f.ledger.isExternalDriver(f.sessID), "C4: the in-memory marker of a non-persistent coordinator stays")
+}
+
+// TestClaimExternalDriver_StartsRecheckTicker: a `rush run` claims its session
+// through ClaimExternalDriver, which also starts the same 60s pass the web
+// process runs (recheck set, parked delegations, maintenance): the CLI root
+// itself is a hint-only no-op for it, but its delegated children's retries
+// ride it. CancelAll stops it.
+//
+// Revert-check: dropping StartRecheckTicker from ClaimExternalDriver leaves
+// recheckStop nil and this test red.
+func TestClaimExternalDriver_StartsRecheckTicker(t *testing.T) {
+	ctx := context.Background()
+	f := newForeignDriverFx(t, "claim-starts-ticker")
+	f.coord.currentAgent = &mockSessionAgent{}
+	require.Nil(t, f.coord.recheckStop, "precondition: no ticker before the claim")
+
+	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
+	require.NotNil(t, f.coord.recheckStop, "the claim starts the recheck pass")
+	done := f.coord.recheckDone
+
+	f.coord.CancelAll()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CancelAll must stop the ticker the claim started")
+	}
 }

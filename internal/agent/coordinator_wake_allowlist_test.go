@@ -114,7 +114,8 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	// (what the removed `defer Clear` used to do at the end of the first turn).
 	spy.ClearSessionRunAllowlist("child-1")
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, true)
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 
 	spy.mu.Lock()

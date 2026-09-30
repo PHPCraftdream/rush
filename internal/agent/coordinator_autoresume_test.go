@@ -6,7 +6,6 @@ package agent
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +13,6 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -274,92 +272,10 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 
 	var err error
 	require.NotPanics(t, func() {
-		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, true)
+		require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-1", "manual_test_notice", "owed", true, ""))
+		err = coord.wakeSession(t.Context(), "sess-1", true)
 	})
 	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
-}
-
-// TestWakeSession_RunErrorIsVisibleNotDebug pins ASYNC-09: a wake whose Run
-// attempt fails after the underlying fact was already committed must
-// produce a visible marker, not just a Debug log line nobody sees. Step 3
-// changed WHERE that marker lands: wakeSession no longer persists anything
-// itself, so the marker is a durable session_notices row (kind
-// NoticeKindWakeFailed, wake=0), not a second InjectMessage call. Step 4
-// (doc sec.3.4 "closing debt by failure") gates the marker on the debt
-// snapshot captured before the turn ran being non-empty -- this test seeds
-// one wake=1 session_notices row so settle-by-failure has a real row to
-// close.
-//
-// W-DRAIN item 1 fix (docs/reviews/2026-09-29-async-phase4-round1.md B5/C3):
-// the runFunc error used to be assert.AnError, a generic non-provider-shaped
-// error -- classifyProviderError's OLD default case treated any such
-// unrecognized error as classTerminal, settling immediately. That default
-// was ITSELF the bug item 1 fixes: a DB error in a Drain's turn-start
-// preamble is equally "a generic unrecognized error" and must NOT settle
-// debt (docs/reviews' explicit "DB error in the preamble ... must not
-// settle debt or write a marker"). settleOrRetryDrainFailure now only
-// terminal-classifies a REAL provider-shaped error (isProviderClassifiable)
-// when no per-attempt evidence is available (this mock never wires
-// OnAssistantMessageCreated) -- a bare *fantasy.ProviderError with a 400
-// status is the correct fixture for "ASYNC-09: an unrecoverable failure
-// produces a visible marker", not a generic error.
-//
-// Revert-check performed: removed the persistWakeFailedMarker call from
-// settleAndMark -- this test FAILED (ListSessionNotices returned only the
-// seeded row, no marker) -- restored the call, re-ran, passed (two rows: the
-// seeded one now reacted_failed=1, plus a "wake_failed" one containing
-// "call-2").
-func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
-	agent := &mockSessionAgent{
-		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			return nil, &fantasy.ProviderError{StatusCode: http.StatusBadRequest, Message: "boom"}
-		},
-	}
-	env := testEnv(t)
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.subAgentDrivers.register("sess-2", subAgentDriver{agent: agent})
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
-	coord.asyncJobs.coord = coord
-	// A generic, unclassified kind -- deliberately NOT one of the four named
-	// NoticeKind* constants: "supervision"/"timeout_wake_only" would VOID on
-	// pull (sessionNoticeVoidCondition, notice_pull.go) since this fixture
-	// has no other running row in scope; "bg_shell_done" would instead be
-	// swept up by sessionDrainPolicy's OWN bg-shell-only refusal gate (this
-	// fixture's coordinator has no cfg, i.e. AutoResumeOnJobDone reads as
-	// off), refusing the turn before the mock ever runs -- neither is what
-	// this test is about (ASYNC-09's visible-marker guarantee, independent
-	// of notice kind).
-	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-2", "manual_test_notice", "seeded debt", true, ""))
-	// W-DRAIN task A (C18/B-dev1 fix): captureDebtSnapshot now scopes to
-	// delivery='done' only -- a real Drain's OWN turn-start pull always runs
-	// BEFORE the provider call that might then fail, so by the time a REAL
-	// attempt fails, a row it actually saw is already 'done'. A bare
-	// InsertSessionNotice alone leaves the row 'pending' (nothing pulled it
-	// yet), which this mock's runFunc never does either -- pre-pull it here
-	// to reproduce the realistic pre-attempt state a real turn's preamble
-	// would already have produced, matching every other settle-by-failure
-	// fixture in this package (see newSettleFixture).
-	_, pullErr := coord.asyncJobs.store.PullSessionNotices(t.Context(), env.messages, "sess-2", buildSessionNoticeMessageParams)
-	require.NoError(t, pullErr)
-
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, true)
-	require.Error(t, err)
-
-	notices, listErr := coord.asyncJobs.store.ListSessionNotices(t.Context(), "sess-2")
-	require.NoError(t, listErr)
-	require.Len(t, notices, 2, "the seeded debt row plus one durable wake-failed marker")
-	var marker, seeded session.SessionNoticeRow
-	for _, n := range notices {
-		if n.Kind == "wake_failed" {
-			marker = n
-		} else {
-			seeded = n
-		}
-	}
-	require.Equal(t, "wake_failed", marker.Kind)
-	require.Contains(t, marker.Text, "call-2")
-	require.Equal(t, "seeded debt", seeded.Text)
 }
 
 // TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy pins the fix for
@@ -396,7 +312,8 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, true)
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")
 }

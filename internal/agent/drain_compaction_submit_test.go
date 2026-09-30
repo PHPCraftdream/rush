@@ -13,10 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -210,71 +207,14 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	}
 
 	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindSupervision, "check-in", true, ""))
-	pulled, _ := agent.pullPendingNotices(ctx, sess.ID)
+	pulled := agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Equal(t, 2, tickCount(), "a supervision check-in must not reset its own backoff")
 
 	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindBGShellDone, "shell done", true, ""))
-	pulled, _ = agent.pullPendingNotices(ctx, sess.ID)
+	pulled = agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Zero(t, tickCount(), "any other notice moving into history is progress")
-}
-
-// TestRunInternal_DrainRetrySkipsPullGate: a Drain turn (CLI loop,
-// WithDrainCall) that reached the provider and failed transiently is
-// retried with drainTurnCommitted set -- its notice was already pulled by
-// the first attempt, so the retry must not re-apply the turn-start gate and
-// silently skip the provider.
-//
-// Revert-check performed: removed `trackCall.drainTurnCommitted =
-// trackCall.IsDrain` from runInternal's retry loop -- this test FAILED (the
-// retry attempt carried drainTurnCommitted=false). Restored; re-ran, passed.
-func TestRunInternal_DrainRetrySkipsPullGate(t *testing.T) {
-	const providerID = "test-drain-retry"
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
-
-	env := testEnv(t)
-	cfg, err := config.Init(env.workingDir, "", false)
-	require.NoError(t, err)
-	cfg.Config().Providers.Set(providerID, config.ProviderConfig{
-		ID: providerID, Type: "openai",
-		Models: []catwalk.Model{{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096}},
-	})
-	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
-	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
-	cfg.Config().Models[config.SelectedModelTypeFast] = sel
-	coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages, modelCache: csync.NewMap[string, cachedModelPair]()}
-
-	sess, err := env.sessions.Create(t.Context(), "drain-retry")
-	require.NoError(t, err)
-
-	var calls []SessionAgentCall
-	coord.currentAgent = newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-		calls = append(calls, call)
-		if len(calls) == 1 {
-			row, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
-				Role:  message.Assistant,
-				Parts: []message.ContentPart{message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle}},
-			})
-			require.NoError(t, err)
-			call.OnAssistantMessageCreated(row.ID)
-			return nil, context.Canceled
-		}
-		return agentResultWithText("reacted"), nil
-	})
-
-	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
-	require.NoError(t, err)
-	res, err := coord.runInternal(WithDrainCall(t.Context()), sess.ID, "", pinned)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-	require.Len(t, calls, 2)
-	require.True(t, calls[0].IsDrain)
-	require.False(t, calls[0].drainTurnCommitted, "the first attempt still gates on its own pull")
-	require.True(t, calls[1].IsDrain)
-	require.True(t, calls[1].drainTurnCommitted, "the retry must not re-gate on a pull its first attempt already consumed")
 }
 
 // TestDrain_CommittedRetryReachesProviderWithNothingToPull: the runTurn side
@@ -439,26 +379,18 @@ func TestReminderBeforeTail(t *testing.T) {
 	require.Equal(t, withReminder, reminderBeforeTail(withReminder, 0), "k=0: untouched")
 }
 
-// TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop pins B13: a
-// no-turn Drain's markNoTurnDrainRelease must fire ONLY for the release that
-// is actually its own -- not when a real call was already queued behind it
-// and runs next inside the SAME Run() loop (drainOrReleaseMerged's ok==true
-// branch), before any onSessionIdle fires. Before the fix the marker was
-// written unconditionally, so it could still be sitting there (and,
-// depending on the hint counter, suppress onSessionIdleHook's re-launch
-// check) by the time the REAL turn's own eventual release consults it --
-// even though that release has nothing to do with the no-turn Drain.
+// TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop pins B13: a no-turn Drain
+// (accounted before its release) must not swallow a real call already queued
+// behind it: drainOrReleaseMerged hands that call to the SAME Run() loop as
+// its next turn.
 //
 // runTurnToolsSnapshotSeam fires synchronously inside runTurn, strictly
-// before the notice pull / decideDrainTurn gate, so it deterministically
-// queues the second call into the SAME mailbox generation without any
-// timing race.
+// before the notice pull / commit decision, so it deterministically queues
+// the second call into the SAME mailbox generation without any timing race.
 //
-// Revert-check performed: restored the old unconditional
-// `markNoTurnDrainRelease` call (before drainOrReleaseMerged, regardless of
-// ok) -- this test FAILED (wasNoTurnDrain reported true after the real turn
-// ran). Reapplied the fix; re-ran, passed.
-func TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop(t *testing.T) {
+// Revert-check: making the no-turn branch release the mailbox without
+// draining (dropping the queued call) leaves result nil and this test red.
+func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -510,7 +442,4 @@ func TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, result, "the queued real call must run as the loop's next turn")
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "the real call reached the provider exactly once")
-
-	wasNoTurnDrain, _ := ledger.consumeNoTurnDrainRelease(sess.ID)
-	require.False(t, wasNoTurnDrain, "the no-turn Drain's marker must not survive onto the real turn's own release")
 }

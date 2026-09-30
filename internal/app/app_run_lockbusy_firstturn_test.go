@@ -75,9 +75,8 @@ func newLockBusyCLITestApp(t *testing.T, handler http.HandlerFunc) (application 
 // TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast is the core
 // regression test.
 //
-// Revert-check performed: removed the `if firstTurn { return final, err }`
-// branch from app_run_async.go's lock-busy handling (leaving the general
-// bounded-retry path to run for the first turn too) -- this test's
+// Revert-check performed: routing the first turn through the Drain refusal
+// budget (retrying instead of failing fast) -- this test's
 // `require.Less(t, elapsed, ...)` FAILED: the call took the full shrunk
 // cliLockBusyRetryOverallLimit instead of returning immediately, and a real
 // (non-shrunk) build would have taken the full 30s instead of the pre-phase-4
@@ -89,10 +88,9 @@ func newLockBusyCLITestApp(t *testing.T, handler http.HandlerFunc) (application 
 // retry regression this pins takes the whole limit -- the two stay far apart
 // at any load.
 func TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast(t *testing.T) {
-	origPause, origLimit := cliLockBusyRetryPause, cliLockBusyRetryOverallLimit
-	cliLockBusyRetryPause = 20 * time.Millisecond
+	origLimit := cliLockBusyRetryOverallLimit
 	cliLockBusyRetryOverallLimit = 4 * time.Second
-	t.Cleanup(func() { cliLockBusyRetryPause, cliLockBusyRetryOverallLimit = origPause, origLimit })
+	t.Cleanup(func() { cliLockBusyRetryOverallLimit = origLimit })
 
 	application, sessionID, dataDir := newLockBusyCLITestApp(t, func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("provider must never be called: the session lock refusal must be caught before any turn runs")

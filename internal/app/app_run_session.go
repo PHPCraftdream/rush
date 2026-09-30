@@ -108,3 +108,14 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		return app.Sessions.Create(ctx, agent.DefaultSessionName)
 	}
 }
+
+// resolveRunSession resolves the session of one ExecuteRun. A `rush run` loop's
+// Drain iteration (drainTurn) continues the session its first turn already
+// resolved and claimed: it is read back as is, without the "cannot continue a
+// child session" refusal, which guards only what an operator may start.
+func (app *App) resolveRunSession(ctx context.Context, drainTurn bool, continueSessionID string, useLast bool) (session.Session, error) {
+	if drainTurn && continueSessionID != "" {
+		return app.Sessions.Get(ctx, continueSessionID)
+	}
+	return app.resolveSession(ctx, continueSessionID, useLast)
+}

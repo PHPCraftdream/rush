@@ -6,7 +6,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -135,43 +137,53 @@ func shouldRunReviewerPass(role config.SelectedModelType, cfg *config.Config) bo
 	return ok && reviewerModelCfg.Model != ""
 }
 
-// reviewerPassScopeOpenRetries bounds how many times
-// reviewerPassScopeStillOpen retries a failed ScopeOpen read before giving
-// up and defaulting to "open" (skip the reviewer pass) -- C16 fix (docs/
-// reviews/2026-09-29-async-phase4-round1.md): doc sec.3.5 requires a DB read
-// error to retry with a pause, never a silent skip on the very first error.
+// reviewerPassScopeOpenRetries bounds how many times reviewerPassBlocked
+// retries a failed CLIScope read before giving up and defaulting to
+// "blocked" (skip the reviewer pass) -- C16 fix: doc sec.3.5 requires a DB
+// read error to retry with a pause, never a silent skip on the very first
+// error.
 const reviewerPassScopeOpenRetries = 3
 
-// reviewerPassScopeStillOpen reports whether sessionID's scope (a live async
-// job, an open delegation, or outstanding reaction debt) is still open --
-// which must block the automatic reviewer pass from opening a new phase on
-// a session doing something else. Retries a DB read error up to
-// reviewerPassScopeOpenRetries times (paced by cliDBRetryPause, mirroring
-// the CLI loop's own waitForNextCLITurn retry cadence) instead of either
-// failing open on the first error or looping forever; persistent failure
-// still defaults to "open" (skip the reviewer pass) -- running an extra,
-// possibly-conflicting reviewer phase while scope state is genuinely
-// unknown is the riskier of the two guesses.
+// reviewerPassBlocked reports whether the automatic reviewer pass must not
+// open a new phase on sessionID: it has running work, or owes (Owed), is
+// retrying (Paced) or gave up on (Stuck) a reaction turn. Debt the policy
+// defers (DrainDeferred: nothing will ever act on it) does not block. Every
+// skip is one stderr line, so a silently missing review is never a mystery.
+// A DB read error retries reviewerPassScopeOpenRetries times (paced by
+// cliDBRetryPause); persistent failure blocks -- running a possibly-conflicting
+// reviewer phase while the scope is unknown is the riskier guess.
 //
 // Only called when every cheap, in-memory gate (ExecuteRun's own error,
-// credentials, cancellation, shouldRunReviewerPass) already passed -- C16's
-// second half: ScopeOpen runs recovery writes and exclusive lock probes, so
-// a run with no reviewer configured (or an explicit --role, or an SDK
-// credentialed call) must never pay for it.
-func (app *App) reviewerPassScopeStillOpen(ctx context.Context, source agent.ReactionDebtSource, sessionID string) bool {
+// credentials, cancellation, shouldRunReviewerPass) already passed.
+func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string) bool {
+	var lastErr error
 	for attempt := 1; attempt <= reviewerPassScopeOpenRetries; attempt++ {
-		open, err := source.ScopeOpen(ctx, sessionID)
+		state, err := source.CLIScope(ctx, sessionID)
 		if err == nil {
-			return open
+			why := ""
+			switch {
+			case state.WorkOpen:
+				why = "it still has running work"
+			case state.Drain == agent.DrainOwed:
+				why = "it owes a reaction turn"
+			case state.Drain == agent.DrainPaced:
+				why = "a failed reaction turn is being retried"
+			case state.Drain == agent.DrainStuck:
+				why = "a notice it stopped reacting to is still pending"
+			}
+			if why != "" {
+				fmt.Fprintf(os.Stderr, "rush run: reviewer pass skipped for session %q: %s\n", sessionID, why)
+				return true
+			}
+			return false
 		}
+		lastErr = err
 		slog.Warn("reviewer pass: scope check failed; retrying", "session_id", sessionID, "attempt", attempt, "err", err)
-		if attempt == reviewerPassScopeOpenRetries {
-			break
-		}
-		if !sleepOrCtxDone(ctx, cliDBRetryPause) {
+		if attempt == reviewerPassScopeOpenRetries || !sleepOrCtxDone(ctx, cliDBRetryPause) {
 			break
 		}
 	}
+	fmt.Fprintf(os.Stderr, "rush run: reviewer pass skipped for session %q: its scope could not be read (%v)\n", sessionID, lastErr)
 	return true
 }
 
