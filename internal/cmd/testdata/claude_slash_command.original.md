@@ -450,7 +450,7 @@ handle and refuses. Use:
 ```
 rush sessions kill <id>            # kills holder PID + removes lock
 rush sessions kill <id> --wait 10s # extra time for a slow holder
-rush sessions reset <id> --force   # same + wipe message history
+rush sessions reset <id> --force   # same + wipe message history (refuses while live work exists: cancel first)
 rush sessions reap                 # sweep ALL orphan locks at once
 ```
 

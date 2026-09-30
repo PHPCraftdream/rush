@@ -34,7 +34,7 @@ Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
 func init() {
 	sessionsListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
 
-	sessionsResetCmd.Flags().Bool("force", false, "Also kill any process holding the session lock and remove the lock file")
+	sessionsResetCmd.Flags().Bool("force", false, "Also kill any process holding the session lock (the lock file stays); reset still refuses while the session has live work")
 
 	sessionsShowCmd.Flags().Bool("json", false, "Emit structured JSON instead of text")
 	sessionsShowCmd.Flags().Bool("with-messages", false, "Include all messages in the output")
