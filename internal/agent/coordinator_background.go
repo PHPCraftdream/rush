@@ -136,11 +136,13 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 			"consecutive", c.consecutiveResume(sessionID))
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
-		// The bound is bumped ONCE, synchronously, here (before the wake's
-		// goroutine spawns), so a burst of near-simultaneous completions is
-		// bounded deterministically: exactly maxConsecutiveAutoResumes
-		// submissions per human message. The launch predicate does not
-		// re-check the counter (R2B-16).
+		// The slot was spent ONCE, synchronously, at admission (before the
+		// wake's goroutine spawns), so a burst of near-simultaneous
+		// completions is bounded deterministically: at most
+		// maxConsecutiveAutoResumes completions per human message launch a
+		// turn of their own. The launch decision of this wake does not
+		// re-check the counter (R2B-16); a paced or refused launch keeps its
+		// slot and submits nothing.
 		c.recheckWakes.Add(1) // waitRecheckWakes covers this detached wake too
 		go func() {
 			defer c.recheckWakes.Done()

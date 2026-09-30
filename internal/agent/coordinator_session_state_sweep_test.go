@@ -66,7 +66,7 @@ func TestRecheckPass_FreesIdleSessionState(t *testing.T) {
 	f.ledger.bumpHint("never-had-a-session") // an idle entry, no jobs, zero gate
 	f.coord.bumpConsecutiveResume(gone.ID)
 	f.coord.autoResumeMu.Lock()
-	f.coord.bgShellOverCap = map[string]int{gone.ID: 1, f.sessID: 1}
+	f.coord.bgShellOverCap = map[string]map[int64]struct{}{gone.ID: {1: {}}, f.sessID: {2: {}}}
 	f.coord.autoResumeMu.Unlock()
 	f.coord.suspendAutoResume(gone.ID)
 	f.coord.bumpConsecutiveResume(f.sessID)
@@ -77,10 +77,10 @@ func TestRecheckPass_FreesIdleSessionState(t *testing.T) {
 
 	require.False(t, ledgerEntryIDs(f.ledger)["never-had-a-session"], "an idle ledger entry is freed")
 	require.Zero(t, f.coord.consecutiveResume(gone.ID), "a deleted session's cap counter is freed")
-	require.Zero(t, f.coord.bgShellOverCapCount(gone.ID), "a deleted session's over-cap count is freed")
+	require.Zero(t, f.coord.bgShellOverCapCount(gone.ID), "a deleted session's over-cap ids are freed")
 	require.False(t, f.coord.autoResumeSuspended(gone.ID), "a deleted session's suspension is freed")
 	require.EqualValues(t, 1, f.coord.consecutiveResume(f.sessID), "a live session keeps its cap counter")
-	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "a live session keeps its over-cap count")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "a live session keeps its over-cap ids")
 	require.True(t, f.coord.autoResumeSuspended(f.sessID), "a live session keeps Stop's suspension")
 }
 

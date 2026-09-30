@@ -112,7 +112,7 @@ func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
 	require.Contains(t, v.reason, "cap reached")
 
 	f.coord.ResetAutoResumeCounter(f.sessID)
-	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a human message clears the over-cap count too")
+	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a human message clears the over-cap ids too")
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, false))
 	require.EqualValues(t, maxConsecutiveAutoResumes+1, runs.runs.Load(), "a human message re-arms auto-resume")
 }
@@ -164,25 +164,32 @@ func TestBGShellCap_SpentSlotsBehindAPauseAreRetriedAndClosed(t *testing.T) {
 }
 
 // bgShellCapDeferred defers exactly when every slot is spent and the ENTIRE
-// debt is bg-shell rows none of which holds a slot (rows <= over-cap count).
+// debt is bg-shell rows every one of which is an over-cap completion (its id is
+// in the set).
 //
-// Revert-check: comparing with `<` instead of `<=` turns the "equal" case red;
-// dropping the bgOnly guard defers the mixed-debt case; deferring before the
-// cap is reached turns the first case red.
-func TestBGShellCapDeferred_OnlyWhenNoDebtRowHoldsASlot(t *testing.T) {
+// Revert-check: deferring when ANY row is over-cap (instead of every row) turns
+// the "one row holds a slot" case red; dropping the bgOnly guard defers the
+// mixed-debt case; deferring before the cap is reached turns the first case
+// red; comparing sizes without the prune (the round-4 rule) turns the "gone
+// over-cap row" case red.
+func TestBGShellCapDeferred_OnlyWhenEveryDebtRowIsOverCap(t *testing.T) {
 	cases := []struct {
 		name         string
-		slots, over  int
+		slots        int
 		rows         int
+		overIdx      []int // indexes of the debt rows recorded as over-cap
+		gone         int   // recorded over-cap ids whose rows are no longer in the debt
 		jobDebt      bool
 		wantDeferred bool
 	}{
-		{"cap not reached", maxConsecutiveAutoResumes - 1, 0, 3, false, false},
-		{"every row is over the cap", maxConsecutiveAutoResumes, 3, 3, false, true},
-		{"one row holds a slot", maxConsecutiveAutoResumes, 2, 3, false, false},
-		{"only slot rows", maxConsecutiveAutoResumes, 0, 5, false, false},
-		{"no debt at all", maxConsecutiveAutoResumes, 0, 0, false, false},
-		{"job debt alongside an over-cap row", maxConsecutiveAutoResumes, 1, 1, true, false},
+		{"cap not reached", maxConsecutiveAutoResumes - 1, 3, []int{0, 1, 2}, 0, false, false},
+		{"every row is over the cap", maxConsecutiveAutoResumes, 3, []int{0, 1, 2}, 0, false, true},
+		{"one row holds a slot", maxConsecutiveAutoResumes, 3, []int{1, 2}, 0, false, false},
+		{"the OLD row holds a slot, newer ones are over the cap", maxConsecutiveAutoResumes, 2, []int{1}, 0, false, false},
+		{"an over-cap row that left the debt hides no slot row", maxConsecutiveAutoResumes, 1, nil, 1, false, false},
+		{"only slot rows", maxConsecutiveAutoResumes, 5, nil, 0, false, false},
+		{"no debt at all", maxConsecutiveAutoResumes, 0, nil, 0, false, false},
+		{"job debt alongside an over-cap row", maxConsecutiveAutoResumes, 1, []int{0}, 0, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,12 +198,21 @@ func TestBGShellCapDeferred_OnlyWhenNoDebtRowHoldsASlot(t *testing.T) {
 			for range tc.slots {
 				f.coord.bumpConsecutiveResume(f.sessID)
 			}
-			f.coord.autoResumeMu.Lock()
-			f.coord.bgShellOverCap = map[string]int{f.sessID: tc.over}
-			f.coord.autoResumeMu.Unlock()
+			ids := make([]int64, 0, tc.rows)
 			for range tc.rows {
-				require.NoError(t, f.store.InsertSessionNotice(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, ""))
+				id, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
+				require.NoError(t, err)
+				ids = append(ids, id)
 			}
+			f.coord.autoResumeMu.Lock()
+			f.coord.bgShellOverCap = map[string]map[int64]struct{}{f.sessID: {}}
+			for _, i := range tc.overIdx {
+				f.coord.bgShellOverCap[f.sessID][ids[i]] = struct{}{}
+			}
+			for i := range tc.gone {
+				f.coord.bgShellOverCap[f.sessID][int64(9000+i)] = struct{}{}
+			}
+			f.coord.autoResumeMu.Unlock()
 			if tc.jobDebt {
 				f.seedDebt(ctx, "call-1", false)
 			}
@@ -233,7 +249,7 @@ func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) 
 // The completion's row insert and its slot decision are ONE step for the cap
 // check: the arrival holds bgArrival from before the insert to after the
 // decision, so a check never sees a row whose slot decision (a slot, or an
-// over-cap count) has not been made yet -- it would take an over-cap row for a
+// recorded over-cap id) has not been made yet -- it would take an over-cap row for a
 // slot row and launch it.
 //
 // Revert-check: dropping the gate from persistBGShellCompletion leaves it free
@@ -261,36 +277,40 @@ func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T
 }
 
 // claimAutoResume spends a slot only while slots remain, and counts as over-cap
-// exactly the completions refused because every slot is spent (whatever else
+// (by row id) exactly the completions refused because every slot is spent (whatever else
 // would have refused them); a refusal with slots left (Stop, auto-resume off)
 // is not counted.
 //
-// Revert-check: dropping the over-cap increment turns the count assertions red;
+// Revert-check: dropping the over-cap record turns the count assertions red;
 // counting every refusal turns the "slots left" assertions red.
 func TestClaimAutoResume_CountsOnlyRefusalsForLackOfASlot(t *testing.T) {
 	f, _ := newBGShellCapFixture(t, "claim-over-cap", attemptFixtureOpts{})
 	sid := f.sessID
 
 	f.coord.suspendAutoResume(sid)
-	require.False(t, f.coord.claimAutoResume(sid), "Stop suspended automatic turns")
+	require.False(t, f.coord.claimAutoResume(sid, 1), "Stop suspended automatic turns")
 	require.Zero(t, f.coord.bgShellOverCapCount(sid), "a refusal with slots left is not over-cap")
 	f.coord.resetConsecutiveResume(sid)
 
 	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(false)
-	require.False(t, f.coord.claimAutoResume(sid), "auto-resume is off")
+	require.False(t, f.coord.claimAutoResume(sid, 2), "auto-resume is off")
 	require.Zero(t, f.coord.bgShellOverCapCount(sid))
 	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(true)
 
-	for range maxConsecutiveAutoResumes {
-		require.True(t, f.coord.claimAutoResume(sid))
+	for i := range maxConsecutiveAutoResumes {
+		require.True(t, f.coord.claimAutoResume(sid, int64(10+i)))
 	}
-	require.False(t, f.coord.claimAutoResume(sid))
-	require.False(t, f.coord.claimAutoResume(sid))
+	require.False(t, f.coord.claimAutoResume(sid, 20))
+	require.False(t, f.coord.claimAutoResume(sid, 21))
 	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid))
+	require.False(t, f.coord.claimAutoResume(sid, 21), "the same row is one id")
+	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid))
+	require.False(t, f.coord.claimAutoResume(sid, 0), "a completion with no row (insert failed) is refused")
+	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid), "and records nothing: there is no row to defer")
 	require.Equal(t, maxConsecutiveAutoResumes, f.coord.consecutiveResume(sid), "the slot count stops at the cap")
 
 	f.coord.suspendAutoResume(sid)
-	require.False(t, f.coord.claimAutoResume(sid))
+	require.False(t, f.coord.claimAutoResume(sid, 22))
 	require.EqualValues(t, 3, f.coord.bgShellOverCapCount(sid), "a suspended completion after the cap is still over it")
 }
 

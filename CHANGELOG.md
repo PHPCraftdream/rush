@@ -371,7 +371,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   that finished while an earlier reaction turn was paused or refused has
   already used its slot: its notice is still retried by the re-check and
   closed after three attempts like any other, and only completions that
-  arrive after all five slots are used wait for your next message.
+  arrive after all five slots are used wait for your next message. The same
+  holds for a reaction turn queued behind the last permitted one: a shell
+  finishing while that turn runs no longer gets a sixth turn. Over-cap
+  completions are now tracked by their saved notice, so a completion whose
+  notice could not be saved (a locked database) no longer hides a notice that
+  is still owed, and an older owed notice is retried even after newer ones
+  were answered.
 - **Per-session bookkeeping is freed in a long-lived web process.** The 60s
   pass drops the idle in-memory entries of sessions with no work (also a
   retry pause that has already passed), and the auto-resume state of deleted
