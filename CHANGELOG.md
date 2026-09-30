@@ -379,13 +379,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the
-  next root turn; the reviewer pass runs once, after all of that work has
-  drained, on the final text (see the reviewer bullet below).
+  next root turn; the reviewer pass runs once, when that work has drained and
+  the scope first closes, on the final text (work the review turn itself starts
+  is waited on too: see the review round 4 bullet below).
 - **`rush run` reaction turns no longer break the run's answer, totals or
-  session (review round 3).** The automatic reviewer pass runs once, after the
-  last reaction turn, on the final text, and its verdict is the run's answer
-  (it used to be started inside the last reaction turn, come back as a
-  "queued" no-turn and leave the first turn's text and usage as the result).
+  session (review round 3).** The automatic reviewer pass runs once, when the
+  scope first closes (after the reaction turns so far), on the final text, and
+  its verdict is the run's answer unless reaction turns to work it started
+  follow it -- the answer is always the last completed turn (it used to be
+  started inside the last reaction turn, come back as a "queued" no-turn and
+  leave the first turn's text and usage as the result).
   A first turn that fails before it is launched (a session-setup write, the
   pending-work drain) ends the run with that error instead of being hidden by
   a later reaction. A reaction turn that committed right before Ctrl-C or
@@ -408,11 +411,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `delta_cost_usd` (and `RUSH_COST_USD` for `--on-finish`) is the session's cost
   between the driver claim and the exit, so a delegated child's spend, charged
   to the parent between its turns, and a human turn on the same session are
-  counted (the `--max-cost` error and the envelope now agree); tokens stay the
-  sum of the turns' last-snapshot deltas. `rush run --continue` resolves the
+  counted (`--max-cost` caps the session's total, and its error names that
+  total; the envelope reports this run's window, from the driver claim to the
+  exit -- the two differ when `--session` continues a session that already
+  had spend); tokens stay the sum of the turns' last-snapshot deltas. `rush run --continue` resolves the
   most recently updated top-level session (a worker's child session updated
   later is no longer taken for it); a CLI run on a coordinator that cannot drive
   the loop fails with an error instead of silently running one plain turn.
+- **`rush run`: `--no-supervision` / `--supervision-interval` cover the reviewer's
+  jobs, and cancel exits count a running child's spend (review round 5).** The
+  reviewer turn now carries the run's supervision options: since its jobs are
+  waited on, a `--no-supervision` run no longer gets check-in notices (and a
+  paid Drain on the reviewer model) for a long reviewer job, and
+  `--supervision-interval` applies to it. A refusal streak that ended when the
+  scope closed no longer counts against the first Drain refused after the
+  reviewer (it had made that refusal give up at once, without a "retrying"
+  line). On Ctrl-C, `--timeout` or a cap exit with a delegation still running,
+  the child's spend so far is charged to its parent (deepest first, delta-based
+  through `parent_cost_accounted`, so the later charge on shutdown adds only what
+  accrued after it) before the run's cost is read: `delta_cost_usd` and
+  `RUSH_COST_USD` include it, and `sessions cost` shows the same number. A live
+  `rush run` loop between turns (a paced retry after a failed reaction turn: no
+  session lock, no running row) is no longer reported at rest: `sessions why`
+  says `running` and names the loop's PID, `sessions list` shows `running`, and
+  the web session list sets `HasLiveOwnWork`, all from the durable driver marker
+  (host liveness, unknown counts as alive), read in one query for a whole list.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
