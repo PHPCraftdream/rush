@@ -165,8 +165,9 @@ func TestDrainAttempt_ShutdownIsExempt(t *testing.T) {
 	require.Zero(t, f.markers(ctx))
 }
 
-// A9b: cancelling the live turn (Stop, interrupt, `sessions cancel`) is not
-// evidence about the debt either.
+// A9b: a bare Cancel of the live turn with nothing queued (`sessions cancel`)
+// is not evidence about the debt either. Stop and an interrupt that hand the
+// session a human message are pinned by drain_handover_test.go.
 //
 // Revert-check: as A9a.
 func TestDrainAttempt_CancelTurnIsExempt(t *testing.T) {

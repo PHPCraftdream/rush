@@ -42,6 +42,7 @@ func (ts *turnStream) handleStreamFailure(
 		// paid attempt (accountDrainAttempt does not exempt it).
 		ts.att.stalled.Store(isWatchdogStall)
 		ts.att.turnCtxDone.Store(turnCtxDone)
+		ts.att.streamErr = err
 	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires

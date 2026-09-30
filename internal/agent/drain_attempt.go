@@ -111,7 +111,11 @@ type drainAttempt struct {
 	// only when this is true: net/http timeouts satisfy
 	// errors.Is(err, context.DeadlineExceeded) too.
 	turnCtxDone atomic.Bool
-	closed      bool
+	// streamErr is the error agent.Stream returned: runTurn hands a cancelled
+	// leg to the next queued call with a nil error, so the accounting reads
+	// the cause here.
+	streamErr error
+	closed    bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -141,6 +145,16 @@ func (a *sessionAgent) closeDrainAttempt(att *drainAttempt, turnErr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	a.asyncJobs.coord.accountDrainAttempt(ctx, att, turnErr)
+}
+
+// failure is the error the leg ended with: the turn loop's own error, else
+// the one agent.Stream returned (a cancelled leg handed to the next queued
+// call reports nil).
+func (att *drainAttempt) failure(turnErr error) error {
+	if turnErr != nil {
+		return turnErr
+	}
+	return att.streamErr
 }
 
 // operatorStop reports whether err is the turn's context ending under an
@@ -188,6 +202,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		return
 	}
 	sid := att.sessionID
+	turnErr = att.failure(turnErr)
 	turnCtxDone := att.turnCtxDone.Load()
 	switch att.outcome {
 	case drainNotAttempted:
