@@ -23,6 +23,16 @@ type ShutdownResult struct {
 	// exiting, but a long-lived host process must decide its own
 	// follow-up (e.g. db.ReleaseAll once it knows no writers remain).
 	//
+	// The phase-4 host lock is pinned the same way, with no in-process
+	// follow-up: the goroutines that outlive the grace (agent runs, pump
+	// workers, ledger executors) have only per-agent/per-job signals, no
+	// single one to wait on for all of them, so no moment exists at which
+	// releasing the lock is provably safe (A12). The rows this App's host
+	// had running stay `running` on a locked host, and a new App in the SAME
+	// process cannot recover them (the host id is still this process's own)
+	// until the process exits. A library caller that sees Forced must exit
+	// its process, as the CLI does.
+	//
 	// On the ShutdownAfterDrain path (the SDK's Close) the same holds,
 	// with one refinement: a caller-side drain that stalls past its
 	// grace period is cancelled first, and Forced reflects whether work
@@ -368,7 +378,10 @@ func (app *App) ShutdownWithResult() ShutdownResult {
 
 // Shutdown performs the same shutdown as ShutdownWithResult and discards
 // the result. Kept as the call-site-compatible entry point for the CLI's
-// many `defer a.Shutdown()` sites.
+// many `defer a.Shutdown()` sites. A caller that discards the result also
+// discards ShutdownResult.Forced: after a forced shutdown the DB and the host
+// lock stay pinned for the process's life, so a long-lived embedder should
+// use ShutdownWithResult and exit the process when Forced is set.
 func (app *App) Shutdown() {
 	app.ShutdownWithResult()
 }
