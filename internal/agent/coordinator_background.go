@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -127,17 +126,8 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 	stdout, stderr, _, runErr := sh.GetOutput()
 	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
-		insertCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := c.asyncJobs.store.InsertSessionNotice(insertCtx, sessionID, session.NoticeKindBGShellDone, summary, true, "")
-		cancel()
-		if err != nil {
-			slog.Error("failed to persist background-shell-done notice",
-				"session_id", sessionID, "shell_id", sh.ID, "err", err)
-		}
-	}
-
-	if c.claimAutoResume(sessionID) {
+	// The row and the slot decision are one step (persistBGShellCompletion).
+	if c.persistBGShellCompletion(sessionID, sh.ID, summary) {
 		// Autonomous idle-resume: start (or, if busy, queue) a Drain call
 		// over the just-persisted notice. The bound was spent by
 		// claimAutoResume (reset by any human message).
@@ -151,7 +141,9 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 		// bounded deterministically: exactly maxConsecutiveAutoResumes
 		// submissions per human message. The launch predicate does not
 		// re-check the counter (R2B-16).
+		c.recheckWakes.Add(1) // waitRecheckWakes covers this detached wake too
 		go func() {
+			defer c.recheckWakes.Done()
 			// Re-check trigger (iii): a job owned by this session just
 			// became terminal and this goroutine is the delivery it woke.
 			// Re-evaluate any delegation parked for this session once

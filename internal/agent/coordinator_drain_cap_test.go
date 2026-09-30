@@ -1,9 +1,10 @@
 // B7 (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN) and R2B-16: the
 // consecutive-auto-turn cap bounds ONLY the SDK background-shell auto-resume
 // (claimAutoResume spends one of maxConsecutiveAutoResumes per human message,
-// atomically, at submission); the launch policy never re-checks it. Stop's
-// (and a pending question's) suspension gates EVERY automatic turn through
-// its own state, separate from the counter.
+// atomically, at submission); a completion's own launch never re-checks it, and
+// a re-check defers only bg-shell-only debt (drain_bgcap_test.go). Stop's (and a
+// pending question's) suspension gates EVERY automatic turn through its own
+// state, separate from the counter.
 package agent
 
 import (
@@ -98,11 +99,15 @@ func TestResetAutoResumeCounter_ClearsStopAndCap(t *testing.T) {
 		coord.bumpConsecutiveResume(sess.ID)
 	}
 	coord.suspendAutoResume(sess.ID)
+	coord.autoResumeMu.Lock()
+	coord.bgShellOverCap = map[string]int{sess.ID: 2}
+	coord.autoResumeMu.Unlock()
 
 	coord.ResetAutoResumeCounter(sess.ID)
 
 	require.Zero(t, coord.consecutiveResume(sess.ID))
 	require.False(t, coord.autoResumeSuspended(sess.ID))
+	require.Zero(t, coord.bgShellOverCapCount(sess.ID), "the over-cap count is cleared with the slots")
 	allowed, err := policyAllowed(coord, ctx, sess.ID)
 	require.NoError(t, err)
 	require.True(t, allowed, "a human message must re-arm automatic turns")

@@ -78,7 +78,11 @@ func (c *coordinator) refreshAfterUnauthorized(ctx context.Context, providerID s
 	if err != nil {
 		return false
 	}
-	if err := c.retryAfterUnauthorized(ctx, providerCfg); err != nil {
+	// The refresh has its own budget, detached from ctx: a slow auth endpoint
+	// must not eat what the settle after it needs (R4B-3).
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainRefreshBudget())
+	defer cancel()
+	if err := c.retryAfterUnauthorized(refreshCtx, providerCfg); err != nil {
 		slog.Warn("401 on a Drain: credential refresh skipped", "provider", providerID, "error", err)
 		return false
 	}
@@ -264,4 +268,11 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 		return err
 	}
 	return nil
+}
+
+// hasRefreshableCredential reports whether providerCfg's credentials can
+// change under a running process: an OAuth token, or an API key resolved from a
+// `$` template (retryAfterUnauthorized refreshes exactly these two).
+func hasRefreshableCredential(providerCfg config.ProviderConfig) bool {
+	return providerCfg.OAuthToken != nil || strings.Contains(providerCfg.APIKeyTemplate, "$")
 }

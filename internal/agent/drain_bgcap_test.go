@@ -1,17 +1,19 @@
-// The web bg-shell auto-resume cap (R3B-6): exactly maxConsecutiveAutoResumes
-// Drains per human message, spent once at admission (claimAutoResume) by the
-// completion's own launch. A release or tick re-check of the same bg-shell-only
-// debt compares against the cap WITHOUT spending it, so a shell that finishes
-// while the last permitted Drain is still running cannot chain further Drains.
+// The web bg-shell auto-resume cap (R3B-6, R4B-1): maxConsecutiveAutoResumes
+// slots per human message, spent once at admission (claimAutoResume) by the
+// completion's own launch. A release or tick re-check compares the cap WITHOUT
+// spending a slot and defers the debt only when none of its rows holds a slot,
+// i.e. every row is a completion that arrived over the cap. A row whose slot
+// was spent but whose launch was paced, refused, held or deferred is retried
+// and closed at K=3 like any other debt.
 package agent
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
@@ -27,49 +29,309 @@ func finishedBackgroundShell(t *testing.T, workDir, sessionID string) *shell.Bac
 	return sh
 }
 
-// A13 (rewritten): six REAL completions through notifyBackgroundJobDone launch
-// exactly five Drains; the release/tick re-check of the sixth completion's
-// debt does not launch a sixth; a human message re-arms.
-//
-// Revert-check: dropping the cap comparison for non-fact launches from
-// drainPolicy lets wakeSession(fact=false) launch the sixth Drain and this
-// test goes red; re-adding the comparison to the fact path (the old "<" after
-// the bump) refuses the fifth submission and turns it red too.
-func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
-	ctx := context.Background()
-	// A plain root session with a real config (drainCallFor builds its call
-	// from it); the token is live, so nothing is refreshed.
-	f := newAttemptFixture(t, "attempt-bgshell-cap", attemptFixtureOpts{
-		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
-	})
+// newBGShellCapFixture is a plain web root session (no delegation driver) with
+// AutoResumeOnJobDone on and its real agent behind a Run counter. The test must
+// not be parallel (the OAuth fixture isolates the global config paths).
+func newBGShellCapFixture(t *testing.T, title string, opts attemptFixtureOpts) (*attemptFixture, *countingAgent) {
+	t.Helper()
+	opts.noIdle, opts.noDriver, opts.oauthProvider = true, true, oauthTestProvider
+	f := newAttemptFixture(t, title, opts)
 	f.rotateCredentials(oauthTestProvider)
 	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(true)
 	f.coord.SetPersistentMode(true)
 	t.Cleanup(f.coord.StopRecheckTicker)
-	mock := &mockSessionAgent{}
-	var launches atomic.Int32
-	mock.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
-		launches.Add(1)
-		return nil, nil
-	}
-	// A plain root session (no delegation driver): every launch runs on
-	// currentAgent.
-	f.coord.currentAgent = mock
+	runs := &countingAgent{SessionAgent: f.sa}
+	f.coord.currentAgent = runs
+	return f, runs
+}
 
-	for range maxConsecutiveAutoResumes + 1 {
-		f.coord.notifyBackgroundJobDone(f.sessID, finishedBackgroundShell(t, f.env.workingDir, f.sessID))
+// complete delivers one real background-shell completion and waits for its
+// detached wake to return.
+func (f *attemptFixture) complete() {
+	f.t.Helper()
+	f.coord.notifyBackgroundJobDone(f.sessID, finishedBackgroundShell(f.t, f.env.workingDir, f.sessID))
+	f.coord.waitRecheckWakes()
+}
+
+// expireDrainPause ends the session's launch pause without waiting for it.
+func (f *attemptFixture) expireDrainPause() {
+	f.ledger.mu.Lock()
+	defer f.ledger.mu.Unlock()
+	f.ledger.sessionLocked(f.sessID).drain.retryAt = time.Now().Add(-time.Second)
+}
+
+// maxNoticeAttempts is the highest wake_attempts among the visible debt rows.
+func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
+	f.t.Helper()
+	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
+	require.NoError(f.t, err)
+	n, err := f.store.MaxWakeAttempts(ctx, f.sessID, snap)
+	require.NoError(f.t, err)
+	return n
+}
+
+func (f *attemptFixture) hasDebt(ctx context.Context) bool {
+	f.t.Helper()
+	debt, err := f.ledger.reactionDebtExists(ctx, f.sessID)
+	require.NoError(f.t, err)
+	return debt
+}
+
+// A13 (rewritten): six REAL completions through notifyBackgroundJobDone; the
+// first five each spend a slot and launch a Drain that really reacts. The sixth
+// arrives over the cap: it launches nothing, and neither the release/tick
+// re-check nor a direct wake launches it either (its row is only an over-cap
+// row); a human message re-arms.
+//
+// Revert-check: making bgShellCapDeferred never defer (or dropping the cap
+// comparison from drainPolicy) lets the re-check launch a sixth Drain and turns
+// the run count red; refusing the fifth completion at the fact path (a "<" after
+// the bump) leaves four Drains and turns the first assertion red.
+func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
+	ctx := context.Background()
+	f, runs := newBGShellCapFixture(t, "attempt-bgshell-cap", attemptFixtureOpts{})
+
+	for range maxConsecutiveAutoResumes {
+		f.complete()
 	}
-	require.Eventually(t, func() bool { return launches.Load() == maxConsecutiveAutoResumes }, 10*time.Second, 10*time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
-	require.EqualValues(t, maxConsecutiveAutoResumes, launches.Load(), "exactly five Drains per human message")
+	require.Eventually(t, func() bool { return !f.hasDebt(ctx) && !f.sa.IsSessionBusy(f.sessID) }, 10*time.Second, 5*time.Millisecond)
+	f.coord.waitRecheckWakes()
+	require.EqualValues(t, maxConsecutiveAutoResumes, runs.runs.Load(), "one Drain per slot")
+
+	f.complete() // the sixth: no slot
+	require.EqualValues(t, maxConsecutiveAutoResumes, runs.runs.Load(), "the sixth completion launches nothing")
+	require.True(t, f.hasDebt(ctx), "its notice stays debt (visible), deferred")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
 
 	// The release of a Drain and the 60s pass re-check the sixth completion's
-	// still-owed debt: over the cap, they must not launch.
+	// still-owed debt: only an over-cap row is left, so they must not launch.
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, false))
 	f.pass(ctx)
-	require.EqualValues(t, maxConsecutiveAutoResumes, launches.Load(), "a re-check must not spend past the cap")
+	require.EqualValues(t, maxConsecutiveAutoResumes, runs.runs.Load(), "a re-check must not launch an over-cap row")
+	v := f.coord.drainPermitted(ctx, f.sessID, false)
+	require.Equal(t, drainDeferred, v.kind)
+	require.Contains(t, v.reason, "cap reached")
 
 	f.coord.ResetAutoResumeCounter(f.sessID)
+	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a human message clears the over-cap count too")
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, false))
-	require.EqualValues(t, maxConsecutiveAutoResumes+1, launches.Load(), "a human message re-arms auto-resume")
+	require.EqualValues(t, maxConsecutiveAutoResumes+1, runs.runs.Load(), "a human message re-arms auto-resume")
+}
+
+// R4B-1: a slot is spent at admission, before the launch decision, so a
+// completion whose launch was paced still owns it. The first Drain fails (a
+// counted, paced attempt); four more shells finish inside the pause and spend
+// slots 2-5 without submitting anything. Once the pause is over ONE re-check
+// must launch (the debt is all slot rows, none over the cap), and the rows are
+// retried and closed at K=3 like any other debt: row 1 at its third attempt,
+// rows 2-5 (which joined later) at theirs, one marker per close.
+//
+// Revert-check: deferring every bg-shell-only debt at the cap for a re-check
+// (bgShellCapDeferred returning the bgOnly answer alone) launches nothing at
+// the tick and turns the run count red at the first pass.
+func TestBGShellCap_SpentSlotsBehindAPauseAreRetriedAndClosed(t *testing.T) {
+	ctx := context.Background()
+	shrinkDrainRetry(t, time.Hour) // the pause ends only when the test says so
+	f, runs := newBGShellCapFixture(t, "attempt-bgshell-cap-paused", attemptFixtureOpts{handler: emptyReplyResponse})
+
+	f.complete() // slot 1: its Drain reaches the provider, nothing reacted
+	require.EqualValues(t, 1, runs.runs.Load())
+	require.EqualValues(t, 1, f.maxNoticeAttempts(ctx))
+	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind)
+
+	for range maxConsecutiveAutoResumes - 1 {
+		f.complete() // slots 2-5: the gate is paced, nothing is submitted
+	}
+	require.Equal(t, maxConsecutiveAutoResumes, f.coord.consecutiveResume(f.sessID), "every slot is spent")
+	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID))
+	require.EqualValues(t, 1, runs.runs.Load(), "nothing was submitted inside the pause")
+
+	f.expireDrainPause()
+	f.pass(ctx)
+	require.EqualValues(t, 2, runs.runs.Load(), "a re-check retries the rows whose slot was spent")
+	require.EqualValues(t, 2, f.maxNoticeAttempts(ctx), "the first row's second attempt")
+
+	f.expireDrainPause()
+	f.pass(ctx)
+	require.EqualValues(t, 3, runs.runs.Load())
+	require.Equal(t, 1, f.markers(ctx), "the first row reached K=3 and was closed; the later rows keep their own clock")
+	require.True(t, f.hasDebt(ctx))
+
+	f.expireDrainPause()
+	f.pass(ctx)
+	require.EqualValues(t, 4, runs.runs.Load())
+	require.Equal(t, 2, f.markers(ctx), "rows 2-5 reached K=3 and were closed")
+	require.False(t, f.hasDebt(ctx), "nothing is left owed")
+}
+
+// bgShellCapDeferred defers exactly when every slot is spent and the ENTIRE
+// debt is bg-shell rows none of which holds a slot (rows <= over-cap count).
+//
+// Revert-check: comparing with `<` instead of `<=` turns the "equal" case red;
+// dropping the bgOnly guard defers the mixed-debt case; deferring before the
+// cap is reached turns the first case red.
+func TestBGShellCapDeferred_OnlyWhenNoDebtRowHoldsASlot(t *testing.T) {
+	cases := []struct {
+		name         string
+		slots, over  int
+		rows         int
+		jobDebt      bool
+		wantDeferred bool
+	}{
+		{"cap not reached", maxConsecutiveAutoResumes - 1, 0, 3, false, false},
+		{"every row is over the cap", maxConsecutiveAutoResumes, 3, 3, false, true},
+		{"one row holds a slot", maxConsecutiveAutoResumes, 2, 3, false, false},
+		{"only slot rows", maxConsecutiveAutoResumes, 0, 5, false, false},
+		{"no debt at all", maxConsecutiveAutoResumes, 0, 0, false, false},
+		{"job debt alongside an over-cap row", maxConsecutiveAutoResumes, 1, 1, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newAttemptFixture(t, "cap-deferred", attemptFixtureOpts{noIdle: true})
+			for range tc.slots {
+				f.coord.bumpConsecutiveResume(f.sessID)
+			}
+			f.coord.autoResumeMu.Lock()
+			f.coord.bgShellOverCap = map[string]int{f.sessID: tc.over}
+			f.coord.autoResumeMu.Unlock()
+			for range tc.rows {
+				require.NoError(t, f.store.InsertSessionNotice(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, ""))
+			}
+			if tc.jobDebt {
+				f.seedDebt(ctx, "call-1", false)
+			}
+
+			deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantDeferred, deferred)
+		})
+	}
+}
+
+// A check that cannot take the arrival gate (a completion is mid-step, or the
+// caller gave up) fails closed as an error, never as "not deferred": drainPolicy
+// maps it to a deferred-with-recheck verdict.
+//
+// Revert-check: dropping the gate from bgShellCapDeferred answers (false, nil)
+// here and turns the assertion red.
+func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
+	f := newAttemptFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+	require.NoError(t, f.coord.bgArrival.lock(context.Background())) // an arrival mid-step
+	defer f.coord.bgArrival.unlock()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := f.coord.bgShellCapDeferred(cancelled, f.sessID)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// The completion's row insert and its slot decision are ONE step for the cap
+// check: a checker never sees a row without the decision that classifies it. The
+// session starts at the cap with one over-cap row; while more over-cap
+// completions arrive, every check must answer "deferred" (no debt row holds a
+// slot). Without the gate a check can run between an arrival's insert and its
+// over-cap count and see a row nothing accounts for (a launch by re-check).
+//
+// Revert-check: dropping the gate from persistBGShellCompletion lets a check land
+// between the insert and the count; the assertion goes red (a race-window
+// regression, so the green run is deterministic).
+func TestBGShellCap_ArrivalIsAtomicForTheCapCheck(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "cap-atomic", attemptFixtureOpts{noIdle: true})
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh-0", "done"), "no slot left")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var bad error
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
+			if err != nil || !deferred {
+				bad = err
+				if bad == nil {
+					bad = context.DeadlineExceeded // stands for "not deferred"
+				}
+				return
+			}
+		}
+	}()
+	for i := range 150 {
+		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"), "iteration %d", i)
+	}
+	close(stop)
+	wg.Wait()
+	require.NoError(t, bad, "a check saw an arrival's row without its over-cap count")
+}
+
+// claimAutoResume spends a slot only while slots remain, and counts as over-cap
+// exactly the completions refused because every slot is spent (whatever else
+// would have refused them); a refusal with slots left (Stop, auto-resume off)
+// is not counted.
+//
+// Revert-check: dropping the over-cap increment turns the count assertions red;
+// counting every refusal turns the "slots left" assertions red.
+func TestClaimAutoResume_CountsOnlyRefusalsForLackOfASlot(t *testing.T) {
+	f, _ := newBGShellCapFixture(t, "claim-over-cap", attemptFixtureOpts{})
+	sid := f.sessID
+
+	f.coord.suspendAutoResume(sid)
+	require.False(t, f.coord.claimAutoResume(sid), "Stop suspended automatic turns")
+	require.Zero(t, f.coord.bgShellOverCapCount(sid), "a refusal with slots left is not over-cap")
+	f.coord.resetConsecutiveResume(sid)
+
+	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(false)
+	require.False(t, f.coord.claimAutoResume(sid), "auto-resume is off")
+	require.Zero(t, f.coord.bgShellOverCapCount(sid))
+	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(true)
+
+	for range maxConsecutiveAutoResumes {
+		require.True(t, f.coord.claimAutoResume(sid))
+	}
+	require.False(t, f.coord.claimAutoResume(sid))
+	require.False(t, f.coord.claimAutoResume(sid))
+	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid))
+	require.Equal(t, maxConsecutiveAutoResumes, f.coord.consecutiveResume(sid), "the slot count stops at the cap")
+
+	f.coord.suspendAutoResume(sid)
+	require.False(t, f.coord.claimAutoResume(sid))
+	require.EqualValues(t, 3, f.coord.bgShellOverCapCount(sid), "a suspended completion after the cap is still over it")
+}
+
+// With every slot spent, a re-check whose cap state cannot be read fails CLOSED
+// like every policy input: deferred, asking for a re-check tick (the gate
+// variant of the error is pinned by
+// TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed).
+//
+// Revert-check: ignoring the bgShellCapDeferred error in drainPolicy allows the
+// launch and turns this red.
+func TestDrainPolicy_CapStateUnreadableFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newBGShellCapFixture(t, "cap-state-readerr", attemptFixtureOpts{})
+	f.seedDebt(ctx, "call-1", false)
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+	f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
+
+	v := f.coord.drainPolicy(ctx, f.sessID, false)
+
+	require.Equal(t, drainDeferred, v.kind, "an unreadable cap state must never allow a Drain")
+	require.True(t, v.recheck)
+	require.Error(t, v.err)
+	require.Equal(t, "bg-shell cap state unreadable", v.reason)
 }

@@ -324,8 +324,15 @@ type coordinator struct {
 	// SetPersistentMode call path — atomic.Bool costs nothing and keeps
 	// this field consistent with its neighbors under `go test -race`.
 	persistentMode         atomic.Bool
-	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes and autoTurnsSuspended.
+	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes, bgShellOverCap and autoTurnsSuspended.
 	consecutiveAutoResumes map[string]int // sessionID -> consecutive bg-shell auto-resumes since last human message.
+	// bgShellOverCap counts, per session, the bg-shell completions that
+	// arrived with every slot already spent (since the last human message):
+	// their rows are the newest of the debt and stay deferred (bgshell_cap.go).
+	bgShellOverCap map[string]int
+	// bgArrival makes a completion's "insert the notice row + claim/refuse a
+	// slot" one step relative to the cap check that reads both.
+	bgArrival ctxMutex
 	// autoTurnsSuspended is Stop's own per-session "automatic turns paused
 	// until the next human message" state, deliberately separate from the
 	// bg-shell cap counter above: filling that cap must not pause async-job/
@@ -355,7 +362,8 @@ type coordinator struct {
 	// recheckWakeInFlight (guarded by recheckMu) is the set of sessions with
 	// a detached recheck-pass wake running right now: one per session, and
 	// its size is the concurrency bound. recheckWakes lets a caller wait for
-	// them to finish (waitRecheckWakes).
+	// them, and for the detached wakes of bg-shell completions, to finish
+	// (waitRecheckWakes).
 	recheckWakeInFlight map[string]struct{}
 	recheckWakes        sync.WaitGroup
 
@@ -581,6 +589,7 @@ func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
 	delete(c.consecutiveAutoResumes, sessionID)
+	delete(c.bgShellOverCap, sessionID)
 	delete(c.autoTurnsSuspended, sessionID)
 	c.autoResumeMu.Unlock()
 	// A human message also reopens the Drain launch gate: the one thing that
@@ -636,18 +645,27 @@ func (c *coordinator) autoResumeEligible(sessionID string) bool {
 // claimAutoResume is autoResumeEligible plus the counter bump as ONE atomic
 // step: it reports whether a finished background shell may autonomously
 // resume the session and, if so, spends one of the maxConsecutiveAutoResumes
-// submissions allowed per human message. Nothing downstream re-checks the
-// counter, so exactly that many completions are submitted (R2B-16).
+// slots allowed per human message. The slot is spent at admission, before the
+// launch decision, so a paced or refused launch still spends it and its row
+// keeps being retried (bgShellCapDeferred tells it from an over-cap row). A
+// completion refused because every slot is spent is counted (bgShellOverCap),
+// whatever else would have refused it. Nothing downstream re-checks the counter
+// for the completion's own launch, so exactly that many completions are
+// submitted (R2B-16). Called under bgArrival (persistBGShellCompletion).
 func (c *coordinator) claimAutoResume(sessionID string) bool {
-	if !c.autonomyEnabled() || !c.persistentMode.Load() {
-		return false
-	}
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
-	if _, suspended := c.autoTurnsSuspended[sessionID]; suspended {
+	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
+		if c.bgShellOverCap == nil {
+			c.bgShellOverCap = make(map[string]int)
+		}
+		c.bgShellOverCap[sessionID]++
 		return false
 	}
-	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
+	if !c.persistentMode.Load() || !c.autonomyEnabled() {
+		return false
+	}
+	if _, suspended := c.autoTurnsSuspended[sessionID]; suspended {
 		return false
 	}
 	if c.consecutiveAutoResumes == nil {

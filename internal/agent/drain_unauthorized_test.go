@@ -14,6 +14,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
@@ -160,4 +161,108 @@ func TestRunInternal_DrainCarriesFreshCredentialsAfterTheProactiveRefresh(t *tes
 
 	require.EqualValues(t, 1, refreshes.Load())
 	require.Equal(t, "Bearer new-key", f.authHeader.Load(), "the call runs on a client rebuilt after the refresh")
+}
+
+// withAPIKeyTemplateProvider turns the fixture's provider into an API-key
+// template provider (no OAuth token) whose runtime key is `key`.
+func (f *attemptFixture) withAPIKeyTemplateProvider(providerID, key string) {
+	f.t.Helper()
+	pc, ok := f.coord.cfg.Config().Providers.Get(providerID)
+	require.True(f.t, ok)
+	pc.OAuthToken = nil
+	pc.APIKeyTemplate = "$(print-key)"
+	pc.APIKey = key
+	f.coord.cfg.SetProviderRuntimeConfig(providerID, pc)
+}
+
+// A delegated child whose provider uses an API-key TEMPLATE gets its frozen
+// client rebuilt too: the 401 accounting re-resolves the template and publishes
+// the new key, and the child's next Drain must put that key on the wire (not the
+// one its template froze), or two more 401s close the delegation as failed.
+//
+// Revert-check: restoring the OAuth-only early return in freshenDrainClient
+// leaves the frozen client ("Bearer old-key") and turns the wire assertion red.
+func TestDrainCallFor_ChildTemplateClientCarriesFreshAPIKey(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "drain-call-child-key", attemptFixtureOpts{noIdle: true, oauthProvider: oauthTestProvider})
+	f.withAPIKeyTemplateProvider(oauthTestProvider, "old-key")
+	f.seedDebt(ctx, "call-1", false)
+	frozen, err := f.coord.resolveSessionModels(ctx, f.sessID) // the template's client, the old key
+	require.NoError(t, err)
+	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
+		agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
+	})
+	f.withAPIKeyTemplateProvider(oauthTestProvider, "new-key") // the 401 accounting's refresh published it
+
+	call, err := f.coord.drainCallFor(ctx, f.sessID)
+	require.NoError(t, err)
+	_, err = f.sa.Run(ctx, call)
+	require.NoError(t, err)
+
+	require.Equal(t, "probe", call.SmartModel.ModelCfg.Model, "same model, new client")
+	require.Equal(t, "Bearer new-key", f.authHeader.Load(), "the child's frozen client is replaced")
+}
+
+// A per-call credential (a tenant's own key) is never replaced with the shared
+// config's, whatever the provider's refreshable credentials are.
+//
+// Revert-check: dropping the `call.Credentials != nil` guard from
+// freshenDrainClient rebuilds the client and turns the identity assertion red.
+func TestFreshenDrainClient_PerCallCredentialsKeepTheirClient(t *testing.T) {
+	f := newAttemptFixture(t, "drain-call-tenant", attemptFixtureOpts{noIdle: true, oauthProvider: oauthTestProvider})
+	f.withAPIKeyTemplateProvider(oauthTestProvider, "shared-key")
+	frozen, err := f.coord.resolveSessionModels(context.Background(), f.sessID)
+	require.NoError(t, err)
+	call := SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart, Credentials: &CredentialSet{}}
+
+	f.coord.freshenDrainClient(context.Background(), &call)
+
+	require.Same(t, &frozen.smart, call.SmartModel, "the tenant's client is kept")
+}
+
+func TestHasRefreshableCredential(t *testing.T) {
+	require.False(t, hasRefreshableCredential(config.ProviderConfig{APIKey: "static"}))
+	require.True(t, hasRefreshableCredential(config.ProviderConfig{APIKeyTemplate: "$(cmd)"}))
+	require.True(t, hasRefreshableCredential(config.ProviderConfig{OAuthToken: expiredOAuthToken()}))
+	require.False(t, hasRefreshableCredential(config.ProviderConfig{APIKeyTemplate: "literal"}), "a template with no substitution never changes")
+}
+
+// shrinkDrainBudgets shrinks the accounting's whole budget and the credential
+// refresh's own budget for the calling test (process-wide: not parallel).
+func shrinkDrainBudgets(t *testing.T, account, refresh time.Duration) {
+	t.Helper()
+	oldA, oldR := drainAccountBudgetNS.Swap(int64(account)), drainRefreshBudgetNS.Swap(int64(refresh))
+	t.Cleanup(func() { drainAccountBudgetNS.Store(oldA); drainRefreshBudgetNS.Store(oldR) })
+}
+
+// R4B-3: the 401 refresh has its own bounded context. With the auth endpoint
+// black-holed (the refresh blocks until its context ends) the refresh gives up
+// on its own budget and the settle that follows still has the accounting's:
+// the unrefreshable 401 closes the row with its marker on the FIRST attempt.
+//
+// Revert-check: refreshing on the accounting's own context (refreshAfterUnauthorized
+// passing ctx through) lets the refresh eat the whole accounting budget; the
+// settle then runs on an expired context, closes nothing and turns this red.
+func TestDrainAttempt_401BlackHoledRefreshStillSettlesTheRow(t *testing.T) {
+	ctx := context.Background()
+	shrinkDrainBudgets(t, 3*time.Second, 100*time.Millisecond)
+	f := newAttemptFixture(t, "attempt-401-black-hole", attemptFixtureOpts{
+		noIdle: true, handler: unauthorizedResponse, oauthProvider: oauthTestProvider,
+	})
+	var refreshes atomic.Int32
+	f.coord.refreshOAuth2TokenFn = func(ctx context.Context, _ config.ProviderConfig) error {
+		refreshes.Add(1)
+		<-ctx.Done() // TCP open, no answer
+		return ctx.Err()
+	}
+	f.seedDebt(ctx, "call-1", false)
+
+	_, err := f.drainRun(ctx)
+	require.Error(t, err)
+
+	require.EqualValues(t, 1, refreshes.Load())
+	row := f.row(ctx, "call-1")
+	require.EqualValues(t, 1, row.Reacted, "the unrefreshable 401 closes the row at once")
+	require.EqualValues(t, 1, row.ReactedFailed)
+	require.Equal(t, 1, f.markers(ctx), "with its visible marker")
 }
