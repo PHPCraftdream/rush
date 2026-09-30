@@ -329,6 +329,9 @@ type coordinator struct {
 	// bg-shell cap counter above: filling that cap must not pause async-job/
 	// delegation/supervision wakes, and Stop must pause every kind.
 	autoTurnsSuspended map[string]struct{}
+	// turnHolds counts the reruns currently holding a session's automatic turns
+	// (HoldAutomaticTurns), guarded by autoResumeMu.
+	turnHolds map[string]int
 
 	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (web
 	// process only; a CLI coordinator never drains the set): a

@@ -72,6 +72,10 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVe
 			return deferred("another process drives the session", true)
 		}
 	}
+	// A rerun holds the session while it cancels, truncates and hands off.
+	if c.automaticTurnsHeld(sessionID) {
+		return deferred("rerun in progress", true)
+	}
 	// Stop and a pending question suspend automatic turns until a human
 	// message (or a fresh delegation on a child) lifts it.
 	if c.autoResumeSuspended(sessionID) {

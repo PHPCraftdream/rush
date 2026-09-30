@@ -55,6 +55,18 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// Web sessions never prompt for permissions.
 	autoApproveWebSession(a, sessionID)
 
+	// Automatic (Drain) turns stay off the session from the moment the live
+	// turn is cancelled until the replacement turn takes over: the cancelled
+	// turn's release must not start a paid Drain that races the rerun (it
+	// fails "still stopping", or its reaction is truncated and re-pended and
+	// paid twice). Released right before the handoff, or by the defer on any
+	// bailout (idempotent).
+	releaseHold := func() {}
+	if holder, ok := a.AgentCoordinator.(agent.AutoTurnHolder); ok {
+		releaseHold = holder.HoldAutomaticTurns(sessionID)
+	}
+	defer releaseHold()
+
 	// 1. Cancel + clear queue if busy, then poll until idle (up to 10s). This
 	// is a courtesy wait, NOT the safety mechanism: IsSessionBusy is a
 	// snapshot, and a new Send/Rerun can legitimately start the instant after
@@ -388,14 +400,24 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}
 
 	// Stop the jobs the committed truncation voided (running executors of this
-	// process, and every voided delegation's child tree). Synchronous and best
-	// effort: the rows are already void, so a stop that misses only lets the
-	// executor finish and commit void. Runs under deleteCtx and after the
-	// recreate defer, so a panic here still restores the prompt.
+	// process, and every voided delegation's child tree). Best effort and OFF
+	// the handler: the rows are already void, so a stop that misses only lets
+	// the executor finish and commit void, and the stop's own retry loop (a
+	// child transition retried until commit) is bounded by the coordinator's
+	// shutdown, not by this request -- it must never keep the reservation held
+	// or the recreate defer from firing. The hook runs before, so a panic there
+	// still restores the prompt.
 	if rerunPostTruncateSeam != nil {
 		rerunPostTruncateSeam()
 	}
-	a.AgentCoordinator.StopRerunJobs(deleteCtx, sessionID, trunc.Voided)
+	go func(coord agent.Coordinator, voided []session.VoidedAsyncJob) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ws: rerun: stopping the voided jobs panicked", "sessionID", sessionID, "panic", r)
+			}
+		}()
+		coord.StopRerunJobs(deleteCtx, sessionID, voided)
+	}(a.AgentCoordinator, trunc.Voided)
 
 	// 4. Re-arm Phase 4 autonomy.
 	a.AgentCoordinator.ResetAutoResumeCounter(sessionID)
@@ -435,6 +457,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// which represents the handoff instant — observes no probe held.
 	probe.Release()
 	probeHeld = false
+	releaseHold()
 
 	// Test-only seam (task #614 F-2): fires right before Broadcast, i.e. before
 	// RunWithReservedOwnership is called. Used to test that panics before the
