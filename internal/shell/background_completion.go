@@ -9,13 +9,17 @@ package shell
 // taken at OnDone registration (before the process can finish, or while the
 // registering call still runs), and ends at the first of: the callback calling
 // MarkCompletionRecorded, the last registered callback returning (a panic
-// included), or completionHoldMax after the shell finished.
+// included), or completionHoldMax after the shell finished, or, for a shell
+// taken out of the table (Kill/Remove/Close) whose process never exits (a
+// descendant holds the output pipe, so done stays open), completionHoldMax
+// after it was detached (R8B-2).
 
 import "time"
 
-// completionHoldMax bounds how long a FINISHED shell's hold counts, whatever
-// its callback is doing: a callback wedged on a dead dependency must not keep
-// its session's scope open forever.
+// completionHoldMax bounds how long a FINISHED or DETACHED shell's hold counts,
+// whatever its callback is doing: a callback wedged on a dead dependency, or a
+// killed shell whose process never exits, must not keep its session's scope
+// open forever. A shell still in the table is running and ActiveOwned counts it.
 const completionHoldMax = 10 * time.Minute
 
 // takeCompletionHold adds the shell to its manager's hold set. Idempotent.
@@ -70,11 +74,21 @@ func (m *BackgroundShellManager) PendingCompletionsOwned(sessionID string) int {
 		if bs.SessionID != sessionID {
 			continue
 		}
-		if at := bs.completedAt.Load(); at > 0 && now-at > int64(completionHoldMax/time.Second) {
+		if at := bs.holdClock(); at > 0 && now-at > int64(completionHoldMax/time.Second) {
 			delete(m.holds, bs)
 			continue
 		}
 		pending++
 	}
 	return pending
+}
+
+// holdClock is the instant the shell's hold starts to age: its completion, else
+// (a shell taken out of the table whose process never exited) its detachment; 0
+// while it is attached and running, which never expires.
+func (bs *BackgroundShell) holdClock() int64 {
+	if at := bs.completedAt.Load(); at > 0 {
+		return at
+	}
+	return bs.detachedAt.Load()
 }

@@ -132,6 +132,7 @@ func (bs *BackgroundShell) armDetachedReleaseTimerLocked() {
 // output immediately. If completion is still in flight, detached makes its
 // completion path perform the release after the process exits.
 func (bs *BackgroundShell) detachFromManager() {
+	bs.detachedAt.CompareAndSwap(0, time.Now().Unix())
 	bs.retentionMu.Lock()
 	bs.detached = true
 	retentionTimer := bs.retentionTimer
