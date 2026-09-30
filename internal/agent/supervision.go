@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -70,7 +71,7 @@ type SupervisionConfig struct {
 func DefaultSupervisionConfig() SupervisionConfig {
 	return SupervisionConfig{
 		Enabled:       true,
-		Interval:      supervisionDefaultInterval,
+		Interval:      defaultSupervisionInterval(),
 		MaxInterval:   supervisionMaxInterval,
 		MaxNoProgress: supervisionMaxNoProgress,
 	}
@@ -101,7 +102,7 @@ func (c *coordinator) resolveSupervisionConfig(ctx context.Context) SupervisionC
 		}
 	}
 	if cfg.Interval < supervisionMinIntervalFloor {
-		cfg.Interval = supervisionDefaultInterval
+		cfg.Interval = defaultSupervisionInterval()
 	}
 	return cfg
 }
@@ -465,4 +466,15 @@ func (c *coordinator) afterRelease(sessionID string) {
 	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
+}
+
+// supervisionIntervalNS shrinks the built-in initial interval for tests
+// (SetSupervisionDefaultIntervalForTest); 0 keeps supervisionDefaultInterval.
+var supervisionIntervalNS atomic.Int64
+
+func defaultSupervisionInterval() time.Duration {
+	if ns := supervisionIntervalNS.Load(); ns > 0 {
+		return time.Duration(ns)
+	}
+	return supervisionDefaultInterval
 }

@@ -115,6 +115,11 @@ type App struct {
 	// raw-SQL features that don't have their own sqlc-generated package.
 	DB func() *sql.DB
 
+	// readDB is the read-only pool shared with the session/message services
+	// (nil when it failed to open or the App was assembled by hand): the
+	// driver-marker reader runs on it, off the single writer connection.
+	readDB *sql.DB
+
 	// dataDir is the path to .rush/ where the database lives. Stored here for
 	// shutdown policy and diagnostics.
 	dataDir string
@@ -278,6 +283,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		BackgroundShellManager: shell.NewBackgroundShellManager(),
 
 		DB:      func() *sql.DB { return conn },
+		readDB:  readConn,
 		dataDir: dataDir,
 
 		globalCtx: ctx,

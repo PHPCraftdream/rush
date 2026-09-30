@@ -240,7 +240,8 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 // session as done while `rush run` is still waiting on its delegation. Same
 // for a session whose scope is open only because of its OWN running plain job
 // (no descendant, no lock between turns): the web half of `sessions list`'s
-// "running" promotion.
+// "running" promotion. A session a live `rush run` loop drives between turns
+// (durable driver marker, App.LiveSessionDrivers) is flagged HasLiveOwnWork too.
 //
 // Deliberately unconditional (not gated on the session otherwise looking
 // idle): this layer has no status map to gate on — re-deriving one here
@@ -251,8 +252,8 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 // never "less", so the flags are not consulted here.
 //
 // Cost is one reader query per delegation-tree level over ALL listed sessions
-// plus one liveness probe per distinct host — not per session — paid only on
-// the sessions_list reply and its periodic re-poll, never on the per-event
+// plus one liveness probe per distinct host — not per session — and one read
+// of the driver markers, paid only on the sessions_list reply and its periodic re-poll, never on the per-event
 // broadcast path.
 func annotateLiveWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
 	store := a.AsyncJobStore()
@@ -264,9 +265,20 @@ func annotateLiveWork(ctx context.Context, a *appPkg.App, sessions []session.Ses
 		ids[i] = sessions[i].ID
 	}
 	work := store.LiveWorkForRoots(ctx, ids)
+	// A live `rush run` loop between turns (a paced Drain retry, debt pending)
+	// holds no lock and has no running row: the durable driver marker is the
+	// only fact that its scope is open (ASYNC-02, R5C-5). One read for the whole
+	// list; the session counts as having live own work.
+	drivers, driverErr := a.LiveSessionDrivers(ctx)
+	if driverErr != nil {
+		slog.Warn("sessions_list: could not read the session driver markers", "err", driverErr)
+	}
 	for i := range sessions {
 		w := work[sessions[i].ID]
 		if len(w.Own) > 0 {
+			sessions[i].HasLiveOwnWork = true
+		}
+		if _, driven := drivers[sessions[i].ID]; driven {
 			sessions[i].HasLiveOwnWork = true
 		}
 		if len(w.Descendants) == 0 {
