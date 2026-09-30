@@ -62,8 +62,9 @@ func endedReasonOf(t *testing.T, application *App, sessionID string) string {
 // "error".
 //
 // Revert-check: (1) dropping the refusal case from scopeClosed restores the
-// error envelope and the replaced answer; (2) dropping turnRefusedByOwner from
-// ExecuteRun's ended_reason guard adds an "error" write to the log.
+// error envelope and the replaced answer; (2) dropping the loopTurn guard from
+// ExecuteRun's ended_reason defer (R8A-1) writes the first turn's "end_turn"
+// and the refused turn's reason to the log.
 func TestRunLoop_ReviewerRefusedByLockKeepsAnswer(t *testing.T) {
 	for name, mode := range map[string]RunMode{"json": RunModeJSON, "terse": RunModeTerse} {
 		t.Run(name, func(t *testing.T) {
@@ -98,9 +99,9 @@ func TestRunLoop_ReviewerRefusedByLockKeepsAnswer(t *testing.T) {
 				require.Equal(t, 1, strings.Count(out.String(), `"final_text"`))
 			}
 			require.Contains(t, stderr.String(), "reviewer pass", "the skipped pass is visible on stderr")
-			require.NotEmpty(t, endedAfterFirst)
-			require.Equal(t, endedAfterFirst, endedReasonOf(t, rh.app, rh.sessionID), "ended_reason is unchanged by the refused turn")
-			require.Equal(t, []string{"", endedAfterFirst}, writes(), "the refused turn writes no ended_reason and the loop's exit finds the row already right")
+			require.Empty(t, endedAfterFirst, "the first loop turn leaves the row empty")
+			require.Equal(t, res.ExitReason, endedReasonOf(t, rh.app, rh.sessionID), "the loop's exit writes the kept answer's reason")
+			require.Equal(t, []string{"", res.ExitReason}, writes(), "neither turn writes ended_reason; the exit writes it once")
 		})
 	}
 }
@@ -132,7 +133,7 @@ func r6HeldFirstJobHarness(t *testing.T) *loopHarness {
 // cancelled run ctx.
 //
 // Revert-check: dropping the persist call from flushed (exitCanceled) leaves
-// "end_turn" in the row.
+// the row empty (since R8A-1 the turns write nothing themselves).
 func TestRunLoop_TimeoutWhileWaitingWritesEnvelopeReason(t *testing.T) {
 	h := r6HeldFirstJobHarness(t)
 	writes := logEndedReasonWrites(t, h.app)
@@ -148,7 +149,7 @@ func TestRunLoop_TimeoutWhileWaitingWritesEnvelopeReason(t *testing.T) {
 	require.Equal(t, "canceled", res.ExitReason)
 	require.Contains(t, out, `"exit_reason":"canceled"`)
 	require.Equal(t, res.ExitReason, endedReasonOf(t, h.app, h.sessionID), "the row carries the envelope's exit reason")
-	require.Equal(t, []string{"", "end_turn", "canceled"}, writes(), "one write per turn, one at the loop's exit")
+	require.Equal(t, []string{"", "canceled"}, writes(), "the start clear and the loop's one exit write: loop turns write none")
 }
 
 // scopeOverrideSource answers CLIScope from a script once armed (after the
@@ -172,7 +173,7 @@ func (s *scopeOverrideSource) CLIScope(ctx context.Context, sessionID string) (a
 // envelope carries; the row never keeps the first turn's "end_turn".
 //
 // Revert-check: dropping the persist call from exit / flushed leaves
-// "end_turn" in the row for the matching case.
+// the row empty for the matching case (since R8A-1 the turns write nothing).
 func TestRunLoop_BetweenTurnsExitsWriteEnvelopeReason(t *testing.T) {
 	origLimit, origPause := cliDBErrorRetryOverallLimit, cliDBRetryPause
 	cliDBErrorRetryOverallLimit, cliDBRetryPause = 30*time.Millisecond, 5*time.Millisecond

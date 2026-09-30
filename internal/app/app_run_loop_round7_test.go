@@ -76,7 +76,7 @@ func TestRunLoop_CancelWhileWaitingOnRunningWorkEndsCanceled(t *testing.T) {
 			require.Contains(t, out, `"exit_reason":"canceled"`)
 			require.EqualValues(t, 2, h.requests.Load(), "the first turn's two steps (job call, then its result); no paid turn follows the cancel")
 			require.Equal(t, "canceled", endedReasonOf(t, h.app, h.sessionID))
-			require.Equal(t, []string{"", "end_turn", "canceled"}, writes())
+			require.Equal(t, []string{"", "canceled"}, writes(), "loop turns write none; the exit writes the envelope's reason once")
 		})
 	}
 }
