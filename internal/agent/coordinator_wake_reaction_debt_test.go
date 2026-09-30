@@ -288,6 +288,9 @@ func TestSessionDrainPolicy_StopSuspendsUntilHumanMessage(t *testing.T) {
 	ctx := context.Background()
 	f := newWakeDebtFixture(t, "stop-suspends-web")
 	f.coord.Cancel(f.sessID) // Stop, with no prior work -- just arms the suspension
+	// Stop re-checks the tree and releases this idle session's driver record
+	// (R7B-2); a real root has none, so the fixture puts its agent back.
+	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
 
 	f.claimAndFinish(t, ctx, "call-1")
 	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
