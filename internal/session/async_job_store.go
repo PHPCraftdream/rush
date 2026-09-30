@@ -587,6 +587,21 @@ func (s *AsyncJobStore) DeleteUnannounced(ctx context.Context, owner, toolCallID
 // Get reads the current row for (owner, toolCallID), or sql.ErrNoRows if
 // none exists. A thin read-only wrapper for tests and any caller that
 // needs a direct row read (e.g. diagnostics); the cross-process readers are
+// deleteUnannouncedForClaim is DeleteUnannounced for a caller that read the row
+// first (dead-host recovery): it removes that incarnation only. Two recoverers
+// can list the same unannounced row; if one deletes it and a live host claims
+// the same tool_call_id before the other's delete, a key-only delete would
+// remove the live host's row (R3A-3). Reports whether this call deleted it.
+func (s *AsyncJobStore) deleteUnannouncedForClaim(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+	rows, err := s.q.DeleteUnannouncedAsyncJobForClaim(ctx, db.DeleteUnannouncedAsyncJobForClaimParams{
+		OwnerSessionID: owner, ToolCallID: toolCallID, ClaimID: claimID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("async job store: delete unannounced (claim): %w", err)
+	}
+	return rows > 0, nil
+}
+
 // in async_job_reader.go.
 func (s *AsyncJobStore) Get(ctx context.Context, owner, toolCallID string) (db.AsyncJob, error) {
 	return s.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: toolCallID})

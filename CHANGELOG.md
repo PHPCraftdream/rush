@@ -193,7 +193,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   the next turn; a delegation whose child messages
   cannot be read is left `running` for a later sweep instead of reporting a
   false empty answer. Recovery only records what happened: it never writes
-  history and never wakes a session. A natural completion that races a
+  history and never wakes a session, and it does not hold the dead host's lock
+  while it works, so a crashed `rush run`'s session can be taken over at once
+  instead of reading "alive" until the recovery ends. A natural completion that races a
   graceful shutdown is still recorded (only jobs that shutdown itself
   cancels stay `running` for the next host), and a Stop between a job's
   claim and its "started" result no longer orphans the row. The old

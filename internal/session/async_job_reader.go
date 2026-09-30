@@ -42,7 +42,7 @@ type LiveJob struct {
 // HostLiveness is the reader's per-row liveness check (doc sec.3.6/3.8):
 // this process's own host is alive by definition and is never probed
 // (IsOwnHostID); anything else goes through the shared, non-acquiring probe
-// (ProbeHostShared) so a live recoverer holding the exclusive lock is never
+// (ProbeHostShared) so a recoverer about to unlink the host's lock file is never
 // disturbed. A probe error that isn't a definite HostStatusDead verdict is
 // folded into HostStatusUnknown -- doc sec.3.6: any outcome other than a
 // clean "dead" leaves the row visible, never silently reapable.
