@@ -34,7 +34,7 @@ func childDelegationFixture(t *testing.T, o attemptFixtureOpts) (*attemptFixture
 	})
 	_, _, err = f.ledger.Start(parent.ID, "delegate-1", "do work", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
-	f.ledger.acknowledged(parent.ID, "delegate-1")
+	f.ledger.acknowledged(jobOf(f.ledger, parent.ID, "delegate-1"))
 	// The child owes a reaction to its own notice when its first turn ends.
 	require.NoError(t, f.store.InsertSessionNotice(ctx, child.ID, "manual_test_notice", "child job finished", true, ""))
 	return f, parent.ID, child.ID, ch
