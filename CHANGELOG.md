@@ -424,6 +424,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   most recently updated top-level session (a worker's child session updated
   later is no longer taken for it); a CLI run on a coordinator that cannot drive
   the loop fails with an error instead of silently running one plain turn.
+- **`rush run`: a reviewer pass refused by the session lock keeps the run's
+  answer, and every loop exit records its exit reason (review round 6).** When
+  another process (a web tab's human turn, `sessions inject`) holds the
+  session lock as the loop's scope closes, the automatic reviewer turn is
+  skipped with a stderr line instead of replacing the run's answer with an
+  empty error envelope: the JSON envelope and terse output keep the last
+  completed answer, the exit is clean, and the refused turn no longer writes
+  `ended_reason` "error". A loop exit while waiting between turns (Ctrl-C,
+  `--timeout`, stuck debt, a cap or `sessions cancel` at the precheck, an
+  unreadable DB) now stores the envelope's `exit_reason` in the session's
+  `ended_reason` once, so `sessions show` no longer says "end_turn" beside an
+  envelope that says "canceled". The `HasLiveOwnWork` field is documented as
+  what it is: an own running job OR a live `rush run` driver between turns
+  (it does not imply a job exists); comments and docs only.
 - **`rush run`: `--no-supervision` / `--supervision-interval` cover the reviewer's
   jobs, and cancel exits count a running child's spend (review round 5).** The
   reviewer turn now carries the run's supervision options: since its jobs are
