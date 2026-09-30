@@ -180,3 +180,65 @@ func lockDriver(candidates []session.SessionDriver, pid int) (session.SessionDri
 	}
 	return session.SessionDriver{}, false
 }
+
+// lockStemIDs maps a lock-file stem to the real session ids that sanitise to
+// it (R8C-8): the file name cannot be mapped back, so the top-level session
+// list and the live driver markers are the sources. A failed list still
+// yields the driver ids.
+func lockStemIDs(ctx context.Context, a *app.App, drivers map[string]session.SessionDriver) map[string][]string {
+	out := map[string][]string{}
+	seen := map[string]bool{}
+	add := func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		stem := sanitiseSessionIDForFilename(id)
+		out[stem] = append(out[stem], id)
+	}
+	if a != nil && a.Sessions != nil {
+		if sessions, err := a.Sessions.List(ctx); err == nil {
+			for _, s := range sessions {
+				add(s.ID)
+			}
+		}
+	}
+	for id := range drivers {
+		add(id)
+	}
+	return out
+}
+
+// lockCallTreeActivity is callTreeActivityFresherThan over a lock file's real
+// session ids (several when ids collide on one stem): the freshest candidate
+// wins. Without a known id the stem itself is tried (a plain id is its own
+// stem).
+func lockCallTreeActivity(ctx context.Context, a *app.App, ids []string, stem string, baselineUnix int64) (callTreeActivity, bool) {
+	if len(ids) == 0 {
+		ids = []string{stem}
+	}
+	var best callTreeActivity
+	found := false
+	for _, id := range ids {
+		if act, fresher := callTreeActivityFresherThan(ctx, a, id, baselineUnix); fresher && (!found || act.LatestUnix > best.LatestUnix) {
+			best, found = act, true
+		}
+	}
+	return best, found
+}
+
+// resolveLocksFilterStem turns the `sessions locks <id>` argument (a session
+// id or hash prefix) into the lock-file stem to match. An argument that names
+// no session is taken as a literal id or stem, so a lock whose session was
+// deleted can still be inspected; an ambiguous prefix is an error.
+func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string, error) {
+	sess, err := resolveSessionID(ctx, a.Sessions, arg)
+	switch {
+	case err == nil:
+		return sanitiseSessionIDForFilename(sess.ID), nil
+	case strings.HasPrefix(err.Error(), "session not found"):
+		return sanitiseSessionIDForFilename(arg), nil
+	default:
+		return "", err
+	}
+}

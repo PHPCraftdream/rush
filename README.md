@@ -236,15 +236,22 @@ jq -r '.error' "$out"         # error.message if non-success
   runs inherit it.
 - **`--stream`** — streams every token to stdout for live wrappers.
 - **`--idle-timeout <duration>`** (default `15m`) — ends the run if the
-  agent goes quiet for this long (no streamed output, no tool
-  call/result; a long-running tool call is not "quiet"). Terminal —
+  agent goes quiet for this long during a turn (no streamed output, no
+  tool call/result; a long-running tool call is not "quiet"). Terminal —
   unlike a plain provider stall elsewhere, it never silently retries.
-  Usually left alone.
-- **`--timeout <duration>`** (default `0`, i.e. disabled) — an
-  additional hard wall-clock cap on the whole run, for when a task
-  must fit an external deadline (a CI slot, a cron window). Most
-  invocations don't need it: `--idle-timeout` already bounds a stuck
-  agent, and `rush run` otherwise runs until the agent finishes.
+  It watches turns only: a run waiting between turns on a job, a
+  delegation or a retry pause is not covered by it. Usually left alone.
+- **`--timeout <duration>`** (default `0`, i.e. no explicit deadline) —
+  a hard wall-clock cap on the whole run, for when a task must fit an
+  external deadline (a CI slot, a cron window) or must outlive the
+  default cap. A run is never unbounded: without `--timeout` a **6 h
+  default wall-clock cap** applies (override with
+  `RUSH_RUN_DEFAULT_HARD_TIMEOUT`: seconds or a Go duration such as
+  `30m`/`2h`; invalid or non-positive falls back to 6 h). Reaching the
+  cap or `--timeout` ends the run gracefully like Ctrl-C (exit reason
+  `canceled`, exit 1, an envelope; the jobs the run started are
+  cancelled), so a wait longer than 6 h (an 8-hour soak test) needs an
+  explicit `--timeout`.
 
 #### Background shell ownership
 
@@ -442,6 +449,9 @@ list`.
   true` and `between_turns: true` (JSON), no turn is in flight to
   interrupt, and the message reaches the loop's next turn if it runs
   one (otherwise the session's next run).
+- A session waiting between turns on its own running background job or a
+  live delegation (the web case: no driver marker, no lock) counts as
+  running too (`running: true`); the message reaches its next turn.
 
 Delivery costs nothing at rest: `rush sessions inject` writes a
 signal row to a `pending_injects` table, and the running process only

@@ -291,11 +291,16 @@ is targeted; the model then either retries with a different path or
 falls back to returning the content via final_text — both of which
 keep the redirect target intact.
 
-Time limits (usually leave both alone): --timeout bounds the WHOLE run
-and defaults to 0 (disabled — no limit). --idle-timeout (default 15m)
-already ends the run if the agent goes quiet for that long, so most
-invocations don't need --timeout at all; only reach for it when a run
-must fit a hard external deadline (a CI job slot, a cron window).`,
+Time limits (usually leave both alone): --timeout bounds the WHOLE run and
+defaults to 0 (disabled), but a run is never unbounded: without --timeout
+the 6h default wall-clock cap applies (see "Runaway protection" above;
+override via RUSH_RUN_DEFAULT_HARD_TIMEOUT), and a wait known to be longer
+(an 8h soak test) needs an explicit --timeout. --idle-timeout (default 15m)
+ends the run if the agent goes quiet for that long DURING A TURN; it does not
+watch a run that is waiting between turns on a job, a delegation or a retry
+pause -- that wait is bounded only by --timeout or the cap. Only reach for
+--timeout when a run must fit a hard external deadline (a CI job slot, a
+cron window) or must outlive the cap.`,
 	Example: `
 # Run a simple prompt
 rush run "Guess my 5 favorite Pokémon"
