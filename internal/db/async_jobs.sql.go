@@ -222,6 +222,7 @@ const countAsyncJobsOlderThan = `-- name: CountAsyncJobsOlderThan :one
 SELECT COUNT(*) FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL)
   AND NOT (child_session_id IS NOT NULL AND (
         EXISTS (
             SELECT 1 FROM async_jobs c
@@ -523,7 +524,9 @@ const listAsyncHosts = `-- name: ListAsyncHosts :many
 SELECT id, pid, label, started_at FROM async_hosts ORDER BY started_at ASC
 `
 
-// Reader for `sessions jobs`/`sessions hosts` display.
+// Test/diagnostic reader: no production caller, no `sessions hosts` command.
+// `label` is the registrant's App label ("app" at both NewAsyncJobStore call
+// sites), display-only bookkeeping.
 func (q *Queries) ListAsyncHosts(ctx context.Context) ([]AsyncHost, error) {
 	rows, err := q.query(ctx, q.listAsyncHostsStmt, listAsyncHosts)
 	if err != nil {
@@ -1027,6 +1030,7 @@ const purgeAsyncJobsOlderThan = `-- name: PurgeAsyncJobsOlderThan :execrows
 DELETE FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL)
   AND NOT (child_session_id IS NOT NULL AND (
         EXISTS (
             SELECT 1 FROM async_jobs c
@@ -1060,6 +1064,11 @@ WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
 // session_notices, pending included): isDurableDelegationChild recognises a
 // released delegation child only by this row, and a child whose row was
 // purged mid-work would get an uncapped Drain on the parent's agent.
+// R5A-1: a job_kill row that is 'done' with notice_message_id NULL (wake=0,
+// reacted=1: never debt) is the state dead-host recovery repairs
+// (RependJobKillRowsWithoutNoticeForHost, the third arm of
+// ListDistinctRecoverableHostIDs); purging it first would leave recovery
+// nothing to re-pend and the killed job's output would never reach the session.
 func (q *Queries) PurgeAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error) {
 	result, err := q.exec(ctx, q.purgeAsyncJobsOlderThanStmt, purgeAsyncJobsOlderThan, updatedAt)
 	if err != nil {
@@ -1630,25 +1639,4 @@ func (q *Queries) VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJ
 		return nil, err
 	}
 	return items, nil
-}
-
-const voidPendingAsyncJobNotice = `-- name: VoidPendingAsyncJobNotice :execrows
-UPDATE async_jobs SET delivery = 'void', updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'pending'
-`
-
-type VoidPendingAsyncJobNoticeParams struct {
-	UpdatedAt      int64  `json:"updated_at"`
-	OwnerSessionID string `json:"owner_session_id"`
-	ToolCallID     string `json:"tool_call_id"`
-}
-
-// A pulled notice whose task-still-running condition failed (doc sec.3.4,
-// supervision/wake_only void-at-drain rule) becomes void instead of done.
-func (q *Queries) VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error) {
-	result, err := q.exec(ctx, q.voidPendingAsyncJobNoticeStmt, voidPendingAsyncJobNotice, arg.UpdatedAt, arg.OwnerSessionID, arg.ToolCallID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }

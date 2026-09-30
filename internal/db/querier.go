@@ -415,7 +415,9 @@ type Querier interface {
 	// rowid is the tie-breaker: see ListUserMessagesBySession above - identical
 	// reasoning applies across all sessions, not just one.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
-	// Reader for `sessions jobs`/`sessions hosts` display.
+	// Test/diagnostic reader: no production caller, no `sessions hosts` command.
+	// `label` is the registrant's App label ("app" at both NewAsyncJobStore call
+	// sites), display-only bookkeeping.
 	ListAsyncHosts(ctx context.Context) ([]AsyncHost, error)
 	// Retention candidates (doc sec.3.7): host rows with zero referencing
 	// async_jobs rows of ANY state. Caller still must verify the lock file
@@ -635,6 +637,11 @@ type Querier interface {
 	// session_notices, pending included): isDurableDelegationChild recognises a
 	// released delegation child only by this row, and a child whose row was
 	// purged mid-work would get an uncapped Drain on the parent's agent.
+	// R5A-1: a job_kill row that is 'done' with notice_message_id NULL (wake=0,
+	// reacted=1: never debt) is the state dead-host recovery repairs
+	// (RependJobKillRowsWithoutNoticeForHost, the third arm of
+	// ListDistinctRecoverableHostIDs); purging it first would leave recovery
+	// nothing to re-pend and the killed job's output would never reach the session.
 	PurgeAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error)
 	// Same retention pass as PurgeAsyncJobsOlderThan (doc sec.3.7), including
 	// the A5 "never purge unreacted debt" guard, scoped to delivery='done'
@@ -958,9 +965,6 @@ type Querier interface {
 	// tail's tool_call_ids. Restricted to NULL so a row that DOES name its
 	// announce message is never matched by a possibly-reused tool_call_id.
 	VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJobsByToolCallIDsParams) ([]VoidAsyncJobsByToolCallIDsRow, error)
-	// A pulled notice whose task-still-running condition failed (doc sec.3.4,
-	// supervision/wake_only void-at-drain rule) becomes void instead of done.
-	VoidPendingAsyncJobNotice(ctx context.Context, arg VoidPendingAsyncJobNoticeParams) (int64, error)
 	// A pulled notice whose "task still running" condition failed (doc sec.3.4:
 	// supervision notice is debt only while the scope still has a running row;
 	// wake_only timeout notice voids if the task is no longer running) becomes

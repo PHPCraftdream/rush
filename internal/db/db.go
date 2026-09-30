@@ -480,9 +480,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.voidAsyncJobsByToolCallIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByToolCallIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByToolCallIDs: %w", err)
 	}
-	if q.voidPendingAsyncJobNoticeStmt, err = db.PrepareContext(ctx, voidPendingAsyncJobNotice); err != nil {
-		return nil, fmt.Errorf("error preparing query VoidPendingAsyncJobNotice: %w", err)
-	}
 	if q.voidPendingSessionNoticeStmt, err = db.PrepareContext(ctx, voidPendingSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingSessionNotice: %w", err)
 	}
@@ -1257,11 +1254,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing voidAsyncJobsByToolCallIDsStmt: %w", cerr)
 		}
 	}
-	if q.voidPendingAsyncJobNoticeStmt != nil {
-		if cerr := q.voidPendingAsyncJobNoticeStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing voidPendingAsyncJobNoticeStmt: %w", cerr)
-		}
-	}
 	if q.voidPendingSessionNoticeStmt != nil {
 		if cerr := q.voidPendingSessionNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidPendingSessionNoticeStmt: %w", cerr)
@@ -1468,7 +1460,6 @@ type Queries struct {
 	visibleAsyncReactionDebtExistsStmt                   *sql.Stmt
 	voidAsyncJobsByAnnounceMessageIDsStmt                *sql.Stmt
 	voidAsyncJobsByToolCallIDsStmt                       *sql.Stmt
-	voidPendingAsyncJobNoticeStmt                        *sql.Stmt
 	voidPendingSessionNoticeStmt                         *sql.Stmt
 	voidWakeFailedNoticesByMessageIDsStmt                *sql.Stmt
 	writeToOrphanOutboxStmt                              *sql.Stmt
@@ -1630,7 +1621,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		visibleAsyncReactionDebtExistsStmt:                   q.visibleAsyncReactionDebtExistsStmt,
 		voidAsyncJobsByAnnounceMessageIDsStmt:                q.voidAsyncJobsByAnnounceMessageIDsStmt,
 		voidAsyncJobsByToolCallIDsStmt:                       q.voidAsyncJobsByToolCallIDsStmt,
-		voidPendingAsyncJobNoticeStmt:                        q.voidPendingAsyncJobNoticeStmt,
 		voidPendingSessionNoticeStmt:                         q.voidPendingSessionNoticeStmt,
 		voidWakeFailedNoticesByMessageIDsStmt:                q.voidWakeFailedNoticesByMessageIDsStmt,
 		writeToOrphanOutboxStmt:                              q.writeToOrphanOutboxStmt,

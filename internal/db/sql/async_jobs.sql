@@ -10,7 +10,9 @@ RETURNING *;
 SELECT * FROM async_hosts WHERE id = ?;
 
 -- name: ListAsyncHosts :many
--- Reader for `sessions jobs`/`sessions hosts` display.
+-- Test/diagnostic reader: no production caller, no `sessions hosts` command.
+-- `label` is the registrant's App label ("app" at both NewAsyncJobStore call
+-- sites), display-only bookkeeping.
 SELECT * FROM async_hosts ORDER BY started_at ASC;
 
 -- name: ListDistinctRecoverableHostIDs :many
@@ -277,12 +279,6 @@ UPDATE async_jobs SET notice_message_id = @notice_message_id, updated_at = @upda
 WHERE owner_session_id = @owner_session_id AND claim_id = @claim_id AND claim_id != ''
   AND delivery = 'done' AND notice_message_id IS NULL;
 
--- name: VoidPendingAsyncJobNotice :execrows
--- A pulled notice whose task-still-running condition failed (doc sec.3.4,
--- supervision/wake_only void-at-drain rule) becomes void instead of done.
-UPDATE async_jobs SET delivery = 'void', updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'pending';
-
 -- name: AsyncReactionDebtExists :one
 -- Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
 -- idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
@@ -436,9 +432,15 @@ SELECT * FROM async_jobs WHERE owner_session_id = ? ORDER BY created_at ASC;
 -- session_notices, pending included): isDurableDelegationChild recognises a
 -- released delegation child only by this row, and a child whose row was
 -- purged mid-work would get an uncapped Drain on the parent's agent.
+-- R5A-1: a job_kill row that is 'done' with notice_message_id NULL (wake=0,
+-- reacted=1: never debt) is the state dead-host recovery repairs
+-- (RependJobKillRowsWithoutNoticeForHost, the third arm of
+-- ListDistinctRecoverableHostIDs); purging it first would leave recovery
+-- nothing to re-pend and the killed job's output would never reach the session.
 DELETE FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL)
   AND NOT (child_session_id IS NOT NULL AND (
         EXISTS (
             SELECT 1 FROM async_jobs c
@@ -457,6 +459,7 @@ WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
 SELECT COUNT(*) FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL)
   AND NOT (child_session_id IS NOT NULL AND (
         EXISTS (
             SELECT 1 FROM async_jobs c
