@@ -80,5 +80,4 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	require.False(t, res.Running, "no lock, no loop: unchanged")
 	require.Equal(t, "persisted-offline", res.Status)
 	require.False(t, res.BetweenTurns)
-
 }
