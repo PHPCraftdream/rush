@@ -576,7 +576,7 @@ var cliDBErrorRetryOverallLimit = 30 * time.Second
 // nextStep implements doc sec.3.5's CLI-loop decision through the
 // coordinator's single CLIScope answer, waiting as long as it must: Owed --
 // run a Drain (the pre-launch caps are checked by the caller); Paced -- wait
-// until the gate reopens (a newer event may reopen it sooner); running work --
+// until the gate reopens (a newer event reopens it early only after a refusal, never after a paid failure); running work --
 // wait (heartbeat on stderr); Stuck with nothing running -- give up; Deferred
 // or no debt with nothing running -- the scope is closed. A DB read error
 // retries with a pause, bounded overall and visible on stderr.
