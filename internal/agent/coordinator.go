@@ -272,6 +272,11 @@ type coordinator struct {
 	// coordinator_subagent_drivers.go.
 	subAgentDrivers *subAgentDriverRegistry
 
+	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
+	// goroutine over WakeScheduleStore.NextDue), wired via
+	// SetWakeScheduleStore from internal/app; nil until then.
+	wakeScheduler *wakeScheduler
+
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
 	mcpOwner *mcp.Owner

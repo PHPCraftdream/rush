@@ -171,5 +171,14 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	// Stage 4b: start the durable wake-schedule worker over this App's
+	// store. Optional-interface assertion (agent.WakeScheduleController):
+	// the Coordinator interface is not grown for it, so existing test
+	// fakes keep compiling.
+	if app.wakeScheduleStore != nil {
+		if ctrl, ok := app.AgentCoordinator.(agent.WakeScheduleController); ok {
+			ctrl.SetWakeScheduleStore(app.wakeScheduleStore)
+		}
+	}
 	return nil
 }

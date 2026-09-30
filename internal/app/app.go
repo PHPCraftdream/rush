@@ -105,6 +105,12 @@ type App struct {
 	// dataDir=="".
 	asyncJobStore *session.AsyncJobStore
 
+	// wakeScheduleStore is the stage-4b durable wake-schedule store
+	// (internal/agent/wake_scheduler.go is the worker over it), built next
+	// to asyncJobStore below and handed to the coordinator in
+	// InitCoderAgent. Nil under SkipAgentSetup or when dataDir=="".
+	wakeScheduleStore *session.WakeScheduleStore
+
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
 	RunQueuePump *session.RunQueuePump
@@ -308,6 +314,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	if !o.skipAgentSetup && dataDir != "" {
 		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
 		app.asyncJobStore.SetMessages(messages)
+		// Stage 4b: the durable wake-schedule store over the same writer
+		// pool. Construction does no I/O; the worker is started by
+		// InitCoderAgent's SetWakeScheduleStore (a config-only App never
+		// needs the timer).
+		app.wakeScheduleStore = session.NewWakeScheduleStore(conn)
 		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
 		// SAME read-only pool session/message already share above, so
 		// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/

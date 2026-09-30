@@ -178,6 +178,15 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		slog.Info("app: stopped run queue pump")
 	}
 
+	// Stop the stage-4b wake-schedule worker (the same before-DB-close
+	// ordering as the pump): its timer goroutine must not claim or fire
+	// schedules under a closing DB. Stop is synchronous (waits for the
+	// worker loop to exit); a wake delivery already detached into its own
+	// goroutine follows the same policy as supervision's detached wakes.
+	if ctrl, ok := app.AgentCoordinator.(agent.WakeScheduleController); ok {
+		ctrl.StopWakeScheduler()
+	}
+
 	// All subscriptions exposed by this App are owned by the App, not by the
 	// caller's context. Close every broker after the pump's bounded stop/drain
 	// chance so a subscriber using context.Background receives EOF only after

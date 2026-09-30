@@ -22,6 +22,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Wake-schedule worker (stage 4b)**: a single per-process timer
+  (`internal/agent/wake_scheduler.go`) over the `wake_schedules` store:
+  sleeps until the nearest due schedule, recovers expired leases on start,
+  never catches up missed intervals (one immediate firing after downtime,
+  loops stay on their original grid), and delivers each fired occurrence
+  through the ordinary durable wake path (`wake_fired` session notice +
+  `coordinator.wakeSession` — a system event, not a human message). Wired
+  into App startup/shutdown via the new `agent.WakeScheduleController`
+  interface; adds `HasOpenOnceWakeSchedule` for stage 5a (an active
+  one-shot timer will hold `rush run` open, a loop will not). New
+  invariants SCHED-06…SCHED-08 in `docs/async-invariants.md`.
 - **Durable wake schedules (stage 4a)**: a `wake_schedules` table (migration
   `20260929000005`) and the `session.WakeScheduleStore` service behind it:
   `once`/`loop` schedules owned by a session, lease-based `ClaimDue`,
