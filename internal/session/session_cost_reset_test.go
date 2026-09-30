@@ -215,10 +215,10 @@ func TestIncrementCostIfUnderMax_NegativeDeltaFollowsTheLedger(t *testing.T) {
 	_, ok, err := f.svc.IncrementCostIfUnderMax(f.ctx, f.child.ID, -1.0, 5.0)
 	require.NoError(t, err)
 	require.True(t, ok)
-	f.spend(t, 0.6)
+	f.spend(t, 1.5) // more than the old accounted amount: only the ledger move charges it
 	f.transfer(t)
 
-	require.InDelta(t, 1.6, f.cost(t, f.parent.ID), 1e-9)
+	require.InDelta(t, 2.5, f.cost(t, f.parent.ID), 1e-9)
 }
 
 // TestCostResetRacingTransfers_ParentSeesEverySpendOnce hammers spends,

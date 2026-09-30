@@ -575,8 +575,8 @@ type Querier interface {
 	// Ack gate (DUR-7): "started" and announced=1 are one transaction with NO
 	// condition on state -- a job that raced to terminal before its own
 	// "started" tool-result committed must still be marked announced (the
-	// caller checks rows-affected==0 only to detect a since-deleted row, e.g.
-	// a Rerun that removed it out from under this transaction).
+	// caller checks rows-affected==0 only to detect a since-deleted row: the
+	// owner session was deleted, which cascades; Rerun never deletes rows).
 	MarkAsyncJobAnnounced(ctx context.Context, arg MarkAsyncJobAnnouncedParams) (int64, error)
 	// Reaction is recorded where it happens (doc sec.3.4): the same transaction
 	// that persists a model step's real-content finish marks every wake=1,
