@@ -514,3 +514,28 @@ func TestSessionsLocksCmdRun_CollidingDeadSessionStaysOffline(t *testing.T) {
 	require.True(t, row.Stale)
 	require.False(t, row.BetweenTurns)
 }
+
+// With Sessions.Get carrying ended_reason (R7C-4), the watch's signal (a) is
+// live: a row that says "canceled" ends the watch with that reason once the
+// loop is gone, but never while the driver marker is live (the live-work
+// consultation runs before the verdict is trusted).
+//
+// Revert-check: dropping the live-work consultation from isSessionFinished
+// makes the first assertion fail; dropping ended_reason from Get's result
+// changes the second reason to "end_turn".
+func TestIsSessionFinished_EndedReasonEndsTheWatchOnlyWhenNoLoopIsLive(t *testing.T) {
+	t.Parallel()
+	a, s, m, store, dataDir := newRunDriverTestApp(t)
+	ctx := context.Background()
+	sess := betweenTurnsSession(t, s, m, dataDir, "canceled row, live loop", message.FinishReasonEndTurn)
+	require.NoError(t, s.SetEndedReason(ctx, sess.ID, "canceled"))
+	require.NoError(t, store.ClaimSessionDriver(ctx, sess.ID))
+
+	st, reason := isSessionFinished(ctx, a, sess.ID, dataDir)
+	require.False(t, st.done, "a live loop keeps the watch going whatever the row says (reason %q)", reason)
+
+	require.NoError(t, store.ReleaseSessionDriver(ctx, sess.ID))
+	st, reason = isSessionFinished(ctx, a, sess.ID, dataDir)
+	require.True(t, st.done)
+	require.Equal(t, "canceled", reason, "signal (a): the row's ended_reason is the reason")
+}

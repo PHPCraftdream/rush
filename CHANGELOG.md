@@ -495,6 +495,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `os.Exit(124)` remains only for a process still alive 60 s past the deadline.
   A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
   an explicit `--timeout`. `--timeout` itself is unchanged.
+- **`sessions cancel` stops a `rush run` that is waiting on a job (review round
+  7).** The flag was read only before a paid turn, so a loop waiting on a
+  long-running job (or on the launch gate's pause) ignored the cancel until the
+  job ended. The loop now reads it at every wake of that wait (at least every
+  5 s) and ends `canceled` like Ctrl-C: envelope, `--on-finish`, `ended_reason`,
+  and the jobs the run started are cancelled with the process.
+- **`sessions locks`, `sessions inject` and `sessions tail` handle ids with
+  path characters, loops between turns and hashes (review round 7).** A
+  session id with `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` or a space (for
+  example `--session fix/login-timeout`) has a lock file named with `_`, so the
+  round-6 "between turns" detection and the `--prune` guard missed it: such a
+  loop read `offline`, and `--prune` could take its lock. They now match by the
+  lock-file name. `sessions inject` into a session a live `rush run` loop drives
+  between turns answers `running: true` (JSON `between_turns`, `driver_pid`; the
+  message names the loop) instead of "no process is currently running this
+  session"; `--interrupt` has no running turn to cancel there and applies when
+  the loop starts its next one. `sessions tail <hash>` (the HASH column of
+  `sessions list`) prints the messages and `--follow` ends, and Ctrl-C ends
+  `tail --follow` with exit 0 as documented.
+- **`sessions show` prints how the last run ended and its budget, and
+  `sessions list --json` carries `ended_reason` (review round 7).** The
+  round-6 change that keeps `ended_reason` in step with the envelope was
+  invisible: `Sessions.Get` dropped the column, so `Ended:` and the budget never
+  appeared. `run.go`'s help now says what is written: the run's `exit_reason`
+  (the model's finish such as `end_turn`, `error` -- also for a
+  `--max-cost`/`--max-tokens` exit -- or `canceled` for Ctrl-C, `--timeout`, the
+  default cap and `sessions cancel`), empty while a run is in progress.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now

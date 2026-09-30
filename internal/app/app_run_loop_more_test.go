@@ -22,8 +22,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// cancelFlagSessions answers IsCancelRequested from a fixed value; every
+// other session.Service method is unset (nextStep reads only the flag).
+type cancelFlagSessions struct {
+	session.Service
+	canceled bool
+}
+
+func (c cancelFlagSessions) IsCancelRequested(context.Context, string) (bool, error) {
+	return c.canceled, nil
+}
+
 func nextStepLoop(src agent.ReactionDebtSource) *cliLoop {
-	return &cliLoop{ctx: context.Background(), source: src, sessionID: "sess-1"}
+	return nextStepLoopCancel(src, false)
+}
+
+func nextStepLoopCancel(src agent.ReactionDebtSource, canceled bool) *cliLoop {
+	return &cliLoop{
+		ctx: context.Background(), source: src, sessionID: "sess-1",
+		app: &App{Sessions: cancelFlagSessions{canceled: canceled}},
+	}
 }
 
 // TestNextStep_DecisionTable pins how the loop reads each CLIScope answer:
@@ -59,6 +77,39 @@ func TestNextStep_DecisionTable(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.want, step)
 			require.Equal(t, tc.wantWaits, src.waits.Load())
+		})
+	}
+}
+
+// R7C-1: a pending `sessions cancel` ends the wait on running work or on the
+// launch gate before it starts (stepCanceled, no WaitForHint); an Owed Drain is
+// still returned as such (the precheck before the paid turn reads the flag).
+//
+// Revert-check: without the cancel check in the WorkOpen / Paced branch the
+// matching row waits (waits == 1) and returns stepDrain/stepExit instead.
+func TestNextStep_CancelRequestedEndsTheWait(t *testing.T) {
+	cases := []struct {
+		name  string
+		state agent.CLIScopeState
+		want  cliStep
+	}{
+		{"running work", agent.CLIScopeState{WorkOpen: true}, stepCanceled},
+		{"paced gate", agent.CLIScopeState{Drain: agent.DrainPaced, RetryAt: time.Now().Add(time.Hour)}, stepCanceled},
+		{"owed drain is left to the precheck", agent.CLIScopeState{Drain: agent.DrainOwed}, stepDrain},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &scriptedScopeSource{script: []scopeAnswer{{state: tc.state}, {state: agent.CLIScopeState{}}}}
+			step, _, err := nextStepLoopCancel(src, true).nextStep()
+			require.Equal(t, tc.want, step)
+			require.Zero(t, src.waits.Load(), "no wait starts once the cancel is pending")
+			if tc.want == stepCanceled {
+				var inc *runIncompleteError
+				require.ErrorAs(t, err, &inc)
+				require.Equal(t, "canceled", inc.reason)
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

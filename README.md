@@ -437,6 +437,11 @@ list`.
 - If no process is currently running the session, the message is
   still persisted and picked up the next time the session runs; the
   command tells you so instead of failing.
+- A `rush run` loop waiting between turns (on a job, a delegation or a
+  retry) counts as running the session: the result says `running:
+  true` and `between_turns: true` (JSON), no turn is in flight to
+  interrupt, and the message reaches the loop's next turn if it runs
+  one (otherwise the session's next run).
 
 Delivery costs nothing at rest: `rush sessions inject` writes a
 signal row to a `pending_injects` table, and the running process only
