@@ -82,7 +82,7 @@ type Session struct {
 
 	SystemPrompt    string
 	YoloEnabled     bool
-	CancelRequested bool // Only populated by ListAll; use IsCancelRequested() for live checks.
+	CancelRequested bool // Snapshot of the row when read; use IsCancelRequested() for a live check.
 
 	// DeletedTodos holds the Content strings of todos that the operator
 	// explicitly removed via the UI. mergeTodos uses this set as a tombstone
@@ -91,7 +91,7 @@ type Session struct {
 
 	// Fork patch (operator UX): persisted from --max-cost / --max-tokens /
 	// --timeout at run start so sessions show/locks can display budget.
-	EndedReason      string  // "done","canceled","timeout","max_cost","max_tokens","error","crash",""
+	EndedReason      string  // exit reason the last `rush run` recorded; "" while running or never run
 	BudgetMaxCost    float64 // --max-cost value, 0 if unlimited
 	BudgetMaxTokens  int64   // --max-tokens value, 0 if unlimited
 	BudgetTimeoutSec int64   // --timeout in seconds, 0 if unlimited
@@ -185,12 +185,15 @@ type Service interface {
 	// share a session ID. Returns the refreshed session snapshot.
 	//
 	// Semantics for delta = 0: the implementation short-circuits to a
-	// plain Get so callers can use IncrementCost(id, 0) as a "verify the
-	// session exists and grab its current snapshot" call without paying
-	// the cost of an UPDATE. This preserves the not-found error path for
-	// callers like coordinator.updateParentSessionCost where a child
-	// with zero accrued cost still wants to fail if the parent went
-	// away. Pass a non-zero delta only when you actually want to charge.
+	// plain Get, so IncrementCost(id, 0) is a "verify the session exists and
+	// grab its current snapshot" call without the cost of an UPDATE. Pass a
+	// non-zero delta only when you actually want to charge.
+	//
+	// Semantics for delta < 0 (`sessions reset` zeroes a session this way):
+	// the spend a parent was not yet charged for is charged to it first, then
+	// cost is lowered (never below zero) and parent_cost_accounted is set
+	// equal to it, all in one transaction, so the next
+	// TransferChildCostToParent charges exactly the spend after the decrease.
 	IncrementCost(ctx context.Context, sessionID string, delta float64) (Session, error)
 	// IncrementCostIfUnderMax is IncrementCost's budget-guarded sibling
 	// (task #782, K-2): the charge and the maxCost check happen in ONE
@@ -201,13 +204,16 @@ type Service interface {
 	// combined cost would meet or exceed maxCost; the caller must treat
 	// that exactly like a pre-charge budget-cap skip. maxCost <= 0 is
 	// treated as "unlimited" and always charges (delta == 0 still
-	// short-circuits to a plain Get, same as IncrementCost).
+	// short-circuits to a plain Get, same as IncrementCost). A negative delta
+	// is a decrease and takes IncrementCost's path (it cannot overshoot).
 	IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (sess Session, ok bool, err error)
 	// TransferChildCostToParent moves the child session's cost accrued since
 	// the last transfer into the parent session, atomically in one DB
 	// transaction. It reads the child's persisted parent_cost_accounted
-	// ledger, charges only the delta (cost - accounted, clamped >= 0) to the
-	// parent via the atomic IncrementSessionCost UPDATE, and advances the
+	// ledger, charges only the delta (cost - accounted) to the
+	// parent via the atomic IncrementSessionCost UPDATE (a cost below the
+	// ledger, left by a reset that predates the ledger-aware decrement, is
+	// treated as a reset: all of it is new), and advances the
 	// child's accounted marker to its current cost — all inside one tx so a
 	// crash between the parent charge and the child bookkeeping cannot leave
 	// them inconsistent. Idempotent: a repeat call with no new child cost
@@ -454,8 +460,14 @@ func (s service) fromDBItem(item db.Session) Session {
 		ReviewerModelID:              item.ReviewerModelID.String,
 		ReviewerModelReasoningEffort: item.ReviewerModelReasoningEffort.String,
 
-		SystemPrompt: item.SystemPrompt,
-		YoloEnabled:  item.YoloEnabled != 0,
+		SystemPrompt:    item.SystemPrompt,
+		YoloEnabled:     item.YoloEnabled != 0,
+		CancelRequested: item.CancelRequested != 0,
+
+		EndedReason:      item.EndedReason,
+		BudgetMaxCost:    item.BudgetMaxCost,
+		BudgetMaxTokens:  item.BudgetMaxTokens,
+		BudgetTimeoutSec: item.BudgetTimeoutSec,
 	}
 }
 

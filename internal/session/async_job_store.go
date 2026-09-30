@@ -44,9 +44,10 @@ func HashJobInput(input string) string {
 }
 
 // ErrAsyncChildSessionBusy is ASYNC-01's claim-time refusal (doc sec.3.8): a
-// delegation naming a child session id a RUNNING row already claims. Every
-// conflict is a refusal in this step -- dead-host recovery of the
-// conflicting row is step 5/6, not here.
+// delegation naming a child session id a RUNNING row already claims. Claim
+// first recovers the conflicting row when its host is provably dead and
+// retries once; the refusal is what remains for a live or unknown host, or a
+// conflict that survives the retry.
 type ErrAsyncChildSessionBusy struct {
 	ChildSessionID string
 }
@@ -70,7 +71,8 @@ func (e *ErrAsyncJobInputMismatch) Error() string {
 }
 
 // ErrAsyncJobGone is returned by MarkAnnounced when the target row no
-// longer exists (e.g. a Rerun truncation raced it) -- distinct from a real
+// longer exists (its owner session was deleted, which cascades; Rerun only
+// voids or re-pends rows, it never deletes them) -- distinct from a real
 // I/O failure so callers can treat it as a benign no-op.
 var ErrAsyncJobGone = errors.New("async job store: row no longer exists")
 
@@ -559,8 +561,8 @@ func (s *AsyncJobStore) Transition(ctx context.Context, p TransitionParams) (Tra
 // tool result for (owner, toolCallID) is persisted. Unconditional on state
 // (a job that raced to terminal before its own "started" write commits
 // must still be marked announced). Returns ErrAsyncJobGone if the row no
-// longer exists (e.g. a Rerun truncation raced it) -- a benign no-op for
-// the caller, not a failure.
+// longer exists (its owner session was deleted) -- a benign no-op for the
+// caller, not a failure.
 func (s *AsyncJobStore) MarkAnnounced(ctx context.Context, owner, toolCallID string) error {
 	rows, err := s.q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
 		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: toolCallID,

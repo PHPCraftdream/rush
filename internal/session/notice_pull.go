@@ -317,8 +317,9 @@ func (s *AsyncJobStore) InsertSessionNotice(ctx context.Context, owner, kind, te
 // no condition on the row's state -- a job that races to terminal before
 // its own "started" write commits must still be marked announced, so its
 // already-pending notice becomes pullable. rows==0 (ErrAsyncJobGone) means
-// the row no longer exists (e.g. a Rerun truncation raced it): a benign
-// no-op for the caller, mirroring MarkAnnounced's own doc. The caller
+// the row no longer exists (its owner session was deleted; Rerun never
+// deletes rows): a benign no-op for the caller, mirroring MarkAnnounced's
+// own doc. The caller
 // (workLedger.acknowledgeWithMessageTx) is responsible for the in-memory
 // tail (announced flag, delivery via the existing wake-hint machinery) --
 // this function only owns the durable half.
