@@ -801,13 +801,15 @@ func (l *cliLoop) flushQueuedUsage(now usageMark) {
 
 // applyTotals writes the run's totals into the envelope about to be flushed.
 func (l *cliLoop) applyTotals(final *RunResult) {
+	l.chargeRunningChildren()
 	if l.queuedMark != nil {
 		l.flushQueuedUsage(l.sessionUsage())
 	}
 	l.tot.applyTo(final, l.started)
 	// The run's cost is the session's spend from the claim to now: it covers
 	// what happened between turns (a delegated child's cost is charged to the
-	// root there, and a human turn on the same session is spend too), which the
+	// root there -- for a child still running, by chargeRunningChildren just
+	// above -- and a human turn on the same session is spend too), which the
 	// turns' own deltas miss. The per-turn sum stays as the fallback when a
 	// session read failed. Tokens are last-snapshot counters, summed per turn.
 	if end := l.sessionUsage(); l.startMark.ok && end.ok {
