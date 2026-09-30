@@ -539,3 +539,72 @@ func TestIsSessionFinished_EndedReasonEndsTheWatchOnlyWhenNoLoopIsLive(t *testin
 	require.True(t, st.done)
 	require.Equal(t, "canceled", reason, "signal (a): the row's ended_reason is the reason")
 }
+
+// R8C-8: the sub-agent pulse was looked up by the lock-file STEM (the sanitised
+// id), so a slug id such as "fix/login-timeout" never matched its session and a
+// parked delegation showed a growing root pulse and no sub_agent. The real id
+// is resolved from the session list; `sessions locks <id>` (the guidance's
+// watchdog recipe) then filters to that session, by id or hash prefix.
+//
+// Revert-check: passing the stem to callTreeActivityFresherThan again leaves
+// sub_agent empty for the slug row; dropping the id filter prints every lock.
+func TestSessionsLocksCmdRun_SlugIdGetsSubAgentPulseAndIdFilter(t *testing.T) {
+	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
+	ctx := context.Background()
+	mk := func(id string) session.Session {
+		root, err := a.Sessions.CreateWithID(ctx, id, id)
+		require.NoError(t, err)
+		ageLock(t, releasedLock(t, dataDir, root.ID), 2*time.Minute)
+		child, err := a.Sessions.CreateTaskSession(ctx, "child-of-"+sanitiseSessionIDForFilename(id), root.ID, "sub-agent")
+		require.NoError(t, err)
+		_, err = a.Messages.Create(ctx, child.ID, message.CreateMessageParams{
+			Role:  message.Assistant,
+			Parts: []message.ContentPart{message.ToolCall{ID: "call_1", Name: "view", Input: `{}`}},
+		})
+		require.NoError(t, err)
+		return root
+	}
+	slug, plain := mk("fix/login-timeout"), mk("plain-id")
+	a.Shutdown()
+
+	ensureRootFlagStandIns(sessionsLocksCmd, dataDir)
+	if f := sessionsLocksCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsLocksCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsLocksCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("json", "true"))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("stale-only", "false"))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("prune", "false"))
+	sessionsLocksCmd.SetContext(ctx)
+
+	type item struct {
+		SessionID string `json:"session_id"`
+		Pulse     string `json:"pulse"`
+		SubAgent  string `json:"sub_agent"`
+	}
+	run := func(args ...string) map[string]item {
+		stdout, _ := captureStdoutAndStderr(t, func() { require.NoError(t, sessionsLocksCmd.RunE(sessionsLocksCmd, args)) })
+		got := map[string]item{}
+		dec := json.NewDecoder(strings.NewReader(stdout))
+		for dec.More() {
+			var it item
+			require.NoError(t, dec.Decode(&it))
+			got[it.SessionID] = it
+		}
+		return got
+	}
+
+	slugRow := sanitiseSessionIDForFilename(slug.ID)
+	all := run()
+	require.Len(t, all, 2)
+	require.NotEmpty(t, all[slugRow].SubAgent, "slug id: the child's fresh activity is found")
+	require.NotEmpty(t, all[plain.ID].SubAgent, "plain id: unchanged")
+	require.NotEqual(t, "offline", all[slugRow].Pulse)
+
+	byID := run(slug.ID)
+	require.Len(t, byID, 1)
+	require.Contains(t, byID, slugRow)
+	byHash := run(session.HashID(plain.ID)[:8])
+	require.Len(t, byHash, 1)
+	require.Contains(t, byHash, plain.ID)
+}

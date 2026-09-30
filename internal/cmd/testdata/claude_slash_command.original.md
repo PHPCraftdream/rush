@@ -515,7 +515,10 @@ for that long, and unlike an ordinary provider stall it never silently
 retries — you'll see the run actually end. A tool call that's still
 running counts as activity, so a genuinely long build/test doesn't trip
 it. Pass `--idle-timeout <duration>` to change it, or `0` to disable it
-outright.
+outright. It
+watches turns only: a run waiting between turns on a background job, a
+delegation or a retry pause is bounded by `--timeout` or the 6 h cap, not
+by it.
 
 Only reach for `--timeout <duration>` on top of that when the run must
 fit a hard external deadline (a CI job slot, a cron window) or must wait

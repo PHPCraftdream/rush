@@ -81,3 +81,53 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	require.Equal(t, "persisted-offline", res.Status)
 	require.False(t, res.BetweenTurns)
 }
+
+// R8C-4: a web session between turns with a running own job or a live
+// delegation (no driver marker: only CLI loops claim one) is running, not
+// "persisted-offline".
+//
+// Revert-check: reading only `.driver` from inspectSessionLiveWork makes the
+// job and delegation rows report persisted-offline.
+func TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning(t *testing.T) {
+	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
+	ctx := context.Background()
+	mk := func(id string) string {
+		sess, err := a.Sessions.CreateWithID(ctx, id, id)
+		require.NoError(t, err)
+		ageLock(t, releasedLock(t, dataDir, sess.ID), 2*time.Minute)
+		return sess.ID
+	}
+	jobID, delegID, loneID := mk("inject-web-job"), mk("inject-web-deleg"), mk("inject-web-lone")
+	child, err := a.Sessions.CreateTaskSession(ctx, "inject-web-child", delegID, "sub-agent")
+	require.NoError(t, err)
+	store := a.AsyncJobStore()
+	require.NotNil(t, store)
+	claimOwnJob(t, store, jobID, "bash-1")
+	claimDelegation(t, store, delegID, "delegate-1", child.ID)
+	a.SetAsyncJobStoreForTest(nil)
+	defer func() { _ = store.Close(context.Background()) }()
+	a.Shutdown()
+
+	decode := func(out string) injectResult {
+		var res injectResult
+		require.NoError(t, json.NewDecoder(strings.NewReader(out)).Decode(&res))
+		return res
+	}
+	for _, id := range []string{jobID, delegID} {
+		out, _ := runInject(t, dataDir, id, false, true)
+		res := decode(out)
+		require.True(t, res.Running, "%s: live work behind a released lock is running", id)
+		require.Equal(t, "injected", res.Status, id)
+		require.False(t, res.BetweenTurns, "%s: no CLI loop drives it", id)
+		require.Zero(t, res.DriverPID, id)
+	}
+
+	_, stderr := runInject(t, dataDir, jobID, false, false)
+	require.NotContains(t, stderr, "no process is currently running")
+	require.Contains(t, stderr, "bash-1", "the message names what keeps the session open")
+
+	out, _ := runInject(t, dataDir, loneID, false, true)
+	res := decode(out)
+	require.False(t, res.Running, "nothing live: unchanged")
+	require.Equal(t, "persisted-offline", res.Status)
+}

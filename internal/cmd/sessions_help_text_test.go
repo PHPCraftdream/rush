@@ -7,6 +7,7 @@ package cmd
 // session.
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -71,4 +72,63 @@ func TestSessionsHelp_WhyGcJobsAreAccurate(t *testing.T) {
 	require.Contains(t, jobs, `"kill -INT <pid>"`)
 	require.Contains(t, jobs, "WHOLE host process")
 	require.NotContains(t, jobs, "does nothing between turns")
+}
+
+// timeLimitsParagraph returns the text from marker (the "Time limits" heading) on.
+func timeLimitsParagraph(t *testing.T, s, marker string) string {
+	t.Helper()
+	i := strings.Index(s, marker)
+	require.GreaterOrEqual(t, i, 0, "no Time limits paragraph")
+	return oneLine(s[i:])
+}
+
+// R8C-6: `rush run` help, README and the embedded guidance said a run has no
+// time limit, contradicting the 6h default cap; and that --idle-timeout bounds
+// a stuck run, though it only watches turns (a loop waiting on a wedged job is
+// bounded by the cap alone).
+//
+// Revert-check: the old "defaults to 0 (disabled -- no limit)" paragraph turns
+// the help assertions red; the old README bullet the README ones.
+func TestRunHelp_TimeLimitsNamesTheDefaultCap(t *testing.T) {
+	para := timeLimitsParagraph(t, runCmd.Long, "Time limits (usually")
+	require.Contains(t, para, "6h default wall-clock cap")
+	require.Contains(t, para, "RUSH_RUN_DEFAULT_HARD_TIMEOUT")
+	require.Contains(t, para, "DURING A TURN", "idle-timeout watches turns only")
+	require.Contains(t, para, "bounded only by --timeout or the cap")
+	require.NotContains(t, para, "no limit")
+	require.NotContains(t, para, "don't need --timeout at all")
+}
+
+func TestReadmeTimeouts_NameTheDefaultCap(t *testing.T) {
+	data, err := os.ReadFile("../../README.md")
+	require.NoError(t, err)
+	readme := oneLine(string(data))
+	i := strings.Index(readme, "**`--timeout <duration>`**")
+	require.GreaterOrEqual(t, i, 0)
+	bullet := readme[i:]
+	if j := strings.Index(bullet, "#### "); j >= 0 {
+		bullet = bullet[:j]
+	}
+	require.Contains(t, bullet, "6 h default wall-clock cap")
+	require.Contains(t, bullet, "RUSH_RUN_DEFAULT_HARD_TIMEOUT")
+	require.NotContains(t, bullet, "`rush run` otherwise runs until the agent finishes")
+	require.Contains(t, readme, "It watches turns only")
+}
+
+func TestRushGuidanceTimeLimits_IdleTimeoutWatchesTurnsOnly(t *testing.T) {
+	_, body, err := loadSkillSource("claude_slash_command", skillTargetClaude)
+	require.NoError(t, err)
+	para := timeLimitsParagraph(t, body, "## Time limits")
+	require.Contains(t, para, "6 h")
+	require.Contains(t, para, "RUSH_RUN_DEFAULT_HARD_TIMEOUT")
+	require.Contains(t, para, "It watches turns only")
+}
+
+// R8A-2 / R8C-2: the cancel help states the one-shot flag and the --all scope.
+func TestSessionsCancelHelp_DescribesOneShotFlagAndAllScope(t *testing.T) {
+	long := oneLine(sessionsCancelCmd.Long)
+	require.Contains(t, long, "ONE-SHOT")
+	require.Contains(t, long, "cleared when it is honoured")
+	require.Contains(t, long, "With --all only sessions that have live work are flagged")
+	require.Contains(t, oneLine(sessionsCancelCmd.Flags().Lookup("all").Usage), "live work")
 }

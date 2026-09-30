@@ -566,6 +566,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (the model's finish such as `end_turn`, `error` -- also for a
   `--max-cost`/`--max-tokens` exit -- or `canceled` for Ctrl-C, `--timeout`, the
   default cap and `sessions cancel`), empty while a run is in progress.
+- **`sessions inject`, `sessions reap`, `sessions locks` and `sessions cancel
+  --all` fixed (review round 8).** `sessions inject` into a web session that
+  waits between turns on its own running background job or a live delegation
+  (no `rush run` driver marker) answers `running: true` and names what keeps
+  the session open, instead of "persisted-offline". `sessions reap` keeps every
+  lock file that records no PID (what a clean release leaves: a `rush run` loop
+  or a web session between turns) unprobed, so it no longer takes the lock a
+  live loop needs next or reports "provably dead" for a live process; a crash's
+  PID-recording lock is still reclaimed. `sessions locks` finds the sub-agent
+  pulse of slug ids such as `fix/login-timeout` by the real session id, and
+  `sessions locks <id>` (id or hash prefix) now lists only that session's lock,
+  as the `/rush` guidance's watchdog recipe assumes. `sessions cancel --all`
+  flags only sessions with live work (a live lock, a `rush run` driver, a running
+  job or a live delegation) and prints how many idle sessions it skipped: the
+  cancel flag is a one-shot request, and one left on an idle web session would
+  abort its next turn. A named `sessions cancel <id>` still flags.
+- **`rush run` help, the README and the `/rush` guidance no longer say a run
+  has no time limit (review round 8).** Without `--timeout` a 6 h default
+  wall-clock cap applies (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`); `--idle-timeout`
+  watches turns only, so a run waiting between turns on a job, a delegation or
+  a retry pause is bounded by `--timeout` or the cap alone.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now

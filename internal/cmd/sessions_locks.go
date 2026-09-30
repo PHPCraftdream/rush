@@ -20,7 +20,7 @@ import (
 )
 
 var sessionsLocksCmd = &cobra.Command{
-	Use:   "locks",
+	Use:   "locks [session-id]",
 	Short: "List active session lock files",
 	Long: `Scan the .rush/locks directory for session lock files and report
 their status: session id, PID, when the lock was acquired, and whether
@@ -56,11 +56,17 @@ on the exact same session id). --prune is opt-in precisely because those
 narrow windows are accepted for an explicit operator request, not for a
 default that runs silently on every invocation.
 
-Use --stale-only to filter to suspicious locks. Use --json for NDJSON
-output suitable for metrics collection or automation.`,
+Pass a session id (full id or hash prefix) to list only that session's lock:
+the watchdog probe "rush sessions locks <id>". Use --stale-only to filter to
+suspicious locks. Use --json for NDJSON output suitable for metrics
+collection or automation.`,
+	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Show all locks
 rush sessions locks
+
+# One session's heartbeat
+rush sessions locks pr-42
 
 # Show only stale locks
 rush sessions locks --stale-only
@@ -202,6 +208,13 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	// (this exact function was left unfixed when those landed).
 	dataDir := a.Config().Options.DataDirectory
 	locksDir := filepath.Join(dataDir, "locks")
+
+	onlyStem := ""
+	if len(args) == 1 {
+		if onlyStem, err = resolveLocksFilterStem(cmd.Context(), a, args[0]); err != nil {
+			return err
+		}
+	}
 	entries, err := os.ReadDir(locksDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -241,6 +254,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	// name is the sanitised id, the marker is keyed by the real one (R7C-2).
 	liveDrivers, _ := a.LiveSessionDrivers(cmd.Context())
 	drivers := driversByLockName(liveDrivers)
+	stemIDs := lockStemIDs(cmd.Context(), a, liveDrivers)
 
 	var locks []lockItem
 	now := time.Now()
@@ -253,6 +267,9 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 
 		sessionID := strings.TrimPrefix(entry.Name(), "session-")
 		sessionID = strings.TrimSuffix(sessionID, ".lock")
+		if onlyStem != "" && sessionID != onlyStem {
+			continue
+		}
 
 		info, _ := entry.Info()
 		age := now.Sub(info.ModTime())
@@ -371,7 +388,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// that came from the session's OWN activity, not a delegation,
 		// gets no such label.
 		var subAgentLabel string
-		if act, fresher := callTreeActivityFresherThan(cmd.Context(), a, sessionID, info.ModTime().Unix()); fresher {
+		if act, fresher := lockCallTreeActivity(cmd.Context(), a, stemIDs[sessionID], sessionID, info.ModTime().Unix()); fresher {
 			if subAge, ok := act.Age(now); ok {
 				pulseSec = int64(subAge.Seconds())
 				pulse = lockPulseStatus(pulseSec)
@@ -441,6 +458,10 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(locks) == 0 {
+		if len(args) == 1 {
+			fmt.Printf("(no lock file for session %s)\n", args[0])
+			return nil
+		}
 		if staleOnly {
 			fmt.Println("(no stale locks)")
 		} else {
