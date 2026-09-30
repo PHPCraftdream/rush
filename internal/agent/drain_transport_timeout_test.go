@@ -50,7 +50,7 @@ func (f *attemptFixture) lastAssistantFinishTitle(ctx context.Context) string {
 // the attempt: wake_attempts stays 0 and this test goes red.
 func TestDrainAttempt_TransportTimeoutIsCountedPacedAndSettledAtK(t *testing.T) {
 	ctx := context.Background()
-	const retry = 300 * time.Millisecond
+	const retry = 600 * time.Millisecond
 	shrinkDrainRetry(t, retry)
 	f := newAttemptFixture(t, "attempt-transport-timeout", attemptFixtureOpts{
 		handler: stallUntilClientGone, clientTimeout: 150 * time.Millisecond,

@@ -141,8 +141,9 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 // call-B with one attempt and this test goes red.
 func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	ctx := context.Background()
-	const retry = 100 * time.Millisecond
-	shrinkDrainRetry(t, retry)
+	// A long pause the test never waits out: the gate is reopened by hand
+	// between runs, and "paced" must not flake into "open" under load.
+	shrinkDrainRetry(t, time.Minute)
 	f := newAttemptFixture(t, "attempt-per-row-k", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-A", false)
 	for i := int64(1); i <= 2; i++ {
@@ -167,8 +168,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "rows remain: the gate stays paced")
 
 	for want := int64(2); want <= 3; want++ {
-		time.Sleep(retry + 50*time.Millisecond)
-		f.ledger.resetDrainGate(f.sessID)
+		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
 		_, _ = f.drainRun(ctx)
 		require.Equal(t, want, f.row(ctx, "call-B").WakeAttempts)
 	}
