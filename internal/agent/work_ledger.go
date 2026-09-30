@@ -720,10 +720,10 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 		// sync job never touches the store, so it must reach its "stopped
 		// (job_kill)" outcome via the OLD memory-only path -- otherwise a
 		// blocked awaitSync caller silently loses that outcome. A sync job's
-		// own transitionSyncStopped has no CAS to lose (in-memory only,
+		// own transitionSync has no CAS to lose (in-memory only,
 		// guarded by the SAME top check above under the SAME lock it never
 		// releases in between) -- B11's race does not apply to it.
-		l.transitionSyncStopped(job, partial)
+		l.transitionSync(job, phaseCancelled, partial)
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: toolCallID, ToolName: toolName,
 			Content: partial.content, IsError: partial.isError, Stopped: true,
@@ -837,7 +837,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 	if sync {
 		// Review finding P2: same sync/memory-only path as MarkJobStopped --
 		// no CAS to lose (B11 does not apply to a sync job).
-		l.transitionSyncStopped(job, result)
+		l.transitionSync(job, phaseCancelled, result)
 		if cancel != nil {
 			cancel()
 		}

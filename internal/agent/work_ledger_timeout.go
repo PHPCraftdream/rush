@@ -169,6 +169,7 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 	switch job.timeoutKind {
 	case timeoutTerminateAndWake:
 		owner, toolCallID, toolName, childSession, shellID, outputBuf := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID, job.outputBuf
+		sync, timeoutSeconds := job.sync, job.timeoutSeconds
 		cancel := job.cancel
 		l.mu.Unlock()
 
@@ -183,7 +184,22 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		// established snapshot-then-refresh-then-relock pattern.
 		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 
-		l.transition(job, causeTimeoutTerminated, partial)
+		if sync {
+			// A sync job has no row to commit (doc sec.3.1): reach the
+			// timed-out outcome in memory, like job_kill's transitionSync, so
+			// the blocked awaitSync caller gets it with the partial output
+			// instead of the executor's "context canceled" once cancel below
+			// fires.
+			l.transitionSync(job, phaseTimedOut, jobResult{
+				content: FormatAsyncCompletion(AsyncCompletion{
+					ToolCallID: toolCallID, ToolName: toolName, Content: partial.content,
+					TimedOut: true, TimeoutSeconds: timeoutSeconds,
+				}),
+				isError: true,
+			})
+		} else {
+			l.transition(job, causeTimeoutTerminated, partial)
+		}
 		if cancel != nil {
 			cancel() // best-effort: ask the executor to stop, now that the cause is durably recorded
 		}

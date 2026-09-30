@@ -348,7 +348,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   now go through the same job registry, CAS, and explicit-timeout support
   as CLI/web calls**, instead of a separate synchronous branch with no
   registry and no timeout support. The response returned to the caller is
-  unchanged.
+  unchanged; a `terminate_and_wake` timeout on such a call returns a timed-out error
+  result carrying the partial output.
 
 ### Added
 

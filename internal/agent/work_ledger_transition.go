@@ -364,21 +364,22 @@ func (l *workLedger) transition(job *asyncJob, cause transitionCause, result job
 	l.commitAndDeliver(job, cause, result)
 }
 
-// transitionSyncStopped is the sync-job counterpart of the job_kill/
-// StopRunCommandJob cause (review finding P2, regression of #1023 for
+// transitionSync is the sync-job counterpart of every external cause (job_kill,
+// terminate_and_wake timeout; review finding P2, regression of #1023 for
 // library/SDK mode): a sync job never touches the store (doc sec.3.1), so
-// MarkJobStopped/StopRunCommandJob call this instead of transition to reach
-// a well-formed "stopped (job_kill)" outcome entirely in memory --
-// transitionToTerminal + deliverLocked, the same pair cancelSession's own
-// sync-delegation branch uses -- so a caller blocked in awaitSync gets the
-// contract's Stopped/partial-content wording instead of silently losing it.
-func (l *workLedger) transitionSyncStopped(job *asyncJob, partial jobResult) {
+// its callers use this instead of transition to reach a well-formed terminal
+// outcome entirely in memory -- transitionToTerminal + deliverLocked, the
+// same pair cancelSession's own sync-delegation branch uses -- so a caller
+// blocked in awaitSync gets that outcome (stopped/timed-out, with partial
+// output) instead of the executor's own "context canceled" once the job's
+// context is cancelled.
+func (l *workLedger) transitionSync(job *asyncJob, phase jobPhase, result jobResult) {
 	l.mu.Lock()
 	if !l.currentLocked(job) || job.state.terminal() {
 		l.mu.Unlock()
 		return
 	}
-	job.transitionToTerminal(phaseCancelled, partial)
+	job.transitionToTerminal(phase, result)
 	completion, callback := l.deliverLocked(job.owner, job)
 	l.mu.Unlock()
 	if callback {
