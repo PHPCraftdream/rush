@@ -574,6 +574,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `--timeout`: the loop ends through its normal exit (envelope, `--on-finish`,
   shutdown; exit reason `canceled`) with a stderr line naming the cap;
   `os.Exit(124)` remains only for a process still alive 60 s past the deadline.
+  The exit status of a run ended by the cap is 1 (it used to be 124): scripts
+  that matched 124 were matching a force-kill with no envelope; 124 now means
+  only that the 60 s hard-kill backstop fired.
   A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
   an explicit `--timeout`. `--timeout` itself is unchanged.
 - **`sessions cancel` stops a `rush run` that is waiting on a job (review round
