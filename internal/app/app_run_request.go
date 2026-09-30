@@ -209,6 +209,12 @@ type RunRequest struct {
 	onSessionResolved func(string) error
 	// captureResult returns a structured outcome even in terse or stream mode.
 	captureResult bool
+	// loopTurn marks every turn the `rush run` loop issues (first turn, Drains,
+	// reviewer pass): ExecuteRun does not write ended_reason for it, because the
+	// column is empty while a run is in progress and the loop's exit is the only
+	// writer (persistEndedReason, R8A-1). Callers that are not the loop keep the
+	// per-turn write.
+	loopTurn bool
 	// drainTurn marks a `rush run` loop Drain iteration: mutation-free setup (the
 	// invocation's own setup ran once with the first turn) and no ended_reason
 	// write when it ran no turn.

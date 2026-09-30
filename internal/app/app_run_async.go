@@ -204,6 +204,9 @@ type cliLoop struct {
 	// firstSubmitted: the user's own turn was launched (every setup step that
 	// can fail before it had passed). A failure before that ends the run.
 	firstSubmitted bool
+	// refusedByOwner: the first turn was refused because another process holds
+	// the session; the loop's exit then leaves the row and its cancel flag alone.
+	refusedByOwner bool
 
 	final        *RunResult    // the last COMPLETED turn's result (carries the answer)
 	runErr       error         // the last real turn's outcome
@@ -332,6 +335,7 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
 		HideSpinner:       l.hideSpinner,
 		captureResult:     true,
+		loopTurn:          true,
 		drainTurn:         !first,
 		deferReviewer:     true, // the loop runs the pass once, at its exit
 		reviewerConfig:    l.reviewerDone,
@@ -382,6 +386,7 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 		Origin:            l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
 		HideSpinner:       l.hideSpinner,
 		captureResult:     true,
+		loopTurn:          true,
 		reviewerTurn:      true,
 		onSessionResolved: l.claim,
 	})
@@ -407,7 +412,7 @@ func (l *cliLoop) scopeClosed() (again bool, final *RunResult, err error) {
 		return false, final, err
 	}
 	l.reviewerDone = true
-	if precheckErr := l.precheck(); precheckErr != nil {
+	if precheckErr := l.stopError(); precheckErr != nil {
 		final, err = l.exitPrecheck(precheckErr)
 		return false, final, err
 	}
@@ -479,6 +484,9 @@ func (l *cliLoop) run() (*RunResult, error) {
 	// flushed and --on-finish still runs (R2C-2).
 	var lockBusy *session.SessionLockBusyError
 	if errors.As(err, &lockBusy) {
+		// Another process owns the session: this run ran nothing, so it records
+		// no ended_reason and honours no cancel request on it (R8A-1/R8A-2).
+		l.refusedByOwner = true
 		return l.exit(err, "")
 	}
 	if l.sessionID == "" || l.ctx.Err() != nil {
@@ -505,7 +513,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
 			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
 		}
-		if err := l.precheck(); err != nil {
+		if err := l.stopError(); err != nil {
 			return l.exitPrecheck(err)
 		}
 
@@ -605,8 +613,9 @@ const (
 	stepExit cliStep = iota
 	stepDrain
 	stepStuck
-	// stepCanceled: `sessions cancel` was seen while waiting; nextStep's error
-	// is the precheck-style cancel error (R7C-1).
+	// stepCanceled: the run must stop while it waits -- `sessions cancel` was
+	// seen (R7C-1) or --max-cost/--max-tokens was crossed (R8B-3); nextStep's
+	// error is the precheck-style stop error.
 	stepCanceled
 )
 
@@ -630,7 +639,8 @@ var cliDBErrorRetryOverallLimit = 30 * time.Second
 // wait (heartbeat on stderr); Stuck with nothing running -- give up; Deferred
 // or no debt with nothing running -- the scope is closed. A DB read error
 // retries with a pause, bounded overall and visible on stderr. An operator
-// cancel is checked before each wait (stepCanceled, R7C-1).
+// cancel or a crossed cap is checked before each wait (stepCanceled, R7C-1,
+// R8B-3).
 func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 	var dbErrorRetryStart time.Time
 	for {
@@ -658,15 +668,15 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		case state.Drain == agent.DrainOwed:
 			return stepDrain, "", nil
 		case state.Drain == agent.DrainPaced:
-			if cancelErr := l.cancelError(); cancelErr != nil {
-				return stepCanceled, "", cancelErr
+			if stopErr := l.stopError(); stopErr != nil {
+				return stepCanceled, "", stopErr
 			}
 			l.noticePaced(state)
 			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
 			continue
 		case state.WorkOpen:
-			if cancelErr := l.cancelError(); cancelErr != nil {
-				return stepCanceled, "", cancelErr
+			if stopErr := l.stopError(); stopErr != nil {
+				return stepCanceled, "", stopErr
 			}
 			if now := time.Now(); l.lastOpenScopeNotice.IsZero() || now.Sub(l.lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
 				l.lastOpenScopeNotice = now
@@ -695,29 +705,6 @@ func (l *cliLoop) noticePaced(state agent.CLIScopeState) {
 		l.sessionID, l.failedAttempt, state.RetryAt.Format(time.RFC3339))
 }
 
-// precheck refuses to launch a paid reaction turn once the run's own budget or
-// an operator cancel already ended it: --max-cost/--max-tokens compare exactly
-// like enforceRunawayCaps, and `sessions cancel` between turns ends the run.
-func (l *cliLoop) precheck() error {
-	if err := l.capError(); err != nil {
-		return err
-	}
-	return l.cancelError()
-}
-
-// cancelError is the run's end by `sessions cancel` (nil when none is pending).
-// Read before every paid turn and on every wake of a wait on running work or
-// on the launch gate (at least every 5s), so a cancel takes effect within one
-// step, not when the awaited work ends (R7C-1). The exit goes through
-// exitPrecheck: envelope, ended_reason, --on-finish, and the caller's Shutdown
-// cancels the run's jobs as Ctrl-C does.
-func (l *cliLoop) cancelError() error {
-	if canceled, err := l.app.Sessions.IsCancelRequested(l.ctx, l.sessionID); err == nil && canceled {
-		return &runIncompleteError{reason: "canceled", detail: fmt.Sprintf("session %s cancelled by user", l.sessionID)}
-	}
-	return nil
-}
-
 // exit ends the loop: totals of every real turn are applied to the final
 // envelope, the envelope is flushed through the one common path, and the
 // caller gets (final, err); the session row's ended_reason is made to match
@@ -737,7 +724,8 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 			final.Error = l.lastFailed.Error
 		}
 	}
-	l.persistEndedReason(final)
+	l.clearHonouredCancel(final, err)
+	l.persistEndedReason(final, err)
 	if flushErr := flushLoopExit(l.output, l.mode, final, l.lastBuffered); flushErr != nil {
 		return final, flushErr
 	}
@@ -762,7 +750,8 @@ func (l *cliLoop) flushed(err error) (*RunResult, error) {
 	if l.final != nil {
 		l.applyTotals(l.final)
 	}
-	l.persistEndedReason(l.final)
+	l.clearHonouredCancel(l.final, err)
+	l.persistEndedReason(l.final, err)
 	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
 		return l.final, flushErr
 	}
@@ -799,29 +788,6 @@ func cmpName(a, b string) int {
 	default:
 		return 0
 	}
-}
-
-// capError reports the run's --max-cost/--max-tokens as exceeded, comparing
-// the session totals exactly like the agent's enforceRunawayCaps. A single-step
-// turn that crosses a cap is not cut short (fantasy ignores the step
-// callback's error), so the loop checks after every Drain too.
-func (l *cliLoop) capError() error {
-	if l.overrides.MaxCost <= 0 && l.overrides.MaxTokens <= 0 {
-		return nil
-	}
-	sess, err := l.app.Sessions.Get(l.ctx, l.sessionID)
-	if err != nil {
-		return nil
-	}
-	if l.overrides.MaxCost > 0 && sess.Cost > l.overrides.MaxCost {
-		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
-			"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, sess.Cost, l.overrides.MaxCost)}
-	}
-	if total := sess.PromptTokens + sess.CompletionTokens; l.overrides.MaxTokens > 0 && total > l.overrides.MaxTokens {
-		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
-			"session %s aborted: %d tokens exceeds max %d", l.sessionID, total, l.overrides.MaxTokens)}
-	}
-	return nil
 }
 
 // flushQueuedUsage folds what the session spent since the first queued
