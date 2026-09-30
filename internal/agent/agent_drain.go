@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"charm.land/fantasy"
@@ -76,11 +77,24 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.parentSessionID != "" {
 			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
 		}
-		return newDrainCall(driver.callFor("")), nil
+		call := newDrainCall(driver.callFor(""))
+		c.freshenDrainClient(ctx, &call)
+		return call, nil
 	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
 		return SessionAgentCall{}, err
+	}
+	// A reaction after a long job may find the OAuth token expired: refresh it
+	// BEFORE the call is built (the web and child Drains bypass runInternal,
+	// where the CLI refreshes), and resolve the models again so the call
+	// carries the new client. A failed refresh proceeds with the token we have.
+	if refreshed, refreshErr := c.refreshExpiredToken(ctx, pinned.providerCfg); refreshErr != nil {
+		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", sessionID, "error", refreshErr)
+	} else if refreshed {
+		if pinned, err = c.resolveSessionModels(ctx, sessionID); err != nil {
+			return SessionAgentCall{}, err
+		}
 	}
 	call, err := c.buildCall(ctx, sessionID, "", pinned, nil)
 	if err != nil {
@@ -118,4 +132,33 @@ func isTodoReminder(m fantasy.Message) bool {
 	}
 	part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
 	return ok && strings.HasPrefix(part.Text, "<system_reminder>")
+}
+
+// freshenDrainClient brings a delegated child's Drain call onto the current
+// OAuth credentials. The child's driver template froze its model client when the
+// delegation started, so after a long job (or a refresh by any other caller) it
+// carries an expired token: refresh an expired token, then rebuild the pinned
+// model's client from the current config (same model, new client). Best effort:
+// a failure leaves the template's client, and a 401 then takes the counted,
+// paced path of the accounting. Per-call credentials (tenant keys) are never
+// replaced with the shared config's.
+func (c *coordinator) freshenDrainClient(ctx context.Context, call *SessionAgentCall) {
+	if c.cfg == nil || call.SmartModel == nil || call.Credentials != nil {
+		return
+	}
+	providerID := call.SmartModel.ModelCfg.Provider
+	_, providerCfg, err := c.rebuildInputs(providerID)
+	if err != nil || providerCfg.OAuthToken == nil {
+		return
+	}
+	if _, err := c.refreshExpiredToken(ctx, providerCfg); err != nil {
+		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", call.SessionID, "provider", providerID, "error", err)
+		return
+	}
+	fresh, err := c.rebuildOnCurrentCredentials(ctx, *call.SmartModel, true)
+	if err != nil {
+		slog.Warn("Drain: could not rebuild the child's model client", "session_id", call.SessionID, "provider", providerID, "error", err)
+		return
+	}
+	call.SmartModel = &fresh
 }

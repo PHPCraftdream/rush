@@ -117,7 +117,13 @@ type drainAttempt struct {
 	// leg to the next queued call with a nil error, so the accounting reads
 	// the cause here.
 	streamErr error
-	closed    bool
+	// provider is the provider id of the model the attempt called, and
+	// credentialed says the call carries its own per-call credentials (which a
+	// refresh of the shared config cannot repair): set just before the stream,
+	// read by the 401 handling of the accounting.
+	provider     string
+	credentialed bool
+	closed       bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -250,7 +256,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	// outage never closes it). A terminal provider classification closes
 	// every row the failed attempt saw.
 	closing, closed := rows.atK, rows.atKCount
-	if drainFailureTerminal(turnErr, turnCtxDone) {
+	if c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone) {
 		closing, closed = att.snapshot, rows.open
 	}
 	if closing.Empty() {
@@ -269,6 +275,26 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	if closed < rows.open {
 		pace() // rows with fewer attempts remain: they keep the retry pace
 	}
+}
+
+// drainAttemptTerminal reports whether the attempt's failure closes every row
+// it saw at once: a provider classification no retry can fix. A 401 is
+// terminal only when the credentials cannot be refreshed: a refresh that
+// works (an OAuth token that expired during a long job) makes it a counted,
+// paced transient, because the next attempt runs on the new credentials. A 401
+// that stays terminal asks the operator to re-authenticate (hyper).
+func (c *coordinator) drainAttemptTerminal(ctx context.Context, att *drainAttempt, turnErr error, turnCtxDone bool) bool {
+	if !drainFailureTerminal(turnErr, turnCtxDone) {
+		return false
+	}
+	if !c.isUnauthorized(turnErr) {
+		return true
+	}
+	if !att.credentialed && c.refreshAfterUnauthorized(ctx, att.provider) {
+		return false
+	}
+	c.publishReauthenticate(att.provider)
+	return true
 }
 
 // snapshotAttempts is the per-row picture of a snapshot after an attempt was
