@@ -712,11 +712,16 @@ func stdinTruncationNote(reason string, bytesRead int) string {
 func ResolveCwd(cmd *cobra.Command) (string, error) {
 	cwd, _ := cmd.Flags().GetString("cwd")
 	if cwd != "" {
-		err := os.Chdir(cwd)
+		// Absolutise before chdir: callers re-resolve the returned path,
+		// and a relative one would be applied twice from the new cwd.
+		abs, err := filepath.Abs(cwd)
 		if err != nil {
+			return "", fmt.Errorf("failed to resolve directory: %v", err)
+		}
+		if err := os.Chdir(abs); err != nil {
 			return "", fmt.Errorf("failed to change directory: %v", err)
 		}
-		return cwd, nil
+		return abs, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
