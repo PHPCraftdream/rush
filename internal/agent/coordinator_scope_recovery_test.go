@@ -1,4 +1,4 @@
-// Own-scope recovery (doc sec.3.5/3.7, step 5): ScopeOpen recovers its
+// Own-scope recovery (doc sec.3.5/3.7, step 5): CLIScope recovers its
 // owner's dead-host rows to 'interrupted' before answering, so a row whose
 // host just died is treated as recoverable, never as open scope forever.
 package agent
@@ -32,12 +32,12 @@ func newTestAsyncJobStoreWithDataDir(t *testing.T) (*session.AsyncJobStore, stri
 	return store, dataDir, conn
 }
 
-// TestScopeOpen_RecoversDeadHostRowBeforeAnswering pins the CLI-loop wiring
-// (app_run_async.go's waitForNextCLITurn calls ScopeOpen between turns): a
+// TestCLIScope_RecoversDeadHostRowBeforeAnswering pins the CLI-loop wiring
+// (app_run_async.go's nextStep calls CLIScope between turns): a
 // row on a host that has since died must be recovered to 'interrupted' as
 // part of answering the scope question, not merely skipped by HostNotDead
 // and left 'running' forever.
-func TestScopeOpen_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
+func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
@@ -61,20 +61,20 @@ func TestScopeOpen_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	c.asyncJobs = newWorkLedger(nil)
 	c.asyncJobs.store = store
 
-	open, err := c.ScopeOpen(ctx, "sess-1")
+	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
-	require.False(t, open, "an interrupted row (wake=0) with nothing else outstanding must close the scope")
+	require.False(t, st.WorkOpen, "an interrupted row (wake=0) with nothing else outstanding must close the scope")
 
 	row, err := store.Get(ctx, "sess-1", "call-1")
 	require.NoError(t, err)
-	require.Equal(t, "interrupted", row.State, "ScopeOpen must have recovered the dead host's row, not merely skipped it")
+	require.Equal(t, "interrupted", row.State, "CLIScope must have recovered the dead host's row, not merely skipped it")
 	require.Equal(t, "interrupted", row.NoticeKind)
 	require.EqualValues(t, 0, row.Wake)
 }
 
-// TestScopeOpen_LiveHostRunningRowKeepsScopeOpen is the negative twin: a
+// TestCLIScope_LiveHostRunningRowKeepsScopeOpen is the negative twin: a
 // running row on a LIVE host must still report scope open, unrecovered.
-func TestScopeOpen_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
+func TestCLIScope_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
@@ -94,9 +94,9 @@ func TestScopeOpen_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	c.asyncJobs = newWorkLedger(nil)
 	c.asyncJobs.store = store
 
-	open, err := c.ScopeOpen(ctx, "sess-1")
+	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
-	require.True(t, open, "a running row on a live host must keep the scope open")
+	require.True(t, st.WorkOpen, "a running row on a live host must keep the scope open")
 
 	row, err := store.Get(ctx, "sess-1", "call-1")
 	require.NoError(t, err)

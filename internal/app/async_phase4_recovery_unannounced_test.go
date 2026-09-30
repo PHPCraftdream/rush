@@ -21,8 +21,8 @@
 // THIS made the test FAIL (`errors.Is(err, sql.ErrNoRows)` false: the row
 // still existed). Re-enabling ONLY that one call (the other two still
 // disabled) made it PASS again. The mechanism is: app_run_async.go's CLI
-// loop calls waitForNextCLITurn after EVERY turn, including the first;
-// waitForNextCLITurn finds no reaction debt (an unannounced row produces no
+// loop calls nextStep after EVERY turn, including the first;
+// nextStep finds no reaction debt (an unannounced row produces no
 // notice at all, matching ASYNC-05) and falls through to source.ScopeOpen,
 // whose own body (coordinator_reaction_source.go's ScopeOpen method)
 // recovers the owner's scope (deleting this unannounced row) BEFORE
@@ -92,7 +92,7 @@ func TestTwoAppScenarioD_AnnouncedZeroHostKilledBeforeAck(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resB)
 	require.Equal(t, "end_turn", resB.ExitReason, "warnings=%v", resB.Warnings)
-	// Exactly one turn: after it, the CLI loop's own waitForNextCLITurn ->
+	// Exactly one turn: after it, the CLI loop's own nextStep ->
 	// ScopeOpen recovery call (see REVERT CHECK above) finds the row gone and
 	// reports scope closed, so no second (empty-prompt Drain) turn is needed.
 	require.Equal(t, 1, requestsB, "B's post-turn scope recovery (ScopeOpen's own RecoverOwnerScope call) must have deleted the row, closing the scope with no further turn needed")

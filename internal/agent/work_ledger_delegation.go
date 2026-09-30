@@ -229,9 +229,9 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	// work moved to a DIFFERENT, still-live host, or whose pulled notice the
 	// child still owes a reaction to (DB reaction debt), has NOT actually
 	// drained -- releasing the delegation now would hand the parent a
-	// premature/truncated result. childScopeOpenAcrossProcesses reuses
-	// ScopeOpen's exact predicate (doc sec.3.5: running row on a live host,
-	// OR reaction debt), deliberately omitting ScopeOpen's mid-turn branch
+	// premature/truncated result. childScopeOpenAcrossProcesses reads
+	// CLIScope (doc sec.3.5: running row on a live host, or debt the child owes
+	// or is retrying a reaction to), deliberately omitting a mid-turn branch
 	// (already covered by the IsSessionBusy checks above).
 	if l.childScopeOpenAcrossProcesses(childID) {
 		return false

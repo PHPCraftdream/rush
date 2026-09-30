@@ -98,7 +98,7 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 // `rush run`'s loop (internal/app/app_run_async.go) now claims/releases the
 // external-driver marker directly via ClaimExternalDriver/ReleaseExternalDriver
 // (coordinator_reaction_source.go) and re-derives its next turn from
-// ReactionDebtExists/ScopeOpen against the DB, waiting on WaitForHint (with
+// CLIScope against the DB, waiting on WaitForHint (with
 // its bounded 5s fallback) instead of draining a memory queue.
 
 // backgroundJobSummary formats a finished background command for injection

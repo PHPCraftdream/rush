@@ -8,7 +8,7 @@
 // Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §3) deleted
 // DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork. Phase 4
 // replaced their successor workLedger.next() with the DB scope predicate
-// (coordinator.ScopeOpen) -- see app_run_async.go's
+// (coordinator.CLIScope) -- see app_run_async.go's
 // runNonInteractiveWithAsyncResults and docs/async-invariants.md's ASYNC-02
 // row.
 package agent

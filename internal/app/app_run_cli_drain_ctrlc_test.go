@@ -27,12 +27,10 @@ import (
 // fires automatically (doc sec.3.4) and this test cancels the run's ctx
 // while THAT specific request is in flight (never during turn 1).
 //
-// REVERT CHECK: commented out settleOrRetryDrainFailure's top `errors.Is(
-// runErr, context.Canceled) ...` guard (coordinator_drain_policy.go) --
-// this test's `require.True(t, debtStillOpen, ...)` FAILED (debt was
-// closed) and a wake_failed marker appeared: classifyProviderError treated
-// the CLI loop's own cancelled Drain exactly like an unrecoverable provider
-// failure. Restored the guard; re-ran, passed.
+// REVERT CHECK: making drainAttemptExempt (agent/drain_attempt.go) return
+// false for a plain cancellation counts the interrupted attempt; the debt is
+// then paced (wake_attempts=1) instead of untouched, and the
+// `wake_attempts == 0` assertion FAILED. Restored the exemption; re-ran, passed.
 func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testing.T) {
 	drainReqReached := make(chan struct{})
 	var drainOnce sync.Once
@@ -94,6 +92,9 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 	debtStillOpen, err := app.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.True(t, debtStillOpen, "Ctrl-C mid-Drain must never settle the debt")
+	row, err := app.asyncJobStore.Get(context.Background(), sessionID, "call-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, row.WakeAttempts, "an interrupted Drain is not evidence about the debt: not counted")
 
 	notices, err := app.asyncJobStore.ListSessionNotices(context.Background(), sessionID)
 	require.NoError(t, err)

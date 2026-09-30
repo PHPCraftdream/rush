@@ -2,7 +2,7 @@ package app
 
 // The `rush run` loop and the session policy must agree on "a reaction turn is
 // owed": debt the policy will never allow a turn for (a bg-shell-done notice
-// with AutoResumeOnJobDone off) used to keep waitForNextCLITurn reporting a
+// with AutoResumeOnJobDone off) used to keep nextStep reporting a
 // turn owed, every Drain was refused as a no-turn, and the loop re-checked
 // every 5s until --timeout/Ctrl-C. These tests drive the real
 // RunNonInteractiveWithResult path against a real App and provider.
@@ -92,7 +92,7 @@ func bgShellNotices(t *testing.T, r bgShellRun) []db.SessionNotice {
 // unaffected, the notice left for the next human turn -- instead of spinning
 // until the deadline.
 //
-// Revert-check performed: put waitForNextCLITurn back on the old pair
+// Revert-check performed: put nextStep back on the old pair
 // (pending-inclusive debt => turn owed, then ScopeOpen) -- the run kept
 // looping, every Drain a no-turn, until the 25s context expired: err was
 // non-nil, ctx.Err() DeadlineExceeded, ExitReason "canceled".

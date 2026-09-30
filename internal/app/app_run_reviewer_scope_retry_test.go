@@ -1,9 +1,10 @@
-// C16 (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN item 3):
-// the automatic reviewer-pass gate (app_run.go, around the ScopeOpen call)
-// must retry a DB read error with a pause instead of silently skipping the
-// reviewer pass on the very first failure -- doc sec.3.5's "a DB read error
-// is a retry with a pause, never a silent skip" applies here exactly like
-// it does to the CLI loop's own waitForNextCLITurn.
+// C16 / R2C-6 (docs/reviews/2026-09-29-async-phase4-round1.md, 2026-09-30-
+// async-phase4-round2.md): the automatic reviewer-pass gate (app_run.go)
+// decides from CLIScope: running work and an owed/paced/stuck reaction block
+// the pass (one stderr line each), debt the policy defers does not, and a DB
+// read error retries with a pause instead of silently skipping the pass on the
+// very first failure. The real end-to-end case (deferred debt, reviewer runs)
+// is TestRunNonInteractive_ReviewerRunsWithDeferredDebt.
 package app
 
 import (
@@ -14,87 +15,81 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
-// flakyScopeSource's ScopeOpen fails failCount times, then returns
-// (wantOpen, nil) forever after -- enough to exercise both "recovers within
-// the retry budget" and "persistently failing" cases from one fake.
-type flakyScopeSource struct {
-	failCount int32
-	wantOpen  bool
-
-	calls int32
+// scopeAnswer is one scripted CLIScope answer.
+type scopeAnswer struct {
+	state agent.CLIScopeState
+	err   error
 }
 
-func (f *flakyScopeSource) ClaimExternalDriver(context.Context, string) error { return nil }
-func (f *flakyScopeSource) ReleaseExternalDriver(context.Context, string)     {}
-func (f *flakyScopeSource) RunMaintenanceSweep(context.Context)               {}
-func (f *flakyScopeSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
-	return agent.CLIScopeState{}, nil
-}
-func (f *flakyScopeSource) WaitForHint(context.Context, string, time.Time) {}
-func (f *flakyScopeSource) CaptureDrainSnapshot(context.Context, string) session.DebtSnapshot {
-	return session.DebtSnapshot{}
+// scriptedScopeSource answers CLIScope from a script (the last entry repeats)
+// and counts its calls and WaitForHint waits.
+type scriptedScopeSource struct {
+	script []scopeAnswer
+	calls  atomic.Int32
+	waits  atomic.Int32
 }
 
-func (f *flakyScopeSource) RecordDrainTurnOutcome(context.Context, string, session.DebtSnapshot, error, bool) {
-}
-
-func (f *flakyScopeSource) ScopeOpen(context.Context, string) (bool, error) {
-	n := atomic.AddInt32(&f.calls, 1)
-	if n <= f.failCount {
-		return false, errors.New("database is locked")
+func (f *scriptedScopeSource) ClaimExternalDriver(context.Context, string) error { return nil }
+func (f *scriptedScopeSource) ReleaseExternalDriver(context.Context, string)     {}
+func (f *scriptedScopeSource) RunMaintenanceSweep(context.Context)               {}
+func (f *scriptedScopeSource) WaitForHint(context.Context, string, time.Time)    { f.waits.Add(1) }
+func (f *scriptedScopeSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
+	i := int(f.calls.Add(1)) - 1
+	if i >= len(f.script) {
+		i = len(f.script) - 1
 	}
-	return f.wantOpen, nil
+	return f.script[i].state, f.script[i].err
 }
 
-// TestReviewerPassScopeStillOpen_RecoversWithinRetryBudget: a DB error on
-// the first attempt must not be treated as "skip the reviewer pass" --
-// the SECOND attempt's real answer (scope closed) must win.
+func TestReviewerPassBlocked_ScopeDecides(t *testing.T) {
+	cases := []struct {
+		name    string
+		state   agent.CLIScopeState
+		blocked bool
+	}{
+		{"nothing outstanding", agent.CLIScopeState{}, false},
+		{"debt the policy defers does not block", agent.CLIScopeState{Drain: agent.DrainDeferred}, false},
+		{"running work blocks", agent.CLIScopeState{WorkOpen: true}, true},
+		{"an owed reaction blocks", agent.CLIScopeState{Drain: agent.DrainOwed}, true},
+		{"a retried reaction blocks", agent.CLIScopeState{Drain: agent.DrainPaced}, true},
+		{"a stuck reaction blocks", agent.CLIScopeState{Drain: agent.DrainStuck}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &scriptedScopeSource{script: []scopeAnswer{{state: tc.state}}}
+			require.Equal(t, tc.blocked, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+			require.EqualValues(t, 1, fake.calls.Load(), "no retry overhead when the scope just answers")
+		})
+	}
+}
+
+// TestReviewerPassBlocked_RecoversWithinRetryBudget: a DB error on the first
+// attempt must not be treated as "skip the reviewer pass" -- the second
+// attempt's real answer wins.
 //
-// Revert-check performed: made reviewerPassScopeStillOpen return true
-// (skip) on the FIRST ScopeOpen error instead of retrying -- this test's
-// `require.False(t, open)` FAILED (open was true: the transient error alone
-// blocked a reviewer pass that should have run). Restored the retry loop;
-// re-ran, passed.
-func TestReviewerPassScopeStillOpen_RecoversWithinRetryBudget(t *testing.T) {
+// Revert-check: returning "blocked" on the first read error turns this red.
+func TestReviewerPassBlocked_RecoversWithinRetryBudget(t *testing.T) {
 	orig := cliDBRetryPause
 	cliDBRetryPause = time.Millisecond
 	t.Cleanup(func() { cliDBRetryPause = orig })
 
-	fake := &flakyScopeSource{failCount: 1, wantOpen: false}
-	app := &App{}
-	open := app.reviewerPassScopeStillOpen(context.Background(), fake, "sess-1")
-	require.False(t, open, "the retry's real answer (scope closed) must be used, not the first attempt's error")
-	require.Equal(t, int32(2), atomic.LoadInt32(&fake.calls))
+	fake := &scriptedScopeSource{script: []scopeAnswer{{err: errors.New("database is locked")}, {}}}
+	require.False(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+	require.EqualValues(t, 2, fake.calls.Load())
 }
 
-// TestReviewerPassScopeStillOpen_PersistentFailureDefaultsToOpen: once every
-// retry is exhausted, the conservative default is "open" (skip the reviewer
-// pass) rather than guessing "closed" and running an extra phase against
-// unknown scope state.
-func TestReviewerPassScopeStillOpen_PersistentFailureDefaultsToOpen(t *testing.T) {
+// TestReviewerPassBlocked_PersistentFailureDefaultsToBlocked: once every retry
+// is exhausted the conservative default is "blocked" rather than running an
+// extra phase against unknown scope state.
+func TestReviewerPassBlocked_PersistentFailureDefaultsToBlocked(t *testing.T) {
 	orig := cliDBRetryPause
 	cliDBRetryPause = time.Millisecond
 	t.Cleanup(func() { cliDBRetryPause = orig })
 
-	fake := &flakyScopeSource{failCount: 100, wantOpen: false}
-	app := &App{}
-	open := app.reviewerPassScopeStillOpen(context.Background(), fake, "sess-1")
-	require.True(t, open, "persistent DB failure must default to skipping the reviewer pass")
-	require.Equal(t, int32(reviewerPassScopeOpenRetries), atomic.LoadInt32(&fake.calls),
-		"retries must be bounded, not unbounded")
-}
-
-// TestReviewerPassScopeStillOpen_NoErrorReturnsRealValueImmediately is the
-// common-case regression guard: no retry loop overhead when ScopeOpen just
-// answers.
-func TestReviewerPassScopeStillOpen_NoErrorReturnsRealValueImmediately(t *testing.T) {
-	fake := &flakyScopeSource{failCount: 0, wantOpen: true}
-	app := &App{}
-	open := app.reviewerPassScopeStillOpen(context.Background(), fake, "sess-1")
-	require.True(t, open)
-	require.Equal(t, int32(1), atomic.LoadInt32(&fake.calls))
+	fake := &scriptedScopeSource{script: []scopeAnswer{{err: errors.New("database is locked")}}}
+	require.True(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+	require.EqualValues(t, reviewerPassScopeOpenRetries, fake.calls.Load(), "retries are bounded")
 }
