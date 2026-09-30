@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -40,4 +41,31 @@ func sessionRoleModelOverride(ctx context.Context, a *app.App, sessionID string,
 	default:
 		return ""
 	}
+}
+
+// foldRoleModel folds --role into the smart slot: without an explicit --model,
+// prefer a worker/reviewer override pinned on THIS session (task #1060,
+// sessionRoleModelOverride -- same set_session_models path as smart/fast),
+// else the config's default for that role's slot. The agent always uses its
+// `smart` slot for the turn; --role decides which catalog entry fills it.
+// `--continue` names its session only implicitly (the most recently updated
+// top-level one), so that id is resolved here first (R2C-14): the pin is
+// read from the session the run will actually continue.
+func foldRoleModel(ctx context.Context, a *app.App, role string, modelType config.SelectedModelType, smartModel, sessionID string, useLast bool) (string, error) {
+	if modelType == config.SelectedModelTypeSmart || smartModel != "" {
+		return smartModel, nil
+	}
+	if sessionID == "" && useLast {
+		if last, err := a.Sessions.GetLast(ctx); err == nil {
+			sessionID = last.ID
+		}
+	}
+	if override := sessionRoleModelOverride(ctx, a, sessionID, modelType); override != "" {
+		return override, nil
+	}
+	roleModel, ok := a.Config().Models[modelType]
+	if !ok || roleModel.Model == "" {
+		return "", fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
+	}
+	return roleModel.Provider + "/" + roleModel.Model, nil
 }

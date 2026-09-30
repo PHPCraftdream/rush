@@ -24,10 +24,14 @@ var sessionsGcCmd = &cobra.Command{
 
 With --jobs-older-than, ALSO purges terminal (not 'running'), delivered-or-
 voided rows from the phase-4 durable async job ledger (async_jobs and
-session_notices) older than the given age. A 'running' row is NEVER purged
-regardless of age -- this only removes rows whose async command/delegation
-already finished (or was voided by a Rerun) and stayed in that state past
-the age. Without --jobs-older-than, job retention runs only with its own
+session_notices) older than the given age. A 'running' row, an undelivered
+('pending') row and delivered-but-unreacted debt (a notice whose reaction turn
+is still owed) are NEVER purged regardless of age, nor is a delegation row whose
+child session still has running work or unreacted debt -- this only removes
+rows whose async command/delegation already finished (or was voided by a
+Rerun), whose notice was delivered and owes no reaction, and stayed in that
+state past the age.
+Without --jobs-older-than, job retention runs only with its own
 fixed 7-day window, and only where a rush process is running: the web
 server purges every 60s (together with its dead-host sweep), and each
 "rush run" loop purges once when it starts. Nothing else purges in the

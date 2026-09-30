@@ -37,3 +37,37 @@ func TestSessionsWhyHelp_NamesHostLockAndSessionLockAccurately(t *testing.T) {
 	require.Contains(t, long, "host lock")
 	require.Contains(t, long, "session lock")
 }
+
+// The `sessions` root help lists every subcommand it has: an operator reads it
+// to find `jobs`/`why`, and a command missing from it does not exist for them.
+//
+// Revert-check: the `why <id>`/`jobs <id>` lines removed from the root Long --
+// this test went red naming them.
+func TestSessionsRootHelp_ListsEverySubcommand(t *testing.T) {
+	long := oneLine(sessionsCmd.Long)
+	for _, sub := range sessionsCmd.Commands() {
+		require.Containsf(t, long, sub.Name(), "`sessions` help does not mention its subcommand %q", sub.Name())
+	}
+}
+
+// `sessions why`, `gc` and `jobs` say what they read, keep and do (R2C-doc):
+// why probes host locks too, gc never purges delivered-but-unreacted debt, and
+// the jobs hint stops the WHOLE host process.
+//
+// Revert-check: the old "only the DB and the .rush/locks directory", the gc
+// text without the debt clause and the jobs text without the whole-host
+// statement each turn one assertion red.
+func TestSessionsHelp_WhyGcJobsAreAccurate(t *testing.T) {
+	why := oneLine(sessionsWhyCmd.Long)
+	require.NotContains(t, why, "only the DB and the .rush/locks directory")
+	require.Contains(t, why, ".rush/hosts", "why probes host locks as well as session locks")
+
+	gc := oneLine(sessionsGcCmd.Long)
+	require.Contains(t, gc, "delivered-but-unreacted debt")
+	require.Contains(t, gc, "are NEVER purged regardless of age")
+
+	jobs := oneLine(sessionsJobsCmd.Long)
+	require.Contains(t, jobs, `"kill -INT <pid>"`)
+	require.Contains(t, jobs, "WHOLE host process")
+	require.NotContains(t, jobs, "does nothing between turns")
+}

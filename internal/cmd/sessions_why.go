@@ -20,13 +20,15 @@ var sessionsWhyCmd = &cobra.Command{
 	Short: "Explain why a session has the status it has",
 	Long: `Print a one-shot diagnostic explaining a session's current status
 (running / crashed / done / at rest) and the evidence behind it, using
-only data rush itself owns: the session/message DB and the lock file.
+only data rush itself owns: the session/message DB (including the async job
+ledger) and the lock files -- session locks in .rush/locks, and the host locks
+in .rush/hosts that are probed (read-only) to tell whether the process
+running a job is alive.
 
 This is the command to reach for when "sessions list" shows a session as
 "crashed" and you want to know whether it genuinely died mid-turn or
 actually finished cleanly and left a stale lock behind. It does NOT read
-external log files or orchestrator redirect output — only the DB and the
-.rush/locks directory.
+external log files or orchestrator redirect output.
 
 The five possible verdicts:
 

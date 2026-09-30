@@ -10,11 +10,12 @@ package cmd
 //
 // Deliberately observation-only: there is no job-level "kill" here. Killing
 // a job on a DIFFERENT, still-live host needs the OWNING process to act;
-// `rush sessions kill` only ends a session's running turn and does nothing
-// between turns, so the only lever is stopping the host process itself. A
-// live row on a foreign host prints a hint naming that process and a kill
-// command for it instead of attempting an in-process stop it cannot safely
-// perform.
+// `rush sessions kill` kills the holder of the SESSION lock, and nothing
+// holds it between turns (a host waiting for a job holds its host lock
+// instead), so the only lever is stopping the host process itself -- which
+// stops everything else that host runs. A live row on a foreign host prints
+// a hint naming that process and the command that stops it instead of
+// attempting an in-process stop it cannot safely perform.
 import (
 	"encoding/json"
 	"fmt"
@@ -44,9 +45,15 @@ job(s) behind that verdict. Works from any process: a row is written by
 whichever process actually owns the job, not the one running this command.
 
 A 'running' row on a LIVE host owned by a DIFFERENT process prints a hint
-naming that host's PID and a kill command for that process -- there is no
-job-level kill, and "rush sessions kill" does nothing between turns, so
-stopping the job means stopping the holder process.`,
+naming that host's PID and the command that stops that process -- there is no
+job-level kill, and "rush sessions kill" kills the holder of the session lock,
+which nothing holds between turns, so stopping the job means stopping the
+WHOLE host process (every other job and session it runs stops with it). On
+POSIX the hint is "kill -INT <pid>" (graceful: rush catches SIGINT, not
+SIGTERM, and on the way out kills the job process groups); on Windows it is
+"taskkill /F /T /PID <pid>" (forced: no cleanup runs; the process tree dies, and
+so do the job children when rush joined its kill-on-close Job Object at
+startup).`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Everything this session and its sub-agents are/were doing
@@ -213,16 +220,27 @@ func sessionsJobsCmdRun(cmd *cobra.Command, args []string) error {
 }
 
 // foreignHostKillHint is the `sessions jobs` hint for a running row on a live
-// host of another process (C13): `rush sessions kill` ends a session's
-// running turn and does nothing between turns, so it cannot stop such a job;
-// stopping the host process can. pid 0 (host row missing) still says so.
+// host of another process (C13): `rush sessions kill` kills the holder of the
+// SESSION lock, which nothing holds between turns, so it cannot stop such a
+// job; stopping the host process can, and stops everything else it runs.
 func foreignHostKillHint(pid int64) string {
+	return foreignHostKillHintFor(runtime.GOOS, pid)
+}
+
+// foreignHostKillHintFor: POSIX uses SIGINT because rush catches os.Interrupt
+// only -- a plain SIGTERM ends it with no cleanup and leaves the job children
+// (own process groups) running, while the graceful exit's CancelAll kills
+// them. Windows has no signal to send: taskkill /F /T forcibly ends the
+// process tree, and main.go tries to put rush in a kill-on-close Job Object, so
+// the OS then also takes every job child with it; no cleanup runs. pid 0 (host row
+// missing) still says so.
+func foreignHostKillHintFor(goos string, pid int64) string {
 	if pid <= 0 {
-		return "owned by a live host on another process (PID unknown); stop that process to stop this job"
+		return "owned by a live host on another process (PID unknown); stop that whole process to stop this job and everything else it runs"
 	}
-	kill := fmt.Sprintf("kill %d", pid)
-	if runtime.GOOS == "windows" {
-		kill = fmt.Sprintf("taskkill /F /T /PID %d", pid)
+	kill, how := fmt.Sprintf("kill -INT %d", pid), "graceful; job process groups are killed on exit"
+	if goos == "windows" {
+		kill, how = fmt.Sprintf("taskkill /F /T /PID %d", pid), "forced; no cleanup, the process tree dies with it"
 	}
-	return fmt.Sprintf("owned by a live host on another process (PID %d); stop that process to stop this job: `%s`", pid, kill)
+	return fmt.Sprintf("owned by a live host on another process (PID %d); stopping that whole process stops this job and everything else it runs (%s): `%s`", pid, how, kill)
 }
