@@ -484,6 +484,9 @@ func (l *cliLoop) run() (*RunResult, error) {
 		case waitErr != nil:
 			return l.exitWait(waitErr)
 		case step == stepExit:
+			// A closed scope ends any refusal/failure streak: later Drains (after the
+			// reviewer turn) start a fresh retry budget (R5C-2).
+			l.refusalSince, l.failedAttempt, l.pacedNoticeAt = time.Time{}, nil, time.Time{}
 			again, final, exitErr := l.scopeClosed()
 			if !again {
 				return final, exitErr

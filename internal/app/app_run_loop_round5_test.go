@@ -188,3 +188,78 @@ func TestRunLoop_ReviewerJobHonorsSupervisionInterval(t *testing.T) {
 	})
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+// refusalRetryWriter runs onRefused (once) when the loop reports a refused
+// Drain and counts those lines.
+type refusalRetryWriter struct {
+	syncBuffer
+	onRefused func()
+	refused   atomic.Int32
+	gaveUp    atomic.Bool
+}
+
+func (w *refusalRetryWriter) Write(p []byte) (int, error) {
+	n, err := w.syncBuffer.Write(p)
+	s := string(p)
+	if strings.Contains(s, "giving up") {
+		w.gaveUp.Store(true)
+	}
+	if strings.Contains(s, "was refused") && w.refused.Add(1) == 1 && w.onRefused != nil {
+		w.onRefused()
+	}
+	return n, err
+}
+
+// R5C-2: a refusal streak that ended with the scope closing (its debt was
+// settled by another owner) must not count against the reviewer's Drains: the
+// first Drain refusal after the reviewer gets a fresh retry budget, its own
+// "retrying" line, and the run ends with the reaction. Before the fix the old
+// refusalSince made that refusal exceed the 30s budget at once ("giving up",
+// exit_reason error, the job result never reacted to).
+//
+// Revert-check: dropping the reset at stepExit in cliLoop.run makes the run
+// end with the refusal error and no reaction.
+func TestCLILoop_RefusalStreakDoesNotOutliveClosedScope(t *testing.T) {
+	defer agent.SetDrainPacingForTest(0, 100*time.Millisecond, 0)()
+	rh := newReviewerAsyncHarness(t, false)
+	setPeak := func(on bool) {
+		cfg, ok := rh.app.config.Config().Providers.Get("openaicompat")
+		require.True(t, ok)
+		cfg.PeakHours = nil
+		if on {
+			cfg.PeakHours = &config.PeakHoursWindow{Start: "00:00", End: "23:59"}
+		}
+		rh.app.config.Config().Providers.Set("openaicompat", cfg)
+	}
+	stderr := &refusalRetryWriter{onRefused: func() { setPeak(false) }}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(stderr.String())
+		}
+	})
+	var turns atomic.Int32
+	cliLoopTurnDoneSeam = func() {
+		// The reviewer turn is the loop's second turn: from here on Drains are
+		// refused until the first refusal line is printed.
+		if turns.Add(1) == 2 {
+			setPeak(true)
+		}
+	}
+	t.Cleanup(func() { cliLoopTurnDoneSeam = nil })
+	var out syncBuffer
+	l := r4LoopWith(loopCtx(t), rh, driverSource(t, rh.app), &out, stderr)
+	l.refusalSince = time.Now().Add(-time.Minute) // a streak from before the scope closed
+
+	res, err := l.run()
+
+	require.NoError(t, err)
+	require.False(t, stderr.gaveUp.Load(), "the stale streak must not exhaust the new budget")
+	require.NotNil(t, res)
+	require.Equal(t, "end_turn", res.ExitReason)
+	require.Equal(t, r4Verdict, res.FinalText, "the answer is the reaction the refused Drain finally ran")
+	require.EqualValues(t, 1, stderr.refused.Load(), "one refusal, one 'retrying' line")
+	starts, drains := rh.snapshot()
+	require.Equal(t, 1, starts)
+	require.Len(t, drains, 1)
+	rh.requireNothingOpen(t)
+}
