@@ -364,7 +364,12 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	}
 	ctx = agent.WithCallOptions(ctx, callOpts)
 	if modelOverrideRequested {
-		ctx = agent.WithSessionModelPersistence(ctx, persistedSmartModel, persistedFastModel)
+		// The override applies to every turn of the invocation, but only the
+		// first one writes it to the session: a follow-up call (Drain, reviewer
+		// pass) would overwrite a model the operator changed meanwhile (R3C-6).
+		if !req.mutationFree() {
+			ctx = agent.WithSessionModelPersistence(ctx, persistedSmartModel, persistedFastModel)
+		}
 		ctx = agent.WithModelOverrides(ctx, smartOverride, fastOverride)
 	}
 

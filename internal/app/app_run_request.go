@@ -213,6 +213,18 @@ type RunRequest struct {
 	// invocation's own setup ran once with the first turn) and no ended_reason
 	// write when it ran no turn.
 	drainTurn bool
+	// reviewerTurn makes this call the automatic reviewer pass and nothing else:
+	// the `rush run` loop issues it once, from its scope-closed exit, as an
+	// ordinary (non-Drain) turn on the session it already claimed. Setup is
+	// mutation-free like a Drain's.
+	reviewerTurn bool
+	// deferReviewer tells ExecuteRun not to run the reviewer pass itself: the
+	// `rush run` loop runs it once when its scope closes (reviewerTurn).
+	deferReviewer bool
+	// onTurnSubmitted runs right before the turn is launched: every setup step
+	// that can fail has passed. It lets the loop tell a first turn that never
+	// reached the model from one that ran and failed.
+	onTurnSubmitted func()
 
 	// Credentials, when non-nil, runs THIS invocation on the given
 	// provider credentials instead of whatever rush.json/env would
@@ -240,3 +252,9 @@ type RunRequest struct {
 	// message.OriginSDK when the caller left it unspecified.
 	Origin message.Origin
 }
+
+// mutationFree reports a follow-up call of a `rush run` invocation (a Drain
+// iteration or the loop's reviewer pass): the invocation's own session setup --
+// system prompt, reasoning effort, model slots, cancel flag, budget,
+// ended_reason -- ran once with the first turn and is not repeated.
+func (r RunRequest) mutationFree() bool { return r.drainTurn || r.reviewerTurn }

@@ -8,8 +8,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,7 +62,7 @@ func TestReviewerPassBlocked_ScopeDecides(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &scriptedScopeSource{script: []scopeAnswer{{state: tc.state}}}
-			require.Equal(t, tc.blocked, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+			require.Equal(t, tc.blocked, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", io.Discard))
 			require.EqualValues(t, 1, fake.calls.Load(), "no retry overhead when the scope just answers")
 		})
 	}
@@ -77,7 +79,7 @@ func TestReviewerPassBlocked_RecoversWithinRetryBudget(t *testing.T) {
 	t.Cleanup(func() { cliDBRetryPause = orig })
 
 	fake := &scriptedScopeSource{script: []scopeAnswer{{err: errors.New("database is locked")}, {}}}
-	require.False(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+	require.False(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", io.Discard))
 	require.EqualValues(t, 2, fake.calls.Load())
 }
 
@@ -90,6 +92,33 @@ func TestReviewerPassBlocked_PersistentFailureDefaultsToBlocked(t *testing.T) {
 	t.Cleanup(func() { cliDBRetryPause = orig })
 
 	fake := &scriptedScopeSource{script: []scopeAnswer{{err: errors.New("database is locked")}}}
-	require.True(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1"))
+	require.True(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", io.Discard))
 	require.EqualValues(t, reviewerPassScopeOpenRetries, fake.calls.Load(), "retries are bounded")
+}
+
+// TestReviewerPassBlocked_WritesToTheRunsStderr is R3C-9: the skip line goes
+// to the writer the run was given (SDK callers pass RunRequest.Stderr), never
+// to the process's os.Stderr.
+//
+// Revert-check: writing the lines to os.Stderr again leaves both buffers empty
+// and this test red.
+func TestReviewerPassBlocked_WritesToTheRunsStderr(t *testing.T) {
+	orig := cliDBRetryPause
+	cliDBRetryPause = time.Millisecond
+	t.Cleanup(func() { cliDBRetryPause = orig })
+
+	var blocked bytes.Buffer
+	fake := &scriptedScopeSource{script: []scopeAnswer{{state: agent.CLIScopeState{WorkOpen: true}}}}
+	require.True(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", &blocked))
+	require.Contains(t, blocked.String(), `reviewer pass skipped for session "sess-1": it still has running work`)
+
+	var unreadable bytes.Buffer
+	fake = &scriptedScopeSource{script: []scopeAnswer{{err: errors.New("database is locked")}}}
+	require.True(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", &unreadable))
+	require.Contains(t, unreadable.String(), "its scope could not be read (database is locked)")
+
+	var open bytes.Buffer
+	fake = &scriptedScopeSource{script: []scopeAnswer{{}}}
+	require.False(t, (&App{}).reviewerPassBlocked(context.Background(), fake, "sess-1", &open))
+	require.Empty(t, open.String(), "an open scope prints nothing")
 }

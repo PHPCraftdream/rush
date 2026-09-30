@@ -7,8 +7,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -148,14 +148,15 @@ const reviewerPassScopeOpenRetries = 3
 // open a new phase on sessionID: it has running work, or owes (Owed), is
 // retrying (Paced) or gave up on (Stuck) a reaction turn. Debt the policy
 // defers (DrainDeferred: nothing will ever act on it) does not block. Every
-// skip is one stderr line, so a silently missing review is never a mystery.
+// skip is one line on stderr -- the run's own writer (RunRequest.Stderr), never
+// the process's -- so a silently missing review is never a mystery.
 // A DB read error retries reviewerPassScopeOpenRetries times (paced by
 // cliDBRetryPause); persistent failure blocks -- running a possibly-conflicting
 // reviewer phase while the scope is unknown is the riskier guess.
 //
 // Only called when every cheap, in-memory gate (ExecuteRun's own error,
 // credentials, cancellation, shouldRunReviewerPass) already passed.
-func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string) bool {
+func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
 	var lastErr error
 	for attempt := 1; attempt <= reviewerPassScopeOpenRetries; attempt++ {
 		state, err := source.CLIScope(ctx, sessionID)
@@ -172,7 +173,7 @@ func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDe
 				why = "a notice it stopped reacting to is still pending"
 			}
 			if why != "" {
-				fmt.Fprintf(os.Stderr, "rush run: reviewer pass skipped for session %q: %s\n", sessionID, why)
+				fmt.Fprintf(stderr, "rush run: reviewer pass skipped for session %q: %s\n", sessionID, why)
 				return true
 			}
 			return false
@@ -183,7 +184,7 @@ func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDe
 			break
 		}
 	}
-	fmt.Fprintf(os.Stderr, "rush run: reviewer pass skipped for session %q: its scope could not be read (%v)\n", sessionID, lastErr)
+	fmt.Fprintf(stderr, "rush run: reviewer pass skipped for session %q: its scope could not be read (%v)\n", sessionID, lastErr)
 	return true
 }
 

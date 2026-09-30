@@ -49,6 +49,12 @@ var (
 // nil in every production path.
 var cliLoopTurnDoneSeam func()
 
+// cliLoopBeforeDrainSeam is a test-only hook called after the pre-launch
+// checks passed and right before a Drain's ExecuteRun starts: the window in
+// which an operator's `sessions cancel` can land after the check. nil in every
+// production path.
+var cliLoopBeforeDrainSeam func()
+
 // flushLoopExit renders final's envelope through output exactly the way the
 // loop's normal "scope closed" exit always did: every exit from the loop --
 // refusal give-up, ctx cancellation, a wait error, a stuck debt, or the
@@ -88,11 +94,23 @@ func sleepOrCtxDone(ctx context.Context, d time.Duration) bool {
 // calls, warnings and sub-agent outputs (a cancelled or failed Drain adds its
 // usage without replacing the last completed answer).
 type loopTotals struct {
-	tokens          int64
-	cost            float64
-	counts          map[string]int
-	warnings        []string
+	tokens int64
+	cost   float64
+	counts map[string]int
+	turns  []loopTurn
+	// subAgentOutputs holds each child once (by session id, in first-seen
+	// order) with its latest text: every turn lists ALL of the parent's
+	// sub-sessions, so concatenating turns would repeat them (R3C-7).
 	subAgentOutputs []SubAgentOutput
+	subAgentIndex   map[string]int
+}
+
+// loopTurn is one real turn's warnings, split so the ones that describe its
+// final_text can be dropped once another turn supplies the answer (R3C-7).
+type loopTurn struct {
+	result       *RunResult
+	warnings     []string
+	textWarnings []string
 }
 
 func (t *loopTotals) add(r *RunResult) {
@@ -104,17 +122,46 @@ func (t *loopTotals) add(r *RunResult) {
 	}
 	t.tokens += r.Usage.DeltaTokens
 	t.cost += r.Usage.DeltaCostUSD
-	t.warnings = append(t.warnings, r.Warnings...)
-	t.subAgentOutputs = append(t.subAgentOutputs, r.SubAgentOutputs...)
+	t.turns = append(t.turns, loopTurn{
+		result:       r,
+		warnings:     slices.Clone(r.Warnings),
+		textWarnings: slices.Clone(r.finalTextWarnings),
+	})
+	for _, out := range r.SubAgentOutputs {
+		if i, ok := t.subAgentIndex[out.SessionID]; ok {
+			t.subAgentOutputs[i] = out
+			continue
+		}
+		if t.subAgentIndex == nil {
+			t.subAgentIndex = make(map[string]int)
+		}
+		t.subAgentIndex[out.SessionID] = len(t.subAgentOutputs)
+		t.subAgentOutputs = append(t.subAgentOutputs, out)
+	}
 	for _, stat := range r.ToolCalls {
 		t.counts[stat.Name] += stat.Count
 	}
 }
 
+// warningsFor is the run's warning list: every turn's diagnostics, but the
+// warnings about a turn's final_text only for the turn that is the answer.
+func (t *loopTotals) warningsFor(final *RunResult) []string {
+	var out []string
+	for _, turn := range t.turns {
+		for _, w := range turn.warnings {
+			if turn.result != final && slices.Contains(turn.textWarnings, w) {
+				continue
+			}
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
 	final.Usage.DeltaTokens = t.tokens
 	final.Usage.DeltaCostUSD = t.cost
-	final.Warnings = t.warnings
+	final.Warnings = t.warningsFor(final)
 	final.SubAgentOutputs = t.subAgentOutputs
 	final.DurationMs = time.Since(started).Milliseconds()
 	final.ToolCalls = final.ToolCalls[:0]
@@ -146,6 +193,10 @@ type cliLoop struct {
 	driverClaimed    bool
 	claimedSessionID string
 
+	// firstSubmitted: the user's own turn was launched (every setup step that
+	// can fail before it had passed). A failure before that ends the run.
+	firstSubmitted bool
+
 	final        *RunResult    // the last COMPLETED turn's result (carries the answer)
 	runErr       error         // the last real turn's outcome
 	lastFailed   *RunResult    // the last real Drain's result, when it failed
@@ -153,6 +204,14 @@ type cliLoop struct {
 	tot          loopTotals
 
 	refusalSince time.Time
+	// failedAttempt is the error of the last Drain that ran and failed; it
+	// names the retry on stderr (pacedNoticeAt dedupes one line per attempt).
+	failedAttempt error
+	pacedNoticeAt time.Time
+	// queuedMark is the session's usage when the first not-yet-folded queued
+	// iteration began (see afterDrain); flushQueuedUsage adds what the session
+	// spent since.
+	queuedMark *usageMark
 	// lastOpenScopeNotice paces the wait heartbeat across the WHOLE run, not
 	// per nextStep call (which restarts after every Drain).
 	lastOpenScopeNotice time.Time
@@ -243,14 +302,7 @@ func (l *cliLoop) claim(resolved string) error {
 // runTurn runs one ExecuteRun: the first call carries the user's request, every
 // later one is a Drain (empty prompt, mutation-free setup).
 func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
-	buffered := &bytes.Buffer{}
-	turnOutput := l.output
-	switch l.mode {
-	case RunModeTerse:
-		turnOutput = buffered
-	case RunModeJSON:
-		turnOutput = io.Discard
-	}
+	buffered, turnOutput := l.turnSink()
 	turnCtx := l.ctx
 	if !first {
 		// Doc sec.3.4: an empty-prompt Drain call: lifts ErrEmptyPrompt, skips
@@ -265,6 +317,54 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 		HideSpinner:       l.hideSpinner,
 		captureResult:     true,
 		drainTurn:         !first,
+		deferReviewer:     true, // the loop runs the pass once, at its exit
+		onSessionResolved: l.claim,
+		onTurnSubmitted: func() {
+			if first {
+				l.firstSubmitted = true
+			}
+		},
+	})
+	if cliLoopTurnDoneSeam != nil {
+		cliLoopTurnDoneSeam()
+	}
+	return result, buffered, err
+}
+
+// turnSink is where one turn's output goes: terse output is held (only the
+// answer is printed, at exit), JSON is discarded (the envelope is printed at
+// exit), stream flows through.
+func (l *cliLoop) turnSink() (buffered *bytes.Buffer, out io.Writer) {
+	buffered = &bytes.Buffer{}
+	switch l.mode {
+	case RunModeTerse:
+		return buffered, buffered
+	case RunModeJSON:
+		return buffered, io.Discard
+	}
+	return buffered, l.output
+}
+
+// reviewerDue reports that the run ended clean and the automatic reviewer pass
+// is configured: it runs once, as an ordinary turn, when the scope closed
+// (never inside a Drain, R3C-1). Same conditions as the in-ExecuteRun pass of
+// non-loop callers; the loop has no credentials.
+func (l *cliLoop) reviewerDue() bool {
+	return l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
+		shouldRunReviewerPass(l.overrides.ModelRole, l.app.config.Config())
+}
+
+// runReviewerTurn runs the reviewer pass: a plain turn on the claimed session,
+// no Drain marker on its ctx.
+func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
+	buffered, turnOutput := l.turnSink()
+	result, err := l.app.ExecuteRun(l.ctx, RunRequest{
+		Overrides: l.turnOverrides, Mode: l.mode,
+		ContinueSessionID: l.sessionID,
+		Origin:            l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
+		HideSpinner:       l.hideSpinner,
+		captureResult:     true,
+		reviewerTurn:      true,
 		onSessionResolved: l.claim,
 	})
 	if cliLoopTurnDoneSeam != nil {
@@ -273,12 +373,60 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 	return result, buffered, err
 }
 
+// exitClosed ends a run whose scope closed: the reviewer pass first, when due,
+// and its result becomes the run's answer (a failed review is the run's error,
+// like the pass inside ExecuteRun); then the ordinary exit.
+func (l *cliLoop) exitClosed() (*RunResult, error) {
+	if !l.reviewerDue() {
+		return l.exit(l.runErr, "")
+	}
+	if err := l.precheck(); err != nil {
+		return l.exitPrecheck(err)
+	}
+	usageBefore := l.sessionUsage()
+	l.flushQueuedUsage(usageBefore)
+	result, buffered, err := l.runReviewerTurn()
+	if l.ctx.Err() != nil {
+		return l.turnCanceled(result, buffered, err, usageBefore)
+	}
+	if errors.Is(err, ErrRunQueued) {
+		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass queued behind another owner and did not run\n", l.sessionID)
+		l.queuedMark = &usageBefore
+		return l.exit(l.runErr, "")
+	}
+	l.tot.add(result)
+	if result == nil {
+		return l.exit(err, "error")
+	}
+	l.final, l.lastBuffered, l.runErr = result, buffered, err
+	return l.exit(err, "")
+}
+
+// turnCanceled ends the run after a turn that ran while the run's ctx was
+// cancelled (Ctrl-C, --timeout). Its usage is kept; a turn that had already
+// committed cleanly (result, no error) keeps its answer as the run's final one
+// (R3C-4); the run still exits canceled.
+func (l *cliLoop) turnCanceled(result *RunResult, buffered *bytes.Buffer, err error, usageBefore usageMark) (*RunResult, error) {
+	l.tot.add(result)
+	if result == nil {
+		// An interrupted turn returns no envelope; its usage is what the
+		// session totals gained meanwhile.
+		l.tot.addSince(usageBefore, l.sessionUsage())
+	}
+	if err == nil && result != nil {
+		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, nil, nil
+	}
+	return l.exitCanceled()
+}
+
 func (l *cliLoop) run() (*RunResult, error) {
 	result, buffered, err := l.runTurn(true)
-	// The session never resolved or its driver claim was refused (another live
-	// loop drives it): the first turn never ran, so there is no scope of ours to
-	// wait on -- fail now, having changed nothing.
-	if err != nil && !l.driverClaimed {
+	// The session never resolved, its driver claim was refused (another live
+	// loop drives it), or a setup step failed before the user's turn was
+	// launched (R3C-3): the request never reached the model, so there is
+	// nothing of ours to wait on and no later Drain may turn the failure into
+	// an exit 0 -- fail now with that error, having run nothing.
+	if err != nil && (!l.driverClaimed || !l.firstSubmitted) {
 		return nil, err
 	}
 	l.final, l.runErr, l.lastBuffered = result, err, buffered
@@ -305,7 +453,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 		case waitErr != nil:
 			return l.exitWait(waitErr)
 		case step == stepExit:
-			return l.exit(l.runErr, "")
+			return l.exitClosed()
 		case step == stepStuck:
 			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
 			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
@@ -315,15 +463,13 @@ func (l *cliLoop) run() (*RunResult, error) {
 		}
 
 		usageBefore := l.sessionUsage()
+		l.flushQueuedUsage(usageBefore)
+		if cliLoopBeforeDrainSeam != nil {
+			cliLoopBeforeDrainSeam()
+		}
 		result, buffered, err = l.runTurn(false)
 		if l.ctx.Err() != nil {
-			l.tot.add(result)
-			if result == nil {
-				// An interrupted Drain returns no envelope; its usage is what the
-				// session totals gained meanwhile.
-				l.tot.addSince(usageBefore, l.sessionUsage())
-			}
-			return l.exitCanceled()
+			return l.turnCanceled(result, buffered, err, usageBefore)
 		}
 		// A Drain that crossed the run's budget ends the run: its result is not the
 		// answer, and no further paid turn follows.
@@ -333,7 +479,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 				return l.exitPrecheck(capErr)
 			}
 		}
-		if done, exitErr := l.afterDrain(result, err, buffered); done {
+		if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
 			return l.exit(exitErr, "error")
 		}
 	}
@@ -341,13 +487,20 @@ func (l *cliLoop) run() (*RunResult, error) {
 
 // afterDrain classifies one finished Drain iteration. done reports that the
 // loop must end now (the refusal budget ran out) with exitErr.
-func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffer) (done bool, exitErr error) {
+func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffer, usageBefore usageMark) (done bool, exitErr error) {
 	var awaiting *agent.AwaitingAnswerError
 	switch {
 	case errors.Is(err, ErrRunQueued):
 		// It queued behind another owner (or the Drain found nothing visible to
-		// react to): no turn of ours to account -- the owner's loop already did.
+		// react to): no turn of ours to account for the debt -- the owner's loop
+		// already did, and the owner's answer is not this run's. What the session
+		// spends meanwhile is still the run's cost: it is folded in at the next
+		// turn or the exit (queuedMark), never dropped.
 		l.refusalSince = time.Time{}
+		l.failedAttempt = nil
+		if l.queuedMark == nil {
+			l.queuedMark = &usageBefore
+		}
 		l.source.WaitForHint(l.ctx, l.sessionID, time.Now().Add(cliQueuedDrainPause))
 		return false, nil
 	case agent.IsDrainNotAttempted(err), result == nil && err != nil && !errors.As(err, &awaiting):
@@ -357,6 +510,7 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 		// longer resolves, a run-queue read error, ...) has no gate behind it,
 		// so it takes the same bounded/visible path and the loop paces it
 		// itself; unbounded it would relaunch as fast as it fails.
+		l.failedAttempt = nil
 		refused := agent.IsDrainNotAttempted(err)
 		first, still := "was refused", "is still refused"
 		if !refused {
@@ -387,10 +541,12 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 			l.lastBuffered = buffered
 		}
 		l.runErr, l.lastFailed = err, nil
+		l.failedAttempt = nil
 	default:
 		// A failed Drain never replaces the last completed answer; the error
 		// exit carries its classification.
 		l.runErr, l.lastFailed = err, result
+		l.failedAttempt = err
 	}
 	return false, nil
 }
@@ -451,6 +607,7 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		case state.Drain == agent.DrainOwed:
 			return stepDrain, "", nil
 		case state.Drain == agent.DrainPaced:
+			l.noticePaced(state)
 			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
 			continue
 		case state.WorkOpen:
@@ -467,6 +624,18 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		}
 		return stepExit, "", nil
 	}
+}
+
+// noticePaced prints one stderr line per failed attempt, naming the error and
+// when the retry comes (R3C-8): the wait can last up to two minutes. A refusal
+// has its own line (afterDrain) and clears failedAttempt.
+func (l *cliLoop) noticePaced(state agent.CLIScopeState) {
+	if l.failedAttempt == nil || state.RetryAt.IsZero() || state.RetryAt.Equal(l.pacedNoticeAt) {
+		return
+	}
+	l.pacedNoticeAt = state.RetryAt
+	fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn failed (%v); retrying at %s\n",
+		l.sessionID, l.failedAttempt, state.RetryAt.Format(time.RFC3339))
 }
 
 // precheck refuses to launch a paid reaction turn once the run's own budget or
@@ -489,7 +658,7 @@ func (l *cliLoop) precheck() error {
 func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 	final := l.final
 	if final != nil {
-		l.tot.applyTo(final, l.started)
+		l.applyTotals(final)
 		switch {
 		case err != nil && reason != "":
 			final.ExitReason = reason
@@ -520,7 +689,7 @@ func (l *cliLoop) exitCanceled() (*RunResult, error) {
 // flushed applies the totals and flushes without touching the exit reason.
 func (l *cliLoop) flushed(err error) (*RunResult, error) {
 	if l.final != nil {
-		l.tot.applyTo(l.final, l.started)
+		l.applyTotals(l.final)
 	}
 	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
 		return l.final, flushErr
@@ -581,6 +750,23 @@ func (l *cliLoop) capError() error {
 			"session %s aborted: %d tokens exceeds max %d", l.sessionID, total, l.overrides.MaxTokens)}
 	}
 	return nil
+}
+
+// flushQueuedUsage folds what the session spent since the first queued
+// iteration (turns of another owner) into the run's totals.
+func (l *cliLoop) flushQueuedUsage(now usageMark) {
+	if l.queuedMark != nil {
+		l.tot.addSince(*l.queuedMark, now)
+		l.queuedMark = nil
+	}
+}
+
+// applyTotals writes the run's totals into the envelope about to be flushed.
+func (l *cliLoop) applyTotals(final *RunResult) {
+	if l.queuedMark != nil {
+		l.flushQueuedUsage(l.sessionUsage())
+	}
+	l.tot.applyTo(final, l.started)
 }
 
 // usageMark is the session's token and cost totals at one instant.
