@@ -672,8 +672,11 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// auto-backgrounds and later finishes, notifyBackgroundJobDone persists a
 	// bg_shell_done session_notices row (wake=1); the owning session's next
 	// turn pulls it into history (a running turn at a step boundary). A turn
-	// is started for it only in the web process with AutoResumeOnJobDone.
-	// Kill-switch defaults to ON. A `rush run` process registers this
+	// is started for it by the web process (AutoResumeOnJobDone, at most
+	// maxConsecutiveAutoResumes per human message) or by a `rush run` loop's
+	// own reaction turn (the same policy: with AutoResumeOnJobDone off a
+	// bg-shell-only notice waits for the next natural turn; the loop has no
+	// cap). Kill-switch defaults to ON. A `rush run` process registers this
 	// callback too, so the row can also appear while its loop waits.
 	opts := cfg.Options
 	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone

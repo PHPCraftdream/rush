@@ -242,8 +242,10 @@ type Coordinator interface {
 	CancelTurn(sessionID string)
 	// StopRerunJobs stops the jobs a committed Rerun truncation voided
 	// (session.TruncateForRerun's Voided set): each still-running row this
-	// process executes is stopped with job_kill semantics, and every voided
-	// delegation's child tree is stopped like Stop (stopTree). Best effort,
+	// process executes is stopped with Stop semantics (a session cancel:
+	// `cancelled`, notice kind session_cancel, wake=0, delivery stays `void` --
+	// not job_kill's stopped notice), and every voided delegation's child tree
+	// is stopped like Stop (stopTree). Best effort,
 	// called strictly AFTER the truncation transaction committed -- a stop
 	// that fails or cannot reach a foreign host's executor is safe: the row
 	// is already void, so its completion commits void (no debt, never pulled).
@@ -333,11 +335,12 @@ type coordinator struct {
 	// (HoldAutomaticTurns), guarded by autoResumeMu.
 	turnHolds map[string]int
 
-	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (web
-	// process only; a CLI coordinator never drains the set): a
-	// session whose Drain submission was refused by an admission gate (the
-	// session-lock held by another process, or shutdown) is never forgotten
-	// -- it goes here instead, and RecheckPass (coordinator_recheck.go)
+	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (the
+	// web process, and `rush run` through ClaimExternalDriver's ticker): a
+	// session whose launch must be retried -- refused by an admission gate (the
+	// session-lock held by another process, shutdown), paced by the launch
+	// gate, held by a rerun, or whose launch decision could not be read -- is
+	// never forgotten: it goes here, and RecheckPass (coordinator_recheck.go)
 	// retries it on the next tick rather than losing the wake.
 	recheckMu   sync.Mutex
 	recheckSet  map[string]struct{}
@@ -539,9 +542,10 @@ func (c *coordinator) SetPersistentMode(persistent bool) {
 	c.persistentMode.Store(persistent)
 	if persistent {
 		// Doc sec.3.5: hints live only inside this process, so the web
-		// process runs the 60s host-level pass (RecheckPass). `rush run`
-		// never calls this: it has no ticker, runs RunMaintenanceSweep once
-		// at loop start and re-reads the DB itself while it waits.
+		// process runs the 60s host-level pass (RecheckPass). `rush run` does
+		// not call this: ClaimExternalDriver starts the same ticker for it,
+		// and it also runs RunMaintenanceSweep once at loop start and
+		// re-reads the DB itself while it waits.
 		c.StartRecheckTicker()
 	}
 }
@@ -579,8 +583,8 @@ func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	delete(c.consecutiveAutoResumes, sessionID)
 	delete(c.autoTurnsSuspended, sessionID)
 	c.autoResumeMu.Unlock()
-	// A human message also reopens the Drain launch gate (a dormant gate
-	// waits for exactly this or a newer fact).
+	// A human message also reopens the Drain launch gate: the one thing that
+	// reopens EVERY dormant gate (a newer fact reopens only a failing pull's).
 	if c.asyncJobs != nil {
 		c.asyncJobs.resetDrainGate(sessionID)
 	}
