@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -36,7 +37,12 @@ func WatchdogResumeGuidance(sessionID, timeoutFlag string) string {
 // with context.WithTimeoutCause(ctx, d, ErrRunDefaultCap), and a turn cut off by
 // it reads the cause (context.Cause) to name the cap instead of a --timeout the
 // operator never passed. A --timeout deadline carries no cause.
-var ErrRunDefaultCap = errors.New("run default wall-clock cap reached")
+//
+// It wraps context.DeadlineExceeded: net/http HTTP/1.1 returns
+// context.Cause(ctx) itself from a cut stream, and that must still classify as
+// a deadline (isRunTimeout, operatorStop) exactly like the same cut by
+// --timeout (R8B-1). errors.Is(DeadlineExceeded, ErrRunDefaultCap) stays false.
+var ErrRunDefaultCap = fmt.Errorf("run default wall-clock cap reached: %w", context.DeadlineExceeded)
 
 // runTimeoutFinishText is the finish message of a turn cut off by the run's
 // deadline; cause is context.Cause of the turn's context.

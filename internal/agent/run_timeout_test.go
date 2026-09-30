@@ -53,6 +53,22 @@ func (waitForDeadlineModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy
 
 func (waitForDeadlineModel) Model() string { return "wait-for-deadline" }
 
+// waitForCauseModel fails with context.Cause(ctx), what net/http HTTP/1.1
+// (transport.go: pc.cancelRequest(context.Cause(ctx))) hands back once the
+// request context ends: the cancellation cause, not ctx.Err().
+type waitForCauseModel struct{ deadlineExceededModel }
+
+func (waitForCauseModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case <-time.After(10 * time.Second):
+		return nil, errors.New("waitForCauseModel: the deadline never arrived")
+	}
+}
+
+func (waitForCauseModel) Model() string { return "wait-for-cause" }
+
 // TestRun_RunTimeoutDeadlineExceededSurfacesClearFinish reproduces the
 // regression found while triaging a crashed session in another repo: a
 // context.DeadlineExceeded from the run's own root --timeout wasn't matched
@@ -146,8 +162,13 @@ func lastAssistantFinish(t *testing.T, env fakeEnv, sessionID string) *message.F
 // cap and RUSH_RUN_DEFAULT_HARD_TIMEOUT instead of a --timeout nobody passed.
 // The title stays the same for both.
 //
+// Each case runs against both shapes a cut stream takes: ctx.Err() (HTTP/2, the
+// pre-headers phase) and context.Cause(ctx) (net/http HTTP/1.1 hands the cause
+// back, R8B-1), so a cap that is not a deadline cannot hide behind the fake.
+//
 // Revert-check: reading no cause in handleStreamFailure (always the --timeout
-// text) turns the default-cap case red.
+// text) turns the default-cap cases red; a plain errors.New ErrRunDefaultCap
+// turns the cause-returning default-cap case red (generic "Provider Error").
 func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -172,27 +193,51 @@ func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
 			notWant: "--timeout deadline",
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env := testEnv(t)
-			agent := testSessionAgent(env, waitForDeadlineModel{}, waitForDeadlineModel{}, "test system prompt")
-			sess, err := env.sessions.Create(t.Context(), "Run timeout")
-			require.NoError(t, err)
-			_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
-				Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier"}},
-			})
-			require.NoError(t, err)
-
-			runCtx, cancel := tc.ctx(t)
-			defer cancel()
-			_, err = agent.Run(runCtx, SessionAgentCall{Prompt: "hello", SessionID: sess.ID, MaxOutputTokens: 100})
-			require.ErrorIs(t, err, context.DeadlineExceeded)
-
-			finish := lastAssistantFinish(t, env, sess.ID)
-			assert.Equal(t, "Run timeout exceeded", finish.Message)
-			assert.Contains(t, finish.Details, tc.want)
-			assert.NotContains(t, finish.Details, tc.notWant)
-			assert.Contains(t, finish.Details, "rush run --session "+sess.ID+" --timeout <larger-value>", "the resume command is the same for both")
-		})
+	models := []struct {
+		name  string
+		model fantasy.LanguageModel
+	}{
+		{"ctx.Err", waitForDeadlineModel{}},
+		{"context.Cause", waitForCauseModel{}},
 	}
+	for _, tc := range cases {
+		for _, m := range models {
+			t.Run(tc.name+"/"+m.name, func(t *testing.T) {
+				env := testEnv(t)
+				agent := testSessionAgent(env, m.model, m.model, "test system prompt")
+				sess, err := env.sessions.Create(t.Context(), "Run timeout")
+				require.NoError(t, err)
+				_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+					Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier"}},
+				})
+				require.NoError(t, err)
+
+				runCtx, cancel := tc.ctx(t)
+				defer cancel()
+				_, err = agent.Run(runCtx, SessionAgentCall{Prompt: "hello", SessionID: sess.ID, MaxOutputTokens: 100})
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+
+				finish := lastAssistantFinish(t, env, sess.ID)
+				assert.Equal(t, "Run timeout exceeded", finish.Message)
+				assert.Contains(t, finish.Details, tc.want)
+				assert.NotContains(t, finish.Details, tc.notWant)
+				assert.Contains(t, finish.Details, "rush run --session "+sess.ID+" --timeout <larger-value>", "the resume command is the same for both")
+			})
+		}
+	}
+}
+
+// TestOperatorStop_DefaultCapIsADeadline: the default cap's cause is a
+// deadline, so a stream the HTTP/1.1 transport cuts with context.Cause(ctx)
+// counts as an operator stop (exempt from the Drain's wake accounting) exactly
+// like the same cut made by --timeout (R8B-1).
+//
+// Revert-check: a plain errors.New ErrRunDefaultCap makes the first assertion
+// false.
+func TestOperatorStop_DefaultCapIsADeadline(t *testing.T) {
+	assert.True(t, operatorStop(ErrRunDefaultCap, true), "the cap with the turn context done is an operator stop")
+	assert.True(t, operatorStop(context.DeadlineExceeded, true), "the --timeout deadline is one too")
+	assert.False(t, operatorStop(ErrRunDefaultCap, false), "with a live turn context it is a transport failure")
+	assert.NotErrorIs(t, context.DeadlineExceeded, ErrRunDefaultCap, "a --timeout deadline is not the cap")
+	assert.ErrorIs(t, ErrRunDefaultCap, context.DeadlineExceeded)
 }
