@@ -43,8 +43,9 @@ func (c *childBGFixture) requireStillParked(why string) {
 // reacts and the parent gets "reacted", not "first turn text". A callback that
 // already ran to completion holds nothing (the control).
 //
-// Revert-check: dropping the completion hold from childScopeDrained (or from
-// the window and turns both windows red.
+// Revert-check: dropping the completion hold from childScopeDrained turns all
+// three cases red (the two windows where the notice is not durable yet, and the
+// natural completion in place).
 func TestChildScope_FinishedShellStaysOpenUntilItsNoticeCommits(t *testing.T) {
 	cases := []struct {
 		name   string
