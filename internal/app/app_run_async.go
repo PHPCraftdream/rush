@@ -92,7 +92,9 @@ func sleepOrCtxDone(ctx context.Context, d time.Duration) bool {
 // loopTotals accumulates what EVERY real turn of one invocation did, so any
 // exit path reports the whole run and not only its last turn: usage, tool
 // calls, warnings and sub-agent outputs (a cancelled or failed Drain adds its
-// usage without replacing the last completed answer).
+// usage without replacing the last completed answer). cost is the sum of the
+// turns' own cost deltas: only the fallback for the run's cost, which is the
+// session's cost window (cliLoop.applyTotals).
 type loopTotals struct {
 	tokens int64
 	cost   float64
@@ -192,6 +194,12 @@ type cliLoop struct {
 	sessionID        string
 	driverClaimed    bool
 	claimedSessionID string
+	// startMark is the session's usage when the driver was claimed: the run's
+	// cost is what the session spent from here to the exit (applyTotals).
+	startMark usageMark
+	// reviewerDone: the reviewer pass ran (or was refused); it never runs again
+	// in this invocation, and later Drains run on its call options and model.
+	reviewerDone bool
 
 	// firstSubmitted: the user's own turn was launched (every setup step that
 	// can fail before it had passed). A failure before that ends the run.
@@ -237,6 +245,12 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		output = io.Discard
 	}
 	source, isReactionSource := app.AgentCoordinator.(agent.ReactionDebtSource)
+	if overrides.Origin == message.OriginCLI && !isReactionSource {
+		// The loop cannot run without the coordinator's scope answers; running one
+		// plain turn instead would drop the driver marker and every reaction
+		// silently (R4C-5).
+		return nil, fmt.Errorf("rush run: the agent coordinator (%T) is not an agent.ReactionDebtSource; the async reaction loop cannot run", app.AgentCoordinator)
+	}
 	if !isReactionSource || overrides.Origin != message.OriginCLI {
 		final, runErr = app.ExecuteRun(ctx, RunRequest{
 			Prompt: prompt, Overrides: overrides, Mode: mode,
@@ -294,6 +308,8 @@ func (l *cliLoop) claim(resolved string) error {
 		}
 		l.driverClaimed = true
 		l.claimedSessionID = resolved
+		l.sessionID = resolved
+		l.startMark = l.sessionUsage()
 	}
 	l.sessionID = resolved
 	return nil
@@ -318,6 +334,7 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 		captureResult:     true,
 		drainTurn:         !first,
 		deferReviewer:     true, // the loop runs the pass once, at its exit
+		reviewerConfig:    l.reviewerDone,
 		onSessionResolved: l.claim,
 		onTurnSubmitted: func() {
 			if first {
@@ -346,11 +363,12 @@ func (l *cliLoop) turnSink() (buffered *bytes.Buffer, out io.Writer) {
 }
 
 // reviewerDue reports that the run ended clean and the automatic reviewer pass
-// is configured: it runs once, as an ordinary turn, when the scope closed
-// (never inside a Drain, R3C-1). Same conditions as the in-ExecuteRun pass of
-// non-loop callers; the loop has no credentials.
+// is configured and has not run yet: it runs at most once per invocation, as an
+// ordinary turn, when the scope closed (never inside a Drain, R3C-1). Same
+// conditions as the in-ExecuteRun pass of non-loop callers; the loop has no
+// credentials.
 func (l *cliLoop) reviewerDue() bool {
-	return l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
+	return !l.reviewerDone && l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
 		shouldRunReviewerPass(l.overrides.ModelRole, l.app.config.Config())
 }
 
@@ -373,33 +391,46 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 	return result, buffered, err
 }
 
-// exitClosed ends a run whose scope closed: the reviewer pass first, when due,
-// and its result becomes the run's answer (a failed review is the run's error,
-// like the pass inside ExecuteRun); then the ordinary exit.
-func (l *cliLoop) exitClosed() (*RunResult, error) {
+// scopeClosed handles a closed scope: the reviewer pass first, when due. A
+// clean review turn returns again == true and its result is the run's answer so
+// far: the turn keeps bash (every CLI bash is an async job), so the loop goes
+// back through nextStep -- running work waited on, Owed debt Drained on the
+// reviewer's options -- and the answer becomes the last completed turn (R4C-1).
+// Every other outcome ends the run: a failed review is the run's error, like
+// the pass inside ExecuteRun (work it started is cancelled with the run, as at
+// any error exit), a review that queued behind another owner did not run, and
+// a cancelled run keeps its last completed answer.
+func (l *cliLoop) scopeClosed() (again bool, final *RunResult, err error) {
 	if !l.reviewerDue() {
-		return l.exit(l.runErr, "")
+		final, err = l.exit(l.runErr, "")
+		return false, final, err
 	}
-	if err := l.precheck(); err != nil {
-		return l.exitPrecheck(err)
+	l.reviewerDone = true
+	if precheckErr := l.precheck(); precheckErr != nil {
+		final, err = l.exitPrecheck(precheckErr)
+		return false, final, err
 	}
 	usageBefore := l.sessionUsage()
 	l.flushQueuedUsage(usageBefore)
-	result, buffered, err := l.runReviewerTurn()
-	if l.ctx.Err() != nil {
-		return l.turnCanceled(result, buffered, err, usageBefore)
-	}
-	if errors.Is(err, ErrRunQueued) {
+	result, buffered, turnErr := l.runReviewerTurn()
+	switch {
+	case l.ctx.Err() != nil:
+		final, err = l.turnCanceled(result, buffered, turnErr, usageBefore)
+	case errors.Is(turnErr, ErrRunQueued):
 		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass queued behind another owner and did not run\n", l.sessionID)
 		l.queuedMark = &usageBefore
-		return l.exit(l.runErr, "")
+		final, err = l.exit(l.runErr, "")
+	case result == nil:
+		final, err = l.exit(turnErr, "error")
+	default:
+		l.tot.add(result)
+		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, turnErr, nil
+		if turnErr == nil {
+			return true, nil, nil
+		}
+		final, err = l.exit(turnErr, "")
 	}
-	l.tot.add(result)
-	if result == nil {
-		return l.exit(err, "error")
-	}
-	l.final, l.lastBuffered, l.runErr = result, buffered, err
-	return l.exit(err, "")
+	return false, final, err
 }
 
 // turnCanceled ends the run after a turn that ran while the run's ctx was
@@ -453,7 +484,11 @@ func (l *cliLoop) run() (*RunResult, error) {
 		case waitErr != nil:
 			return l.exitWait(waitErr)
 		case step == stepExit:
-			return l.exitClosed()
+			again, final, exitErr := l.scopeClosed()
+			if !again {
+				return final, exitErr
+			}
+			continue
 		case step == stepStuck:
 			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
 			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
@@ -767,6 +802,14 @@ func (l *cliLoop) applyTotals(final *RunResult) {
 		l.flushQueuedUsage(l.sessionUsage())
 	}
 	l.tot.applyTo(final, l.started)
+	// The run's cost is the session's spend from the claim to now: it covers
+	// what happened between turns (a delegated child's cost is charged to the
+	// root there, and a human turn on the same session is spend too), which the
+	// turns' own deltas miss. The per-turn sum stays as the fallback when a
+	// session read failed. Tokens are last-snapshot counters, summed per turn.
+	if end := l.sessionUsage(); l.startMark.ok && end.ok {
+		final.Usage.DeltaCostUSD = max(end.cost-l.startMark.cost, 0)
+	}
 }
 
 // usageMark is the session's token and cost totals at one instant.
