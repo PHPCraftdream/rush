@@ -424,6 +424,11 @@ func (h *HostIdentity) Close(ctx context.Context, store AsyncHostStore) error {
 	return nil
 }
 
+// removeDeadHostFileBeforeRemoveSeam is a test-only hook fired immediately before
+// RemoveDeadHostFile unlinks the file, so a test can observe whether the lock
+// is still held at that instant (the POSIX ordering law). nil in production.
+var removeDeadHostFileBeforeRemoveSeam func(lockPath string)
+
 // RemoveDeadHostFile is the recoverer path (doc sec.3.6: "восстановитель,
 // держащий блокировку, после проверки, что открытый файл тот же, что по
 // пути ... удаляет [его]"). held must be a *FileLock won from
@@ -472,6 +477,9 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 		return nil
 	}
 	if unlinkBeforeUnlock {
+		if removeDeadHostFileBeforeRemoveSeam != nil {
+			removeDeadHostFileBeforeRemoveSeam(lockPath)
+		}
 		rmErr := os.Remove(lockPath)
 		relErr := held.Release()
 		if rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
@@ -484,6 +492,9 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 	}
 	if err := held.Release(); err != nil {
 		return fmt.Errorf("host lock: release before remove: %w", err)
+	}
+	if removeDeadHostFileBeforeRemoveSeam != nil {
+		removeDeadHostFileBeforeRemoveSeam(lockPath)
 	}
 	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// A race lost after the identity check (rare). Not fatal --
