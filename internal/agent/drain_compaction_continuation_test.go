@@ -27,15 +27,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDrain_CompactionContinuation_ReachesProviderAfterAutoSummarize is the
-// end-to-end regression test for B4.
+// TestDrain_CompactionContinuation_NoEmptyPrompt is the end-to-end regression
+// test for B4 (the continuation reaches the provider) and R2B-15 (a Drain's
+// continuation persists no empty-request prompt).
 //
-// REVERT CHECK: removed `continuationCall.drainTurnCommitted =
+// REVERT CHECK B4: removed `continuationCall.drainTurnCommitted =
 // continuationCall.IsDrain` from agent_turn.go's shouldSummarize branch --
-// this test's `continuationCalls.Load()` assertion FAILED (stayed 0; the
-// run instead ended via the no-turn branch with a nil result). Restored the
-// line; re-ran, passed.
-func TestDrain_CompactionContinuation_ReachesProviderAfterAutoSummarize(t *testing.T) {
+// the `continuationCalls.Load()` assertion FAILED (stayed 0).
+// REVERT CHECK R2B-15: giving a Drain's continuation the request-template
+// prompt again persists a "the initial user request was: “" user row and
+// the NotContains assertion FAILED.
+func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 	var mainCalls, summarizeCalls, continuationCalls atomic.Int64
 
 	// Main Drain turn: a pending tool call AND usage crossing the
@@ -134,15 +136,12 @@ func TestDrain_CompactionContinuation_ReachesProviderAfterAutoSummarize(t *testi
 
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
-	var foundContinuationUserMsg bool
 	for _, m := range msgs {
 		if m.Role != message.User {
 			continue
 		}
-		if strings.Contains(m.FullText(), "previous session was interrupted") {
-			foundContinuationUserMsg = true
-		}
+		require.NotEmpty(t, strings.TrimSpace(m.FullText()), "a Drain's continuation must never persist an empty user row")
+		require.NotContains(t, m.FullText(), "the initial user request was",
+			"a Drain has no user request: its continuation must not persist the request template with an empty prompt")
 	}
-	require.True(t, foundContinuationUserMsg,
-		"the continuation's synthesized prompt must be persisted as a real follow-on turn, proving it executed rather than being silently dropped")
 }

@@ -490,7 +490,7 @@ func NewCoordinator(
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	// Resolve the session's model configuration from the DB or config defaults.
@@ -498,7 +498,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	// runs with a complete, self-contained model configuration.
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve session models: %w", err)
+		return nil, c.drainRefused(ctx, sessionID, fmt.Errorf("failed to resolve session models: %w", err))
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)

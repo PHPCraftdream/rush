@@ -219,7 +219,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// (every-run, not just every-401) path.
 	providerCfg := pinned.providerCfg
 	if providerCfg.ID == "" {
-		return nil, errModelProviderNotConfigured
+		return nil, c.drainRefused(ctx, sessionID, errModelProviderNotConfigured)
 	}
 	// Fork patch (peak-hours bypass): consume the one-shot allow flag
 	// armed by SetAllowPeakHours (`rush run --allow-peak-hours`). Reset
@@ -238,7 +238,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	}
 	if !allowPeak {
 		if err := checkPeakHours(providerCfg); err != nil {
-			return nil, err
+			return nil, c.drainRefused(ctx, sessionID, err)
 		}
 	}
 
@@ -478,15 +478,6 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			Origin:                    trackCall.Origin,
 			AutoResumed:               trackCall.AutoResumed,
 			BackgroundJobNotice:       trackCall.BackgroundJobNotice,
-			// A 401-credential-refresh rebuild is the SAME logical call
-			// retrying, not a new call built from an active one -- unlike
-			// InterruptAndReplace/driver.callFor (doc sec.3.4's "never
-			// inherited" rule), IsDrain must survive this rebuild or a
-			// Drain call that hits a 401 would retry as an ordinary turn.
-			IsDrain: trackCall.IsDrain,
-			// The 401 came from the provider, so this Drain already
-			// committed to a turn; its retry must not re-gate on the pull.
-			drainTurnCommitted: trackCall.IsDrain,
 		}
 		pinned.pin(&newCall)
 		*trackCall = newCall
@@ -515,12 +506,30 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 	beforeLoaded := c.skillTracker.LoadedNames()
 	var result *fantasy.AgentResult
-	originalErr := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
-		var err error
+	var originalErr error
+	if agentCall.IsDrain {
+		// A Drain is ONE provider attempt (attempts design 1.6): no 401
+		// rebuild-and-retry leg here and no transient retry below -- the
+		// attempt is accounted by the turn loop and retried by the launch
+		// gate's pace. A 401 still refreshes the credentials, as a side effect.
 		armAttempt()
-		result, err = run()
-		return err
-	}, rebuildCall)
+		result, originalErr = run()
+		if originalErr != nil && c.isUnauthorized(originalErr) {
+			if refreshErr := c.retryAfterUnauthorized(ctx, providerCfg); refreshErr != nil {
+				slog.Warn("401 on a Drain: credential refresh skipped", "provider", providerCfg.ID, "error", refreshErr)
+			}
+		}
+		if errors.Is(originalErr, ErrAgentShuttingDown) {
+			originalErr = c.drainRefused(ctx, sessionID, originalErr)
+		}
+	} else {
+		originalErr = c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
+			var err error
+			armAttempt()
+			result, err = run()
+			return err
+		}, rebuildCall)
+	}
 	// Only what THIS attempt's own turn reported before run() returned
 	// counts. A queued admission leaves it empty UNLESS the queued copy's
 	// dispatch fired the callback before this resolve() sealed it (R7-1);
@@ -594,6 +603,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			maxRetries = 0
 		}
 	}
+	if agentCall.IsDrain {
+		maxRetries = 0 // one attempt, see above
+	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		// R7-1: ADMISSION OUTCOME gates retry classification, checked
 		// BEFORE any attemptEvidence consultation. A queued call never
@@ -656,9 +668,6 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// Fresh capture target for the next attempt (R3-1, round 6);
 		// this attempt's instance is sealed by the resolve() below.
 		armAttempt()
-		// A retried Drain already reached the provider and pulled its
-		// notice on the first attempt; skip the turn-start gate now.
-		trackCall.drainTurnCommitted = trackCall.IsDrain
 		result, originalErr = run()
 		attemptAssistantMsgID = curAttempt.resolve()
 	}
@@ -670,7 +679,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 // smart/fast model overrides instead of the global config defaults.
 func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	// Carry session-level reasoning effort into the overrides so that
@@ -708,7 +717,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 
 	pinned, err := c.applyModelOverrides(ctx, smart, fast)
 	if err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)

@@ -13,10 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -218,63 +215,6 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	pulled = agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Zero(t, tickCount(), "any other notice moving into history is progress")
-}
-
-// TestRunInternal_DrainRetrySkipsPullGate: a Drain turn (CLI loop,
-// WithDrainCall) that reached the provider and failed transiently is
-// retried with drainTurnCommitted set -- its notice was already pulled by
-// the first attempt, so the retry must not re-apply the turn-start gate and
-// silently skip the provider.
-//
-// Revert-check performed: removed `trackCall.drainTurnCommitted =
-// trackCall.IsDrain` from runInternal's retry loop -- this test FAILED (the
-// retry attempt carried drainTurnCommitted=false). Restored; re-ran, passed.
-func TestRunInternal_DrainRetrySkipsPullGate(t *testing.T) {
-	const providerID = "test-drain-retry"
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
-
-	env := testEnv(t)
-	cfg, err := config.Init(env.workingDir, "", false)
-	require.NoError(t, err)
-	cfg.Config().Providers.Set(providerID, config.ProviderConfig{
-		ID: providerID, Type: "openai",
-		Models: []catwalk.Model{{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096}},
-	})
-	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
-	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
-	cfg.Config().Models[config.SelectedModelTypeFast] = sel
-	coord := &coordinator{cfg: cfg, sessions: env.sessions, messages: env.messages, modelCache: csync.NewMap[string, cachedModelPair]()}
-
-	sess, err := env.sessions.Create(t.Context(), "drain-retry")
-	require.NoError(t, err)
-
-	var calls []SessionAgentCall
-	coord.currentAgent = newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-		calls = append(calls, call)
-		if len(calls) == 1 {
-			row, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
-				Role:  message.Assistant,
-				Parts: []message.ContentPart{message.Finish{Reason: message.FinishReasonError, Message: streamStalledFinishTitle}},
-			})
-			require.NoError(t, err)
-			call.OnAssistantMessageCreated(row.ID)
-			return nil, context.Canceled
-		}
-		return agentResultWithText("reacted"), nil
-	})
-
-	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
-	require.NoError(t, err)
-	res, err := coord.runInternal(WithDrainCall(t.Context()), sess.ID, "", pinned)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-	require.Len(t, calls, 2)
-	require.True(t, calls[0].IsDrain)
-	require.False(t, calls[0].drainTurnCommitted, "the first attempt still gates on its own pull")
-	require.True(t, calls[1].IsDrain)
-	require.True(t, calls[1].drainTurnCommitted, "the retry must not re-gate on a pull its first attempt already consumed")
 }
 
 // TestDrain_CommittedRetryReachesProviderWithNothingToPull: the runTurn side
@@ -502,5 +442,4 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result, "the queued real call must run as the loop's next turn")
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "the real call reached the provider exactly once")
-
 }

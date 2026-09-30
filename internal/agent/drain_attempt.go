@@ -347,3 +347,15 @@ func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens b
 	}
 	c.addToRecheckSet(sessionID)
 }
+
+// drainRefused reports a pre-agent refusal (provider not configured, peak
+// hours, model resolution, shutdown) of a Drain call built through the
+// prompt-string entry points: the launch gate is paced and the error says the
+// Drain never reached the provider. Any other call keeps its error as is.
+func (c *coordinator) drainRefused(ctx context.Context, sessionID string, err error) error {
+	if err == nil || !isDrainCallFrom(ctx) {
+		return err
+	}
+	c.noteDrainRefused(sessionID, err)
+	return &DrainNotAttemptedError{Err: err}
+}

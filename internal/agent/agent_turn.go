@@ -666,7 +666,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		history = reminderBeforeTail(history, len(pulledAtStart))
 		last := len(history) - 1
 		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
-			history = append(history, fantasy.NewUserMessage("Continue based on the notice(s) above."))
+			nudge := "Continue based on the notice(s) above."
+			if call.drainTurnCommitted {
+				nudge = "The conversation was summarized; continue reacting to the notice(s) above."
+			}
+			history = append(history, fantasy.NewUserMessage(nudge))
 		}
 	}
 
@@ -791,7 +795,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// Returning early here means drainOrReleaseMerged below is never reached,
 			// which is correct: we're not releasing ownership yet, we're continuing.
 			continuationCall := call
-			continuationCall.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			if call.IsDrain {
+				// A Drain has no user request: its continuation keeps the empty
+				// prompt (no user row is persisted) and runTurn's non-persisted
+				// nudge says what to do (R2B-15).
+				continuationCall.Prompt = ""
+			} else {
+				continuationCall.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			}
 			// B4 fix: this continuation resumes a Drain turn that ALREADY
 			// committed to reaching the provider (its own turn-start pull ran
 			// above, before shouldSummarize could even be computed) -- it must
