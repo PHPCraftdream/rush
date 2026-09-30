@@ -275,7 +275,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	if turnErr != nil {
 		cause = redactNetworkURLs(turnErr.Error())
 	}
-	if err := c.settleDrainDebt(ctx, sid, closing, cause); err != nil {
+	if err := c.settleDrainDebtTail(ctx, sid, closing, cause, settleTailFor(turnErr)); err != nil {
 		pace()
 		return
 	}
@@ -389,6 +389,12 @@ func (c *coordinator) noteTurnFailed(sessionID string) {
 // visible wake_failed marker in one transaction (marker only if a row was
 // really settled). The marker names the snapshot's own tool_call_ids.
 func (c *coordinator) settleDrainDebt(ctx context.Context, sessionID string, snap session.DebtSnapshot, cause string) error {
+	return c.settleDrainDebtTail(ctx, sessionID, snap, cause, settleTailNextTurn)
+}
+
+// settleDrainDebtTail is settleDrainDebt with the marker's closing sentence
+// chosen by the caller (settleTailFor).
+func (c *coordinator) settleDrainDebtTail(ctx context.Context, sessionID string, snap session.DebtSnapshot, cause, tail string) error {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil || snap.Empty() {
 		return nil
 	}
@@ -400,12 +406,12 @@ func (c *coordinator) settleDrainDebt(ctx context.Context, sessionID string, sna
 	var text string
 	if len(ids) > 0 {
 		text = fmt.Sprintf(
-			"Не удалось продолжить работу после события %s: %s. Событие сохранено; продолжение — при следующем ходе.",
-			strings.Join(ids, ", "), cause)
+			"Не удалось продолжить работу после события %s: %s. %s",
+			strings.Join(ids, ", "), cause, tail)
 	} else {
 		text = fmt.Sprintf(
-			"Не удалось продолжить работу после ошибки провайдера: %s. Событие сохранено; продолжение — при следующем ходе.",
-			cause)
+			"Не удалось продолжить работу после ошибки провайдера: %s. %s",
+			cause, tail)
 	}
 	settled, err := c.asyncJobs.store.SettleReactedFailedWithMarker(ctx, sessionID, snap, text)
 	if err != nil {
