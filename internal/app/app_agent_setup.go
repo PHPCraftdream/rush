@@ -143,7 +143,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	// fixture reaching this with dataDir == "" would get a coordinator that
 	// fails closed on the first non-sync async tool call, not a crash.
 	if app.asyncJobStore == nil && app.dataDir != "" {
-		// label is display-only ("sessions jobs"/"sessions hosts", doc
+		// label is display-only (shown by `sessions jobs`, doc
 		// sec.3.6) -- this App type drives both `rush run` and the web
 		// server, and does not know which at construction time, so "app"
 		// is used uniformly rather than guessing "cli"/"web" wrong.

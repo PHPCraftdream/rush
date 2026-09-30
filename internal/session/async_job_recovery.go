@@ -35,10 +35,11 @@ const interruptedNoChildTextText = "the sub-agent session finished with no textu
 
 // AsyncDataRetentionAge bounds how long a terminal, delivered-or-voided
 // async_jobs/session_notices row (and an empty dead host's lock file)
-// survives before the purge reaps it (doc sec.3.7): the web process's 60s
-// pass, or once at the start of a `rush run` loop. Fixed, not a config
-// option -- the doc's own tests only require "old rows are purged, recent
-// ones are kept", not a tunable knob.
+// survives before the purge reaps it (doc sec.3.7): the 60s pass of the web
+// process and of a `rush run` loop (ClaimExternalDriver starts the ticker; the
+// loop also runs it once at start). Fixed, not a config option -- the doc's
+// own tests only require "old rows are purged, recent ones are kept", not a
+// tunable knob.
 const AsyncDataRetentionAge = 7 * 24 * time.Hour
 
 // recoverDeadHostRowSeam is a test-only hook fired before RecoverDeadHost handles
@@ -324,9 +325,10 @@ func (s *AsyncJobStore) RecoverOwnerScope(ctx context.Context, owner string, mes
 }
 
 // PurgeExpired is the retention half of the maintenance sweep (doc sec.3.7;
-// web: every 60s, `rush run`: once at loop start): terminal, delivered-or-
-// voided async_jobs/session_notices rows past age (never unreacted debt, nor a
-// job_kill row still unnamed, which dead-host recovery re-pends, R5A-1),
+// runs every 60s in the web process and in a `rush run` loop, whose
+// ClaimExternalDriver starts the ticker, plus once at loop start): terminal,
+// delivered-or-voided async_jobs/session_notices rows past age (never
+// unreacted debt, nor a job_kill row still unnamed, which dead-host recovery re-pends, R5A-1),
 // dead drivers' markers, and dead hosts' lock files/rows once they reference
 // no rows of any state at all.
 // Best-effort throughout -- a failure on one sub-step is logged and the next
@@ -430,22 +432,33 @@ func (s *AsyncJobStore) purgeOrphanHostLockFiles(ctx context.Context) error {
 		if hostID == "" || IsOwnHostID(hostID) {
 			continue
 		}
-		if _, err := s.q.GetAsyncHost(ctx, hostID); err == nil {
-			continue // has a row -- purgeEmptyDeadHostFiles/RecoverDeadHost own this one
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("purge orphan host lock files: get host row failed", "host_id", hostID, "err", err)
-			continue
-		}
-		status, lock, err := ProbeHost(s.dataDir, hostID)
-		if err != nil || status != HostStatusDead {
-			if lock != nil {
-				_ = lock.Release()
-			}
-			continue
-		}
-		if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
-			slog.Warn("purge orphan host lock files: remove lock file failed", "host_id", hostID, "err", err)
-		}
+		s.reapOrphanHostLock(ctx, hostID)
 	}
 	return nil
+}
+
+// reapOrphanHostLock is purgeOrphanHostLockFiles' per-entry step: remove
+// hostID's listed file when no row exists and the exclusive probe wins. A file
+// already gone before the probe (another process or RecoverDeadHost reaped it
+// between the listing and here) is not a failure: nothing is left to do.
+func (s *AsyncJobStore) reapOrphanHostLock(ctx context.Context, hostID string) {
+	if _, err := s.q.GetAsyncHost(ctx, hostID); err == nil {
+		return // has a row -- purgeEmptyDeadHostFiles/RecoverDeadHost own this one
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("purge orphan host lock files: get host row failed", "host_id", hostID, "err", err)
+		return
+	}
+	status, lock, err := ProbeHost(s.dataDir, hostID)
+	if err != nil || status != HostStatusDead {
+		if lock != nil {
+			_ = lock.Release()
+		}
+		return
+	}
+	if lock == nil {
+		return // dead with no lock: the file is already gone
+	}
+	if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
+		slog.Warn("purge orphan host lock files: remove lock file failed", "host_id", hostID, "err", err)
+	}
 }
