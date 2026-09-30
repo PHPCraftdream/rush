@@ -162,8 +162,9 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, hintIdx, 0)
 	require.Contains(t, lines[hintIdx+1], "4242", "the hint must name the foreign host's PID")
-	require.Contains(t, lines[hintIdx+1], killCommandFor(4242), "the hint must name a kill command for the host process")
-	require.NotContains(t, lines[hintIdx+1], "sessions kill", "`rush sessions kill` does nothing between turns and must not be suggested")
+	require.Contains(t, lines[hintIdx+1], killCommandFor(4242), "the hint must name the command that stops the host process")
+	require.Contains(t, lines[hintIdx+1], "whole process", "the hint must say the whole host stops, not just the job")
+	require.NotContains(t, lines[hintIdx+1], "sessions kill", "`rush sessions kill` kills the session-lock holder and nothing holds it between turns, so it must not be suggested")
 
 	// The dead row must NOT get a hint line.
 	for i, l := range lines {
@@ -237,5 +238,28 @@ func killCommandFor(pid int) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("taskkill /F /T /PID %d", pid)
 	}
-	return fmt.Sprintf("kill %d", pid)
+	return fmt.Sprintf("kill -INT %d", pid)
+}
+
+// TestForeignHostKillHintFor_PerPlatformCommand pins both platform forms on
+// any OS (R2C-9): POSIX must be `kill -INT` -- rush catches os.Interrupt, not
+// SIGTERM, and job children live in their own process groups, so a plain
+// `kill <pid>` ends the host with no cleanup and leaves them running -- and
+// both forms must say the whole host stops. Windows keeps the forced
+// process-tree kill.
+func TestForeignHostKillHintFor_PerPlatformCommand(t *testing.T) {
+	posix := foreignHostKillHintFor("linux", 4242)
+	require.Contains(t, posix, "`kill -INT 4242`")
+	require.NotContains(t, posix, "`kill 4242`", "a plain SIGTERM kill is not caught by rush and leaves job children behind")
+	require.Contains(t, posix, "whole process")
+	require.Contains(t, posix, "graceful")
+
+	win := foreignHostKillHintFor("windows", 4242)
+	require.Contains(t, win, "`taskkill /F /T /PID 4242`")
+	require.Contains(t, win, "whole process")
+	require.Contains(t, win, "forced")
+
+	unknown := foreignHostKillHintFor("linux", 0)
+	require.Contains(t, unknown, "PID unknown")
+	require.Contains(t, unknown, "whole process")
 }

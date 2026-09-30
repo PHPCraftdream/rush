@@ -749,22 +749,11 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
 
-		// Fold --role into smartModel: without an explicit --model, prefer a
-		// worker/reviewer override pinned on THIS session (task #1060,
-		// sessionRoleModelOverride — same set_session_models path as
-		// smart/fast), else the config's default for that role's slot. The
-		// agent always uses its `smart` slot for the turn; --role decides
-		// which catalog entry fills it.
-		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
-			if override := sessionRoleModelOverride(ctx, a, sessionID, modelType); override != "" {
-				smartModel = override
-			} else {
-				roleModel, ok := a.Config().Models[modelType]
-				if !ok || roleModel.Model == "" {
-					return fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
-				}
-				smartModel = roleModel.Provider + "/" + roleModel.Model
-			}
+		// Fold --role into smartModel (see foldRoleModel); resolves
+		// --continue's session first so its worker/reviewer pin applies.
+		smartModel, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
+		if err != nil {
+			return err
 		}
 
 		if verbose {

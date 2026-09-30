@@ -138,20 +138,12 @@ func TestProbeThenKillHolder_StalePIDNotKilled(t *testing.T) {
 	// Simulate a holder that finished (no live OS lock on this session id)
 	// but whose lock file still names a PID — specifically our own PID, so
 	// if the fix regresses and forceKillHolder is invoked on it, the test
-	// process itself would be killed, which is an unmistakable failure.
-	lk, err := session.TryAcquireSessionLock(dataDir, "stale-pid-id")
-	require.NoError(t, err)
-	require.NoError(t, lk.Release())
-
-	// With background cleanup (P0 fix), we need to wait for the cleanup
-	// goroutine to complete before we directly write to the lock file.
-	// Otherwise, cleanup still holds the OS lock and os.WriteFile fails
-	// with "another process has locked a portion of the file" on Windows.
-	lockPath := filepath.Join(dataDir, "locks", "session-stale-pid-id.lock")
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "cleanup should complete before simulating stale PID")
-
+	// process itself would be killed, which is an unmistakable failure. The
+	// file is written directly: acquiring and releasing the lock to create it
+	// would leave a background metadata-cleanup goroutine racing this write.
+	lockDir := filepath.Join(dataDir, "locks")
+	require.NoError(t, os.MkdirAll(lockDir, 0o755))
+	lockPath := filepath.Join(lockDir, "session-stale-pid-id.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
 
 	kr := probeThenKillHolder(dataDir, "stale-pid-id", os.Getpid(), time.Second)

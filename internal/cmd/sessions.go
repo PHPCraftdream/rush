@@ -18,10 +18,14 @@ CLI access to the session store for scripting, orchestration, and debugging.
 
 Core:        list (with STATUS column), show (with purpose + budget), delete, reset (--force)
 Observe:     last (with timestamps), tail --follow, locks (heartbeat + budget),
-             watch (live dashboard), pick (interactive TUI)
+             watch (live dashboard), pick (interactive TUI),
+             why <id> (the evidence behind a status), jobs <id> (durable async
+             jobs of a session and its delegation tree)
 Search:      grep <pattern> (message text), diff <id> (files touched),
-             cost [--by model|day|session] (spend breakdown)
+             cost [--by model|day|session] (spend breakdown),
+             cache [id] (prompt-cache effectiveness)
 Orchestrate: cancel <id> (graceful DB-flag stop), fork <id> [--at N],
+             inject <id> (message into a session from another process),
              tree (parent-child hierarchy), gc (garbage-collect stale)
 Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
              reap (remove all orphan locks)`,

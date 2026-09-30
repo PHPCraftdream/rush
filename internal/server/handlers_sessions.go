@@ -229,64 +229,60 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 	return cfg.Options.DataDirectory
 }
 
-// annotateLiveDescendantWork fills HasLiveDescendantWork / LiveDescendantIDs
-// for every session in the slice: the cross-process, durable-state
-// companion of the coordinator's in-process parked-delegation registry
-// (which this process cannot see for sessions owned by other processes). A
-// top-level session whose own lock is gone while a sub-agent session below
-// it still holds a live delegation row is NOT finished, and the UI must be
-// able to tell that apart from idle — otherwise a tab shows a session as
-// done while `rush run` is still waiting on its delegation.
+// annotateLiveWork fills HasLiveDescendantWork / LiveDescendantIDs and
+// HasLiveOwnWork for every session in the slice from ONE batched reader call
+// (session.AsyncJobStore.LiveWorkForRoots, R2C-13): the cross-process,
+// durable-state companion of the coordinator's in-process parked-delegation
+// registry (which this process cannot see for sessions owned by other
+// processes). A top-level session whose own lock is gone while a sub-agent
+// session below it still holds a live delegation row is NOT finished, and the
+// UI must be able to tell that apart from idle — otherwise a tab shows a
+// session as done while `rush run` is still waiting on its delegation. Same
+// for a session whose scope is open only because of its OWN running plain job
+// (no descendant, no lock between turns): the web half of `sessions list`'s
+// "running" promotion.
 //
 // Deliberately unconditional (not gated on the session otherwise looking
 // idle): this layer has no status map to gate on — re-deriving one here
 // would fork `sessions list`'s classifier — so it reports the raw durable
-// signal ("a descendant has a live async_jobs row") and lets the client
-// compose it with the agent_busy / ownership state it already has.
+// signal ("a descendant/the session has a live async_jobs row") and lets the
+// client compose it with the agent_busy / ownership state it already has. An
+// incomplete walk (RootLiveWork.*Incomplete) only ever means "possibly more",
+// never "less", so the flags are not consulted here.
 //
-// Cost is one indexed child listing per BFS level per session
-// (session.AsyncJobStore.LiveDescendantJobs), paid only on the
-// sessions_list reply and its periodic re-poll, never on the per-event
+// Cost is one reader query per delegation-tree level over ALL listed sessions
+// plus one liveness probe per distinct host — not per session — paid only on
+// the sessions_list reply and its periodic re-poll, never on the per-event
 // broadcast path.
-func annotateLiveDescendantWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
+func annotateLiveWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
 	store := a.AsyncJobStore()
-	if store == nil {
+	if store == nil || len(sessions) == 0 {
 		return
 	}
+	ids := make([]string, len(sessions))
 	for i := range sessions {
-		live, _ := store.LiveDescendantJobs(ctx, sessions[i].ID)
-		if len(live) == 0 {
+		ids[i] = sessions[i].ID
+	}
+	work := store.LiveWorkForRoots(ctx, ids)
+	for i := range sessions {
+		w := work[sessions[i].ID]
+		if len(w.Own) > 0 {
+			sessions[i].HasLiveOwnWork = true
+		}
+		if len(w.Descendants) == 0 {
 			continue
 		}
 		sessions[i].HasLiveDescendantWork = true
-		seen := make(map[string]struct{}, len(live))
-		ids := make([]string, 0, len(live))
-		for _, j := range live {
+		seen := make(map[string]struct{}, len(w.Descendants))
+		childIDs := make([]string, 0, len(w.Descendants))
+		for _, j := range w.Descendants {
 			if _, dup := seen[j.ChildSessionID]; dup {
 				continue
 			}
 			seen[j.ChildSessionID] = struct{}{}
-			ids = append(ids, j.ChildSessionID)
+			childIDs = append(childIDs, j.ChildSessionID)
 		}
-		sessions[i].LiveDescendantIDs = ids
-	}
-}
-
-// annotateLiveOwnWork fills HasLiveOwnWork for every session in the slice: a
-// session whose scope is open only because of its OWN running plain job (no
-// descendant, no lock between turns) must not read as idle/finished. Same
-// durable-state derivation as `sessions list`'s "running" promotion
-// (session.AsyncJobStore.LiveOwnJobs); one indexed query per session, paid
-// only on the sessions_list reply and its re-poll.
-func annotateLiveOwnWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
-	store := a.AsyncJobStore()
-	if store == nil {
-		return
-	}
-	for i := range sessions {
-		if live, _ := store.LiveOwnJobs(ctx, sessions[i].ID); len(live) > 0 {
-			sessions[i].HasLiveOwnWork = true
-		}
+		sessions[i].LiveDescendantIDs = childIDs
 	}
 }
 
@@ -300,8 +296,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		sessions = []session.Session{}
 	}
 	annotateExternalOwnership(a, sessions)
-	annotateLiveDescendantWork(ctx, a, sessions)
-	annotateLiveOwnWork(ctx, a, sessions)
+	annotateLiveWork(ctx, a, sessions)
 	c.reply(msg.ID, EventSessionsList, sessions, "")
 
 	// Correct any stale agent_busy and summarize_queued state in the replay

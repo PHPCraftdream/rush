@@ -44,9 +44,9 @@ const (
 	// EventSessionLiveWork carries a live-work snapshot (running async
 	// commands + sub-agent delegations) for one session -- pushed on change
 	// and replied to CmdGetSessionLiveWork, always as a full snapshot, never
-	// a delta. The emitter that actually populates it from live jobs/
-	// sessions lands in #1058 (needs the DB-backed readers); #1059 only
-	// wires this shared shape plus the client-side tabbed panel.
+	// a delta. No emitter exists yet (#1058; the DB-backed readers it needs,
+	// AsyncJobStore.LiveJobs/LiveWorkForRoots, exist); #1059 only wires this
+	// shared shape plus the client-side tabbed panel.
 	EventSessionLiveWork = "session_live_work"
 )
 
@@ -692,10 +692,11 @@ type UpdateAvailableWire struct {
 
 // ── Live work panel (task #1059) ─────────────────────────────────────────────
 //
-// Wire contract only: no handler populates these yet. #1058 (after the
-// DB-backed readers land) adds the emitter that reads real running jobs/
-// sub-agent sessions and pushes EventSessionLiveWork; until then
-// CmdGetSessionLiveWork falls through handleIncoming's default case.
+// Wire contract only: no handler populates these yet. #1058 adds the emitter
+// that reads real running jobs/sub-agent sessions (the DB-backed readers it
+// needs, AsyncJobStore.LiveJobs/LiveWorkForRoots, exist) and pushes
+// EventSessionLiveWork; until then CmdGetSessionLiveWork falls through
+// handleIncoming's default case.
 
 // GetSessionLiveWorkPayload requests a live-work snapshot for one session.
 type GetSessionLiveWorkPayload struct {

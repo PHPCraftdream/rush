@@ -29,13 +29,18 @@ var (
 	cliDBRetryPause = 500 * time.Millisecond
 	// cliLockBusyRetryOverallLimit bounds how long a run of consecutive Drain
 	// REFUSALS (session lock held by another process, an unwritable lock dir,
-	// a provider that is not configured, peak hours, ...) is retried before the
-	// run gives up with that refusal's error. The retries themselves are paced
-	// by the launch gate (drainRefusalPauseLoop), not by this loop.
+	// a provider that is not configured, peak hours, ...) or setup failures is
+	// retried before the run gives up with that error. A refusal is paced by
+	// the launch gate (drainRefusalPauseLoop), a setup failure by
+	// cliSetupRetryPause; neither by anything else in this loop.
 	cliLockBusyRetryOverallLimit = 30 * time.Second
 	// cliQueuedDrainPause is the wait after a Drain that queued behind another
 	// owner (it ran no turn of its own and cannot be accounted here).
 	cliQueuedDrainPause = 500 * time.Millisecond
+	// cliSetupRetryPause paces the retry of a Drain that failed in setup before
+	// any turn (no launch gate stands behind such a failure; the streak is
+	// bounded by cliLockBusyRetryOverallLimit).
+	cliSetupRetryPause = 500 * time.Millisecond
 )
 
 // cliLoopTurnDoneSeam is a test-only hook called right after each loop turn's
@@ -148,6 +153,24 @@ type cliLoop struct {
 	tot          loopTotals
 
 	refusalSince time.Time
+	// lastOpenScopeNotice paces the wait heartbeat across the WHOLE run, not
+	// per nextStep call (which restarts after every Drain).
+	lastOpenScopeNotice time.Time
+	stderr              io.Writer
+}
+
+// cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
+// the direct uses it replaced) as the loop's diagnostics sink; a test seam.
+var cliLoopStderr io.Writer
+
+func (l *cliLoop) errOut() io.Writer {
+	if l.stderr != nil {
+		return l.stderr
+	}
+	if cliLoopStderr != nil {
+		return cliLoopStderr
+	}
+	return os.Stderr
 }
 
 func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (final *RunResult, runErr error) {
@@ -238,7 +261,7 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 	result, err := l.app.ExecuteRun(turnCtx, RunRequest{
 		Prompt: l.prompt, Overrides: l.turnOverrides, Mode: l.mode,
 		ContinueSessionID: l.continueSessionID, UseLast: l.useLast,
-		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: os.Stderr,
+		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
 		HideSpinner:       l.hideSpinner,
 		captureResult:     true,
 		drainTurn:         !first,
@@ -284,7 +307,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 		case step == stepExit:
 			return l.exit(l.runErr, "")
 		case step == stepStuck:
-			fmt.Fprintf(os.Stderr, "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
+			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
 			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
 		}
 		if err := l.precheck(); err != nil {
@@ -319,6 +342,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 // afterDrain classifies one finished Drain iteration. done reports that the
 // loop must end now (the refusal budget ran out) with exitErr.
 func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffer) (done bool, exitErr error) {
+	var awaiting *agent.AwaitingAnswerError
 	switch {
 	case errors.Is(err, ErrRunQueued):
 		// It queued behind another owner (or the Drain found nothing visible to
@@ -326,23 +350,34 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 		l.refusalSince = time.Time{}
 		l.source.WaitForHint(l.ctx, l.sessionID, time.Now().Add(cliQueuedDrainPause))
 		return false, nil
-	case agent.IsDrainNotAttempted(err):
+	case agent.IsDrainNotAttempted(err), result == nil && err != nil && !errors.As(err, &awaiting):
 		// A refusal is never counted or settled: the launch gate paces the retry
 		// (0.5s for this loop's own session); the loop only bounds the streak.
+		// A setup failure before any turn (no result: a model override that no
+		// longer resolves, a run-queue read error, ...) has no gate behind it,
+		// so it takes the same bounded/visible path and the loop paces it
+		// itself; unbounded it would relaunch as fast as it fails.
+		refused := agent.IsDrainNotAttempted(err)
+		first, still := "was refused", "is still refused"
+		if !refused {
+			first, still = "could not be set up", "still cannot be set up"
+		}
 		if l.refusalSince.IsZero() {
 			l.refusalSince = time.Now()
-			fmt.Fprintf(os.Stderr, "rush run: session %q: the reaction turn was refused (%v); retrying\n", l.sessionID, err)
+			fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn %s (%v); retrying\n", l.sessionID, first, err)
 		}
 		if time.Since(l.refusalSince) > cliLockBusyRetryOverallLimit {
-			fmt.Fprintf(os.Stderr, "rush run: session %q: the reaction turn is still refused after %s (%v); giving up\n",
-				l.sessionID, cliLockBusyRetryOverallLimit, err)
+			fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn %s after %s (%v); giving up\n",
+				l.sessionID, still, cliLockBusyRetryOverallLimit, err)
 			return true, err
+		}
+		if !refused {
+			sleepOrCtxDone(l.ctx, cliSetupRetryPause)
 		}
 		return false, nil
 	}
 	l.refusalSince = time.Time{}
 	l.tot.add(result)
-	var awaiting *agent.AwaitingAnswerError
 	switch {
 	case err == nil || errors.As(err, &awaiting):
 		// A completed turn (or a question -- an answer of its own kind): it is
@@ -370,7 +405,9 @@ const (
 )
 
 // cliOpenScopeWaitNoticeInterval bounds how often the loop prints its "still
-// waiting on open scope" stderr heartbeat (C17 fix): an `Unknown` host-liveness
+// waiting on open work" stderr heartbeat (C17 fix): the first line comes when
+// the loop starts waiting, then at most one per interval over the WHOLE run
+// (the cadence is not restarted by a Drain). An `Unknown` host-liveness
 // verdict keeps a session's scope reported open for up to `sessions gc`'s 6h
 // horizon with NO observable signal otherwise. A var so a test can shrink it.
 var cliOpenScopeWaitNoticeInterval = 60 * time.Second
@@ -388,7 +425,7 @@ var cliDBErrorRetryOverallLimit = 30 * time.Second
 // or no debt with nothing running -- the scope is closed. A DB read error
 // retries with a pause, bounded overall and visible on stderr.
 func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
-	var lastOpenScopeNotice, dbErrorRetryStart time.Time
+	var dbErrorRetryStart time.Time
 	for {
 		if l.ctx.Err() != nil {
 			return stepExit, "", l.ctx.Err()
@@ -400,7 +437,7 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				dbErrorRetryStart = time.Now()
 			}
 			if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
-				fmt.Fprintf(os.Stderr, "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
+				fmt.Fprintf(l.errOut(), "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
 					l.sessionID, cliDBErrorRetryOverallLimit, stateErr)
 				return stepExit, "", stateErr
 			}
@@ -417,16 +454,16 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
 			continue
 		case state.WorkOpen:
-			if now := time.Now(); lastOpenScopeNotice.IsZero() || now.Sub(lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
-				lastOpenScopeNotice = now
-				fmt.Fprintf(os.Stderr, "rush run: session %q still has open work (a running job/delegation, or an unreachable host); waiting\n", l.sessionID)
+			if now := time.Now(); l.lastOpenScopeNotice.IsZero() || now.Sub(l.lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
+				l.lastOpenScopeNotice = now
+				fmt.Fprintf(l.errOut(), "rush run: session %q still has open work; waiting on %s\n", l.sessionID, l.describeOpenWork())
 			}
 			l.source.WaitForHint(l.ctx, l.sessionID, time.Time{})
 			continue
 		case state.Drain == agent.DrainStuck:
 			return stepStuck, state.Reason, nil
 		case state.Drain == agent.DrainDeferred:
-			fmt.Fprintf(os.Stderr, "rush run: session %q has a notice no automatic turn is allowed for (%s); it stays for the next turn\n", l.sessionID, state.Reason)
+			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice no automatic turn is allowed for (%s); it stays for the next turn\n", l.sessionID, state.Reason)
 		}
 		return stepExit, "", nil
 	}

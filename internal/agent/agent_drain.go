@@ -1,12 +1,12 @@
 // The Drain call kind (phase-4 step 3, docs/plans/2026-09-28-async-phase4-
 // durable-core.md sec.3.4): a SessionAgentCall whose only job is the
 // driver's notice pull (agent_notice_pull.go) at turn start, followed by an
-// empty-prompt reaction turn if (and only if) that pull moved a wake=1
-// notice into history -- the interim rule this step uses; step 4 replaces
-// it with the durable reaction-debt predicate. Submitted through the
-// ordinary Run/submit path: idle -> becomes the owner like any call; busy
-// -> queued, merging with whatever is already there (mailbox_ownership.go's
-// submit).
+// empty-prompt reaction turn if (and only if) debt that pull made visible is
+// still owed and the ONE launch predicate (drainPermitted, see
+// decideDrainTurn in agent_drain_decision.go) allows a turn. Submitted
+// through the ordinary Run/submit path: idle -> becomes the owner like any
+// call; busy -> queued, merging with whatever is already there
+// (mailbox_ownership.go's submit).
 package agent
 
 import (
