@@ -389,6 +389,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   owner no longer drops the usage the session spent meanwhile;
   `--continue --role worker|reviewer` continues the very session whose pin it
   read.
+- **`rush run`: work the reviewer pass starts is waited on, and the run's cost is
+  the whole session's (review round 4).** The reviewer turn keeps `bash`, and
+  every CLI `bash` is an async job: the run used to end right after the review
+  turn, so its "tests are running" text became the answer and the job was
+  cancelled at exit. The loop now goes back to waiting after the review turn:
+  the job's result is reacted to on the reviewer's model and options, the
+  reviewer runs at most once, and the answer is the last completed turn.
+  `delta_cost_usd` (and `RUSH_COST_USD` for `--on-finish`) is the session's cost
+  between the driver claim and the exit, so a delegated child's spend, charged
+  to the parent between its turns, and a human turn on the same session are
+  counted (the `--max-cost` error and the envelope now agree); tokens stay the
+  sum of the turns' last-snapshot deltas. `rush run --continue` resolves the
+  most recently updated top-level session (a worker's child session updated
+  later is no longer taken for it); a CLI run on a coordinator that cannot drive
+  the loop fails with an error instead of silently running one plain turn.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
