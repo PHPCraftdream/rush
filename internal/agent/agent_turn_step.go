@@ -218,6 +218,8 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 // must call activeRequests' cancelFn(), not just return an error, because
 // returning an error from OnStepFinish alone does not break fantasy's loop
 // (BUG-4, pinned by TestActiveRequests_HoldsLiveCancelDuringTurn).
+// persistStepFinish runs before both abort checks: the step that crossed a
+// cap is still a recorded reaction.
 func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.bumpActivity()
 	ts.recordStepHistory(stepResult)
@@ -234,13 +236,24 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	if err != nil {
 		return err
 	}
+	// The step's reaction is recorded BEFORE the abort checks: a step the
+	// provider already answered and billed is a reaction even when a cap or
+	// the peak-hours window ends the turn right after it (else the notice
+	// stays debt and a paid reaction turn repeats without bound).
+	persistErr := ts.persistStepFinish()
 	if err := ts.enforceRunawayCaps(updatedSession); err != nil {
+		if persistErr != nil {
+			slog.Warn("agent: step finish not persisted before a cap abort", "session_id", ts.call.SessionID, "err", persistErr)
+		}
 		return err
 	}
 	if err := ts.recheckPeakHours(); err != nil {
+		if persistErr != nil {
+			slog.Warn("agent: step finish not persisted before a peak-hours abort", "session_id", ts.call.SessionID, "err", persistErr)
+		}
 		return err
 	}
-	return ts.persistStepFinish()
+	return persistErr
 }
 
 // recordStepHistory accumulates this step and recomputes loop detection
@@ -520,6 +533,12 @@ func stepIsReaction(m message.Message) bool {
 	if reason == message.FinishReasonError || reason == message.FinishReasonCanceled {
 		return false
 	}
+	return hasReactionContent(m)
+}
+
+// hasReactionContent reports whether m carries real content (text, a tool
+// call or reasoning), whatever its finish.
+func hasReactionContent(m message.Message) bool {
 	return m.FullText() != "" || len(m.ToolCalls()) > 0 || m.ReasoningContent().Thinking != ""
 }
 
