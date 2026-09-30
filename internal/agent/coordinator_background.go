@@ -119,20 +119,40 @@ func backgroundJobSummary(id, command string, stdout, stderr string, exitCode in
 // NoticeKindBGShellDone, wake=1 per the wake-policy table -- the row's own
 // wake bit does not depend on session policy, only whether a TURN is forced
 // right now does). AutoResumeOnJobDone decides ONLY that immediate-turn
-// question, exactly as today: on, a Drain call is submitted right away; off,
-// the notice simply waits for the next natural turn/Drain to pull it (its
-// wake=1 still counts then).
+// question for a session that is not a delegated child, exactly as today: on,
+// a Drain call is submitted right away; off, the notice simply waits for the
+// next natural turn/Drain to pull it (its wake=1 still counts then). A child
+// whose delegation row runs is woken regardless (delegatedChildDriven).
 func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
 	stdout, stderr, _, runErr := sh.GetOutput()
 	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 
 	// The row and the slot decision are one step (persistBGShellCompletion).
-	if c.persistBGShellCompletion(sessionID, sh.ID, summary) {
+	claimed := c.persistBGShellCompletion(sessionID, sh.ID, summary)
+	// A delegated child is driven by its delegation, not by the auto-resume
+	// policy (R6B-1): the claim (web only, AutoResumeOnJobDone on, a free slot)
+	// bounds a session's OWN chain of automatic turns. Refusing a child's wake
+	// for it left the child's debt owed with nothing to launch it while the
+	// parent's delegation waited. drainPermitted stays the single launch gate
+	// (a running row allows the turn, a released child is refused there); a root
+	// keeps the cap and the policy.
+	driven := false
+	if !claimed {
+		var err error
+		if driven, err = c.delegatedChildDriven(context.Background(), sessionID); err != nil {
+			slog.Warn("bg-shell completion: delegation state unreadable", "session_id", sessionID, "err", err)
+			if !driven {
+				c.addToRecheckSet(sessionID) // the 60s pass decides it
+			}
+		}
+	}
+	if claimed || driven {
 		// Autonomous idle-resume: start (or, if busy, queue) a Drain call
 		// over the just-persisted notice. The bound was spent by
-		// claimAutoResume (reset by any human message).
-		slog.Info("Phase 4: auto-resuming session on background job completion",
-			"session_id", sessionID, "shell_id", sh.ID,
+		// claimAutoResume (reset by any human message); a driven child spends
+		// no slot.
+		slog.Info("Phase 4: resuming session on background job completion",
+			"session_id", sessionID, "shell_id", sh.ID, "delegated_child", driven,
 			"consecutive", c.consecutiveResume(sessionID))
 		ctx := context.WithValue(context.Background(), autoResumedCtxKey{}, true)
 		ctx = context.WithValue(ctx, backgroundJobNoticeCtxKey{}, true)
@@ -169,4 +189,24 @@ func (c *coordinator) IsBusy() bool {
 
 func (c *coordinator) IsSessionBusy(sessionID string) bool {
 	return c.currentAgent.IsSessionBusy(sessionID)
+}
+
+// delegatedChildDriven reports whether sessionID is a delegation's child that
+// its delegation currently drives: a RUNNING async_jobs row names it as the
+// child. The durable row decides (another process may own the delegation; this
+// process's ledger and driver registry can be empty), so a released child, whose
+// row is terminal, is not driven even while its driver is still registered.
+// An unreadable row falls back to the driver registration, which only ever
+// exists for a child, and reports the error: the launch decision that follows
+// (wakeSession) is drainPermitted's, which refuses whatever the policy refuses.
+func (c *coordinator) delegatedChildDriven(ctx context.Context, sessionID string) (bool, error) {
+	if c.asyncJobs == nil {
+		return false, nil
+	}
+	running, err := c.asyncJobs.hasRunningDelegationFor(ctx, sessionID)
+	if err == nil {
+		return running, nil
+	}
+	_, registered := c.subAgentDrivers.get(sessionID)
+	return registered, err
 }

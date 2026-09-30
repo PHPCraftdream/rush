@@ -20,6 +20,15 @@ import (
 // whose driver is a real *sessionAgent; deliveries to the parent land on ch.
 func childDelegationFixture(t *testing.T, o attemptFixtureOpts) (*attemptFixture, string, string, chan AsyncCompletion) {
 	t.Helper()
+	f, parentID, childID, ch := childDelegationBase(t, o)
+	// The child owes a reaction to its own notice when its first turn ends.
+	require.NoError(t, f.store.InsertSessionNotice(context.Background(), childID, "manual_test_notice", "child job finished", true, ""))
+	return f, parentID, childID, ch
+}
+
+// childDelegationBase is childDelegationFixture with no debt on the child.
+func childDelegationBase(t *testing.T, o attemptFixtureOpts) (*attemptFixture, string, string, chan AsyncCompletion) {
+	t.Helper()
 	ctx := context.Background()
 	f := newAttemptFixture(t, "child-question-root", o)
 	f.coord.messages = f.env.messages
@@ -37,8 +46,6 @@ func childDelegationFixture(t *testing.T, o attemptFixtureOpts) (*attemptFixture
 	_, _, err = f.ledger.Start(parent.ID, "delegate-1", "do work", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
 	f.ledger.acknowledged(jobOf(f.ledger, parent.ID, "delegate-1"))
-	// The child owes a reaction to its own notice when its first turn ends.
-	require.NoError(t, f.store.InsertSessionNotice(ctx, child.ID, "manual_test_notice", "child job finished", true, ""))
 	return f, parent.ID, child.ID, ch
 }
 

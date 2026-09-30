@@ -100,7 +100,9 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent b
 		return unreadable("delegation state", err)
 	}
 	if running {
-		return drainVerdict{kind: drainAllow} // a delegated child while its row runs
+		// A delegated child while its row runs: its delegation drives it, so
+		// neither the bg-shell policy nor the cap below applies (R6B-1).
+		return drainVerdict{kind: drainAllow}
 	}
 	if !own {
 		// A released or expired child must never fall through to the root
