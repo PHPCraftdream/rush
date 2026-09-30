@@ -424,6 +424,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   most recently updated top-level session (a worker's child session updated
   later is no longer taken for it); a CLI run on a coordinator that cannot drive
   the loop fails with an error instead of silently running one plain turn.
+- **A delegated child whose background shell finishes is woken even when
+  auto-resume would not launch it, and its reaction turns are charged to the
+  parent (review round 6).** A child's `bash` that moved to the background and
+  finished while its delegation was parked left the child owing a reaction that
+  nothing launched (web with `AutoResumeOnJobDone` off, web with every slot
+  spent, and every `rush run`): the parent's delegation, and with it the run,
+  waited until Stop or the 6-hour cap. A child whose delegation row is still
+  running (read from the durable row, so a delegation another process owns
+  counts) now gets its Drain whatever the auto-resume claim says; the launch
+  gate and the policy (Stop, a question, a released child) are unchanged and a
+  root session keeps the auto-resume cap. The child's own spend after its first
+  turn (its reaction turns) reaches the parent when the delegation releases,
+  before the notice commits, and at every end of the child's turn (so a Stop
+  charges it too), through the same `parent_cost_accounted` delta as every other
+  charge: a normal exit and a Ctrl-C exit report the same cost. The test-only
+  supervision interval override no longer lets a value under one second defeat
+  the floor.
 - **`rush run`: `--no-supervision` / `--supervision-interval` cover the reviewer's
   jobs, and cancel exits count a running child's spend (review round 5).** The
   reviewer turn now carries the run's supervision options: since its jobs are
