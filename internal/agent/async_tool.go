@@ -105,23 +105,19 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 // already claimed this job's durable row (announced=0, state='running')
 // before this is ever called, so a panic anywhere in this window, before
 // "go t.run" ever runs, must not leave that row looking like a
-// legitimately started, live job forever -- the model would see this
-// panic's own recovered error response (fused as the job's "started" ack by
-// onToolResult, since the ledger has no way to tell "the executor is about
-// to run" apart from "something panicked before it could"), while nothing
-// will ever call finish()/transition() for the row again. The recover here
-// finalizes it exactly as if t.run's OWN panic recovery (below) had caught
-// it, having never actually reached "go t.run" at all -- same ordering
-// (finalize, then cancel) as that path's paired defers.
+// legitimately started, live job forever: nothing would ever call
+// finish()/transition() for it again. The recover here fails the job with
+// the launch error directly (failLaunch) and answers with an error response
+// tagged with the job's claim (failedStartResponse), which the ack gate
+// treats as the job's own result, so the row is announced and its failure
+// delivered like any other.
 func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.CancelFunc, sessionID, childSessionID string, call fantasy.ToolCall, sync bool, job *asyncJob) (resp fantasy.ToolResponse, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.finalize(job, childSessionID, AsyncCompletion{
-				SessionID: sessionID, ToolCallID: call.ID, ToolName: t.name,
-				IsError: true, Content: fmt.Sprintf("async %s failed to start: %v", t.name, recovered),
-			})
+			msg := fmt.Sprintf("async %s failed to start: %v", t.name, recovered)
+			t.failLaunch(job, msg)
 			cancel()
-			resp = fantasy.NewTextErrorResponse(fmt.Sprintf("async %s failed to start: %v", t.name, recovered))
+			resp = failedStartResponse(msg, job.claimID)
 			err = nil
 		}
 	}()
@@ -414,4 +410,28 @@ func (c *coordinator) wrapAsyncTools(list []fantasy.AgentTool) []fantasy.AgentTo
 		}
 	}
 	return list
+}
+
+// failLaunch ends a job whose executor never started: straight to a failed
+// outcome carrying msg. It deliberately bypasses the delegation re-check
+// (armDelegation -> recheckChild), whose refresh would read a resumed
+// child's OLD last message as this call's result while the tool result says
+// "failed to start" (R2B-14).
+func (t *asyncTool) failLaunch(job *asyncJob, msg string) {
+	if t.coordinator == nil || t.coordinator.asyncJobs == nil {
+		return
+	}
+	t.coordinator.asyncJobs.finish(job, jobResult{content: msg, isError: true})
+}
+
+// failedStartResponse is the error response of a launch that panicked. When
+// the job has a durable claim it carries the claim tag, so the ack gate
+// treats it as the job's own result (see ackTag); a sync job has no row to
+// acknowledge and gets the plain error.
+func failedStartResponse(msg, claimID string) fantasy.ToolResponse {
+	resp := fantasy.NewTextErrorResponse(msg)
+	if claimID == "" {
+		return resp
+	}
+	return fantasy.WithResponseMetadata(resp, ackTag{ClaimID: claimID})
 }

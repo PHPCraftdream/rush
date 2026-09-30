@@ -27,7 +27,7 @@ import (
 // of a job whose launch panicked. claim_id is the job's own claim, unique per
 // job incarnation.
 type ackTag struct {
-	ClaimID string `json:"claim_id"`
+	ClaimID string `json:"claim_id,omitempty"`
 }
 
 // claimAck returns the job toolResult acknowledges, or nil when it is an

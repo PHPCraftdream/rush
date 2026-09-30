@@ -863,8 +863,9 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 }
 
 // finish is the terminal transition for a PLAIN job's (bash/run_command)
-// NATURAL completion (causeNaturalFinish). Not used for a delegation (agent/
-// agentic_fetch) -- see armDelegation. For a sync job it still writes
+// NATURAL completion (causeNaturalFinish). Not used for a delegation's natural
+// end (agent/agentic_fetch) -- see armDelegation -- except for a launch that
+// failed before its executor started (asyncTool.failLaunch). For a sync job it still writes
 // directly via transitionToTerminal (sync jobs never touch the store, doc
 // sec.3.1) -- see the sync branch below.
 //
