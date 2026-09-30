@@ -199,14 +199,8 @@ func (ts *turnStream) handleStreamFailure(
 	} else if isCancelErr {
 		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 	} else if isRunTimeout {
-		ts.currentAssistant.AddFinish(
-			message.FinishReasonError,
-			"Run timeout exceeded",
-			fmt.Sprintf(
-				"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
-				WatchdogResumeGuidance(ts.call.SessionID, "--timeout"),
-			),
-		)
+		title, details := runTimeoutFinishText(context.Cause(ts.genCtx), ts.call.SessionID)
+		ts.currentAssistant.AddFinish(message.FinishReasonError, title, details)
 	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 		ts.currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
 	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
