@@ -28,7 +28,16 @@ it appears stale (process not running or lock older than 10 minutes).
 
 Lock files are typically acquired when a session is running and released
 when the run completes. Stale locks can accumulate if processes crash
-without cleanup. By default this command is READ-ONLY: it lists locks and
+without cleanup.
+
+The lock is held only during a turn: a "rush run" waiting between turns (on
+a background job, a delegation or a retry) leaves a released lock file that
+ages to "offline" by mtime. When the session's durable driver marker says a
+live loop drives it, the row reads "between turns (rush run PID n)" instead
+(not stale, never pruned). "offline" alone is therefore not proof that the
+holder died: "rush sessions why <id>" gives the verdict.
+
+By default this command is READ-ONLY: it lists locks and
 never removes anything — an empty lock file with no held OS lock is
 harmless (the next acquirer reopens and overwrites it; see
 internal/session/lock.go's Release), so auto-deleting stable per-session
@@ -68,7 +77,11 @@ rush sessions locks --json | jq '.session_id'
 //	0–10s  → "alive"    (fresh heartbeat)
 //	10–15s → "ping"     (one beat overdue, likely OK)
 //	15–20s → "stopping" (two beats missed, probably finishing)
-//	>20s   → "offline"  (stale — holder crashed or exited without Release)
+//	>20s   → "offline"  (stale — holder crashed, exited without Release, or
+//	                     released the lock after a turn: see "between-turns")
+//
+// "between-turns" is not derived from age: the caller sets it for an
+// "offline" lock of a session a live `rush run` loop drives.
 func lockPulseStatus(ageSec int64) string {
 	switch {
 	case ageSec <= 10:
@@ -205,7 +218,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		SessionID   string `json:"session_id"`
 		PID         int    `json:"pid"`
 		PulseSec    int64  `json:"pulse_sec"`
-		Pulse       string `json:"pulse"` // alive / ping / stopping / offline
+		Pulse       string `json:"pulse"` // alive / ping / stopping / offline / between-turns
 		AcquiredAt  int64  `json:"acquired_at_unix"`
 		DurationSec int64  `json:"duration_seconds"`
 		Stale       bool   `json:"stale"`
@@ -216,7 +229,16 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// sub-agent's activity age, which is the honest "is anything actually
 		// making progress" signal an operator wants during a long delegation.
 		SubAgent string `json:"sub_agent,omitempty"`
+		// BetweenTurns: the lock is a clean-release leftover of a session a live
+		// `rush run` loop still drives (waiting on a job, a delegation or a
+		// retry); Pulse is "between-turns", Stale false, DriverPID the loop's.
+		BetweenTurns bool `json:"between_turns,omitempty"`
+		DriverPID    int  `json:"driver_pid,omitempty"`
 	}
+
+	// Sessions a live `rush run` loop drives, by id (ONE read; nil on error:
+	// without the marker a released lock reads as before).
+	drivers, _ := a.LiveSessionDrivers(cmd.Context())
 
 	var locks []lockItem
 	now := time.Now()
@@ -257,7 +279,10 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// locks are bound to the inode, not the path); it just lets a second
 		// process create a fresh inode at the same path and believe it owns
 		// the session — two owners of one session id.
-		if prune && age > autoDeleteAfter {
+		// A session a live `rush run` loop drives (between turns) is never
+		// pruned: the death probe would take the lock the loop is about to
+		// take for its next turn.
+		if _, driven := drivers[sessionID]; prune && age > autoDeleteAfter && !driven {
 			if lockHolderProvablyDead(dataDir, sessionID) {
 				if preAutoDeleteRemoveHook != nil {
 					preAutoDeleteRemoveHook(lockPath)
@@ -355,16 +380,28 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if staleOnly && !stale {
-			continue
-		}
-
 		// session.ReadLockPID (not a raw os.ReadFile+Sscanf) so a live
 		// holder's PID is still readable on Windows, where the holder's
 		// mandatory LockFileEx range-lock can make the lock file's own
 		// content unreadable to this process — see readLockFile's sidecar
 		// fallback (internal/session/lock.go) and task #231.
 		pid := session.ReadLockPID(lockPath)
+
+		// Between turns (R6C-1): the lock is held only during a turn and its
+		// file is truncated on release, so a loop waiting on a job leaves an
+		// aging PID-less file that reads "offline". A live driver marker for
+		// the session says the loop is alive: not stale, not offline.
+		var driverPID int
+		betweenTurns := false
+		if d, ok := drivers[sessionID]; ok && pulse == "offline" && (pid <= 0 || int64(pid) == d.PID) {
+			betweenTurns, driverPID = true, int(d.PID)
+			pulse, stale = "between-turns", false
+		}
+
+		if staleOnly && !stale {
+			continue
+		}
+
 		budgetSec := session.ReadLockTimeoutSec(lockPath)
 
 		// Approximate acquire time: mtime when pulse was fresh.
@@ -383,6 +420,9 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			Stale:       stale,
 			BudgetSec:   budgetSec,
 			SubAgent:    subAgentLabel,
+
+			BetweenTurns: betweenTurns,
+			DriverPID:    driverPID,
 		})
 	}
 
@@ -416,11 +456,16 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		if lock.SubAgent != "" {
 			subAgent = lock.SubAgent
 		}
+		pidCell, pulseCell := lock.PID, lock.Pulse
+		if lock.BetweenTurns {
+			pidCell = lock.DriverPID
+			pulseCell = fmt.Sprintf("between turns (rush run PID %d)", lock.DriverPID)
+		}
 		fmt.Fprintf(
 			tw, "%s\t%d\t%s\t%ds ago\t%s\t%s\t%s\n",
 			truncate(lock.SessionID, 28),
-			lock.PID,
-			lock.Pulse,
+			pidCell,
+			pulseCell,
 			lock.PulseSec,
 			formatDurationShort(time.Duration(lock.DurationSec)*time.Second),
 			budget,

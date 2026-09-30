@@ -37,6 +37,11 @@ via any of:
   (a) the session row has an ended_reason
   (b) the lock file disappears (process exited / was killed)
   (c) the latest assistant message has a non-partial Finish part
+but never while the session is still worked on: the lock is held only
+during a turn, so a "rush run" waiting between turns (on a background job,
+a delegation or a retry) is kept open by its durable driver marker, running
+job or live delegation; watch says what it waits on and ends once none of
+them is live.
 
 On exit a summary block is printed: id, title, end reason, duration,
 tokens (prompt + completion) and cost (with budget if one was set).
@@ -154,6 +159,7 @@ func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string,
 	watchStart := time.Now()
 	sawLiveLock := false
 	warnedWaiting := false
+	workNoted := "" // last live-work note printed (one line per change)
 
 	for {
 		// Ctrl+C wins over everything. fang wraps the root command's
@@ -171,8 +177,12 @@ func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string,
 		// Check for end first so we print a summary even when there are
 		// no new messages to emit on this tick.
 		st, reason := isSessionFinished(ctx, a, sessionID, dataDir)
-		if st.lockAlive {
+		if st.lockAlive || st.liveWork != "" {
 			sawLiveLock = true
+		}
+		if st.liveWork != "" && st.liveWork != workNoted {
+			fmt.Fprintf(os.Stderr, "(between turns — %s; still watching)\n", st.liveWork)
+			workNoted = st.liveWork
 		}
 		tickAt := time.Now()
 		lastActivityAge := time.Duration(0)
@@ -454,6 +464,17 @@ func isSessionFinished(ctx context.Context, a *app.App, sessionID, dataDir strin
 
 	done, reason := isSessionFinishedFromState(sess, sessErr, msgs, msgsErr, lockAlive)
 
+	// The lock is held only during a turn (its file is truncated on release),
+	// so a finished-looking state proves nothing while a `rush run` loop
+	// waits between turns: the driver marker, a running own job or a live
+	// delegation keep the session open (R6C-1, ASYNC-02).
+	var liveWork string
+	if done {
+		if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
+			done, reason, liveWork = false, "", w.describe()
+		}
+	}
+
 	// Freshest activity anywhere we can see it, used to tell "this session
 	// wrapped up long ago" from "something is happening right now".
 	lastActivity := sess.UpdatedAt
@@ -463,6 +484,7 @@ func isSessionFinished(ctx context.Context, a *app.App, sessionID, dataDir strin
 	return watchState{
 		done:         done,
 		lockAlive:    lockAlive,
+		liveWork:     liveWork,
 		lastActivity: lastActivity,
 	}, reason
 }
@@ -476,6 +498,9 @@ type watchState struct {
 	done bool
 	// lockAlive reports whether the session lock was heartbeating this tick.
 	lockAlive bool
+	// liveWork names the live work (driver marker, own job, delegation)
+	// that kept a finished-looking session open this tick; "" when none.
+	liveWork string
 	// lastActivity is the newest unix timestamp seen on the session row or
 	// any of its messages. 0 when unknown.
 	lastActivity int64

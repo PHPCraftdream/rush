@@ -65,7 +65,15 @@ applies via reclassifyCrashedAsDone, surfaced here in plain language.
 That reclassification is suppressed while a delegation is live (a running
 delegation row on a host that is not provably dead) or the session's own
 background job is running: the end_turn is the session's own yield, not
-completion.`,
+completion.
+
+The session lock is held only during a turn and its file is truncated on
+release, so an empty (PID-less) stale lock is a clean release, not a dead
+holder: while a live driver, a running own job or a live delegation exists
+the verdict is running / delegating whatever the last finish is (an error
+finish after a failed reaction turn is a retry the loop paces, not a crash).
+"crashed" stays for a recorded dead PID that is not the live driver's and for
+a session with no live work.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
@@ -386,6 +394,9 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		default:
 			holderDeadReason = fmt.Sprintf("lock file exists but holder PID %d is not alive", pid)
 		}
+		// A lock that records no PID (an empty file after a clean release) or
+		// the live driver's own PID is not a dead holder.
+		cleanRelease := pid <= 0 || (driver != nil && int64(pid) == driver.PID)
 		if finish != nil && finish.Reason == message.FinishReasonEndTurn {
 			if len(liveDescendants) > 0 {
 				// The reclassification to "done" is suppressed: the
@@ -422,6 +433,24 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 					fmt.Fprint(out, descendantCaveat)
 				}
 			}
+		} else if cleanRelease && (len(liveDescendants) > 0 || len(ownJobs) > 0 || driver != nil) {
+			// A failed turn (error finish) whose lock is only a clean-release
+			// leftover -- an empty file, or one naming the live driver -- is
+			// not a crash while the session has live work: the loop retries
+			// (R6C-2). A recorded dead PID of another process stays a crash.
+			status, clause := "running", ""
+			switch {
+			case len(liveDescendants) > 0:
+				status, clause = "delegating", describeLiveDescendants(liveDescendants)
+			case len(ownJobs) > 0:
+				clause = describeLiveOwnJobs(ownJobs)
+			default:
+				driverShown = true
+				clause = describeRunDriver(*driver, driverOwes)
+			}
+			fmt.Fprintf(out, "status: %s (stale lock)\n", status)
+			fmt.Fprintf(out, "reason: %s; %s — the lock is a leftover of a clean release, not a crash, so the last finish (%s) does not mean the session died; it is NOT done.\n",
+				holderDeadReason, clause, finishReasonOrUnknown(finish))
 		} else {
 			fmt.Fprintf(out, "status: crashed\n")
 			fmt.Fprintf(out, "reason: %s.\n", holderDeadReason)

@@ -77,8 +77,11 @@ func TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning(t *testing.T) {
 	require.Equal(t, "status: at rest", verdictLine(buf.String()), "no marker: the loop is gone")
 }
 
-// The stale-lock shape (a previous turn's lock left behind, clean end_turn):
-// with a live driver it is running, not done; a crashed session stays crashed.
+// The stale-lock shape a turn leaves behind (an EMPTY back-dated lock after a
+// clean release, clean end_turn): with a live driver it is running, not done.
+// A lock recording another process's dead PID with an error finish is that
+// process's own crash and stays crashed, driver or not (the empty-lock error
+// shape is TestExplainSessionStatus_ReleasedLockErrorFinishLiveDriverIsRunning).
 //
 // Revert-check: as above; the first line reads "status: done (stale lock)".
 func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
@@ -88,7 +91,7 @@ func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
 
 	stale, err := s.Create(ctx, "stale lock, driven")
 	require.NoError(t, err)
-	backDateLock(t, writeLockFileAt(t, dataDir, stale.ID, 999999))
+	releasedLock(t, dataDir, stale.ID)
 	addFinishedAssistant(t, m, stale.ID, message.FinishReasonEndTurn)
 	require.NoError(t, store.ClaimSessionDriver(ctx, stale.ID))
 
@@ -189,7 +192,7 @@ func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	lockDir := filepath.Join(dataDir, "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	parentLock := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(parent.ID)+".lock")
-	require.NoError(t, os.WriteFile(parentLock, []byte("999999\n"), 0o644))
+	require.NoError(t, os.WriteFile(parentLock, nil, 0o644)) // a clean release leaves an empty file
 	backDateLock(t, parentLock)
 	assistant, err := a.Messages.Create(ctx, parent.ID, message.CreateMessageParams{
 		Role:  message.Assistant,
