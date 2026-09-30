@@ -6,9 +6,14 @@
 package agent
 
 // stopToolCallsForRerun stops every RUNNING job owned by owner whose
-// tool_call_id is in toolCallIDs, with job_kill semantics: the job is marked
-// stoppedBySession before l.mu is released and stopped in place through the
-// one durable transition path. A delegation's child tree is NOT walked here:
+// tool_call_id is in toolCallIDs, with Stop semantics -- the same cause and
+// path as cancelSession, NOT job_kill's: the job is marked stoppedBySession
+// before l.mu is released and stopped in place through the one durable
+// transition path as cancelled / notice_kind session_cancel / wake=0. Rerun
+// has already voided these rows and a terminal transition preserves void, so
+// a stopped row ends state=cancelled, delivery=void: `sessions jobs` shows a
+// stopped job whose result belongs to the deleted branch, and (as for Stop)
+// a plain job's in-memory notice is dropped. A delegation's child tree is NOT walked here:
 // the caller (Coordinator.StopRerunJobs) stops it with stopTree, which
 // also cancels the child's live generation and zeroes wake -- cancelTree
 // alone did neither.

@@ -124,7 +124,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   the tail after it and the ledger reconciliation commit in a single
   transaction. If the transaction fails, nothing was changed and the error
   says to retry; a cancel before the commit point also changes nothing. Only
-  the deleted tail's jobs are stopped, after the commit; jobs started before
+  the deleted tail's jobs are stopped, after the commit (recorded as stopped by
+  the session, like Stop: `cancelled`, no wake, the row stays void); jobs started before
   the rerun point keep running and their result reaches the new branch as a
   notice. A delivered notice whose message was in the deleted tail is
   delivered again to the new branch; a `wake_failed` marker in the tail is
