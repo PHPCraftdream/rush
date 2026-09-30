@@ -191,6 +191,54 @@ test("an unknown-command error reply for get_session_live_work does not show the
   await expect(page.locator(".chat-error-banner")).toHaveCount(0);
 });
 
+// ── 10. Server-sourced statuses (#1058): distinct terminal causes ───────────
+
+test("terminal statuses render distinctly: running elapsed vs done/failed/timed out/stopped/killed", async ({ page }) => {
+  await selectSession(page, "lw-status", "LW Status");
+  await sendLiveWork(page, "lw-status", [
+    { toolCallID: "tc-s1", toolName: "bash", title: "still going", startedAt: Date.now() - 5000, status: "running" },
+    { toolCallID: "tc-s2", toolName: "bash", title: "all good", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "completed" },
+    { toolCallID: "tc-s3", toolName: "bash", title: "boom", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "failed" },
+    { toolCallID: "tc-s4", toolName: "bash", title: "too slow", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "timed_out", reason: "timeout_terminated" },
+    { toolCallID: "tc-s5", toolName: "bash", title: "halting", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "cancelled", reason: "session_cancel" },
+    { toolCallID: "tc-s6", toolName: "bash", title: "killed", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "cancelled", reason: "job_kill" },
+    { toolCallID: "tc-s7", toolName: "bash", title: "host died", startedAt: Date.now() - 60000, finishedAt: Date.now() - 30000, lastActivityAt: Date.now() - 30000, status: "interrupted" },
+  ]);
+
+  await page.getByTestId("live-work-tab-commands").click();
+  const rows = page.getByTestId("live-work-row");
+
+  // A running row shows a ticking elapsed label, not a status word.
+  await expect(rows.filter({ hasText: "still going" }).getByTestId("live-work-row-status")).toHaveCount(0);
+  await expect(rows.filter({ hasText: "still going" })).toContainText(/\d+s/);
+  // Each terminal cause shows its own label.
+  await expect(rows.filter({ hasText: "all good" }).getByTestId("live-work-row-status")).toHaveText("done");
+  await expect(rows.filter({ hasText: "boom" }).getByTestId("live-work-row-status")).toHaveText("failed");
+  await expect(rows.filter({ hasText: "too slow" }).getByTestId("live-work-row-status")).toHaveText("timed out");
+  await expect(rows.filter({ hasText: "halting" }).getByTestId("live-work-row-status")).toHaveText("stopped by user");
+  await expect(rows.filter({ hasText: "killed" }).getByTestId("live-work-row-status")).toHaveText("killed");
+  await expect(rows.filter({ hasText: "host died" }).getByTestId("live-work-row-status")).toHaveText("interrupted");
+});
+
+// ── 11. The reply to get_session_live_work populates the tabs ───────────────
+
+test("a get_session_live_work reply (not just a push) populates the Commands tab", async ({ page }) => {
+  await selectSession(page, "lw-reply", "LW Reply");
+  const sent = await waitForWSSend(page, "get_session_live_work");
+
+  await sendMockWSMessage(page, {
+    type: "session_live_work",
+    id: sent.id,
+    payload: {
+      sessionID: "lw-reply",
+      commands: [{ toolCallID: "tc-reply", toolName: "run_command", title: "make build", startedAt: Date.now() - 1000, status: "running" }],
+      agents: [],
+    },
+  });
+
+  await expect(page.getByTestId("live-work-tab-commands")).toHaveText("Commands 1");
+});
+
 // ── 9. Not-found hint ────────────────────────────────────────────────────────
 
 test("clicking an item with no matching tool call in the transcript shows a hint", async ({ page }) => {

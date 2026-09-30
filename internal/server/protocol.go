@@ -87,10 +87,7 @@ const (
 	CmdClearScopedModel      = "clear_scoped_model"
 	// CmdGetSessionLiveWork asks for a fresh EventSessionLiveWork snapshot
 	// for one session -- sent when a session becomes active and after a
-	// reconnect. No handler is registered yet (#1058): until then this
-	// reliably gets handleIncoming's "unknown command" EventError reply (or
-	// no reply at all against an even older server), and the client must
-	// treat both the same as an empty snapshot -- see web/src/store_livework.ts.
+	// reconnect; handleGetSessionLiveWork (handlers_livework.go) answers it.
 	CmdGetSessionLiveWork = "get_session_live_work"
 	// CmdShutdownServer asks the server process to gracefully shut itself down
 	// (task #714). The handler acks first, then triggers the same shutdown path
@@ -690,29 +687,38 @@ type UpdateAvailableWire struct {
 	Latest  string `json:"latest"`
 }
 
-// ── Live work panel (task #1059) ─────────────────────────────────────────────
+// ── Live work panel (tasks #1058/#1059) ─────────────────────────────────────
 //
-// Wire contract only: no handler populates these yet. #1058 adds the emitter
-// that reads real running jobs/sub-agent sessions (the DB-backed readers it
-// needs, AsyncJobStore.LiveJobs/LiveWorkForRoots, exist) and pushes
-// EventSessionLiveWork; until then CmdGetSessionLiveWork falls through
-// handleIncoming's default case.
+// handlers_livework.go builds the snapshot from the durable async_jobs table
+// (session.AsyncJobStore.JobsInTree, the read-pool reader), pushes
+// EventSessionLiveWork on change events, and answers CmdGetSessionLiveWork
+// with the same full snapshot.
 
 // GetSessionLiveWorkPayload requests a live-work snapshot for one session.
 type GetSessionLiveWorkPayload struct {
 	SessionID string `json:"sessionID"`
 }
 
-// LiveWorkItemWire is one in-flight async command (bash/run_command) or
-// sub-agent delegation (agent/agentic_fetch) for the live-work panel.
+// LiveWorkItemWire is one async command (bash/run_command) or sub-agent
+// delegation (agent/agentic_fetch) row for the live-work panel (task #1058).
 // ChildSessionID is set only for a delegation -- the sub-agent's own session
-// ID. StartedAt is unix milliseconds. Mirrors web/src/types.ts's LiveWorkItem.
+// ID. StartedAt/FinishedAt/LastActivityAt are unix milliseconds; FinishedAt
+// is 0 while the row is still running. Status is the durable async_jobs.state
+// ("running"|"completed"|"failed"|"timed_out"|"cancelled"|"interrupted") and
+// Reason the row's notice_kind ("job_kill" for a user-killed command,
+// "session_cancel" for a session-level stop, ...) so the client can tell
+// user-stopped apart from timed out apart from failed. Mirrors
+// web/src/types.ts's LiveWorkItem.
 type LiveWorkItemWire struct {
 	ToolCallID     string `json:"toolCallID"`
 	ToolName       string `json:"toolName"`
 	Title          string `json:"title"`
 	ChildSessionID string `json:"childSessionID,omitempty"`
 	StartedAt      int64  `json:"startedAt"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+	FinishedAt     int64  `json:"finishedAt"`
+	LastActivityAt int64  `json:"lastActivityAt"`
 }
 
 // SessionLiveWorkPayload is both the session_live_work push and the

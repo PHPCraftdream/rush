@@ -49,11 +49,9 @@ export function applyLiveWorkSnapshot(payload: SessionLiveWorkPayload) {
 
 // Every get_session_live_work request is tagged with this prefix so
 // useWS.ts's generic "error" handler can recognize its reply and swallow it
-// silently instead of surfacing a banner. No server handler exists yet
-// (#1058), so this request reliably comes back as handleIncoming's "unknown
-// command" EventError (or gets no reply at all against an even older
-// server) -- both must read as "treat as empty", not as a user-visible
-// failure.
+// silently instead of surfacing a banner (e.g. against an older server
+// without the handler, or on a transport hiccup) -- both must read as
+// "treat as empty", not as a user-visible failure.
 const LIVE_WORK_REQUEST_PREFIX = "livework-";
 
 /** Requests a fresh live-work snapshot for sessionID. Fire-and-forget: the

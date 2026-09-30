@@ -263,10 +263,9 @@ export interface MCPState {
 
 // ─── Live work panel (task #1059) ───────────────────────────────────────────
 //
-// One in-flight async command (bash/run_command) or sub-agent delegation
+// One async command (bash/run_command) or sub-agent delegation
 // (agent/agentic_fetch), sourced from internal/server/protocol.go's
-// LiveWorkItemWire. The server-side emitter lands in #1058 (needs the
-// DB-backed readers); this task only wires the shared shape + client render.
+// LiveWorkItemWire (task #1058's snapshot emitter).
 export interface LiveWorkItem {
   toolCallID: string;
   toolName: string;
@@ -274,6 +273,17 @@ export interface LiveWorkItem {
   // Set only for a sub-agent delegation -- the child session's own ID.
   childSessionID?: string;
   startedAt: number; // unix ms
+  // Durable async_jobs.state: "running" | "completed" | "failed" |
+  // "timed_out" | "cancelled" | "interrupted". Always set by the #1058
+  // server emitter; absent on synthetic client-side items.
+  status?: string;
+  // The row's notice_kind for a terminal state ("job_kill" = user killed
+  // the command, "session_cancel" = session-level stop, ...).
+  reason?: string;
+  // Terminal finish time, unix ms; 0/absent while running.
+  finishedAt?: number;
+  // Last async_jobs row update, unix ms.
+  lastActivityAt?: number;
 }
 
 // SessionLiveWorkPayload mirrors the server's SessionLiveWorkPayload: the

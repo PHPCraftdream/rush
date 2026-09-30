@@ -23,6 +23,11 @@ const batchInterval = 16 * time.Millisecond
 // subscribeAndBroadcast subscribes to all app event sources and forwards them
 // to the hub, batching high-frequency message updates the same way the TUI does.
 func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
+	// Live-work snapshots: the forwarders below only MARK sessions dirty;
+	// this worker does the DB reads off the broadcast hot path (#1058) and
+	// exits with ctx.
+	liveWork := startLiveWorkPusher(ctx, a, h)
+
 	// Sessions
 	go func() {
 		ch := a.Sessions.Subscribe(ctx)
@@ -79,12 +84,18 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 				switch ev.Type {
 				case pubsub.CreatedEvent:
 					h.Broadcast(EventMessageCreated, toMessageWire(ev.Payload))
+					if shouldPushLiveWork(ev.Payload) {
+						liveWork.mark(ev.Payload.SessionID)
+					}
 				case pubsub.UpdatedEvent:
 					// Deduplicate: keep only the latest update per message ID.
 					pending[ev.Payload.ID] = ev.Payload
 				case pubsub.DeletedEvent:
 					delete(pending, ev.Payload.ID)
 					h.Broadcast(EventMessageDeleted, ev.Payload)
+					if shouldPushLiveWork(ev.Payload) {
+						liveWork.mark(ev.Payload.SessionID)
+					}
 				}
 			case <-ticker.C:
 				flush()

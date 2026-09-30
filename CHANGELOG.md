@@ -39,6 +39,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   Ownership-checked against the caller session; `job_kill`/`job_output` on a
   delegation job_id now point at these tools.
 
+- **Web UI: server-backed live-work panel (#1058)** — the Commands/Agents
+  tabs are now populated by the server from the durable `async_jobs` table
+  (`get_session_live_work` request + `session_live_work` push on change
+  events; no polling), so work hosted by another process (a live `rush run`)
+  is visible the same as local work. Rows carry state and terminal cause
+  (running / done / failed / timed out / stopped by user / killed /
+  interrupted), started/finished/last-activity times, the abbreviated
+  command text, and the sub-agent's session id; a click still jumps to the
+  tool call in the transcript. A snapshot covers only the requested session
+  and its delegation descendants.
 - **`rush sessions jobs <id>`** lists a session's own durable async jobs
   (bash/run_command/agent/agentic_fetch) plus its whole delegation tree
   (following `child_session_id`, any state): tool call id, kind, state,

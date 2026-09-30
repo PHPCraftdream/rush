@@ -43,24 +43,33 @@ func TestTitleSaveIsBroadcastToEveryTab(t *testing.T) {
 
 	// Stand in for what the agent's title goroutine does when its fast-model
 	// call returns: one Rename on the session row.
-	require.NoError(t, a.Sessions.Rename(ctx, sess.ID, "A Generated Title"))
-
+	//
+	// Retried: pubsub.Broker drops events published BEFORE Subscribe
+	// registers the subscriber (broker.go registers subs inside Subscribe,
+	// no replay buffer), and subscribeAndBroadcast runs asynchronously, so
+	// under full-package load the bridge goroutine can lose the first
+	// Rename's UpdatedEvent. This race is a fixture property, not a
+	// production one: the real server subscribes at startup, long before
+	// any title write. Each retry re-publishes via the same Rename.
 	var updated *session.Session
-	deadline := time.Now().Add(3 * time.Second)
-	for updated == nil && time.Now().Before(deadline) {
-		select {
-		case raw := <-client.send:
-			var env WSMessage
-			require.NoError(t, json.Unmarshal(raw, &env))
-			if env.Type != EventSessionUpdated {
-				continue
+	for attempt := 0; attempt < 5 && updated == nil; attempt++ {
+		require.NoError(t, a.Sessions.Rename(ctx, sess.ID, "A Generated Title"))
+		deadline := time.Now().Add(1 * time.Second)
+		for updated == nil && time.Now().Before(deadline) {
+			select {
+			case raw := <-client.send:
+				var env WSMessage
+				require.NoError(t, json.Unmarshal(raw, &env))
+				if env.Type != EventSessionUpdated {
+					continue
+				}
+				var s session.Session
+				require.NoError(t, json.Unmarshal(env.Payload, &s))
+				if s.ID == sess.ID {
+					updated = &s
+				}
+			case <-time.After(50 * time.Millisecond):
 			}
-			var s session.Session
-			require.NoError(t, json.Unmarshal(env.Payload, &s))
-			if s.ID == sess.ID {
-				updated = &s
-			}
-		case <-time.After(50 * time.Millisecond):
 		}
 	}
 

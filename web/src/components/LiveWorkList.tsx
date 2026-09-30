@@ -1,5 +1,9 @@
-// Commands / Agents tab body for LiveWorkPanel (task #1059): a flat list of
-// in-flight items, each jumping the chat to its tool call on click.
+// Commands / Agents tab body for LiveWorkPanel (tasks #1059/#1058): a list
+// of async-work items sourced from the server's durable async_jobs snapshot,
+// each jumping the chat to its tool call on click. A running item shows a
+// ticking elapsed label; a finished one shows a distinct status label --
+// stopped by the user, killed, timed out, failed, and interrupted must not
+// look alike (#1058).
 
 import { useEffect, useState } from "react";
 import type { LiveWorkItem } from "../types";
@@ -15,16 +19,44 @@ function formatElapsed(startedAt: number): string {
   return `${h}h ${m % 60}m`;
 }
 
-// Ticks a re-render once a second so the elapsed label keeps counting while
-// an item is visible -- these are "running right now" items by definition,
-// so there is no "finished, stop ticking" state to reach.
-function useElapsedLabel(startedAt: number): string {
+// Ticks a re-render once a second so the elapsed label keeps counting -- but
+// only for a still-running item; a terminal row's label never changes, so it
+// gets no interval at all.
+function useElapsedLabel(item: LiveWorkItem): string {
+  const running = !item.status || item.status === "running";
   const [, bump] = useState(0);
   useEffect(() => {
+    if (!running) return;
     const id = window.setInterval(() => bump((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, []);
-  return formatElapsed(startedAt);
+  }, [running]);
+  if (!running) return formatElapsed(item.finishedAt || item.lastActivityAt || item.startedAt);
+  return formatElapsed(item.startedAt);
+}
+
+// statusLabel maps a durable async_jobs.state (+ notice_kind reason) to the
+// short label the row shows. Cancelled splits by reason: "job_kill" is a
+// user-killed command, "session_cancel" a session-level stop -- both
+// deliberately distinct from timed_out and failed (#1058).
+export function statusLabel(item: LiveWorkItem): string {
+  switch (item.status) {
+    case "running":
+    case "":
+    case undefined:
+      return "";
+    case "completed":
+      return "done";
+    case "failed":
+      return "failed";
+    case "timed_out":
+      return "timed out";
+    case "interrupted":
+      return "interrupted";
+    case "cancelled":
+      return item.reason === "session_cancel" ? "stopped by user" : "killed";
+    default:
+      return item.status;
+  }
 }
 
 // jumpToToolCall requests the accordion holding `toolCallID` to expand
@@ -51,7 +83,8 @@ function jumpToToolCall(toolCallID: string, onNotFound: () => void) {
 }
 
 function LiveWorkRow({ item }: { item: LiveWorkItem }) {
-  const elapsed = useElapsedLabel(item.startedAt);
+  const elapsed = useElapsedLabel(item);
+  const status = statusLabel(item);
   const [notFound, setNotFound] = useState(false);
 
   function onClick() {
@@ -75,7 +108,13 @@ function LiveWorkRow({ item }: { item: LiveWorkItem }) {
         <span className="text-text font-mono text-sm truncate flex-1 min-w-0" style={{ fontSize: "var(--chat-font-size)" }}>
           {item.title || "—"}
         </span>
-        <span className="text-text-subtle text-xs font-mono tabular-nums shrink-0">{elapsed}</span>
+        {status ? (
+          <span data-test-id="live-work-row-status" className="text-text-subtle text-xs font-mono shrink-0">
+            {status}
+          </span>
+        ) : (
+          <span className="text-text-subtle text-xs font-mono tabular-nums shrink-0">{elapsed}</span>
+        )}
       </button>
       {notFound && (
         <p data-test-id="live-work-row-hint" className="px-2 pb-1 text-[11px] text-text-subtle">

@@ -1,14 +1,8 @@
-// Tabbed panel shown at the bottom of the chat (task #1059): Tasks (the
-// existing todo list, always present) / Commands / Agents (in-flight async
-// jobs and sub-agent delegations, hidden while empty). Replaces the bare
+// Tabbed panel shown at the bottom of the chat (tasks #1059/#1058): Tasks
+// (the existing todo list, always present) / Commands / Agents, populated
+// from the server's durable async_jobs snapshot (session_live_work events +
+// get_session_live_work replies, keyed by session). Replaces the bare
 // <TodoList> that used to sit in this spot in Chat.tsx.
-//
-// The server-side emitter that actually populates commands/agents lands in
-// #1058 (needs the DB-backed readers) -- until then $liveWorkBySession stays
-// empty for every session, so only the Tasks tab is ever visible in
-// practice. The tab machinery, the anchor/expand wiring, and the wire
-// contract are all real and exercised by web/tests/live-work-panel.spec.ts
-// against the mock-WS fixtures.
 
 import { useState } from "react";
 import { useStore } from "@nanostores/react";

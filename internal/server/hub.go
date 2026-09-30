@@ -333,6 +333,13 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 
+	// liveWorkTitles caches async-work row titles (command/prompt text) for
+	// the live-work panel (#1058). Per-hub, never package-global: it is
+	// keyed by (ownerSessionID, toolCallID, inputHash) — see titleCache —
+	// and must die with the server so one server's cache can never leak a
+	// session's titles into another's panel.
+	liveWorkTitles *titleCache
+
 	// stickyBroadcast carries only coalescing wakeup tokens. When
 	// BroadcastSticky updates h.sticky, it non-blocking-sends a token here;
 	// Run's stickyBroadcast case drains the channel, locks stickyMu, swaps
@@ -393,6 +400,7 @@ func newHub() *Hub {
 		stickyPending:   make(map[string]struct{}),
 		stickyBroadcast: make(chan struct{}, 64),
 		stopped:         make(chan struct{}),
+		liveWorkTitles:  newTitleCache(),
 	}
 }
 
