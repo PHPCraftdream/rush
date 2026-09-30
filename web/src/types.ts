@@ -54,9 +54,10 @@ export interface Session {
   HasLiveDescendantWork?: boolean;
   // Descendant session IDs those running delegation rows name (deduplicated).
   LiveDescendantIDs?: string[];
-  // True when the session itself owns a running background job
-  // (bash/run_command) on a host that is not provably dead: not finished
-  // even with no lock.
+  // True when the session is not finished although it holds no lock: it owns
+  // a running background job (bash/run_command) on a host that is not
+  // provably dead, or a live `rush run` loop drives it between turns. Does
+  // not imply that a job exists.
   HasLiveOwnWork?: boolean;
 }
 

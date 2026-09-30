@@ -117,13 +117,14 @@ type Session struct {
 	// delegation rows, so the UI can name the sub-agent it is waiting on.
 	// Wire-only.
 	LiveDescendantIDs []string `json:",omitempty"`
-	// HasLiveOwnWork reports that this session itself still owns a running
-	// plain background job (bash/run_command) on a host not provably dead,
-	// so it is NOT finished even with no lock of its own -- the counterpart
-	// of HasLiveDescendantWork for the session's own job rather than a
-	// sub-agent's. Wire-only, filled by the web server's session list; the
-	// same derivation as `sessions list`'s "running" promotion
-	// (AsyncJobStore.LiveOwnJobs).
+	// HasLiveOwnWork reports that this session is NOT finished although it
+	// holds no lock of its own: it owns a running plain background job
+	// (bash/run_command) on a host not provably dead, OR a live `rush run`
+	// driver marker (a loop waiting between turns) covers it. It does not
+	// imply that a job exists. The counterpart of HasLiveDescendantWork for
+	// the session's own work rather than a sub-agent's. Wire-only, filled by
+	// the web server's session list; the same derivation as `sessions list`'s
+	// "running" promotion (AsyncJobStore.LiveOwnJobs, App.LiveSessionDrivers).
 	HasLiveOwnWork bool `json:",omitempty"`
 }
 
