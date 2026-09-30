@@ -46,17 +46,25 @@ const drainDormantStreak = 3
 
 // drainRetryAfterNS paces the next launch after an unreacted attempt;
 // drainRefusalPauseNS paces a refused launch for a session this process's own
-// `rush run` loop drives (external driver) only. Atomic so a test can shrink
-// them at test timescale while a lingering goroutine of an earlier test reads.
-var drainRetryAfterNS, drainRefusalPauseNS atomic.Int64
+// `rush run` loop drives (external driver) only. drainAccountBudgetNS bounds a
+// whole accounting (its DB reads, the credential refresh and the settle);
+// drainRefreshBudgetNS bounds the 401 credential refresh inside it, detached
+// from the accounting's context so a black-holed auth endpoint cannot eat the
+// settle's budget (R4B-3). Atomic so a test can shrink them at test timescale
+// while a lingering goroutine of an earlier test reads.
+var drainRetryAfterNS, drainRefusalPauseNS, drainAccountBudgetNS, drainRefreshBudgetNS atomic.Int64
 
 func init() {
 	drainRetryAfterNS.Store(int64(60 * time.Second))
 	drainRefusalPauseNS.Store(int64(500 * time.Millisecond))
+	drainAccountBudgetNS.Store(int64(30 * time.Second))
+	drainRefreshBudgetNS.Store(int64(10 * time.Second))
 }
 
 func drainRetryAfterFailure() time.Duration { return time.Duration(drainRetryAfterNS.Load()) }
 func drainRefusalPauseLoop() time.Duration  { return time.Duration(drainRefusalPauseNS.Load()) }
+func drainAccountBudget() time.Duration     { return time.Duration(drainAccountBudgetNS.Load()) }
+func drainRefreshBudget() time.Duration     { return time.Duration(drainRefreshBudgetNS.Load()) }
 
 // ErrDrainNotAttempted marks a Drain that never reached the provider
 // (refusal or a preamble failure); see DrainNotAttemptedError.
@@ -150,7 +158,7 @@ func (a *sessionAgent) closeDrainAttempt(att *drainAttempt, turnErr error) {
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
 	defer cancel()
 	a.asyncJobs.coord.accountDrainAttempt(ctx, att, turnErr)
 }

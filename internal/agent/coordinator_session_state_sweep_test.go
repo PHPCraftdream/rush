@@ -65,6 +65,9 @@ func TestRecheckPass_FreesIdleSessionState(t *testing.T) {
 
 	f.ledger.bumpHint("never-had-a-session") // an idle entry, no jobs, zero gate
 	f.coord.bumpConsecutiveResume(gone.ID)
+	f.coord.autoResumeMu.Lock()
+	f.coord.bgShellOverCap = map[string]int{gone.ID: 1, f.sessID: 1}
+	f.coord.autoResumeMu.Unlock()
 	f.coord.suspendAutoResume(gone.ID)
 	f.coord.bumpConsecutiveResume(f.sessID)
 	f.coord.suspendAutoResume(f.sessID)
@@ -74,7 +77,37 @@ func TestRecheckPass_FreesIdleSessionState(t *testing.T) {
 
 	require.False(t, ledgerEntryIDs(f.ledger)["never-had-a-session"], "an idle ledger entry is freed")
 	require.Zero(t, f.coord.consecutiveResume(gone.ID), "a deleted session's cap counter is freed")
+	require.Zero(t, f.coord.bgShellOverCapCount(gone.ID), "a deleted session's over-cap count is freed")
 	require.False(t, f.coord.autoResumeSuspended(gone.ID), "a deleted session's suspension is freed")
 	require.EqualValues(t, 1, f.coord.consecutiveResume(f.sessID), "a live session keeps its cap counter")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "a live session keeps its over-cap count")
 	require.True(t, f.coord.autoResumeSuspended(f.sessID), "a live session keeps Stop's suspension")
+}
+
+// R4B-4: a gate whose pause has PASSED with both streaks at zero is open, like a
+// zero gate, and holds nothing: the sweep frees it (a web turn that failed with a
+// provider error paces the gate with no debt and no streak; if the session is
+// never used again nothing else would). A pause still running, and any streak,
+// are live state and stay.
+//
+// Revert-check: requiring retryAt.IsZero() again keeps the expired entry and
+// turns the count assertion red; dropping the streak conditions frees the
+// paid/free entries and turns the last two red.
+func TestSweepIdleSessions_ExpiredPauseWithZeroStreaksIsIdle(t *testing.T) {
+	now := time.Now()
+	l := newWorkLedger(nil)
+	c := &coordinator{asyncJobs: l}
+	c.noteTurnFailed("failed-turn") // the ordinary turn's pause: no debt, no streak
+	l.paceDrainGate("refused", 0, 30*time.Minute, true, paceUncounted)
+	l.paceDrainGate("paid", 0, 0, false, pacePaidUnreacted) // one paid streak
+	l.paceDrainGate("free", 0, 0, false, paceFreeNoTurn)    // one free streak
+
+	require.Zero(t, l.sweepIdleSessionsAt(now), "pauses still running (and streaks) keep their entries")
+
+	require.Equal(t, 2, l.sweepIdleSessionsAt(now.Add(2*time.Hour)), "an expired pause with zero streaks holds nothing")
+	ids := ledgerEntryIDs(l)
+	require.False(t, ids["failed-turn"], "the failed turn's pause is over")
+	require.False(t, ids["refused"], "and the refusal's")
+	require.True(t, ids["paid"], "a streak is live state")
+	require.True(t, ids["free"], "a streak is live state")
 }

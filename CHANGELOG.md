@@ -359,14 +359,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   reaction turn after a long job used to send the old token, get a 401 and
   close the debt on the first attempt; the token is refreshed before the call
   and its client rebuilt (also in `rush run`), and a 401 that still happens is
-  refreshed and counted like a transient failure.
+  refreshed and counted like a transient failure. A delegated child whose
+  provider takes its key from a `$(command)` template now also runs its next
+  reaction turn on the refreshed key, and the refresh has its own 10-second
+  budget, so an unresponsive auth server no longer keeps the notice from being
+  closed with its failure marker.
 - **The background-shell auto-resume cap (5 per human message) cannot be
   bypassed by a re-check.** A shell finishing while the last permitted reaction
   turn was running started a chain of further turns through the release
-  re-check; the re-check now compares the cap without spending it.
+  re-check; the re-check now compares the cap without spending it. A shell
+  that finished while an earlier reaction turn was paused or refused has
+  already used its slot: its notice is still retried by the re-check and
+  closed after three attempts like any other, and only completions that
+  arrive after all five slots are used wait for your next message.
 - **Per-session bookkeeping is freed in a long-lived web process.** The 60s
-  pass drops the idle in-memory entries of sessions with no work, and the
-  auto-resume state of deleted sessions.
+  pass drops the idle in-memory entries of sessions with no work (also a
+  retry pause that has already passed), and the auto-resume state of deleted
+  sessions.
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the

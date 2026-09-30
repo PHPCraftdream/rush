@@ -13,8 +13,9 @@ type AutoTurnHolder interface {
 	// HoldAutomaticTurns refuses automatic turns for sessionID until the
 	// returned func is called (idempotent). Holds nest: automatic turns resume
 	// when the last hold is released. While held the launch predicate answers
-	// "deferred, worth a tick", so a skipped wake is retried by the re-check
-	// pass after the release.
+	// drainPaced with no clock (a temporary hold, never "deferred": a delegated
+	// child's parent keeps the delegation open), so a skipped wake is retried by
+	// the re-check tick and the release retry after the hold ends.
 	HoldAutomaticTurns(sessionID string) (release func())
 }
 

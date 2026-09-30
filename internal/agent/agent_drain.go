@@ -135,20 +135,23 @@ func isTodoReminder(m fantasy.Message) bool {
 }
 
 // freshenDrainClient brings a delegated child's Drain call onto the current
-// OAuth credentials. The child's driver template froze its model client when the
-// delegation started, so after a long job (or a refresh by any other caller) it
-// carries an expired token: refresh an expired token, then rebuild the pinned
-// model's client from the current config (same model, new client). Best effort:
-// a failure leaves the template's client, and a 401 then takes the counted,
-// paced path of the accounting. Per-call credentials (tenant keys) are never
-// replaced with the shared config's.
+// refreshable credentials (an OAuth token or an API-key template). The child's
+// driver template froze its model client when the delegation started, so after
+// a long job (or a refresh by any other caller: the 401 accounting refreshes an
+// API-key template and publishes the new key) it carries an old token or key:
+// refresh an expired OAuth token, then rebuild the pinned model's client from
+// the current config (same model, new client). Best effort: a failure leaves the
+// template's client, and a 401 then takes the counted, paced path of the
+// accounting. A provider with no refreshable credential keeps its client, and
+// per-call credentials (tenant keys) are never replaced with the shared
+// config's.
 func (c *coordinator) freshenDrainClient(ctx context.Context, call *SessionAgentCall) {
 	if c.cfg == nil || call.SmartModel == nil || call.Credentials != nil {
 		return
 	}
 	providerID := call.SmartModel.ModelCfg.Provider
 	_, providerCfg, err := c.rebuildInputs(providerID)
-	if err != nil || providerCfg.OAuthToken == nil {
+	if err != nil || !hasRefreshableCredential(providerCfg) {
 		return
 	}
 	if _, err := c.refreshExpiredToken(ctx, providerCfg); err != nil {
