@@ -12,6 +12,7 @@ package cmd
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -143,4 +144,39 @@ func promoteCleanReleaseCrashes(
 		}
 	}
 	return statusByID
+}
+
+// driversByLockName indexes the live loop markers by the lock-file stem
+// (sanitiseSessionIDForFilename of the real id): a lock file name cannot be
+// mapped back to the real id, so `sessions locks` matches by the stem (R7C-2).
+// Two real ids that sanitise equally ("a/b", "a b") share one lock file; the
+// candidates are kept in PID order so the choice is deterministic.
+func driversByLockName(drivers map[string]session.SessionDriver) map[string][]session.SessionDriver {
+	byName := make(map[string][]session.SessionDriver, len(drivers))
+	for _, d := range drivers {
+		stem := sanitiseSessionIDForFilename(d.SessionID)
+		byName[stem] = append(byName[stem], d)
+	}
+	for _, list := range byName {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].PID != list[j].PID {
+				return list[i].PID < list[j].PID
+			}
+			return list[i].SessionID < list[j].SessionID
+		})
+	}
+	return byName
+}
+
+// lockDriver picks the live loop a released lock file belongs to: an empty
+// file (pid <= 0) is the clean-release leftover of any candidate; a recorded
+// PID belongs only to the candidate running under that PID. A colliding dead
+// session's own recorded PID therefore never reads as a live loop's lock.
+func lockDriver(candidates []session.SessionDriver, pid int) (session.SessionDriver, bool) {
+	for _, d := range candidates {
+		if pid <= 0 || int64(pid) == d.PID {
+			return d, true
+		}
+	}
+	return session.SessionDriver{}, false
 }
