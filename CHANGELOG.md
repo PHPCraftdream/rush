@@ -441,6 +441,43 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   charge: a normal exit and a Ctrl-C exit report the same cost. The test-only
   supervision interval override no longer lets a value under one second defeat
   the floor.
+- **A stream cut by the default wall-clock cap counts as a deadline on every
+  transport (review round 8).** On plain HTTP/1.1 providers (Ollama, LM Studio,
+  vLLM on `http://localhost`) net/http returns the cancellation cause itself,
+  and the cap's cause did not wrap `context.DeadlineExceeded`: the turn ended
+  as a generic "Provider Error" instead of the run-timeout text naming the cap,
+  and a Drain cut off by it was charged as a failed attempt (three such runs
+  closed the notice as failed) while the same cut by `--timeout` was exempt. The
+  cause now wraps the deadline error.
+- **A killed background shell that never exits stops holding its session's
+  scope after 10 minutes (review round 8).** A shell whose process tree kill
+  missed a descendant holding the output pipe (an ssh `ControlPersist` master,
+  the adb server) stays unfinished after `job_kill`; its completion hold had no
+  end, so a delegated child's parent stayed parked until the run's 6 h cap. The
+  hold now expires 10 minutes after the shell was taken out of the job table.
+- **Stop during an async `bash` start releases the child's driver (review round
+  8).** A Stop landing in the first second of a child's async `bash` (the fast
+  failure check) left the child's driver record and permission-allowlist entry
+  registered until the process ended; the finishing executor now re-checks its
+  owner.
+- **A Drain that fails because the history no longer fits the model's context
+  window says so (review round 8).** The "Event saved; continuation at the next
+  turn" marker was false for that failure (the events stay in history and every
+  later request fails the same way); it now names the cause and the remedy
+  (summarize the session or start a new one). Detected from the provider's
+  flagged context-size error, a 413, or a 400 naming the overflow.
+- **A message injected into an idle session reaches the next turn's prompt once
+  (review round 8).** `sessions inject` saves the user message before it queues
+  the pending row, so the next turn loaded it with the history and then spliced
+  it in a second time at step 1 (the model could act twice); a pending row whose
+  message is already in the turn's history is now only consumed.
+- **`sessions cancel` is a one-shot request (review round 8, agent part).** The
+  cancel flag stayed set after it stopped a turn, so a web session's next prompt
+  (and every automatic turn after it) was aborted after one step, and a child
+  resumed by a delegation likewise. A human-initiated turn (web/SDK `Run`, a
+  delegation resuming a child) now starts with the flag cleared, and an in-turn
+  abort that honours it clears it; a session driven by this process's `rush run`
+  loop keeps it for the loop, and Drain turns never clear it at their start.
 - **A delegated child's finished background shell keeps the delegation
   parked until its result is recorded (review round 7).** A child's shell that
   had exited but whose completion notice was not written yet (the write can wait
