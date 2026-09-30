@@ -33,7 +33,8 @@ func (s *AsyncJobStore) CountJobsOlderThan(ctx context.Context, age time.Duratio
 
 // PurgeJobsOlderThan deletes terminal, delivered-or-voided async_jobs/
 // session_notices rows older than age (doc sec.3.7) -- `sessions gc
-// --jobs-older-than`. Returns the number of rows deleted from each table.
+// --jobs-older-than`. Never touches unreacted debt or an unnamed job_kill row
+// (R5A-1). Returns the number of rows deleted from each table.
 func (s *AsyncJobStore) PurgeJobsOlderThan(ctx context.Context, age time.Duration) (jobs, notices int64, err error) {
 	cutoff := time.Now().Add(-age).Unix()
 	jobs, err = s.q.PurgeAsyncJobsOlderThan(ctx, cutoff)

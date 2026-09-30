@@ -46,6 +46,11 @@ const AsyncDataRetentionAge = 7 * 24 * time.Hour
 // gap. nil in production.
 var recoverDeadHostRowSeam func(hostID string, row db.AsyncJob)
 
+// purgeEmptyDeadHostBeforeDeleteSeam is a test-only hook fired between
+// purgeEmptyDeadHostFiles' dead verdict and its host-row delete. nil in
+// production.
+var purgeEmptyDeadHostBeforeDeleteSeam func(hostID string)
+
 // RecoveryOutcome tallies one host sweep's effect, for logging and tests.
 type RecoveryOutcome struct {
 	Interrupted int  // running, announced=1 rows moved to 'interrupted'
@@ -194,8 +199,9 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 	return out, nil
 }
 
-// removeDeadHostFile is the only step of recovery that takes the exclusive
-// lock: won here, RemoveDeadHostFile verifies the path still names the held
+// removeDeadHostFile is the only step of recovery (and of the empty-host reap,
+// purgeEmptyDeadHostFiles) that takes the exclusive lock: won here,
+// RemoveDeadHostFile verifies the path still names the held
 // file and unlinks it. Not winning is not an error: the file is already gone
 // (ENOENT), another holder has it right now (a recoverer or reaper, which
 // removes it, or a reader's shared probe, which removes nothing), or the probe
@@ -205,12 +211,12 @@ func (s *AsyncJobStore) removeDeadHostFile(hostID string) {
 	status, lock, err := ProbeHost(s.dataDir, hostID)
 	if status != HostStatusDead || lock == nil {
 		if err != nil {
-			slog.Warn("recover dead host: lock file probe before removal failed", "host_id", hostID, "err", err)
+			slog.Warn("remove dead host file: lock file probe before removal failed", "host_id", hostID, "err", err)
 		}
 		return
 	}
 	if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
-		slog.Warn("recover dead host: remove lock file failed", "host_id", hostID, "err", err)
+		slog.Warn("remove dead host file: remove lock file failed", "host_id", hostID, "err", err)
 	}
 }
 
@@ -319,7 +325,8 @@ func (s *AsyncJobStore) RecoverOwnerScope(ctx context.Context, owner string, mes
 
 // PurgeExpired is the retention half of the maintenance sweep (doc sec.3.7;
 // web: every 60s, `rush run`: once at loop start): terminal, delivered-or-
-// voided async_jobs/session_notices rows past age (never unreacted debt),
+// voided async_jobs/session_notices rows past age (never unreacted debt, nor a
+// job_kill row still unnamed, which dead-host recovery re-pends, R5A-1),
 // dead drivers' markers, and dead hosts' lock files/rows once they reference
 // no rows of any state at all.
 // Best-effort throughout -- a failure on one sub-step is logged and the next
@@ -356,6 +363,13 @@ func (s *AsyncJobStore) PurgeExpired(ctx context.Context, age time.Duration) err
 // row actually disappeared. A LIVE host with zero current jobs (e.g. an idle
 // long-running web server) is correctly left alone -- the probe must
 // independently confirm 'dead' before anything is touched.
+//
+// Same shape as RecoverDeadHost (R3A-3): the verdict is the SHARED probe, the
+// row delete (a write that can wait behind any in-process transaction, up to
+// busy_timeout) runs holding no lock, and the exclusive lock is taken only
+// inside removeDeadHostFile, for the unlink -- so a host being reaped still
+// probes dead to every reader. A lost delete (another reaper won the row)
+// leaves the file to it or to purgeOrphanHostLockFiles.
 func (s *AsyncJobStore) purgeEmptyDeadHostFiles(ctx context.Context) error {
 	hosts, err := s.q.ListAsyncHostsWithNoJobs(ctx)
 	if err != nil {
@@ -365,24 +379,19 @@ func (s *AsyncJobStore) purgeEmptyDeadHostFiles(ctx context.Context) error {
 		if h.ID == "" || IsOwnHostID(h.ID) {
 			continue
 		}
-		status, lock, err := ProbeHost(s.dataDir, h.ID)
-		if err != nil || status != HostStatusDead {
-			if lock != nil {
-				_ = lock.Release()
-			}
+		if status, _ := ProbeHostShared(s.dataDir, h.ID); status != HostStatusDead {
 			continue
 		}
-		if _, err := s.q.DeleteAsyncHostIfNoJobs(ctx, h.ID); err != nil {
+		if purgeEmptyDeadHostBeforeDeleteSeam != nil {
+			purgeEmptyDeadHostBeforeDeleteSeam(h.ID)
+		}
+		n, err := s.q.DeleteAsyncHostIfNoJobs(ctx, h.ID)
+		if err != nil {
 			slog.Warn("purge empty dead host files: delete host row failed", "host_id", h.ID, "err", err)
-			if lock != nil {
-				_ = lock.Release()
-			}
 			continue
 		}
-		if lock != nil {
-			if err := RemoveDeadHostFile(HostLockPath(s.dataDir, h.ID), lock); err != nil {
-				slog.Warn("purge empty dead host files: remove lock file failed", "host_id", h.ID, "err", err)
-			}
+		if n > 0 {
+			s.removeDeadHostFile(h.ID)
 		}
 	}
 	return nil
