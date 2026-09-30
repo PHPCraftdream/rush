@@ -139,3 +139,60 @@ func lastAssistantFinish(t *testing.T, env fakeEnv, sessionID string) *message.F
 	require.NotNil(t, finish)
 	return finish
 }
+
+// TestRun_RunTimeoutFinishNamesItsSource: the same turn cut off by the run's
+// deadline names what set it. An explicit --timeout says so; the default
+// wall-clock cap (the run tags its deadline with ErrRunDefaultCap) names the
+// cap and RUSH_RUN_DEFAULT_HARD_TIMEOUT instead of a --timeout nobody passed.
+// The title stays the same for both.
+//
+// Revert-check: reading no cause in handleStreamFailure (always the --timeout
+// text) turns the default-cap case red.
+func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
+	cases := []struct {
+		name    string
+		ctx     func(t *testing.T) (context.Context, context.CancelFunc)
+		want    string
+		notWant string
+	}{
+		{
+			name: "explicit --timeout",
+			ctx: func(t *testing.T) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(t.Context(), 200*time.Millisecond)
+			},
+			want:    "The run's --timeout deadline expired",
+			notWant: "default wall-clock cap",
+		},
+		{
+			name: "default cap",
+			ctx: func(t *testing.T) (context.Context, context.CancelFunc) {
+				return context.WithTimeoutCause(t.Context(), 200*time.Millisecond, ErrRunDefaultCap)
+			},
+			want:    "The run's default wall-clock cap expired (no --timeout was set; RUSH_RUN_DEFAULT_HARD_TIMEOUT sets it)",
+			notWant: "--timeout deadline",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testEnv(t)
+			agent := testSessionAgent(env, waitForDeadlineModel{}, waitForDeadlineModel{}, "test system prompt")
+			sess, err := env.sessions.Create(t.Context(), "Run timeout")
+			require.NoError(t, err)
+			_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier"}},
+			})
+			require.NoError(t, err)
+
+			runCtx, cancel := tc.ctx(t)
+			defer cancel()
+			_, err = agent.Run(runCtx, SessionAgentCall{Prompt: "hello", SessionID: sess.ID, MaxOutputTokens: 100})
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+
+			finish := lastAssistantFinish(t, env, sess.ID)
+			assert.Equal(t, "Run timeout exceeded", finish.Message)
+			assert.Contains(t, finish.Details, tc.want)
+			assert.NotContains(t, finish.Details, tc.notWant)
+			assert.Contains(t, finish.Details, "rush run --session "+sess.ID+" --timeout <larger-value>", "the resume command is the same for both")
+		})
+	}
+}

@@ -129,6 +129,11 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 
 	// The row and the slot decision are one step (persistBGShellCompletion).
 	claimed := c.persistBGShellCompletion(sessionID, sh.ID, summary)
+	// The notice is durable (or its insert failed and nothing more will be
+	// written): the shell's completion hold ends here so the session's own
+	// debt answers "is work owed", and only now do this callback's re-checks
+	// run (R7B-1). The shell manager releases it on a panic or return too.
+	sh.MarkCompletionRecorded()
 	// A delegated child is driven by its delegation, not by the auto-resume
 	// policy (R6B-1): the claim (web only, AutoResumeOnJobDone on, a free slot)
 	// bounds a session's OWN chain of automatic turns. Refusing a child's wake

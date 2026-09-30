@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,7 +78,8 @@ func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 // process is NOT killed (the grace is far away and stop() disarms it).
 //
 // Revert-check: not deriving the deadline context for the default cap (the old
-// bare-timer shape) makes ctx never end and the test time out.
+// bare-timer shape) makes ctx never end and the test time out; a plain
+// WithTimeout (no cause) fails the cause assertion.
 func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 	t.Parallel()
 	stderr, rec := newLockedBuf(), newExitRecorder()
@@ -85,6 +87,7 @@ func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 
 	awaitClosed(t, ctx.Done(), "the default cap to end the run's context")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	require.ErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "the cap tags its deadline so a cut-off turn names it (R7C-5)")
 	awaitClosed(t, stderr.sawN, "the cap notice")
 	require.Contains(t, stderr.String(), "default wall-clock cap of 30ms")
 	require.Contains(t, stderr.String(), "no --timeout set")
@@ -123,6 +126,7 @@ func TestInstallRunDeadline_TimeoutFlagUnchanged(t *testing.T) {
 
 	awaitClosed(t, ctx.Done(), "the --timeout deadline")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "an explicit --timeout is not the default cap")
 	awaitClosed(t, rec.first, "the --timeout hard kill")
 	require.Equal(t, []int{124}, rec.calls())
 	out := stderr.String()

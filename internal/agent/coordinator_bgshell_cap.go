@@ -45,6 +45,10 @@ func (m *ctxMutex) unlock() { <-m.ch }
 // the slot decision of persistBGShellCompletion, still under bgArrival.
 var bgArrivalInsertedSeam atomic.Pointer[func()]
 
+// bgArrivalEnteredSeam is a test-only hook called with the session id as
+// persistBGShellCompletion is entered, before it takes bgArrival.
+var bgArrivalEnteredSeam atomic.Pointer[func(sessionID string)]
+
 // persistBGShellCompletion writes a finished background shell's notice row and
 // takes (or refuses) its auto-resume slot as ONE step relative to the cap check
 // (bgShellCapDeferred): the check then never sees a row without its slot
@@ -52,6 +56,9 @@ var bgArrivalInsertedSeam atomic.Pointer[func()]
 // failed insert is logged and the slot decision is made anyway, as before, but
 // with no row id: nothing exists to defer, so nothing is recorded as over-cap.
 func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary string) (claimed bool) {
+	if seam := bgArrivalEnteredSeam.Load(); seam != nil {
+		(*seam)(sessionID)
+	}
 	_ = c.bgArrival.lock(context.Background()) // cannot fail: Background never ends
 	defer c.bgArrival.unlock()
 	var rowID int64

@@ -105,7 +105,9 @@ func (c *childBGFixture) awaitRelease() AsyncCompletion {
 // delegation never released.
 //
 // Revert-check: dropping the delegated-child wake from notifyBackgroundJobDone
-// (launching on the claim alone) turns every case red on the release timeout.
+// (launching on the claim alone) turns the four refused-claim cases red on the
+// release timeout; "a free slot" launches through the claim and stays green (the
+// control that the claim path itself still works).
 func TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays(t *testing.T) {
 	cases := []struct {
 		name string

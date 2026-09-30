@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent"
 )
 
 // hardKillGrace is how long a `rush run` may take to exit after its deadline
@@ -32,7 +34,14 @@ func installRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.
 	if deadline <= 0 {
 		deadline, isCap = defaultCap, true
 	}
-	ctx, cancel := context.WithTimeout(ctx, deadline)
+	var cancel context.CancelFunc
+	if isCap {
+		// The cause lets a turn the cap cuts off name the cap, not a --timeout
+		// nobody passed (agent.runTimeoutFinishText, R7C-5).
+		ctx, cancel = context.WithTimeoutCause(ctx, deadline, agent.ErrRunDefaultCap)
+	} else {
+		ctx, cancel = context.WithTimeout(ctx, deadline)
+	}
 	timers := make([]*time.Timer, 0, 2)
 	if isCap {
 		timers = append(timers, time.AfterFunc(deadline, func() {
