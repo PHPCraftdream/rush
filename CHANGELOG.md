@@ -308,15 +308,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   ran it, from what the database says: a turn that reached the provider and
   left its notices unreacted (an error, an empty reply, a reaction write that
   never landed, a watchdog stall, a `--max-tokens`/`--max-cost` cut) counts
-  as one attempt, waits 60s (a human message reopens it at once; a newer
-  event does not shorten the pause after a failed attempt, only after a
-  refusal before the provider) and, on the third, or at once on a quota/401-class error, closes
-  the debt with the visible wake-failure marker. Ctrl-C, `--timeout`, Stop,
-  interrupts, shutdown and any refusal before the provider (lock busy, peak
-  hours, provider not configured) count as nothing. A reaction turn makes one
-  provider attempt (no coordinator retry loop). If both the reaction write
-  and the settle keep failing, launches stop after three attempts until a new
-  event or a human message. A question the assistant asks while reacting is
+  as one attempt, waits 60s (a newer event does not shorten the pause after a
+  paid failure, so a one-minute provider outage never closes a notice; a
+  human message does) and, on the third attempt of THAT notice, or at once on
+  a quota-class error or a 401 whose credentials cannot be refreshed, closes
+  it with the visible wake-failure marker (a notice that arrived later keeps
+  its own count and is not closed with an older one). A 401 is refreshed
+  first (an expired OAuth token after a long job, also before a web or
+  delegated-child reaction turn starts): when the refresh works the attempt
+  counts and the next one runs on the new token. Ctrl-C, the run's own
+  `--timeout`, Stop, interrupts (including a human message that cuts the
+  reaction turn off), shutdown and any refusal before the provider (lock
+  busy, peak hours, provider not configured) count as nothing; a network
+  timeout of the provider call is a provider failure and counts. A reaction
+  turn makes one provider attempt (no coordinator retry loop). If both the
+  reaction write and the settle keep failing, launches stop after three
+  attempts until a human message; if only the notice pull keeps failing,
+  three empty launches pause until a new event or a human message. A question the assistant asks while reacting is
   its reaction: the notice is closed, automatic turns pause until you answer,
   and a delegated child's question reaches its parent as the delegation
   result. A step that crosses `--max-tokens`/`--max-cost` is recorded as the
@@ -330,7 +338,35 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **A Rerun no longer races a reaction turn.** From the moment the live turn
   is cancelled until the replacement turn takes over, automatic reaction
   turns are held off the session; stopping the voided jobs no longer keeps
-  the rerun waiting.
+  the rerun waiting. While a delegated child is held, its parent's delegation
+  stays open (the hold is a temporary pause, not "nothing left to do"), so it
+  is no longer handed over with stale text.
+- **A delegated child's question reaches its parent as a question even when
+  the child wrote text first.** The text used to win and the delegation was
+  reported as failed without the question, options or resume guidance (the
+  parent then redid the work); now the question is delivered, with the text
+  kept as its preamble.
+- **A network timeout of the provider call is a provider failure, not your
+  `--timeout`.** A black-holed provider used to look like an operator deadline:
+  the reaction turn was relaunched at once with no attempt count, no pause and
+  dozens of "Run timeout exceeded" messages. The decision now comes from the
+  turn's own context, so such a turn is counted, paced and closed at three
+  attempts like any other failure, and only a real deadline of the run is
+  exempt. A reaction turn cut off by a message you send (interrupt-and-send,
+  Stop or Cancel with a message queued) is no longer counted as a failed
+  attempt either.
+- **Reaction turns refresh an expired OAuth token.** A web or delegated-child
+  reaction turn after a long job used to send the old token, get a 401 and
+  close the debt on the first attempt; the token is refreshed before the call
+  and its client rebuilt (also in `rush run`), and a 401 that still happens is
+  refreshed and counted like a transient failure.
+- **The background-shell auto-resume cap (5 per human message) cannot be
+  bypassed by a re-check.** A shell finishing while the last permitted reaction
+  turn was running started a chain of further turns through the release
+  re-check; the re-check now compares the cap without spending it.
+- **Per-session bookkeeping is freed in a long-lived web process.** The 60s
+  pass drops the idle in-memory entries of sessions with no work, and the
+  auto-resume state of deleted sessions.
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the

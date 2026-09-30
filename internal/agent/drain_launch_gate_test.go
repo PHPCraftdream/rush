@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -14,13 +15,13 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 // policyAllowed reports the policy half of the launch predicate.
 func policyAllowed(c *coordinator, ctx context.Context, sessionID string) (bool, error) {
-	v := c.drainPolicy(ctx, sessionID)
+	v := c.drainPolicy(ctx, sessionID, false)
 	return v.kind == drainAllow, v.err
 }
 
@@ -204,84 +205,98 @@ func TestAdmissionRefusal_NonBusyLockError_NoHotLoop(t *testing.T) {
 }
 
 // A12: the release hook does no work on the releasing goroutine: with the DB
-// writer held by someone else it still returns at once.
+// held by someone else it still returns at once, for a PLAIN session (never a
+// delegation driver), whose afterRelease does a bounded debt read -- the work
+// the hook would otherwise do inline -- and still does it, off-thread.
 //
-// Revert-check: running afterRelease synchronously in the hook blocks until
-// the (shrunk) decision budget and this test goes red.
+// Revert-check: running afterRelease synchronously in the hook blocks for the
+// (shrunk) decision budget and this test goes red.
 func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 	ctx := context.Background()
 	old := recheckDebtCheckBudget
 	recheckDebtCheckBudget = 300 * time.Millisecond
 	t.Cleanup(func() { recheckDebtCheckBudget = old })
 	f := newAttemptFixture(t, "attempt-hook-db", attemptFixtureOpts{noIdle: true})
+	plain, err := f.env.sessions.Create(ctx, "a plain session, never a delegation driver")
+	require.NoError(t, err)
+	require.False(t, f.ledger.hasArmedOrDriver(plain.ID), "precondition: nothing armed, no driver")
 	conn, err := f.env.conn.Conn(ctx)
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
 	require.NoError(t, err)
 
 	start := time.Now()
-	f.coord.onSessionIdleHook(f.sessID)
+	f.coord.onSessionIdleHook(plain.ID)
 	elapsed := time.Since(start)
 
+	require.Less(t, elapsed, 50*time.Millisecond, "the hook must return at once")
+	// The DB stays held until the off-thread debt read has run into its budget:
+	// it fails and keeps the session for the tick.
+	require.Eventually(t, func() bool {
+		f.coord.recheckMu.Lock()
+		defer f.coord.recheckMu.Unlock()
+		_, queued := f.coord.recheckSet[plain.ID]
+		return queued
+	}, 5*time.Second, 10*time.Millisecond, "the blocked debt read ends at its budget, off the hook's goroutine, and keeps the session for the tick")
 	_, _ = conn.ExecContext(ctx, "ROLLBACK")
 	require.NoError(t, conn.Close())
-	require.Less(t, elapsed, 50*time.Millisecond, "the hook must return at once")
 }
 
-// A13: six completions on a web session with auto-resume on submit exactly
-// maxConsecutiveAutoResumes Drains per human message; the counter is spent
-// once, atomically, and never re-checked downstream.
-//
-// Revert-check: re-adding the cap comparison to drainPolicy (the old "<" after
-// the bump) refuses the fifth submission (4 launches) and this test goes red.
-func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
-	ctx := context.Background()
-	f := newAttemptFixture(t, "attempt-bgshell-cap", attemptFixtureOpts{noIdle: true})
-	cfg, err := config.Init(f.env.workingDir, "", false)
-	require.NoError(t, err)
-	cfg.Config().Options = &config.Options{AutoResumeOnJobDone: boolPtr(true)}
-	f.coord.cfg = cfg
-	f.coord.SetPersistentMode(true)
-	mock := &mockSessionAgent{}
-	var launches atomic.Int32
-	mock.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
-		launches.Add(1)
-		return nil, nil
-	}
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: mock, call: SessionAgentCall{SessionID: f.sessID}})
-
-	submitted := 0
-	for i := range maxConsecutiveAutoResumes + 1 {
-		require.NoError(t, f.store.InsertSessionNotice(ctx, f.sessID, "bg_shell_done", "job finished", true, ""))
-		if f.coord.claimAutoResume(f.sessID) {
-			submitted++
-			require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true), "completion %d", i)
-		}
-	}
-	require.Equal(t, maxConsecutiveAutoResumes, submitted)
-	require.EqualValues(t, maxConsecutiveAutoResumes, launches.Load(), "exactly five Drains per human message")
-
-	f.coord.ResetAutoResumeCounter(f.sessID)
-	require.True(t, f.coord.claimAutoResume(f.sessID), "a human message re-arms auto-resume")
+// failingGetSessions makes Get fail for one session id: the ONE read
+// isDurableDelegationChild makes of the sessions table.
+type failingGetSessions struct {
+	session.Service
+	failID string
 }
 
-// A14: an unreadable policy input fails CLOSED for every session -- a released
-// delegation child included -- and asks for a re-check tick.
+func (s failingGetSessions) Get(ctx context.Context, id string) (session.Session, error) {
+	if id == s.failID {
+		return session.Session{}, errors.New("fx: sessions read failed")
+	}
+	return s.Service.Get(ctx, id)
+}
+
+// A14: an unreadable policy input fails CLOSED -- deferred, asking for a
+// re-check tick -- and every input is pinned on its OWN read: each case fails
+// exactly one read (a renamed table, or a failing Get) and the verdict names
+// that input. (A whole-DB close fails the first read only, so the later inputs,
+// the delegation-identity read a released child needs included, were never
+// reached.)
 //
-// Revert-check: answering "allow" on a read error (the old fail-open) turns
-// both assertions red.
+// Revert-check: answering "allow" for an unreadable input (the old fail-open)
+// turns every case red; dropping the error branch of any single read turns that
+// case red.
 func TestDrainPolicy_ReadErrorFailsClosed(t *testing.T) {
 	ctx := context.Background()
-	f := newAttemptFixture(t, "attempt-policy-readerr", attemptFixtureOpts{noIdle: true})
-	require.NoError(t, f.env.conn.Close())
+	cases := []struct {
+		name, reason string
+		fail         func(f *attemptFixture)
+	}{
+		{"driver marker", "driver marker unreadable", func(f *attemptFixture) {
+			f.exec(ctx, `ALTER TABLE session_drivers RENAME TO fx_session_drivers`)
+		}},
+		{"delegation state", "delegation state unreadable", func(f *attemptFixture) {
+			f.exec(ctx, `ALTER TABLE async_jobs RENAME TO fx_async_jobs`)
+		}},
+		{"delegation identity", "delegation identity unreadable", func(f *attemptFixture) {
+			f.coord.sessions = failingGetSessions{Service: f.env.sessions, failID: f.sessID}
+		}},
+		{"debt kinds", "debt kinds unreadable", func(f *attemptFixture) {
+			f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAttemptFixture(t, "attempt-policy-readerr", attemptFixtureOpts{noIdle: true})
+			f.seedDebt(ctx, "call-1", false)
+			tc.fail(f)
 
-	v := f.coord.drainPolicy(ctx, f.sessID)
-	require.Equal(t, drainDeferred, v.kind)
-	require.True(t, v.recheck)
-	require.Error(t, v.err)
+			v := f.coord.drainPolicy(ctx, f.sessID, false)
 
-	child := "some-child-session"
-	v = f.coord.drainPolicy(ctx, child)
-	require.Equal(t, drainDeferred, v.kind, "an unreadable policy must never allow a Drain, whatever the session")
-	require.True(t, v.recheck)
+			require.Equal(t, drainDeferred, v.kind, "an unreadable policy input must never allow a Drain")
+			require.True(t, v.recheck, "and asks for a re-check tick")
+			require.Error(t, v.err)
+			require.Equal(t, tc.reason, v.reason, "the verdict names the input whose read failed")
+		})
+	}
 }

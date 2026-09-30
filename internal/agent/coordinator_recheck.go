@@ -2,13 +2,16 @@
 // inter-process fallback"): hints live only inside this process, so a host
 // re-checks, once a minute: its own parked delegations (recheckChild, which
 // may need to fire again if the child's own work was recovered by another
-// process), and every session a Drain submission was refused for (session-
-// lock held elsewhere, shutdown) -- see coordinator_wake.go's
-// turnAttemptRefused branch. The wakes run detached (one per session, bounded
-// concurrency) so a slow turn never delays the next tick. Only the web
-// process (SetPersistentMode) runs it. A `rush run` has no ticker: it runs RunMaintenanceSweep once at loop
-// start and re-reads the DB itself (WaitForHint, at most every 5s) while its
-// scope is open; its recheck set is never drained.
+// process), every session whose launch is waiting (a Drain refused by an
+// admission gate, paced by the launch gate, held by a rerun, or whose launch
+// decision could not be read -- wakeSession's verdict switch keeps it in the
+// set), and the sweep of idle per-session state. The wakes run detached (one
+// per session, bounded concurrency) so a slow turn never delays the next tick.
+// The web process starts the ticker (SetPersistentMode) and so does a `rush
+// run` (ClaimExternalDriver): the CLI root itself is a hint-only no-op for the
+// pass, but its delegated children's retries ride it. A `rush run` also runs
+// RunMaintenanceSweep once at loop start and re-reads the DB itself
+// (WaitForHint, at most every 5s) while its scope is open.
 package agent
 
 import (
@@ -97,6 +100,9 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 			c.addToRecheckSet(sessionID)
 		}
 	}
+	// Last: a session the loop above just queued keeps its entry (its gate is
+	// not zero, or it has jobs); only idle state is freed.
+	c.sweepSessionState(ctx)
 }
 
 // launchRecheckWake starts sessionID's wake on its own goroutine and returns
@@ -104,8 +110,9 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 // session is already in flight or maxConcurrentRecheckWakes are running. The
 // wake outlives the pass but not ctx (the ticker's context, cancelled by
 // StopRecheckTicker/CancelAll). wakeSession re-adds sessionID to the recheck
-// set itself if this attempt is refused again (its turnAttemptRefused
-// branch), so the launcher never duplicates that decision.
+// set itself while the launch is still not allowed (paced, deferred with a
+// re-check, refused, an unreadable decision), so the launcher never duplicates
+// that decision.
 func (c *coordinator) launchRecheckWake(ctx context.Context, sessionID string) bool {
 	c.recheckMu.Lock()
 	if _, busy := c.recheckWakeInFlight[sessionID]; busy || len(c.recheckWakeInFlight) >= maxConcurrentRecheckWakes {
@@ -140,8 +147,8 @@ func (c *coordinator) waitRecheckWakes() {
 
 // StartRecheckTicker starts the 60s background pass exactly once per
 // coordinator (idempotent), stopped by StopRecheckTicker (wired into
-// CancelAll). Intended for the long-lived web/interactive process --
-// `rush run` never calls this (no ticker; see the file header).
+// CancelAll). Started by the web process (SetPersistentMode) and by a `rush
+// run` loop's ClaimExternalDriver (see the file header).
 func (c *coordinator) StartRecheckTicker() {
 	c.recheckOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())

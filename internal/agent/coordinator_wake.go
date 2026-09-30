@@ -43,7 +43,7 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 
 	// Only the decision reads are bounded; the Drain itself is not.
 	decideCtx, cancel := context.WithTimeout(ctx, recheckDebtCheckBudget)
-	debt, v, decErr := c.drainDecision(decideCtx, sessionID)
+	debt, v, decErr := c.drainDecision(decideCtx, sessionID, fact)
 	cancel()
 	if decErr != nil {
 		c.addToRecheckSet(sessionID)

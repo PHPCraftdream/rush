@@ -244,10 +244,21 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 
-	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
+	if refreshed, err := c.refreshExpiredToken(ctx, providerCfg); err != nil {
 		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
 		// depends on the flow below. If refresh fails, proceed with the token we have.
 		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", err)
+	} else if refreshed && creds == nil {
+		// The model above was resolved BEFORE the refresh, so its client still
+		// carries the old token: rebuild it on the new one (same model). A
+		// Drain gets exactly one attempt, so it must not spend it on the
+		// stale client.
+		if fresh, rebuildErr := c.rebuildOnCurrentCredentials(ctx, model, false); rebuildErr != nil {
+			slog.Warn("Could not rebuild the model client after a token refresh; proceeding with the old client", "provider", providerCfg.ID, "error", rebuildErr)
+		} else {
+			model = fresh
+			pinned.smart = fresh
+		}
 	}
 
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
@@ -511,14 +522,10 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// A Drain is ONE provider attempt (attempts design 1.6): no 401
 		// rebuild-and-retry leg here and no transient retry below -- the
 		// attempt is accounted by the turn loop and retried by the launch
-		// gate's pace. A 401 still refreshes the credentials, as a side effect.
+		// gate's pace. A 401 refreshes the credentials in that accounting
+		// (refreshAfterUnauthorized), before it decides, not here after it.
 		armAttempt()
 		result, originalErr = run()
-		if originalErr != nil && c.isUnauthorized(originalErr) {
-			if refreshErr := c.retryAfterUnauthorized(ctx, providerCfg); refreshErr != nil {
-				slog.Warn("401 on a Drain: credential refresh skipped", "provider", providerCfg.ID, "error", refreshErr)
-			}
-		}
 		if errors.Is(originalErr, ErrAgentShuttingDown) {
 			originalErr = c.drainRefused(ctx, sessionID, originalErr)
 		}
@@ -552,8 +559,10 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
 
 	// Notify only if still unauthorized after retry — a successful
-	// retry means the user doesn't need to re-authenticate.
-	if originalErr != nil && c.isUnauthorized(originalErr) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
+	// retry means the user doesn't need to re-authenticate. A Drain's 401
+	// was refreshed, or found terminal, by its own accounting, which also
+	// publishes this notification when it stays terminal.
+	if originalErr != nil && !agentCall.IsDrain && c.isUnauthorized(originalErr) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
 		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
 			Type:       notify.TypeReAuthenticate,
 			ProviderID: model.ModelCfg.Provider,

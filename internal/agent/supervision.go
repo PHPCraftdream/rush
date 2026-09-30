@@ -190,7 +190,8 @@ func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
 // recordProgress resets sessionID's backoff to its base interval and clears
 // the no-progress/paused counters: a real completion (job/sub-agent/timeout
 // notice) is "progress" regardless of how many no-progress ticks preceded
-// it. Called from wakeSession for every notice EXCEPT supervision's own
+// it. Called from pullPendingNotices (agent_notice_pull.go) when a notice
+// moves into history, for every notice EXCEPT supervision's own
 // (noticeKindSupervision) -- see that call site's comment for why the tick's
 // own resulting turn must not reset the very backoff it just grew.
 func (l *workLedger) recordProgress(sessionID string) {
@@ -309,7 +310,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	}
 
 	// Only while the root is not running a turn. If busy, do nothing here:
-	// pushDeadlineOnTurnEnd (onSessionIdle) reschedules once that turn ends,
+	// pushDeadlineOnTurnEnd (called from afterTurn) reschedules once that turn ends,
 	// using the SAME (unchanged) interval -- this fire is simply skipped,
 	// not counted as a no-progress tick.
 	if l.coord.agentFor(rootSessionID).IsSessionBusy(rootSessionID) {

@@ -580,7 +580,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		mb.beginGeneration(turnCancel)
 		att := a.newDrainAttempt(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
-		err = a.afterTurn(call, att, err)
+		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}

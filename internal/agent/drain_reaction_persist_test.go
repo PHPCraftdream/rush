@@ -83,3 +83,17 @@ func askQuestionResponse(w http.ResponseWriter, _ *http.Request) {
 		fl.Flush()
 	}
 }
+
+// textThenAskQuestionResponse streams ONE step that writes a sentence and then
+// calls ask_question: the child's question comes with its own preamble text.
+func textThenAskQuestionResponse(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	fl, _ := w.(http.Flusher)
+	sseChunk(w, fl, `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"Checked the job output; one detail is unclear."},"finish_reason":null}]}`)
+	sseChunk(w, fl, `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_q","type":"function","function":{"name":"ask_question","arguments":"{\"question\":\"which one?\"}"}}]},"finish_reason":null}]}`)
+	sseChunk(w, fl, `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	if fl != nil {
+		fl.Flush()
+	}
+}

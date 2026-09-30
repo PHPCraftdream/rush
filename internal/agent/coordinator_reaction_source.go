@@ -24,15 +24,20 @@ const (
 	DrainNone DrainState = iota
 	// DrainOwed: debt, and a Drain may be launched now.
 	DrainOwed
-	// DrainPaced: debt, retrying after an unreacted attempt or a refusal; the
-	// gate opens at CLIScopeState.RetryAt (a newer event may open it sooner).
+	// DrainPaced: debt, retrying after an unreacted attempt or a refusal, or
+	// held by a rerun in progress (a temporary hold: RetryAt is zero, the tick
+	// and the release retry it; it reads as "open", never "drained"). The gate
+	// opens at CLIScopeState.RetryAt; a newer event opens it sooner after a
+	// refusal or a no-turn Drain, but NOT after a paid failure.
 	DrainPaced
 	// DrainDeferred: debt the policy will not allow a turn for (bg-shell-only
-	// with AutoResumeOnJobDone off, a released delegation child, another live
-	// driver, Stop's suspension, a pending question).
+	// with AutoResumeOnJobDone off, or with the web auto-resume cap reached for
+	// a re-check launch, a released delegation child, another live driver,
+	// Stop's suspension, a pending question).
 	DrainDeferred
-	// DrainStuck: repeated unreacted attempts; no launch until a newer event or
-	// a human message.
+	// DrainStuck: dormant gate. Three no-turn Drains over a pull that keeps
+	// failing: a newer event or a human message reopens it. Three paid attempts
+	// whose close kept failing: only a human message (or a restart) does.
 	DrainStuck
 )
 
@@ -224,7 +229,7 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if !debt {
 		return state, nil
 	}
-	v := c.drainPermitted(ctx, sessionID)
+	v := c.drainPermitted(ctx, sessionID, false)
 	if v.err != nil {
 		// An unreadable policy input is a read error the loop retries with a
 		// pause, never a silent exit.

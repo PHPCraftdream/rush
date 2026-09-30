@@ -138,15 +138,34 @@ type drainGate struct {
 	// hintOpens: may a hint newer than hintAt open the gate before retryAt?
 	// False after a paid failure (a fact must not restart the retry clock).
 	hintOpens bool
-	// streak counts consecutive unreacted outcomes; drainDormantStreak or more
-	// keeps the gate shut until a newer fact hint (or a human message).
-	streak int
+	// freeStreak counts consecutive no-turn Drains that left pending debt (the
+	// pull keeps failing): free, and a newer fact hint reopens a gate that
+	// reached drainDormantStreak.
+	freeStreak int
+	// paidStreak counts consecutive paid attempts that left the debt
+	// unreacted. The per-row counter (K) closes the debt long before this
+	// reaches drainDormantStreak; it gets there only when the close (or the
+	// counting) itself keeps failing, and then ONLY a human message (or a
+	// restart) reopens the gate -- a newer fact does not.
+	paidStreak int
 }
 
+// drainPace says what a pacing counts toward the dormancy streaks.
+type drainPace uint8
+
+const (
+	// paceUncounted: a refusal or a failed ordinary turn -- pause only.
+	paceUncounted drainPace = iota
+	// paceFreeNoTurn: a no-turn Drain left pending debt behind (pull failing).
+	paceFreeNoTurn
+	// pacePaidUnreacted: a paid attempt left the debt unreacted.
+	pacePaidUnreacted
+)
+
 // drainGateOpen reports whether a Drain may be launched for owner now:
-// open = never paced || (hintOpens && a newer hint arrived) ||
-// (not dormant && retryAt passed). dormant reports a shut gate that only a
-// newer fact (or a human message) can reopen.
+// open = never paced || (hintOpens && a newer hint arrived && not paid-dormant)
+// || (not dormant && retryAt passed). dormant reports a shut gate that only a
+// newer fact (free dormancy) or a human message (paid dormancy) can reopen.
 func (l *workLedger) drainGateOpen(owner string, now time.Time) (open, dormant bool, retryAt time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -155,19 +174,20 @@ func (l *workLedger) drainGateOpen(owner string, now time.Time) (open, dormant b
 		return true, false, time.Time{}
 	}
 	g := s.drain
-	if g.hintOpens && s.hintSeq != g.hintAt {
+	paidDormant := g.paidStreak >= drainDormantStreak
+	if g.hintOpens && !paidDormant && s.hintSeq != g.hintAt {
 		return true, false, g.retryAt
 	}
-	if g.streak < drainDormantStreak {
+	if !paidDormant && g.freeStreak < drainDormantStreak {
 		return !now.Before(g.retryAt), false, g.retryAt
 	}
 	return false, true, g.retryAt
 }
 
-// paceDrainGate shuts owner's gate for wait; it reports the moment the gate
-// turned dormant. unreacted counts the outcome
-// toward the dormant streak.
-func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens, unreacted bool) (becameDormant bool) {
+// paceDrainGate shuts owner's gate for wait; it reports the moment a streak
+// reached dormancy. kind says which streak the outcome counts toward: a paid
+// attempt proves the pull works again, so it clears the free streak.
+func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) (becameDormant bool) {
 	if owner == "" {
 		return false
 	}
@@ -177,14 +197,19 @@ func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Durati
 	g.retryAt = time.Now().Add(wait)
 	g.hintAt = hintAt
 	g.hintOpens = hintOpens
-	if unreacted {
-		g.streak++
-		return g.streak == drainDormantStreak
+	switch kind {
+	case paceFreeNoTurn:
+		g.freeStreak++
+		return g.freeStreak == drainDormantStreak
+	case pacePaidUnreacted:
+		g.freeStreak = 0
+		g.paidStreak++
+		return g.paidStreak == drainDormantStreak
 	}
 	return false
 }
 
-// resetDrainGate opens owner's gate and clears its streak.
+// resetDrainGate opens owner's gate and clears its streaks.
 func (l *workLedger) resetDrainGate(owner string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

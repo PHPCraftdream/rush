@@ -193,7 +193,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 	require.NoError(t, err)
 	seedCompletedJob(t, store, sess.ID, "call-1", session.JobKindCommand, "")
 
-	ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, false, true)
+	ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, false, pacePaidUnreacted)
 	st, err := coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)
 	requireScope(t, st, false, DrainPaced)
@@ -205,7 +205,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 	requireScope(t, st, false, DrainPaced, "a paid failure is not reopened by a newer fact")
 
 	ledger.resetDrainGate(sess.ID)
-	ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, true, false)
+	ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, true, paceUncounted)
 	ledger.bumpHint(sess.ID)
 	st, err = coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 
 	ledger.resetDrainGate(sess.ID)
 	for range drainDormantStreak {
-		ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, false, true)
+		ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, false, pacePaidUnreacted)
 	}
 	st, err = coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)

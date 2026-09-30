@@ -749,6 +749,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// the "attempted" mark (a pre-Stream failure stays a refusal).
 	if att != nil {
 		att.outcome = drainAttempted
+		att.provider = smartModel.ModelCfg.Provider
+		att.credentialed = call.Credentials != nil
 	}
 	result, err := agent.Stream(genCtx, ts.streamCall(history, files, maxOutputTokens))
 	// Defensive: normally OnStepFinish stops the checkpoint ticker (via

@@ -374,14 +374,14 @@ func TestSupervision_AfterTurnPushesDeadline(t *testing.T) {
 	}
 	sa := &sessionAgent{asyncJobs: l}
 
-	sa.afterTurn(SessionAgentCall{SessionID: "hook-root"}, nil, nil)
+	sa.afterTurn(SessionAgentCall{SessionID: "hook-root"}, nil, nil, false)
 	l.supervision.mu.Lock()
 	pushed := l.supervision.byRoot["hook-root"].generation
 	l.supervision.mu.Unlock()
 	require.NotEqual(t, uint64(1), pushed, "a turn that reached the provider must push the supervision deadline")
 
 	noTurn := &drainAttempt{sessionID: "quiet-root", outcome: drainNoTurn}
-	sa.afterTurn(newDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil)
+	sa.afterTurn(newDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil, false)
 	l.supervision.mu.Lock()
 	quiet := l.supervision.byRoot["quiet-root"].generation
 	l.supervision.mu.Unlock()

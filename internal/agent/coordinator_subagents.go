@@ -349,7 +349,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// above regardless of outcome.
 	var awaitingAnswer *AwaitingAnswerError
 	if errors.As(err, &awaitingAnswer) {
-		return fantasy.NewTextResponse(subAgentQuestionText(session.ID, awaitingAnswer)), nil
+		return fantasy.NewTextResponse(subAgentQuestionWithPreamble(
+			c.childQuestionPreamble(session.ID), subAgentQuestionText(session.ID, awaitingAnswer))), nil
 	}
 	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil

@@ -10,9 +10,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -177,41 +180,48 @@ func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) 
 	require.False(t, f.debtVisible(t, ctx), "the very next attempt must clear the debt -- no further chain needed")
 }
 
-// TestInterruptDuringDrain_OperatorMessageReachesProvider complements
-// drain_interrupt_test.go's construction-only proofs
-// (TestHandleInterruptTick_DrainActiveCallNotInherited et al: the
-// replacement call is never itself a Drain) with an end-to-end run: the
-// operator's interrupt message, built via callFromActive from an ACTIVE
-// Drain call exactly like handleInterruptTick does, actually reaches the
-// provider when run.
+// TestInterruptDuringDrain_OperatorMessageReachesProvider: a REAL interrupt
+// lands on a live Drain (its provider request is in flight). The operator's
+// message, built via callFromActive from the active Drain call exactly like
+// handleInterruptTick does, reaches the provider as an ordinary turn -- and is
+// not accounted as a Drain attempt (an empty reply to it is not a counted,
+// paced failure of the notice's debt).
 //
-// REVERT CHECK: changed callFromActive to `return active` unmodified
-// (inheriting IsDrain/AutoResumed/BackgroundJobNotice) -- this test FAILED
-// (`result` was nil: with IsDrain still true and no debt/pull to react to,
-// runTurn took the no-provider-call branch instead of running the
-// operator's message as a real turn). Restored callFromActive's reset
-// (byte-identical diff confirmed); re-ran, passed.
+// REVERT CHECK: changing callFromActive to `return active` unmodified
+// (inheriting IsDrain/AutoResumed/BackgroundJobNotice) runs the operator's
+// message as a Drain: its empty reply becomes a counted attempt
+// (wake_attempts 1) and this test goes red.
 func TestInterruptDuringDrain_OperatorMessageReachesProvider(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	f := newAttemptFixture(t, "interrupt-during-drain", attemptFixtureOpts{noIdle: true, handler: stalledStreamResponse})
+	f.seedDebt(ctx, "call-1", false)
+
+	done := make(chan error, 1)
+	go func() { _, err := f.drainRun(ctx); done <- err }()
+	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+
 	var mu sync.Mutex
 	var sawOperatorPrompt bool
-	f := newWakeDebtFixtureWithHandler(t, "interrupt-during-drain", func(body []byte) {
+	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		defer mu.Unlock()
-		if bytes.Contains(body, []byte("operator interrupt: please check on this")) {
-			sawOperatorPrompt = true
-		}
+		sawOperatorPrompt = sawOperatorPrompt || bytes.Contains(body, []byte("operator interrupt: please check on this"))
+		mu.Unlock()
+		emptyReplyResponse(w, r)
 	})
-
-	activeDrain := newDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"})
-	replacement := callFromActive(activeDrain)
+	replacement := callFromActive(newDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"}))
 	replacement.Prompt = "operator interrupt: please check on this"
+	require.True(t, f.sa.InterruptAndReplace(f.sessID, replacement), "the interrupt reaches the live Drain")
 
-	result, err := f.sa.Run(ctx, replacement)
-	require.NoError(t, err)
-	require.NotNil(t, result)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the operator's replacement turn never ran")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	require.True(t, sawOperatorPrompt, "the operator's message must reach the provider as a real turn, not be dropped as a Drain")
+	require.EqualValues(t, 0, f.row(ctx, "call-1").WakeAttempts, "the operator's turn is not a Drain attempt, and the cut-off Drain is exempt")
 }

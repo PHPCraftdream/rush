@@ -186,7 +186,7 @@ func TestSessionDrainPolicy_DriverMarkerUnreadable(t *testing.T) {
 			f.coord.persistentMode.Store(mode == "web")
 			f.claimAndFinish(t, ctx, "call-1")
 
-			v := f.coord.drainPolicy(ctx, f.sessID)
+			v := f.coord.drainPolicy(ctx, f.sessID, false)
 			require.Equal(t, drainDeferred, v.kind)
 			require.True(t, v.recheck)
 			require.Error(t, v.err)
