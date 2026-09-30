@@ -446,3 +446,34 @@ func TestPullSessionNotices_SupervisionVoidsWhenOnlyRunningRowIsVoided(t *testin
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "a live running row must still deliver the check-in")
 }
+
+// TestPullSessionNotices_WakeOnlyOfArchivedJobDoesNotFollowTheReusedKey is
+// R2A-4's wake_only half: a wake_only check-in names its job by tool_call_id
+// text. When the job's row is archived by a reused id, the check-in follows the
+// row (RepointSessionNoticesJobToolCallID); otherwise the text resolves to the
+// NEW running row and a check-in about the finished job is delivered as if it
+// were about the new one.
+//
+// REVERT CHECK: the RepointSessionNoticesJobToolCallID call removed from
+// claimOnce -- the old check-in was delivered (pulled had 1 entry) and the
+// require.Empty below failed. Restored; re-ran, passed.
+func TestPullSessionNotices_WakeOnlyOfArchivedJobDoesNotFollowTheReusedKey(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(store.q)
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	// The check-in about the FIRST job is queued while it runs...
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindWakeOnly, "first job still running", true, "call_0"))
+	// ...the job then finishes and its id is reused before the check-in is pulled.
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "done", Wake: true})
+	require.NoError(t, err)
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second", ToolName: "bash"})
+	require.NoError(t, err)
+
+	pulled, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled, "the check-in about the finished first job must void, not resolve to the new running row")
+}

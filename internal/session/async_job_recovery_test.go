@@ -769,3 +769,99 @@ func TestSweepDeadHosts_UnstoppedRunningRowsYieldExactlyNFactsThenNone(t *testin
 	require.NoError(t, err)
 	require.Empty(t, outcomes2, "a later restart must add no extra facts over the first recovery")
 }
+
+// TestSweepDeadHosts_DeletesTerminalUnannouncedRowsOfDeadHost is R2A-7 (and
+// ASYNC-05's "no trace" for a dead host): a job that reached a terminal state
+// before its "started" result committed (announced=0), then lost its host, is
+// deleted by the sweep -- recovery used to read only state='running', so the
+// row leaked forever and blocked its tool_call_id. An announced terminal row of
+// the same host is history and stays.
+//
+// REVERT CHECK: DeleteTerminalUnannouncedAsyncJobsForHost removed from
+// RecoverDeadHost (and the candidate query narrowed back to running rows) --
+// the dead host was never even considered, the row stayed, and the
+// `require.ErrorIs(..., sql.ErrNoRows)` below failed. Restored; re-ran,
+// passed.
+func TestSweepDeadHosts_DeletesTerminalUnannouncedRowsOfDeadHost(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	fabricateDeadHost(t, ctx, q, store.dataDir, "dead-host-r2a7")
+
+	seedRunningJob(t, ctx, q, "owner-1", "call-unannounced", "dead-host-r2a7", "", false)
+	seedRunningJob(t, ctx, q, "owner-1", "call-announced", "dead-host-r2a7", "", true)
+	for _, id := range []string{"call-unannounced", "call-announced"} {
+		res, err := store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: id, State: "completed", ResultSummary: "ok", Wake: true})
+		require.NoError(t, err)
+		require.Equal(t, TransitionWon, res.Outcome)
+	}
+
+	out, err := store.SweepDeadHosts(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, out["dead-host-r2a7"].Deleted, "exactly the unannounced terminal row is deleted")
+
+	_, err = store.Get(ctx, "owner-1", "call-unannounced")
+	require.ErrorIs(t, err, sql.ErrNoRows, "a terminal unannounced row of a dead host must not leak")
+	_, err = store.Get(ctx, "owner-1", "call-announced")
+	require.NoError(t, err, "an announced terminal row is history and must survive the sweep")
+
+	// The id is free again.
+	res, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-unannounced", Kind: JobKindCommand, Input: "fresh"})
+	require.NoError(t, err)
+	require.False(t, res.Existing)
+}
+
+// TestSweepDeadHosts_RependsJobKillRowWithoutResultMessage is R2A-8's recovery
+// half (DUR-11 for job_kill): the host died between causeJobKill's
+// done/reacted=1 commit and AnnounceJobKillResult, leaving a 'done' row that
+// names no message. The sweep makes it a plain pending, wake=0 notice again --
+// a later pull delivers the result, and it never becomes debt or a wake. A
+// job_kill row that DOES name its message is untouched.
+//
+// REVERT CHECK: RependJobKillRowsWithoutNoticeForHost removed from
+// RecoverDeadHost -- the row stayed 'done' and the `require.Equal(t,
+// "pending", ...)` below failed. Restored; re-ran, passed.
+func TestSweepDeadHosts_RependsJobKillRowWithoutResultMessage(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+	fabricateDeadHost(t, ctx, q, store.dataDir, "dead-host-r2a8")
+
+	for _, id := range []string{"call-lost", "call-named"} {
+		seedRunningJob(t, ctx, q, "owner-1", id, "dead-host-r2a8", "", true)
+		res, err := store.Transition(ctx, TransitionParams{
+			Owner: "owner-1", ToolCallID: id, State: "cancelled", NoticeKind: "job_kill",
+			ResultSummary: "partial output of " + id, Delivery: "done", Reacted: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, TransitionWon, res.Outcome)
+	}
+	// call-named got its fused result message before the host died.
+	_, err := store.AnnounceJobKillResult(ctx, messages, "owner-1", "call-named", message.CreateMessageParams{
+		Role: message.Tool, Parts: []message.ContentPart{message.TextContent{Text: "stopped"}},
+	})
+	require.NoError(t, err)
+
+	out, err := store.SweepDeadHosts(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, out["dead-host-r2a8"].Repended)
+
+	lost, err := store.Get(ctx, "owner-1", "call-lost")
+	require.NoError(t, err)
+	require.Equal(t, "pending", lost.Delivery)
+	require.EqualValues(t, 0, lost.Reacted)
+	require.EqualValues(t, 0, lost.Wake, "a re-pended job_kill row must never wake anyone")
+	named, err := store.Get(ctx, "owner-1", "call-named")
+	require.NoError(t, err)
+	require.Equal(t, "done", named.Delivery, "a job_kill row that names its result message is untouched")
+	require.True(t, named.NoticeMessageID.Valid)
+
+	debt, err := store.ReactionDebtExists(ctx, "owner-1")
+	require.NoError(t, err)
+	require.False(t, debt, "wake=0: the re-pended row is a notice, not debt")
+
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "the lost job_kill result must be deliverable on the next pull")
+	require.Contains(t, pulled[0].Message.FullText(), "partial output of call-lost")
+	require.False(t, pulled[0].Wake)
+}

@@ -211,14 +211,33 @@ func TestClaimSessionDriver_MarkerUnavailableWithoutHostLock(t *testing.T) {
 	require.False(t, ok, "no marker may be written without a host to name")
 }
 
-// TestForeignLiveDriver_Matrix: none / own / live sibling / crashed / unknown
-// liveness -> false / false / true / false / true (unknown counts as alive).
+// registerForeignLiveHost registers a real host (its lock file is held by this
+// test) and drops it from the process-wide own-id registry, so every probe of
+// it takes the cross-process path -- the shared probe against a genuinely held
+// lock -- exactly as another process's host would. Same-process sibling stores
+// (nStores) never reach that branch: IsOwnHostID answers "alive" for them.
+func registerForeignLiveHost(t *testing.T, ctx context.Context, q *db.Queries, dataDir string) string {
+	t.Helper()
+	h, err := RegisterHost(ctx, dataDir, 4321, "foreign", q)
+	require.NoError(t, err)
+	unmarkOwnHostID(h.ID)
+	t.Cleanup(func() { _ = h.Close(ctx, q) })
+	return h.ID
+}
+
+// TestForeignLiveDriver_Matrix: none / own / live sibling / genuinely foreign
+// live / crashed / unknown liveness -> false / false / true / true / false /
+// true (unknown counts as alive). The "live sibling" case is a same-process
+// store answered by IsOwnHostID without probing; the "foreign live" case is the
+// one that reaches the shared probe with a really held lock.
 //
 // Revert-check: (a) treat unknown as dead; (b) drop the own-host check --
-// the own case reports foreign (the sibling registry says its own host is alive).
+// the own case reports foreign (the sibling registry says its own host is
+// alive); (c) make hostLivenessDetail fold a contended (alive) probe into dead
+// -- the foreign-live case reports not foreign.
 func TestForeignLiveDriver_Matrix(t *testing.T) {
 	t.Parallel()
-	stores, q, ctx := nStores(t, 3, "none", "own", "sibling", "crashed", "unknown")
+	stores, q, ctx := nStores(t, 3, "none", "own", "sibling", "foreign-live", "crashed", "unknown")
 	a, b, c := stores[0], stores[1], stores[2]
 
 	check := func(st *AsyncJobStore, sessionID string, wantForeign bool, why string) {
@@ -241,6 +260,16 @@ func TestForeignLiveDriver_Matrix(t *testing.T) {
 	require.Equal(t, HostStatusAlive, d.Status)
 	require.EqualValues(t, 1000, d.PID)
 
+	foreignID := registerForeignLiveHost(t, ctx, q, b.dataDir)
+	n, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "foreign-live", HostID: foreignID, Pid: 4321, ClaimedAt: 1})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	require.False(t, IsOwnHostID(foreignID), "precondition: the own-id shortcut must not answer for this host")
+	d, foreign, err = b.ForeignLiveDriver(ctx, "foreign-live")
+	require.NoError(t, err)
+	require.True(t, foreign, "a driver whose host holds its lock is foreign and live")
+	require.Equal(t, HostStatusAlive, d.Status, "the verdict must come from the shared probe of a really held lock")
+
 	require.NoError(t, c.ClaimSessionDriver(ctx, "crashed"))
 	check(b, "crashed", true, "precondition: alive before the crash")
 	require.NoError(t, c.SimulateCrashForTest())
@@ -248,7 +277,7 @@ func TestForeignLiveDriver_Matrix(t *testing.T) {
 
 	// Unknown: the lock path is a directory, so the probe cannot decide.
 	require.NoError(t, os.MkdirAll(HostLockPath(b.dataDir, "unknown-host"), 0o755))
-	n, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "unknown", HostID: "unknown-host", Pid: 4242, ClaimedAt: 1})
+	n, err = q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "unknown", HostID: "unknown-host", Pid: 4242, ClaimedAt: 1})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 	d, foreign, err = b.ForeignLiveDriver(ctx, "unknown")
@@ -259,18 +288,26 @@ func TestForeignLiveDriver_Matrix(t *testing.T) {
 
 // TestPurgeExpired_DeletesOnlyDeadDriverRows: the retention pass drops the
 // markers of provably dead hosts and leaves live, unknown and its own alone.
+// "live" is a same-process sibling (skipped by IsOwnHostID before any probe);
+// "foreign-live" is a genuinely foreign host whose lock is really held, so the
+// pass must reach the shared probe and read "alive" from it.
 //
-// Revert-check: delete markers without probing (every foreign host's row goes).
+// Revert-check: (a) delete markers without probing (every foreign host's row
+// goes); (b) treat a contended (alive) probe as dead -- the foreign-live marker
+// is purged and its survival assertion fails.
 func TestPurgeExpired_DeletesOnlyDeadDriverRows(t *testing.T) {
 	t.Parallel()
-	stores, q, ctx := nStores(t, 3, "live", "dead", "unknown", "mine")
+	stores, q, ctx := nStores(t, 3, "live", "foreign-live", "dead", "unknown", "mine")
 	purger, live, dead := stores[0], stores[1], stores[2]
 
 	require.NoError(t, live.ClaimSessionDriver(ctx, "live"))
 	require.NoError(t, dead.ClaimSessionDriver(ctx, "dead"))
 	require.NoError(t, purger.ClaimSessionDriver(ctx, "mine"))
+	foreignID := registerForeignLiveHost(t, ctx, q, purger.dataDir)
+	_, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "foreign-live", HostID: foreignID, Pid: 4321, ClaimedAt: 1})
+	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(HostLockPath(purger.dataDir, "unknown-host"), 0o755))
-	_, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "unknown", HostID: "unknown-host", Pid: 1, ClaimedAt: 1})
+	_, err = q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{SessionID: "unknown", HostID: "unknown-host", Pid: 1, ClaimedAt: 1})
 	require.NoError(t, err)
 	require.NoError(t, dead.SimulateCrashForTest())
 
@@ -278,7 +315,7 @@ func TestPurgeExpired_DeletesOnlyDeadDriverRows(t *testing.T) {
 
 	_, ok := driverRow(t, ctx, purger, "dead")
 	require.False(t, ok, "a dead host's marker must be purged")
-	for _, id := range []string{"live", "unknown", "mine"} {
+	for _, id := range []string{"live", "foreign-live", "unknown", "mine"} {
 		_, ok := driverRow(t, ctx, purger, id)
 		require.True(t, ok, "marker %s must survive the purge", id)
 	}

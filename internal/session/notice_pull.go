@@ -128,7 +128,7 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 	}
 
 	params := build(JobNoticeRow{
-		ToolCallID: pulledRow.ToolCallID, ToolName: pulledRow.ToolName,
+		ToolCallID: displayToolCallID(pulledRow.ToolCallID), ToolName: pulledRow.ToolName,
 		NoticeKind: pulledRow.NoticeKind, TimeoutSeconds: int(pulledRow.TimeoutSeconds),
 		State: pulledRow.State, ResultContent: pulledRow.ResultSummary.String,
 		ResultIsError: pulledRow.ResultIsError.Int64 != 0, OriginCLI: pulledRow.OriginCli != 0,
@@ -416,4 +416,26 @@ func (s *AsyncJobStore) ListSessionNotices(ctx context.Context, owner string) ([
 		out = append(out, SessionNoticeRow{ID: row.ID, Kind: row.Kind, Text: row.Text})
 	}
 	return out, nil
+}
+
+// RependJobKillRowWithoutNotice is R2A-8's live-process repair for job_kill
+// (DUR-11): causeJobKill commits delivery='done', reacted=1 first and
+// AnnounceJobKillResult names the result message later -- when that fused
+// write does not happen (an error result, a cancelled context, a failed
+// transaction) the row is 'done' with no notice_message_id: never pulled,
+// invisible to Rerun's re-pend, its output lost. This puts exactly that row
+// back to a plain pending, wake=0 notice so the owner's next pull shows the
+// result (a crash between the two writes is repaired by dead-host recovery
+// instead). claimID must be the claim the caller's own transition won: a
+// later claim under a reused tool_call_id is never touched. Reports whether
+// a row was re-pended; false is normal (the fused write succeeded, or the row
+// is not a job_kill row awaiting its message).
+func (s *AsyncJobStore) RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+	rows, err := s.q.RependJobKillRowWithoutNotice(ctx, db.RependJobKillRowWithoutNoticeParams{
+		UpdatedAt: time.Now().Unix(), Owner: owner, ToolCallID: toolCallID, ClaimID: claimID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("async job store: re-pend job_kill row without notice: %w", err)
+	}
+	return rows > 0, nil
 }

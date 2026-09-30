@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -352,11 +353,16 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 		// tool_call_id (a provider that numbers calls per response) must
 		// start a NEW row, not be refused for up to 7 days as "already
 		// started earlier"/"different input" (see ArchiveAsyncJobToolCallID's
-		// own doc for the state!='running' guard's importance). Archive the
+		// own doc for the state!='running' guard's importance). R2A-6: a
+		// terminal row the model already saw announced but whose notice is
+		// still undelivered (delivery='pending', announced=1) is history too
+		// -- its notice stays pullable under the archived key. Archive the
 		// old row out of the active key, then fall through to the fresh-claim
-		// path below exactly as if no row existed.
-		if existing.State != "running" && (existing.Delivery == "done" || existing.Delivery == "void") {
-			archivedID := fmt.Sprintf("%s#reused#%s", p.ToolCallID, uuid.NewString())
+		// path below exactly as if no row existed. A terminal row that is not
+		// announced yet is NOT archived: its "started" result is still to be
+		// written, and a repeat of the same call answers idempotently.
+		if isArchivableHistoryRow(existing) {
+			archivedID := fmt.Sprintf("%s%s%s", p.ToolCallID, archivedToolCallIDMarker, uuid.NewString())
 			rows, archErr := q.ArchiveAsyncJobToolCallID(ctx, db.ArchiveAsyncJobToolCallIDParams{
 				NewToolCallID: archivedID, UpdatedAt: time.Now().Unix(),
 				OwnerSessionID: p.Owner, OldToolCallID: p.ToolCallID,
@@ -365,6 +371,13 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 				return ClaimResult{}, nil, fmt.Errorf("async job store: claim: archive reused tool_call_id: %w", archErr)
 			}
 			if rows > 0 {
+				// R2A-4: check-ins that named the row by its old key follow it.
+				if _, err := q.RepointSessionNoticesJobToolCallID(ctx, db.RepointSessionNoticesJobToolCallIDParams{
+					NewJobToolCallID: sql.NullString{String: archivedID, Valid: true}, Owner: p.Owner,
+					OldJobToolCallID: sql.NullString{String: p.ToolCallID, Valid: true},
+				}); err != nil {
+					return ClaimResult{}, nil, fmt.Errorf("async job store: claim: repoint notices of archived row: %w", err)
+				}
 				break // fresh claim: child-conflict check + insert below
 			}
 			// Lost a race archiving this row (should not happen under the
@@ -643,4 +656,29 @@ func (s *AsyncJobStore) takeHost() *HostIdentity {
 	s.regMu.Lock()
 	defer s.regMu.Unlock()
 	return s.host.Swap(nil)
+}
+
+// isArchivableHistoryRow reports whether row no longer holds its tool_call_id
+// key: terminal, and either fully delivered/voided or announced with its
+// notice merely still pending (R2A-6). Mirrors ArchiveAsyncJobToolCallID's
+// own WHERE clause.
+func isArchivableHistoryRow(row db.AsyncJob) bool {
+	if row.State == "running" {
+		return false
+	}
+	return row.Delivery == "done" || row.Delivery == "void" || (row.Delivery == "pending" && row.Announced != 0)
+}
+
+// archivedToolCallIDMarker separates the original tool_call_id from the uuid
+// in an archived row's key (ArchiveAsyncJobToolCallID).
+const archivedToolCallIDMarker = "#reused#"
+
+// displayToolCallID is the tool_call_id the model saw: an archived row's key
+// with the archive suffix removed. A pending row archived by R2A-6 is pulled
+// under its archived key, but its notice must still name the model's id.
+func displayToolCallID(key string) string {
+	if i := strings.Index(key, archivedToolCallIDMarker); i >= 0 {
+		return key[:i]
+	}
+	return key
 }

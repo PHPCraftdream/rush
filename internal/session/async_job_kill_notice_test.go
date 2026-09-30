@@ -117,3 +117,73 @@ func TestAnnounceJobKillResult_LostRaceStillPersistsMessageWithoutFusing(t *test
 	require.Equal(t, "pending", row.Delivery, "the row belongs to the cause that actually won -- untouched by the losing job_kill call")
 	require.False(t, row.NoticeMessageID.Valid, "must not fuse notice_message_id onto a row this call did not actually deliver")
 }
+
+// TestRependJobKillRowWithoutNotice is R2A-8's live-process half: job_kill's
+// transition committed done/reacted=1 but the fused result write never
+// happened (an error result, a cancelled context, a failed transaction), so
+// the row names no message. RependJobKillRowWithoutNotice puts exactly that
+// row back to a plain pending, wake=0 notice -- and touches nothing else: not a
+// row that already names its message, not another claim under the same
+// tool_call_id, not a row of another cause.
+//
+// REVERT CHECK: the method's UPDATE removed (returning false, nil) -- the row
+// stayed 'done' and `require.True(t, repended)` failed. Dropping the
+// `notice_message_id IS NULL` or `claim_id` guard from the query makes the
+// "names its message"/"other claim" sub-checks fail instead.
+func TestRependJobKillRowWithoutNotice(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+
+	kill := func(id string) db.AsyncJob {
+		t.Helper()
+		claimed, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: id, Kind: JobKindCommand, Input: id, ToolName: "bash"})
+		require.NoError(t, err)
+		require.NoError(t, store.MarkAnnounced(ctx, "owner-1", id))
+		res, err := store.Transition(ctx, TransitionParams{
+			Owner: "owner-1", ToolCallID: id, ClaimID: claimed.Row.ClaimID, State: "cancelled", NoticeKind: "job_kill",
+			ResultSummary: "output of " + id, Delivery: "done", Reacted: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, TransitionWon, res.Outcome)
+		return res.Row
+	}
+
+	lost := kill("call-lost")
+	repended, err := store.RependJobKillRowWithoutNotice(ctx, "owner-1", "call-lost", "some-other-claim")
+	require.NoError(t, err)
+	require.False(t, repended, "another claim's id must not re-pend this row")
+
+	repended, err = store.RependJobKillRowWithoutNotice(ctx, "owner-1", "call-lost", lost.ClaimID)
+	require.NoError(t, err)
+	require.True(t, repended)
+	row, err := store.Get(ctx, "owner-1", "call-lost")
+	require.NoError(t, err)
+	require.Equal(t, "pending", row.Delivery)
+	require.EqualValues(t, 0, row.Reacted)
+	require.EqualValues(t, 0, row.Wake)
+
+	repended, err = store.RependJobKillRowWithoutNotice(ctx, "owner-1", "call-lost", lost.ClaimID)
+	require.NoError(t, err)
+	require.False(t, repended, "the repair is idempotent: a pending row is not touched again")
+
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1)
+	require.Contains(t, pulled[0].Message.FullText(), "output of call-lost")
+	require.False(t, pulled[0].Wake, "the repaired job_kill notice never wakes")
+
+	// A row that already names its result message is left alone.
+	named := kill("call-named")
+	_, err = store.AnnounceJobKillResult(ctx, messages, "owner-1", "call-named", message.CreateMessageParams{
+		Role: message.Tool, Parts: []message.ContentPart{message.TextContent{Text: "stopped"}},
+	})
+	require.NoError(t, err)
+	repended, err = store.RependJobKillRowWithoutNotice(ctx, "owner-1", "call-named", named.ClaimID)
+	require.NoError(t, err)
+	require.False(t, repended, "a job_kill row that names its message must not be re-pended")
+	row, err = store.Get(ctx, "owner-1", "call-named")
+	require.NoError(t, err)
+	require.Equal(t, "done", row.Delivery)
+}

@@ -9,8 +9,11 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -389,4 +392,156 @@ func TestLiveOwnJobs(t *testing.T) {
 		require.Empty(t, live)
 		require.False(t, incomplete)
 	})
+}
+
+// TestJobsInTree_RunsOnTheReadPool is R2A-12's first half: JobsInTree still
+// read on the single writer connection, contrary to SetReadConn's doc, so a
+// `sessions jobs` walk could stall behind a write transaction. Wiring a read
+// pool that cannot answer (an empty DB without the schema) must make the walk
+// fail into walkIncomplete instead of silently using the writer.
+//
+// REVERT CHECK: JobsInTree changed back to s.q.ListAsyncJobsForOwner -- the
+// walk kept returning the writer's row with walkIncomplete=false and both
+// assertions below failed. Restored; re-ran, passed.
+func TestJobsInTree_RunsOnTheReadPool(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x"})
+	require.NoError(t, err)
+
+	jobs, incomplete := store.JobsInTree(ctx, "owner-1")
+	require.Len(t, jobs, 1, "sanity: with no read pool wired the walk uses the writer")
+	require.False(t, incomplete)
+
+	other, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "other.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = other.Close() })
+	store.SetReadConn(other)
+
+	jobs, incomplete = store.JobsInTree(ctx, "owner-1")
+	require.Empty(t, jobs, "the walk must read from the wired read pool, not the writer")
+	require.True(t, incomplete, "a failing read pool must surface as walkIncomplete, never as 'nothing running'")
+}
+
+// countingDBTX counts the reader queries a store issues.
+type countingDBTX struct {
+	db.DBTX
+	n *atomic.Int64
+}
+
+func (c countingDBTX) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	c.n.Add(1)
+	return c.DBTX.QueryContext(ctx, query, args...)
+}
+
+func (c countingDBTX) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	c.n.Add(1)
+	return c.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+// TestLiveWorkForRoots_MatchesSingleRootReadersInBatchedQueries is R2A-12's
+// batched reader: for a forest of sessions -- a delegation chain, a session
+// that is both a root and somebody's child, a dead host, an own plain job, a
+// shared host, idle sessions -- LiveWorkForRoots must return for every root
+// exactly what LiveDescendantJobs and LiveOwnJobs return for it alone, while
+// issuing a number of queries that depends on the tree depth, not on the number
+// of roots, and probing each distinct host once.
+//
+// REVERT CHECK: LiveWorkForRoots reimplemented as a per-root loop over
+// LiveDescendantJobs/LiveOwnJobs -- the equivalence assertions still passed
+// but the query-count assertion failed (2 queries per root instead of one per
+// level) and the probe-count assertion failed (one probe per root per call).
+// Restored; re-ran, passed.
+func TestLiveWorkForRoots_MatchesSingleRootReadersInBatchedQueries(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	// Register this store's host so "own" rows are alive without probing.
+	ownHost, err := store.ensureHost(ctx)
+	require.NoError(t, err)
+	for _, id := range []string{"root-a", "mid-a", "leaf-a", "root-b", "solo", "idle-1", "idle-2", "root-dead", "mid-b"} {
+		require.NoError(t, seedSession(ctx, q, id))
+	}
+	// A foreign host that is alive (lock held by this test) and one that is dead.
+	aliveLock, err := TryAcquireFileLock(HostLockPath(store.dataDir, "foreign-alive"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = aliveLock.Release() })
+	fabricateDeadHost(t, ctx, q, store.dataDir, "foreign-dead")
+
+	// root-a -> (delegation) mid-a -> (delegation) leaf-a which runs a plain job
+	seedRunningJob(t, ctx, q, "root-a", "d1", ownHost, "mid-a", true)
+	seedRunningJob(t, ctx, q, "mid-a", "d2", "foreign-alive", "leaf-a", true)
+	seedRunningJob(t, ctx, q, "leaf-a", "p1", "foreign-alive", "", true)
+	// mid-a is itself a root of the list (a session that is somebody's child).
+	// root-b runs an own plain job and a delegation whose child delegates back to it: a cycle.
+	seedRunningJob(t, ctx, q, "root-b", "p2", ownHost, "", true)
+	seedRunningJob(t, ctx, q, "root-b", "d3", ownHost, "mid-b", true)
+	seedRunningJob(t, ctx, q, "mid-b", "d5", ownHost, "root-b", true)
+	// solo: own plain job on the alive foreign host.
+	seedRunningJob(t, ctx, q, "solo", "p3", "foreign-alive", "", true)
+	// root-dead: delegation on a dead host is not live, and neither is its child.
+	seedRunningJob(t, ctx, q, "root-dead", "d4", "foreign-dead", "idle-1", true)
+	seedRunningJob(t, ctx, q, "root-dead", "p4", "foreign-dead", "", true)
+
+	roots := []string{"root-a", "mid-a", "leaf-a", "root-b", "solo", "idle-1", "idle-2", "root-dead", "", "root-a", "never-heard-of"}
+
+	var queries atomic.Int64
+	store.readQ.Store(db.New(countingDBTX{DBTX: store.sqlDB, n: &queries}))
+	var probes atomic.Int64
+	origProbe := probeHostSharedFn
+	probeHostSharedFn = func(dataDir, hostID string) (HostLockStatus, error) {
+		probes.Add(1)
+		return origProbe(dataDir, hostID)
+	}
+	t.Cleanup(func() { probeHostSharedFn = origProbe })
+
+	got := store.LiveWorkForRoots(ctx, roots)
+	batchedQueries, batchedProbes := queries.Load(), probes.Load()
+
+	distinct := map[string]struct{}{}
+	for _, r := range roots {
+		if r != "" {
+			distinct[r] = struct{}{}
+		}
+	}
+	require.Len(t, got, len(distinct), "every distinct non-empty root has an entry")
+	for root := range distinct {
+		wantDesc, wantDescIncomplete := store.LiveDescendantJobs(ctx, root)
+		wantOwn, wantOwnIncomplete := store.LiveOwnJobs(ctx, root)
+		gotWork := got[root]
+		require.ElementsMatchf(t, wantDesc, gotWork.Descendants, "descendants of %s", root)
+		require.ElementsMatchf(t, wantOwn, gotWork.Own, "own jobs of %s", root)
+		require.Equalf(t, wantDescIncomplete, gotWork.DescendantsIncomplete, "descendants incomplete flag of %s", root)
+		require.Equalf(t, wantOwnIncomplete, gotWork.OwnIncomplete, "own incomplete flag of %s", root)
+	}
+	// Spot-check the shapes the equivalence loop above compares against.
+	require.NotEmpty(t, got["root-a"].Descendants, "root-a has a live delegation chain")
+	require.Empty(t, got["root-dead"].Descendants, "a delegation on a dead host is not live")
+	require.Empty(t, got["root-dead"].Own, "an own job on a dead host is not live")
+	require.NotEmpty(t, got["solo"].Own)
+	require.Empty(t, got["idle-2"].Descendants)
+
+	// Depth of the tree is 3 levels (root-a -> mid-a -> leaf-a); distinct roots
+	// are 9. A per-root walk needs well over 2 queries per root.
+	require.LessOrEqual(t, batchedQueries, int64(4), "queries must depend on tree depth, not on the number of roots")
+	require.LessOrEqual(t, batchedProbes, int64(2), "one liveness probe per distinct foreign host (alive + dead)")
+}
+
+// TestLiveWorkForRoots_ChunksLargeRootSets pins the chunking: an IN (...) over
+// every listed session must not exceed SQLite's bound-variable limit, so the
+// root set is queried liveWorkQueryChunk owners at a time.
+//
+// REVERT CHECK: the chunk loop replaced by one query over all owners -- the
+// query count assertion failed (1 instead of 3).
+func TestLiveWorkForRoots_ChunksLargeRootSets(t *testing.T) {
+	store, _, ctx := newTestStore(t)
+	roots := make([]string, 0, 2*liveWorkQueryChunk+100)
+	for i := 0; i < 2*liveWorkQueryChunk+100; i++ {
+		roots = append(roots, fmt.Sprintf("session-%d", i))
+	}
+	var queries atomic.Int64
+	store.readQ.Store(db.New(countingDBTX{DBTX: store.sqlDB, n: &queries}))
+
+	got := store.LiveWorkForRoots(ctx, roots)
+	require.Len(t, got, len(roots))
+	require.EqualValues(t, 3, queries.Load(), "600+... roots must be queried in ceil(n/%d) chunks", liveWorkQueryChunk)
 }

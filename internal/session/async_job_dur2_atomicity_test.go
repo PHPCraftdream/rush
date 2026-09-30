@@ -6,7 +6,7 @@
 // the fault direction through the REAL Transition: a database-level fault on
 // the wake write of the terminal transition (a trigger aborting any UPDATE
 // that sets wake) must leave state, delivery, wake and reacted exactly as they
-// were, and the row must still be transitionable afterwards. An
+// were, and the same transition must still win afterwards. An
 // implementation that wrote state/delivery and wake in separate statements
 // (each committing on its own) would leave state='completed' behind.
 package session

@@ -44,7 +44,8 @@ const AsyncDataRetentionAge = 7 * 24 * time.Hour
 // RecoveryOutcome tallies one host sweep's effect, for logging and tests.
 type RecoveryOutcome struct {
 	Interrupted int  // running, announced=1 rows moved to 'interrupted'
-	Deleted     int  // running, announced=0 rows deleted without a trace
+	Deleted     int  // announced=0 rows (running or terminal) deleted without a trace
+	Repended    int  // job_kill rows left done without a result message, made deliverable again
 	HostRemoved bool // async_hosts row + lock file both removed (no rows left)
 }
 
@@ -128,6 +129,31 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 		// TransitionLost/TransitionGone: another recoverer (or the row's own
 		// legitimate winner, though a dead host cannot produce one) already
 		// settled this row -- nothing more to do for it.
+	}
+
+	// R2A-7: a job that went terminal before its own "started" result
+	// committed (announced=0) never produces a notice and recovery reads only
+	// state='running' -- without this it leaks forever and blocks its
+	// tool_call_id. Same ASYNC-05 rule as the running unannounced rows above:
+	// deleted without a trace.
+	if n, err := s.q.DeleteTerminalUnannouncedAsyncJobsForHost(ctx, hostID); err != nil {
+		slog.Warn("recover dead host: delete terminal unannounced rows failed; will retry on a later sweep",
+			"host_id", hostID, "err", err)
+	} else {
+		out.Deleted += int(n)
+	}
+	// R2A-8 (DUR-11 for job_kill): job_kill commits done/reacted=1 first and
+	// names its result message (notice_message_id) later; a host that died
+	// between left a row nobody will ever pull. Made deliverable again so the
+	// next pull shows the result -- a plain pending, wake=0 notice, never a
+	// wake.
+	if n, err := s.q.RependJobKillRowsWithoutNoticeForHost(ctx, db.RependJobKillRowsWithoutNoticeForHostParams{
+		UpdatedAt: time.Now().Unix(), HostID: hostID,
+	}); err != nil {
+		slog.Warn("recover dead host: re-pend job_kill rows without a result message failed; will retry on a later sweep",
+			"host_id", hostID, "err", err)
+	} else {
+		out.Repended += int(n)
 	}
 
 	deletedHostRow, delErr := s.q.DeleteAsyncHostIfNoJobs(ctx, hostID)
@@ -221,7 +247,7 @@ func (s *AsyncJobStore) SweepDeadHosts(ctx context.Context, messages message.Ser
 			slog.Debug("sweep dead hosts: recover failed", "host_id", hostID, "err", err)
 			continue
 		}
-		if outcome.Interrupted > 0 || outcome.Deleted > 0 || outcome.HostRemoved {
+		if outcome.Interrupted > 0 || outcome.Deleted > 0 || outcome.Repended > 0 || outcome.HostRemoved {
 			out[hostID] = outcome
 		}
 	}

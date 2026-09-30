@@ -486,3 +486,54 @@ func TestAsyncJobStore_SetReadConn_RoutesReadsToTheGivenConnection(t *testing.T)
 	_, err = store.ListAsyncJobsForOwner(ctx, "owner-1")
 	require.Error(t, err, "SetReadConn must actually route reader queries to the given connection")
 }
+
+// TestAsyncJobStore_ClaimReusedToolCallIDAfterTerminalUndeliveredStartsFreshRow
+// is R2A-6: a terminal row the model already saw announced, whose notice is
+// merely still pending, must not block a reused tool_call_id ("already
+// running with different input"/"already started earlier"). It is archived
+// like a delivered row; its notice stays pullable by the owner and still names
+// the id the model used, not the archive key.
+//
+// REVERT CHECK: isArchivableHistoryRow (and the archive query's WHERE) reduced
+// to the pre-fix "delivery done/void only" -- the second Claim returned
+// *ErrAsyncJobInputMismatch and the require.NoError below failed. Restored;
+// re-ran, passed.
+func TestAsyncJobStore_ClaimReusedToolCallIDAfterTerminalUndeliveredStartsFreshRow(t *testing.T) {
+	t.Parallel()
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(db.New(store.sqlDB))
+
+	first, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "first result", Wake: true})
+	require.NoError(t, err)
+	// The first result is NOT pulled yet: delivery='pending', announced=1.
+
+	second, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second, unrelated"})
+	require.NoError(t, err, "an announced terminal row with a pending notice must not hold its tool_call_id")
+	require.False(t, second.Existing)
+	require.Equal(t, "running", second.Row.State)
+	require.NotEqual(t, first.Row.ClaimID, second.Row.ClaimID)
+
+	var seen []string
+	pulled, err := store.PullJobNotices(ctx, messages, "owner-1", func(row JobNoticeRow) message.CreateMessageParams {
+		seen = append(seen, row.ToolCallID)
+		return buildTestJobNoticeParams(row)
+	})
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "the archived row's notice must still be delivered to its owner")
+	require.Equal(t, []string{"call_0"}, seen, "the notice must name the tool_call_id the model used, not the archive key")
+	require.Contains(t, pulled[0].Message.FullText(), "first result")
+
+	rows, err := q.ListAsyncJobsForOwner(ctx, "owner-1")
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		if row.ClaimID == first.Row.ClaimID {
+			require.Equal(t, "done", row.Delivery)
+			require.NotEqual(t, "call_0", row.ToolCallID, "the old row must have moved off the reused key")
+		}
+	}
+}
