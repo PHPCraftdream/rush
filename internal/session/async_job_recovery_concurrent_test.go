@@ -222,7 +222,7 @@ func TestRecoverDeadHost_ConcurrentRecoverers_HostRemovedOnce(t *testing.T) {
 
 	total, removed := sumOutcomes(concurrentRecoverers(t, ctx, stores, dead))
 	require.Equal(t, 3, total.Deleted)
-	require.Equal(t, 1, removed, "exactly one recoverer removes the host")
+	require.Equal(t, 1, removed, "exactly one recoverer deletes the async_hosts row")
 	_, statErr := os.Stat(HostLockPath(stores[0].dataDir, dead))
 	require.ErrorIs(t, statErr, os.ErrNotExist, "the lock file is removed")
 	hosts, err := q.ListAsyncHosts(ctx)

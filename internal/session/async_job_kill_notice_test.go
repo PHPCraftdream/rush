@@ -29,8 +29,8 @@ import (
 // stays delivery='done' with notice_message_id NULL) -- TruncateForRerun's own
 // repend query then found NOTHING to re-pend (delivery stayed 'done'). Using
 // AnnounceJobKillResult as this test does, the repend fires; reverted the
-// production code's fix by removing the SetAsyncJobNoticeMessageIDIfDone call
-// from AnnounceJobKillResult -- this test FAILED (row.NoticeMessageID.Valid
+// production code's fix by removing the SetAsyncJobNoticeMessageIDForClaimIfDone
+// call from AnnounceJobKillResult -- this test FAILED (row.NoticeMessageID.Valid
 // was false, RerunTruncate found nothing). Restored; re-ran, passed.
 func TestAnnounceJobKillResult_NamesTheRowAndSurvivesRerunRepend(t *testing.T) {
 	store, q, ctx := newTestStore(t)
@@ -83,13 +83,13 @@ func TestAnnounceJobKillResult_NamesTheRowAndSurvivesRerunRepend(t *testing.T) {
 }
 
 // TestAnnounceJobKillResult_LostRaceStillPersistsMessageWithoutFusing pins
-// the "0 rows affected is not an error" half: if this job_kill call's OWN
-// transition did NOT win delivery='done' (some other cause already committed
-// first, leaving the row 'pending' for the ordinary pull instead), the
-// tool-result message for job_kill's OWN call must still be persisted --
-// every tool_use needs a tool_result -- but notice_message_id must be left
-// alone (SetAsyncJobNoticeMessageIDIfDone's guard), never pointing at a
-// message that is not actually this row's own pulled notice.
+// the "0 rows affected is not an error" half of the defensive guard. Production
+// passes a claim only after its own transition won, so the row here (finished
+// on its own, delivery still 'pending') is a state the caller never reaches;
+// it is forced to prove the guard: the tool-result message for job_kill's OWN
+// call is still persisted -- every tool_use needs a tool_result -- and
+// notice_message_id is left alone (SetAsyncJobNoticeMessageIDForClaimIfDone's
+// guard), never pointing at a message that is not this row's own pulled notice.
 func TestAnnounceJobKillResult_LostRaceStillPersistsMessageWithoutFusing(t *testing.T) {
 	store, q, ctx := newTestStore(t)
 	require.NoError(t, seedSession(ctx, q, "owner-1"))

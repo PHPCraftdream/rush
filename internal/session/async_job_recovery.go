@@ -51,7 +51,7 @@ type RecoveryOutcome struct {
 	Interrupted int  // running, announced=1 rows moved to 'interrupted'
 	Deleted     int  // announced=0 rows (running or terminal) deleted without a trace
 	Repended    int  // job_kill rows left done without a result message, made deliverable again
-	HostRemoved bool // async_hosts row + lock file both removed (no rows left)
+	HostRemoved bool // this call deleted the async_hosts row (no rows left); the lock file too unless another holder kept it (purgeOrphanHostLockFiles reaps it)
 }
 
 // RecoverDeadHost recovers hostID's rows IFF hostID is provably dead right
@@ -197,8 +197,10 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 // removeDeadHostFile is the only step of recovery that takes the exclusive
 // lock: won here, RemoveDeadHostFile verifies the path still names the held
 // file and unlinks it. Not winning is not an error: the file is already gone
-// (ENOENT), another recoverer or a reaper holds it right now (it removes it),
-// or the probe is inconclusive -- retention reaps whatever is left.
+// (ENOENT), another holder has it right now (a recoverer or reaper, which
+// removes it, or a reader's shared probe, which removes nothing), or the probe
+// is inconclusive. At most one removes the file; otherwise
+// purgeOrphanHostLockFiles reaps it once the row is gone.
 func (s *AsyncJobStore) removeDeadHostFile(hostID string) {
 	status, lock, err := ProbeHost(s.dataDir, hostID)
 	if status != HostStatusDead || lock == nil {
