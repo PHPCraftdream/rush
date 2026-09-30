@@ -29,6 +29,9 @@ import (
 // when one exists, so:
 //
 //   - a child whose last turn ended cleanly delivers "finished";
+//   - a child whose last turn ended on a question it asked (ask_question)
+//     delivers that question, with any text it wrote first, as a paused
+//     sub-agent -- checked before every other reading of the message;
 //   - a child whose last turn errored (FinishReasonError -- e.g. its own
 //     background job's failure surfacing through the auto-resume turn)
 //     delivers "failed";
@@ -80,15 +83,21 @@ func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completio
 		if msg.Role != message.Assistant || !msg.IsFinished() {
 			continue
 		}
-		if text := strings.TrimSpace(msg.FullText()); text != "" {
-			completion.Content = tools.TruncateOutput(text)
-		} else if question, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); ok {
-			// The child asked a question in a Drain turn: the parent gets the
-			// question (as a paused sub-agent, not a failure), like the
-			// first-turn path of runSubAgent does.
-			completion.Content = tools.TruncateOutput(question)
+		text := strings.TrimSpace(msg.FullText())
+		if question, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); ok {
+			// The child asked a question (in its first turn or a Drain turn):
+			// the parent gets the question as a paused sub-agent it can
+			// resume, never as a failure -- whether or not the turn also
+			// wrote text first (that text is kept as the question's
+			// preamble). Checked BEFORE the text branch: the stop is
+			// recorded as an error finish, and letting the text win would
+			// deliver "failed" without the question.
+			completion.Content = subAgentQuestionWithPreamble(text, question)
 			completion.IsError = false
 			return completion
+		}
+		if text != "" {
+			completion.Content = tools.TruncateOutput(text)
 		} else {
 			// Doc sec.3.8 ("Итог делегации"): the child's last finished
 			// message has no text at all (only reasoning and/or tool
@@ -101,6 +110,34 @@ func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completio
 		return completion
 	}
 	return completion
+}
+
+// childQuestionPreamble is the text the child wrote in the turn that ended on
+// its question (runSubAgent's first-turn path; the delegation's refresh reads
+// the same message itself). Empty when that turn wrote none, when the child's
+// last turn did not end on a question, or on a read failure: the question
+// itself never depends on it.
+func (c *coordinator) childQuestionPreamble(childSessionID string) string {
+	if c.messages == nil || childSessionID == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msgs, err := c.messages.List(ctx, childSessionID)
+	if err != nil {
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg.Role != message.Assistant || !msg.IsFinished() {
+			continue
+		}
+		if _, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); !ok {
+			return ""
+		}
+		return strings.TrimSpace(msg.FullText())
+	}
+	return ""
 }
 
 // subAgentNoFinalTextText is doc sec.3.8's fixed wording for a delegation

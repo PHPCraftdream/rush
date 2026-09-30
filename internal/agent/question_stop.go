@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
@@ -80,6 +81,18 @@ func subAgentQuestionFrame(childSessionID, questionBlock string) string {
 			"prompt. To abandon it instead, just continue on your own.",
 		childSessionID, questionBlock, childSessionID,
 	)
+}
+
+// subAgentQuestionWithPreamble puts the words the child wrote before it asked
+// in front of the question frame, so the parent reads the context the question
+// refers to. Only the preamble is truncated: the frame (question, options,
+// resume guidance) always survives.
+func subAgentQuestionWithPreamble(preamble, frame string) string {
+	preamble = strings.TrimSpace(preamble)
+	if preamble == "" {
+		return frame
+	}
+	return tools.TruncateOutput(preamble) + "\n\n" + frame
 }
 
 // subAgentQuestionFromFinish reads a question-tool stop back from the finish
