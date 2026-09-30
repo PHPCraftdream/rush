@@ -441,6 +441,32 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   charge: a normal exit and a Ctrl-C exit report the same cost. The test-only
   supervision interval override no longer lets a value under one second defeat
   the floor.
+- **A delegated child's finished background shell keeps the delegation
+  parked until its result is recorded (review round 7).** A child's shell that
+  had exited but whose completion notice was not written yet (the write can wait
+  on the process-wide arrival lock and the single writer connection) counted as
+  no work: a delegation re-check landing in that window (the 60-second pass, a
+  release hook) handed the parent the child's stale first-turn text, and the
+  shell's result reached neither the child nor the parent. The shell manager now
+  keeps a per-shell completion hold from the moment its completion callback is
+  registered until the notice is durable (also released when the callback
+  returns or panics, and after 10 minutes at the latest), and the scope counts
+  it; the callback's own re-check runs after the release.
+- **Stopping a delegation releases its child's driver (review round 7).** A
+  delegation stopped while its child was parked on the child's own async job
+  left the child's driver record and permission-allowlist entry registered for
+  the life of the web process, and later Stop/inject on that child reached an
+  idle agent. Stop (and the Rerun tree stop) now re-checks every session of the
+  stopped tree.
+- **A run cut off by the default wall-clock cap says so (review round 7).** The
+  "Run timeout exceeded" message of a turn ended by the 6 h default cap named a
+  `--timeout` nobody passed; it now names the cap and
+  `RUSH_RUN_DEFAULT_HARD_TIMEOUT`.
+- **Documented: a delegated child's chain of background-shell wakes has no cap
+  of its own (review round 7).** Root supervision does not bound it; the bounds
+  are Stop, the delegation's own `timeout` (`terminate_and_wake`) and, in the
+  CLI, `--timeout`/the default cap and `--max-cost` (`docs/async-invariants.md`
+  ASYNC-09).
 - **`rush run`: a reviewer pass refused by the session lock keeps the run's
   answer, and every loop exit records its exit reason (review round 6).** When
   another process (a web tab's human turn, `sessions inject`) holds the
