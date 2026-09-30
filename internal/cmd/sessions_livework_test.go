@@ -295,13 +295,17 @@ func TestSessionsListCmdRun_ReleasedLockErrorFinishLiveDriverIsRunning(t *testin
 // turns", not offline; without the marker it is offline; --stale-only does not
 // list it and --prune leaves its lock file alone.
 //
+// The driven id contains characters the lock file name replaces ("/", space):
+// the marker is keyed by the real id, the file by the sanitised one (R7C-2).
+//
 // Revert-check: dropping the driver consultation from `sessions locks`
-// makes the driven row read "offline" / stale.
+// makes the driven row read "offline" / stale; looking the marker up by the
+// file-derived name (the pre-R7C-2 key) does the same for this id.
 func TestSessionsLocksCmdRun_LiveDriverBetweenTurnsIsNotOffline(t *testing.T) {
 	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
 	ctx := context.Background()
 
-	driven, err := a.Sessions.CreateWithID(ctx, "locks-driven", "driven between turns")
+	driven, err := a.Sessions.CreateWithID(ctx, "locks/driven x", "driven between turns")
 	require.NoError(t, err)
 	lone, err := a.Sessions.CreateWithID(ctx, "locks-lone", "no driver")
 	require.NoError(t, err)
@@ -347,17 +351,18 @@ func TestSessionsLocksCmdRun_LiveDriverBetweenTurnsIsNotOffline(t *testing.T) {
 		return got
 	}
 
+	drivenRow := sanitiseSessionIDForFilename(driven.ID)
 	all := runLocks(false, false)
-	require.Contains(t, all, driven.ID)
-	require.NotEqual(t, "offline", all[driven.ID].Pulse)
-	require.False(t, all[driven.ID].Stale)
-	require.True(t, all[driven.ID].BetweenTurns)
-	require.Equal(t, os.Getpid(), all[driven.ID].DriverPID)
+	require.Contains(t, all, drivenRow)
+	require.NotEqual(t, "offline", all[drivenRow].Pulse)
+	require.False(t, all[drivenRow].Stale)
+	require.True(t, all[drivenRow].BetweenTurns)
+	require.Equal(t, os.Getpid(), all[drivenRow].DriverPID)
 	require.Equal(t, "offline", all[lone.ID].Pulse, "no driver: an aged released lock is offline as before")
 	require.False(t, all[lone.ID].BetweenTurns)
 
 	staleOnly := runLocks(true, false)
-	require.NotContains(t, staleOnly, driven.ID)
+	require.NotContains(t, staleOnly, drivenRow)
 	require.Contains(t, staleOnly, lone.ID)
 
 	runLocks(false, true)
@@ -431,4 +436,106 @@ func ageLock(t *testing.T, path string, d time.Duration) {
 func tailDone(ctx context.Context, a *app.App, sessionID string) bool {
 	done, _ := tailSessionFinished(ctx, a, sessionID)
 	return done
+}
+
+// R7C-2: ids that sanitise to the same lock-file stem ("x/y" and "x y") share
+// one file; only a loop's own (or no) recorded PID reads as between turns, so
+// a dead colliding session's PID never makes its lock look live, and the
+// candidate order is deterministic.
+//
+// Revert-check: making lockDriver ignore the recorded PID reads the dead PID
+// as "between turns"; dropping the PID sort makes the candidate order depend
+// on map iteration.
+func TestLockDriver_CollidingIdsShareOneStem(t *testing.T) {
+	drivers := map[string]session.SessionDriver{
+		"x/y": {SessionID: "x/y", PID: 300},
+		"x y": {SessionID: "x y", PID: 200},
+		"z":   {SessionID: "z", PID: 100},
+	}
+	for range 20 {
+		byName := driversByLockName(drivers)
+		require.Len(t, byName, 2)
+		require.Equal(t, []int64{200, 300}, []int64{byName["x_y"][0].PID, byName["x_y"][1].PID})
+		require.Len(t, byName["z"], 1)
+	}
+	byName := driversByLockName(drivers)
+
+	d, ok := lockDriver(byName["x_y"], 0)
+	require.True(t, ok)
+	require.EqualValues(t, 200, d.PID, "an empty file belongs to the lowest-PID candidate")
+	d, ok = lockDriver(byName["x_y"], 300)
+	require.True(t, ok)
+	require.EqualValues(t, 300, d.PID, "a recorded PID selects its own loop")
+	_, ok = lockDriver(byName["x_y"], 999999)
+	require.False(t, ok, "a foreign recorded PID (a dead colliding session) is not a live loop's")
+	_, ok = lockDriver(nil, 0)
+	require.False(t, ok)
+}
+
+// R7C-2 (locks, command level): the colliding dead session's recorded PID
+// keeps the row offline even though a live loop drives the other id.
+//
+// Revert-check: matching on the marker without the PID condition reads the
+// row as between turns.
+func TestSessionsLocksCmdRun_CollidingDeadSessionStaysOffline(t *testing.T) {
+	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
+	ctx := context.Background()
+	driven, err := a.Sessions.CreateWithID(ctx, "clash/id", "driven")
+	require.NoError(t, err)
+	path := writeLockFileAt(t, dataDir, "clash id", 999999)
+	ageLock(t, path, 2*time.Minute)
+	store := a.AsyncJobStore()
+	require.NotNil(t, store)
+	require.NoError(t, store.ClaimSessionDriver(ctx, driven.ID))
+	a.SetAsyncJobStoreForTest(nil)
+	defer func() { _ = store.Close(context.Background()) }()
+	a.Shutdown()
+
+	ensureRootFlagStandIns(sessionsLocksCmd, dataDir)
+	if f := sessionsLocksCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsLocksCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsLocksCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("json", "true"))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("stale-only", "false"))
+	require.NoError(t, sessionsLocksCmd.Flags().Set("prune", "false"))
+	sessionsLocksCmd.SetContext(ctx)
+
+	stdout, _ := captureStdoutAndStderr(t, func() { require.NoError(t, sessionsLocksCmd.RunE(sessionsLocksCmd, nil)) })
+	var row struct {
+		SessionID    string `json:"session_id"`
+		Pulse        string `json:"pulse"`
+		Stale        bool   `json:"stale"`
+		BetweenTurns bool   `json:"between_turns"`
+	}
+	require.NoError(t, json.NewDecoder(strings.NewReader(stdout)).Decode(&row))
+	require.Equal(t, "clash_id", row.SessionID)
+	require.Equal(t, "offline", row.Pulse)
+	require.True(t, row.Stale)
+	require.False(t, row.BetweenTurns)
+}
+
+// With Sessions.Get carrying ended_reason (R7C-4), the watch's signal (a) is
+// live: a row that says "canceled" ends the watch with that reason once the
+// loop is gone, but never while the driver marker is live (the live-work
+// consultation runs before the verdict is trusted).
+//
+// Revert-check: dropping the live-work consultation from isSessionFinished
+// makes the first assertion fail; dropping ended_reason from Get's result
+// changes the second reason to "end_turn".
+func TestIsSessionFinished_EndedReasonEndsTheWatchOnlyWhenNoLoopIsLive(t *testing.T) {
+	t.Parallel()
+	a, s, m, store, dataDir := newRunDriverTestApp(t)
+	ctx := context.Background()
+	sess := betweenTurnsSession(t, s, m, dataDir, "canceled row, live loop", message.FinishReasonEndTurn)
+	require.NoError(t, s.SetEndedReason(ctx, sess.ID, "canceled"))
+	require.NoError(t, store.ClaimSessionDriver(ctx, sess.ID))
+
+	st, reason := isSessionFinished(ctx, a, sess.ID, dataDir)
+	require.False(t, st.done, "a live loop keeps the watch going whatever the row says (reason %q)", reason)
+
+	require.NoError(t, store.ReleaseSessionDriver(ctx, sess.ID))
+	st, reason = isSessionFinished(ctx, a, sess.ID, dataDir)
+	require.True(t, st.done)
+	require.Equal(t, "canceled", reason, "signal (a): the row's ended_reason is the reason")
 }

@@ -236,9 +236,11 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		DriverPID    int  `json:"driver_pid,omitempty"`
 	}
 
-	// Sessions a live `rush run` loop drives, by id (ONE read; nil on error:
-	// without the marker a released lock reads as before).
-	drivers, _ := a.LiveSessionDrivers(cmd.Context())
+	// Sessions a live `rush run` loop drives (ONE read; nil on error: without
+	// the marker a released lock reads as before), by lock-file stem: the file
+	// name is the sanitised id, the marker is keyed by the real one (R7C-2).
+	liveDrivers, _ := a.LiveSessionDrivers(cmd.Context())
+	drivers := driversByLockName(liveDrivers)
 
 	var locks []lockItem
 	now := time.Now()
@@ -282,7 +284,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// A session a live `rush run` loop drives (between turns) is never
 		// pruned: the death probe would take the lock the loop is about to
 		// take for its next turn.
-		if _, driven := drivers[sessionID]; prune && age > autoDeleteAfter && !driven {
+		if driven := len(drivers[sessionID]) > 0; prune && age > autoDeleteAfter && !driven {
 			if lockHolderProvablyDead(dataDir, sessionID) {
 				if preAutoDeleteRemoveHook != nil {
 					preAutoDeleteRemoveHook(lockPath)
@@ -393,9 +395,11 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// the session says the loop is alive: not stale, not offline.
 		var driverPID int
 		betweenTurns := false
-		if d, ok := drivers[sessionID]; ok && pulse == "offline" && (pid <= 0 || int64(pid) == d.PID) {
-			betweenTurns, driverPID = true, int(d.PID)
-			pulse, stale = "between-turns", false
+		if pulse == "offline" {
+			if d, ok := lockDriver(drivers[sessionID], pid); ok {
+				betweenTurns, driverPID = true, int(d.PID)
+				pulse, stale = "between-turns", false
+			}
 		}
 
 		if staleOnly && !stale {

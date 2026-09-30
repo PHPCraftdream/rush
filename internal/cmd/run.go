@@ -102,9 +102,13 @@ first 60 characters of the user prompt are used as the title. This makes
 
 Budget persistence: --max-cost, --max-tokens, and --timeout values are
 saved on the session row. "sessions show" displays cost vs budget, and
-"sessions locks" shows an ELAPSED / BUDGET column. ended_reason is set
-when the run finishes (done, canceled, timeout, max_cost, max_tokens,
-error) and appears in "sessions show" and "sessions list --json".
+"sessions locks" shows an ELAPSED / BUDGET column. ended_reason is written
+when the run ends and equals its exit_reason (the --json envelope's): the
+model's finish (end_turn, stop, max_tokens, ...), "error" (a failed run; also
+a --max-cost/--max-tokens exit), or "canceled" (Ctrl-C, --timeout, the default
+6h cap, "sessions cancel"; a turn cut short before its envelope exists can
+leave the older spelling "cancelled"). It is empty while a run is in progress
+and appears in "sessions show" and "sessions list --json" (ended_reason).
 
 Output modes (mutually exclusive --stream / --json):
   - default (terse): tool-call names on stderr as "▶ <toolName>"; only

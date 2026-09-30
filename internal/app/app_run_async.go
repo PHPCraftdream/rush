@@ -488,6 +488,8 @@ func (l *cliLoop) run() (*RunResult, error) {
 	for {
 		step, why, waitErr := l.nextStep()
 		switch {
+		case step == stepCanceled:
+			return l.exitPrecheck(waitErr)
 		case waitErr != nil:
 			return l.exitWait(waitErr)
 		case step == stepExit:
@@ -603,6 +605,9 @@ const (
 	stepExit cliStep = iota
 	stepDrain
 	stepStuck
+	// stepCanceled: `sessions cancel` was seen while waiting; nextStep's error
+	// is the precheck-style cancel error (R7C-1).
+	stepCanceled
 )
 
 // cliOpenScopeWaitNoticeInterval bounds how often the loop prints its "still
@@ -624,7 +629,8 @@ var cliDBErrorRetryOverallLimit = 30 * time.Second
 // until the gate reopens (a newer event reopens it early only after a refusal, never after a paid failure); running work --
 // wait (heartbeat on stderr); Stuck with nothing running -- give up; Deferred
 // or no debt with nothing running -- the scope is closed. A DB read error
-// retries with a pause, bounded overall and visible on stderr.
+// retries with a pause, bounded overall and visible on stderr. An operator
+// cancel is checked before each wait (stepCanceled, R7C-1).
 func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 	var dbErrorRetryStart time.Time
 	for {
@@ -652,10 +658,16 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		case state.Drain == agent.DrainOwed:
 			return stepDrain, "", nil
 		case state.Drain == agent.DrainPaced:
+			if cancelErr := l.cancelError(); cancelErr != nil {
+				return stepCanceled, "", cancelErr
+			}
 			l.noticePaced(state)
 			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
 			continue
 		case state.WorkOpen:
+			if cancelErr := l.cancelError(); cancelErr != nil {
+				return stepCanceled, "", cancelErr
+			}
 			if now := time.Now(); l.lastOpenScopeNotice.IsZero() || now.Sub(l.lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
 				l.lastOpenScopeNotice = now
 				fmt.Fprintf(l.errOut(), "rush run: session %q still has open work; waiting on %s\n", l.sessionID, l.describeOpenWork())
@@ -690,6 +702,16 @@ func (l *cliLoop) precheck() error {
 	if err := l.capError(); err != nil {
 		return err
 	}
+	return l.cancelError()
+}
+
+// cancelError is the run's end by `sessions cancel` (nil when none is pending).
+// Read before every paid turn and on every wake of a wait on running work or
+// on the launch gate (at least every 5s), so a cancel takes effect within one
+// step, not when the awaited work ends (R7C-1). The exit goes through
+// exitPrecheck: envelope, ended_reason, --on-finish, and the caller's Shutdown
+// cancels the run's jobs as Ctrl-C does.
+func (l *cliLoop) cancelError() error {
 	if canceled, err := l.app.Sessions.IsCancelRequested(l.ctx, l.sessionID); err == nil && canceled {
 		return &runIncompleteError{reason: "canceled", detail: fmt.Sprintf("session %s cancelled by user", l.sessionID)}
 	}

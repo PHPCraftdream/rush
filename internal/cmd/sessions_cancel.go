@@ -16,7 +16,12 @@ Sets a database flag that the running agent checks after each step. Works
 across processes — use it from a second terminal or orchestrator to stop
 a ` + "`rush run`" + ` that is running in the background.
 
-The running agent will stop within one step of the flag being set.`,
+The running agent will stop within one step of the flag being set. A
+` + "`rush run`" + ` loop that is waiting between turns (on a running job, a
+delegation or a retry pause) re-reads the flag at least every 5 seconds and
+ends the run as "canceled" (envelope, --on-finish and ended_reason as for
+Ctrl-C; the jobs the run started are cancelled), instead of waiting for the
+work to finish.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Cancel a specific session

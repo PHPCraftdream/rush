@@ -24,7 +24,12 @@ tokens, cost, and optionally all messages.
 The default output is human-readable text; use --json for structured format
 suitable for parsing. Combine with --with-messages to include the message
 thread and system prompt. Use --full with --with-messages to see complete
-message content (default truncates to 200 chars per message).`,
+message content (default truncates to 200 chars per message).
+
+The last run's ended_reason (its exit_reason: the model's finish, "error" or
+"canceled") and the --max-cost/--max-tokens/--timeout budget it was started
+with are shown when recorded ("Ended:", the budget beside the cost, JSON
+ended_reason / budget_*).`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Human-readable inspection

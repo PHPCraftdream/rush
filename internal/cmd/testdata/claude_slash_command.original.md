@@ -417,10 +417,16 @@ rush sessions inject <id> -m "stop — wrong approach" --interrupt
 - If the session is **not currently running**, the message is still
   persisted and picked up next time that session id runs — the
   command tells you so instead of failing.
+- A `rush run` loop **waiting between turns** (on a job, a delegation or a
+  retry) counts as running: the result says `running: true` and
+  `between_turns: true`; no turn is in flight to cancel, so the message
+  reaches the loop's next turn if it runs one (otherwise the session's
+  next run).
 
 Works cross-process: writes to the session DB, and the running `rush
 run` (or web server) owning that session picks it up. Add `--json` for
-a machine-readable `{session_id, message_id, running, status}` result.
+a machine-readable `{session_id, message_id, running, status}` result (plus
+`between_turns` and `driver_pid` for a loop between turns).
 
 ## Repo-wide default system prompt
 
