@@ -63,7 +63,7 @@ func TestDrainAttempt_TransportTimeoutIsCountedPacedAndSettledAtK(t *testing.T) 
 	require.EqualValues(t, 1, row.WakeAttempts, "a transport timeout is a counted attempt")
 	require.EqualValues(t, 0, row.Reacted)
 	require.Equal(t, "Provider Error", f.lastAssistantFinishTitle(ctx), "not the --timeout text")
-	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID).kind, "paced behind the failure")
+	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "paced behind the failure")
 	require.True(t, f.inRecheckSet())
 
 	requests := f.requests.Load()

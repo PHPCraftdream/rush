@@ -16,7 +16,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +35,8 @@ type attemptFixture struct {
 	sessID   string
 	requests atomic.Int32
 	srv      *httptest.Server
+	// authHeader is the Authorization header of the newest request.
+	authHeader atomic.Value
 
 	mu      sync.Mutex
 	handler http.HandlerFunc
@@ -46,6 +51,14 @@ type attemptFixtureOpts struct {
 	// clientTimeout is the provider HTTP client's Client.Timeout: a stalled
 	// server then fails with a net/http timeout, not a cancelled context.
 	clientTimeout time.Duration
+	// oauthProvider gives the coordinator a real config whose provider of that
+	// id (the agent's model names it) holds an EXPIRED OAuth token. The test
+	// must not be parallel (it isolates the global config paths with t.Setenv)
+	// and installs coord.refreshOAuth2TokenFn itself.
+	oauthProvider string
+	// noDriver leaves the session unregistered as a delegation driver: a plain
+	// root session (drainCallFor builds its call from the config).
+	noDriver bool
 }
 
 func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemptFixture {
@@ -53,6 +66,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f := &attemptFixture{t: t, handler: o.handler}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
+		f.authHeader.Store(r.Header.Get("Authorization"))
 		f.mu.Lock()
 		h := f.handler
 		f.mu.Unlock()
@@ -77,6 +91,9 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f.ledger.store = f.store
 	f.ledger.coord = f.coord
 	f.coord.asyncJobs = f.ledger
+	if o.oauthProvider != "" {
+		f.withOAuthProvider(o.oauthProvider)
+	}
 
 	tools := o.tools
 	if tools == nil {
@@ -95,7 +112,9 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	sess, err := f.env.sessions.Create(context.Background(), title)
 	require.NoError(t, err)
 	f.sessID = sess.ID
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	if !o.noDriver {
+		f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	}
 	return f
 }
 
@@ -178,4 +197,47 @@ func (f *attemptFixture) inRecheckSet() bool {
 	defer f.coord.recheckMu.Unlock()
 	_, ok := f.coord.recheckSet[f.sessID]
 	return ok
+}
+
+// withOAuthProvider gives f.coord a real config store whose smart and fast
+// model come from an OAuth provider with an expired token, plus what
+// UpdateModels (run after a refresh) needs, and makes the fixture's agent name
+// that provider.
+func (f *attemptFixture) withOAuthProvider(providerID string) {
+	f.t.Helper()
+	isolateAllGlobalConfigPaths(f.t)
+	cfg, err := config.Init(f.env.workingDir, "", false)
+	require.NoError(f.t, err)
+	f.coord.cfg = cfg
+	f.coord.sessions, f.coord.messages, f.coord.permissions = f.env.sessions, f.env.messages, f.env.permissions
+	f.coord.history, f.coord.filetracker = f.env.history, *f.env.filetracker
+	f.coord.modelCache = csync.NewMap[string, cachedModelPair]()
+	f.coord.currentAgent = &mockSessionAgent{}
+	c6ConfigureProvider(f.t, f.coord, providerID, "probe", "old-key", expiredOAuthToken())
+	pc, ok := cfg.Config().Providers.Get(providerID)
+	require.True(f.t, ok)
+	pc.BaseURL = f.srv.URL // clients built from the config talk to the probe server
+	cfg.SetProviderRuntimeConfig(providerID, pc)
+	cfg.SetupAgents()
+	f.model.ModelCfg.Provider = providerID
+	f.model.ModelCfg.Model = "probe"
+}
+
+// rotateCredentials is what a successful OAuth refresh leaves in the config:
+// a new key (the probe server sees it as "Bearer new-key") and a live token.
+func (f *attemptFixture) rotateCredentials(providerID string) {
+	f.t.Helper()
+	pc, ok := f.coord.cfg.Config().Providers.Get(providerID)
+	require.True(f.t, ok)
+	pc.APIKey = "new-key"
+	pc.OAuthToken = &oauth.Token{AccessToken: "new", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	f.coord.cfg.SetProviderRuntimeConfig(providerID, pc)
+}
+
+// oauthTestProvider is the provider id of withOAuthProvider's provider.
+const oauthTestProvider = "oauth-provider"
+
+// expiredOAuthToken is a token IsExpired reports as expired.
+func expiredOAuthToken() *oauth.Token {
+	return &oauth.Token{AccessToken: "old", RefreshToken: "r", ExpiresAt: 1}
 }

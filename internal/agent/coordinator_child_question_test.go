@@ -142,3 +142,36 @@ func TestRunSubAgent_FirstTurnQuestionKeepsPreamble(t *testing.T) {
 	require.Contains(t, resp.Content, "which one?")
 	require.Less(t, strings.Index(resp.Content, "Checked the job output"), strings.Index(resp.Content, "SUB-AGENT QUESTION"))
 }
+
+// TestChildScope_RerunHoldKeepsDelegationOpen (R3C-5): a rerun holds the
+// child's automatic turns while it cancels, truncates and hands off. The hold
+// is temporary, so the child's scope reads as paced (open), not deferred: the
+// parent's delegation is not released with stale text during the hold, and the
+// debt is owed again once the hold is released.
+//
+// Revert-check: answering "deferred" for a held session (the old verdict)
+// reads the child as drained and delivers the delegation during the hold: this
+// test goes red on the early delivery.
+func TestChildScope_RerunHoldKeepsDelegationOpen(t *testing.T) {
+	ctx := context.Background()
+	f, parentID, childID, delivered := childDelegationFixture(t, attemptFixtureOpts{noIdle: true})
+	release := f.coord.HoldAutomaticTurns(childID)
+	t.Cleanup(release)
+
+	st, err := f.coord.CLIScope(ctx, childID)
+	require.NoError(t, err)
+	require.Equal(t, DrainPaced, st.Drain, "a hold is a temporary pause, not a refusal")
+	require.True(t, st.RetryAt.IsZero(), "no clock: the tick and the release retry it")
+
+	f.ledger.armDelegation(jobOf(f.ledger, parentID, "delegate-1"), jobResult{content: "first turn text"})
+	select {
+	case c := <-delivered:
+		t.Fatalf("the delegation must stay open while a rerun holds the child: %+v", c)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	release()
+	st, err = f.coord.CLIScope(ctx, childID)
+	require.NoError(t, err)
+	require.Equal(t, DrainOwed, st.Drain, "the debt is owed again after the hold")
+}

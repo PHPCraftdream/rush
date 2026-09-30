@@ -25,7 +25,10 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, sn
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
 		return true, drainVerdict{kind: drainAllow}
 	}
-	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID)
+	// The commit never compares the bg-shell cap: the launch decision already
+	// did (or spent the slot itself), and a fact-launched Drain must not be
+	// refused for the slot it just took.
+	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID, true)
 	return v.kind == drainAllow, v
 }
 

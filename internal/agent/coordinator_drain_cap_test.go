@@ -56,7 +56,7 @@ func TestDrainPolicy_StopSuspension_RefusesEveryAutomaticTurn(t *testing.T) {
 
 	coord.suspendAutoResume(sess.ID)
 
-	v := coord.drainPolicy(ctx, sess.ID)
+	v := coord.drainPolicy(ctx, sess.ID, false)
 	require.Equal(t, drainDeferred, v.kind, "Stop's suspension must refuse the turn")
 	require.Zero(t, coord.consecutiveResume(sess.ID), "Stop must not consume the bg-shell cap counter")
 }

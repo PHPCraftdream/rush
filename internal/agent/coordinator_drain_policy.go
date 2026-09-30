@@ -19,11 +19,14 @@ type drainVerdictKind uint8
 const (
 	drainAllow drainVerdictKind = iota
 	// drainDeferred: the policy refuses a turn for this debt (foreign driver,
-	// Stop suspension, released child, bg-shell with auto-resume off, ...).
+	// Stop suspension, released child, bg-shell with auto-resume off or over
+	// its cap for a re-check, ...).
 	drainDeferred
-	// drainPaced: the launch gate is shut until retryAt.
+	// drainPaced: the launch gate is shut until retryAt, or a rerun holds the
+	// session (a temporary hold: retryAt is zero and the tick retries it).
 	drainPaced
-	// drainStuck: the gate is dormant; only a newer fact reopens it.
+	// drainStuck: the gate is dormant -- a failing pull is reopened by a newer
+	// fact, paid attempts whose close kept failing only by a human message.
 	drainStuck
 )
 
@@ -45,7 +48,10 @@ type drainVerdict struct {
 // wrong "allow" here would run a released child's Drain on the root agent).
 // A session driven by this process's own `rush run` loop skips the
 // delegation-child refusal: its turns always run on currentAgent anyway.
-func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVerdict {
+// spent: the asker is a fact's own launch that already spent its bg-shell
+// auto-resume slot (see the bg-shell row below); a release, tick or commit
+// re-check passes false and compares the cap without spending it.
+func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent bool) drainVerdict {
 	l := c.asyncJobs
 	if l == nil {
 		return drainVerdict{kind: drainAllow}
@@ -72,9 +78,15 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVe
 			return deferred("another process drives the session", true)
 		}
 	}
-	// A rerun holds the session while it cancels, truncates and hands off.
+	// A rerun holds the session while it cancels, truncates and hands off. A
+	// hold is TEMPORARY -- the debt is neither abandoned nor drained, and the
+	// turn the rerun hands off to is the session's next work -- so it is paced
+	// with no clock (the re-check tick and the release retry it), never
+	// "deferred": every scope consumer reads paced as still open, while a
+	// deferred verdict would let a delegated child's parent release the
+	// delegation with stale text during the hold.
 	if c.automaticTurnsHeld(sessionID) {
-		return deferred("rerun in progress", true)
+		return drainVerdict{kind: drainPaced, recheck: true, reason: "rerun in progress"}
 	}
 	// Stop and a pending question suspend automatic turns until a human
 	// message (or a fresh delegation on a child) lifts it.
@@ -100,13 +112,23 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVe
 		}
 	}
 	// "Background shell: only with AutoResumeOnJobDone": a session whose
-	// ENTIRE debt is bg-shell completions gets no turn with it off.
-	if !(c.cfg != nil && c.autonomyEnabled()) {
+	// ENTIRE debt is bg-shell completions gets no turn with it off -- and, with
+	// it on, none for a re-check launch (release, tick) once the cap per human
+	// message is used up. A completion's own launch (spent: claimAutoResume
+	// already took its slot) never compares; a re-check compares WITHOUT
+	// spending, so a shell finishing while the last permitted Drain runs
+	// cannot chain further Drains through the release re-check.
+	autonomy := c.cfg != nil && c.autonomyEnabled()
+	capReached := autonomy && !spent && c.consecutiveResume(sessionID) >= maxConsecutiveAutoResumes
+	if !autonomy || capReached {
 		bgOnly, err := c.sessionDebtIsBGShellOnly(ctx, sessionID)
 		if err != nil {
 			return unreadable("debt kinds", err)
 		}
 		if bgOnly {
+			if capReached {
+				return deferred("background-shell auto-resume cap reached", false)
+			}
 			return deferred("background-shell completion with auto-resume off", false)
 		}
 	}
@@ -115,9 +137,9 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVe
 
 // drainPermitted is THE launch predicate: the session policy, then the
 // per-session launch gate (written only by the attempt accounting, the
-// refusal note and the human-message reset).
-func (c *coordinator) drainPermitted(ctx context.Context, sessionID string) drainVerdict {
-	v := c.drainPolicy(ctx, sessionID)
+// refusal note and the human-message reset). spent: see drainPolicy.
+func (c *coordinator) drainPermitted(ctx context.Context, sessionID string, spent bool) drainVerdict {
+	v := c.drainPolicy(ctx, sessionID, spent)
 	if v.kind != drainAllow || c.asyncJobs == nil {
 		return v
 	}
@@ -133,8 +155,9 @@ func (c *coordinator) drainPermitted(ctx context.Context, sessionID string) drai
 }
 
 // drainDecision reads the pending-inclusive debt and, when there is some,
-// the launch verdict. No debt means nothing to launch for.
-func (c *coordinator) drainDecision(ctx context.Context, sessionID string) (debt bool, v drainVerdict, err error) {
+// the launch verdict. No debt means nothing to launch for. spent: see
+// drainPolicy.
+func (c *coordinator) drainDecision(ctx context.Context, sessionID string, spent bool) (debt bool, v drainVerdict, err error) {
 	if c.asyncJobs == nil {
 		return false, drainVerdict{}, nil
 	}
@@ -142,7 +165,7 @@ func (c *coordinator) drainDecision(ctx context.Context, sessionID string) (debt
 	if err != nil || !debt {
 		return false, drainVerdict{}, err
 	}
-	return true, c.drainPermitted(ctx, sessionID), nil
+	return true, c.drainPermitted(ctx, sessionID, spent), nil
 }
 
 // isDurableDelegationChild reports whether sessionID was EVER created as a

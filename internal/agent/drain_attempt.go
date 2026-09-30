@@ -34,12 +34,14 @@ const (
 	drainAttempted
 )
 
-// drainFailureSettleThreshold is K: after this many counted, unreacted
-// attempts on the same visible rows the debt is closed by failure.
+// drainFailureSettleThreshold is K: a row whose OWN counter reaches this many
+// counted, unreacted attempts is closed by failure (other rows keep theirs).
 const drainFailureSettleThreshold = 3
 
-// drainDormantStreak is the number of consecutive unreacted outcomes after
-// which the launch gate stays shut until a newer fact (or a human message).
+// drainDormantStreak is the length of either dormancy streak (drainGate):
+// consecutive no-turn Drains over a failing pull (a newer fact reopens the
+// gate) or consecutive paid attempts whose close kept failing (only a human
+// message or a restart reopens it).
 const drainDormantStreak = 3
 
 // drainRetryAfterNS paces the next launch after an unreacted attempt;
@@ -214,7 +216,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	case drainNoTurn:
 		switch {
 		case att.pendingLeft:
-			c.paceUnreacted(sid, att.hintAt, true)
+			c.paceUnreacted(sid, att.hintAt, true, paceFreeNoTurn)
 		case att.snapshot.Empty():
 			l.resetDrainGate(sid)
 		default:
@@ -227,35 +229,93 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	if drainAttemptExempt(att, turnErr) || l.store == nil {
 		return
 	}
-	pace := func() { c.paceUnreacted(sid, att.hintAt, false) }
+	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {
 		slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
 		pace()
 		return
 	}
-	attempts, err := l.store.MaxWakeAttempts(ctx, sid, att.snapshot)
+	rows, err := c.snapshotAttempts(ctx, sid, att.snapshot)
 	if err != nil {
 		slog.Error("drain attempt: read wake attempts failed", "session_id", sid, "err", err)
 		pace()
 		return
 	}
-	if attempts == 0 {
+	if rows.open == 0 {
 		l.resetDrainGate(sid) // every visible row reacted
 		return
 	}
-	if attempts >= drainFailureSettleThreshold || drainFailureTerminal(turnErr, turnCtxDone) {
-		cause := "the assistant responded, but its reaction to this event was not recorded"
-		if turnErr != nil {
-			cause = redactNetworkURLs(turnErr.Error())
-		}
-		if err := c.settleDrainDebt(ctx, sid, att.snapshot, cause); err != nil {
-			pace()
-			return
-		}
-		l.resetDrainGate(sid)
+	// Only a row whose OWN counter reached K is closed: a notice that arrived
+	// while earlier ones were failing keeps its own clock (a one-minute
+	// outage never closes it). A terminal provider classification closes
+	// every row the failed attempt saw.
+	closing, closed := rows.atK, rows.atKCount
+	if drainFailureTerminal(turnErr, turnCtxDone) {
+		closing, closed = att.snapshot, rows.open
+	}
+	if closing.Empty() {
+		pace()
 		return
 	}
-	pace()
+	cause := "the assistant responded, but its reaction to this event was not recorded"
+	if turnErr != nil {
+		cause = redactNetworkURLs(turnErr.Error())
+	}
+	if err := c.settleDrainDebt(ctx, sid, closing, cause); err != nil {
+		pace()
+		return
+	}
+	l.resetDrainGate(sid)
+	if closed < rows.open {
+		pace() // rows with fewer attempts remain: they keep the retry pace
+	}
+}
+
+// snapshotAttempts is the per-row picture of a snapshot after an attempt was
+// counted on it.
+type snapshotAttempts struct {
+	// open: rows still debt (still the row the snapshot saw).
+	open int
+	// atK: the rows whose own counter reached drainFailureSettleThreshold.
+	atK      session.DebtSnapshot
+	atKCount int
+}
+
+// snapshotAttempts reads each snapshot row's OWN wake_attempts (one row per
+// read: MaxWakeAttempts of a single-row snapshot), so the close can be limited
+// to the rows that really used up their attempts.
+func (c *coordinator) snapshotAttempts(ctx context.Context, sessionID string, snap session.DebtSnapshot) (snapshotAttempts, error) {
+	var out snapshotAttempts
+	store := c.asyncJobs.store
+	for _, ref := range snap.Jobs {
+		n, err := store.MaxWakeAttempts(ctx, sessionID, session.DebtSnapshot{Jobs: []session.DebtJobRef{ref}})
+		if err != nil {
+			return out, err
+		}
+		if n == 0 {
+			continue // no longer debt
+		}
+		out.open++
+		if n >= drainFailureSettleThreshold {
+			out.atK.Jobs = append(out.atK.Jobs, ref)
+			out.atKCount++
+		}
+	}
+	for _, ref := range snap.Notices {
+		n, err := store.MaxWakeAttempts(ctx, sessionID, session.DebtSnapshot{Notices: []session.DebtNoticeRef{ref}})
+		if err != nil {
+			return out, err
+		}
+		if n == 0 {
+			continue
+		}
+		out.open++
+		if n >= drainFailureSettleThreshold {
+			out.atK.Notices = append(out.atK.Notices, ref)
+			out.atKCount++
+		}
+	}
+	return out, nil
 }
 
 // noteDrainRefused is the one handler of an admission refusal (lock busy or
@@ -274,7 +334,7 @@ func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
 	if external {
 		wait = drainRefusalPauseLoop()
 	}
-	l.paceDrainGate(sessionID, l.hintSeqOf(sessionID), wait, true, false)
+	l.paceDrainGate(sessionID, l.hintSeqOf(sessionID), wait, true, paceUncounted)
 	if !external {
 		c.addToRecheckSet(sessionID)
 	}
@@ -288,7 +348,7 @@ func (c *coordinator) noteTurnFailed(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
-	c.asyncJobs.paceDrainGate(sessionID, 0, drainRetryAfterFailure(), false, false)
+	c.asyncJobs.paceDrainGate(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
 }
 
 // settleDrainDebt closes the snapshot's debt by failure and writes the
@@ -375,13 +435,20 @@ func providerTurnFailed(err error, turnCtxDone bool) bool {
 }
 
 // paceUnreacted shuts the gate after an unreacted outcome and queues the
-// session for a re-check tick. The moment the gate turns dormant it says so
-// once: the debt stays visible (`sessions why`), and only a newer event or a
-// human message reopens the gate.
-func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool) {
-	if c.asyncJobs.paceDrainGate(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, true) {
-		slog.Warn("drain launches for this session are paused: repeated attempts left the debt unreacted; a new event or a human message resumes them",
-			"session_id", sessionID)
+// session for a re-check tick. The moment a streak turns the gate dormant it
+// says so once, naming what reopens it: the debt stays visible (`sessions
+// why`). A pull that keeps failing (free) is reopened by a newer event or a
+// human message; paid attempts whose close kept failing only by a human
+// message or a restart.
+func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool, kind drainPace) {
+	if c.asyncJobs.paceDrainGate(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, kind) {
+		if kind == paceFreeNoTurn {
+			slog.Warn("drain launches for this session are paused: the notice pull keeps failing; a new event or a human message resumes them",
+				"session_id", sessionID)
+		} else {
+			slog.Warn("drain launches for this session are paused: repeated attempts could not be closed or counted; only a human message (or a restart) resumes them",
+				"session_id", sessionID)
+		}
 	}
 	c.addToRecheckSet(sessionID)
 }
