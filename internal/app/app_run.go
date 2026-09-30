@@ -485,6 +485,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		hookExitReason = "cancelled"
 		return nil, err
 	}
+	if req.reviewerConfig {
+		// A Drain after the loop's reviewer turn reacts to that turn's own async
+		// work, so it runs as that turn did: reviewer model, sub-agents off.
+		runFn, ctx = app.buildReviewerPassTurn(ctx, setup.callOpts)
+	}
 	// The event loop now lives on executeRunLoop (app_run_reviewer.go) so
 	// it can run twice: once for the primary turn, and — only when the
 	// reviewer pass fires — once more for the review turn, whose finish()

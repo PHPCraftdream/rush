@@ -275,6 +275,8 @@ type Querier interface {
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
 	GetFileRead(ctx context.Context, arg GetFileReadParams) (ReadFile, error)
 	GetHourDayHeatmap(ctx context.Context) ([]GetHourDayHeatmapRow, error)
+	// The most recently updated TOP-LEVEL session (`rush run --continue`): a
+	// delegated child updated later must never be taken for it.
 	GetLastSession(ctx context.Context) (Session, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	// Get the oldest pending entry for a session (for transactional lease).

@@ -221,6 +221,10 @@ type RunRequest struct {
 	// deferReviewer tells ExecuteRun not to run the reviewer pass itself: the
 	// `rush run` loop runs it once when its scope closes (reviewerTurn).
 	deferReviewer bool
+	// reviewerConfig makes a Drain run on the reviewer pass's call options and
+	// model (buildReviewerPassTurn): set for the loop's Drains after its reviewer
+	// turn, which react to the async work that turn started.
+	reviewerConfig bool
 	// onTurnSubmitted runs right before the turn is launched: every setup step
 	// that can fail has passed. It lets the loop tell a first turn that never
 	// reached the model from one that ran and failed.
