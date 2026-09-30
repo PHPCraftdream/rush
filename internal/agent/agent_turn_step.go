@@ -434,6 +434,12 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"session_id", ts.call.SessionID, "err", cancErr)
 	}
 	if cancErr == nil && canc {
+		// Honoured: the request is spent, unless the `rush run` loop of this process
+		// drives the session -- it reads the flag after the turn, ends the run
+		// canceled and clears it itself (R8A-2).
+		if l := ts.a.asyncJobs; l == nil || !l.isExternalDriver(ts.call.SessionID) {
+			clearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}

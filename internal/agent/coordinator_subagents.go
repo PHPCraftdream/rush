@@ -87,6 +87,12 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// now answers by resuming it): from here it is driven by this delegation.
 	c.resetConsecutiveResume(session.ID)
 
+	// A resumed child starts with a stale `sessions cancel` request spent: the
+	// delegation is a fresh, deliberate turn (R8A-2). A new child has no flag.
+	if params.ResumeSessionID != "" {
+		clearCancelRequest(ctx, c.sessions, session.ID)
+	}
+
 	// Propagate the PARENT session's auto-approve status to this child.
 	//
 	// A sub-agent runs under its own child session id
