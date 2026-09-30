@@ -12,6 +12,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -39,6 +40,10 @@ func (m *ctxMutex) lock(ctx context.Context) error {
 
 func (m *ctxMutex) unlock() { <-m.ch }
 
+// bgArrivalInsertedSeam is a test-only hook called between the notice insert and
+// the slot decision of persistBGShellCompletion, still under bgArrival.
+var bgArrivalInsertedSeam atomic.Pointer[func()]
+
 // persistBGShellCompletion writes a finished background shell's notice row and
 // takes (or refuses) its auto-resume slot as ONE step relative to the cap check
 // (bgShellCapDeferred): the check then never sees a row without its slot
@@ -56,6 +61,9 @@ func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary strin
 			slog.Error("failed to persist background-shell-done notice",
 				"session_id", sessionID, "shell_id", shellID, "err", err)
 		}
+	}
+	if seam := bgArrivalInsertedSeam.Load(); seam != nil {
+		(*seam)()
 	}
 	return c.claimAutoResume(sessionID)
 }

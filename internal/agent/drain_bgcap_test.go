@@ -9,7 +9,6 @@ package agent
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -211,12 +210,14 @@ func TestBGShellCapDeferred_OnlyWhenNoDebtRowHoldsASlot(t *testing.T) {
 
 // A check that cannot take the arrival gate (a completion is mid-step, or the
 // caller gave up) fails closed as an error, never as "not deferred": drainPolicy
-// maps it to a deferred-with-recheck verdict.
+// maps it to a deferred-with-recheck verdict. The ledger has no store here, so
+// the debt read cannot fail on the cancelled context by itself: only the gate can.
 //
 // Revert-check: dropping the gate from bgShellCapDeferred answers (false, nil)
 // here and turns the assertion red.
 func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
 	f := newAttemptFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
+	f.ledger.store = nil
 	for range maxConsecutiveAutoResumes {
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
@@ -230,52 +231,33 @@ func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) 
 }
 
 // The completion's row insert and its slot decision are ONE step for the cap
-// check: a checker never sees a row without the decision that classifies it. The
-// session starts at the cap with one over-cap row; while more over-cap
-// completions arrive, every check must answer "deferred" (no debt row holds a
-// slot). Without the gate a check can run between an arrival's insert and its
-// over-cap count and see a row nothing accounts for (a launch by re-check).
+// check: the arrival holds bgArrival from before the insert to after the
+// decision, so a check never sees a row whose slot decision (a slot, or an
+// over-cap count) has not been made yet -- it would take an over-cap row for a
+// slot row and launch it.
 //
-// Revert-check: dropping the gate from persistBGShellCompletion lets a check land
-// between the insert and the count; the assertion goes red (a race-window
-// regression, so the green run is deterministic).
-func TestBGShellCap_ArrivalIsAtomicForTheCapCheck(t *testing.T) {
+// Revert-check: dropping the gate from persistBGShellCompletion leaves it free
+// between the insert and the decision and turns the assertion red.
+func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "cap-atomic", attemptFixtureOpts{noIdle: true})
 	for range maxConsecutiveAutoResumes {
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh-0", "done"), "no slot left")
-	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
-
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var bad error
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
-			if err != nil || !deferred {
-				bad = err
-				if bad == nil {
-					bad = context.DeadlineExceeded // stands for "not deferred"
-				}
-				return
-			}
-		}
-	}()
-	for i := range 150 {
-		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"), "iteration %d", i)
+	var heldBetween, rowVisible bool
+	seam := func() {
+		heldBetween = len(f.coord.bgArrival.ch) == 1
+		rowVisible = f.hasDebt(ctx)
 	}
-	close(stop)
-	wg.Wait()
-	require.NoError(t, bad, "a check saw an arrival's row without its over-cap count")
+	bgArrivalInsertedSeam.Store(&seam)
+	t.Cleanup(func() { bgArrivalInsertedSeam.Store(nil) })
+
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"), "no slot left")
+
+	require.True(t, rowVisible, "the row is durable before the decision")
+	require.True(t, heldBetween, "and the gate is held across the insert and the slot decision")
+	require.Zero(t, len(f.coord.bgArrival.ch), "released afterwards")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
 }
 
 // claimAutoResume spends a slot only while slots remain, and counts as over-cap
