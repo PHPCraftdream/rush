@@ -58,9 +58,13 @@ type ReactionDebtSource interface {
 	// first (so no OTHER process starts a reaction turn for it -- see
 	// drainPolicy), then the in-memory one wakeSession hints against.
 	// A session already driven by another live loop is refused with
-	// *session.ErrSessionDrivenElsewhere and nothing is set. A data dir that
-	// cannot host the host lock (session.ErrDriverMarkerUnavailable) is not
-	// an error: the in-memory marker alone is set.
+	// *session.ErrSessionDrivenElsewhere and nothing is set. The ONLY
+	// degraded outcome is a data dir that cannot host an OS lock file
+	// (session.ErrDriverMarkerUnavailable = the lock file cannot be created or
+	// locked): a Warn, and the in-memory marker alone is set. Any other
+	// failure -- a database error registering the host (SQLITE_BUSY/FULL), a
+	// cancelled ctx, a failed marker write -- is returned and nothing is set:
+	// the run fails before it touches the session (R3A-1).
 	ClaimExternalDriver(ctx context.Context, sessionID string) error
 	// ReleaseExternalDriver releases the durable marker once the loop exits
 	// (always), and the in-memory one for a persistent coordinator (C4).
@@ -93,8 +97,9 @@ type ReactionDebtSource interface {
 
 // ClaimExternalDriver implements ReactionDebtSource: the durable claim first (a
 // refusal or a real error returns before anything is set), then the in-memory
-// marker. An unavailable durable marker (no OS-lock-capable data dir) is
-// logged and the in-memory marker alone is kept -- the pre-durable behaviour.
+// marker. An unavailable durable marker (no OS-lock-capable data dir, and only
+// that) is logged and the in-memory marker alone is kept -- the pre-durable
+// behaviour; every other claim error is returned.
 func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string) error {
 	if c.asyncJobs == nil {
 		return nil
