@@ -107,6 +107,12 @@ func (l *workLedger) recheckChild(childSessionID string) {
 		if closed {
 			return
 		}
+		// A session that was never a delegated child (nothing armed on it,
+		// no driver registered) has nothing to release: return before any
+		// scope read, so an ordinary session's release costs no DB work.
+		if !l.hasArmedOrDriver(childSessionID) {
+			return
+		}
 		if !l.childScopeDrained(childSessionID) {
 			return
 		}
@@ -234,23 +240,27 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 }
 
 // childScopeOpenAcrossProcesses is childScopeDrained's cross-process half
-// (B3/C6 fix). Fails OPEN (i.e. reports true, "not drained yet") on a DB
-// error or a nil store: prematurely releasing a delegation whose child
-// might still owe a reaction is worse than deferring the release to a later
-// recheckChild trigger -- the same asymmetry ScopeOpen's own callers rely
-// on for scope evaluation.
+// (B3/C6 fix), decided by the SAME scope answer the CLI loop uses (CLIScope):
+// the child's scope is open while it has running work on a host not provably
+// dead, or debt it owes (or is retrying after a failed attempt -- Paced) a
+// reaction to. Debt the policy defers (a question the child asked, Stop, a
+// foreign driver) or that stopped launching (Stuck) releases the delegation:
+// the child would never get a turn for it, so waiting would hang the parent.
+// Fails OPEN (reports true, "not drained yet") on a DB error or a nil store:
+// prematurely releasing a delegation whose child might still owe a reaction
+// is worse than deferring the release to a later recheckChild trigger.
 func (l *workLedger) childScopeOpenAcrossProcesses(childID string) bool {
 	if l.coord == nil || l.store == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), childScopeDBCheckTimeout)
 	defer cancel()
-	open, err := l.coord.ScopeOpen(ctx, childID)
+	st, err := l.coord.CLIScope(ctx, childID)
 	if err != nil {
 		slog.Warn("childScopeDrained: cross-process scope check failed; treating scope as still open", "child_session_id", childID, "err", err)
 		return true
 	}
-	return open
+	return st.WorkOpen || st.Drain == DrainOwed || st.Drain == DrainPaced
 }
 
 // cancelSessionTarget is a snapshot of one job cancelSession must act on,
@@ -505,4 +515,21 @@ func (l *workLedger) parkedChildSessions() []string {
 		}
 	}
 	return children
+}
+
+// hasArmedOrDriver reports whether recheckChild has anything to decide for
+// childID: a delegation armed on it, or a driver registered for it (whose
+// release childScopeDrained still gates).
+func (l *workLedger) hasArmedOrDriver(childID string) bool {
+	l.mu.Lock()
+	armed := oldestArmedLocked(l.byChild[childID]) != nil
+	l.mu.Unlock()
+	if armed {
+		return true
+	}
+	if l.coord == nil {
+		return false
+	}
+	_, ok := l.coord.subAgentDrivers.get(childID)
+	return ok
 }

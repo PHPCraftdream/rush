@@ -34,7 +34,7 @@ func (f *flakyScopeSource) RunMaintenanceSweep(context.Context)               {}
 func (f *flakyScopeSource) CLIScope(context.Context, string) (agent.CLIScopeState, error) {
 	return agent.CLIScopeState{}, nil
 }
-func (f *flakyScopeSource) WaitForHint(context.Context, string) {}
+func (f *flakyScopeSource) WaitForHint(context.Context, string, time.Time) {}
 func (f *flakyScopeSource) CaptureDrainSnapshot(context.Context, string) session.DebtSnapshot {
 	return session.DebtSnapshot{}
 }

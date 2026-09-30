@@ -72,7 +72,7 @@ func (f *alwaysErrorsReactionSource) CLIScope(context.Context, string) (agent.CL
 	return agent.CLIScopeState{}, errors.New("database is locked")
 }
 
-func (f *fakeStuckPendingReactionSource) WaitForHint(context.Context, string) {
+func (f *fakeStuckPendingReactionSource) WaitForHint(context.Context, string, time.Time) {
 	atomic.AddInt32(&f.waitForHintCalls, 1)
 }
 

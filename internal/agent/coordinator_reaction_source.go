@@ -15,23 +15,42 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// CLIScopeState is the CLI loop's ONE answer to "what now" between turns
-// (CLIScope). TurnOwed and DeferredDebt are the two outcomes of a pending-
-// inclusive reaction debt, split by the SAME session policy (drainPolicy)
-// that wakeSession and the Drain turn-start re-check apply, so the loop never
-// waits for a turn the policy will not allow.
+// DrainState is the launch verdict for a session's pending-inclusive reaction
+// debt (drainPermitted): policy first, then the per-session launch gate.
+type DrainState uint8
+
+const (
+	// DrainNone: no reaction debt.
+	DrainNone DrainState = iota
+	// DrainOwed: debt, and a Drain may be launched now.
+	DrainOwed
+	// DrainPaced: debt, retrying after an unreacted attempt or a refusal; the
+	// gate opens at CLIScopeState.RetryAt (a newer event may open it sooner).
+	DrainPaced
+	// DrainDeferred: debt the policy will not allow a turn for (bg-shell-only
+	// with AutoResumeOnJobDone off, a released delegation child, another live
+	// driver, Stop's suspension, a pending question).
+	DrainDeferred
+	// DrainStuck: repeated unreacted attempts; no launch until a newer event or
+	// a human message.
+	DrainStuck
+)
+
+// CLIScopeState is the ONE answer to "what now" for a session between turns
+// (CLIScope), read by the CLI loop and by a delegation child's release.
 type CLIScopeState struct {
-	// TurnOwed: reaction debt exists AND the session policy allows a Drain
-	// turn for it -- run the next turn.
-	TurnOwed bool
 	// WorkOpen: the session has a running task row on a host not provably
 	// dead -- wait for it.
 	WorkOpen bool
-	// DeferredDebt: reaction debt exists but the policy will not allow a turn
-	// for it (bg-shell-only debt with AutoResumeOnJobDone off, a released
-	// delegation child, another live driver, Stop's suspension). The loop
-	// neither waits on it nor settles it: the notice stays for the next human
-	// turn and the run's exit reason is unaffected.
+	// Drain is the launch verdict for its reaction debt.
+	Drain DrainState
+	// RetryAt is when a Paced gate reopens by itself.
+	RetryAt time.Time
+	// Reason names why the debt is Deferred/Stuck/Paced.
+	Reason string
+	// TurnOwed and DeferredDebt are the pre-gate pair the CLI loop still reads
+	// until it follows Drain (derived: Owed/Paced and Deferred/Stuck).
+	TurnOwed     bool
 	DeferredDebt bool
 }
 
@@ -70,11 +89,11 @@ type ReactionDebtSource interface {
 	// want "anything outstanding"; the CLI loop uses CLIScope instead.
 	ScopeOpen(ctx context.Context, sessionID string) (bool, error)
 	// WaitForHint blocks until sessionID's hint counter advances, ctx is
-	// done, or a bounded same-process fallback elapses. The caller must
-	// still re-derive its decision from ReactionDebtExists/ScopeOpen
+	// done, until (when non-zero) passes, or a bounded same-process fallback
+	// elapses. The caller must still re-derive its decision from CLIScope
 	// afterward -- a returned hint is a reason to re-check, not itself an
 	// answer.
-	WaitForHint(ctx context.Context, sessionID string)
+	WaitForHint(ctx context.Context, sessionID string, until time.Time)
 	// CaptureDrainSnapshot snapshots sessionID's current debt id set --
 	// call BEFORE a Drain-context (empty-prompt) loop turn runs, pair with
 	// RecordDrainTurnOutcome afterward (doc sec.6's launch-counter bound:
@@ -122,6 +141,10 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 		}
 	}
 	c.asyncJobs.claimExternalDriver(sessionID)
+	// The same 60s pass the web process runs (recheck set, parked children,
+	// maintenance): the CLI root itself is a hint-only no-op for it, but its
+	// delegated children's retries and refusals ride it. Stopped by CancelAll.
+	c.StartRecheckTicker()
 	return nil
 }
 
@@ -177,12 +200,16 @@ func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) 
 const reactionDebtSourceHintFallback = 5 * time.Second
 
 // WaitForHint implements ReactionDebtSource.
-func (c *coordinator) WaitForHint(ctx context.Context, sessionID string) {
+func (c *coordinator) WaitForHint(ctx context.Context, sessionID string, until time.Time) {
 	if c.asyncJobs == nil {
 		return
 	}
 	since := c.asyncJobs.hintSeqOf(sessionID)
-	waitCtx, cancel := context.WithTimeout(ctx, reactionDebtSourceHintFallback)
+	wait := reactionDebtSourceHintFallback
+	if !until.IsZero() {
+		wait = min(wait, max(time.Until(until), 0))
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	c.asyncJobs.waitForHint(waitCtx, sessionID, since)
 }
@@ -259,17 +286,25 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if !debt {
 		return state, nil
 	}
-	v := c.drainPolicy(ctx, sessionID)
+	v := c.drainPermitted(ctx, sessionID)
 	if v.err != nil {
 		// An unreadable policy input is a read error the loop retries with a
 		// pause, never a silent exit.
 		return CLIScopeState{}, v.err
 	}
-	if v.kind == drainAllow {
-		state.TurnOwed = true
-	} else {
-		state.DeferredDebt = true
+	state.RetryAt, state.Reason = v.retryAt, v.reason
+	switch v.kind {
+	case drainAllow:
+		state.Drain = DrainOwed
+	case drainPaced:
+		state.Drain = DrainPaced
+	case drainDeferred:
+		state.Drain = DrainDeferred
+	default:
+		state.Drain = DrainStuck
 	}
+	state.TurnOwed = state.Drain == DrainOwed || state.Drain == DrainPaced
+	state.DeferredDebt = state.Drain == DrainDeferred || state.Drain == DrainStuck
 	return state, nil
 }
 

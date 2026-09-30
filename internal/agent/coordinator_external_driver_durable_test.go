@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -252,4 +253,30 @@ func TestReleaseExternalDriver_DurableReleasedEvenWhenNonPersistent(t *testing.T
 	require.NoError(t, err)
 	require.False(t, foreign, "the durable marker must be gone")
 	require.True(t, f.ledger.isExternalDriver(f.sessID), "C4: the in-memory marker of a non-persistent coordinator stays")
+}
+
+// TestClaimExternalDriver_StartsRecheckTicker: a `rush run` claims its session
+// through ClaimExternalDriver, which also starts the same 60s pass the web
+// process runs (recheck set, parked delegations, maintenance): the CLI root
+// itself is a hint-only no-op for it, but its delegated children's retries
+// ride it. CancelAll stops it.
+//
+// Revert-check: dropping StartRecheckTicker from ClaimExternalDriver leaves
+// recheckStop nil and this test red.
+func TestClaimExternalDriver_StartsRecheckTicker(t *testing.T) {
+	ctx := context.Background()
+	f := newForeignDriverFx(t, "claim-starts-ticker")
+	f.coord.currentAgent = &mockSessionAgent{}
+	require.Nil(t, f.coord.recheckStop, "precondition: no ticker before the claim")
+
+	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
+	require.NotNil(t, f.coord.recheckStop, "the claim starts the recheck pass")
+	done := f.coord.recheckDone
+
+	f.coord.CancelAll()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CancelAll must stop the ticker the claim started")
+	}
 }

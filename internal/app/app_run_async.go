@@ -379,7 +379,7 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 // so this wait is never reached for it.
 func waitAfterNoTurnDrain(ctx context.Context, source agent.ReactionDebtSource, sessionID string, drainNoTurn bool) {
 	if drainNoTurn {
-		source.WaitForHint(ctx, sessionID)
+		source.WaitForHint(ctx, sessionID, time.Time{})
 	}
 }
 
@@ -480,7 +480,7 @@ func (app *App) waitForNextCLITurn(ctx context.Context, source agent.ReactionDeb
 			lastOpenScopeNotice = now
 			fmt.Fprintf(os.Stderr, "rush run: session %q still has open work (a running job/delegation, or an unreachable host); waiting\n", sessionID)
 		}
-		source.WaitForHint(ctx, sessionID)
+		source.WaitForHint(ctx, sessionID, time.Time{})
 	}
 }
 

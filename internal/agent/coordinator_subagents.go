@@ -82,6 +82,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		session = created
 	}
 
+	// A delegation starting on this child lifts any suspension of its
+	// automatic turns (a Stop, or a question it asked earlier and the parent
+	// now answers by resuming it): from here it is driven by this delegation.
+	c.resetConsecutiveResume(session.ID)
+
 	// Propagate the PARENT session's auto-approve status to this child.
 	//
 	// A sub-agent runs under its own child session id
