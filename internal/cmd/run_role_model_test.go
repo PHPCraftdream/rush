@@ -127,23 +127,77 @@ func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 		&session.ModelSlotUpdate{Provider: "last-prov", Model: "last-reviewer"}))
 	a := &app.App{Sessions: lastPinnedService{Service: s, lastID: last.ID}}
 
-	got, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
+	got, resolved, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "last-prov/last-worker", got, "--continue must use the pin of the session it continues")
+	require.Equal(t, last.ID, resolved, "the resolved session is handed on so the run does not resolve it again")
+	require.False(t, useLast)
 
-	got, err = foldRoleModel(ctx, a, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
+	got, _, _, err = foldRoleModel(ctx, a, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "last-prov/last-reviewer", got)
 
-	got, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
+	got, resolved, useLast, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
 	require.NoError(t, err)
 	require.Equal(t, "old-prov/old-worker", got, "an explicit session id takes precedence over --continue, as in resolveSession")
+	require.Equal(t, older.ID, resolved)
+	require.True(t, useLast, "an explicit id resolves nothing: the flags come back as given")
 
-	got, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	got, resolved, useLast, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "explicit/model", got, "an explicit --model is never overridden")
+	require.Empty(t, resolved)
+	require.True(t, useLast)
 
-	got, err = foldRoleModel(ctx, a, "smart", config.SelectedModelTypeSmart, "", "", true)
+	got, _, _, err = foldRoleModel(ctx, a, "smart", config.SelectedModelTypeSmart, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "--role smart never folds")
+}
+
+// bumpingLastService answers GetLast with a different session on every call, as
+// happens when another process creates or touches a session between two reads.
+type bumpingLastService struct {
+	session.Service
+	ids   []string
+	calls int
+}
+
+func (b *bumpingLastService) GetLast(ctx context.Context) (session.Session, error) {
+	id := b.ids[min(b.calls, len(b.ids)-1)]
+	b.calls++
+	return b.Get(ctx, id)
+}
+
+// TestFoldRoleModel_ResolvedLastSessionIsHandedOn is R3C-10: the session the
+// fold reads the pin from is the one the run must continue. The fold returns
+// that id (useLast cleared), so the run resolves nothing a second time; a
+// "last session" that moved between the two reads can no longer split the pin
+// (session A) from the continued session (B).
+//
+// Revert-check: returning the caller's ("", true) pair unchanged again (the
+// run then resolves GetLast itself) turns the id and flag assertions red.
+func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
+	t.Parallel()
+	conn, q := newTestDB(t)
+	s := session.NewService(q, conn)
+	ctx := context.Background()
+
+	a1, err := s.Create(ctx, "a")
+	require.NoError(t, err)
+	b1, err := s.Create(ctx, "b")
+	require.NoError(t, err)
+	require.NoError(t, s.UpdateWorkerReviewerModels(ctx, a1.ID,
+		&session.ModelSlotUpdate{Provider: "a-prov", Model: "a-worker"}, nil))
+	require.NoError(t, s.UpdateWorkerReviewerModels(ctx, b1.ID,
+		&session.ModelSlotUpdate{Provider: "b-prov", Model: "b-worker"}, nil))
+	svc := &bumpingLastService{Service: s, ids: []string{a1.ID, b1.ID}}
+	a := &app.App{Sessions: svc}
+
+	model, sessionID, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
+
+	require.NoError(t, err)
+	require.Equal(t, "a-prov/a-worker", model, "the pin comes from the first resolution")
+	require.Equal(t, a1.ID, sessionID, "the run continues the session the pin came from")
+	require.False(t, useLast, "the run must not resolve the last session again")
+	require.Equal(t, 1, svc.calls, "exactly one GetLast")
 }
