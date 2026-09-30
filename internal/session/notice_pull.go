@@ -370,14 +370,20 @@ func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Se
 // notice_message_id write commit in ONE transaction, so a crash between them
 // can never leave the row 'done' with no named message.
 //
-// jobToolCallID is the TARGET async_jobs row's tool_call_id (the job that
-// was killed) -- distinct from params' own tool_call_id (job_kill's own
-// call). 0 rows affected by the guarded write (SetAsyncJobNoticeMessageIDIfDone)
-// is not an error: it means THIS job_kill call's own transition lost the
-// race to a different cause (the row is still 'pending', to be pulled
-// normally instead) -- job_kill's tool-result message is persisted
-// regardless, since a tool_use must always get a tool_result.
-func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages message.Service, owner, jobToolCallID string, params message.CreateMessageParams) (message.Message, error) {
+// killedClaimID is the claim_id of the TARGET async_jobs row (the job that was
+// killed; the claim job_kill's own transition won) -- never its tool_call_id:
+// a new claim under a reused id archives the killed row while job_kill is
+// still running (R3A-2), and a claim id names one incarnation of a job.
+// params' own tool_call_id is job_kill's own call. 0 rows affected by the
+// guarded write (SetAsyncJobNoticeMessageIDForClaimIfDone) is not an error:
+// the row is no longer 'done' and unnamed -- it changed after the transition
+// job_kill won (a Rerun re-pended it, it was deleted) -- so there is nothing to
+// fuse; job_kill's tool-result message is persisted regardless, since a
+// tool_use must always get a tool_result.
+func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages message.Service, owner, killedClaimID string, params message.CreateMessageParams) (message.Message, error) {
+	if killedClaimID == "" {
+		return message.Message{}, errors.New("async job store: announce job_kill result: empty claim id")
+	}
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: begin: %w", err)
@@ -389,9 +395,9 @@ func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages mess
 	if err != nil {
 		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: create message: %w", err)
 	}
-	if _, err := q.SetAsyncJobNoticeMessageIDIfDone(ctx, db.SetAsyncJobNoticeMessageIDIfDoneParams{
+	if _, err := q.SetAsyncJobNoticeMessageIDForClaimIfDone(ctx, db.SetAsyncJobNoticeMessageIDForClaimIfDoneParams{
 		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ToolCallID: jobToolCallID,
+		OwnerSessionID: owner, ClaimID: killedClaimID,
 	}); err != nil {
 		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: set notice message id: %w", err)
 	}
@@ -426,13 +432,18 @@ func (s *AsyncJobStore) ListSessionNotices(ctx context.Context, owner string) ([
 // invisible to Rerun's re-pend, its output lost. This puts exactly that row
 // back to a plain pending, wake=0 notice so the owner's next pull shows the
 // result (a crash between the two writes is repaired by dead-host recovery
-// instead). claimID must be the claim the caller's own transition won: a
-// later claim under a reused tool_call_id is never touched. Reports whether
-// a row was re-pended; false is normal (the fused write succeeded, or the row
-// is not a job_kill row awaiting its message).
-func (s *AsyncJobStore) RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+// instead). claimID must be the claim the caller's own transition won; it is
+// the only key (R3A-2): the row may already have been renamed out of its
+// tool_call_id by a later claim under a reused id, and that later claim is
+// never touched. An empty claimID matches nothing. Reports whether a row was
+// re-pended; false is normal (the fused write succeeded, or the row is not a
+// job_kill row awaiting its message).
+func (s *AsyncJobStore) RependJobKillRowWithoutNotice(ctx context.Context, owner, claimID string) (bool, error) {
+	if claimID == "" {
+		return false, nil
+	}
 	rows, err := s.q.RependJobKillRowWithoutNotice(ctx, db.RependJobKillRowWithoutNoticeParams{
-		UpdatedAt: time.Now().Unix(), Owner: owner, ToolCallID: toolCallID, ClaimID: claimID,
+		UpdatedAt: time.Now().Unix(), Owner: owner, ClaimID: claimID,
 	})
 	if err != nil {
 		return false, fmt.Errorf("async job store: re-pend job_kill row without notice: %w", err)

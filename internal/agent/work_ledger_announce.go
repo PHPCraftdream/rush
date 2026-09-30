@@ -167,11 +167,12 @@ func (l *workLedger) acknowledgeWithMessageTx(ctx context.Context, job *asyncJob
 // jobKillRepender is the store method that puts a job_kill row whose fused
 // result write did not happen back into the ordinary pull path (R2A-8):
 // delivery='pending', reacted=0, wake=0, only while the row still matches
-// (owner, tool_call_id, claim_id), is 'done' by job_kill and has no
-// notice_message_id. Satisfied by *session.AsyncJobStore (compile-time
+// (owner, claim_id -- the claim job_kill's own transition won, never the
+// tool_call_id a later claim may have taken over, R3A-2), is 'done' by job_kill
+// and has no notice_message_id. Satisfied by *session.AsyncJobStore (compile-time
 // assertion below); tests inject a fake through workLedger.jobKillRepend.
 type jobKillRepender interface {
-	RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) (bool, error)
+	RependJobKillRowWithoutNotice(ctx context.Context, owner, claimID string) (bool, error)
 }
 
 // The real store must satisfy it: a signature drift here would silently
@@ -206,7 +207,7 @@ func (l *workLedger) rependJobKill(ctx context.Context, owner string, meta tools
 	detached, stop := context.WithTimeout(context.WithoutCancel(ctx), jobKillRependBudget)
 	defer stop()
 	if err := l.retryAsyncStoreOp(detached, func() error {
-		_, err := repender.RependJobKillRowWithoutNotice(detached, owner, meta.JobID, meta.KilledClaimID)
+		_, err := repender.RependJobKillRowWithoutNotice(detached, owner, meta.KilledClaimID)
 		if errors.Is(err, session.ErrAsyncJobGone) {
 			return nil
 		}
@@ -222,7 +223,8 @@ func (l *workLedger) rependJobKill(ctx context.Context, owner string, meta tools
 // carries its result". job_kill's Transition already set delivery='done' /
 // reacted=1, so nothing else ever writes notice_message_id -- this fuses
 // job_kill's own tool-result message id onto the TARGET row (named by the
-// result's metadata, NOT job_kill's own tool_call_id) in the SAME
+// killed claim_id in the result's metadata, NOT job_kill's own tool_call_id nor
+// the target's: a reused id archives the row under another one, R3A-2) in the SAME
 // transaction as the message insert. Whenever that fused write does not
 // happen -- the result is an error, the transaction fails, ctx is cancelled
 // -- the row is re-pended so the captured output is delivered by the
@@ -243,7 +245,7 @@ func (l *workLedger) persistJobKillResult(ctx context.Context, sessionID string,
 		return false, nil
 	}
 	if !result.IsError {
-		if _, err = store.AnnounceJobKillResult(ctx, messages, sessionID, meta.JobID, params); err == nil {
+		if _, err = store.AnnounceJobKillResult(ctx, messages, sessionID, meta.KilledClaimID, params); err == nil {
 			return true, nil
 		}
 		l.rependJobKill(ctx, sessionID, meta)

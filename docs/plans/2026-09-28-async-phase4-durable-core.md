@@ -699,7 +699,11 @@ reacted=0)`; `pending` не удаляется вовсе; `sessions gc --jobs-o
 исчез или kill оборван ctx. Если слитая запись `AnnounceJobKillResult` не
 произошла (результат-ошибка, сбой транзакции, отмена ctx), `persistJobKillResult`
 возвращает строку в pull через `RependJobKillRowWithoutNotice(owner,
-tool_call_id, claim_id)` (ctx отсоединён, повторы ограничены 30 с).
+claim_id)` (ctx отсоединён, повторы ограничены 30 с). Раунд 3 (R3A-2): и слитая
+запись (`SetAsyncJobNoticeMessageIDForClaimIfDone`), и возврат в pull
+адресуют строку только по `claim_id` остановленной заявки: прежний ключ
+`tool_call_id` промахивался, когда новый `call_0` архивировал только что
+убитую строку, пока `job_kill` ещё работал.
 
 **(p) Синхронный `terminate_and_wake` снова даёт исход «таймаут» (R2B-13).**
 У sync-задачи нет строки, поэтому таймер завершает её в памяти

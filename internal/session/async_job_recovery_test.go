@@ -48,7 +48,7 @@ func seedRunningJob(t *testing.T, ctx context.Context, q *db.Queries, owner, too
 	}
 	_, err := q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
 		OwnerSessionID: owner, ToolCallID: toolCallID, Kind: kind, ToolName: "bash",
-		InputHash: "h-" + toolCallID, HostID: hostID, ChildSessionID: childParam,
+		InputHash: "h-" + toolCallID, HostID: hostID, ChildSessionID: childParam, ClaimID: "claim-" + toolCallID,
 		CreatedAt: 1700000000, UpdatedAt: 1700000000,
 	})
 	require.NoError(t, err)
@@ -836,7 +836,7 @@ func TestSweepDeadHosts_RependsJobKillRowWithoutResultMessage(t *testing.T) {
 		require.Equal(t, TransitionWon, res.Outcome)
 	}
 	// call-named got its fused result message before the host died.
-	_, err := store.AnnounceJobKillResult(ctx, messages, "owner-1", "call-named", message.CreateMessageParams{
+	_, err := store.AnnounceJobKillResult(ctx, messages, "owner-1", "claim-call-named", message.CreateMessageParams{
 		Role: message.Tool, Parts: []message.ContentPart{message.TextContent{Text: "stopped"}},
 	})
 	require.NoError(t, err)

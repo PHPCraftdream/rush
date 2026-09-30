@@ -47,10 +47,12 @@ WHERE host_id = ? AND state != 'running' AND delivery = 'done' AND reacted = 1 A
 -- Live-process twin of RependJobKillRowsWithoutNoticeForHost (R2A-8): the
 -- job_kill tool call finished without its fused result write (an error
 -- result, a cancelled context, a failed transaction), so the row this same
--- call had just marked done/reacted names no message. Scoped to the caller's
--- claim so a later claim under a reused tool_call_id is never touched.
+-- call had just marked done/reacted names no message. Keyed by the CLAIM the
+-- call's own transition won, not by tool_call_id (R3A-2): a later claim under
+-- a reused id archives the killed row to another tool_call_id while job_kill
+-- is still running, and a claim id names exactly one incarnation of a job.
 UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = @updated_at
-WHERE owner_session_id = @owner AND tool_call_id = @tool_call_id AND claim_id = @claim_id
+WHERE owner_session_id = @owner AND claim_id = @claim_id AND claim_id != ''
   AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
   AND notice_kind = 'job_kill' AND notice_message_id IS NULL;
 
@@ -139,6 +141,14 @@ WHERE owner_session_id = ? AND tool_call_id = ?;
 -- should remain (ASYNC-05). Scoped to announced=0 so a row that won the
 -- ack-gate race concurrently is never deleted out from under it.
 DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0;
+
+-- name: DeleteUnannouncedAsyncJobForClaim :execrows
+-- Recovery's twin of DeleteUnannouncedAsyncJob (R3A-3): recoverers no longer
+-- hold the dead host's exclusive lock, so two of them can list the same row;
+-- one deletes it and a live host may claim the same tool_call_id before the
+-- other's delete runs. Keyed by the listed row's claim so only that
+-- incarnation can be removed.
+DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND claim_id = ? AND announced = 0;
 
 -- name: TransitionAsyncJobTerminalPreserveVoid :one
 -- The ONE terminal-transition CAS (DUR-1/DUR-2/step-2 review): a terminal
@@ -243,7 +253,7 @@ RETURNING *;
 UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ?;
 
--- name: SetAsyncJobNoticeMessageIDIfDone :execrows
+-- name: SetAsyncJobNoticeMessageIDForClaimIfDone :execrows
 -- A3 (docs/reviews/2026-09-29-async-phase4-round1.md): job_kill's own
 -- Transition call sets delivery='done' directly, bypassing the ordinary
 -- pull (doc sec.3.2) -- so nothing else ever calls SetAsyncJobNoticeMessageID
@@ -252,13 +262,17 @@ WHERE owner_session_id = ? AND tool_call_id = ?;
 -- satisfying the law "delivery='done' => the row names the message that
 -- carries its result" (Rerun's RependAsyncJobsByNoticeMessageIDs, matched by
 -- notice_message_id, could otherwise never find a job_kill'd tool call in a
--- deleted tail). Guarded to delivery='done' AND notice_message_id IS NULL:
--- a row whose OWN causeJobKill transition lost the race to a different
--- cause (still 'pending', to be pulled normally instead) is left
--- completely alone -- 0 rows affected is not an error, the caller's
--- tool-result message is persisted either way.
-UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'done' AND notice_message_id IS NULL;
+-- deleted tail). Keyed by the killed row's CLAIM, not its tool_call_id
+-- (R3A-2): a new claim under a reused id archives the killed row while
+-- job_kill is still running, and a tool_call_id lookup would then name the
+-- NEW row (or nothing). Guarded to delivery='done' AND notice_message_id IS
+-- NULL: a row that is no longer in that state (Rerun re-pended it, another
+-- writer named it, it was deleted) is left completely alone -- 0 rows
+-- affected is not an error, the caller's tool-result message is persisted
+-- either way.
+UPDATE async_jobs SET notice_message_id = @notice_message_id, updated_at = @updated_at
+WHERE owner_session_id = @owner_session_id AND claim_id = @claim_id AND claim_id != ''
+  AND delivery = 'done' AND notice_message_id IS NULL;
 
 -- name: VoidPendingAsyncJobNotice :execrows
 -- A pulled notice whose task-still-running condition failed (doc sec.3.4,
