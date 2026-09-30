@@ -218,7 +218,7 @@ func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
 				return
 			}
 			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
-		case "child:result":
+		case "child:final":
 			if failedOnce.CompareAndSwap(false, true) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)

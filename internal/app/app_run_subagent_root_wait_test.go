@@ -67,6 +67,11 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 	// moment the child's OWN background job becomes terminal. The root's
 	// final turn is gated on it.
 	childJobKilled := make(chan struct{})
+	// closeGate closes childJobKilled exactly once: both post-kill child
+	// branches below prove the job terminal (see the merged-Drain note on
+	// child:final), and which of them serves the child's last turn is a
+	// scheduling race, not a contract.
+	var closeGate sync.Once
 	var childTurns atomic.Int32
 	var requests atomic.Int32
 	// requestOrder records the phase label of every served model request, in
@@ -104,19 +109,35 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 			admissionWriteSSE(w, []string{
 				admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop"),
 			})
-		case "child:result":
-			// Child turn 4: the child's own killed job reports back to the
-			// CHILD (not to a queue nobody reads), and the child answers.
+		case "child:final":
+			// The child's turn that carries the pulled bg-shell-done notice
+			// ("Async job call-bash (bash) was stopped (job_kill)"). The
+			// notice is only persisted after the shell actually exited, so
+			// serving this turn is itself production proof that the child's
+			// OWN owned background job is terminal -- release the gate here.
+			//
+			// This branch also serves the case where the completion Drain
+			// MERGED into the child's plain post-job_kill continuation: the
+			// merged turn carries BOTH the notice and the "terminated
+			// successfully" tool result, and the misroute-sensitive harness
+			// used to classify it as child:result without ever closing the
+			// gate -- the root then resumed first, the 15s gate refused with
+			// 503 twice, and the run died of its own ctx deadline (~61s) --
+			// the reported #1083 flake, load/race dependent.
+			closeGate.Do(func() { close(childJobKilled) })
 			childTurns.Add(1)
-			requestOrder.add("child:result")
+			requestOrder.add("child:final")
 			admissionWriteSSE(w, []string{
-				admissionSSEText("child-result", "child final: gate job reported"), admissionSSEStop("child-result", "stop"),
+				admissionSSEText("child-final", "child final: gate job reported"), admissionSSEStop("child-final", "stop"),
 			})
 		case "child:yield":
-			// Child turn 3: the child's own job_kill has already made its
-			// OWN owned background job terminal, so the child now yields.
+			// Child turn 3 (unmerged path): the plain post-job_kill
+			// continuation, the bg-shell-done notice not pulled yet. The kill
+			// tool result is production proof the job is terminal, so the
+			// gate is released here too; the completion Drain arrives after
+			// this as its own child:final turn.
+			closeGate.Do(func() { close(childJobKilled) })
 			childTurns.Add(1)
-			close(childJobKilled)
 			requestOrder.add("child:yield")
 			admissionWriteSSE(w, []string{
 				admissionSSEText("child-yield", "child yielded: gate still running"), admissionSSEStop("child-yield", "stop"),
@@ -207,22 +228,31 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 	// The order is asserted by index rather than by exact sequence: the
 	// root's post-delegation yield turn (a real request — the model is always
 	// called again after an async tool result) races the child's first turn,
-	// so its position is not deterministic. What IS contractual is the
-	// relative order of the phases: exactly one root:delegate first, the
-	// child's three phases in order, and root:final LAST.
+	// so its position is not deterministic. The child's post-kill shape is
+	// likewise racy: the completion Drain may merge into the plain
+	// continuation (a single child:final turn) or follow it (child:yield,
+	// then child:final). What IS contractual is the relative order of the
+	// phases: exactly one root:delegate first, the child's phases in order,
+	// and root:final LAST.
 	order := requestOrder.snapshot()
 	require.Contains(t, order, "root:delegate", "the root must delegate exactly once: %v", order)
 	require.Equal(t, "root:delegate", order[0], "the delegation must be the first served request: %v", order)
 	require.Equal(t, "root:final", order[len(order)-1], "the root must be the LAST phase to run: %v", order)
 	require.Equal(t, 1, countLabel(order, "root:delegate"), "the root must delegate exactly once: %v", order)
 	require.Equal(t, 1, countLabel(order, "root:final"), "the root must be resumed exactly once by the delegation result: %v", order)
+	require.Equal(t, 1, countLabel(order, "child:bash"), "the child must start exactly one background job: %v", order)
+	require.Equal(t, 1, countLabel(order, "child:kill"), "the child must kill its job exactly once: %v", order)
 	require.Less(t, indexOf(order, "child:bash"), indexOf(order, "child:kill"),
 		"the child must start its background job before killing it: %v", order)
-	require.Less(t, indexOf(order, "child:kill"), indexOf(order, "child:yield"),
-		"the child must kill its job before yielding: %v", order)
-	require.Less(t, indexOf(order, "child:yield"), indexOf(order, "child:result"),
-		"the child's own job result must wake the child after it yielded: %v", order)
-	require.Less(t, indexOf(order, "child:result"), indexOf(order, "root:final"),
+	// The post-kill phase: at least one child:final (the turn carrying the
+	// pulled bg-shell-done notice, merged or standalone), optionally preceded
+	// by the unmerged plain continuation. Every child phase precedes the
+	// root's final turn.
+	require.GreaterOrEqual(t, countLabel(order, "child:final"), 1,
+		"the child's final turn (carrying the pulled job-done notice) must be served: %v", order)
+	require.Less(t, indexOf(order, "child:kill"), indexOf(order, "child:final"),
+		"the child must kill its job before its final turn: %v", order)
+	require.Less(t, indexOf(order, "child:final"), indexOf(order, "root:final"),
 		"the child's answer to its own job result must reach the parent "+
 			"before the root's final turn: %v", order)
 
@@ -363,13 +393,21 @@ func routeModelRequest(body []byte) string {
 		}
 	}
 
+	// Ambiguity note: the completion Drain can MERGE into the plain
+	// post-job_kill continuation, making that turn carry BOTH the pulled
+	// bg-shell-done notice (lastUser) and the "terminated successfully" tool
+	// result (lastTool). The notice check must therefore win: that merged
+	// turn is the child's final turn (child:final), not a loss of the kill
+	// phase. Ordering within a session is stable, so once the kill tool
+	// result exists it stays the last tool result for every later child
+	// turn; the notice's presence is what distinguishes final from yield.
 	switch {
 	case strings.Contains(system, "short title"):
 		return "title"
 	case strings.Contains(lastUser, "Async job call-agent (agent) finished"):
 		return "root:final"
 	case strings.Contains(lastUser, "Async job call-bash (bash)"):
-		return "child:result"
+		return "child:final"
 	case strings.Contains(lastTool, "terminated successfully"):
 		return "child:yield"
 	case strings.Contains(lastTool, "Async bash job"):
