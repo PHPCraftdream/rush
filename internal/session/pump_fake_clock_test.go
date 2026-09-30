@@ -16,10 +16,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakePumpEpoch is far from any real date, so a real-clock read that leaks
-// into the pump's lease logic makes a test fail loudly instead of passing by
-// coincidence. Whole-second, so Unix-seconds columns round-trip exactly.
-var fakePumpEpoch = time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)
+// fakePumpEpoch lies in the PAST, so every real-clock reading is later than
+// every fake deadline, lease expiry and backoff end: a pump decision taken on
+// the real clock reads "already expired" (the watchdog fires, a renewal is
+// skipped, a lease is stamped on real time, a backoff is over) and the tests
+// that watch those outcomes fail. A FUTURE epoch would do the opposite -- every
+// real-clock read would look early, and the watchdog and renewal paths would
+// pass silently. Whole-second, so Unix-seconds columns round-trip exactly.
+var fakePumpEpoch = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 
 type fakePumpClock struct {
 	mu      sync.Mutex

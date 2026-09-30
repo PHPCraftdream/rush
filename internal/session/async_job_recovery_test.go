@@ -48,7 +48,7 @@ func seedRunningJob(t *testing.T, ctx context.Context, q *db.Queries, owner, too
 	}
 	_, err := q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
 		OwnerSessionID: owner, ToolCallID: toolCallID, Kind: kind, ToolName: "bash",
-		InputHash: "h-" + toolCallID, HostID: hostID, ChildSessionID: childParam,
+		InputHash: "h-" + toolCallID, HostID: hostID, ChildSessionID: childParam, ClaimID: "claim-" + toolCallID,
 		CreatedAt: 1700000000, UpdatedAt: 1700000000,
 	})
 	require.NoError(t, err)
@@ -410,18 +410,12 @@ func TestRecoverDeadHost_RowsRemainKeepsHostAndFile(t *testing.T) {
 // recovery matrix's concurrency requirement: two independent recoverers
 // racing the SAME dead host's SAME row must produce exactly one transition.
 //
-// A-b test fix: this does NOT isolate the OS-lock guarantee from the SQL
-// CAS guarantee -- with two real recoverers, the OS exclusive lock on
-// dead-host-1's lock file is what stops the LOSER from ever attempting
-// Transition at all (its own ProbeHost call sees HostStatusAlive, since the
-// winner is mid-recovery holding the lock), so this test cannot tell "only
-// one recoverer even tried" (OS-lock layer) apart from "both tried, but the
-// CAS let only one commit" (SQL layer) -- either layer alone would make this
-// exact assertion pass. Both layers exist and both are load-bearing in
-// production (the CAS also protects a recoverer racing the row's OWN
-// legitimate winner, which no host-lock probe is involved in at all); this
-// test proves the END-TO-END two-recoverer outcome, not one layer in
-// isolation.
+// Recovery holds no lock on the dead host (R3A-3), so both recoverers may run
+// past the probe together and only the SQL CAS (Transition scoped to
+// state='running' and the listed claim) keeps the outcome to one transition;
+// this test does not force the overlap -- the barrier version is
+// TestRecoverDeadHost_ConcurrentRecoverers_OneEffectPerRow
+// (async_job_recovery_concurrent_test.go).
 func TestRecoverDeadHost_TwoRecoverersRace_ExactlyOneTransitionPerRow(t *testing.T) {
 	t.Parallel()
 	storeA, q, ctx := newTestStore(t)
@@ -836,7 +830,7 @@ func TestSweepDeadHosts_RependsJobKillRowWithoutResultMessage(t *testing.T) {
 		require.Equal(t, TransitionWon, res.Outcome)
 	}
 	// call-named got its fused result message before the host died.
-	_, err := store.AnnounceJobKillResult(ctx, messages, "owner-1", "call-named", message.CreateMessageParams{
+	_, err := store.AnnounceJobKillResult(ctx, messages, "owner-1", "claim-call-named", message.CreateMessageParams{
 		Role: message.Tool, Parts: []message.ContentPart{message.TextContent{Text: "stopped"}},
 	})
 	require.NoError(t, err)

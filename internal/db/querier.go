@@ -222,6 +222,12 @@ type Querier interface {
 	// should remain (ASYNC-05). Scoped to announced=0 so a row that won the
 	// ack-gate race concurrently is never deleted out from under it.
 	DeleteUnannouncedAsyncJob(ctx context.Context, arg DeleteUnannouncedAsyncJobParams) (int64, error)
+	// Recovery's twin of DeleteUnannouncedAsyncJob (R3A-3): recoverers no longer
+	// hold the dead host's exclusive lock, so two of them can list the same row;
+	// one deletes it and a live host may claim the same tool_call_id before the
+	// other's delete runs. Keyed by the listed row's claim so only that
+	// incarnation can be removed.
+	DeleteUnannouncedAsyncJobForClaim(ctx context.Context, arg DeleteUnannouncedAsyncJobForClaimParams) (int64, error)
 	// ON CONFLICT DO NOTHING makes this idempotent on id (P2-1): a caller that
 	// retries with the same, stable idempotency key must not error just because
 	// its own earlier attempt already committed the row. Returns zero rows on
@@ -665,8 +671,10 @@ type Querier interface {
 	// Live-process twin of RependJobKillRowsWithoutNoticeForHost (R2A-8): the
 	// job_kill tool call finished without its fused result write (an error
 	// result, a cancelled context, a failed transaction), so the row this same
-	// call had just marked done/reacted names no message. Scoped to the caller's
-	// claim so a later claim under a reused tool_call_id is never touched.
+	// call had just marked done/reacted names no message. Keyed by the CLAIM the
+	// call's own transition won, not by tool_call_id (R3A-2): a later claim under
+	// a reused id archives the killed row to another tool_call_id while job_kill
+	// is still running, and a claim id names exactly one incarnation of a job.
 	RependJobKillRowWithoutNotice(ctx context.Context, arg RependJobKillRowWithoutNoticeParams) (int64, error)
 	// DUR-11 for job_kill on a dead host (R2A-8): job_kill's transition commits
 	// delivery='done', reacted=1 first and the result message (which names
@@ -708,12 +716,15 @@ type Querier interface {
 	// satisfying the law "delivery='done' => the row names the message that
 	// carries its result" (Rerun's RependAsyncJobsByNoticeMessageIDs, matched by
 	// notice_message_id, could otherwise never find a job_kill'd tool call in a
-	// deleted tail). Guarded to delivery='done' AND notice_message_id IS NULL:
-	// a row whose OWN causeJobKill transition lost the race to a different
-	// cause (still 'pending', to be pulled normally instead) is left
-	// completely alone -- 0 rows affected is not an error, the caller's
-	// tool-result message is persisted either way.
-	SetAsyncJobNoticeMessageIDIfDone(ctx context.Context, arg SetAsyncJobNoticeMessageIDIfDoneParams) (int64, error)
+	// deleted tail). Keyed by the killed row's CLAIM, not its tool_call_id
+	// (R3A-2): a new claim under a reused id archives the killed row while
+	// job_kill is still running, and a tool_call_id lookup would then name the
+	// NEW row (or nothing). Guarded to delivery='done' AND notice_message_id IS
+	// NULL: a row that is no longer in that state (Rerun re-pended it, another
+	// writer named it, it was deleted) is left completely alone -- 0 rows
+	// affected is not an error, the caller's tool-result message is persisted
+	// either way.
+	SetAsyncJobNoticeMessageIDForClaimIfDone(ctx context.Context, arg SetAsyncJobNoticeMessageIDForClaimIfDoneParams) (int64, error)
 	// Stop transitivity (DUR-9, doc sec.3.8): every pending row of the stopped
 	// tree loses its wake bit in the same pass, so a race between natural
 	// completion and Stop can never grant a stopped delegation a turn.

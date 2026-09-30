@@ -306,6 +306,29 @@ func (q *Queries) DeleteUnannouncedAsyncJob(ctx context.Context, arg DeleteUnann
 	return result.RowsAffected()
 }
 
+const deleteUnannouncedAsyncJobForClaim = `-- name: DeleteUnannouncedAsyncJobForClaim :execrows
+DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND claim_id = ? AND announced = 0
+`
+
+type DeleteUnannouncedAsyncJobForClaimParams struct {
+	OwnerSessionID string `json:"owner_session_id"`
+	ToolCallID     string `json:"tool_call_id"`
+	ClaimID        string `json:"claim_id"`
+}
+
+// Recovery's twin of DeleteUnannouncedAsyncJob (R3A-3): recoverers no longer
+// hold the dead host's exclusive lock, so two of them can list the same row;
+// one deletes it and a live host may claim the same tool_call_id before the
+// other's delete runs. Keyed by the listed row's claim so only that
+// incarnation can be removed.
+func (q *Queries) DeleteUnannouncedAsyncJobForClaim(ctx context.Context, arg DeleteUnannouncedAsyncJobForClaimParams) (int64, error) {
+	result, err := q.exec(ctx, q.deleteUnannouncedAsyncJobForClaimStmt, deleteUnannouncedAsyncJobForClaim, arg.OwnerSessionID, arg.ToolCallID, arg.ClaimID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getAsyncHost = `-- name: GetAsyncHost :one
 SELECT id, pid, label, started_at FROM async_hosts WHERE id = ?
 `
@@ -1122,30 +1145,26 @@ func (q *Queries) RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg Rep
 
 const rependJobKillRowWithoutNotice = `-- name: RependJobKillRowWithoutNotice :execrows
 UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?1
-WHERE owner_session_id = ?2 AND tool_call_id = ?3 AND claim_id = ?4
+WHERE owner_session_id = ?2 AND claim_id = ?3 AND claim_id != ''
   AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
   AND notice_kind = 'job_kill' AND notice_message_id IS NULL
 `
 
 type RependJobKillRowWithoutNoticeParams struct {
-	UpdatedAt  int64  `json:"updated_at"`
-	Owner      string `json:"owner"`
-	ToolCallID string `json:"tool_call_id"`
-	ClaimID    string `json:"claim_id"`
+	UpdatedAt int64  `json:"updated_at"`
+	Owner     string `json:"owner"`
+	ClaimID   string `json:"claim_id"`
 }
 
 // Live-process twin of RependJobKillRowsWithoutNoticeForHost (R2A-8): the
 // job_kill tool call finished without its fused result write (an error
 // result, a cancelled context, a failed transaction), so the row this same
-// call had just marked done/reacted names no message. Scoped to the caller's
-// claim so a later claim under a reused tool_call_id is never touched.
+// call had just marked done/reacted names no message. Keyed by the CLAIM the
+// call's own transition won, not by tool_call_id (R3A-2): a later claim under
+// a reused id archives the killed row to another tool_call_id while job_kill
+// is still running, and a claim id names exactly one incarnation of a job.
 func (q *Queries) RependJobKillRowWithoutNotice(ctx context.Context, arg RependJobKillRowWithoutNoticeParams) (int64, error) {
-	result, err := q.exec(ctx, q.rependJobKillRowWithoutNoticeStmt, rependJobKillRowWithoutNotice,
-		arg.UpdatedAt,
-		arg.Owner,
-		arg.ToolCallID,
-		arg.ClaimID,
-	)
+	result, err := q.exec(ctx, q.rependJobKillRowWithoutNoticeStmt, rependJobKillRowWithoutNotice, arg.UpdatedAt, arg.Owner, arg.ClaimID)
 	if err != nil {
 		return 0, err
 	}
@@ -1232,16 +1251,17 @@ func (q *Queries) SetAsyncJobNoticeMessageID(ctx context.Context, arg SetAsyncJo
 	return result.RowsAffected()
 }
 
-const setAsyncJobNoticeMessageIDIfDone = `-- name: SetAsyncJobNoticeMessageIDIfDone :execrows
-UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id = ? AND delivery = 'done' AND notice_message_id IS NULL
+const setAsyncJobNoticeMessageIDForClaimIfDone = `-- name: SetAsyncJobNoticeMessageIDForClaimIfDone :execrows
+UPDATE async_jobs SET notice_message_id = ?1, updated_at = ?2
+WHERE owner_session_id = ?3 AND claim_id = ?4 AND claim_id != ''
+  AND delivery = 'done' AND notice_message_id IS NULL
 `
 
-type SetAsyncJobNoticeMessageIDIfDoneParams struct {
+type SetAsyncJobNoticeMessageIDForClaimIfDoneParams struct {
 	NoticeMessageID sql.NullString `json:"notice_message_id"`
 	UpdatedAt       int64          `json:"updated_at"`
 	OwnerSessionID  string         `json:"owner_session_id"`
-	ToolCallID      string         `json:"tool_call_id"`
+	ClaimID         string         `json:"claim_id"`
 }
 
 // A3 (docs/reviews/2026-09-29-async-phase4-round1.md): job_kill's own
@@ -1252,17 +1272,20 @@ type SetAsyncJobNoticeMessageIDIfDoneParams struct {
 // satisfying the law "delivery='done' => the row names the message that
 // carries its result" (Rerun's RependAsyncJobsByNoticeMessageIDs, matched by
 // notice_message_id, could otherwise never find a job_kill'd tool call in a
-// deleted tail). Guarded to delivery='done' AND notice_message_id IS NULL:
-// a row whose OWN causeJobKill transition lost the race to a different
-// cause (still 'pending', to be pulled normally instead) is left
-// completely alone -- 0 rows affected is not an error, the caller's
-// tool-result message is persisted either way.
-func (q *Queries) SetAsyncJobNoticeMessageIDIfDone(ctx context.Context, arg SetAsyncJobNoticeMessageIDIfDoneParams) (int64, error) {
-	result, err := q.exec(ctx, q.setAsyncJobNoticeMessageIDIfDoneStmt, setAsyncJobNoticeMessageIDIfDone,
+// deleted tail). Keyed by the killed row's CLAIM, not its tool_call_id
+// (R3A-2): a new claim under a reused id archives the killed row while
+// job_kill is still running, and a tool_call_id lookup would then name the
+// NEW row (or nothing). Guarded to delivery='done' AND notice_message_id IS
+// NULL: a row that is no longer in that state (Rerun re-pended it, another
+// writer named it, it was deleted) is left completely alone -- 0 rows
+// affected is not an error, the caller's tool-result message is persisted
+// either way.
+func (q *Queries) SetAsyncJobNoticeMessageIDForClaimIfDone(ctx context.Context, arg SetAsyncJobNoticeMessageIDForClaimIfDoneParams) (int64, error) {
+	result, err := q.exec(ctx, q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt, setAsyncJobNoticeMessageIDForClaimIfDone,
 		arg.NoticeMessageID,
 		arg.UpdatedAt,
 		arg.OwnerSessionID,
-		arg.ToolCallID,
+		arg.ClaimID,
 	)
 	if err != nil {
 		return 0, err

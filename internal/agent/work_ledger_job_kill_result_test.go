@@ -18,8 +18,8 @@ import (
 )
 
 type rependCall struct {
-	owner, toolCallID, claimID string
-	ctxErr                     error
+	owner, claimID string
+	ctxErr         error
 }
 
 // fakeRepender records rependJobKill's store call (the real store method is
@@ -29,10 +29,10 @@ type fakeRepender struct {
 	calls []rependCall
 }
 
-func (f *fakeRepender) RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+func (f *fakeRepender) RependJobKillRowWithoutNotice(ctx context.Context, owner, claimID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, rependCall{owner, toolCallID, claimID, ctx.Err()})
+	f.calls = append(f.calls, rependCall{owner, claimID, ctx.Err()})
 	return true, nil
 }
 
@@ -124,7 +124,7 @@ func TestPersistToolResult_JobKillFusedWriteFailureRependsRow(t *testing.T) {
 	err := f.l.persistToolResult(context.Background(), "owner-1", f.result, f.messages, f.params())
 
 	require.Error(t, err)
-	require.Equal(t, []rependCall{{"owner-1", "call_0", f.claim, nil}}, f.rep.snapshot())
+	require.Equal(t, []rependCall{{"owner-1", f.claim, nil}}, f.rep.snapshot())
 	require.Zero(t, f.messageCount(t))
 	_, valid := f.noticeMessageID(t)
 	require.False(t, valid)
@@ -144,7 +144,7 @@ func TestPersistToolResult_JobKillErrorResultStillPersistsAndRependsRow(t *testi
 	require.NoError(t, f.l.persistToolResult(context.Background(), "owner-1", f.result, f.messages, f.params()))
 
 	require.Equal(t, 1, f.messageCount(t))
-	require.Equal(t, []rependCall{{"owner-1", "call_0", f.claim, nil}}, f.rep.snapshot())
+	require.Equal(t, []rependCall{{"owner-1", f.claim, nil}}, f.rep.snapshot())
 	_, valid := f.noticeMessageID(t)
 	require.False(t, valid, "the error path does not fuse")
 }

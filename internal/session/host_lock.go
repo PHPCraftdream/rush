@@ -279,6 +279,15 @@ type HostIdentity struct {
 	lock *FileLock
 }
 
+// ErrHostLockUnavailable is RegisterHost's typed refusal for the ONE failure
+// class that means "this data dir cannot host an OS lock file": the lock file
+// cannot be created or opened (missing/unwritable hosts dir, a file where the
+// dir must be) or the lock call fails for a reason other than contention (a
+// filesystem without lock support). Database and context errors, and an
+// exhausted retry against active peers, are NOT this: they are plain errors
+// the caller must surface (R3A-1).
+var ErrHostLockUnavailable = errors.New("host lock unavailable")
+
 // registerHostAttempts bounds RegisterHost's retry loop: each retry follows
 // a lock file a reaper or prober touched between its creation and our lock
 // (see acquireFreshHostLock), which needs a peer active at that instant.
@@ -338,9 +347,10 @@ func acquireFreshHostLock(lockPath string) (*FileLock, error) {
 // unconditional primitive it calls.
 //
 // Registration FAILS outright if the lock cannot be acquired (doc sec.3.6:
-// a filesystem without lock support must fail registration) or if the DB
-// insert fails (in which case the just-acquired lock is released before
-// returning, so a failed registration never leaks a held lock).
+// a filesystem without lock support must fail registration; that class, and
+// only that class, is ErrHostLockUnavailable) or if the DB insert fails (a
+// plain error; the just-acquired lock is released before returning, so a
+// failed registration never leaks a held lock).
 func RegisterHost(ctx context.Context, dataDir string, pid int, label string, store AsyncHostStore) (*HostIdentity, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("host lock: RegisterHost: empty dataDir")
@@ -363,7 +373,11 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("host lock: register: acquire %s: %w", lockPath, err)
+		if isContentionError(err) || errors.Is(err, errHostLockReplaced) {
+			return nil, fmt.Errorf("host lock: register: no stable lock file after %d attempts (last %s): %w",
+				registerHostAttempts, lockPath, err)
+		}
+		return nil, fmt.Errorf("%w: register: acquire %s: %w", ErrHostLockUnavailable, lockPath, err)
 	}
 	if _, err := store.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{
 		ID:        id,
@@ -409,6 +423,11 @@ func (h *HostIdentity) Close(ctx context.Context, store AsyncHostStore) error {
 	}
 	return nil
 }
+
+// removeDeadHostFileBeforeRemoveSeam is a test-only hook fired immediately before
+// RemoveDeadHostFile unlinks the file, so a test can observe whether the lock
+// is still held at that instant (the POSIX ordering law). nil in production.
+var removeDeadHostFileBeforeRemoveSeam func(lockPath string)
 
 // RemoveDeadHostFile is the recoverer path (doc sec.3.6: "восстановитель,
 // держащий блокировку, после проверки, что открытый файл тот же, что по
@@ -458,6 +477,9 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 		return nil
 	}
 	if unlinkBeforeUnlock {
+		if removeDeadHostFileBeforeRemoveSeam != nil {
+			removeDeadHostFileBeforeRemoveSeam(lockPath)
+		}
 		rmErr := os.Remove(lockPath)
 		relErr := held.Release()
 		if rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
@@ -470,6 +492,9 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 	}
 	if err := held.Release(); err != nil {
 		return fmt.Errorf("host lock: release before remove: %w", err)
+	}
+	if removeDeadHostFileBeforeRemoveSeam != nil {
+		removeDeadHostFileBeforeRemoveSeam(lockPath)
 	}
 	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// A race lost after the identity check (rare). Not fatal --

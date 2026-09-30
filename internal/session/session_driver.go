@@ -22,8 +22,12 @@ import (
 )
 
 // ErrDriverMarkerUnavailable means the durable marker cannot be kept on this
-// data directory because the host lock cannot be registered (a filesystem
-// without OS locks): the caller carries on with its in-memory marker only.
+// data directory because the host lock cannot be created or taken (a
+// filesystem without OS locks: ErrHostLockUnavailable): the caller carries on
+// with its in-memory marker only. It is ONLY that: a database or context error
+// during registration (SQLITE_BUSY/FULL, a cancelled ctx) is a plain error --
+// degrading on it would let another process run a paid Drain on a session a
+// CLI loop drives (R3A-1).
 var ErrDriverMarkerUnavailable = errors.New("session driver marker unavailable")
 
 // ErrSessionDrivenElsewhere is Claim's refusal: another host whose liveness is
@@ -85,11 +89,16 @@ func (s *AsyncJobStore) hostLivenessDetail(hostID string) (HostLockStatus, error
 // idempotent for the same host; refuses (*ErrSessionDrivenElsewhere) while
 // another host that is alive or unknown holds the marker; takes a dead
 // host's marker over with a CAS on that exact host (so of N concurrent takers
-// exactly one wins). ensureHost failure is ErrDriverMarkerUnavailable.
+// exactly one wins). A host lock the data dir cannot provide is
+// ErrDriverMarkerUnavailable; every other ensureHost failure is a plain error
+// (the caller must not proceed without the marker).
 func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string) error {
 	hostID, err := s.ensureHost(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrDriverMarkerUnavailable, err)
+		if errors.Is(err, ErrHostLockUnavailable) {
+			return fmt.Errorf("%w: %w", ErrDriverMarkerUnavailable, err)
+		}
+		return fmt.Errorf("session driver: register host: %w", err)
 	}
 	for attempt := 0; attempt < claimSessionDriverAttempts; attempt++ {
 		now := time.Now().Unix()

@@ -57,13 +57,16 @@ func (e *ErrAsyncChildSessionBusy) Error() string {
 
 // ErrAsyncJobInputMismatch is returned when a (owner, tool_call_id) key is
 // reused with a DIFFERENT input hash: a distinct call colliding on the id,
-// not an idempotent retry (doc sec.3.1).
+// not an idempotent retry (doc sec.3.1). The row holding the key is either
+// running or terminal but not yet announced (its "started" result is still to
+// be written; a terminal row that is already history is archived instead), so
+// the text says "unfinished", not "running".
 type ErrAsyncJobInputMismatch struct {
 	ToolCallID string
 }
 
 func (e *ErrAsyncJobInputMismatch) Error() string {
-	return fmt.Sprintf("async job %s is already running with different input", e.ToolCallID)
+	return fmt.Sprintf("async job %s is already in use by an unfinished call with different input", e.ToolCallID)
 }
 
 // ErrAsyncJobGone is returned by MarkAnnounced when the target row no
@@ -582,6 +585,21 @@ func (s *AsyncJobStore) DeleteUnannounced(ctx context.Context, owner, toolCallID
 		return fmt.Errorf("async job store: delete unannounced: %w", err)
 	}
 	return nil
+}
+
+// deleteUnannouncedForClaim is DeleteUnannounced for a caller that read the row
+// first (dead-host recovery): it removes that incarnation only. Two recoverers
+// can list the same unannounced row; if one deletes it and a live host claims
+// the same tool_call_id before the other's delete, a key-only delete would
+// remove the live host's row (R3A-3). Reports whether this call deleted it.
+func (s *AsyncJobStore) deleteUnannouncedForClaim(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+	rows, err := s.q.DeleteUnannouncedAsyncJobForClaim(ctx, db.DeleteUnannouncedAsyncJobForClaimParams{
+		OwnerSessionID: owner, ToolCallID: toolCallID, ClaimID: claimID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("async job store: delete unannounced (claim): %w", err)
+	}
+	return rows > 0, nil
 }
 
 // Get reads the current row for (owner, toolCallID), or sql.ErrNoRows if

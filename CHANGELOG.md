@@ -170,7 +170,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   Rerun) when the id comes back. A terminal row that is announced but not
   delivered yet is renamed the same way (its notice is still delivered, under
   the id the model used); only a terminal row whose "started" result has not
-  been written yet answers the repeated call idempotently.
+  been written yet keeps the id: a repeat of that call is refused with a tool
+  error ("was already started earlier; not starting it again", or, for a
+  different input, "is already in use by an unfinished call with different
+  input") and never starts a second executor. `job_kill` attaches its result
+  message to the killed job by its claim, not by the id, so a reused id cannot
+  misdirect it.
 - **Notices are durable rows, visible in history only when a turn pulls
   them.** Async job outcomes, supervision check-ins, `wake_only` timeout
   check-ins, wake-failure markers and SDK background-shell completions are
@@ -192,11 +197,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   recovers it: an announced job is marked `interrupted` and delivered as a
   notice on the next turn; a job whose "started" result never made it to
   the model is deleted without a trace (also when it had already finished); a
-  `job_kill` whose result message was never written is delivered as a notice on
-  the next turn; a delegation whose child messages
+  `job_kill` whose result message was never written (the host died between the
+  kill and the message) is delivered as a notice on the next turn, while one
+  whose result message was written is not delivered a second time; a delegation whose child messages
   cannot be read is left `running` for a later sweep instead of reporting a
   false empty answer. Recovery only records what happened: it never writes
-  history and never wakes a session. A natural completion that races a
+  history and never wakes a session, and it does not hold the dead host's lock
+  while it works, so a crashed `rush run`'s session can be taken over at once
+  instead of reading "alive" until the recovery ends. A natural completion that races a
   graceful shutdown is still recorded (only jobs that shutdown itself
   cancels stay `running` for the next host), and a Stop between a job's
   claim and its "started" result no longer orphans the row. The old

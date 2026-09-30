@@ -41,6 +41,11 @@ const interruptedNoChildTextText = "the sub-agent session finished with no textu
 // ones are kept", not a tunable knob.
 const AsyncDataRetentionAge = 7 * 24 * time.Hour
 
+// recoverDeadHostRowSeam is a test-only hook fired before RecoverDeadHost handles
+// each listed row, so a test can hold N recoverers inside the list-then-write
+// gap. nil in production.
+var recoverDeadHostRowSeam func(hostID string, row db.AsyncJob)
+
 // RecoveryOutcome tallies one host sweep's effect, for logging and tests.
 type RecoveryOutcome struct {
 	Interrupted int  // running, announced=1 rows moved to 'interrupted'
@@ -55,20 +60,35 @@ type RecoveryOutcome struct {
 // nil error) for this process's own host id or a sibling App's, exactly
 // like ProbeHost itself.
 //
-// Idempotent and safe against a concurrent recoverer: every write below is
-// an ordinary guarded CAS/delete (Transition scoped to state='running',
-// DeleteUnannounced scoped to announced=0) already used elsewhere, so a
-// second recoverer racing this one simply finds 0 rows affected on whatever
-// it did not win and moves on -- never a double transition, never a double
-// delete. messages may be nil (a caller with no message.Service handy):
-// a recovered delegation then falls back to interruptedNoChildTextText
-// instead of the child's actual last words.
+// The verdict is the SHARED probe: it is kernel-attested proof that no
+// exclusive holder exists, and it retains nothing, so recovery never holds the
+// host's lock while it works (R3A-3). Holding the exclusive lock across the
+// row-by-row work made every other reader's shared probe see contention =
+// "alive" for as long as recovery took (ClaimSessionDriver refused a crashed
+// driver's session, ForeignLiveDriver and the scope readers reported a
+// live host). Death is irreversible (host ids are uuids never reused, and an
+// id is published only while its registrant holds a verified lock), so nothing
+// recovery does can race the host coming back; the exclusive lock is taken
+// only at the very end, for the lock file's removal.
+//
+// Idempotent and safe against a concurrent recoverer, which the shared probe
+// now admits: every write below is a guarded CAS/delete keyed by the row's
+// identity -- Transition scoped to state='running' and the listed claim_id,
+// the unannounced delete scoped to announced=0 and the listed claim_id (a
+// key-only delete could remove a live host's fresh claim of the same
+// tool_call_id), the host-scoped deletes/re-pend touching only rows that
+// carry the dead host's id (no live host ever writes one) -- so a second
+// recoverer racing this one simply finds 0 rows affected on whatever it did
+// not win and moves on: never a double transition, never a double delete.
+// messages may be nil (a caller with no message.Service handy): a recovered
+// delegation then falls back to interruptedNoChildTextText instead of the
+// child's actual last words.
 func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, messages message.Service) (RecoveryOutcome, error) {
 	var out RecoveryOutcome
 	if hostID == "" || IsOwnHostID(hostID) {
 		return out, nil
 	}
-	status, lock, err := ProbeHost(s.dataDir, hostID)
+	status, err := ProbeHostShared(s.dataDir, hostID)
 	if status != HostStatusDead {
 		// Alive: genuinely not ours to touch. Unknown: doc sec.3.6 -- "rows
 		// stay, the scope does not treat them as open only on a definite
@@ -79,21 +99,24 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 
 	rows, listErr := s.q.ListRunningAsyncJobsForHost(ctx, hostID)
 	if listErr != nil {
-		if lock != nil {
-			_ = lock.Release()
-		}
 		return out, fmt.Errorf("recover dead host %s: list running rows: %w", hostID, listErr)
 	}
 	for _, row := range rows {
+		if recoverDeadHostRowSeam != nil {
+			recoverDeadHostRowSeam(hostID, row)
+		}
 		if row.Announced == 0 {
 			// ASYNC-05: the "started" tool result never committed for this
 			// row -- delete it without a trace, same rule as a live abort.
-			if err := s.DeleteUnannounced(ctx, row.OwnerSessionID, row.ToolCallID); err != nil {
+			deleted, err := s.deleteUnannouncedForClaim(ctx, row.OwnerSessionID, row.ToolCallID, row.ClaimID)
+			if err != nil {
 				slog.Warn("recover dead host: delete unannounced row failed; will retry on a later sweep",
 					"host_id", hostID, "owner", row.OwnerSessionID, "tool_call_id", row.ToolCallID, "err", err)
 				continue
 			}
-			out.Deleted++
+			if deleted {
+				out.Deleted++
+			}
 			continue
 		}
 		text, isErr, readErr := recoveredResultText(ctx, messages, row)
@@ -158,28 +181,35 @@ func (s *AsyncJobStore) RecoverDeadHost(ctx context.Context, hostID string, mess
 
 	deletedHostRow, delErr := s.q.DeleteAsyncHostIfNoJobs(ctx, hostID)
 	if delErr != nil {
-		if lock != nil {
-			_ = lock.Release()
-		}
 		return out, fmt.Errorf("recover dead host %s: delete host row: %w", hostID, delErr)
 	}
 	if deletedHostRow > 0 {
 		out.HostRemoved = true
-		if lock != nil {
-			if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
-				slog.Warn("recover dead host: remove lock file failed", "host_id", hostID, "err", err)
-			}
-		}
-		return out, nil
+		s.removeDeadHostFile(hostID)
 	}
-	// Rows for this host still exist (the just-recovered ones themselves,
-	// still delivery='pending'/'done' until a driver pulls and retention
-	// eventually purges them) -- release the lock but leave the file for a
-	// later sweep's "no rows left" check to reap.
-	if lock != nil {
-		_ = lock.Release()
-	}
+	// Otherwise rows for this host still exist (the just-recovered ones
+	// themselves, still delivery='pending'/'done' until a driver pulls and
+	// retention eventually purges them): the file stays for a later sweep's
+	// "no rows left" check to reap.
 	return out, nil
+}
+
+// removeDeadHostFile is the only step of recovery that takes the exclusive
+// lock: won here, RemoveDeadHostFile verifies the path still names the held
+// file and unlinks it. Not winning is not an error: the file is already gone
+// (ENOENT), another recoverer or a reaper holds it right now (it removes it),
+// or the probe is inconclusive -- retention reaps whatever is left.
+func (s *AsyncJobStore) removeDeadHostFile(hostID string) {
+	status, lock, err := ProbeHost(s.dataDir, hostID)
+	if status != HostStatusDead || lock == nil {
+		if err != nil {
+			slog.Warn("recover dead host: lock file probe before removal failed", "host_id", hostID, "err", err)
+		}
+		return
+	}
+	if err := RemoveDeadHostFile(HostLockPath(s.dataDir, hostID), lock); err != nil {
+		slog.Warn("recover dead host: remove lock file failed", "host_id", hostID, "err", err)
+	}
 }
 
 // recoveredResultText computes a recovered row's result text/isError (doc

@@ -120,6 +120,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteUnannouncedAsyncJobStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJob); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJob: %w", err)
 	}
+	if q.deleteUnannouncedAsyncJobForClaimStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJobForClaim); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJobForClaim: %w", err)
+	}
 	if q.enqueueRunQueueEntryStmt, err = db.PrepareContext(ctx, enqueueRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query EnqueueRunQueueEntry: %w", err)
 	}
@@ -396,8 +399,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.setAsyncJobNoticeMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageID); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageID: %w", err)
 	}
-	if q.setAsyncJobNoticeMessageIDIfDoneStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageIDIfDone); err != nil {
-		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageIDIfDone: %w", err)
+	if q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageIDForClaimIfDone); err != nil {
+		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageIDForClaimIfDone: %w", err)
 	}
 	if q.setAsyncJobsWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setAsyncJobsWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobsWakeZeroPendingForOwners: %w", err)
@@ -652,6 +655,11 @@ func (q *Queries) Close() error {
 	if q.deleteUnannouncedAsyncJobStmt != nil {
 		if cerr := q.deleteUnannouncedAsyncJobStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobStmt: %w", cerr)
+		}
+	}
+	if q.deleteUnannouncedAsyncJobForClaimStmt != nil {
+		if cerr := q.deleteUnannouncedAsyncJobForClaimStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobForClaimStmt: %w", cerr)
 		}
 	}
 	if q.enqueueRunQueueEntryStmt != nil {
@@ -1114,9 +1122,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDStmt: %w", cerr)
 		}
 	}
-	if q.setAsyncJobNoticeMessageIDIfDoneStmt != nil {
-		if cerr := q.setAsyncJobNoticeMessageIDIfDoneStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDIfDoneStmt: %w", cerr)
+	if q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt != nil {
+		if cerr := q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDForClaimIfDoneStmt: %w", cerr)
 		}
 	}
 	if q.setAsyncJobsWakeZeroPendingForOwnersStmt != nil {
@@ -1340,6 +1348,7 @@ type Queries struct {
 	deleteSessionMessagesByIDsStmt                       *sql.Stmt
 	deleteTerminalUnannouncedAsyncJobsForHostStmt        *sql.Stmt
 	deleteUnannouncedAsyncJobStmt                        *sql.Stmt
+	deleteUnannouncedAsyncJobForClaimStmt                *sql.Stmt
 	enqueueRunQueueEntryStmt                             *sql.Stmt
 	getAsyncHostStmt                                     *sql.Stmt
 	getAsyncJobStmt                                      *sql.Stmt
@@ -1432,7 +1441,7 @@ type Queries struct {
 	repointSessionNoticesJobToolCallIDStmt               *sql.Stmt
 	setAsyncJobAnnounceMessageIDStmt                     *sql.Stmt
 	setAsyncJobNoticeMessageIDStmt                       *sql.Stmt
-	setAsyncJobNoticeMessageIDIfDoneStmt                 *sql.Stmt
+	setAsyncJobNoticeMessageIDForClaimIfDoneStmt         *sql.Stmt
 	setAsyncJobsWakeZeroPendingForOwnersStmt             *sql.Stmt
 	setParentCostAccountedStmt                           *sql.Stmt
 	setSessionNoticeMessageIDStmt                        *sql.Stmt
@@ -1501,6 +1510,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionMessagesByIDsStmt:                       q.deleteSessionMessagesByIDsStmt,
 		deleteTerminalUnannouncedAsyncJobsForHostStmt:        q.deleteTerminalUnannouncedAsyncJobsForHostStmt,
 		deleteUnannouncedAsyncJobStmt:                        q.deleteUnannouncedAsyncJobStmt,
+		deleteUnannouncedAsyncJobForClaimStmt:                q.deleteUnannouncedAsyncJobForClaimStmt,
 		enqueueRunQueueEntryStmt:                             q.enqueueRunQueueEntryStmt,
 		getAsyncHostStmt:                                     q.getAsyncHostStmt,
 		getAsyncJobStmt:                                      q.getAsyncJobStmt,
@@ -1593,7 +1603,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		repointSessionNoticesJobToolCallIDStmt:               q.repointSessionNoticesJobToolCallIDStmt,
 		setAsyncJobAnnounceMessageIDStmt:                     q.setAsyncJobAnnounceMessageIDStmt,
 		setAsyncJobNoticeMessageIDStmt:                       q.setAsyncJobNoticeMessageIDStmt,
-		setAsyncJobNoticeMessageIDIfDoneStmt:                 q.setAsyncJobNoticeMessageIDIfDoneStmt,
+		setAsyncJobNoticeMessageIDForClaimIfDoneStmt:         q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt,
 		setAsyncJobsWakeZeroPendingForOwnersStmt:             q.setAsyncJobsWakeZeroPendingForOwnersStmt,
 		setParentCostAccountedStmt:                           q.setParentCostAccountedStmt,
 		setSessionNoticeMessageIDStmt:                        q.setSessionNoticeMessageIDStmt,
