@@ -398,8 +398,9 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 // reviewer's options -- and the answer becomes the last completed turn (R4C-1).
 // Every other outcome ends the run: a failed review is the run's error, like
 // the pass inside ExecuteRun (work it started is cancelled with the run, as at
-// any error exit), a review that queued behind another owner did not run, and
-// a cancelled run keeps its last completed answer.
+// any error exit), a review that queued behind another owner or was refused by
+// the session lock's holder did not run and the run keeps its answer (R6C-4),
+// and a cancelled run keeps its last completed answer.
 func (l *cliLoop) scopeClosed() (again bool, final *RunResult, err error) {
 	if !l.reviewerDue() {
 		final, err = l.exit(l.runErr, "")
@@ -418,6 +419,12 @@ func (l *cliLoop) scopeClosed() (again bool, final *RunResult, err error) {
 		final, err = l.turnCanceled(result, buffered, turnErr, usageBefore)
 	case errors.Is(turnErr, ErrRunQueued):
 		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass queued behind another owner and did not run\n", l.sessionID)
+		l.queuedMark = &usageBefore
+		final, err = l.exit(l.runErr, "")
+	case turnRefusedByOwner(turnErr):
+		// Another process holds the session lock (a human turn): the review ran
+		// nothing, so the run keeps its last completed answer and ends clean.
+		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass did not run, another owner holds the session (%v); the run keeps its last answer\n", l.sessionID, turnErr)
 		l.queuedMark = &usageBefore
 		final, err = l.exit(l.runErr, "")
 	case result == nil:
@@ -691,8 +698,10 @@ func (l *cliLoop) precheck() error {
 
 // exit ends the loop: totals of every real turn are applied to the final
 // envelope, the envelope is flushed through the one common path, and the
-// caller gets (final, err). reason, when set, is the exit_reason to record for
-// err; otherwise a failed last Drain's own classification is carried over.
+// caller gets (final, err); the session row's ended_reason is made to match
+// the envelope (persistEndedReason). reason, when set, is the exit_reason to
+// record for err; otherwise a failed last Drain's own classification is
+// carried over.
 func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 	final := l.final
 	if final != nil {
@@ -706,6 +715,7 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 			final.Error = l.lastFailed.Error
 		}
 	}
+	l.persistEndedReason(final)
 	if flushErr := flushLoopExit(l.output, l.mode, final, l.lastBuffered); flushErr != nil {
 		return final, flushErr
 	}
@@ -724,11 +734,13 @@ func (l *cliLoop) exitCanceled() (*RunResult, error) {
 	return l.flushed(err)
 }
 
-// flushed applies the totals and flushes without touching the exit reason.
+// flushed applies the totals, persists the envelope's reason and flushes,
+// without touching the exit reason.
 func (l *cliLoop) flushed(err error) (*RunResult, error) {
 	if l.final != nil {
 		l.applyTotals(l.final)
 	}
+	l.persistEndedReason(l.final)
 	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
 		return l.final, flushErr
 	}

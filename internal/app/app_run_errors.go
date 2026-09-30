@@ -231,3 +231,11 @@ func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails
 	}
 	return &runIncompleteError{reason: "cancelled"}
 }
+
+// turnRefusedByOwner reports that a turn never started because another owner
+// holds the session: a lock held by another process (a web tab's human turn,
+// `sessions inject`) or an in-process owner. Such a turn ran nothing.
+func turnRefusedByOwner(err error) bool {
+	var busy *session.SessionLockBusyError
+	return errors.As(err, &busy) || errors.Is(err, agent.ErrSessionBusy)
+}
