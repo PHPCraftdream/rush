@@ -506,6 +506,9 @@ type sessionListItem struct {
 	Tokens       int64   `json:"tokens"`
 	CostUSD      float64 `json:"cost_usd"`
 	YoloEnabled  bool    `json:"yolo_enabled"`
+	// EndedReason is how the session's last run ended (its exit_reason);
+	// empty while a run is in progress or when none ever ended.
+	EndedReason string `json:"ended_reason,omitempty"`
 	// Status is "running" (lock exists, holder PID alive), "crashed"
 	// (lock exists but PID dead — will be auto-reclaimed) or "" (at rest).
 	// Computed live from the locks directory at list time. omitempty so
@@ -527,6 +530,7 @@ func makeSessionListItem(s session.Session) sessionListItem {
 		Tokens:       s.PromptTokens + s.CompletionTokens,
 		CostUSD:      s.Cost,
 		YoloEnabled:  s.YoloEnabled,
+		EndedReason:  s.EndedReason,
 	}
 }
 
