@@ -5,8 +5,8 @@ package cmd
 // as running / crashed / done / delegating from the locks directory, the
 // shared call-tree activity signal, and the cross-process durable-state
 // walk over live async_jobs delegation rows (session.AsyncJobStore.
-// LiveDescendantJobs) and the session's own running plain jobs
-// (LiveOwnJobs).
+// LiveDescendantJobs), the session's own running plain jobs (LiveOwnJobs) and
+// the durable driver marker of a live `rush run` loop (LiveSessionDrivers).
 
 import (
 	"context"
@@ -108,6 +108,10 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// Own-job half: a root with no lock of its own that is waiting on
 		// its OWN running background job is working, not done.
 		statusByID = markRunningOwnJobs(cmd.Context(), a, sessions, statusByID)
+
+		// Driver half: a session a live `rush run` loop drives between turns
+		// (no lock, no running row) is working too.
+		statusByID = markLiveRunDrivers(cmd.Context(), a, sessions, statusByID)
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -518,4 +522,43 @@ func makeSessionListItem(s session.Session) sessionListItem {
 		CostUSD:      s.Cost,
 		YoloEnabled:  s.YoloEnabled,
 	}
+}
+
+// markLiveRunDrivers promotes a session that would otherwise read as finished
+// ("done") or at rest (blank) to "running" when a live `rush run` loop drives it
+// (the durable driver marker on a host not provably dead; App.LiveSessionDrivers,
+// ONE read for the whole list). Between turns -- a paced retry after a failed
+// Drain, debt pending -- such a loop holds no session lock and has no running
+// row, so without this the session headlined "done" while the loop was still
+// going to react (ASYNC-02: the scope is open). Runs last and never downgrades:
+// running / crashed / delegating keep their own signal.
+func markLiveRunDrivers(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil {
+		return statusByID
+	}
+	drivers, err := a.LiveSessionDrivers(ctx)
+	if err != nil || len(drivers) == 0 {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			continue
+		}
+		if _, driven := drivers[s.ID]; !driven {
+			continue
+		}
+		if statusByID == nil {
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "running"
+	}
+	return statusByID
 }
