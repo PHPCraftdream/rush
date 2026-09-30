@@ -53,7 +53,7 @@ func TestChildDrainQuestion_ReachesParent(t *testing.T) {
 	f, parentID, childID, delivered := childDelegationFixture(t, attemptFixtureOpts{
 		tools: []fantasy.AgentTool{tools.NewAskQuestionTool()}, handler: askQuestionResponse,
 	})
-	f.ledger.armDelegation(parentID, "delegate-1", jobResult{content: "first turn text"})
+	f.ledger.armDelegation(jobOf(f.ledger, parentID, "delegate-1"), jobResult{content: "first turn text"})
 	select {
 	case c := <-delivered:
 		t.Fatalf("the delegation must stay open while the child owes a reaction: %+v", c)
@@ -86,7 +86,7 @@ func TestChildScope_DeferredDebtReleasesDelegation(t *testing.T) {
 	f, parentID, childID, delivered := childDelegationFixture(t, attemptFixtureOpts{noIdle: true})
 	f.coord.suspendAutoResume(childID)
 
-	f.ledger.armDelegation(parentID, "delegate-1", jobResult{content: "first turn text"})
+	f.ledger.armDelegation(jobOf(f.ledger, parentID, "delegate-1"), jobResult{content: "first turn text"})
 
 	select {
 	case c := <-delivered:
