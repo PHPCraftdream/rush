@@ -28,9 +28,13 @@ If the session is currently running in another process, the message is
 merged into its next provider request without restarting the turn. With
 --interrupt the inject is marked so the running turn is cancelled and
 restarted with the new message (interrupt handling itself lives in the
-running process). If no process is currently running the session, the
-message is still persisted and will be picked up the next time the
-session runs.
+running process). A "rush run" loop waiting between turns (on a job, a
+delegation or a retry) counts as running the session: the result says
+running:true, between_turns:true and driver_pid (JSON), no turn is
+running to interrupt, and the message reaches the loop's next turn if it
+runs one (otherwise the session's next run). If no process is running the
+session, the message is still persisted and will be picked up the next
+time the session runs.
 
 The <session-id> may be a full session id or a hash prefix as printed by
 "sessions list".`,
@@ -68,6 +72,11 @@ type injectResult struct {
 	Interrupt bool   `json:"interrupt"`
 	Running   bool   `json:"running"`
 	Status    string `json:"status"` // injected | queued-for-interrupt | persisted-offline
+	// BetweenTurns: a live `rush run` loop drives the session but no turn is
+	// running (it waits on a job, a delegation or a retry); DriverPID is the
+	// loop's. The message reaches the loop's next turn, if it runs one.
+	BetweenTurns bool `json:"between_turns,omitempty"`
+	DriverPID    int  `json:"driver_pid,omitempty"`
 }
 
 func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
@@ -92,7 +101,16 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A session is running while a process holds its lock (a turn) or a live
+	// `rush run` loop drives it between turns (lock released, driver marker
+	// live: R7C-3).
 	running := isSessionLockAlive(a.Config().Options.DataDirectory, sess.ID)
+	var loop *session.SessionDriver
+	if !running {
+		if loop = inspectSessionLiveWork(cmd.Context(), a, sess.ID).driver; loop != nil {
+			running = true
+		}
+	}
 
 	status := "injected"
 	switch {
@@ -111,7 +129,21 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 			Interrupt: interrupt,
 			Running:   running,
 			Status:    status,
+
+			BetweenTurns: loop != nil,
+			DriverPID:    loopPID(loop),
 		})
+	}
+
+	if loop != nil {
+		verb, note := "injected into", ""
+		if interrupt {
+			verb = "queued for interrupt on"
+			note = "; --interrupt has no running turn to cancel and applies when that turn starts"
+		}
+		fmt.Fprintf(os.Stderr, "%s session %s (%s): rush run PID %d drives it between turns; no turn is running now, so it reaches the loop's next turn (if it runs one, else the session's next run)%s\n",
+			verb, sess.ID, short(session.HashID(sess.ID)), loop.PID, note)
+		return nil
 	}
 
 	switch status {
@@ -123,6 +155,13 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "injected into session %s (%s)\n", sess.ID, short(session.HashID(sess.ID)))
 	}
 	return nil
+}
+
+func loopPID(d *session.SessionDriver) int {
+	if d == nil {
+		return 0
+	}
+	return int(d.PID)
 }
 
 // resolveInjectText validates the -m/-f pair (exactly one required) and
