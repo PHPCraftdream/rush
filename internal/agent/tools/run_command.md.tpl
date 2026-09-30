@@ -15,7 +15,7 @@ Because there is no shell, shell builtins CANNOT run: echo, cd, test, set, expor
 </no_builtins>
 
 <behavior_notes>
-- In web and CLI sessions, the program starts asynchronously and returns a job ID; its output and exit status arrive as a new session message. Continue independent work instead of waiting or polling. SDK calls retain foreground behavior.
+- In web and CLI sessions, the program starts asynchronously and returns a job ID; its output and exit status arrive as a new session message. Continue independent work instead of waiting or polling; if none is left, end your turn (the result wakes you) rather than running sleep/echo filler commands. SDK calls retain foreground behavior.
 - Use that job ID with job_output(job_id) to read accumulated output while the program is still running, or job_kill(job_id) to stop it early -- this kills the whole process tree it spawned, not just the direct process. Stopping it this way produces a distinct "stopped" notice, not a generic failure.
 - Bounded program timeout: default {{ .DefaultTimeout }}s, maximum {{ .MaxTimeout }}s (larger values are clamped).
 - Programs on the shared block list cannot run: {{ .BannedCommands }} — plus package-manager install patterns like `go install`, `npm install --global`, `go test -exec`.

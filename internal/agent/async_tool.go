@@ -169,7 +169,7 @@ func (t *asyncTool) awaitAndFinish(ctx context.Context, job *asyncJob) (fantasy.
 // retried tool call reports the SAME child session id the first Start call
 // registered.
 func (t *asyncTool) startedResponse(jobID, childSessionID, claimID string) fantasy.ToolResponse {
-	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work.", t.name, jobID)
+	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work, or end your turn if none is left. Do not wait with sleep/echo commands: each completion wakes you again.", t.name, jobID)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), asyncToolMetadata{
 		Async: true, JobID: jobID, ChildSessionID: childSessionID, Status: "running", ClaimID: claimID,
 	})

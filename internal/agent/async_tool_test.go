@@ -40,6 +40,7 @@ func TestAsyncToolReturnsBeforeCommandFinishes(t *testing.T) {
 	response, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: "run_command", Input: `{}`})
 	require.NoError(t, err)
 	require.Contains(t, response.Content, "started")
+	require.Contains(t, response.Content, "end your turn", "start reply must tell the model not to wait with filler commands")
 	var metadata asyncToolMetadata
 	require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
 	require.True(t, metadata.Async)
