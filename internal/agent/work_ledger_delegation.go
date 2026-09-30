@@ -137,6 +137,13 @@ func (l *workLedger) recheckChild(childSessionID string) {
 		}
 		l.mu.Unlock()
 
+		// R6C-3: the child's spend since its last transfer (its reaction turns)
+		// reaches the owner BEFORE the notice commits, so whoever sees the debt
+		// (the `rush run` loop, a cost cap) reads the complete cost.
+		if l.coord != nil {
+			l.coord.chargeChildToParent(childSessionID, owner)
+		}
+
 		refreshed := snapshot
 		if l.coord != nil {
 			refreshed = l.coord.refreshSubAgentCompletion(childSessionID, snapshot)
