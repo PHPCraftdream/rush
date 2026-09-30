@@ -30,8 +30,7 @@ or other tools.
 
 Exit codes:
   0 — session completed or user interrupted with Ctrl+C
-  1 — session not found
-  2 — database error while streaming
+  1 — session not found, or a database error while streaming
   `,
 	Args: cobra.ExactArgs(1),
 	Example: `
@@ -66,12 +65,12 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	defer a.Shutdown()
 
-	sessionID := args[0]
-	// Verify session exists
-	_, err = resolveSessionID(cmd.Context(), a.Sessions, sessionID)
+	// The argument may be a HASH prefix: every read below uses the resolved id.
+	sess, err := resolveSessionID(cmd.Context(), a.Sessions, args[0])
 	if err != nil {
 		return err
 	}
+	sessionID := sess.ID
 
 	// Track the last message ID we've printed
 	lastPrinted := fromMsgID
@@ -129,9 +128,17 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-cmd.Context().Done():
+			return nil // Ctrl-C: exit 0, as documented
+		case <-ticker.C:
+		}
 		messages, err := a.Messages.List(cmd.Context(), sessionID)
 		if err != nil {
+			if cmd.Context().Err() != nil {
+				return nil // interrupted mid-read
+			}
 			return fmt.Errorf("database error: %w", err)
 		}
 
@@ -167,8 +174,6 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-
-	return nil
 }
 
 // tailSessionFinished reports whether `sessions tail --follow` should stop:
