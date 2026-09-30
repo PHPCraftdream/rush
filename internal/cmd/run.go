@@ -638,6 +638,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		uninstallConsoleCtrlFilter := installConsoleCtrlFilter()
 		defer uninstallConsoleCtrlFilter()
 
+		// A closed stdout pipe fails the exit flush instead of killing the run
+		// (hook and Shutdown still run, R8C-7).
+		defer keepBrokenPipeAsError()()
+
 		// Cancel on SIGINT or SIGTERM.
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 		defer cancel()

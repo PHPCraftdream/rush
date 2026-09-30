@@ -426,6 +426,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			slog.Info("Skipping ended_reason write: the run never started (canceled during admission)", "session_id", sess.ID)
 			return
 		}
+		if req.loopTurn {
+			// The `rush run` loop's exit is the only writer for its turns: the
+			// column stays empty while the run is in progress (R8A-1).
+			return
+		}
 		if req.mutationFree() && (agent.IsDrainNotAttempted(runErr) || errors.Is(runErr, ErrRunQueued) || turnRefusedByOwner(runErr)) {
 			// A follow-up turn that ran nothing (a Drain refused, or queued
 			// behind another owner; a reviewer turn refused by the lock holder)
