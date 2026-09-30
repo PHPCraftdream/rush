@@ -5,8 +5,9 @@
 // LIVE rows (state='running') are never touched -- that scoping lives in
 // the SQL itself (PurgeAsyncJobsOlderThan/CountAsyncJobsOlderThan), not
 // here, so a row of an unknown-liveness host is never at risk either: a
-// 'running' row is excluded outright, and a terminal row's host no longer
-// matters once it is terminal.
+// 'running' row is excluded outright, and a terminal row's host does not matter
+// -- except an unnamed job_kill row (delivery='done', no result message),
+// which is kept until its host is dead and recovery re-pends it (R5A-1).
 package session
 
 import (

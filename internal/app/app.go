@@ -301,10 +301,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// async_hosts/session_notices even when no provider is configured yet
 	// and InitCoderAgent therefore never runs (cfg.IsConfigured()==false
 	// below). Constructing the struct does no I/O and registers no host
-	// lock -- RegisterHost only happens lazily on this store's first Claim
-	// (see AsyncJobStore's own doc), so building it unconditionally here is
-	// free for every caller that never starts an async job. InitCoderAgent
-	// reuses this same instance (its own nil-guard already handles that).
+	// lock -- RegisterHost only happens lazily, on this store's first Claim or
+	// ClaimSessionDriver (see AsyncJobStore's own doc), so building it
+	// unconditionally here is free for every caller that never starts an
+	// async job or a driver. InitCoderAgent reuses this same instance (its own nil-guard already handles that).
 	if !o.skipAgentSetup && dataDir != "" {
 		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
 		app.asyncJobStore.SetMessages(messages)
