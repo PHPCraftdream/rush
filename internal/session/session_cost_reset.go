@@ -13,6 +13,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
+// owedChildCost is the spend a child still owes its parent: cost above the
+// ledger. Cost below the ledger is a reset that predates the ledger-aware
+// decrement (decrementCost keeps them in step now): everything the child
+// holds was spent after it, so all of it is new. The one rule shared by
+// TransferChildCostToParent and decrementCost.
+func owedChildCost(cost, accounted float64) float64 {
+	owed := cost - accounted
+	if owed < 0 {
+		owed = cost
+	}
+	return owed
+}
+
 // decrementCost applies a negative delta and keeps parent_cost_accounted
 // consistent with it, in one IMMEDIATE transaction (the writer connection
 // takes the write lock at BEGIN, so nothing interleaves between the read and
@@ -40,10 +53,10 @@ func (s *service) decrementCost(ctx context.Context, sessionID string, delta flo
 	}
 
 	chargedParent := ""
-	if row.ParentSessionID.Valid && row.Cost > row.ParentCostAccounted {
+	if owed := owedChildCost(row.Cost, row.ParentCostAccounted); row.ParentSessionID.Valid && owed > 0 {
 		_, perr := qtx.IncrementSessionCost(ctx, db.IncrementSessionCostParams{
 			ID:   row.ParentSessionID.String,
-			Cost: row.Cost - row.ParentCostAccounted,
+			Cost: owed,
 		})
 		switch {
 		case perr == nil:

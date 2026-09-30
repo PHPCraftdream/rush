@@ -5,11 +5,14 @@ package cmd
 // first.
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +26,18 @@ and per-session model selection.
 
 Useful when you want to re-run "rush run --session <same-id>" from a
 clean slate without picking a new id and losing the side-channel state
-(system prompt, model overrides) that you previously configured.`,
+(system prompt, model overrides) that you previously configured.
+
+The wipe is a clean slate: the session's undelivered and unreacted background
+job / supervision notices are voided with the messages, so
+none of them reappears in the next run. A session that is still worked on is
+never reset: reset refuses while a "rush run" loop drives it (even between
+turns) or a background job / delegation of it is running. Stop it first
+("rush sessions cancel <id>"; a hung "rush run" can be ended by its PID, and
+"rush sessions kill <id>" ends the holder of the session lock during a turn).
+--force kills the process holding the session lock (a turn in progress) and takes
+over the lock, then applies the same check: it does not override a loop waiting
+between turns or a running job that outlived the killed process.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Wipe history, keep system prompt, continue with same id
@@ -89,8 +103,9 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
-		if err := a.Messages.DeleteSessionMessages(cmd.Context(), sess.ID); err != nil {
-			return fmt.Errorf("failed to reset session %s: %w", sess.ID, err)
+		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID)
+		if err != nil {
+			return err
 		}
 		// Zero the per-session usage counters so a follow-up run starts
 		// from an honest "empty context" estimate.
@@ -109,6 +124,49 @@ rush sessions reset pr-42 --force
 			}
 		}
 		fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sess.ID, short(session.HashID(sess.ID)))
+		if outcome.JobsVoided+outcome.NoticesVoided > 0 {
+			fmt.Fprintf(os.Stderr, "voided %d background job notice(s) and %d session notice(s) of the wiped history\n",
+				outcome.JobsVoided, outcome.NoticesVoided)
+		}
 		return nil
 	},
+}
+
+// resetSessionHistory is the wipe itself (R8A-3): it refuses while the session
+// is still worked on, then deletes the messages and voids the session's
+// async notice rows in one transaction, so the next run starts from a truly
+// clean slate. Refusal, not stopping, because the live work belongs to other
+// processes this command cannot stop safely: voiding a running job would
+// leave its process editing the workspace with its result silently dropped,
+// and a loop between turns would run its next Drain on the wiped history.
+func resetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.ResetOutcome, error) {
+	store := a.AsyncJobStore()
+	if store == nil {
+		// No async data can exist without a store: the plain wipe is all there is.
+		if err := a.Messages.DeleteSessionMessages(ctx, sessionID); err != nil {
+			return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
+		}
+		return session.ResetOutcome{}, nil
+	}
+	// Dead-host rows (a force-killed run) become 'interrupted' first: only
+	// rows on a live host still count as running.
+	store.RecoverOwnerScope(ctx, sessionID, a.Messages)
+	if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
+		return session.ResetOutcome{}, resetRefusedError(sessionID, w.describe())
+	}
+	outcome, err := store.ResetOwnerHistory(ctx, a.Messages, sessionID)
+	if errors.Is(err, session.ErrResetJobsRunning) {
+		return session.ResetOutcome{}, resetRefusedError(sessionID, err.Error())
+	}
+	if err != nil {
+		return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
+	}
+	return outcome, nil
+}
+
+func resetRefusedError(sessionID, what string) error {
+	return fmt.Errorf("session %s is still being worked on (%s); nothing was reset. "+
+		"Stop it first (`rush sessions cancel %s`: a waiting rush run exits at its next wake; a hung one can be ended by its PID, shown by `rush sessions jobs %s`, "+
+		"or `rush sessions kill %s` while a turn holds the session lock), then reset again "+
+		"(--force only kills the process holding the session lock; it does not stop a loop between turns or running jobs)", sessionID, what, sessionID, sessionID, sessionID)
 }

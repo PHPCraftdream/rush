@@ -976,6 +976,17 @@ type Querier interface {
 	// would never match here and silently fail to downgrade 'done' to 'void',
 	// leaving a suppressed notice mis-recorded as delivered).
 	VoidPendingSessionNotice(ctx context.Context, arg VoidPendingSessionNoticeParams) (int64, error)
+	// Full history wipe (`sessions reset`, R8A-3): every non-running row of the
+	// owner still pending or already delivered-to-history becomes void, so the
+	// next turn's pull cannot show it in the clean slate and no old
+	// done-but-unreacted debt survives (debt excludes void). reacted_failed is
+	// cleared with it: a settle-by-failure closure describes the wiped history.
+	// Running rows are NOT touched: the caller refuses the reset while any
+	// exists (their process is not the wiper's to stop).
+	VoidUndeliveredAsyncJobsForOwner(ctx context.Context, arg VoidUndeliveredAsyncJobsForOwnerParams) (int64, error)
+	// session_notices half of VoidUndeliveredAsyncJobsForOwner (`sessions reset`,
+	// R8A-3): every pending or delivered notice of the owner becomes void.
+	VoidUndeliveredSessionNoticesForOwner(ctx context.Context, arg VoidUndeliveredSessionNoticesForOwnerParams) (int64, error)
 	// Rerun truncation: a delivered wake_failed marker whose message is in the
 	// deleted tail is dropped, not re-pended -- it reports that the deleted
 	// branch's wake-up failed, which says nothing about the new branch.

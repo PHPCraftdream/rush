@@ -203,6 +203,30 @@ func TestTransferChildCostToParent_CostBelowAccounted_TreatedAsReset(t *testing.
 	require.InDelta(t, 0.6, f.cost(t, f.parent.ID), 1e-9, "a second transfer is a no-op")
 }
 
+// TestIncrementCostNegative_CostBelowAccounted_ChargesLegacyRowBeforeZeroing
+// is the reset-side twin of the test above (R8A-4): a legacy row (cost below
+// the ledger: its spend after a pre-fix reset is all new) that is reset with
+// this binary BEFORE any transfer must still charge that spend to the parent
+// instead of dropping it.
+//
+// Revert-check: with the decrementCost condition back to
+// `row.Cost > row.ParentCostAccounted` the parent stays 0 (FAIL).
+func TestIncrementCostNegative_CostBelowAccounted_ChargesLegacyRowBeforeZeroing(t *testing.T) {
+	t.Parallel()
+	f := newCostFixture(t)
+
+	_, err := f.conn.ExecContext(f.ctx,
+		`UPDATE sessions SET cost = 0.6, parent_cost_accounted = 1.0 WHERE id = ?`, f.child.ID)
+	require.NoError(t, err)
+	f.spend(t, -0.6)
+
+	require.InDelta(t, 0.6, f.cost(t, f.parent.ID), 1e-9, "the legacy row's post-reset spend must reach the parent")
+	require.InDelta(t, 0, f.cost(t, f.child.ID), 1e-9)
+	require.InDelta(t, 0, f.accounted(t, f.child.ID), 1e-9)
+	f.transfer(t)
+	require.InDelta(t, 0.6, f.cost(t, f.parent.ID), 1e-9, "a later transfer adds nothing")
+}
+
 // TestIncrementCostIfUnderMax_NegativeDeltaFollowsTheLedger: the guarded
 // writer takes the same reset path for a decrease (a decrease can never
 // overshoot a budget).

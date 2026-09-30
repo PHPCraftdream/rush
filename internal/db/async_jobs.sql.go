@@ -1640,3 +1640,28 @@ func (q *Queries) VoidAsyncJobsByToolCallIDs(ctx context.Context, arg VoidAsyncJ
 	}
 	return items, nil
 }
+
+const voidUndeliveredAsyncJobsForOwner = `-- name: VoidUndeliveredAsyncJobsForOwner :execrows
+UPDATE async_jobs SET delivery = 'void', reacted_failed = 0, updated_at = ?
+WHERE owner_session_id = ? AND state != 'running' AND delivery IN ('pending', 'done')
+`
+
+type VoidUndeliveredAsyncJobsForOwnerParams struct {
+	UpdatedAt      int64  `json:"updated_at"`
+	OwnerSessionID string `json:"owner_session_id"`
+}
+
+// Full history wipe (`sessions reset`, R8A-3): every non-running row of the
+// owner still pending or already delivered-to-history becomes void, so the
+// next turn's pull cannot show it in the clean slate and no old
+// done-but-unreacted debt survives (debt excludes void). reacted_failed is
+// cleared with it: a settle-by-failure closure describes the wiped history.
+// Running rows are NOT touched: the caller refuses the reset while any
+// exists (their process is not the wiper's to stop).
+func (q *Queries) VoidUndeliveredAsyncJobsForOwner(ctx context.Context, arg VoidUndeliveredAsyncJobsForOwnerParams) (int64, error) {
+	result, err := q.exec(ctx, q.voidUndeliveredAsyncJobsForOwnerStmt, voidUndeliveredAsyncJobsForOwner, arg.UpdatedAt, arg.OwnerSessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

@@ -99,13 +99,7 @@ func (s *service) TransferChildCostToParent(ctx context.Context, childSessionID,
 	// The read above is the first statement of an IMMEDIATE transaction, so
 	// the write lock is already held: a concurrent reset (negative
 	// IncrementCost) is serialised entirely before or after this call.
-	delta := accounting.Cost - accounting.ParentCostAccounted
-	if delta < 0 {
-		// Cost fell below the ledger: a reset that predates the ledger-aware
-		// decrement (decrementCost keeps them in step now). Everything the
-		// child holds now was spent after it, so all of it is new.
-		delta = accounting.Cost
-	}
+	delta := owedChildCost(accounting.Cost, accounting.ParentCostAccounted)
 
 	// Always run the parent UPDATE: for delta 0 it is a no-op write, but the
 	// RETURNING clause still surfaces sql.ErrNoRows if the parent was deleted

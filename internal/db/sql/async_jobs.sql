@@ -515,3 +515,14 @@ UPDATE async_jobs SET tool_call_id = @new_tool_call_id, updated_at = @updated_at
 WHERE owner_session_id = @owner_session_id AND tool_call_id = @old_tool_call_id
   AND state != 'running'
   AND (delivery IN ('done', 'void') OR (delivery = 'pending' AND announced = 1));
+
+-- name: VoidUndeliveredAsyncJobsForOwner :execrows
+-- Full history wipe (`sessions reset`, R8A-3): every non-running row of the
+-- owner still pending or already delivered-to-history becomes void, so the
+-- next turn's pull cannot show it in the clean slate and no old
+-- done-but-unreacted debt survives (debt excludes void). reacted_failed is
+-- cleared with it: a settle-by-failure closure describes the wiped history.
+-- Running rows are NOT touched: the caller refuses the reset while any
+-- exists (their process is not the wiper's to stop).
+UPDATE async_jobs SET delivery = 'void', reacted_failed = 0, updated_at = ?
+WHERE owner_session_id = ? AND state != 'running' AND delivery IN ('pending', 'done');

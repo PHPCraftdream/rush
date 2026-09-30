@@ -483,6 +483,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.voidPendingSessionNoticeStmt, err = db.PrepareContext(ctx, voidPendingSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingSessionNotice: %w", err)
 	}
+	if q.voidUndeliveredAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, voidUndeliveredAsyncJobsForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query VoidUndeliveredAsyncJobsForOwner: %w", err)
+	}
+	if q.voidUndeliveredSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, voidUndeliveredSessionNoticesForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query VoidUndeliveredSessionNoticesForOwner: %w", err)
+	}
 	if q.voidWakeFailedNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, voidWakeFailedNoticesByMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidWakeFailedNoticesByMessageIDs: %w", err)
 	}
@@ -1259,6 +1265,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing voidPendingSessionNoticeStmt: %w", cerr)
 		}
 	}
+	if q.voidUndeliveredAsyncJobsForOwnerStmt != nil {
+		if cerr := q.voidUndeliveredAsyncJobsForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing voidUndeliveredAsyncJobsForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.voidUndeliveredSessionNoticesForOwnerStmt != nil {
+		if cerr := q.voidUndeliveredSessionNoticesForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing voidUndeliveredSessionNoticesForOwnerStmt: %w", cerr)
+		}
+	}
 	if q.voidWakeFailedNoticesByMessageIDsStmt != nil {
 		if cerr := q.voidWakeFailedNoticesByMessageIDsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidWakeFailedNoticesByMessageIDsStmt: %w", cerr)
@@ -1461,6 +1477,8 @@ type Queries struct {
 	voidAsyncJobsByAnnounceMessageIDsStmt                *sql.Stmt
 	voidAsyncJobsByToolCallIDsStmt                       *sql.Stmt
 	voidPendingSessionNoticeStmt                         *sql.Stmt
+	voidUndeliveredAsyncJobsForOwnerStmt                 *sql.Stmt
+	voidUndeliveredSessionNoticesForOwnerStmt            *sql.Stmt
 	voidWakeFailedNoticesByMessageIDsStmt                *sql.Stmt
 	writeToOrphanOutboxStmt                              *sql.Stmt
 }
@@ -1622,6 +1640,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		voidAsyncJobsByAnnounceMessageIDsStmt:                q.voidAsyncJobsByAnnounceMessageIDsStmt,
 		voidAsyncJobsByToolCallIDsStmt:                       q.voidAsyncJobsByToolCallIDsStmt,
 		voidPendingSessionNoticeStmt:                         q.voidPendingSessionNoticeStmt,
+		voidUndeliveredAsyncJobsForOwnerStmt:                 q.voidUndeliveredAsyncJobsForOwnerStmt,
+		voidUndeliveredSessionNoticesForOwnerStmt:            q.voidUndeliveredSessionNoticesForOwnerStmt,
 		voidWakeFailedNoticesByMessageIDsStmt:                q.voidWakeFailedNoticesByMessageIDsStmt,
 		writeToOrphanOutboxStmt:                              q.writeToOrphanOutboxStmt,
 	}
