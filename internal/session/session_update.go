@@ -20,6 +20,9 @@ func (s *service) IncrementCost(ctx context.Context, sessionID string, delta flo
 	if delta == 0 {
 		return s.Get(ctx, sessionID)
 	}
+	if delta < 0 {
+		return s.decrementCost(ctx, sessionID, delta)
+	}
 	dbSession, err := s.q.IncrementSessionCost(ctx, db.IncrementSessionCostParams{
 		ID:   sessionID,
 		Cost: delta,
@@ -36,9 +39,11 @@ func (s *service) IncrementCost(ctx context.Context, sessionID string, delta flo
 // Service.IncrementCostIfUnderMax for rationale. maxCost <= 0 means
 // "unlimited": the predicate would otherwise reject every charge (cost +
 // delta < 0 is never true for non-negative cost/delta), so that case falls
-// through to the same unconditional path as IncrementCost.
+// through to the same unconditional path as IncrementCost. A negative delta
+// takes that path too: a decrease cannot overshoot a budget, and it must
+// settle the parent ledger like every other negative delta.
 func (s *service) IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (Session, bool, error) {
-	if maxCost <= 0 {
+	if maxCost <= 0 || delta < 0 {
 		sess, err := s.IncrementCost(ctx, sessionID, delta)
 		return sess, err == nil, err
 	}
@@ -91,10 +96,15 @@ func (s *service) TransferChildCostToParent(ctx context.Context, childSessionID,
 		return fmt.Errorf("get child session: %w", err)
 	}
 
+	// The read above is the first statement of an IMMEDIATE transaction, so
+	// the write lock is already held: a concurrent reset (negative
+	// IncrementCost) is serialised entirely before or after this call.
 	delta := accounting.Cost - accounting.ParentCostAccounted
 	if delta < 0 {
-		// Should not happen (cost only grows), but never charge negative.
-		delta = 0
+		// Cost fell below the ledger: a reset that predates the ledger-aware
+		// decrement (decrementCost keeps them in step now). Everything the
+		// child holds now was spent after it, so all of it is new.
+		delta = accounting.Cost
 	}
 
 	// Always run the parent UPDATE: for delta 0 it is a no-op write, but the

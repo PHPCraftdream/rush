@@ -146,10 +146,6 @@ func (s *service) ListAll(ctx context.Context) ([]Session, error) {
 	var sessions []Session
 	for rows.Next() {
 		var item db.Session
-		var cancelRequested int64
-		var endedReason string
-		var budgetMaxCost float64
-		var budgetMaxTokens, budgetTimeoutSec int64
 		if err := rows.Scan(
 			&item.ID, &item.ParentSessionID, &item.Title, &item.MessageCount,
 			&item.PromptTokens, &item.CompletionTokens, &item.Cost,
@@ -160,18 +156,12 @@ func (s *service) ListAll(ctx context.Context) ([]Session, error) {
 			&item.SmartModelReasoningEffort, &item.FastModelReasoningEffort,
 			&item.WorkerModelProvider, &item.WorkerModelID, &item.WorkerModelReasoningEffort,
 			&item.ReviewerModelProvider, &item.ReviewerModelID, &item.ReviewerModelReasoningEffort,
-			&cancelRequested,
-			&endedReason, &budgetMaxCost, &budgetMaxTokens, &budgetTimeoutSec,
+			&item.CancelRequested,
+			&item.EndedReason, &item.BudgetMaxCost, &item.BudgetMaxTokens, &item.BudgetTimeoutSec,
 		); err != nil {
 			return nil, err
 		}
-		sess := s.fromDBItem(item)
-		sess.CancelRequested = cancelRequested != 0
-		sess.EndedReason = endedReason
-		sess.BudgetMaxCost = budgetMaxCost
-		sess.BudgetMaxTokens = budgetMaxTokens
-		sess.BudgetTimeoutSec = budgetTimeoutSec
-		sessions = append(sessions, sess)
+		sessions = append(sessions, s.fromDBItem(item))
 	}
 	return sessions, rows.Err()
 }
