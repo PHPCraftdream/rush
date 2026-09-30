@@ -422,7 +422,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				if a.asyncJobs != nil {
 					a.asyncJobs.markAdmissionRefusedRelease(call.SessionID)
 				}
-				return nil, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr)
+				a.noteRefusal(call.SessionID, lockErr)
+				return nil, notAttempted(call, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr))
 			}
 			// Unidentified error (not "busy") — e.g. permission denied,
 			// IO error, or any other failure that isn't "someone else
@@ -435,7 +436,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			// proceed unprotected.
 			slog.Error("agent.Run: failed to acquire inter-process session lock, refusing to run unprotected",
 				"session_id", call.SessionID, "err", lockErr)
-			return nil, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr)
+			a.noteRefusal(call.SessionID, lockErr)
+			return nil, notAttempted(call, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr))
 		}
 		// Release the lock in the abandonOwnershipWithHandoff defer above.
 		defer func() {
@@ -532,10 +534,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		call = mb.reclaimReplacementOrKeep(call)
 		inheritReplacementIdentityCallback(&previousCall, &call)
 		if err := persistCallModels(call); err != nil {
+			a.noteRefusal(call.SessionID, err)
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				return nil, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+				return nil, notAttempted(call, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr))
 			}
-			return nil, err
+			return nil, notAttempted(call, err)
 		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
@@ -582,7 +585,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
-		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
+		att := a.newDrainAttempt(call)
+		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		err = a.afterTurn(call, att, err)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}

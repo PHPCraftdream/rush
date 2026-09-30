@@ -187,36 +187,16 @@ func (c *coordinator) WaitForHint(ctx context.Context, sessionID string) {
 	c.asyncJobs.waitForHint(waitCtx, sessionID, since)
 }
 
-// CaptureDrainSnapshot implements ReactionDebtSource.
-func (c *coordinator) CaptureDrainSnapshot(ctx context.Context, sessionID string) session.DebtSnapshot {
-	if c.asyncJobs == nil {
-		return session.DebtSnapshot{}
-	}
-	snap, err := c.asyncJobs.captureDebtSnapshot(ctx, sessionID)
-	if err != nil {
-		return session.DebtSnapshot{}
-	}
-	return snap
+// CaptureDrainSnapshot implements ReactionDebtSource. Deprecated no-op: a
+// Drain leg is accounted by the turn loop that runs it (drain_attempt.go);
+// the CLI loop no longer accounts anything itself.
+func (c *coordinator) CaptureDrainSnapshot(context.Context, string) session.DebtSnapshot {
+	return session.DebtSnapshot{}
 }
 
-// RecordDrainTurnOutcome implements ReactionDebtSource.
-func (c *coordinator) RecordDrainTurnOutcome(ctx context.Context, sessionID string, snapshot session.DebtSnapshot, turnErr error, producedContent bool) {
-	job := jobIdentity{owner: sessionID, toolCallID: "cli-loop"}
-	// "" (no per-attempt assistant-message evidence): the CLI loop's own
-	// turns go through ExecuteRun/coordinator.Run, which does not currently
-	// thread an OnAssistantMessageCreated hook back out to this caller (item
-	// 1, docs/reviews/2026-09-29-async-phase4-round1.md W-DRAIN). settleOr-
-	// RetryDrainFailure's isProviderClassifiable fallback still refuses to
-	// settle on a non-provider-shaped error (e.g. a DB error in the loop's
-	// own turn-start preamble) even without per-attempt evidence.
-	c.recordDrainOutcome(ctx, job, snapshot, true, turnErr, "")
-	// Item 2/C5c fix: the CLI loop's OWN turns are never no-op/queued by the
-	// time they reach here (ExecuteRun already ran a real turn) -- a nil
-	// turnErr with real final text is exactly checkStuckDrainProgress's
-	// "success but did the reaction write actually land" case.
-	if turnErr == nil {
-		c.checkStuckDrainProgress(ctx, job, snapshot, producedContent)
-	}
+// RecordDrainTurnOutcome implements ReactionDebtSource. Deprecated no-op, see
+// CaptureDrainSnapshot.
+func (c *coordinator) RecordDrainTurnOutcome(context.Context, string, session.DebtSnapshot, error, bool) {
 }
 
 // RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and

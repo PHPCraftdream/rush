@@ -573,9 +573,14 @@ func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 // re-entering the loop re-arms autonomy.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
 	delete(c.consecutiveAutoResumes, sessionID)
 	delete(c.autoTurnsSuspended, sessionID)
+	c.autoResumeMu.Unlock()
+	// A human message also reopens the Drain launch gate (a dormant gate
+	// waits for exactly this or a newer fact).
+	if c.asyncJobs != nil {
+		c.asyncJobs.resetDrainGate(sessionID)
+	}
 }
 
 // ResetAutoResumeCounter is the exported wrapper around resetConsecutiveResume

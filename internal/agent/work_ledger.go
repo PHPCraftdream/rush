@@ -121,6 +121,10 @@ type sessionJobs struct {
 	// foreign holder does not release just because our hint counter moved).
 	// Consumed (read-and-cleared) by consumeAdmissionRefusedRelease.
 	admissionRefusedRelease bool
+	// drain is the launch gate every Drain launch decision reads
+	// (drainPermitted); written only by accountDrainAttempt, noteDrainRefused
+	// and the human-message reset. See drainGate in work_ledger_reaction.go.
+	drain drainGate
 }
 
 // workLedger is the single owner of in-memory work state: plain async jobs

@@ -210,12 +210,12 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	}
 
 	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindSupervision, "check-in", true, ""))
-	pulled, _ := agent.pullPendingNotices(ctx, sess.ID)
+	pulled := agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Equal(t, 2, tickCount(), "a supervision check-in must not reset its own backoff")
 
 	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindBGShellDone, "shell done", true, ""))
-	pulled, _ = agent.pullPendingNotices(ctx, sess.ID)
+	pulled = agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Zero(t, tickCount(), "any other notice moving into history is progress")
 }

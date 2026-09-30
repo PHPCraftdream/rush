@@ -6,41 +6,55 @@ package agent
 import (
 	"context"
 	"log/slog"
+
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // decideDrainTurn reports whether a Drain call (agent_turn.go's runTurn,
-// after its own turn-start pull) should reach the provider at all.
-//
-// Uses VISIBLE debt (delivery='done'), never the plain reaction-debt
-// predicate (delivery IN pending,done): a permanently failing pull leaves
-// its rows stuck at 'pending' forever, and reacting to 'pending' debt would
-// force an endless chain of empty-prompt provider turns with nothing new in
-// history to react to (doc sec.6, P1 review fix). anyWake -- this pull's own
-// wake bit -- is used ONLY as a fallback when the debt check itself errors,
-// never as the primary signal (step 3's interim rule, replaced in step 4).
-//
-// When there IS visible debt, the session policy is also consulted: a
-// policy-check error fails OPEN (the worst case is one turn the policy
-// would have refused, not a lost reaction -- the debt stays durable either
-// way).
-func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, anyWake bool) bool {
-	debt, debtErr := a.asyncJobs.visibleReactionDebtExists(ctx, sessionID)
-	if debtErr != nil {
-		slog.Warn("drain turn: visible reaction debt check failed; falling back to this pull's own wake bit",
-			"session_id", sessionID, "err", debtErr)
-		debt = anyWake
-	}
-	if !debt {
-		return false
+// after its own turn-start pull) should reach the provider at all. snap is
+// the visible (delivery='done') debt captured AFTER that pull: a pull that
+// never succeeds leaves rows 'pending', so it can never force a chain of
+// empty-prompt provider turns (doc sec.6). With visible debt the session
+// policy decides; the verdict says why a turn is refused.
+func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, snap session.DebtSnapshot) (bool, drainVerdict) {
+	if snap.Empty() {
+		return false, drainVerdict{kind: drainDeferred, reason: "no visible debt"}
 	}
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
-		return true
+		return true, drainVerdict{kind: drainAllow}
 	}
 	allowed, _, polErr := a.asyncJobs.coord.sessionDrainPolicy(ctx, sessionID)
 	if polErr != nil {
 		slog.Warn("drain turn: session policy check failed; allowing the turn",
 			"session_id", sessionID, "err", polErr)
+		return true, drainVerdict{kind: drainAllow}
+	}
+	if !allowed {
+		return false, drainVerdict{kind: drainDeferred, reason: "session policy"}
+	}
+	return true, drainVerdict{kind: drainAllow}
+}
+
+// visibleDebtSnapshot reads owner's visible (delivery='done') debt row set.
+func (a *sessionAgent) visibleDebtSnapshot(ctx context.Context, sessionID string) (session.DebtSnapshot, error) {
+	if a.asyncJobs == nil {
+		return session.DebtSnapshot{}, nil
+	}
+	return a.asyncJobs.captureDebtSnapshot(ctx, sessionID)
+}
+
+// pendingDebtLeft reports whether pending-inclusive debt remains after a
+// no-turn Drain (its pull keeps failing). An unreadable answer counts as
+// "remains": the session goes to the re-check set instead of being forgotten.
+func (a *sessionAgent) pendingDebtLeft(ctx context.Context, sessionID string) bool {
+	if a.asyncJobs == nil {
+		return false
+	}
+	debt, err := a.asyncJobs.reactionDebtExists(ctx, sessionID)
+	if err != nil {
+		slog.Warn("drain turn: pending debt check failed; treating the debt as remaining",
+			"session_id", sessionID, "err", err)
 		return true
 	}
-	return allowed
+	return debt
 }

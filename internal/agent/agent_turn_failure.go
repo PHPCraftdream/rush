@@ -33,6 +33,11 @@ func (ts *turnStream) handleStreamFailure(
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
 	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	if ts.att != nil {
+		// A watchdog stall surfaces as context.Canceled but is a real,
+		// paid attempt (accountDrainAttempt does not exempt it).
+		ts.att.stalled.Store(isWatchdogStall)
+	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires
 	// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT

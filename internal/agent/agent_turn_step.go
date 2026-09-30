@@ -439,6 +439,9 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"cost", updatedSession.Cost,
 			"max", ts.call.MaxCost,
 		)
+		if ts.att != nil {
+			ts.att.capAbort.Store(true)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}
@@ -453,6 +456,9 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"tokens", totalTokens,
 			"max", ts.call.MaxTokens,
 		)
+		if ts.att != nil {
+			ts.att.capAbort.Store(true)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}

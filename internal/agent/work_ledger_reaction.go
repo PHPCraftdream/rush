@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -200,4 +201,66 @@ func (l *workLedger) captureDebtSnapshot(ctx context.Context, owner string) (ses
 		return session.DebtSnapshot{}, nil
 	}
 	return l.store.CaptureDebtSnapshot(ctx, owner)
+}
+
+// drainGate is one session's Drain launch gate (in memory, per process: the
+// durable bound is K=3 attempts per row). It is shut for retryAt after an
+// unreacted attempt or a refusal; a newer fact hint may open it early unless
+// the last outcome was a paid failure.
+type drainGate struct {
+	retryAt time.Time
+	hintAt  uint64
+	// hintOpens: may a hint newer than hintAt open the gate before retryAt?
+	// False after a paid failure (a fact must not restart the retry clock).
+	hintOpens bool
+	// streak counts consecutive unreacted outcomes; drainDormantStreak or more
+	// keeps the gate shut until a newer fact hint (or a human message).
+	streak int
+}
+
+// drainGateOpen reports whether a Drain may be launched for owner now:
+// open = never paced || (hintOpens && a newer hint arrived) ||
+// (not dormant && retryAt passed). dormant reports a shut gate that only a
+// newer fact (or a human message) can reopen.
+func (l *workLedger) drainGateOpen(owner string, now time.Time) (open, dormant bool, retryAt time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.bySession[owner]
+	if s == nil || s.drain.retryAt.IsZero() {
+		return true, false, time.Time{}
+	}
+	g := s.drain
+	if g.hintOpens && s.hintSeq != g.hintAt {
+		return true, false, g.retryAt
+	}
+	if g.streak < drainDormantStreak {
+		return !now.Before(g.retryAt), false, g.retryAt
+	}
+	return false, true, g.retryAt
+}
+
+// paceDrainGate shuts owner's gate for wait. unreacted counts the outcome
+// toward the dormant streak.
+func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens, unreacted bool) {
+	if owner == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	g := &l.sessionLocked(owner).drain
+	g.retryAt = time.Now().Add(wait)
+	g.hintAt = hintAt
+	g.hintOpens = hintOpens
+	if unreacted {
+		g.streak++
+	}
+}
+
+// resetDrainGate opens owner's gate and clears its streak.
+func (l *workLedger) resetDrainGate(owner string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s := l.bySession[owner]; s != nil {
+		s.drain = drainGate{}
+	}
 }

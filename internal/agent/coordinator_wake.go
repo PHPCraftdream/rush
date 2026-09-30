@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"runtime/debug"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -133,71 +132,17 @@ func (c *coordinator) wakeSession(ctx context.Context, job jobIdentity, wake boo
 	// recorder, never an ancestor's (mirrors turnAdmission's existing
 	// queued-flag isolation).
 	call.onDrainTurnStarting = admission.markReachedProvider
-	// W-DRAIN item 1 (B5/C3 deep fix): capture THIS attempt's own assistant
-	// row id so settleOrRetryDrainFailure can classify from the Drain's own
-	// finish reason instead of runErr alone -- see that function's doc.
-	// newDrainCall already reset OnAssistantMessageCreated to nil, so this
-	// is never overwriting an inherited hook.
-	evidence := newAttemptEvidence()
-	call.OnAssistantMessageCreated = evidence.record
-	snapshot, snapErr := c.asyncJobs.captureDebtSnapshot(ctx, job.owner)
-	if snapErr != nil {
-		slog.Warn("wakeSession: capture debt snapshot failed; settle-by-failure will see an empty set",
-			"session_id", job.owner, "err", snapErr)
-	}
+	// The leg is accounted by the turn loop that runs it (drain_attempt.go),
+	// never here: a queued or merged Drain has no launcher.
 	_, runErr := agent.Run(withTurnAdmission(ctx, admission), call)
-	attemptAssistantMsgID := evidence.resolve()
 	if runErr != nil {
-		// The task is already terminal and its fact already durably
-		// committed -- this failure is about the DELIVERY turn, not the
-		// job. A queued admission is reported via (nil, nil) by Run's own
-		// contract, never as an error, so any non-nil error here is a real
-		// failure to even queue/start (e.g. shutdown, session lock busy).
 		slog.Warn("drain call failed after its underlying notice was committed",
 			"session_id", job.owner, "job_id", job.toolCallID, "err", runErr)
-	}
-	// admission.wasQueued(): this specific call merely joined another
-	// owner's queue rather than running just now -- that later turn's own
-	// in-turn debt+policy re-check governs it; nothing to account for here
-	// yet (see recordDrainOutcome's doc).
-	c.recordDrainOutcome(ctx, job, snapshot, !admission.wasQueued(), runErr, attemptAssistantMsgID)
-	if runErr != nil {
 		return runErr
 	}
-	// W-DRAIN item 2 (C5c fix): a Drain that "succeeded" (fantasy reported no
-	// error) can still have left its captured debt unreacted, if the
-	// reaction write itself silently failed -- see checkStuckDrainProgress's
-	// own doc. hasContent stays false (a no-op) unless the attempt's own
-	// evidence CONFIRMS a clean finish with real content; every bare-mock
-	// SessionAgent test that never wires OnAssistantMessageCreated is
-	// therefore unaffected. !admission.wasQueued() mirrors recordDrainOutcome's
-	// own "attempted" gate just above: a merely-queued call ran no turn of
-	// its own to check progress on.
-	if !admission.wasQueued() {
-		hasContent := false
-		if attemptAssistantMsgID != "" {
-			if msg, ok := c.ownAttemptAssistantMessage(ctx, job.owner, attemptAssistantMsgID); ok {
-				fp := msg.FinishPart()
-				hasContent = (fp == nil || fp.Reason != message.FinishReasonError) && turnMadeProgress(msg)
-			}
-		}
-		c.checkStuckDrainProgress(ctx, job, snapshot, hasContent)
-	}
-	// B7 fix: count only a Drain that ACTUALLY reached the provider -- never
-	// one that was merely admitted/queued (admission.wasQueued(), already
-	// excluded from recordDrainOutcome's accounting above but NOT previously
-	// excluded here) or took the no-turn branch (no debt, or policy forbade
-	// a turn -- decideDrainTurn returned false, so onDrainTurnStarting never
-	// fired). Before this fix EVERY successful wakeSession call incremented
-	// the counter regardless, so a queued or no-turn Drain could exhaust the
-	// cap purely by being re-submitted, never running a single real turn.
+	// B7 fix: count only a Drain that ACTUALLY reached the provider.
 	if counted && admission.didReachProvider() {
 		if already, _ := ctx.Value(capAlreadyCountedCtxKey{}).(bool); !already {
-			// Doc sec.3.4: "failed Drains do not consume the web auto-turn
-			// cap" -- only reached on runErr == nil, i.e. a genuinely
-			// accepted (started or queued) turn. Skipped when the caller
-			// (notifyBackgroundJobDone) already bumped this same wake
-			// itself -- see capAlreadyCountedCtxKey's doc.
 			c.bumpConsecutiveResume(job.owner)
 		}
 	}

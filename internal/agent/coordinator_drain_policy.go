@@ -1,43 +1,40 @@
-// The Drain session policy (doc sec.3.4's "session policy" table) and
-// settle-by-failure (doc sec.3.4 "closing debt by failure"). Both act on a
-// session id BEFORE (policy) or AFTER (settle) a Drain's own provider-turn
-// attempt; see coordinator_wake.go's wakeSession for where each is called
-// from, and agent_turn.go's runTurn for the Drain call's OWN turn-start
-// re-check of the same policy (defense in depth: a policy-check error here
-// fails open, because that turn-start re-check is the authoritative gate).
+// The Drain session policy (doc sec.3.4's "session policy" table): may
+// sessionID's category get a Drain TURN at all. Consulted by wakeSession
+// BEFORE a Drain is submitted and again by the Drain's own turn-start commit
+// (agent_drain_decision.go). Accounting of an attempt lives in
+// drain_attempt.go.
 package agent
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// isPseudoJobID reports whether toolCallID is one of wakeSession's own
-// internal placeholder identities (jobIdentity.toolCallID's doc: "diagnostic-
-// only now") rather than a real, model-facing async-job tool_call_id.
-// settleAndMark uses this to keep a pseudo-id out of a marker's text (item 1
-// fix, docs/reviews/2026-09-29-async-phase4-round1.md B5/C3) while still
-// naming a REAL tool_call_id, which is useful context for whoever reads the
-// marker later.
-func isPseudoJobID(toolCallID string) bool {
-	switch toolCallID {
-	case "release-recheck", "cli-loop", "recheck-pass":
-		return true
-	}
-	return strings.HasPrefix(toolCallID, "supervision-")
-}
+// drainVerdictKind is the outcome of a launch decision.
+type drainVerdictKind uint8
 
-// drainFailureSettleThreshold is doc sec.3.4's K=3: after this many failed
-// wake-up passes for the SAME captured debt id set, a temporary failure is
-// treated as settled even without an unrecoverable classification.
-const drainFailureSettleThreshold = 3
+const (
+	drainAllow drainVerdictKind = iota
+	// drainDeferred: the policy refuses a turn for this debt (foreign driver,
+	// Stop suspension, released child, bg-shell with auto-resume off, ...).
+	drainDeferred
+	// drainPaced: the launch gate is shut until retryAt.
+	drainPaced
+	// drainStuck: the gate is dormant; only a newer fact reopens it.
+	drainStuck
+)
+
+// drainVerdict is one launch decision. recheck: deferred, but worth a tick
+// (foreign driver, unreadable policy input).
+type drainVerdict struct {
+	kind    drainVerdictKind
+	retryAt time.Time
+	recheck bool
+	reason  string
+}
 
 // sessionDrainPolicy decides, BEFORE a Drain is submitted (doc sec.3.4),
 // whether sessionID's category currently permits a Drain TURN at all.
@@ -289,259 +286,4 @@ func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID st
 		}
 	}
 	return true, nil
-}
-
-// recordDrainOutcome is the shared post-turn accounting for a Drain-context
-// turn attempt (doc sec.3.4/sec.6), used both by wakeSession (a coordinator-
-// submitted Drain) and the CLI root's own loop (internal/app, whose turns
-// never go through wakeSession at all -- see ReactionDebtSource.
-// RecordDrainTurnOutcome). snapshot is the debt id set captured BEFORE the
-// turn ran; attempted is false when this specific call never actually ran
-// (merely queued behind another owner) -- nothing to account for yet, since
-// that later turn's own in-turn debt+policy re-check governs it and some
-// future fresh call will still observe whatever debt survives.
-// attemptAssistantMsgID is the OnAssistantMessageCreated-reported id this
-// SPECIFIC Drain attempt wrote (wakeSession captures it; the CLI loop does
-// not currently wire per-attempt evidence through ExecuteRun, so it always
-// passes "" -- see settleOrRetryDrainFailure's fallback for that case).
-func (c *coordinator) recordDrainOutcome(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, attempted bool, turnErr error, attemptAssistantMsgID string) {
-	if !attempted {
-		return
-	}
-	if turnErr != nil {
-		if turnAttemptRefused(turnErr) {
-			// Doc sec.3.4 rule (c)/(b): an admission refusal (session-lock
-			// held by another process, shutdown) keeps the debt untouched
-			// and writes no marker -- it is not a turn failure, just a
-			// missed window. The session goes into the 60s recheck set
-			// instead of being forgotten.
-			c.addToRecheckSet(job.owner)
-			return
-		}
-		c.settleOrRetryDrainFailure(ctx, job, snapshot, turnErr, attemptAssistantMsgID)
-	}
-	// A successful turn is not re-checked against its own captured snapshot
-	// here: this codebase's wakeSession tests widely register a bare mock
-	// SessionAgent as a session's driver (subAgentDrivers.register), whose
-	// canned Run never touches the reacted column at all -- a "did this
-	// turn's debt actually clear" check would misclassify every one of
-	// those as permanently stuck. A genuinely broken pull (doc sec.6: "does
-	// not loop") is still bounded less precisely but safely by the hint/
-	// recheck-set/60s-pass cadence rather than a tight per-release retry.
-}
-
-// settleOrRetryDrainFailure implements doc sec.3.4's "closing debt by
-// failure". Reached ONLY for a REAL provider-turn attempt that failed (an
-// admission refusal is handled separately by wakeSession's own
-// turnAttemptRefused branch, which never reaches here). snapshot is the
-// debt id set captured BEFORE the turn ran (session.AsyncJobStore.
-// CaptureDebtSnapshot) -- the SAME set every counter/settle write below is
-// scoped to, never whatever is pending "now".
-//
-// W-DRAIN item 1 (B5/C3 deep fix): classification uses the Drain's OWN
-// attempt evidence when available (attemptAssistantMsgID, wakeSession's
-// capture), mirroring shouldRetryTurn's ownership gate, rather than runErr
-// alone. runErr alone cannot distinguish "this Drain's own provider call
-// failed" from "some unrelated failure surfaced through the same return
-// path" -- e.g. a queued user turn dispatched behind this Drain in the same
-// mailbox release window, or a DB error in the turn-start preamble before
-// any provider request was ever made.
-func (c *coordinator) settleOrRetryDrainFailure(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, runErr error, attemptAssistantMsgID string) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil || snapshot.Empty() {
-		return
-	}
-	// B5/C3 fix: a cancellation/deadline error, or AwaitingAnswerError, is
-	// NOT evidence that the Drain's own provider attempt failed -- there is
-	// no attempt outcome here to classify at all. classifyProviderError's
-	// "context cancellation is terminal here" is documented as safe ONLY
-	// because its ordinary caller (shouldRetryTurn) first gates on owning
-	// the attempt's own assistant row with a real error finish
-	// (turnMadeProgress/FinishReasonError) -- this function has no such
-	// gate, so it must never reach classifyProviderError for these causes.
-	// Without this, a user Stop during a Drain, CancelAll/shutdown with a
-	// Drain in flight, Ctrl-C/--timeout, a watchdog stall (surfaces as
-	// context.Canceled), or the agent legitimately asking a question all
-	// closed the debt as a permanent failure and wrote a visible
-	// wake-failed marker -- breaking "graceful exit = crash" and losing a
-	// question the model was waiting on an answer to. Route to the recheck
-	// set instead: the debt stays open, retried by a fresh hint or the 60s
-	// pass, never settled on non-attempt evidence.
-	var awaiting *AwaitingAnswerError
-	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.As(runErr, &awaiting) {
-		c.addToRecheckSet(job.owner)
-		return
-	}
-	// Real per-attempt evidence (wakeSession's capture): classify from the
-	// row THIS attempt itself wrote, exactly like shouldRetryTurn/
-	// shouldContinueTurn do for an ordinary turn -- but ONLY when that row
-	// actually exists. A total request failure (e.g. every retry inside a
-	// single fantasy.RetryError hitting the same 503) commonly reports an
-	// OnAssistantMessageCreated id for a step that never persisted content
-	// at all (no row ever committed, or it was rolled back) -- attempt-
-	// EvidenceID != "" does not by itself mean the row is findable. Treat
-	// "reported an id but can't find it" the SAME as "no evidence wired"
-	// (the isProviderClassifiable fallback below), not as a reason to
-	// refuse classification outright -- that was this function's actual
-	// bug (found via TestSettleByFailure_KThreeViaRealReleaseHookAndRecheckPass,
-	// a real end-to-end run against a real failing HTTP provider): wake_
-	// attempts never incremented, K=3 was never reachable, and a genuinely
-	// permanent provider failure never settled.
-	if attemptAssistantMsgID != "" {
-		if msg, ok := c.ownAttemptAssistantMessage(ctx, job.owner, attemptAssistantMsgID); ok {
-			fp := msg.FinishPart()
-			if fp == nil || fp.Reason != message.FinishReasonError {
-				// This attempt's own row did not end in an error finish --
-				// it reacted (or otherwise made a clean finish). runErr does
-				// not describe THIS attempt's own failure; nothing to settle.
-				return
-			}
-			if turnMadeProgress(msg) {
-				// Partial content already written before the failure: a
-				// fresh Drain re-derives and re-answers from the DB at its
-				// own next pull (Drains are regenerable, doc sec.3.4's
-				// wakeSession doc) -- not settled by failure here, unlike an
-				// ordinary turn there is no risk of losing or duplicating a
-				// user prompt.
-				return
-			}
-			// An error-finish, no-progress row: fall through to classify
-			// runErr below, same as the no-evidence path would for a
-			// provider-shaped error.
-		} else if !isProviderClassifiable(runErr) {
-			c.addToRecheckSet(job.owner)
-			return
-		}
-	} else if !isProviderClassifiable(runErr) {
-		// No per-attempt evidence wired for this caller (the CLI loop's own
-		// turns -- ReactionDebtSource.RecordDrainTurnOutcome, item 1) and
-		// runErr is not even provider-shaped: nothing here proves the
-		// PROVIDER actually failed (a DB error in the preamble looks
-		// exactly like this). Route to the recheck set instead of falling
-		// into classifyProviderError's terminal default.
-		c.addToRecheckSet(job.owner)
-		return
-	}
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-
-	if classifyProviderError(runErr) == classTerminal {
-		// Unrecoverable (quota/401/402/other terminal classification):
-		// close the debt on exactly the captured set immediately, K
-		// doesn't matter.
-		c.settleAndMark(settleCtx, job, snapshot, runErr)
-		return
-	}
-	// Temporary failure (doc sec.3.4): increments the counter on exactly
-	// the captured rows; the next attempt comes from a hint or the 60s
-	// pass, never immediately. Settles once K is reached.
-	c.incrementThenSettleIfThreshold(settleCtx, job, snapshot, runErr)
-}
-
-// incrementThenSettleIfThreshold bumps wake_attempts on snapshot's rows and,
-// once any of them reaches drainFailureSettleThreshold, settles the debt by
-// failure exactly as an unrecoverable classification would -- shared by
-// settleOrRetryDrainFailure's temporary-failure branch and
-// checkStuckDrainProgress (doc sec.6: "a Drain ... with a permanent pull
-// error does not loop (the launch counter is bounded)" -- the same counter
-// bounds both causes, since the observable symptom, debt never clearing, is
-// identical).
-func (c *coordinator) incrementThenSettleIfThreshold(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, cause error) {
-	if err := c.asyncJobs.store.IncrementWakeAttempts(ctx, job.owner, snapshot); err != nil {
-		slog.Error("settle-by-failure: increment wake attempts failed", "session_id", job.owner, "err", err)
-		return
-	}
-	attempts, err := c.asyncJobs.store.MaxWakeAttempts(ctx, job.owner, snapshot)
-	if err != nil {
-		slog.Error("settle-by-failure: read wake attempts failed", "session_id", job.owner, "err", err)
-		return
-	}
-	if attempts == 0 {
-		// Every captured row already settled independently (a real turn
-		// reacted to it, or an earlier pass already closed it) -- nothing
-		// left for this pass to act on.
-		return
-	}
-	if attempts < drainFailureSettleThreshold {
-		return
-	}
-	c.settleAndMark(ctx, job, snapshot, cause)
-}
-
-// errDrainProgressNotRecorded is checkStuckDrainProgress's settle-by-failure
-// cause: the turn itself reported success, but the debt it was supposed to
-// react to is still open.
-var errDrainProgressNotRecorded = errors.New("the assistant responded, but its reaction to this event was not recorded")
-
-// checkStuckDrainProgress implements W-DRAIN item 2 (C5c, docs/reviews/
-// 2026-09-29-async-phase4-round1.md): a Drain attempt that reached the
-// provider, produced real content, and returned NO error from wakeSession's
-// (or the CLI loop's) point of view can still leave its captured snapshot's
-// debt rows open -- doc sec.3.4's reaction write commits in the SAME DB
-// transaction as the step's own content persist, and fantasy's OnStepFinish
-// hook has no way to surface a failure of that write back to the caller as
-// a turn error (it "swallows" it, per the finding). Left unchecked, the
-// ordinary hint mechanism relaunches a fresh, PAID provider turn every time
-// afterward, forever, since success never had ANY bound the way failure
-// does (drainFailureSettleThreshold). This reuses that SAME wake_attempts/
-// K=3 counter for the success case: hasContent must be a CONFIRMED signal
-// (wakeSession's own per-attempt finish-reason evidence, or the CLI loop's
-// non-empty FinalText) -- hasContent=false (no evidence at all, e.g. every
-// bare-mock SessionAgent test in this package, which never touches the DB)
-// is always a no-op, so this never fires on a mock's simulated "success"
-// with no real reaction machinery behind it.
-func (c *coordinator) checkStuckDrainProgress(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, hasContent bool) {
-	if !hasContent || c.asyncJobs == nil || c.asyncJobs.store == nil || snapshot.Empty() {
-		return
-	}
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	c.incrementThenSettleIfThreshold(settleCtx, job, snapshot, errDrainProgressNotRecorded)
-}
-
-// settleAndMark closes debt on exactly snapshot's rows and writes the
-// visible marker (doc sec.3.4/ASYNC-09) -- A10/item 1 fix: settle and marker
-// insert happen in ONE transaction via SettleReactedFailedWithMarker
-// (internal/session, agent `store`'s fix), which inserts the marker IFF at
-// least one row was actually settled. This closes two gaps the old two-step
-// SettleReactedFailed+InsertSessionNotice sequence had: (a) a marker-insert
-// failure after the settle committed silently lost the "why" (ASYNC-09);
-// (b) settling a snapshot that turned out to already be fully resolved (a
-// queued user turn behind this Drain reacted to it first) wrote a spurious
-// marker unconditionally -- the atomic method's settled-count gate means
-// this simply becomes a no-op instead.
-//
-// Marker text names job.toolCallID only when it is a real, model-facing
-// tool_call_id (an ordinary async-job/delegation wake) -- the release-
-// recheck/CLI-loop/60s-pass/supervision paths key it on internal pseudo-ids
-// ("release-recheck", "cli-loop", "recheck-pass", "supervision-<uuid>";
-// jobIdentity is diagnostic-only, doc sec.3.4's wakeSession doc), which must
-// never leak into a notice text the model or operator reads -- see
-// isPseudoJobID.
-func (c *coordinator) settleAndMark(ctx context.Context, job jobIdentity, snapshot session.DebtSnapshot, cause error) {
-	var text string
-	if isPseudoJobID(job.toolCallID) {
-		text = fmt.Sprintf(
-			"Не удалось продолжить работу после ошибки провайдера: %s. Событие сохранено; продолжение — при следующем ходе.",
-			cause,
-		)
-	} else {
-		// A real, model-facing tool_call_id (an ordinary async-job/
-		// delegation wake) is useful context for the operator/model reading
-		// the marker later -- only wakeSession's OWN internal pseudo-ids
-		// (release-recheck, cli-loop, recheck-pass, supervision-<uuid>) must
-		// never leak into notice text (item 1 fix).
-		text = fmt.Sprintf(
-			"Не удалось продолжить работу после события %s: %s. Событие сохранено; продолжение — при следующем ходе.",
-			job.toolCallID, cause,
-		)
-	}
-	settled, err := c.asyncJobs.store.SettleReactedFailedWithMarker(ctx, job.owner, snapshot, text)
-	if err != nil {
-		slog.Error("settle-by-failure: settle reacted failed with marker failed", "session_id", job.owner, "err", err)
-		return
-	}
-	if settled == 0 {
-		slog.Debug("settle-by-failure: captured snapshot already fully resolved, nothing settled",
-			"session_id", job.owner)
-	}
 }
