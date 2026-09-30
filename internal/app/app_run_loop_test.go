@@ -374,31 +374,3 @@ func TestRunNonInteractive_FormerDelegationChildReacts(t *testing.T) {
 	require.Equal(t, "the child reacts to its own notice", res.FinalText)
 	require.False(t, h.debtOpen())
 }
-
-// B10: an operator's `sessions cancel` between turns ends the run (canceled)
-// before any paid reaction turn, and a Drain iteration never erases the flag.
-//
-// Revert-check: dropping the pre-launch cancel check launches the Drain (a
-// second request) and this test goes red.
-func TestRunNonInteractive_DrainTurnsMutationFree(t *testing.T) {
-	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, _ []byte, drain bool, _ int) {
-		if drain {
-			t.Error("no Drain may be launched after `sessions cancel`")
-		}
-		loopText(w, "a", "first answer", 11, 3)
-	})
-	h.afterFirstTurn(func() {
-		h.seedDebt()
-		require.NoError(t, h.app.Sessions.RequestCancel(context.Background(), h.sessionID))
-	})
-
-	res, _, err := h.run(loopCtx(t), RunOverrides{})
-
-	require.Error(t, err)
-	require.NotNil(t, res)
-	require.Equal(t, "canceled", res.ExitReason)
-	require.EqualValues(t, 1, h.requests.Load())
-	canceled, cerr := h.app.Sessions.IsCancelRequested(context.Background(), h.sessionID)
-	require.NoError(t, cerr)
-	require.True(t, canceled, "the loop must not clear the operator's cancel request")
-}

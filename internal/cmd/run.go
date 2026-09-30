@@ -751,7 +751,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 
 		// Fold --role into smartModel (see foldRoleModel); resolves
 		// --continue's session first so its worker/reviewer pin applies.
-		smartModel, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
+		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
 		if err != nil {
 			return err
 		}

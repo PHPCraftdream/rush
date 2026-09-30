@@ -81,7 +81,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 
 	defer stopSpinner()
 
-	sess, err := app.resolveRunSession(ctx, req.drainTurn, continueSessionID, useLast)
+	sess, err := app.resolveRunSession(ctx, req.mutationFree(), continueSessionID, useLast)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
@@ -240,10 +240,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	// A Drain turn (req.drainTurn) is mutation-free: the invocation's own setup
-	// -- system prompt, reasoning effort, cancel flag, budget, ended_reason,
-	// title -- ran once with the first turn (R2C-7).
-	if systemPrompt != "" && !req.drainTurn {
+	// A follow-up turn (req.mutationFree: a Drain, the reviewer pass) is
+	// mutation-free: the invocation's own setup -- system prompt, reasoning
+	// effort, model slots, cancel flag, budget, ended_reason, title -- ran once
+	// with the first turn (R2C-7).
+	if systemPrompt != "" && !req.mutationFree() {
 		if err := app.Sessions.UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
 			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
 		}
@@ -255,7 +256,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if overrides.ReasoningEffort != "" && !req.drainTurn {
+	if overrides.ReasoningEffort != "" && !req.mutationFree() {
 		smart := sess.SmartModelReasoningEffort
 		fast := sess.FastModelReasoningEffort
 		if overrides.RoleSmart {
@@ -355,7 +356,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if !req.drainTurn {
+	if !req.mutationFree() {
 		if err := app.Sessions.ClearCancelRequest(mutCtx, sess.ID); err != nil {
 			slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
 		}
@@ -364,7 +365,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	// Fork patch (operator UX): persist budget at run start so
 	// `sessions show` / `sessions locks` can display "cost vs limit".
 	// Also clear ended_reason since the session is being (re)started.
-	if !req.drainTurn {
+	if !req.mutationFree() {
 		if err := app.Sessions.SetBudget(mutCtx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
 			slog.Warn("Failed to persist budget", "session_id", sess.ID, "err", err)
 		}
@@ -425,7 +426,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			slog.Info("Skipping ended_reason write: the run never started (canceled during admission)", "session_id", sess.ID)
 			return
 		}
-		if req.drainTurn && (agent.IsDrainNotAttempted(runErr) || errors.Is(runErr, ErrRunQueued)) {
+		if req.mutationFree() && (agent.IsDrainNotAttempted(runErr) || errors.Is(runErr, ErrRunQueued)) {
 			// A Drain that ran no turn (refused, or queued behind another owner)
 			// must not rewrite how the session's run ended.
 			return
@@ -521,6 +522,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		}
 	}()
 
+	if req.reviewerTurn {
+		// The loop's own reviewer pass: only the review phase runs, as an
+		// ordinary turn (the ctx carries no Drain marker).
+		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+		loop.resetForReviewerPass(reviewCtx)
+		if req.onTurnSubmitted != nil {
+			req.onTurnSubmitted()
+		}
+		result, resultErr := loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
+		loop.flushTerseOutput()
+		return result, resultErr
+	}
+	if req.onTurnSubmitted != nil {
+		req.onTurnSubmitted()
+	}
 	result, resultErr := loop.runTurnPhase(prompt, runFn)
 	// Fork patch (reviewer pass): a CLEAN primary phase (no error — which
 	// already excludes failed, canceled, timed-out, max-cost/max-tokens
@@ -560,12 +576,18 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	// is only consulted once they all already pass (it runs recovery writes and
 	// exclusive lock probes), so runs with no reviewer configured never pay for
 	// it; reviewerPassBlocked retries a DB read error with a pause.
+	//
+	// R3C-1: never inside a Drain iteration (its ctx is a Drain call: the review
+	// turn would inherit it, find nothing to pull and come back as a "queued"
+	// no-turn, dropping the run's real answer) and never when the `rush run`
+	// loop runs the pass itself, once, at its scope-closed exit.
 	reviewerCandidate := resultErr == nil && req.Credentials == nil &&
+		!req.drainTurn && !req.deferReviewer &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
 		shouldRunReviewerPass(overrides.ModelRole, app.config.Config())
 	if reviewerCandidate {
 		if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
-			if app.reviewerPassBlocked(ctx, source, sess.ID) {
+			if app.reviewerPassBlocked(ctx, source, sess.ID, stderr) {
 				reviewerCandidate = false
 			}
 		}

@@ -68,7 +68,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   flushes the last completed turn's answer, and its cost, tokens, tool
   calls, warnings, sub-agent outputs and duration cover every turn of the
   run. A run refused before its first turn (the session is driven by another
-  loop) has nothing to flush. While the loop waits on running work it prints
+  loop), or whose first turn fails before it is launched (a session-setup
+  write or the pending-work drain failed), has nothing to flush: it exits with
+  that error, no envelope is printed and `--on-finish` does not run (no run
+  started). While the loop waits on running work it prints
   a stderr heartbeat naming the job and host it waits on, once when the
   wait starts and then at most every 60s over the whole run, and a
   persistently unreadable database ends the wait after 30s instead of
@@ -227,13 +230,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   re-check of parked delegations and the re-check set. The re-check set's
   wakes run detached (one per session, at most four at a time), so a slow
   reaction turn never delays the next tick's sweep, purge or delegation
-  re-check. A CLI-only install
-  has no ticker: `rush run` runs the dead-host sweep and the retention
-  purge once when its loop starts (never the delegation or re-check-set
-  halves), and a process that registers a host sweeps dead hosts once at
-  registration. Every turn start and scope check recovers the session's own
-  dead-host rows. Library/SDK use, and commands other than `rush run`
-  (except `sessions gc --jobs-older-than`), never purge.
+  re-check. `rush run` runs the same 60s pass while its loop is alive (the
+  ticker starts with the loop's driver claim and stops at the process's
+  shutdown) and
+  the dead-host sweep and retention purge once more when the loop starts, and
+  a process that registers a host sweeps dead hosts once at registration. A
+  CLI-only install with no loop running has no ticker. Every turn start and
+  scope check recovers the session's own dead-host rows. Library/SDK use, and
+  commands other than `rush run` (except `sessions gc --jobs-older-than`),
+  never purge.
 - **Schema.** New migrations `20260929000001` (plain `(owner)` index on
   `session_notices`), `20260929000002` (`async_jobs.claim_id`, closes the
   terminal-transition ABA), `20260929000003` (`async_jobs.announce_message_id`,
@@ -278,8 +283,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   used to close the debt as failed and write a wake-failure marker). A
   release caused by another process holding the session lock no longer
   hot-loops; the session is re-checked by the 60s pass instead. A transient
-  provider failure is no longer retried at once: the retry comes from the
-  next hint or 60s pass, and three failed passes (or a quota/401-class
+  provider failure is no longer retried at once: the retry comes after a 60s
+  pause, and three failed passes (or a quota/401-class
   error) close the debt with a visible wake-failure marker. Stop, shutdown,
   Ctrl-C, `--timeout` and a pending question no longer close debt as
   failed; only rows already visible in history when the turn
@@ -295,8 +300,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   ran it, from what the database says: a turn that reached the provider and
   left its notices unreacted (an error, an empty reply, a reaction write that
   never landed, a watchdog stall, a `--max-tokens`/`--max-cost` cut) counts
-  as one attempt, waits 60s (a newer event or a human message reopens it
-  sooner) and, on the third, or at once on a quota/401-class error, closes
+  as one attempt, waits 60s (a human message reopens it at once; a newer
+  event does not shorten the pause after a failed attempt, only after a
+  refusal before the provider) and, on the third, or at once on a quota/401-class error, closes
   the debt with the visible wake-failure marker. Ctrl-C, `--timeout`, Stop,
   interrupts, shutdown and any refusal before the provider (lock busy, peak
   hours, provider not configured) count as nothing. A reaction turn makes one
@@ -320,7 +326,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the
-  next root turn; the reviewer pass also waits for descendant work.
+  next root turn; the reviewer pass runs once, after all of that work has
+  drained, on the final text (see the reviewer bullet below).
+- **`rush run` reaction turns no longer break the run's answer, totals or
+  session (review round 3).** The automatic reviewer pass runs once, after the
+  last reaction turn, on the final text, and its verdict is the run's answer
+  (it used to be started inside the last reaction turn, come back as a
+  "queued" no-turn and leave the first turn's text and usage as the result).
+  A first turn that fails before it is launched (a session-setup write, the
+  pending-work drain) ends the run with that error instead of being hidden by
+  a later reaction. A reaction turn that committed right before Ctrl-C or
+  `--timeout` keeps its answer. Reaction turns no longer re-write the session's
+  model overrides (a model changed in the web UI during a long wait is kept).
+  The envelope lists each sub-agent once and drops the `final_text` warnings of
+  turns another turn superseded; every failed, retried reaction attempt prints
+  one stderr line naming the error and the retry time; the reviewer-pass skip
+  line goes to the run's own stderr writer; a turn that queued behind another
+  owner no longer drops the usage the session spent meanwhile;
+  `--continue --role worker|reviewer` continues the very session whose pin it
+  read.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
