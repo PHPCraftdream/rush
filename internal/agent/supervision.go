@@ -462,6 +462,12 @@ func (c *coordinator) afterRelease(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
+	// A delegated child's turn just ended (its first turn, a Drain turn, a turn a
+	// Stop cut off): charge its spend to the parent before the release re-check
+	// (R6C-3). A root has no driver, so nothing happens for it.
+	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
+		c.chargeChildToParent(sessionID, driver.parentSessionID)
+	}
 	c.noteSubAgentChildRunEnded(sessionID)
 	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
@@ -469,11 +475,12 @@ func (c *coordinator) afterRelease(sessionID string) {
 }
 
 // supervisionIntervalNS shrinks the built-in initial interval for tests
-// (SetSupervisionDefaultIntervalForTest); 0 keeps supervisionDefaultInterval.
+// (SetSupervisionDefaultIntervalForTest); a value below supervisionMinIntervalFloor
+// (0 included) keeps supervisionDefaultInterval.
 var supervisionIntervalNS atomic.Int64
 
 func defaultSupervisionInterval() time.Duration {
-	if ns := supervisionIntervalNS.Load(); ns > 0 {
+	if ns := supervisionIntervalNS.Load(); time.Duration(ns) >= supervisionMinIntervalFloor {
 		return time.Duration(ns)
 	}
 	return supervisionDefaultInterval

@@ -388,6 +388,27 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 	return c.sessions.TransferChildCostToParent(ctx, childSessionID, parentSessionID)
 }
 
+// chargeChildToParent is updateParentSessionCost for the moments no caller
+// waits on: a delegated child's spend AFTER its first turn (its Drain turns run
+// on its driver, not in runSubAgent) reaches the parent when its delegation
+// releases, before the release's notice commits (workLedger.recheckChild), and
+// at every run end of the child (afterRelease), so a Stop mid-turn is charged
+// too (R6C-3). Idempotent with runSubAgent's own charge and the app's
+// chargeRunningChildren: all three move the same parent_cost_accounted delta.
+// Detached from any caller's context (a Ctrl-C must not drop the spend); a
+// failure only logs, the delta stays for the next charge.
+func (c *coordinator) chargeChildToParent(childSessionID, parentSessionID string) {
+	if c.sessions == nil || childSessionID == "" || parentSessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := c.updateParentSessionCost(ctx, childSessionID, parentSessionID); err != nil {
+		slog.Warn("Failed to charge a delegated child's spend to its parent",
+			"child_session", childSessionID, "parent_session", parentSessionID, "error", err)
+	}
+}
+
 // discoverSkills runs skill discovery for this coordinator at session
 // start. Fork note: upstream threads a pre-built skills.Manager through
 // from app.New; we rejected that abstraction (see CHANGELOG.fork.md
