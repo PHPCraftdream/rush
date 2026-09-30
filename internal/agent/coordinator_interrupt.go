@@ -99,6 +99,17 @@ func (c *coordinator) stopTree(sessionID string) {
 			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
 		}
 	}
+	// R7B-2: a stopped child parked on its own job is not re-checked by any
+	// other trigger (the job is dropped silently, the idle mailbox fires no
+	// release hook), so its driver record and allowlist entry would outlive
+	// the Stop. After the wake zeroing, so debt a racing completion left is
+	// no longer owed; a child still running a turn is released by that turn's
+	// own end.
+	if c.asyncJobs != nil {
+		for _, id := range ids {
+			c.asyncJobs.recheckChild(id)
+		}
+	}
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
