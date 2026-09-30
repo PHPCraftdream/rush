@@ -348,9 +348,11 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 type slowCoordinator struct {
 	calls   atomic.Int64
 	release chan struct{}
+	runCtx  atomic.Pointer[context.Context] // the ctx of the (first) call in flight
 }
 
 func (c *slowCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+	c.runCtx.CompareAndSwap(nil, &ctx)
 	c.calls.Add(1)
 	<-c.release
 	var result any = "ok"
@@ -446,6 +448,7 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 		require.Equal(t, int64(0), entry.Attempts, "step %d: lease recovery charges an attempt; none may have happened", step)
 		require.Equal(t, at.Add(ttl).Unix(), entry.LeaseExpiresAt, "step %d: renewal must have extended the lease to now+TTL", step)
 		require.Equal(t, int64(1), coord.calls.Load(), "step %d: no second dispatch while the first call is in flight", step)
+		require.NoError(t, (*coord.runCtx.Load()).Err(), "step %d: the lease watchdog must not cancel a call whose lease is being renewed (a real-clock read in the watchdog sees every fake deadline as passed)", step)
 	}
 
 	releaseCall()
