@@ -17,10 +17,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   id/pid/label, started/updated times, delivery/wake/reacted, and a short
   result summary. Table and `--json`. A running row on a LIVE host owned by
   another process prints that host's PID and the command that stops that
-  process (`kill <pid>`, or `taskkill /F /T /PID <pid>` on Windows): `rush
-  sessions kill` only ends a running turn and does nothing between turns,
-  so it cannot stop such a job. There is still no job-level kill from the
-  CLI.
+  whole process (`kill -INT <pid>` on POSIX, `taskkill /F /T /PID <pid>` on
+  Windows) and says so: everything else that host runs stops with it. `-INT`
+  because rush catches SIGINT, not SIGTERM, and its graceful exit kills the
+  job process groups; a plain `kill <pid>` would end rush and leave the job
+  children running. The Windows form is forced (no cleanup runs; the job
+  children die with the process tree, and with rush's kill-on-close Job Object
+  when it could join one). `rush sessions
+  kill` kills the holder of the SESSION lock, which nothing holds between
+  turns, so it cannot stop such a job. There is still no job-level kill from
+  the CLI.
 - **`sessions gc --jobs-older-than <duration>`** purges terminal,
   delivered-or-voided `async_jobs`/`session_notices` rows older than the
   given age (`--dry-run` counts only). A `running` row, an undelivered
@@ -48,15 +54,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **`rush run` and a busy session.** The first turn of `rush run --session
-  <busy>` fails fast with the session-busy error, as before phase 4. Only
-  the loop's own later reaction turns (they can legitimately race a web tab
-  that is pulling notices) retry on a lock-busy refusal: every 0.5s, for at
-  most 30s of continuous contention, with a message on stderr, then the run
-  exits with `exit_reason: "error"`. The result of the last completed turn
-  is flushed on every exit path (lock-busy give-up, cancellation, a wait
-  error, scope closed). While the loop waits on running work it prints a
-  stderr heartbeat every 60s, and a persistently unreadable database ends
-  the wait after 30s instead of retrying forever. A Ctrl-C or `--timeout`
+  <busy>` fails fast with the session-busy error, as before phase 4 (the
+  JSON envelope is still printed and `--on-finish` still runs). Only the
+  loop's own later reaction turns (they can legitimately race a web tab that
+  is pulling notices) retry on a lock-busy refusal: every 0.5s, for at most
+  30s of continuous contention, with a message on stderr, then the run
+  exits with `exit_reason: "error"`. A reaction turn that fails in setup
+  before it reaches the provider (a read error on the durable run queue, a
+  model override that no longer resolves) takes the same path: retried
+  every 0.5s for at most 30s, visible on stderr, then `exit_reason:
+  "error"`. Every exit after the first turn ran (lock-busy or setup give-up,
+  cancellation, a wait error, a budget cap, stuck debt, scope closed)
+  flushes the last completed turn's answer, and its cost, tokens, tool
+  calls, warnings, sub-agent outputs and duration cover every turn of the
+  run. A run refused before its first turn (the session is driven by another
+  loop) has nothing to flush. While the loop waits on running work it prints
+  a stderr heartbeat naming the job and host it waits on, once when the
+  wait starts and then at most every 60s over the whole run, and a
+  persistently unreadable database ends the wait after 30s instead of
+  retrying forever. A Ctrl-C or `--timeout`
   that lands right after a turn finished cleanly ends the run with the
   cancellation error and `exit_reason: "canceled"` (it used to exit 0 with a
   canceled envelope).
@@ -70,11 +86,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   exit reason is unaffected. Before, such a notice kept the loop re-checking
   every 5s until `--timeout`/Ctrl-C.
 - **A second `rush run` on a session another live `rush run` loop already
-  drives fails fast, before it changes anything, naming the pid** ("session
-  X is already driven by another `rush run` (host H, pid P, alive); wait
-  for it to finish"). A host whose liveness cannot be determined counts as
-  alive; the marker of a crashed loop is taken over. The loop keeps its
-  claim until it exits (also on Ctrl-C).
+  drives fails fast, before it starts a turn or writes to the session,
+  naming the pid** ("session X is already driven by another `rush run`
+  (host H, pid P, alive); wait for it to finish"). The refused run has
+  already done its once-per-run dead-host sweep and retention purge and
+  registered its own host, which lives until it exits. A host whose
+  liveness cannot be determined counts as alive; the marker of a crashed
+  loop is taken over. The loop keeps its claim until it exits (also on
+  Ctrl-C).
 - **A web process never runs reaction turns on a CLI-driven root.** The
   driving loop is recorded durably in the new `session_drivers` table (host
   id, pid; the driver is alive exactly while its host lock is held, no
@@ -184,7 +203,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Forced shutdown keeps the host lock.** When the shutdown grace period
   expires with turns still running, the process keeps its host lock until it
   really exits, so another process cannot recover rows the still-running
-  goroutines are writing. Only a clean shutdown releases it.
+  goroutines are writing. Only a clean shutdown releases it. There is no later
+  in-process release: the goroutines that outlive the grace have no single
+  completion signal to wait on, so a long-lived embedding process that gets
+  `ShutdownResult.Forced` (or discards it with `Shutdown()`) must exit its
+  process, as the CLI does; until it does, the rows of that host stay
+  `running` and a new App in the same process cannot recover them.
 - **A sub-agent delegation whose last turn produced no text (only reasoning
   or tool calls) now reports "завершено без итогового ответа" to its
   parent**, instead of resurfacing the stale text captured when the
@@ -227,9 +251,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   are added.
 - **Web session-list re-polls read on a separate connection**, so they no
   longer stall behind write transactions (up to the 30s busy timeout); `sessions
-  jobs` reads there too, and no reader waits on a process's first host
-  registration any more (registration no longer holds a lock across its
-  database write, which could also deadlock against a notice pull).
+  jobs` reads there too. The list computes every session's live-work flags with
+  one batched reader call (one query per delegation-tree level and one
+  liveness probe per distinct host for the whole list, not per session). No
+  reader waits on a process's first host registration any more: registration
+  serialises on a lock of its own that no reader and no write transaction
+  takes, so it also cannot deadlock against a notice pull.
 
 ### Removed
 
@@ -240,6 +267,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`rush run --continue --role worker|reviewer` uses the model pinned on the
+  session it continues.** `--continue` names its session only implicitly, and
+  the role fold used to look the pin up before that session was resolved, so
+  the worker/reviewer override set on the session was ignored in favour of
+  the config default. `--session` still takes precedence over `--continue`.
 - **Reaction turns (the turn a session takes after a job or delegation
   finishes) no longer fail in the ways the first phase-4 review found.** A
   reaction turn started from a mailbox release is no longer cut at 30s (it
@@ -296,8 +328,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (rendering pending). This now reads the durable `async_jobs` ledger
   (a live delegation row, checked against its host's liveness) rather than
   a session lock file, so it also covers a delegation whose child session
-  has not yet taken its own turn. Only delegation rows count: a session
-  whose only live work is its own plain background job is not promoted.
+  has not yet taken its own turn. The delegation walk counts delegation rows;
+  a session whose only live work is its own plain background job is reported
+  separately, as "running" (see Added: `HasLiveOwnWork`).
 - **Parked sub-agent outcomes are delivered exactly once and cancellations
   stay cancellations.** A canceled child can no longer be reported to its
   parent as a success carrying the child's last text.
@@ -448,8 +481,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   showing a short hint instead if the call isn't in the loaded transcript.
   The wire contract (`session_live_work` event, `get_session_live_work`
   request) is wired end-to-end on the client; the server-side emitter that
-  actually populates the lists from live jobs/sessions lands in a follow-up
-  once the DB-backed readers exist, so the panel shows Tasks only for now.
+  would populate the lists from live jobs/sessions is not written yet (the
+  DB-backed readers it needs, `AsyncJobStore.LiveJobs`/`LiveWorkForRoots`,
+  ship in the same release), so the panel shows Tasks only for now.
 
 ### Changed
 

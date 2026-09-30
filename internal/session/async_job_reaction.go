@@ -366,8 +366,8 @@ func settleSnapshotRows(ctx context.Context, q *db.Queries, owner string, snap D
 
 // SettleReactedFailedWithMarker is A10's fix: SettleReactedFailed's two-table
 // settle and the wake_failed marker notice it implies were previously two
-// separate commits (coordinator.recordDrainOutcome calling SettleReactedFailed
-// then InsertSessionNotice) -- a marker-insert failure after the settle
+// separate commits (the former coordinator outcome recorder calling
+// SettleReactedFailed then InsertSessionNotice) -- a marker-insert failure after the settle
 // committed closed debt SILENTLY (ASYNC-09), with no visible trace at all.
 // This does both in ONE transaction: settle snap's captured rows on both
 // tables, then insert the NoticeKindWakeFailed marker IFF at least one row
