@@ -80,6 +80,12 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// lock actually hit the message store.
 		statusByID = reclassifyCrashedAsDone(cmd.Context(), a, sessions, statusByID)
 
+		// A "crashed" verdict for an empty (PID-less) or driver-owned lock is
+		// a clean release, not a crash, while the session has live work: a
+		// failed reaction turn's paced retry (error finish, empty back-dated
+		// lock, live driver marker) is running (R6C-2).
+		statusByID = promoteCleanReleaseCrashes(cmd.Context(), a, a.Config().Options.DataDirectory, sessions, statusByID)
+
 		// Sub-agent awareness: a "running" session that is currently blocked
 		// inside an `agent` delegation gets promoted to "delegating" so the
 		// STATUS column distinguishes "top-level agent is working" from "top-
@@ -531,7 +537,8 @@ func makeSessionListItem(s session.Session) sessionListItem {
 // Drain, debt pending -- such a loop holds no session lock and has no running
 // row, so without this the session headlined "done" while the loop was still
 // going to react (ASYNC-02: the scope is open). Runs last and never downgrades:
-// running / crashed / delegating keep their own signal.
+// running / crashed / delegating keep their own signal (a crash whose lock is
+// only a clean release is rescued earlier, by promoteCleanReleaseCrashes).
 func markLiveRunDrivers(
 	ctx context.Context,
 	a *app.App,

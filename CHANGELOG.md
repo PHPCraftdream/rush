@@ -473,6 +473,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   says `running` and names the loop's PID, `sessions list` shows `running`, and
   the web session list sets `HasLiveOwnWork`, all from the durable driver marker
   (host liveness, unknown counts as alive), read in one query for a whole list.
+- **`sessions watch`, `sessions tail --follow` and `sessions locks` no longer
+  call a live `rush run` loop ended or offline while it waits between turns
+  (review round 6).** The session lock is held only during a turn and its file is
+  truncated on release, so a loop waiting on a job (every CLI `bash` is one)
+  left an empty, aging lock file: `watch` printed "session ended" and exited 0,
+  `tail --follow` stopped at the first turn's finish, `locks` said `offline`, and
+  the `/rush` guidance concluded "the holder died" and advised a relaunch that
+  `rush run` then refuses. They now keep going while the driver marker, a running
+  own job or a live delegation exists, and say what they wait on; `locks` shows
+  `between turns (rush run PID n)` (JSON `between_turns`, `driver_pid`; not stale,
+  never pruned). The `/rush` guidance sends `offline` to `sessions why <id>`
+  first. A failed reaction turn's paced retry is `running` in `sessions list` and
+  `sessions why`, not `crashed`: an empty (PID-less) or driver-owned lock is a
+  clean release, and `crashed` stays for a recorded dead PID of another process
+  and for sessions with no live work.
+- **`rush run` without `--timeout` no longer force-kills a waiting loop at the
+  6 h default cap (review round 6).** The cap is now a graceful deadline like
+  `--timeout`: the loop ends through its normal exit (envelope, `--on-finish`,
+  shutdown; exit reason `canceled`) with a stderr line naming the cap;
+  `os.Exit(124)` remains only for a process still alive 60 s past the deadline.
+  A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
+  an explicit `--timeout`. `--timeout` itself is unchanged.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
