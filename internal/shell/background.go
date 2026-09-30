@@ -281,7 +281,8 @@ type BackgroundShell struct {
 	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
 	bufReleased atomic.Bool  // true once the stdout/stderr buffers have been released post-completion
 	releaseOnce sync.Once
-	onDoneCount atomic.Int64 // callbacks registered but not yet delivered
+	onDoneCount atomic.Int64            // callbacks registered but not yet delivered
+	mgr         *BackgroundShellManager // set by start; nil for a hand-built shell (no completion hold)
 
 	// retentionMu serializes attached retention, detached callback release,
 	// callback registration/completion, and the detached transition.
@@ -313,6 +314,11 @@ type BackgroundShellManager struct {
 	// non-atomic check-then-act race without this extra lock serializing the
 	// sequence.
 	startMu sync.Mutex
+
+	// holds is the completion-hold set (background_completion.go), guarded by
+	// holdMu; independent of shells, so a removed job keeps its hold.
+	holdMu sync.Mutex
+	holds  map[*BackgroundShell]struct{}
 
 	// maxJobs is this manager's concurrency cap, defaulting to
 	// MaxBackgroundJobs. It exists as a field rather than a bare use of the
@@ -432,6 +438,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		WorkingDir:  workingDir,
 		StartTime:   time.Now(),
 		Shell:       shell,
+		mgr:         m,
 		ctx:         shellCtx,
 		cancel:      cancel,
 		stdout:      newBoundedBuffer(maxStreamBufferBytes),

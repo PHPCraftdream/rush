@@ -220,7 +220,12 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	if l.coord == nil {
 		return true
 	}
-	if l.coord.background != nil && l.coord.background.ActiveOwned(childID) > 0 {
+	// R7B-1: a shell that finished but whose bg_shell_done notice is not
+	// durable yet (its callback holds a completion hold until the row commits,
+	// notifyBackgroundJobDone) is still open work: without it a re-check in
+	// that window saw no job, no debt and released the delegation with stale
+	// text.
+	if bg := l.coord.background; bg != nil && (bg.ActiveOwned(childID) > 0 || bg.PendingCompletionsOwned(childID) > 0) {
 		return false
 	}
 	if driver, ok := l.coord.subAgentDrivers.get(childID); ok {
