@@ -144,7 +144,20 @@ func textFinishResponse(w http.ResponseWriter, text string) {
 
 func newProbeModel(t *testing.T, srv *httptest.Server) Model {
 	t.Helper()
-	provider, err := openaicompat.New(openaicompat.WithBaseURL(srv.URL), openaicompat.WithAPIKey("probe"))
+	return newProbeModelClient(t, srv, nil)
+}
+
+// newProbeModelClient is newProbeModel over a caller-supplied HTTP client
+// (nil: the SDK default), e.g. one with a Client.Timeout.
+func newProbeModelClient(t *testing.T, srv *httptest.Server, client interface {
+	Do(*http.Request) (*http.Response, error)
+}) Model {
+	t.Helper()
+	opts := []openaicompat.Option{openaicompat.WithBaseURL(srv.URL), openaicompat.WithAPIKey("probe")}
+	if client != nil {
+		opts = append(opts, openaicompat.WithHTTPClient(client))
+	}
+	provider, err := openaicompat.New(opts...)
 	require.NoError(t, err)
 	lm, err := provider.LanguageModel(context.Background(), "probe")
 	require.NoError(t, err)

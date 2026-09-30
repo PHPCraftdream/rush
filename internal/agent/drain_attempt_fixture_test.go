@@ -43,6 +43,9 @@ type attemptFixtureOpts struct {
 	noIdle  bool // do not wire OnSessionIdle
 	// streamIdle/streamTick shrink the stream watchdog (a stalled provider).
 	streamIdle, streamTick time.Duration
+	// clientTimeout is the provider HTTP client's Client.Timeout: a stalled
+	// server then fails with a net/http timeout, not a cancelled context.
+	clientTimeout time.Duration
 }
 
 func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemptFixture {
@@ -60,7 +63,11 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 		textFinishResponse(w, "reacted")
 	}))
 	t.Cleanup(f.srv.Close)
-	f.model = newProbeModel(t, f.srv)
+	if o.clientTimeout > 0 {
+		f.model = newProbeModelClient(t, f.srv, &http.Client{Timeout: o.clientTimeout})
+	} else {
+		f.model = newProbeModel(t, f.srv)
+	}
 
 	f.env = testEnv(t)
 	f.store = session.NewAsyncJobStore(f.env.conn, f.env.workingDir, os.Getpid(), "test")

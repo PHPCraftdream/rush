@@ -106,7 +106,12 @@ type drainAttempt struct {
 	stalled atomic.Bool
 	// capAbort: --max-cost/--max-tokens ended the turn (surfaces as Canceled).
 	capAbort atomic.Bool
-	closed   bool
+	// turnCtxDone: the turn's OWN context was done (cancelled or past its
+	// deadline) when its error surfaced. A deadline error is an operator stop
+	// only when this is true: net/http timeouts satisfy
+	// errors.Is(err, context.DeadlineExceeded) too.
+	turnCtxDone atomic.Bool
+	closed      bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -138,22 +143,35 @@ func (a *sessionAgent) closeDrainAttempt(att *drainAttempt, turnErr error) {
 	a.asyncJobs.coord.accountDrainAttempt(ctx, att, turnErr)
 }
 
+// operatorStop reports whether err is the turn's context ending under an
+// operator (Stop, shutdown, Ctrl-C, --timeout, interrupt/replace, `sessions
+// cancel`), not a provider failure. A cancellation always is (only a
+// cancelled context produces it); a deadline only when the TURN's own context
+// hit it: a net/http timeout satisfies errors.Is(err, context.DeadlineExceeded)
+// with a live turn context and is a transient provider failure.
+func operatorStop(err error, turnCtxDone bool) bool {
+	return errors.Is(err, context.Canceled) || (turnCtxDone && errors.Is(err, context.DeadlineExceeded))
+}
+
 // drainAttemptExempt: the attempt ended for a reason that is not evidence
-// about the debt -- Stop, shutdown, Ctrl-C, --timeout, interrupt/replace,
-// `sessions cancel` all surface as a cancellation. A watchdog stall and a
-// cap abort surface the same way but ARE real, paid attempts.
+// about the debt (operatorStop). A watchdog stall and a cap abort surface as
+// a cancellation too but ARE real, paid attempts.
 func drainAttemptExempt(att *drainAttempt, err error) bool {
 	if att.stalled.Load() || att.capAbort.Load() {
 		return false
 	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return operatorStop(err, att.turnCtxDone.Load())
 }
 
 // drainFailureTerminal reports whether err is a provider failure no retry
 // can fix (401/402/quota/other 4xx/context too large). Peak hours is a
-// window, not a terminal failure.
-func drainFailureTerminal(err error) bool {
+// window, not a terminal failure, and neither is a transport timeout of a
+// live turn (turnCtxDone false).
+func drainFailureTerminal(err error, turnCtxDone bool) bool {
 	if err == nil || errors.Is(err, errProviderPeakHours) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) && !turnCtxDone {
 		return false
 	}
 	var providerErr *fantasy.ProviderError
@@ -170,9 +188,10 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		return
 	}
 	sid := att.sessionID
+	turnCtxDone := att.turnCtxDone.Load()
 	switch att.outcome {
 	case drainNotAttempted:
-		if turnErr == nil || errors.Is(turnErr, context.Canceled) || errors.Is(turnErr, context.DeadlineExceeded) {
+		if turnErr == nil || operatorStop(turnErr, turnCtxDone) {
 			return // a cancelled preamble: nothing was refused, nothing was tried
 		}
 		c.noteDrainRefused(sid, turnErr)
@@ -209,7 +228,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		l.resetDrainGate(sid) // every visible row reacted
 		return
 	}
-	if attempts >= drainFailureSettleThreshold || drainFailureTerminal(turnErr) {
+	if attempts >= drainFailureSettleThreshold || drainFailureTerminal(turnErr, turnCtxDone) {
 		cause := "the assistant responded, but its reaction to this event was not recorded"
 		if turnErr != nil {
 			cause = redactNetworkURLs(turnErr.Error())
@@ -306,7 +325,10 @@ func (a *sessionAgent) noteRefusal(sessionID string, cause error) {
 // in a provider failure, and pushes the supervision deadline unless the leg
 // was a Drain that never reached the provider. It returns the error runOwned
 // should report (a Drain that never reached the provider says so).
-func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err error) error {
+func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err error, turnCtxDone bool) error {
+	if att != nil && turnCtxDone {
+		att.turnCtxDone.Store(true)
+	}
 	a.closeDrainAttempt(att, err)
 	if a.asyncJobs != nil {
 		var awaiting *AwaitingAnswerError
@@ -314,7 +336,7 @@ func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err e
 		switch {
 		case coord != nil && errors.As(err, &awaiting):
 			coord.suspendAutoResume(call.SessionID)
-		case coord != nil && att == nil && err != nil && providerTurnFailed(err):
+		case coord != nil && att == nil && err != nil && providerTurnFailed(err, turnCtxDone):
 			coord.noteTurnFailed(call.SessionID)
 		}
 		if att == nil || att.outcome == drainAttempted {
@@ -328,9 +350,10 @@ func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err e
 }
 
 // providerTurnFailed reports whether err is a real provider failure of an
-// ordinary turn (not a cancellation, not the peak-hours window).
-func providerTurnFailed(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errProviderPeakHours) {
+// ordinary turn (not an operator stop, not the peak-hours window). Same rule
+// as the Drain accounting: a transport timeout of a live turn is a failure.
+func providerTurnFailed(err error, turnCtxDone bool) bool {
+	if operatorStop(err, turnCtxDone) || errors.Is(err, errProviderPeakHours) {
 		return false
 	}
 	return isProviderClassifiable(err)

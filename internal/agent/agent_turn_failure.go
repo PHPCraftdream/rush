@@ -33,10 +33,15 @@ func (ts *turnStream) handleStreamFailure(
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
 	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	// The TURN's own context decides what a deadline error means: a net/http
+	// timeout satisfies errors.Is(err, context.DeadlineExceeded) with a live
+	// turn context and is a provider failure, not an operator stop.
+	turnCtxDone := ts.genCtx.Err() != nil
 	if ts.att != nil {
 		// A watchdog stall surfaces as context.Canceled but is a real,
 		// paid attempt (accountDrainAttempt does not exempt it).
 		ts.att.stalled.Store(isWatchdogStall)
+		ts.att.turnCtxDone.Store(turnCtxDone)
 	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires
@@ -44,8 +49,11 @@ func (ts *turnStream) handleStreamFailure(
 	// context.Canceled, so isCancelErr above never catches it. Without
 	// this branch it fell into the generic `else` below as "Provider
 	// Error" with a bare "context deadline exceeded" — indistinguishable
-	// from a real provider failure and useless to `sessions why`.
-	isRunTimeout := errors.Is(err, context.DeadlineExceeded)
+	// from a real provider failure and useless to `sessions why`. Only a
+	// deadline of the turn's own context counts: a transport timeout
+	// (net/http Client.Timeout) is a provider failure and takes the generic
+	// branch, not this "--timeout" text.
+	isRunTimeout := errors.Is(err, context.DeadlineExceeded) && turnCtxDone
 	// If userMessageCreated is true (either we just created it or
 	// call.ExistingMessageID was set), the call has already left a
 	// persistent trace. Wrap the error to prevent duplicate execution
