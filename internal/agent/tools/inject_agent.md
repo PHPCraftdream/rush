@@ -1,0 +1,1 @@
+Send a message into a running or paused sub-agent's session. By default it only queues/merges the message — if the sub-agent is idle, nothing runs until you also call agent with resume_session_id. Set interrupt:true to cancel its current turn and hand it this message immediately instead of waiting for the turn to end.

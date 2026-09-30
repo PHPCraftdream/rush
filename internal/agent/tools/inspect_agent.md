@@ -1,0 +1,1 @@
+Check a delegated sub-agent's status without waiting for its own completion notice: running, awaiting_answer (it asked a question — see agent's resume_session_id), idle, or a terminal outcome (finished, failed, cancelled, timed_out). Read-only; does not affect the sub-agent.

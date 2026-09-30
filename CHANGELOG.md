@@ -30,6 +30,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   recovery, the 20-active-per-session limit, and cascade/cancel on session
   delete/reset. Worker and tools are stages 4b/4c. New invariants SCHED-01…
   SCHED-05 in `docs/async-invariants.md`.
+- **Sub-agent control tools** `inspect_agent` / `inject_agent` / `stop_agent`
+  (plan stage 3, wake-tools contract §4): check a delegated child's status
+  (running / awaiting_answer / idle / terminal), deliver a message into its
+  running turn (or only queue it when idle; `interrupt:true` replaces the
+  current turn), and stop just that child's turn and armed delegation
+  (idempotent; history preserved; resume with `agent(resume_session_id=...)`).
+  Ownership-checked against the caller session; `job_kill`/`job_output` on a
+  delegation job_id now point at these tools.
+
 - **`rush sessions jobs <id>`** lists a session's own durable async jobs
   (bash/run_command/agent/agentic_fetch) plus its whole delegation tree
   (following `child_session_id`, any state): tool call id, kind, state,

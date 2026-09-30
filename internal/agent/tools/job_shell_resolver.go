@@ -88,16 +88,14 @@ func (e *RunCommandJobError) Error() string {
 }
 
 // DelegationJobError is returned when jobID addresses a delegation (agent/
-// agentic_fetch) job. job_kill/job_output refuse these directly: stop_agent/
-// inspect_agent do not exist yet (task #1024, stage 3), so the text says
-// only that the delegation cannot be stopped/inspected this way and its
-// result arrives as a session message -- see wake-tools-contract.md §4's
-// stage-2 note for why this differs from the contract's eventual text.
+// agentic_fetch) job. job_kill/job_output refuse these directly and point at
+// the dedicated sub-agent control tools (task #1024) -- see wake-tools-
+// contract.md §4.
 type DelegationJobError struct{ JobID, ChildSessionID string }
 
 func (e *DelegationJobError) Error() string {
 	return fmt.Sprintf(
-		"job %s is a sub-agent delegation (child session %s), not a command -- it cannot be stopped or inspected with job_kill/job_output; its result will arrive as a session message when the sub-agent finishes",
+		"job %s is a sub-agent delegation (child session %s), not a command -- use stop_agent to stop it or inspect_agent to check its status; its result will arrive as a session message when the sub-agent finishes",
 		e.JobID, e.ChildSessionID,
 	)
 }

@@ -324,7 +324,7 @@ func TestWorkLedger_ResolveJobShellID_TypedErrors(t *testing.T) {
 	require.Equal(t, "agent-call", delErr.JobID)
 	require.Equal(t, "child-session", delErr.ChildSessionID)
 	require.Contains(t, delErr.Error(), "child session child-session")
-	require.NotContains(t, delErr.Error(), "stop_agent", "stop_agent does not exist yet (stage 3); must not tell the model to call it")
+	require.Contains(t, delErr.Error(), "stop_agent", "stage 3: the refusal must point at the dedicated control tool")
 }
 
 // TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice

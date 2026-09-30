@@ -420,7 +420,7 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 		body = "(no details available)"
 	}
 
-	guidance := "Keep waiting, inspect with job_output, or stop with job_kill (commands only; sub-agent control tools are not available yet)."
+	guidance := "Keep waiting, inspect with job_output, or stop with job_kill (commands); for a sub-agent use inspect_agent, inject_agent or stop_agent."
 	if paused {
 		guidance = fmt.Sprintf(
 			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",

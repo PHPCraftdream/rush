@@ -206,8 +206,8 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 	require.Contains(t, text, "call-abc")
 	require.Contains(t, text, "job_output")
 	require.Contains(t, text, "job_kill")
-	require.NotContains(t, text, "inspect_agent")
-	require.NotContains(t, text, "stop_agent")
+	require.Contains(t, text, "inspect_agent")
+	require.Contains(t, text, "stop_agent")
 }
 
 // TestSupervision_RecordProgressPushesDeadlineForward: recordProgress

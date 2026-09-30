@@ -189,7 +189,8 @@ func TestJobKillTool_DelegationJobIsRefusedNotRoutedToRunCommand(t *testing.T) {
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "sub-agent delegation")
 	require.Contains(t, resp.Content, "child-session-x")
-	require.NotContains(t, resp.Content, "stop_agent", "stage 3's stop_agent does not exist yet")
+	require.Contains(t, resp.Content, "stop_agent", "stage 3: job_kill now points at the dedicated control tool")
+	require.Contains(t, resp.Content, "inspect_agent")
 	require.Empty(t, runCtl.stopCalledJob, "must not route a delegation job_id to RunCommandController")
 }
 
