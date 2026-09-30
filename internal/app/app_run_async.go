@@ -159,15 +159,18 @@ type cliLoop struct {
 	stderr              io.Writer
 }
 
-// cliLoopStderr is where a loop writes its diagnostics; a var so a test can
-// capture them.
-var cliLoopStderr io.Writer = os.Stderr
+// cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
+// the direct uses it replaced) as the loop's diagnostics sink; a test seam.
+var cliLoopStderr io.Writer
 
 func (l *cliLoop) errOut() io.Writer {
 	if l.stderr != nil {
 		return l.stderr
 	}
-	return cliLoopStderr
+	if cliLoopStderr != nil {
+		return cliLoopStderr
+	}
+	return os.Stderr
 }
 
 func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (final *RunResult, runErr error) {
