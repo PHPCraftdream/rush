@@ -82,28 +82,43 @@ func TestDelegationRelease_ChargesChildReactionSpendBeforeTheNoticeCommits(t *te
 	require.InDelta(t, 0.40, c.sessionCost(c.childID), 1e-9)
 }
 
-// TestChildRunEnd_ChargesTheParentItsSpend: a Stop of the delegation (the row
-// goes terminal without a natural release) after the child's Drain turn spent
-// $0.30 still charges the parent through the child's run end, once; a root's
-// release charges nobody.
+// TestChildRunEnd_ChargesTheParentItsSpend: a real Stop of a parked delegation
+// (the row goes terminal, the child's shell keeps running) after the child's
+// Drain turn spent $0.30. The Stop's own re-check cannot release the driver
+// (the shell still holds the scope), so the child's run end is the last thing
+// that can charge the parent: afterRelease charges FIRST, then its re-check
+// releases the driver, which is the order the plan relies on. Charged once; a
+// root's release charges nobody.
 //
 // Revert-check: dropping the charge from afterRelease leaves the parent at
-// $0.10 and this test goes red.
+// $0.10; swapping it with the re-check (noteSubAgentChildRunEnded first)
+// releases the driver before the charge finds it and leaves the parent at
+// $0.10 too: both turn this test red.
 func TestChildRunEnd_ChargesTheParentItsSpend(t *testing.T) {
 	ctx := context.Background()
 	c := newChildBGFixture(t, childBGMode{noIdle: true})
+	c.coord.currentAgent = &mockSessionAgent{} // a root has no driver: Stop and the release route to it
+	c.park()
 	_, err := c.env.sessions.IncrementCost(ctx, c.childID, 0.10)
 	require.NoError(t, err)
 	require.NoError(t, c.coord.updateParentSessionCost(ctx, c.childID, c.parentID))
 
-	// A Drain turn spends $0.30, then the delegation is stopped: the row goes
-	// terminal, and the turn's run end is the last thing that can charge it.
+	// A Drain turn spends $0.30, then the operator stops the delegation.
 	_, err = c.env.sessions.IncrementCost(ctx, c.childID, 0.30)
 	require.NoError(t, err)
-	c.ledger.cancelSession(c.childID)
+	c.coord.Cancel(c.parentID)
+	require.False(t, c.ledger.hasParked(), "the stopped delegation is terminal")
+	_, registered := c.coord.subAgentDrivers.get(c.childID)
+	require.True(t, registered, "the child's shell still holds its scope: the driver stays until the run end")
+	require.InDelta(t, 0.10, c.sessionCost(c.parentID), 1e-9, "nothing charged the Drain turn yet")
+
+	// The shell ends and the child's mailbox is released.
+	require.NoError(t, c.mgr.Kill(ctx, c.held.ID))
 	c.coord.afterRelease(c.childID)
 
 	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
+	_, registered = c.coord.subAgentDrivers.get(c.childID)
+	require.False(t, registered, "and its driver is released")
 	c.coord.afterRelease(c.childID) // a second release charges nothing more
 	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
 
