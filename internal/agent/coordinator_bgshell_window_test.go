@@ -84,8 +84,20 @@ func TestChildScope_FinishedShellStaysOpenUntilItsNoticeCommits(t *testing.T) {
 			require.Zero(t, c.mgr.ActiveOwned(c.childID), "the shell reports finished: the window is open")
 
 			c.requireStillParked("the shell finished, its callback has not entered yet")
+			entered := make(chan struct{}, 1)
+			seam := func(id string) {
+				if id == c.childID {
+					select {
+					case entered <- struct{}{}:
+					default:
+					}
+				}
+			}
+			bgArrivalEnteredSeam.Store(&seam)
+			t.Cleanup(func() { bgArrivalEnteredSeam.Store(nil) })
 			close(enter)
 			if tc.gate {
+				<-entered // the callback is in persistBGShellCompletion; the gate is held, so nothing is written
 				c.requireStillParked("the callback entered and waits on the gate: the notice is not written")
 				c.coord.bgArrival.unlock()
 			}

@@ -145,3 +145,26 @@ func TestCompletionHold_HandBuiltShellIsHarmless(t *testing.T) {
 	close(bs.done)
 	<-fired
 }
+
+// TestCompletionHold_ShutdownReleasesEveryHold: a manager closed at shutdown
+// kills its shells; every callback runs, returns and releases, so no session's
+// scope stays held.
+//
+// Revert-check: a hold released only by MarkCompletionRecorded (not by the
+// callback's return) stays counted after Close for a callback that never
+// records.
+func TestCompletionHold_ShutdownReleasesEveryHold(t *testing.T) {
+	t.Parallel()
+	m, bs := holdFixture(t)
+	other, err := m.StartOwned(t.Context(), "s2", t.TempDir(), nil, "sleep 30", "")
+	require.NoError(t, err)
+	bs.OnDone(func() {})
+	other.OnDone(func() {})
+	require.Equal(t, 1, m.PendingCompletionsOwned("s1"))
+	require.Equal(t, 1, m.PendingCompletionsOwned("s2"))
+
+	m.Close(t.Context())
+
+	eventuallyZero(t, m, "s1", "shutdown released s1")
+	eventuallyZero(t, m, "s2", "shutdown released s2")
+}
