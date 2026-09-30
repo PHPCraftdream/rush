@@ -147,11 +147,14 @@ func newProbeModel(t *testing.T, srv *httptest.Server) Model {
 	return newProbeModelClient(t, srv, nil)
 }
 
+// httpDoer is the HTTP client seam of the provider SDK.
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
 // newProbeModelClient is newProbeModel over a caller-supplied HTTP client
 // (nil: the SDK default), e.g. one with a Client.Timeout.
-func newProbeModelClient(t *testing.T, srv *httptest.Server, client interface {
-	Do(*http.Request) (*http.Response, error)
-}) Model {
+func newProbeModelClient(t *testing.T, srv *httptest.Server, client httpDoer) Model {
 	t.Helper()
 	opts := []openaicompat.Option{openaicompat.WithBaseURL(srv.URL), openaicompat.WithAPIKey("probe")}
 	if client != nil {
