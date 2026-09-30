@@ -128,7 +128,7 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 	}
 
 	params := build(JobNoticeRow{
-		ToolCallID: pulledRow.ToolCallID, ToolName: pulledRow.ToolName,
+		ToolCallID: displayToolCallID(pulledRow.ToolCallID), ToolName: pulledRow.ToolName,
 		NoticeKind: pulledRow.NoticeKind, TimeoutSeconds: int(pulledRow.TimeoutSeconds),
 		State: pulledRow.State, ResultContent: pulledRow.ResultSummary.String,
 		ResultIsError: pulledRow.ResultIsError.Int64 != 0, OriginCLI: pulledRow.OriginCli != 0,
@@ -158,13 +158,16 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 // sec.3.4) fails is marked void instead of delivered, in the same
 // transaction, and produces no message.
 func (s *AsyncJobStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(SessionNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
+	// Captured before any transaction opens (R2A-2): nothing a writer
+	// transaction runs may wait on store state.
+	ownHostID := s.HostID()
 	rows, err := s.q.ListPendingSessionNoticesForOwner(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	var out []PulledNotice
 	for _, row := range rows {
-		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, row, build)
+		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
 		if err != nil {
 			slog.Warn("async job store: pull session notice failed; row stays pending",
 				"session_id", owner, "notice_id", row.ID, "err", err)
@@ -177,7 +180,7 @@ func (s *AsyncJobStore) PullSessionNotices(ctx context.Context, messages message
 	return out, nil
 }
 
-func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
+func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return PulledNotice{}, false, err
@@ -195,7 +198,7 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 		return PulledNotice{}, false, err
 	}
 
-	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, pulledRow)
+	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, ownHostID, pulledRow)
 	if err != nil {
 		return PulledNotice{}, false, err
 	}
@@ -243,7 +246,7 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 // its named job is no longer running; supervision voids if the owner's
 // scope (excluding supervision itself, which has no async_jobs row) has no
 // other running row. Every other kind has no condition and never voids.
-func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner string, row db.SessionNotice) (bool, error) {
+func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
 	case NoticeKindWakeOnly:
 		if !row.JobToolCallID.Valid {
@@ -269,7 +272,12 @@ func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Qu
 			return false, err
 		}
 		for _, r := range running {
-			if s.HostNotDead(r.HostID) {
+			// A job voided by a Rerun is not open scope either, even while its
+			// (possibly unreachable) executor still runs (R2A-9).
+			if r.Delivery == "void" {
+				continue
+			}
+			if s.hostNotDeadFor(ownHostID, r.HostID) {
 				return false, nil
 			}
 		}
@@ -408,4 +416,26 @@ func (s *AsyncJobStore) ListSessionNotices(ctx context.Context, owner string) ([
 		out = append(out, SessionNoticeRow{ID: row.ID, Kind: row.Kind, Text: row.Text})
 	}
 	return out, nil
+}
+
+// RependJobKillRowWithoutNotice is R2A-8's live-process repair for job_kill
+// (DUR-11): causeJobKill commits delivery='done', reacted=1 first and
+// AnnounceJobKillResult names the result message later -- when that fused
+// write does not happen (an error result, a cancelled context, a failed
+// transaction) the row is 'done' with no notice_message_id: never pulled,
+// invisible to Rerun's re-pend, its output lost. This puts exactly that row
+// back to a plain pending, wake=0 notice so the owner's next pull shows the
+// result (a crash between the two writes is repaired by dead-host recovery
+// instead). claimID must be the claim the caller's own transition won: a
+// later claim under a reused tool_call_id is never touched. Reports whether
+// a row was re-pended; false is normal (the fused write succeeded, or the row
+// is not a job_kill row awaiting its message).
+func (s *AsyncJobStore) RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) (bool, error) {
+	rows, err := s.q.RependJobKillRowWithoutNotice(ctx, db.RependJobKillRowWithoutNoticeParams{
+		UpdatedAt: time.Now().Unix(), Owner: owner, ToolCallID: toolCallID, ClaimID: claimID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("async job store: re-pend job_kill row without notice: %w", err)
+	}
+	return rows > 0, nil
 }

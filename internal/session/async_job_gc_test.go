@@ -8,6 +8,7 @@
 package session
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -95,4 +96,88 @@ func TestPurgeSessionNoticesOlderThan_NeverPurgesUnreactedDebt(t *testing.T) {
 	got, err := q.GetSessionNotice(ctx, notices[0].ID)
 	require.NoError(t, err)
 	require.EqualValues(t, notices[0].ID, got.ID, "unreacted debt notice must survive")
+}
+
+// seedFinishedDelegation inserts a terminal, delivered, reacted delegation row
+// owned by parent for child, old enough for any retention cutoff.
+func seedFinishedDelegation(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries, parent, child, toolCallID string) {
+	t.Helper()
+	seedRunningJob(t, ctx, q, parent, toolCallID, store.HostID(), child, true)
+	_, err := store.Transition(ctx, TransitionParams{Owner: parent, ToolCallID: toolCallID, State: "completed", ResultSummary: "ok", Wake: true})
+	require.NoError(t, err)
+	_, err = store.sqlDB.ExecContext(ctx,
+		`UPDATE async_jobs SET delivery = 'done', reacted = 1, notice_message_id = 'm', updated_at = 100 WHERE owner_session_id = ? AND tool_call_id = ?`,
+		parent, toolCallID)
+	require.NoError(t, err)
+}
+
+// TestPurgeJobsOlderThan_KeepsDelegationRowWhileChildStillHasWork is R2A-10:
+// isDurableDelegationChild recognises a released delegation child only by the
+// parent's delegation row, so retention must not delete that row while the
+// child still has a running row or unreacted debt (async_jobs or
+// session_notices, pending included) -- otherwise the child later gets an
+// uncapped Drain on the parent's agent. Once the child is idle the row is
+// purged as before, and the dry-run count agrees with the purge.
+//
+// REVERT CHECK: the child-work predicate removed from PurgeAsyncJobsOlderThan
+// and CountAsyncJobsOlderThan (sql/async_jobs.sql, regenerated) -- every
+// "kept" sub-case purged its delegation row and the require.Zero below failed.
+// Restored; re-ran, passed.
+func TestPurgeJobsOlderThan_KeepsDelegationRowWhileChildStillHasWork(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		child func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries)
+		kept  bool
+	}{
+		{"child has a running row", func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries) {
+			seedRunningJob(t, ctx, q, "child-1", "child-job", store.HostID(), "", true)
+		}, true},
+		{"child has an unreacted done row", func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries) {
+			seedRunningJob(t, ctx, q, "child-1", "child-job", store.HostID(), "", true)
+			_, err := store.Transition(ctx, TransitionParams{Owner: "child-1", ToolCallID: "child-job", State: "completed", ResultSummary: "ok", Wake: true})
+			require.NoError(t, err)
+			_, err = store.sqlDB.ExecContext(ctx, `UPDATE async_jobs SET delivery = 'done', notice_message_id = 'm' WHERE owner_session_id = 'child-1'`)
+			require.NoError(t, err)
+		}, true},
+		{"child has a pending unreacted row", func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries) {
+			seedRunningJob(t, ctx, q, "child-1", "child-job", store.HostID(), "", true)
+			_, err := store.Transition(ctx, TransitionParams{Owner: "child-1", ToolCallID: "child-job", State: "completed", ResultSummary: "ok", Wake: true})
+			require.NoError(t, err)
+		}, true},
+		{"child has a pending notice", func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries) {
+			require.NoError(t, store.InsertSessionNotice(ctx, "child-1", NoticeKindBGShellDone, "bg", true, ""))
+		}, true},
+		{"child is idle", func(t *testing.T, ctx context.Context, store *AsyncJobStore, q *db.Queries) {}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, q, ctx := newTestStore(t)
+			require.NoError(t, seedSession(ctx, q, "parent-1"))
+			require.NoError(t, seedSession(ctx, q, "child-1"))
+			// Register the store's host first so seeded rows sit on a live host.
+			_, err := store.ensureHost(ctx)
+			require.NoError(t, err)
+			seedFinishedDelegation(t, ctx, store, q, "parent-1", "child-1", "deleg-1")
+			tc.child(t, ctx, store, q)
+
+			wantJobs := int64(0)
+			if !tc.kept {
+				wantJobs = 1
+			}
+			counted, _, err := store.CountJobsOlderThan(ctx, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, wantJobs, counted, "the dry-run count must apply the same predicate as the purge")
+			purged, _, err := store.PurgeJobsOlderThan(ctx, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, wantJobs, purged)
+
+			_, getErr := store.Get(ctx, "parent-1", "deleg-1")
+			if tc.kept {
+				require.NoError(t, getErr, "the delegation row must survive while its child still has work")
+			} else {
+				require.ErrorIs(t, getErr, sql.ErrNoRows, "an idle child's delegation row is purged as before")
+			}
+		})
+	}
 }

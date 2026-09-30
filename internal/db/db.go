@@ -114,6 +114,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionMessagesByIDsStmt, err = db.PrepareContext(ctx, deleteSessionMessagesByIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessagesByIDs: %w", err)
 	}
+	if q.deleteTerminalUnannouncedAsyncJobsForHostStmt, err = db.PrepareContext(ctx, deleteTerminalUnannouncedAsyncJobsForHost); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteTerminalUnannouncedAsyncJobsForHost: %w", err)
+	}
 	if q.deleteUnannouncedAsyncJobStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJob); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJob: %w", err)
 	}
@@ -125,6 +128,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getAsyncJobStmt, err = db.PrepareContext(ctx, getAsyncJob); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAsyncJob: %w", err)
+	}
+	if q.getAsyncJobByClaimIDStmt, err = db.PrepareContext(ctx, getAsyncJobByClaimID); err != nil {
+		return nil, fmt.Errorf("error preparing query GetAsyncJobByClaimID: %w", err)
 	}
 	if q.getAverageResponseTimeStmt, err = db.PrepareContext(ctx, getAverageResponseTime); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAverageResponseTime: %w", err)
@@ -204,8 +210,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.hasOutstandingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, hasOutstandingRunQueueEntryForSession); err != nil {
 		return nil, fmt.Errorf("error preparing query HasOutstandingRunQueueEntryForSession: %w", err)
 	}
-	if q.incrementAsyncJobWakeAttemptsStmt, err = db.PrepareContext(ctx, incrementAsyncJobWakeAttempts); err != nil {
-		return nil, fmt.Errorf("error preparing query IncrementAsyncJobWakeAttempts: %w", err)
+	if q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt, err = db.PrepareContext(ctx, incrementAsyncJobWakeAttemptsForSnapshotRow); err != nil {
+		return nil, fmt.Errorf("error preparing query IncrementAsyncJobWakeAttemptsForSnapshotRow: %w", err)
 	}
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
@@ -213,8 +219,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.incrementSessionCostIfUnderMaxStmt, err = db.PrepareContext(ctx, incrementSessionCostIfUnderMax); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCostIfUnderMax: %w", err)
 	}
-	if q.incrementSessionNoticeWakeAttemptsStmt, err = db.PrepareContext(ctx, incrementSessionNoticeWakeAttempts); err != nil {
-		return nil, fmt.Errorf("error preparing query IncrementSessionNoticeWakeAttempts: %w", err)
+	if q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt, err = db.PrepareContext(ctx, incrementSessionNoticeWakeAttemptsForSnapshotRow); err != nil {
+		return nil, fmt.Errorf("error preparing query IncrementSessionNoticeWakeAttemptsForSnapshotRow: %w", err)
 	}
 	if q.insertSessionDriverStmt, err = db.PrepareContext(ctx, insertSessionDriver); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionDriver: %w", err)
@@ -246,8 +252,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listCandidateInterruptedAssistantSessionsStmt, err = db.PrepareContext(ctx, listCandidateInterruptedAssistantSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCandidateInterruptedAssistantSessions: %w", err)
 	}
-	if q.listDistinctRunningHostIDsStmt, err = db.PrepareContext(ctx, listDistinctRunningHostIDs); err != nil {
-		return nil, fmt.Errorf("error preparing query ListDistinctRunningHostIDs: %w", err)
+	if q.listDistinctRecoverableHostIDsStmt, err = db.PrepareContext(ctx, listDistinctRecoverableHostIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query ListDistinctRecoverableHostIDs: %w", err)
 	}
 	if q.listFilesByPathStmt, err = db.PrepareContext(ctx, listFilesByPath); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesByPath: %w", err)
@@ -372,8 +378,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.rependAsyncJobsByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, rependAsyncJobsByNoticeMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query RependAsyncJobsByNoticeMessageIDs: %w", err)
 	}
+	if q.rependJobKillRowWithoutNoticeStmt, err = db.PrepareContext(ctx, rependJobKillRowWithoutNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query RependJobKillRowWithoutNotice: %w", err)
+	}
+	if q.rependJobKillRowsWithoutNoticeForHostStmt, err = db.PrepareContext(ctx, rependJobKillRowsWithoutNoticeForHost); err != nil {
+		return nil, fmt.Errorf("error preparing query RependJobKillRowsWithoutNoticeForHost: %w", err)
+	}
 	if q.rependSessionNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, rependSessionNoticesByMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query RependSessionNoticesByMessageIDs: %w", err)
+	}
+	if q.repointSessionNoticesJobToolCallIDStmt, err = db.PrepareContext(ctx, repointSessionNoticesJobToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query RepointSessionNoticesJobToolCallID: %w", err)
 	}
 	if q.setAsyncJobAnnounceMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobAnnounceMessageID); err != nil {
 		return nil, fmt.Errorf("error preparing query SetAsyncJobAnnounceMessageID: %w", err)
@@ -396,11 +411,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setSessionNoticesWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionNoticesWakeZeroPendingForOwners: %w", err)
 	}
-	if q.settleAsyncJobsReactedFailedStmt, err = db.PrepareContext(ctx, settleAsyncJobsReactedFailed); err != nil {
-		return nil, fmt.Errorf("error preparing query SettleAsyncJobsReactedFailed: %w", err)
+	if q.settleAsyncJobReactedFailedForSnapshotRowStmt, err = db.PrepareContext(ctx, settleAsyncJobReactedFailedForSnapshotRow); err != nil {
+		return nil, fmt.Errorf("error preparing query SettleAsyncJobReactedFailedForSnapshotRow: %w", err)
 	}
-	if q.settleSessionNoticesReactedFailedStmt, err = db.PrepareContext(ctx, settleSessionNoticesReactedFailed); err != nil {
-		return nil, fmt.Errorf("error preparing query SettleSessionNoticesReactedFailed: %w", err)
+	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt, err = db.PrepareContext(ctx, settleSessionNoticeReactedFailedForSnapshotRow); err != nil {
+		return nil, fmt.Errorf("error preparing query SettleSessionNoticeReactedFailedForSnapshotRow: %w", err)
 	}
 	if q.stampInterruptedAssistantIfStillLastStmt, err = db.PrepareContext(ctx, stampInterruptedAssistantIfStillLast); err != nil {
 		return nil, fmt.Errorf("error preparing query StampInterruptedAssistantIfStillLast: %w", err)
@@ -629,6 +644,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionMessagesByIDsStmt: %w", cerr)
 		}
 	}
+	if q.deleteTerminalUnannouncedAsyncJobsForHostStmt != nil {
+		if cerr := q.deleteTerminalUnannouncedAsyncJobsForHostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteTerminalUnannouncedAsyncJobsForHostStmt: %w", cerr)
+		}
+	}
 	if q.deleteUnannouncedAsyncJobStmt != nil {
 		if cerr := q.deleteUnannouncedAsyncJobStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobStmt: %w", cerr)
@@ -647,6 +667,11 @@ func (q *Queries) Close() error {
 	if q.getAsyncJobStmt != nil {
 		if cerr := q.getAsyncJobStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getAsyncJobStmt: %w", cerr)
+		}
+	}
+	if q.getAsyncJobByClaimIDStmt != nil {
+		if cerr := q.getAsyncJobByClaimIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getAsyncJobByClaimIDStmt: %w", cerr)
 		}
 	}
 	if q.getAverageResponseTimeStmt != nil {
@@ -779,9 +804,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing hasOutstandingRunQueueEntryForSessionStmt: %w", cerr)
 		}
 	}
-	if q.incrementAsyncJobWakeAttemptsStmt != nil {
-		if cerr := q.incrementAsyncJobWakeAttemptsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing incrementAsyncJobWakeAttemptsStmt: %w", cerr)
+	if q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt != nil {
+		if cerr := q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing incrementAsyncJobWakeAttemptsForSnapshotRowStmt: %w", cerr)
 		}
 	}
 	if q.incrementSessionCostStmt != nil {
@@ -794,9 +819,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing incrementSessionCostIfUnderMaxStmt: %w", cerr)
 		}
 	}
-	if q.incrementSessionNoticeWakeAttemptsStmt != nil {
-		if cerr := q.incrementSessionNoticeWakeAttemptsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing incrementSessionNoticeWakeAttemptsStmt: %w", cerr)
+	if q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt != nil {
+		if cerr := q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing incrementSessionNoticeWakeAttemptsForSnapshotRowStmt: %w", cerr)
 		}
 	}
 	if q.insertSessionDriverStmt != nil {
@@ -849,9 +874,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listCandidateInterruptedAssistantSessionsStmt: %w", cerr)
 		}
 	}
-	if q.listDistinctRunningHostIDsStmt != nil {
-		if cerr := q.listDistinctRunningHostIDsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listDistinctRunningHostIDsStmt: %w", cerr)
+	if q.listDistinctRecoverableHostIDsStmt != nil {
+		if cerr := q.listDistinctRecoverableHostIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listDistinctRecoverableHostIDsStmt: %w", cerr)
 		}
 	}
 	if q.listFilesByPathStmt != nil {
@@ -1059,9 +1084,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing rependAsyncJobsByNoticeMessageIDsStmt: %w", cerr)
 		}
 	}
+	if q.rependJobKillRowWithoutNoticeStmt != nil {
+		if cerr := q.rependJobKillRowWithoutNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing rependJobKillRowWithoutNoticeStmt: %w", cerr)
+		}
+	}
+	if q.rependJobKillRowsWithoutNoticeForHostStmt != nil {
+		if cerr := q.rependJobKillRowsWithoutNoticeForHostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing rependJobKillRowsWithoutNoticeForHostStmt: %w", cerr)
+		}
+	}
 	if q.rependSessionNoticesByMessageIDsStmt != nil {
 		if cerr := q.rependSessionNoticesByMessageIDsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing rependSessionNoticesByMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.repointSessionNoticesJobToolCallIDStmt != nil {
+		if cerr := q.repointSessionNoticesJobToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing repointSessionNoticesJobToolCallIDStmt: %w", cerr)
 		}
 	}
 	if q.setAsyncJobAnnounceMessageIDStmt != nil {
@@ -1099,14 +1139,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing setSessionNoticesWakeZeroPendingForOwnersStmt: %w", cerr)
 		}
 	}
-	if q.settleAsyncJobsReactedFailedStmt != nil {
-		if cerr := q.settleAsyncJobsReactedFailedStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing settleAsyncJobsReactedFailedStmt: %w", cerr)
+	if q.settleAsyncJobReactedFailedForSnapshotRowStmt != nil {
+		if cerr := q.settleAsyncJobReactedFailedForSnapshotRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing settleAsyncJobReactedFailedForSnapshotRowStmt: %w", cerr)
 		}
 	}
-	if q.settleSessionNoticesReactedFailedStmt != nil {
-		if cerr := q.settleSessionNoticesReactedFailedStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing settleSessionNoticesReactedFailedStmt: %w", cerr)
+	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt != nil {
+		if cerr := q.settleSessionNoticeReactedFailedForSnapshotRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing settleSessionNoticeReactedFailedForSnapshotRowStmt: %w", cerr)
 		}
 	}
 	if q.stampInterruptedAssistantIfStillLastStmt != nil {
@@ -1266,158 +1306,163 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                                             DBTX
-	tx                                             *sql.Tx
-	ackRunQueueEntryStmt                           *sql.Stmt
-	archiveAsyncJobToolCallIDStmt                  *sql.Stmt
-	asyncReactionDebtExistsStmt                    *sql.Stmt
-	claimAsyncJobStmt                              *sql.Stmt
-	cleanupExpiredLeasesStmt                       *sql.Stmt
-	clearReactedFailedForOwnerStmt                 *sql.Stmt
-	clearSessionNoticesReactedFailedForOwnerStmt   *sql.Stmt
-	countAsyncJobsOlderThanStmt                    *sql.Stmt
-	countMessagesBySessionStmt                     *sql.Stmt
-	countMessagesMissingUsageStmt                  *sql.Stmt
-	countMessagesMissingUsageInRangeStmt           *sql.Stmt
-	countSessionNoticesOlderThanStmt               *sql.Stmt
-	createFileStmt                                 *sql.Stmt
-	createMessageStmt                              *sql.Stmt
-	createPendingInjectStmt                        *sql.Stmt
-	createSessionStmt                              *sql.Stmt
-	createSessionPermissionStmt                    *sql.Stmt
-	deleteAsyncHostIfNoJobsStmt                    *sql.Stmt
-	deleteFileStmt                                 *sql.Stmt
-	deleteMessageStmt                              *sql.Stmt
-	deleteMessageIfTerminalStmt                    *sql.Stmt
-	deleteOrphanOutboxEntryIfPendingStmt           *sql.Stmt
-	deletePendingInjectStmt                        *sql.Stmt
-	deletePermissionStmt                           *sql.Stmt
-	deleteSessionStmt                              *sql.Stmt
-	deleteSessionDriverStmt                        *sql.Stmt
-	deleteSessionDriversForHostStmt                *sql.Stmt
-	deleteSessionFilesStmt                         *sql.Stmt
-	deleteSessionMessagesStmt                      *sql.Stmt
-	deleteSessionMessagesByIDsStmt                 *sql.Stmt
-	deleteUnannouncedAsyncJobStmt                  *sql.Stmt
-	enqueueRunQueueEntryStmt                       *sql.Stmt
-	getAsyncHostStmt                               *sql.Stmt
-	getAsyncJobStmt                                *sql.Stmt
-	getAverageResponseTimeStmt                     *sql.Stmt
-	getCallTreeActivityStmt                        *sql.Stmt
-	getCallTreeActivityBatchStmt                   *sql.Stmt
-	getFileStmt                                    *sql.Stmt
-	getFileByPathAndSessionStmt                    *sql.Stmt
-	getFileReadStmt                                *sql.Stmt
-	getHourDayHeatmapStmt                          *sql.Stmt
-	getLastSessionStmt                             *sql.Stmt
-	getMessageStmt                                 *sql.Stmt
-	getOldestPendingRunQueueEntryForSessionStmt    *sql.Stmt
-	getOrphanOutboxEntryStmt                       *sql.Stmt
-	getRecentActivityStmt                          *sql.Stmt
-	getRunQueueEntryStmt                           *sql.Stmt
-	getRunningAsyncJobByChildSessionStmt           *sql.Stmt
-	getSessionByIDStmt                             *sql.Stmt
-	getSessionCostAccountingStmt                   *sql.Stmt
-	getSessionDriverStmt                           *sql.Stmt
-	getSessionNoticeStmt                           *sql.Stmt
-	getToolUsageStmt                               *sql.Stmt
-	getTotalStatsStmt                              *sql.Stmt
-	getTranscriptWindowCursorStmt                  *sql.Stmt
-	getUsageByDayStmt                              *sql.Stmt
-	getUsageByDayOfWeekStmt                        *sql.Stmt
-	getUsageByHourStmt                             *sql.Stmt
-	getUsageByModelStmt                            *sql.Stmt
-	hasOutstandingRunQueueEntryForSessionStmt      *sql.Stmt
-	incrementAsyncJobWakeAttemptsStmt              *sql.Stmt
-	incrementSessionCostStmt                       *sql.Stmt
-	incrementSessionCostIfUnderMaxStmt             *sql.Stmt
-	incrementSessionNoticeWakeAttemptsStmt         *sql.Stmt
-	insertSessionDriverStmt                        *sql.Stmt
-	insertSessionNoticeStmt                        *sql.Stmt
-	leaseRunQueueEntryByIDStmt                     *sql.Stmt
-	listAllSessionPermissionsStmt                  *sql.Stmt
-	listAllSessionsStmt                            *sql.Stmt
-	listAllUserMessagesStmt                        *sql.Stmt
-	listAsyncHostsStmt                             *sql.Stmt
-	listAsyncHostsWithNoJobsStmt                   *sql.Stmt
-	listAsyncJobsForOwnerStmt                      *sql.Stmt
-	listCandidateInterruptedAssistantSessionsStmt  *sql.Stmt
-	listDistinctRunningHostIDsStmt                 *sql.Stmt
-	listFilesByPathStmt                            *sql.Stmt
-	listFilesBySessionStmt                         *sql.Stmt
-	listLatestSessionFilesStmt                     *sql.Stmt
-	listMessagesBySessionStmt                      *sql.Stmt
-	listMessagesBySessionAtCreatedAtStmt           *sql.Stmt
-	listMessagesBySessionOlderThanCreatedAtStmt    *sql.Stmt
-	listMessagesBySessionPaginatedStmt             *sql.Stmt
-	listNewFilesStmt                               *sql.Stmt
-	listPendingAsyncJobNoticesForOwnerStmt         *sql.Stmt
-	listPendingInjectsBySessionStmt                *sql.Stmt
-	listPendingOrphanOutboxEntriesStmt             *sql.Stmt
-	listPendingRunQueueEntriesStmt                 *sql.Stmt
-	listPendingSessionNoticesForOwnerStmt          *sql.Stmt
-	listReactedFailedAsyncJobsForOwnerStmt         *sql.Stmt
-	listReactedFailedSessionNoticesForOwnerStmt    *sql.Stmt
-	listRunningAsyncJobsForHostStmt                *sql.Stmt
-	listRunningAsyncJobsForOwnersStmt              *sql.Stmt
-	listSessionDriverHostIDsStmt                   *sql.Stmt
-	listSessionNoticesForOwnerStmt                 *sql.Stmt
-	listSessionPermissionsStmt                     *sql.Stmt
-	listSessionReadFilesStmt                       *sql.Stmt
-	listSessionsStmt                               *sql.Stmt
-	listStaleLeasedRunQueueEntriesStmt             *sql.Stmt
-	listSubSessionsStmt                            *sql.Stmt
-	listUserMessagesBySessionStmt                  *sql.Stmt
-	markAsyncJobAnnouncedStmt                      *sql.Stmt
-	markAsyncJobsReactedForOwnerStmt               *sql.Stmt
-	markSessionNoticesReactedForOwnerStmt          *sql.Stmt
-	matchSessionPermissionStmt                     *sql.Stmt
-	nackRunQueueEntryStmt                          *sql.Stmt
-	nackRunQueueEntryNoAttemptPenaltyStmt          *sql.Stmt
-	pullPendingAsyncJobNoticeStmt                  *sql.Stmt
-	pullPendingSessionNoticeStmt                   *sql.Stmt
-	purgeAsyncJobsOlderThanStmt                    *sql.Stmt
-	purgeSessionNoticesOlderThanStmt               *sql.Stmt
-	recordFileReadStmt                             *sql.Stmt
-	recordOrphanOutboxFailureStmt                  *sql.Stmt
-	registerAsyncHostStmt                          *sql.Stmt
-	renameSessionStmt                              *sql.Stmt
-	renewRunQueueLeaseStmt                         *sql.Stmt
-	rependAsyncJobsByNoticeMessageIDsStmt          *sql.Stmt
-	rependSessionNoticesByMessageIDsStmt           *sql.Stmt
-	setAsyncJobAnnounceMessageIDStmt               *sql.Stmt
-	setAsyncJobNoticeMessageIDStmt                 *sql.Stmt
-	setAsyncJobNoticeMessageIDIfDoneStmt           *sql.Stmt
-	setAsyncJobsWakeZeroPendingForOwnersStmt       *sql.Stmt
-	setParentCostAccountedStmt                     *sql.Stmt
-	setSessionNoticeMessageIDStmt                  *sql.Stmt
-	setSessionNoticesWakeZeroPendingForOwnersStmt  *sql.Stmt
-	settleAsyncJobsReactedFailedStmt               *sql.Stmt
-	settleSessionNoticesReactedFailedStmt          *sql.Stmt
-	stampInterruptedAssistantIfStillLastStmt       *sql.Stmt
-	sumMessageUsageByDayInRangeStmt                *sql.Stmt
-	sumMessageUsageByModelInRangeStmt              *sql.Stmt
-	sumMessageUsageBySessionStmt                   *sql.Stmt
-	takeOverSessionDriverStmt                      *sql.Stmt
-	terminalFailRunQueueEntryStmt                  *sql.Stmt
-	transitionAsyncJobTerminalPreserveVoidStmt     *sql.Stmt
-	updateMessageStmt                              *sql.Stmt
-	updateMessageIfNotTerminalStmt                 *sql.Stmt
-	updateMessagePinnedStmt                        *sql.Stmt
-	updateMessageUsageStmt                         *sql.Stmt
-	updatePermissionEnabledStmt                    *sql.Stmt
-	updateSessionModelsStmt                        *sql.Stmt
-	updateSessionReasoningEffortStmt               *sql.Stmt
-	updateSessionSystemPromptStmt                  *sql.Stmt
-	updateSessionWorkerReviewerModelsStmt          *sql.Stmt
-	updateSessionWorkerReviewerReasoningEffortStmt *sql.Stmt
-	visibleAsyncReactionDebtExistsStmt             *sql.Stmt
-	voidAsyncJobsByAnnounceMessageIDsStmt          *sql.Stmt
-	voidAsyncJobsByToolCallIDsStmt                 *sql.Stmt
-	voidPendingAsyncJobNoticeStmt                  *sql.Stmt
-	voidPendingSessionNoticeStmt                   *sql.Stmt
-	voidWakeFailedNoticesByMessageIDsStmt          *sql.Stmt
-	writeToOrphanOutboxStmt                        *sql.Stmt
+	db                                                   DBTX
+	tx                                                   *sql.Tx
+	ackRunQueueEntryStmt                                 *sql.Stmt
+	archiveAsyncJobToolCallIDStmt                        *sql.Stmt
+	asyncReactionDebtExistsStmt                          *sql.Stmt
+	claimAsyncJobStmt                                    *sql.Stmt
+	cleanupExpiredLeasesStmt                             *sql.Stmt
+	clearReactedFailedForOwnerStmt                       *sql.Stmt
+	clearSessionNoticesReactedFailedForOwnerStmt         *sql.Stmt
+	countAsyncJobsOlderThanStmt                          *sql.Stmt
+	countMessagesBySessionStmt                           *sql.Stmt
+	countMessagesMissingUsageStmt                        *sql.Stmt
+	countMessagesMissingUsageInRangeStmt                 *sql.Stmt
+	countSessionNoticesOlderThanStmt                     *sql.Stmt
+	createFileStmt                                       *sql.Stmt
+	createMessageStmt                                    *sql.Stmt
+	createPendingInjectStmt                              *sql.Stmt
+	createSessionStmt                                    *sql.Stmt
+	createSessionPermissionStmt                          *sql.Stmt
+	deleteAsyncHostIfNoJobsStmt                          *sql.Stmt
+	deleteFileStmt                                       *sql.Stmt
+	deleteMessageStmt                                    *sql.Stmt
+	deleteMessageIfTerminalStmt                          *sql.Stmt
+	deleteOrphanOutboxEntryIfPendingStmt                 *sql.Stmt
+	deletePendingInjectStmt                              *sql.Stmt
+	deletePermissionStmt                                 *sql.Stmt
+	deleteSessionStmt                                    *sql.Stmt
+	deleteSessionDriverStmt                              *sql.Stmt
+	deleteSessionDriversForHostStmt                      *sql.Stmt
+	deleteSessionFilesStmt                               *sql.Stmt
+	deleteSessionMessagesStmt                            *sql.Stmt
+	deleteSessionMessagesByIDsStmt                       *sql.Stmt
+	deleteTerminalUnannouncedAsyncJobsForHostStmt        *sql.Stmt
+	deleteUnannouncedAsyncJobStmt                        *sql.Stmt
+	enqueueRunQueueEntryStmt                             *sql.Stmt
+	getAsyncHostStmt                                     *sql.Stmt
+	getAsyncJobStmt                                      *sql.Stmt
+	getAsyncJobByClaimIDStmt                             *sql.Stmt
+	getAverageResponseTimeStmt                           *sql.Stmt
+	getCallTreeActivityStmt                              *sql.Stmt
+	getCallTreeActivityBatchStmt                         *sql.Stmt
+	getFileStmt                                          *sql.Stmt
+	getFileByPathAndSessionStmt                          *sql.Stmt
+	getFileReadStmt                                      *sql.Stmt
+	getHourDayHeatmapStmt                                *sql.Stmt
+	getLastSessionStmt                                   *sql.Stmt
+	getMessageStmt                                       *sql.Stmt
+	getOldestPendingRunQueueEntryForSessionStmt          *sql.Stmt
+	getOrphanOutboxEntryStmt                             *sql.Stmt
+	getRecentActivityStmt                                *sql.Stmt
+	getRunQueueEntryStmt                                 *sql.Stmt
+	getRunningAsyncJobByChildSessionStmt                 *sql.Stmt
+	getSessionByIDStmt                                   *sql.Stmt
+	getSessionCostAccountingStmt                         *sql.Stmt
+	getSessionDriverStmt                                 *sql.Stmt
+	getSessionNoticeStmt                                 *sql.Stmt
+	getToolUsageStmt                                     *sql.Stmt
+	getTotalStatsStmt                                    *sql.Stmt
+	getTranscriptWindowCursorStmt                        *sql.Stmt
+	getUsageByDayStmt                                    *sql.Stmt
+	getUsageByDayOfWeekStmt                              *sql.Stmt
+	getUsageByHourStmt                                   *sql.Stmt
+	getUsageByModelStmt                                  *sql.Stmt
+	hasOutstandingRunQueueEntryForSessionStmt            *sql.Stmt
+	incrementAsyncJobWakeAttemptsForSnapshotRowStmt      *sql.Stmt
+	incrementSessionCostStmt                             *sql.Stmt
+	incrementSessionCostIfUnderMaxStmt                   *sql.Stmt
+	incrementSessionNoticeWakeAttemptsForSnapshotRowStmt *sql.Stmt
+	insertSessionDriverStmt                              *sql.Stmt
+	insertSessionNoticeStmt                              *sql.Stmt
+	leaseRunQueueEntryByIDStmt                           *sql.Stmt
+	listAllSessionPermissionsStmt                        *sql.Stmt
+	listAllSessionsStmt                                  *sql.Stmt
+	listAllUserMessagesStmt                              *sql.Stmt
+	listAsyncHostsStmt                                   *sql.Stmt
+	listAsyncHostsWithNoJobsStmt                         *sql.Stmt
+	listAsyncJobsForOwnerStmt                            *sql.Stmt
+	listCandidateInterruptedAssistantSessionsStmt        *sql.Stmt
+	listDistinctRecoverableHostIDsStmt                   *sql.Stmt
+	listFilesByPathStmt                                  *sql.Stmt
+	listFilesBySessionStmt                               *sql.Stmt
+	listLatestSessionFilesStmt                           *sql.Stmt
+	listMessagesBySessionStmt                            *sql.Stmt
+	listMessagesBySessionAtCreatedAtStmt                 *sql.Stmt
+	listMessagesBySessionOlderThanCreatedAtStmt          *sql.Stmt
+	listMessagesBySessionPaginatedStmt                   *sql.Stmt
+	listNewFilesStmt                                     *sql.Stmt
+	listPendingAsyncJobNoticesForOwnerStmt               *sql.Stmt
+	listPendingInjectsBySessionStmt                      *sql.Stmt
+	listPendingOrphanOutboxEntriesStmt                   *sql.Stmt
+	listPendingRunQueueEntriesStmt                       *sql.Stmt
+	listPendingSessionNoticesForOwnerStmt                *sql.Stmt
+	listReactedFailedAsyncJobsForOwnerStmt               *sql.Stmt
+	listReactedFailedSessionNoticesForOwnerStmt          *sql.Stmt
+	listRunningAsyncJobsForHostStmt                      *sql.Stmt
+	listRunningAsyncJobsForOwnersStmt                    *sql.Stmt
+	listSessionDriverHostIDsStmt                         *sql.Stmt
+	listSessionNoticesForOwnerStmt                       *sql.Stmt
+	listSessionPermissionsStmt                           *sql.Stmt
+	listSessionReadFilesStmt                             *sql.Stmt
+	listSessionsStmt                                     *sql.Stmt
+	listStaleLeasedRunQueueEntriesStmt                   *sql.Stmt
+	listSubSessionsStmt                                  *sql.Stmt
+	listUserMessagesBySessionStmt                        *sql.Stmt
+	markAsyncJobAnnouncedStmt                            *sql.Stmt
+	markAsyncJobsReactedForOwnerStmt                     *sql.Stmt
+	markSessionNoticesReactedForOwnerStmt                *sql.Stmt
+	matchSessionPermissionStmt                           *sql.Stmt
+	nackRunQueueEntryStmt                                *sql.Stmt
+	nackRunQueueEntryNoAttemptPenaltyStmt                *sql.Stmt
+	pullPendingAsyncJobNoticeStmt                        *sql.Stmt
+	pullPendingSessionNoticeStmt                         *sql.Stmt
+	purgeAsyncJobsOlderThanStmt                          *sql.Stmt
+	purgeSessionNoticesOlderThanStmt                     *sql.Stmt
+	recordFileReadStmt                                   *sql.Stmt
+	recordOrphanOutboxFailureStmt                        *sql.Stmt
+	registerAsyncHostStmt                                *sql.Stmt
+	renameSessionStmt                                    *sql.Stmt
+	renewRunQueueLeaseStmt                               *sql.Stmt
+	rependAsyncJobsByNoticeMessageIDsStmt                *sql.Stmt
+	rependJobKillRowWithoutNoticeStmt                    *sql.Stmt
+	rependJobKillRowsWithoutNoticeForHostStmt            *sql.Stmt
+	rependSessionNoticesByMessageIDsStmt                 *sql.Stmt
+	repointSessionNoticesJobToolCallIDStmt               *sql.Stmt
+	setAsyncJobAnnounceMessageIDStmt                     *sql.Stmt
+	setAsyncJobNoticeMessageIDStmt                       *sql.Stmt
+	setAsyncJobNoticeMessageIDIfDoneStmt                 *sql.Stmt
+	setAsyncJobsWakeZeroPendingForOwnersStmt             *sql.Stmt
+	setParentCostAccountedStmt                           *sql.Stmt
+	setSessionNoticeMessageIDStmt                        *sql.Stmt
+	setSessionNoticesWakeZeroPendingForOwnersStmt        *sql.Stmt
+	settleAsyncJobReactedFailedForSnapshotRowStmt        *sql.Stmt
+	settleSessionNoticeReactedFailedForSnapshotRowStmt   *sql.Stmt
+	stampInterruptedAssistantIfStillLastStmt             *sql.Stmt
+	sumMessageUsageByDayInRangeStmt                      *sql.Stmt
+	sumMessageUsageByModelInRangeStmt                    *sql.Stmt
+	sumMessageUsageBySessionStmt                         *sql.Stmt
+	takeOverSessionDriverStmt                            *sql.Stmt
+	terminalFailRunQueueEntryStmt                        *sql.Stmt
+	transitionAsyncJobTerminalPreserveVoidStmt           *sql.Stmt
+	updateMessageStmt                                    *sql.Stmt
+	updateMessageIfNotTerminalStmt                       *sql.Stmt
+	updateMessagePinnedStmt                              *sql.Stmt
+	updateMessageUsageStmt                               *sql.Stmt
+	updatePermissionEnabledStmt                          *sql.Stmt
+	updateSessionModelsStmt                              *sql.Stmt
+	updateSessionReasoningEffortStmt                     *sql.Stmt
+	updateSessionSystemPromptStmt                        *sql.Stmt
+	updateSessionWorkerReviewerModelsStmt                *sql.Stmt
+	updateSessionWorkerReviewerReasoningEffortStmt       *sql.Stmt
+	visibleAsyncReactionDebtExistsStmt                   *sql.Stmt
+	voidAsyncJobsByAnnounceMessageIDsStmt                *sql.Stmt
+	voidAsyncJobsByToolCallIDsStmt                       *sql.Stmt
+	voidPendingAsyncJobNoticeStmt                        *sql.Stmt
+	voidPendingSessionNoticeStmt                         *sql.Stmt
+	voidWakeFailedNoticesByMessageIDsStmt                *sql.Stmt
+	writeToOrphanOutboxStmt                              *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -1430,149 +1475,154 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		claimAsyncJobStmt:              q.claimAsyncJobStmt,
 		cleanupExpiredLeasesStmt:       q.cleanupExpiredLeasesStmt,
 		clearReactedFailedForOwnerStmt: q.clearReactedFailedForOwnerStmt,
-		clearSessionNoticesReactedFailedForOwnerStmt:   q.clearSessionNoticesReactedFailedForOwnerStmt,
-		countAsyncJobsOlderThanStmt:                    q.countAsyncJobsOlderThanStmt,
-		countMessagesBySessionStmt:                     q.countMessagesBySessionStmt,
-		countMessagesMissingUsageStmt:                  q.countMessagesMissingUsageStmt,
-		countMessagesMissingUsageInRangeStmt:           q.countMessagesMissingUsageInRangeStmt,
-		countSessionNoticesOlderThanStmt:               q.countSessionNoticesOlderThanStmt,
-		createFileStmt:                                 q.createFileStmt,
-		createMessageStmt:                              q.createMessageStmt,
-		createPendingInjectStmt:                        q.createPendingInjectStmt,
-		createSessionStmt:                              q.createSessionStmt,
-		createSessionPermissionStmt:                    q.createSessionPermissionStmt,
-		deleteAsyncHostIfNoJobsStmt:                    q.deleteAsyncHostIfNoJobsStmt,
-		deleteFileStmt:                                 q.deleteFileStmt,
-		deleteMessageStmt:                              q.deleteMessageStmt,
-		deleteMessageIfTerminalStmt:                    q.deleteMessageIfTerminalStmt,
-		deleteOrphanOutboxEntryIfPendingStmt:           q.deleteOrphanOutboxEntryIfPendingStmt,
-		deletePendingInjectStmt:                        q.deletePendingInjectStmt,
-		deletePermissionStmt:                           q.deletePermissionStmt,
-		deleteSessionStmt:                              q.deleteSessionStmt,
-		deleteSessionDriverStmt:                        q.deleteSessionDriverStmt,
-		deleteSessionDriversForHostStmt:                q.deleteSessionDriversForHostStmt,
-		deleteSessionFilesStmt:                         q.deleteSessionFilesStmt,
-		deleteSessionMessagesStmt:                      q.deleteSessionMessagesStmt,
-		deleteSessionMessagesByIDsStmt:                 q.deleteSessionMessagesByIDsStmt,
-		deleteUnannouncedAsyncJobStmt:                  q.deleteUnannouncedAsyncJobStmt,
-		enqueueRunQueueEntryStmt:                       q.enqueueRunQueueEntryStmt,
-		getAsyncHostStmt:                               q.getAsyncHostStmt,
-		getAsyncJobStmt:                                q.getAsyncJobStmt,
-		getAverageResponseTimeStmt:                     q.getAverageResponseTimeStmt,
-		getCallTreeActivityStmt:                        q.getCallTreeActivityStmt,
-		getCallTreeActivityBatchStmt:                   q.getCallTreeActivityBatchStmt,
-		getFileStmt:                                    q.getFileStmt,
-		getFileByPathAndSessionStmt:                    q.getFileByPathAndSessionStmt,
-		getFileReadStmt:                                q.getFileReadStmt,
-		getHourDayHeatmapStmt:                          q.getHourDayHeatmapStmt,
-		getLastSessionStmt:                             q.getLastSessionStmt,
-		getMessageStmt:                                 q.getMessageStmt,
-		getOldestPendingRunQueueEntryForSessionStmt:    q.getOldestPendingRunQueueEntryForSessionStmt,
-		getOrphanOutboxEntryStmt:                       q.getOrphanOutboxEntryStmt,
-		getRecentActivityStmt:                          q.getRecentActivityStmt,
-		getRunQueueEntryStmt:                           q.getRunQueueEntryStmt,
-		getRunningAsyncJobByChildSessionStmt:           q.getRunningAsyncJobByChildSessionStmt,
-		getSessionByIDStmt:                             q.getSessionByIDStmt,
-		getSessionCostAccountingStmt:                   q.getSessionCostAccountingStmt,
-		getSessionDriverStmt:                           q.getSessionDriverStmt,
-		getSessionNoticeStmt:                           q.getSessionNoticeStmt,
-		getToolUsageStmt:                               q.getToolUsageStmt,
-		getTotalStatsStmt:                              q.getTotalStatsStmt,
-		getTranscriptWindowCursorStmt:                  q.getTranscriptWindowCursorStmt,
-		getUsageByDayStmt:                              q.getUsageByDayStmt,
-		getUsageByDayOfWeekStmt:                        q.getUsageByDayOfWeekStmt,
-		getUsageByHourStmt:                             q.getUsageByHourStmt,
-		getUsageByModelStmt:                            q.getUsageByModelStmt,
-		hasOutstandingRunQueueEntryForSessionStmt:      q.hasOutstandingRunQueueEntryForSessionStmt,
-		incrementAsyncJobWakeAttemptsStmt:              q.incrementAsyncJobWakeAttemptsStmt,
-		incrementSessionCostStmt:                       q.incrementSessionCostStmt,
-		incrementSessionCostIfUnderMaxStmt:             q.incrementSessionCostIfUnderMaxStmt,
-		incrementSessionNoticeWakeAttemptsStmt:         q.incrementSessionNoticeWakeAttemptsStmt,
-		insertSessionDriverStmt:                        q.insertSessionDriverStmt,
-		insertSessionNoticeStmt:                        q.insertSessionNoticeStmt,
-		leaseRunQueueEntryByIDStmt:                     q.leaseRunQueueEntryByIDStmt,
-		listAllSessionPermissionsStmt:                  q.listAllSessionPermissionsStmt,
-		listAllSessionsStmt:                            q.listAllSessionsStmt,
-		listAllUserMessagesStmt:                        q.listAllUserMessagesStmt,
-		listAsyncHostsStmt:                             q.listAsyncHostsStmt,
-		listAsyncHostsWithNoJobsStmt:                   q.listAsyncHostsWithNoJobsStmt,
-		listAsyncJobsForOwnerStmt:                      q.listAsyncJobsForOwnerStmt,
-		listCandidateInterruptedAssistantSessionsStmt:  q.listCandidateInterruptedAssistantSessionsStmt,
-		listDistinctRunningHostIDsStmt:                 q.listDistinctRunningHostIDsStmt,
-		listFilesByPathStmt:                            q.listFilesByPathStmt,
-		listFilesBySessionStmt:                         q.listFilesBySessionStmt,
-		listLatestSessionFilesStmt:                     q.listLatestSessionFilesStmt,
-		listMessagesBySessionStmt:                      q.listMessagesBySessionStmt,
-		listMessagesBySessionAtCreatedAtStmt:           q.listMessagesBySessionAtCreatedAtStmt,
-		listMessagesBySessionOlderThanCreatedAtStmt:    q.listMessagesBySessionOlderThanCreatedAtStmt,
-		listMessagesBySessionPaginatedStmt:             q.listMessagesBySessionPaginatedStmt,
-		listNewFilesStmt:                               q.listNewFilesStmt,
-		listPendingAsyncJobNoticesForOwnerStmt:         q.listPendingAsyncJobNoticesForOwnerStmt,
-		listPendingInjectsBySessionStmt:                q.listPendingInjectsBySessionStmt,
-		listPendingOrphanOutboxEntriesStmt:             q.listPendingOrphanOutboxEntriesStmt,
-		listPendingRunQueueEntriesStmt:                 q.listPendingRunQueueEntriesStmt,
-		listPendingSessionNoticesForOwnerStmt:          q.listPendingSessionNoticesForOwnerStmt,
-		listReactedFailedAsyncJobsForOwnerStmt:         q.listReactedFailedAsyncJobsForOwnerStmt,
-		listReactedFailedSessionNoticesForOwnerStmt:    q.listReactedFailedSessionNoticesForOwnerStmt,
-		listRunningAsyncJobsForHostStmt:                q.listRunningAsyncJobsForHostStmt,
-		listRunningAsyncJobsForOwnersStmt:              q.listRunningAsyncJobsForOwnersStmt,
-		listSessionDriverHostIDsStmt:                   q.listSessionDriverHostIDsStmt,
-		listSessionNoticesForOwnerStmt:                 q.listSessionNoticesForOwnerStmt,
-		listSessionPermissionsStmt:                     q.listSessionPermissionsStmt,
-		listSessionReadFilesStmt:                       q.listSessionReadFilesStmt,
-		listSessionsStmt:                               q.listSessionsStmt,
-		listStaleLeasedRunQueueEntriesStmt:             q.listStaleLeasedRunQueueEntriesStmt,
-		listSubSessionsStmt:                            q.listSubSessionsStmt,
-		listUserMessagesBySessionStmt:                  q.listUserMessagesBySessionStmt,
-		markAsyncJobAnnouncedStmt:                      q.markAsyncJobAnnouncedStmt,
-		markAsyncJobsReactedForOwnerStmt:               q.markAsyncJobsReactedForOwnerStmt,
-		markSessionNoticesReactedForOwnerStmt:          q.markSessionNoticesReactedForOwnerStmt,
-		matchSessionPermissionStmt:                     q.matchSessionPermissionStmt,
-		nackRunQueueEntryStmt:                          q.nackRunQueueEntryStmt,
-		nackRunQueueEntryNoAttemptPenaltyStmt:          q.nackRunQueueEntryNoAttemptPenaltyStmt,
-		pullPendingAsyncJobNoticeStmt:                  q.pullPendingAsyncJobNoticeStmt,
-		pullPendingSessionNoticeStmt:                   q.pullPendingSessionNoticeStmt,
-		purgeAsyncJobsOlderThanStmt:                    q.purgeAsyncJobsOlderThanStmt,
-		purgeSessionNoticesOlderThanStmt:               q.purgeSessionNoticesOlderThanStmt,
-		recordFileReadStmt:                             q.recordFileReadStmt,
-		recordOrphanOutboxFailureStmt:                  q.recordOrphanOutboxFailureStmt,
-		registerAsyncHostStmt:                          q.registerAsyncHostStmt,
-		renameSessionStmt:                              q.renameSessionStmt,
-		renewRunQueueLeaseStmt:                         q.renewRunQueueLeaseStmt,
-		rependAsyncJobsByNoticeMessageIDsStmt:          q.rependAsyncJobsByNoticeMessageIDsStmt,
-		rependSessionNoticesByMessageIDsStmt:           q.rependSessionNoticesByMessageIDsStmt,
-		setAsyncJobAnnounceMessageIDStmt:               q.setAsyncJobAnnounceMessageIDStmt,
-		setAsyncJobNoticeMessageIDStmt:                 q.setAsyncJobNoticeMessageIDStmt,
-		setAsyncJobNoticeMessageIDIfDoneStmt:           q.setAsyncJobNoticeMessageIDIfDoneStmt,
-		setAsyncJobsWakeZeroPendingForOwnersStmt:       q.setAsyncJobsWakeZeroPendingForOwnersStmt,
-		setParentCostAccountedStmt:                     q.setParentCostAccountedStmt,
-		setSessionNoticeMessageIDStmt:                  q.setSessionNoticeMessageIDStmt,
-		setSessionNoticesWakeZeroPendingForOwnersStmt:  q.setSessionNoticesWakeZeroPendingForOwnersStmt,
-		settleAsyncJobsReactedFailedStmt:               q.settleAsyncJobsReactedFailedStmt,
-		settleSessionNoticesReactedFailedStmt:          q.settleSessionNoticesReactedFailedStmt,
-		stampInterruptedAssistantIfStillLastStmt:       q.stampInterruptedAssistantIfStillLastStmt,
-		sumMessageUsageByDayInRangeStmt:                q.sumMessageUsageByDayInRangeStmt,
-		sumMessageUsageByModelInRangeStmt:              q.sumMessageUsageByModelInRangeStmt,
-		sumMessageUsageBySessionStmt:                   q.sumMessageUsageBySessionStmt,
-		takeOverSessionDriverStmt:                      q.takeOverSessionDriverStmt,
-		terminalFailRunQueueEntryStmt:                  q.terminalFailRunQueueEntryStmt,
-		transitionAsyncJobTerminalPreserveVoidStmt:     q.transitionAsyncJobTerminalPreserveVoidStmt,
-		updateMessageStmt:                              q.updateMessageStmt,
-		updateMessageIfNotTerminalStmt:                 q.updateMessageIfNotTerminalStmt,
-		updateMessagePinnedStmt:                        q.updateMessagePinnedStmt,
-		updateMessageUsageStmt:                         q.updateMessageUsageStmt,
-		updatePermissionEnabledStmt:                    q.updatePermissionEnabledStmt,
-		updateSessionModelsStmt:                        q.updateSessionModelsStmt,
-		updateSessionReasoningEffortStmt:               q.updateSessionReasoningEffortStmt,
-		updateSessionSystemPromptStmt:                  q.updateSessionSystemPromptStmt,
-		updateSessionWorkerReviewerModelsStmt:          q.updateSessionWorkerReviewerModelsStmt,
-		updateSessionWorkerReviewerReasoningEffortStmt: q.updateSessionWorkerReviewerReasoningEffortStmt,
-		visibleAsyncReactionDebtExistsStmt:             q.visibleAsyncReactionDebtExistsStmt,
-		voidAsyncJobsByAnnounceMessageIDsStmt:          q.voidAsyncJobsByAnnounceMessageIDsStmt,
-		voidAsyncJobsByToolCallIDsStmt:                 q.voidAsyncJobsByToolCallIDsStmt,
-		voidPendingAsyncJobNoticeStmt:                  q.voidPendingAsyncJobNoticeStmt,
-		voidPendingSessionNoticeStmt:                   q.voidPendingSessionNoticeStmt,
-		voidWakeFailedNoticesByMessageIDsStmt:          q.voidWakeFailedNoticesByMessageIDsStmt,
-		writeToOrphanOutboxStmt:                        q.writeToOrphanOutboxStmt,
+		clearSessionNoticesReactedFailedForOwnerStmt:         q.clearSessionNoticesReactedFailedForOwnerStmt,
+		countAsyncJobsOlderThanStmt:                          q.countAsyncJobsOlderThanStmt,
+		countMessagesBySessionStmt:                           q.countMessagesBySessionStmt,
+		countMessagesMissingUsageStmt:                        q.countMessagesMissingUsageStmt,
+		countMessagesMissingUsageInRangeStmt:                 q.countMessagesMissingUsageInRangeStmt,
+		countSessionNoticesOlderThanStmt:                     q.countSessionNoticesOlderThanStmt,
+		createFileStmt:                                       q.createFileStmt,
+		createMessageStmt:                                    q.createMessageStmt,
+		createPendingInjectStmt:                              q.createPendingInjectStmt,
+		createSessionStmt:                                    q.createSessionStmt,
+		createSessionPermissionStmt:                          q.createSessionPermissionStmt,
+		deleteAsyncHostIfNoJobsStmt:                          q.deleteAsyncHostIfNoJobsStmt,
+		deleteFileStmt:                                       q.deleteFileStmt,
+		deleteMessageStmt:                                    q.deleteMessageStmt,
+		deleteMessageIfTerminalStmt:                          q.deleteMessageIfTerminalStmt,
+		deleteOrphanOutboxEntryIfPendingStmt:                 q.deleteOrphanOutboxEntryIfPendingStmt,
+		deletePendingInjectStmt:                              q.deletePendingInjectStmt,
+		deletePermissionStmt:                                 q.deletePermissionStmt,
+		deleteSessionStmt:                                    q.deleteSessionStmt,
+		deleteSessionDriverStmt:                              q.deleteSessionDriverStmt,
+		deleteSessionDriversForHostStmt:                      q.deleteSessionDriversForHostStmt,
+		deleteSessionFilesStmt:                               q.deleteSessionFilesStmt,
+		deleteSessionMessagesStmt:                            q.deleteSessionMessagesStmt,
+		deleteSessionMessagesByIDsStmt:                       q.deleteSessionMessagesByIDsStmt,
+		deleteTerminalUnannouncedAsyncJobsForHostStmt:        q.deleteTerminalUnannouncedAsyncJobsForHostStmt,
+		deleteUnannouncedAsyncJobStmt:                        q.deleteUnannouncedAsyncJobStmt,
+		enqueueRunQueueEntryStmt:                             q.enqueueRunQueueEntryStmt,
+		getAsyncHostStmt:                                     q.getAsyncHostStmt,
+		getAsyncJobStmt:                                      q.getAsyncJobStmt,
+		getAsyncJobByClaimIDStmt:                             q.getAsyncJobByClaimIDStmt,
+		getAverageResponseTimeStmt:                           q.getAverageResponseTimeStmt,
+		getCallTreeActivityStmt:                              q.getCallTreeActivityStmt,
+		getCallTreeActivityBatchStmt:                         q.getCallTreeActivityBatchStmt,
+		getFileStmt:                                          q.getFileStmt,
+		getFileByPathAndSessionStmt:                          q.getFileByPathAndSessionStmt,
+		getFileReadStmt:                                      q.getFileReadStmt,
+		getHourDayHeatmapStmt:                                q.getHourDayHeatmapStmt,
+		getLastSessionStmt:                                   q.getLastSessionStmt,
+		getMessageStmt:                                       q.getMessageStmt,
+		getOldestPendingRunQueueEntryForSessionStmt:          q.getOldestPendingRunQueueEntryForSessionStmt,
+		getOrphanOutboxEntryStmt:                             q.getOrphanOutboxEntryStmt,
+		getRecentActivityStmt:                                q.getRecentActivityStmt,
+		getRunQueueEntryStmt:                                 q.getRunQueueEntryStmt,
+		getRunningAsyncJobByChildSessionStmt:                 q.getRunningAsyncJobByChildSessionStmt,
+		getSessionByIDStmt:                                   q.getSessionByIDStmt,
+		getSessionCostAccountingStmt:                         q.getSessionCostAccountingStmt,
+		getSessionDriverStmt:                                 q.getSessionDriverStmt,
+		getSessionNoticeStmt:                                 q.getSessionNoticeStmt,
+		getToolUsageStmt:                                     q.getToolUsageStmt,
+		getTotalStatsStmt:                                    q.getTotalStatsStmt,
+		getTranscriptWindowCursorStmt:                        q.getTranscriptWindowCursorStmt,
+		getUsageByDayStmt:                                    q.getUsageByDayStmt,
+		getUsageByDayOfWeekStmt:                              q.getUsageByDayOfWeekStmt,
+		getUsageByHourStmt:                                   q.getUsageByHourStmt,
+		getUsageByModelStmt:                                  q.getUsageByModelStmt,
+		hasOutstandingRunQueueEntryForSessionStmt:            q.hasOutstandingRunQueueEntryForSessionStmt,
+		incrementAsyncJobWakeAttemptsForSnapshotRowStmt:      q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt,
+		incrementSessionCostStmt:                             q.incrementSessionCostStmt,
+		incrementSessionCostIfUnderMaxStmt:                   q.incrementSessionCostIfUnderMaxStmt,
+		incrementSessionNoticeWakeAttemptsForSnapshotRowStmt: q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt,
+		insertSessionDriverStmt:                              q.insertSessionDriverStmt,
+		insertSessionNoticeStmt:                              q.insertSessionNoticeStmt,
+		leaseRunQueueEntryByIDStmt:                           q.leaseRunQueueEntryByIDStmt,
+		listAllSessionPermissionsStmt:                        q.listAllSessionPermissionsStmt,
+		listAllSessionsStmt:                                  q.listAllSessionsStmt,
+		listAllUserMessagesStmt:                              q.listAllUserMessagesStmt,
+		listAsyncHostsStmt:                                   q.listAsyncHostsStmt,
+		listAsyncHostsWithNoJobsStmt:                         q.listAsyncHostsWithNoJobsStmt,
+		listAsyncJobsForOwnerStmt:                            q.listAsyncJobsForOwnerStmt,
+		listCandidateInterruptedAssistantSessionsStmt:        q.listCandidateInterruptedAssistantSessionsStmt,
+		listDistinctRecoverableHostIDsStmt:                   q.listDistinctRecoverableHostIDsStmt,
+		listFilesByPathStmt:                                  q.listFilesByPathStmt,
+		listFilesBySessionStmt:                               q.listFilesBySessionStmt,
+		listLatestSessionFilesStmt:                           q.listLatestSessionFilesStmt,
+		listMessagesBySessionStmt:                            q.listMessagesBySessionStmt,
+		listMessagesBySessionAtCreatedAtStmt:                 q.listMessagesBySessionAtCreatedAtStmt,
+		listMessagesBySessionOlderThanCreatedAtStmt:          q.listMessagesBySessionOlderThanCreatedAtStmt,
+		listMessagesBySessionPaginatedStmt:                   q.listMessagesBySessionPaginatedStmt,
+		listNewFilesStmt:                                     q.listNewFilesStmt,
+		listPendingAsyncJobNoticesForOwnerStmt:               q.listPendingAsyncJobNoticesForOwnerStmt,
+		listPendingInjectsBySessionStmt:                      q.listPendingInjectsBySessionStmt,
+		listPendingOrphanOutboxEntriesStmt:                   q.listPendingOrphanOutboxEntriesStmt,
+		listPendingRunQueueEntriesStmt:                       q.listPendingRunQueueEntriesStmt,
+		listPendingSessionNoticesForOwnerStmt:                q.listPendingSessionNoticesForOwnerStmt,
+		listReactedFailedAsyncJobsForOwnerStmt:               q.listReactedFailedAsyncJobsForOwnerStmt,
+		listReactedFailedSessionNoticesForOwnerStmt:          q.listReactedFailedSessionNoticesForOwnerStmt,
+		listRunningAsyncJobsForHostStmt:                      q.listRunningAsyncJobsForHostStmt,
+		listRunningAsyncJobsForOwnersStmt:                    q.listRunningAsyncJobsForOwnersStmt,
+		listSessionDriverHostIDsStmt:                         q.listSessionDriverHostIDsStmt,
+		listSessionNoticesForOwnerStmt:                       q.listSessionNoticesForOwnerStmt,
+		listSessionPermissionsStmt:                           q.listSessionPermissionsStmt,
+		listSessionReadFilesStmt:                             q.listSessionReadFilesStmt,
+		listSessionsStmt:                                     q.listSessionsStmt,
+		listStaleLeasedRunQueueEntriesStmt:                   q.listStaleLeasedRunQueueEntriesStmt,
+		listSubSessionsStmt:                                  q.listSubSessionsStmt,
+		listUserMessagesBySessionStmt:                        q.listUserMessagesBySessionStmt,
+		markAsyncJobAnnouncedStmt:                            q.markAsyncJobAnnouncedStmt,
+		markAsyncJobsReactedForOwnerStmt:                     q.markAsyncJobsReactedForOwnerStmt,
+		markSessionNoticesReactedForOwnerStmt:                q.markSessionNoticesReactedForOwnerStmt,
+		matchSessionPermissionStmt:                           q.matchSessionPermissionStmt,
+		nackRunQueueEntryStmt:                                q.nackRunQueueEntryStmt,
+		nackRunQueueEntryNoAttemptPenaltyStmt:                q.nackRunQueueEntryNoAttemptPenaltyStmt,
+		pullPendingAsyncJobNoticeStmt:                        q.pullPendingAsyncJobNoticeStmt,
+		pullPendingSessionNoticeStmt:                         q.pullPendingSessionNoticeStmt,
+		purgeAsyncJobsOlderThanStmt:                          q.purgeAsyncJobsOlderThanStmt,
+		purgeSessionNoticesOlderThanStmt:                     q.purgeSessionNoticesOlderThanStmt,
+		recordFileReadStmt:                                   q.recordFileReadStmt,
+		recordOrphanOutboxFailureStmt:                        q.recordOrphanOutboxFailureStmt,
+		registerAsyncHostStmt:                                q.registerAsyncHostStmt,
+		renameSessionStmt:                                    q.renameSessionStmt,
+		renewRunQueueLeaseStmt:                               q.renewRunQueueLeaseStmt,
+		rependAsyncJobsByNoticeMessageIDsStmt:                q.rependAsyncJobsByNoticeMessageIDsStmt,
+		rependJobKillRowWithoutNoticeStmt:                    q.rependJobKillRowWithoutNoticeStmt,
+		rependJobKillRowsWithoutNoticeForHostStmt:            q.rependJobKillRowsWithoutNoticeForHostStmt,
+		rependSessionNoticesByMessageIDsStmt:                 q.rependSessionNoticesByMessageIDsStmt,
+		repointSessionNoticesJobToolCallIDStmt:               q.repointSessionNoticesJobToolCallIDStmt,
+		setAsyncJobAnnounceMessageIDStmt:                     q.setAsyncJobAnnounceMessageIDStmt,
+		setAsyncJobNoticeMessageIDStmt:                       q.setAsyncJobNoticeMessageIDStmt,
+		setAsyncJobNoticeMessageIDIfDoneStmt:                 q.setAsyncJobNoticeMessageIDIfDoneStmt,
+		setAsyncJobsWakeZeroPendingForOwnersStmt:             q.setAsyncJobsWakeZeroPendingForOwnersStmt,
+		setParentCostAccountedStmt:                           q.setParentCostAccountedStmt,
+		setSessionNoticeMessageIDStmt:                        q.setSessionNoticeMessageIDStmt,
+		setSessionNoticesWakeZeroPendingForOwnersStmt:        q.setSessionNoticesWakeZeroPendingForOwnersStmt,
+		settleAsyncJobReactedFailedForSnapshotRowStmt:        q.settleAsyncJobReactedFailedForSnapshotRowStmt,
+		settleSessionNoticeReactedFailedForSnapshotRowStmt:   q.settleSessionNoticeReactedFailedForSnapshotRowStmt,
+		stampInterruptedAssistantIfStillLastStmt:             q.stampInterruptedAssistantIfStillLastStmt,
+		sumMessageUsageByDayInRangeStmt:                      q.sumMessageUsageByDayInRangeStmt,
+		sumMessageUsageByModelInRangeStmt:                    q.sumMessageUsageByModelInRangeStmt,
+		sumMessageUsageBySessionStmt:                         q.sumMessageUsageBySessionStmt,
+		takeOverSessionDriverStmt:                            q.takeOverSessionDriverStmt,
+		terminalFailRunQueueEntryStmt:                        q.terminalFailRunQueueEntryStmt,
+		transitionAsyncJobTerminalPreserveVoidStmt:           q.transitionAsyncJobTerminalPreserveVoidStmt,
+		updateMessageStmt:                                    q.updateMessageStmt,
+		updateMessageIfNotTerminalStmt:                       q.updateMessageIfNotTerminalStmt,
+		updateMessagePinnedStmt:                              q.updateMessagePinnedStmt,
+		updateMessageUsageStmt:                               q.updateMessageUsageStmt,
+		updatePermissionEnabledStmt:                          q.updatePermissionEnabledStmt,
+		updateSessionModelsStmt:                              q.updateSessionModelsStmt,
+		updateSessionReasoningEffortStmt:                     q.updateSessionReasoningEffortStmt,
+		updateSessionSystemPromptStmt:                        q.updateSessionSystemPromptStmt,
+		updateSessionWorkerReviewerModelsStmt:                q.updateSessionWorkerReviewerModelsStmt,
+		updateSessionWorkerReviewerReasoningEffortStmt:       q.updateSessionWorkerReviewerReasoningEffortStmt,
+		visibleAsyncReactionDebtExistsStmt:                   q.visibleAsyncReactionDebtExistsStmt,
+		voidAsyncJobsByAnnounceMessageIDsStmt:                q.voidAsyncJobsByAnnounceMessageIDsStmt,
+		voidAsyncJobsByToolCallIDsStmt:                       q.voidAsyncJobsByToolCallIDsStmt,
+		voidPendingAsyncJobNoticeStmt:                        q.voidPendingAsyncJobNoticeStmt,
+		voidPendingSessionNoticeStmt:                         q.voidPendingSessionNoticeStmt,
+		voidWakeFailedNoticesByMessageIDsStmt:                q.voidWakeFailedNoticesByMessageIDsStmt,
+		writeToOrphanOutboxStmt:                              q.writeToOrphanOutboxStmt,
 	}
 }

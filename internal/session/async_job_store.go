@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -160,8 +162,19 @@ type AsyncJobStore struct {
 	pid     int
 	label   string
 
-	mu   sync.Mutex
-	host *HostIdentity
+	// mu guards messages only and is never held across I/O: the writer
+	// connection is single (SetMaxOpenConns(1)), so a lock held while waiting
+	// for it deadlocks against any writer transaction that then needs the same
+	// lock (R2A-2). Everything a writer transaction may read here is lock-free
+	// (host, readQ are atomic).
+	mu sync.Mutex
+	// regMu serialises host registration and teardown (ensureHost, Close,
+	// CloseKeepLock, SimulateCrashForTest). It IS held across the registration
+	// I/O, so nothing that can run inside a writer transaction ever takes it.
+	regMu sync.Mutex
+	// host is this store's registered identity; nil before the first Claim.
+	// Published only after RegisterHost fully succeeded.
+	host atomic.Pointer[HostIdentity]
 	// messages backs the first-registration dead-host sweep's delegation
 	// text read (doc sec.3.7, recoveredDelegationText) -- optional, wired
 	// once via SetMessages before the first Claim in production
@@ -175,7 +188,7 @@ type AsyncJobStore struct {
 	// method's doc. Nil means "no reader pool wired": every reader method
 	// falls back to the writer's own *db.Queries (today's behavior),
 	// through readQuerier().
-	readQ *db.Queries
+	readQ atomic.Pointer[db.Queries]
 }
 
 // SetMessages wires messages for the first-registration dead-host sweep
@@ -186,6 +199,12 @@ func (s *AsyncJobStore) SetMessages(messages message.Service) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = messages
+}
+
+func (s *AsyncJobStore) messageService() message.Service {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.messages
 }
 
 // SetReadConn wires a separate read-only connection pool for this store's
@@ -203,19 +222,15 @@ func (s *AsyncJobStore) SetReadConn(readDB *sql.DB) {
 	if readDB == nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.readQ = db.New(readDB)
+	s.readQ.Store(db.New(readDB))
 }
 
 // readQuerier returns the read-pool queries if SetReadConn wired one, else
 // the writer's own -- every read-only reader method funnels through this so
 // a store with no reader pool wired keeps working exactly as before.
 func (s *AsyncJobStore) readQuerier() *db.Queries {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.readQ != nil {
-		return s.readQ
+	if q := s.readQ.Load(); q != nil {
+		return q
 	}
 	return s.q
 }
@@ -232,41 +247,46 @@ func NewAsyncJobStore(sqlDB *sql.DB, dataDir string, pid int, label string) *Asy
 // sec.3.6), returning its id. Safe for concurrent callers; registration
 // failure is surfaced to the caller (Claim), never silently retried here.
 //
+// Registration is a writer-connection DB call plus file I/O, so it runs under
+// regMu only -- never s.mu (R2A-2: a writer transaction that reads HostID or
+// the read pool while registration held s.mu waited for a lock whose holder
+// waited for that transaction's connection). The identity is published to the
+// lock-free host pointer once it is complete.
+//
 // Doc sec.3.6/3.7: the process that actually performs registration runs ONE
-// sweep over every dead host right after, outside s.mu -- a concurrent
+// sweep over every dead host right after, outside every lock -- a concurrent
 // caller that only observes an already-registered host (the common case)
 // never pays for this sweep's DB/lock-probe cost.
 func (s *AsyncJobStore) ensureHost(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	if s.host != nil {
-		id := s.host.ID
-		s.mu.Unlock()
-		return id, nil
+	if h := s.host.Load(); h != nil {
+		return h.ID, nil
+	}
+	s.regMu.Lock()
+	if h := s.host.Load(); h != nil {
+		s.regMu.Unlock()
+		return h.ID, nil
 	}
 	h, err := RegisterHost(ctx, s.dataDir, s.pid, s.label, s.q)
 	if err != nil {
-		s.mu.Unlock()
+		s.regMu.Unlock()
 		return "", err
 	}
-	s.host = h
-	messages := s.messages
-	s.mu.Unlock()
+	s.host.Store(h)
+	s.regMu.Unlock()
 
-	if _, sweepErr := s.SweepDeadHosts(ctx, messages); sweepErr != nil {
+	if _, sweepErr := s.SweepDeadHosts(ctx, s.messageService()); sweepErr != nil {
 		slog.Warn("async job store: first-registration dead-host sweep failed", "err", sweepErr)
 	}
 	return h.ID, nil
 }
 
 // HostID returns this store's registered host id, or "" before the first
-// successful Claim.
+// successful Claim. Lock-free, so it is safe inside a writer transaction.
 func (s *AsyncJobStore) HostID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.host == nil {
-		return ""
+	if h := s.host.Load(); h != nil {
+		return h.ID
 	}
-	return s.host.ID
+	return ""
 }
 
 // Claim is the durable, idempotent job start (doc sec.3.1/3.8, sec.5 step
@@ -303,7 +323,7 @@ func (s *AsyncJobStore) Claim(ctx context.Context, p ClaimParams) (ClaimResult, 
 		// a no-op (RecoveryOutcome{}, nil) for a live or unknown host, so the
 		// retry below simply re-observes the same conflict and the loop falls
 		// through to the refusal after the last attempt.
-		if _, recErr := s.RecoverDeadHost(ctx, conflict.HostID, s.messages); recErr != nil {
+		if _, recErr := s.RecoverDeadHost(ctx, conflict.HostID, s.messageService()); recErr != nil {
 			slog.Warn("async job store: claim: dead-host recovery of conflicting row failed; refusing the delegation",
 				"child_session_id", p.ChildSessionID, "host_id", conflict.HostID, "err", recErr)
 			break
@@ -333,11 +353,16 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 		// tool_call_id (a provider that numbers calls per response) must
 		// start a NEW row, not be refused for up to 7 days as "already
 		// started earlier"/"different input" (see ArchiveAsyncJobToolCallID's
-		// own doc for the state!='running' guard's importance). Archive the
+		// own doc for the state!='running' guard's importance). R2A-6: a
+		// terminal row the model already saw announced but whose notice is
+		// still undelivered (delivery='pending', announced=1) is history too
+		// -- its notice stays pullable under the archived key. Archive the
 		// old row out of the active key, then fall through to the fresh-claim
-		// path below exactly as if no row existed.
-		if existing.State != "running" && (existing.Delivery == "done" || existing.Delivery == "void") {
-			archivedID := fmt.Sprintf("%s#reused#%s", p.ToolCallID, uuid.NewString())
+		// path below exactly as if no row existed. A terminal row that is not
+		// announced yet is NOT archived: its "started" result is still to be
+		// written, and a repeat of the same call answers idempotently.
+		if isArchivableHistoryRow(existing) {
+			archivedID := fmt.Sprintf("%s%s%s", p.ToolCallID, archivedToolCallIDMarker, uuid.NewString())
 			rows, archErr := q.ArchiveAsyncJobToolCallID(ctx, db.ArchiveAsyncJobToolCallIDParams{
 				NewToolCallID: archivedID, UpdatedAt: time.Now().Unix(),
 				OwnerSessionID: p.Owner, OldToolCallID: p.ToolCallID,
@@ -346,6 +371,13 @@ func (s *AsyncJobStore) claimOnce(ctx context.Context, p ClaimParams, hostID, in
 				return ClaimResult{}, nil, fmt.Errorf("async job store: claim: archive reused tool_call_id: %w", archErr)
 			}
 			if rows > 0 {
+				// R2A-4: check-ins that named the row by its old key follow it.
+				if _, err := q.RepointSessionNoticesJobToolCallID(ctx, db.RepointSessionNoticesJobToolCallIDParams{
+					NewJobToolCallID: sql.NullString{String: archivedID, Valid: true}, Owner: p.Owner,
+					OldJobToolCallID: sql.NullString{String: p.ToolCallID, Valid: true},
+				}); err != nil {
+					return ClaimResult{}, nil, fmt.Errorf("async job store: claim: repoint notices of archived row: %w", err)
+				}
 				break // fresh claim: child-conflict check + insert below
 			}
 			// Lost a race archiving this row (should not happen under the
@@ -564,10 +596,7 @@ func (s *AsyncJobStore) Get(ctx context.Context, owner, toolCallID string) (db.A
 // path), if one was ever registered. Safe to call on a store that never
 // claimed anything (no-op).
 func (s *AsyncJobStore) Close(ctx context.Context) error {
-	s.mu.Lock()
-	h := s.host
-	s.host = nil
-	s.mu.Unlock()
+	h := s.takeHost()
 	if h == nil {
 		return nil
 	}
@@ -592,10 +621,7 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 // a later recoverer then sees exactly what DUR-6 expects. Safe to call on a
 // store that never claimed anything (no-op).
 func (s *AsyncJobStore) CloseKeepLock() {
-	s.mu.Lock()
-	h := s.host
-	s.host = nil
-	s.mu.Unlock()
+	h := s.takeHost()
 	// Pin the OS lock: the *os.File finalizer would release it at next GC.
 	if h != nil {
 		retainHostLockUntilExit(h.lock)
@@ -614,14 +640,45 @@ func (s *AsyncJobStore) CloseKeepLock() {
 // individual App/store instance (see that registry's own doc). Test-only:
 // no production code path calls this -- Close is the real, clean exit.
 func (s *AsyncJobStore) SimulateCrashForTest() error {
-	s.mu.Lock()
-	h := s.host
-	s.host = nil
-	s.mu.Unlock()
+	h := s.takeHost()
 	if h == nil {
 		return nil
 	}
 	err := h.lock.Release()
 	unmarkOwnHostID(h.ID)
 	return err
+}
+
+// takeHost detaches the registered identity, first waiting out an in-flight
+// registration (regMu) so a Close racing ensureHost cannot leave a host
+// published after teardown.
+func (s *AsyncJobStore) takeHost() *HostIdentity {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	return s.host.Swap(nil)
+}
+
+// isArchivableHistoryRow reports whether row no longer holds its tool_call_id
+// key: terminal, and either fully delivered/voided or announced with its
+// notice merely still pending (R2A-6). Mirrors ArchiveAsyncJobToolCallID's
+// own WHERE clause.
+func isArchivableHistoryRow(row db.AsyncJob) bool {
+	if row.State == "running" {
+		return false
+	}
+	return row.Delivery == "done" || row.Delivery == "void" || (row.Delivery == "pending" && row.Announced != 0)
+}
+
+// archivedToolCallIDMarker separates the original tool_call_id from the uuid
+// in an archived row's key (ArchiveAsyncJobToolCallID).
+const archivedToolCallIDMarker = "#reused#"
+
+// displayToolCallID is the tool_call_id the model saw: an archived row's key
+// with the archive suffix removed. A pending row archived by R2A-6 is pulled
+// under its archived key, but its notice must still name the model's id.
+func displayToolCallID(key string) string {
+	if i := strings.Index(key, archivedToolCallIDMarker); i >= 0 {
+		return key[:i]
+	}
+	return key
 }

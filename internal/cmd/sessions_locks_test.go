@@ -443,7 +443,13 @@ func TestSessionsLocksCmdRun_ConcurrentDeleteBeforeRemove_ENOENTIsSuccess(t *tes
 	origHook := preAutoDeleteRemoveHook
 	preAutoDeleteRemoveHook = func(path string) {
 		require.Equal(t, lockPath, path)
-		require.NoError(t, os.Remove(path))
+		// The probe that just proved the holder dead released its lock a
+		// moment ago, but its background metadata cleanup can still hold the
+		// file (a Windows sharing violation for a raw remove) -- the same
+		// window the precondition wait above covers. Retry until the
+		// concurrent deleter (this hook) gets the file.
+		require.Eventually(t, func() bool { return os.Remove(path) == nil }, 5*time.Second, 5*time.Millisecond,
+			"the simulated concurrent deleter must be able to remove the lock file once the probe's cleanup finished")
 		hookFired = true
 	}
 	t.Cleanup(func() { preAutoDeleteRemoveHook = origHook })

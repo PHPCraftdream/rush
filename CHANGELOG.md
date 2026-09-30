@@ -140,8 +140,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   instead of being refused for up to 7 days ("already started earlier"): a
   row that is terminal and delivered (or voided) is renamed out of the
   active key (`<id>#reused#<uuid>`, still addressable by its message for
-  Rerun) when the id comes back. A terminal row that is not delivered yet
-  still answers the repeated call idempotently.
+  Rerun) when the id comes back. A terminal row that is announced but not
+  delivered yet is renamed the same way (its notice is still delivered, under
+  the id the model used); only a terminal row whose "started" result has not
+  been written yet answers the repeated call idempotently.
 - **Notices are durable rows, visible in history only when a turn pulls
   them.** Async job outcomes, supervision check-ins, `wake_only` timeout
   check-ins, wake-failure markers and SDK background-shell completions are
@@ -162,7 +164,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   session's scope, the next host to register, or the periodic sweep
   recovers it: an announced job is marked `interrupted` and delivered as a
   notice on the next turn; a job whose "started" result never made it to
-  the model is deleted without a trace; a delegation whose child messages
+  the model is deleted without a trace (also when it had already finished); a
+  `job_kill` whose result message was never written is delivered as a notice on
+  the next turn; a delegation whose child messages
   cannot be read is left `running` for a later sweep instead of reporting a
   false empty answer. Recovery only records what happened: it never writes
   history and never wakes a session. A natural completion that races a
@@ -187,7 +191,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Retention (7 days) and where it runs.** Terminal, delivered-or-voided
   `async_jobs`/`session_notices` rows older than 7 days, dead drivers'
   markers, empty dead hosts' lock files and orphan `hosts/*.lock` files are
-  purged. `running` rows, undelivered rows and unreacted debt never are, so
+  purged. `running` rows, undelivered rows, unreacted debt and a delegation
+  row whose child session still has running work or unreacted debt never are, so
   a Rerun reaches back only as far as retention keeps a delivered row. The
   web server runs the purge every 60s together with the dead-host sweep, the
   re-check of parked delegations and the re-check set. The re-check set's
@@ -208,10 +213,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `20260928000002_add_async_phase4_core.sql` was edited in place during
   development (three commits) before it shipped: a data directory that ran
   an intermediate dev build of it keeps the old schema and must be
-  recreated. From now on only new
-  migration files are added.
+  recreated. A data directory created by the rejected `async-phase4`
+  development branch (its migration `20260929000001_add_async_job_ledger.sql`)
+  shares the version number `20260929000001` with the index migration above, so
+  goose refuses it (it reports `20260928000002` as missing); only unreleased
+  development directories are affected and such a directory must be recreated.
+  Shipped migrations are never renumbered. From now on only new migration files
+  are added.
 - **Web session-list re-polls read on a separate connection**, so they no
-  longer stall behind write transactions (up to the 30s busy timeout).
+  longer stall behind write transactions (up to the 30s busy timeout); `sessions
+  jobs` reads there too, and no reader waits on a process's first host
+  registration any more (registration no longer holds a lock across its
+  database write, which could also deadlock against a notice pull).
 
 ### Removed
 

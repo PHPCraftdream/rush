@@ -14,7 +14,8 @@ import (
 const archiveAsyncJobToolCallID = `-- name: ArchiveAsyncJobToolCallID :execrows
 UPDATE async_jobs SET tool_call_id = ?1, updated_at = ?2
 WHERE owner_session_id = ?3 AND tool_call_id = ?4
-  AND state != 'running' AND delivery IN ('done', 'void')
+  AND state != 'running'
+  AND (delivery IN ('done', 'void') OR (delivery = 'pending' AND announced = 1))
 `
 
 type ArchiveAsyncJobToolCallIDParams struct {
@@ -30,7 +31,12 @@ type ArchiveAsyncJobToolCallIDParams struct {
 // numbers calls per response, e.g. "call_0") can claim a brand new row
 // immediately instead of being refused for up to 7 days as "already started
 // earlier"/"different input" (before phase 4 the id was freed at delivery;
-// phase 4's durable row otherwise outlives it). The archived row keeps its
+// phase 4's durable row otherwise outlives it). R2A-6: a terminal row that is
+// announced but not yet pulled (delivery='pending', announced=1) is archived
+// too -- its notice stays pullable by the owner under the archived text, and
+// it must not block the model's next call with the same id. An unannounced
+// terminal row is left alone: its "started" result is still to be written by
+// the caller that owns it. The archived row keeps its
 // own primary key column but under a new, collision-free text -- it stays
 // fully addressable by notice_message_id (Rerun's repend, readers) and by
 // every owner-scoped query; only a lookup BY THE ORIGINAL tool_call_id text
@@ -216,6 +222,17 @@ const countAsyncJobsOlderThan = `-- name: CountAsyncJobsOlderThan :one
 SELECT COUNT(*) FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (child_session_id IS NOT NULL AND (
+        EXISTS (
+            SELECT 1 FROM async_jobs c
+            WHERE c.owner_session_id = async_jobs.child_session_id
+              AND (c.state = 'running' OR (c.wake = 1 AND c.reacted = 0 AND c.delivery != 'void' AND c.announced = 1))
+        )
+        OR EXISTS (
+            SELECT 1 FROM session_notices n
+            WHERE n.owner = async_jobs.child_session_id AND n.wake = 1 AND n.reacted = 0 AND n.delivery != 'void'
+        )
+  ))
 `
 
 // Same predicate as PurgeAsyncJobsOlderThan, read-only, for
@@ -246,6 +263,23 @@ WHERE id = ? AND NOT EXISTS (SELECT 1 FROM async_jobs WHERE host_id = async_host
 // entirely.
 func (q *Queries) DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error) {
 	result, err := q.exec(ctx, q.deleteAsyncHostIfNoJobsStmt, deleteAsyncHostIfNoJobs, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteTerminalUnannouncedAsyncJobsForHost = `-- name: DeleteTerminalUnannouncedAsyncJobsForHost :execrows
+DELETE FROM async_jobs WHERE host_id = ? AND announced = 0 AND state != 'running'
+`
+
+// ASYNC-05 for a dead host (R2A-7): a job that reached a terminal state
+// before its own "started" result committed (announced=0) never produces a
+// notice and would otherwise leak forever and block its tool_call_id --
+// recovery reads only state='running'. Deleted without a trace, like the
+// running unannounced rows of the same host.
+func (q *Queries) DeleteTerminalUnannouncedAsyncJobsForHost(ctx context.Context, hostID string) (int64, error) {
+	result, err := q.exec(ctx, q.deleteTerminalUnannouncedAsyncJobsForHostStmt, deleteTerminalUnannouncedAsyncJobsForHost, hostID)
 	if err != nil {
 		return 0, err
 	}
@@ -331,6 +365,56 @@ func (q *Queries) GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (Async
 	return i, err
 }
 
+const getAsyncJobByClaimID = `-- name: GetAsyncJobByClaimID :one
+SELECT owner_session_id, tool_call_id, kind, tool_name, timeout_seconds, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at, claim_id, announce_message_id FROM async_jobs
+WHERE owner_session_id = ?1 AND claim_id = ?2 AND (claim_id <> '' OR tool_call_id = ?3)
+`
+
+type GetAsyncJobByClaimIDParams struct {
+	Owner      string `json:"owner"`
+	ClaimID    string `json:"claim_id"`
+	ToolCallID string `json:"tool_call_id"`
+}
+
+// Debt-snapshot row lookup (R2A-4): a snapshot names a row by its claim_id,
+// which survives the archive-on-reuse rename of tool_call_id -- a lookup by
+// tool_call_id text would find the NEW row a later claim put under the reused
+// id. claim_id ” (rows from before migration 20260929000002) has no
+// identity of its own, so those keep matching by tool_call_id too.
+func (q *Queries) GetAsyncJobByClaimID(ctx context.Context, arg GetAsyncJobByClaimIDParams) (AsyncJob, error) {
+	row := q.queryRow(ctx, q.getAsyncJobByClaimIDStmt, getAsyncJobByClaimID, arg.Owner, arg.ClaimID, arg.ToolCallID)
+	var i AsyncJob
+	err := row.Scan(
+		&i.OwnerSessionID,
+		&i.ToolCallID,
+		&i.Kind,
+		&i.ToolName,
+		&i.TimeoutSeconds,
+		&i.InputHash,
+		&i.ChildSessionID,
+		&i.OriginCli,
+		&i.State,
+		&i.NoticeKind,
+		&i.HostID,
+		&i.Announced,
+		&i.Delivery,
+		&i.NoticeMessageID,
+		&i.Wake,
+		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
+		&i.DeadlineAt,
+		&i.TimeoutKind,
+		&i.ResultSummary,
+		&i.ResultIsError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClaimID,
+		&i.AnnounceMessageID,
+	)
+	return i, err
+}
+
 const getRunningAsyncJobByChildSession = `-- name: GetRunningAsyncJobByChildSession :one
 SELECT owner_session_id, tool_call_id, kind, tool_name, timeout_seconds, input_hash, child_session_id, origin_cli, state, notice_kind, host_id, announced, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, deadline_at, timeout_kind, result_summary, result_is_error, created_at, updated_at, claim_id, announce_message_id FROM async_jobs WHERE child_session_id = ? AND state = 'running'
 `
@@ -373,39 +457,37 @@ func (q *Queries) GetRunningAsyncJobByChildSession(ctx context.Context, childSes
 	return i, err
 }
 
-const incrementAsyncJobWakeAttempts = `-- name: IncrementAsyncJobWakeAttempts :execrows
-UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id IN (/*SLICE:tool_call_ids*/?) AND wake = 1 AND reacted = 0
+const incrementAsyncJobWakeAttemptsForSnapshotRow = `-- name: IncrementAsyncJobWakeAttemptsForSnapshotRow :execrows
+UPDATE async_jobs SET wake_attempts = wake_attempts + 1, updated_at = ?1
+WHERE owner_session_id = ?2 AND claim_id = ?3 AND (claim_id <> '' OR tool_call_id = ?4)
+  AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(?5 AS TEXT)
+  AND wake = 1 AND reacted = 0
 `
 
-type IncrementAsyncJobWakeAttemptsParams struct {
-	UpdatedAt      int64    `json:"updated_at"`
-	OwnerSessionID string   `json:"owner_session_id"`
-	ToolCallIds    []string `json:"tool_call_ids"`
+type IncrementAsyncJobWakeAttemptsForSnapshotRowParams struct {
+	UpdatedAt       int64  `json:"updated_at"`
+	Owner           string `json:"owner"`
+	ClaimID         string `json:"claim_id"`
+	ToolCallID      string `json:"tool_call_id"`
+	NoticeMessageID string `json:"notice_message_id"`
 }
 
 // Settle-by-failure step 1 (doc sec.3.4: "a temporary failure ... increments
-// the attempt counter in the row"): a temporary provider failure after a
-// wake-up call increments wake_attempts on the SPECIFIC rows the failed
-// turn was meant to react to, not every debt row of the owner (the doc is
-// explicit the closing/counting scope is fixed at the start of that turn,
-// not re-evaluated against whatever is pending now). Guarded by
-// wake=1 AND reacted=0 so a row that settled (by a real step, or by an
-// earlier failure closure) in the meantime is left alone.
-func (q *Queries) IncrementAsyncJobWakeAttempts(ctx context.Context, arg IncrementAsyncJobWakeAttemptsParams) (int64, error) {
-	query := incrementAsyncJobWakeAttempts
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UpdatedAt)
-	queryParams = append(queryParams, arg.OwnerSessionID)
-	if len(arg.ToolCallIds) > 0 {
-		for _, v := range arg.ToolCallIds {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
-	}
-	result, err := q.exec(ctx, nil, query, queryParams...)
+// the attempt counter in the row") on ONE row of the failed turn's debt
+// snapshot (R2A-4/R2A-5). The row must still be the row the snapshot saw:
+// the same claim (claim_id, not tool_call_id text), still delivery='done'
+// and still carrying the notice message the snapshot recorded -- a Rerun
+// re-pend/re-pull changes notice_message_id, a void changes delivery -- and
+// still wake=1/reacted=0, so a row that settled or was re-pended in the
+// meantime is left alone.
+func (q *Queries) IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx context.Context, arg IncrementAsyncJobWakeAttemptsForSnapshotRowParams) (int64, error) {
+	result, err := q.exec(ctx, q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt, incrementAsyncJobWakeAttemptsForSnapshotRow,
+		arg.UpdatedAt,
+		arg.Owner,
+		arg.ClaimID,
+		arg.ToolCallID,
+		arg.NoticeMessageID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -536,15 +618,21 @@ func (q *Queries) ListAsyncJobsForOwner(ctx context.Context, ownerSessionID stri
 	return items, nil
 }
 
-const listDistinctRunningHostIDs = `-- name: ListDistinctRunningHostIDs :many
-SELECT DISTINCT host_id FROM async_jobs WHERE state = 'running'
+const listDistinctRecoverableHostIDs = `-- name: ListDistinctRecoverableHostIDs :many
+SELECT DISTINCT host_id FROM async_jobs
+WHERE state = 'running'
+   OR announced = 0
+   OR (delivery = 'done' AND notice_kind = 'job_kill' AND notice_message_id IS NULL)
 `
 
-// Every host_id that currently owns a 'running' row -- the candidate set a
-// recovery sweep probes (doc sec.3.6/3.7). Liveness itself is decided by
-// the host lock module (OS lock probe), not by this query.
-func (q *Queries) ListDistinctRunningHostIDs(ctx context.Context) ([]string, error) {
-	rows, err := q.query(ctx, q.listDistinctRunningHostIDsStmt, listDistinctRunningHostIDs)
+// Every host_id that owns a row a dead host would leave behind -- the
+// candidate set a recovery sweep probes (doc sec.3.6/3.7): a 'running' row,
+// any unannounced row (a terminal announced=0 row is a leak of a host that
+// died before its "started" result committed, R2A-7), or a job_kill row that
+// is done but never got its result message (R2A-8). Liveness itself is
+// decided by the host lock module (OS lock probe), not by this query.
+func (q *Queries) ListDistinctRecoverableHostIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.query(ctx, q.listDistinctRecoverableHostIDsStmt, listDistinctRecoverableHostIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -914,6 +1002,17 @@ const purgeAsyncJobsOlderThan = `-- name: PurgeAsyncJobsOlderThan :execrows
 DELETE FROM async_jobs
 WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
   AND NOT (delivery = 'done' AND wake = 1 AND reacted = 0)
+  AND NOT (child_session_id IS NOT NULL AND (
+        EXISTS (
+            SELECT 1 FROM async_jobs c
+            WHERE c.owner_session_id = async_jobs.child_session_id
+              AND (c.state = 'running' OR (c.wake = 1 AND c.reacted = 0 AND c.delivery != 'void' AND c.announced = 1))
+        )
+        OR EXISTS (
+            SELECT 1 FROM session_notices n
+            WHERE n.owner = async_jobs.child_session_id AND n.wake = 1 AND n.reacted = 0 AND n.delivery != 'void'
+        )
+  ))
 `
 
 // Bounded retention (doc sec.3.7): a terminal, delivered-or-voided row past
@@ -931,6 +1030,11 @@ WHERE state != 'running' AND delivery IN ('done', 'void') AND updated_at < ?
 // reacted=0 from before it was voided -- that must not block its purge,
 // since a void row will never produce a notice to react to in the first
 // place).
+// R2A-10: a DELEGATION row (child_session_id set) is also kept while its
+// child session still has a running row or unreacted debt (async_jobs or
+// session_notices, pending included): isDurableDelegationChild recognises a
+// released delegation child only by this row, and a child whose row was
+// purged mid-work would get an uncapped Drain on the parent's agent.
 func (q *Queries) PurgeAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error) {
 	result, err := q.exec(ctx, q.purgeAsyncJobsOlderThanStmt, purgeAsyncJobsOlderThan, updatedAt)
 	if err != nil {
@@ -1010,6 +1114,62 @@ func (q *Queries) RependAsyncJobsByNoticeMessageIDs(ctx context.Context, arg Rep
 		query = strings.Replace(query, "/*SLICE:message_ids*/?", "NULL", 1)
 	}
 	result, err := q.exec(ctx, nil, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const rependJobKillRowWithoutNotice = `-- name: RependJobKillRowWithoutNotice :execrows
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?1
+WHERE owner_session_id = ?2 AND tool_call_id = ?3 AND claim_id = ?4
+  AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
+  AND notice_kind = 'job_kill' AND notice_message_id IS NULL
+`
+
+type RependJobKillRowWithoutNoticeParams struct {
+	UpdatedAt  int64  `json:"updated_at"`
+	Owner      string `json:"owner"`
+	ToolCallID string `json:"tool_call_id"`
+	ClaimID    string `json:"claim_id"`
+}
+
+// Live-process twin of RependJobKillRowsWithoutNoticeForHost (R2A-8): the
+// job_kill tool call finished without its fused result write (an error
+// result, a cancelled context, a failed transaction), so the row this same
+// call had just marked done/reacted names no message. Scoped to the caller's
+// claim so a later claim under a reused tool_call_id is never touched.
+func (q *Queries) RependJobKillRowWithoutNotice(ctx context.Context, arg RependJobKillRowWithoutNoticeParams) (int64, error) {
+	result, err := q.exec(ctx, q.rependJobKillRowWithoutNoticeStmt, rependJobKillRowWithoutNotice,
+		arg.UpdatedAt,
+		arg.Owner,
+		arg.ToolCallID,
+		arg.ClaimID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const rependJobKillRowsWithoutNoticeForHost = `-- name: RependJobKillRowsWithoutNoticeForHost :execrows
+UPDATE async_jobs SET delivery = 'pending', reacted = 0, wake = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
+WHERE host_id = ? AND state != 'running' AND delivery = 'done' AND reacted = 1 AND wake = 0
+  AND notice_kind = 'job_kill' AND notice_message_id IS NULL
+`
+
+type RependJobKillRowsWithoutNoticeForHostParams struct {
+	UpdatedAt int64  `json:"updated_at"`
+	HostID    string `json:"host_id"`
+}
+
+// DUR-11 for job_kill on a dead host (R2A-8): job_kill's transition commits
+// delivery='done', reacted=1 first and the result message (which names
+// notice_message_id) later; a host that died between left a 'done' row that
+// is never pulled and that Rerun cannot re-pend. Back to a plain pending,
+// wake=0 row (never debt, never a wake) so the next pull shows the result.
+func (q *Queries) RependJobKillRowsWithoutNoticeForHost(ctx context.Context, arg RependJobKillRowsWithoutNoticeForHostParams) (int64, error) {
+	result, err := q.exec(ctx, q.rependJobKillRowsWithoutNoticeForHostStmt, rependJobKillRowsWithoutNoticeForHost, arg.UpdatedAt, arg.HostID)
 	if err != nil {
 		return 0, err
 	}
@@ -1142,40 +1302,40 @@ func (q *Queries) SetAsyncJobsWakeZeroPendingForOwners(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
-const settleAsyncJobsReactedFailed = `-- name: SettleAsyncJobsReactedFailed :execrows
-UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = ?
-WHERE owner_session_id = ? AND tool_call_id IN (/*SLICE:tool_call_ids*/?) AND wake = 1 AND reacted = 0
+const settleAsyncJobReactedFailedForSnapshotRow = `-- name: SettleAsyncJobReactedFailedForSnapshotRow :execrows
+UPDATE async_jobs SET reacted = 1, reacted_failed = 1, updated_at = ?1
+WHERE owner_session_id = ?2 AND claim_id = ?3 AND (claim_id <> '' OR tool_call_id = ?4)
+  AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(?5 AS TEXT)
+  AND wake = 1 AND reacted = 0
 `
 
-type SettleAsyncJobsReactedFailedParams struct {
-	UpdatedAt      int64    `json:"updated_at"`
-	OwnerSessionID string   `json:"owner_session_id"`
-	ToolCallIds    []string `json:"tool_call_ids"`
+type SettleAsyncJobReactedFailedForSnapshotRowParams struct {
+	UpdatedAt       int64  `json:"updated_at"`
+	Owner           string `json:"owner"`
+	ClaimID         string `json:"claim_id"`
+	ToolCallID      string `json:"tool_call_id"`
+	NoticeMessageID string `json:"notice_message_id"`
 }
 
-// Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on exactly
-// the id set captured at the start of the failed turn -- doc: "only for the
-// rows that were done at the moment it started" -- not every currently-pending
-// row of the owner (a notice that arrived mid-retry must get its own future
-// wake-up call, not be silently absorbed into this closure). reacted_failed
+// Settle-by-failure step 2, after K=3 (doc sec.3.4): closes debt on ONE row of
+// the snapshot captured at the start of the failed turn -- doc: "only for the
+// rows that were done at the moment it started" -- under the same
+// still-the-row-the-snapshot-saw guard as
+// IncrementAsyncJobWakeAttemptsForSnapshotRow (R2A-4/R2A-5), so a late settle
+// (after the turn's release) can never touch a row a Rerun re-pended or
+// voided, or a later claim under a reused tool_call_id. reacted_failed
 // distinguishes this from an ordinary step-persisted reaction
 // (MarkAsyncJobsReactedForOwner): it is set ONLY here, never by a real
 // step, so a child session can tell its parent the delegation failed
 // instead of succeeded-with-no-output.
-func (q *Queries) SettleAsyncJobsReactedFailed(ctx context.Context, arg SettleAsyncJobsReactedFailedParams) (int64, error) {
-	query := settleAsyncJobsReactedFailed
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UpdatedAt)
-	queryParams = append(queryParams, arg.OwnerSessionID)
-	if len(arg.ToolCallIds) > 0 {
-		for _, v := range arg.ToolCallIds {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
-	}
-	result, err := q.exec(ctx, nil, query, queryParams...)
+func (q *Queries) SettleAsyncJobReactedFailedForSnapshotRow(ctx context.Context, arg SettleAsyncJobReactedFailedForSnapshotRowParams) (int64, error) {
+	result, err := q.exec(ctx, q.settleAsyncJobReactedFailedForSnapshotRowStmt, settleAsyncJobReactedFailedForSnapshotRow,
+		arg.UpdatedAt,
+		arg.Owner,
+		arg.ClaimID,
+		arg.ToolCallID,
+		arg.NoticeMessageID,
+	)
 	if err != nil {
 		return 0, err
 	}

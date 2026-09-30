@@ -51,21 +51,24 @@ WHERE id = ? AND delivery = 'done';
 UPDATE session_notices SET reacted = 1, updated_at = ?
 WHERE owner = ? AND wake = 1 AND reacted = 0 AND delivery = 'done';
 
--- name: IncrementSessionNoticeWakeAttempts :execrows
--- Notices half of IncrementAsyncJobWakeAttempts (doc sec.3.4): keyed by id
--- (session_notices' own PK, unlike async_jobs' owner+tool_call_id pair)
--- because the settle-by-failure scope is the exact id set captured at the
--- start of the failed turn, not "every debt row of the owner now".
-UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = ?
-WHERE id IN (sqlc.slice('ids')) AND wake = 1 AND reacted = 0;
+-- name: IncrementSessionNoticeWakeAttemptsForSnapshotRow :execrows
+-- Notices half of IncrementAsyncJobWakeAttemptsForSnapshotRow (doc sec.3.4,
+-- R2A-5): keyed by id (session_notices' own PK) because the settle-by-failure
+-- scope is the exact set captured at the start of the failed turn, and still
+-- the row the snapshot saw: delivery='done' and the snapshot's
+-- notice_message_id (a Rerun re-pend/re-pull changes it), wake=1, reacted=0.
+UPDATE session_notices SET wake_attempts = wake_attempts + 1, updated_at = @updated_at
+WHERE id = @id AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(@notice_message_id AS TEXT)
+  AND wake = 1 AND reacted = 0;
 
--- name: SettleSessionNoticesReactedFailed :execrows
--- Notices half of SettleAsyncJobsReactedFailed (doc sec.3.4): closes debt
--- on exactly the captured id set after K=3 failed passes. reacted_failed
--- distinguishes this from MarkSessionNoticesReactedForOwner's ordinary,
--- real-step reaction.
-UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = ?
-WHERE id IN (sqlc.slice('ids')) AND wake = 1 AND reacted = 0;
+-- name: SettleSessionNoticeReactedFailedForSnapshotRow :execrows
+-- Notices half of SettleAsyncJobReactedFailedForSnapshotRow (doc sec.3.4,
+-- R2A-5): closes debt on ONE snapshot row after K=3 failed passes, under the
+-- same still-the-row-the-snapshot-saw guard. reacted_failed distinguishes this
+-- from MarkSessionNoticesReactedForOwner's ordinary, real-step reaction.
+UPDATE session_notices SET reacted = 1, reacted_failed = 1, updated_at = @updated_at
+WHERE id = @id AND delivery = 'done' AND COALESCE(notice_message_id, '') = CAST(@notice_message_id AS TEXT)
+  AND wake = 1 AND reacted = 0;
 
 -- name: ListReactedFailedSessionNoticesForOwner :many
 -- Notices half of ListReactedFailedAsyncJobsForOwner: the parent-
@@ -118,3 +121,14 @@ SELECT COUNT(*) FROM session_notices WHERE delivery IN ('done', 'void') AND upda
 -- query's doc for the full rationale.
 UPDATE session_notices SET reacted_failed = 0, updated_at = ?
 WHERE owner = ? AND reacted_failed = 1;
+
+-- name: RepointSessionNoticesJobToolCallID :execrows
+-- R2A-4: session_notices.job_tool_call_id names its async_jobs row by
+-- tool_call_id text (the wake_only pull-time void reads that row). When the
+-- archive rename above moves the row, its notices follow it: otherwise the
+-- text would resolve to the NEW row a later claim put under the reused id
+-- and a check-in about the old job would be delivered as if about the new
+-- one. Runs in the archive's own transaction, before the fresh claim
+-- inserts, so every notice matching the old text belongs to the old row.
+UPDATE session_notices SET job_tool_call_id = @new_job_tool_call_id
+WHERE owner = @owner AND job_tool_call_id = @old_job_tool_call_id;

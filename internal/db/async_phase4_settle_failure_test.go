@@ -10,14 +10,16 @@ import (
 )
 
 // makeDoneAsyncJob claims and terminal-transitions a job to a
-// wake=1/delivery=done/reacted=0/announced=1 state -- the shape a settle-by-
-// failure pass's captured id set is built from (doc sec.3.4: "only for the
-// rows that were done at the moment [the failed turn] started").
-func makeDoneAsyncJob(t *testing.T, ctx context.Context, q *Queries, owner, toolCallID, hostID string) {
+// wake=1/delivery=done/reacted=0/announced=1 state carrying notice message
+// "msg-<toolCallID>" -- the shape a settle-by-failure pass's debt snapshot is
+// built from (doc sec.3.4: "only for the rows that were done at the moment
+// [the failed turn] started"). It returns the row's claim id.
+func makeDoneAsyncJob(t *testing.T, ctx context.Context, q *Queries, owner, toolCallID, hostID string) string {
 	t.Helper()
+	claimID := "claim-" + toolCallID
 	_, err := q.ClaimAsyncJob(ctx, ClaimAsyncJobParams{
 		OwnerSessionID: owner, ToolCallID: toolCallID, Kind: "command",
-		InputHash: "h", HostID: hostID, CreatedAt: 1700000000, UpdatedAt: 1700000000,
+		InputHash: "h", HostID: hostID, ClaimID: claimID, CreatedAt: 1700000000, UpdatedAt: 1700000000,
 	})
 	require.NoError(t, err)
 	_, err = q.MarkAsyncJobAnnounced(ctx, MarkAsyncJobAnnouncedParams{
@@ -28,19 +30,23 @@ func makeDoneAsyncJob(t *testing.T, ctx context.Context, q *Queries, owner, tool
 		State: "completed", NoticeKind: "", ResultSummary: sql.NullString{String: "ok", Valid: true},
 		ResultIsError: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1, UpdatedAt: 1700000001,
 		Delivery:       "pending",
-		OwnerSessionID: owner, ToolCallID: toolCallID,
+		OwnerSessionID: owner, ToolCallID: toolCallID, ClaimID: claimID,
 	})
 	require.NoError(t, err)
 	// Terminal transition lands delivery='pending'; the drain pulls it to
-	// 'done' before a turn ever sees it -- settle-by-failure only touches
-	// rows that were 'done', so move it there directly for the test.
-	_, err = conn2(t, q).ExecContext(ctx, `UPDATE async_jobs SET delivery = 'done' WHERE owner_session_id = ? AND tool_call_id = ?`, owner, toolCallID)
+	// 'done' (naming the notice message) before a turn ever sees it --
+	// settle-by-failure only touches rows that were 'done', so move it there
+	// directly for the test.
+	_, err = conn2(t, q).ExecContext(ctx,
+		`UPDATE async_jobs SET delivery = 'done', notice_message_id = ? WHERE owner_session_id = ? AND tool_call_id = ?`,
+		"msg-"+toolCallID, owner, toolCallID)
 	require.NoError(t, err)
+	return claimID
 }
 
-// conn2 recovers the *sql.DB a *Queries was built from, for the one raw
-// UPDATE makeDoneAsyncJob needs (there is no PullPendingAsyncJobNotice-free
-// way to move a row straight to delivery='done' without a message insert).
+// conn2 recovers the *sql.DB a *Queries was built from, for the raw UPDATEs
+// the helpers need (there is no PullPendingAsyncJobNotice-free way to move a
+// row straight to delivery='done' without a message insert).
 func conn2(t *testing.T, q *Queries) *sql.DB {
 	t.Helper()
 	c, ok := q.db.(*sql.DB)
@@ -48,59 +54,98 @@ func conn2(t *testing.T, q *Queries) *sql.DB {
 	return c
 }
 
-func TestIncrementAsyncJobWakeAttempts_ScopedToIDSet(t *testing.T) {
+func snapshotIncrement(claimID, toolCallID, msgID string) IncrementAsyncJobWakeAttemptsForSnapshotRowParams {
+	return IncrementAsyncJobWakeAttemptsForSnapshotRowParams{
+		UpdatedAt: 1700000002, Owner: "sess-1", ClaimID: claimID, ToolCallID: toolCallID, NoticeMessageID: msgID,
+	}
+}
+
+func snapshotSettle(claimID, toolCallID, msgID string) SettleAsyncJobReactedFailedForSnapshotRowParams {
+	return SettleAsyncJobReactedFailedForSnapshotRowParams{
+		UpdatedAt: 1700000003, Owner: "sess-1", ClaimID: claimID, ToolCallID: toolCallID, NoticeMessageID: msgID,
+	}
+}
+
+// TestIncrementAsyncJobWakeAttemptsForSnapshotRow_OnlyTheSnapshotRow pins the
+// per-row guard (R2A-4/R2A-5): the increment lands on the row the snapshot
+// saw and on nothing else -- not a sibling, not the same tool_call_id under a
+// different claim, not a row re-pended (new notice message) or voided since.
+//
+// REVERT CHECK: dropping `AND claim_id = @claim_id`, the notice_message_id
+// comparison or `delivery = 'done'` from the query (sql/async_jobs.sql,
+// regenerated) turns the matching case of the loop below (or the void case)
+// into 1 affected row and the test fails.
+func TestIncrementAsyncJobWakeAttemptsForSnapshotRow_OnlyTheSnapshotRow(t *testing.T) {
 	ctx, conn := setupPhase4DB(t)
 	q := New(conn)
 	_, err := q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-1", Pid: 1, StartedAt: 1700000000})
 	require.NoError(t, err)
 
-	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
+	claim1 := makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
 	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-2", "host-1")
 
-	rows, err := q.IncrementAsyncJobWakeAttempts(ctx, IncrementAsyncJobWakeAttemptsParams{
-		UpdatedAt: 1700000002, OwnerSessionID: "sess-1", ToolCallIds: []string{"call-1"},
-	})
+	// Stale references first: they must change nothing.
+	for name, p := range map[string]IncrementAsyncJobWakeAttemptsForSnapshotRowParams{
+		"a different claim under the same tool_call_id": snapshotIncrement("claim-other", "call-1", "msg-call-1"),
+		"a re-pulled row (different notice message)":    snapshotIncrement(claim1, "call-1", "msg-other"),
+	} {
+		rows, err := q.IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx, p)
+		require.NoError(t, err, name)
+		assert.EqualValues(t, 0, rows, name)
+	}
+
+	rows, err := q.IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx, snapshotIncrement(claim1, "call-1", "msg-call-1"))
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, rows)
 
 	j1, err := q.GetAsyncJob(ctx, GetAsyncJobParams{OwnerSessionID: "sess-1", ToolCallID: "call-1"})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, j1.WakeAttempts)
-
 	j2, err := q.GetAsyncJob(ctx, GetAsyncJobParams{OwnerSessionID: "sess-1", ToolCallID: "call-2"})
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, j2.WakeAttempts, "a row outside the captured id set must not be incremented")
+	assert.EqualValues(t, 0, j2.WakeAttempts, "a row outside the snapshot must not be incremented")
+
+	_, err = conn2(t, q).ExecContext(ctx, `UPDATE async_jobs SET delivery = 'void' WHERE owner_session_id = 'sess-1' AND tool_call_id = 'call-1'`)
+	require.NoError(t, err)
+	rows, err = q.IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx, snapshotIncrement(claim1, "call-1", "msg-call-1"))
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, rows, "a voided row must not be incremented")
 }
 
-// TestSettleAsyncJobsReactedFailed_ScopedToIDSet is the coordinator-
-// requested regression test: settle-by-failure must close debt ONLY for
-// the id set captured at the start of the failed turn, never for a row
-// that became 'done' afterward -- doc sec.3.4: "только для строк, которые
-// были done на момент его начала" (only for rows that were done at the
-// moment it started).
+// TestSettleAsyncJobReactedFailedForSnapshotRow_OnlyTheSnapshotRow is the
+// settle twin: doc sec.3.4 "only for rows that were done at the moment the
+// turn started" -- and still the same rows, not whatever now carries the
+// tool_call_id text or a re-pended delivery.
 //
-// REVERT CHECK: change SettleAsyncJobsReactedFailed's WHERE clause in
-// sql/async_jobs.sql to drop `tool_call_id IN (sqlc.slice('tool_call_ids'))`
-// (settling every wake=1/reacted=0 row of the owner instead), regenerate
-// with sqlc, and this test's second assertion fails (call-2 is wrongly
-// settled too). Verified in this session; reverted back before commit.
-func TestSettleAsyncJobsReactedFailed_ScopedToIDSet(t *testing.T) {
+// REVERT CHECK: same procedure as the increment test on
+// SettleAsyncJobReactedFailedForSnapshotRow.
+func TestSettleAsyncJobReactedFailedForSnapshotRow_OnlyTheSnapshotRow(t *testing.T) {
 	ctx, conn := setupPhase4DB(t)
 	q := New(conn)
 	_, err := q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-1", Pid: 1, StartedAt: 1700000000})
 	require.NoError(t, err)
 
-	// call-1 is done and captured in the failed turn's id set.
-	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
-
-	// call-2 becomes done ONLY AFTER the id set was captured -- it must not
-	// be swept up by the settle even though it now matches the same
-	// wake=1/reacted=0 shape.
+	claim1 := makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
 	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-2", "host-1")
 
-	rows, err := q.SettleAsyncJobsReactedFailed(ctx, SettleAsyncJobsReactedFailedParams{
-		UpdatedAt: 1700000003, OwnerSessionID: "sess-1", ToolCallIds: []string{"call-1"},
-	})
+	// Stale references settle nothing.
+	for name, p := range map[string]SettleAsyncJobReactedFailedForSnapshotRowParams{
+		"a different claim under the same tool_call_id": snapshotSettle("claim-other", "call-1", "msg-call-1"),
+		"a re-pulled row (different notice message)":    snapshotSettle(claim1, "call-1", "msg-other"),
+	} {
+		rows, err := q.SettleAsyncJobReactedFailedForSnapshotRow(ctx, p)
+		require.NoError(t, err, name)
+		assert.EqualValues(t, 0, rows, name)
+	}
+	_, err = conn2(t, q).ExecContext(ctx, `UPDATE async_jobs SET delivery = 'pending' WHERE owner_session_id = 'sess-1' AND tool_call_id = 'call-1'`)
+	require.NoError(t, err)
+	rows, err := q.SettleAsyncJobReactedFailedForSnapshotRow(ctx, snapshotSettle(claim1, "call-1", "msg-call-1"))
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, rows, "a row re-pended since the snapshot must not be settled")
+	_, err = conn2(t, q).ExecContext(ctx, `UPDATE async_jobs SET delivery = 'done' WHERE owner_session_id = 'sess-1' AND tool_call_id = 'call-1'`)
+	require.NoError(t, err)
+
+	rows, err = q.SettleAsyncJobReactedFailedForSnapshotRow(ctx, snapshotSettle(claim1, "call-1", "msg-call-1"))
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, rows)
 
@@ -111,8 +156,8 @@ func TestSettleAsyncJobsReactedFailed_ScopedToIDSet(t *testing.T) {
 
 	j2, err := q.GetAsyncJob(ctx, GetAsyncJobParams{OwnerSessionID: "sess-1", ToolCallID: "call-2"})
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, j2.Reacted, "a row outside the captured id set must not be settled")
-	assert.EqualValues(t, 0, j2.ReactedFailed, "a row outside the captured id set must not be marked reacted_failed")
+	assert.EqualValues(t, 0, j2.Reacted, "a row outside the snapshot must not be settled")
+	assert.EqualValues(t, 0, j2.ReactedFailed)
 
 	debt, err := q.AsyncReactionDebtExists(ctx, "sess-1")
 	require.NoError(t, err)
@@ -125,12 +170,10 @@ func TestListReactedFailedAsyncJobsForOwner(t *testing.T) {
 	_, err := q.RegisterAsyncHost(ctx, RegisterAsyncHostParams{ID: "host-1", Pid: 1, StartedAt: 1700000000})
 	require.NoError(t, err)
 
-	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
+	claim1 := makeDoneAsyncJob(t, ctx, q, "sess-1", "call-1", "host-1")
 	makeDoneAsyncJob(t, ctx, q, "sess-1", "call-2", "host-1")
 
-	_, err = q.SettleAsyncJobsReactedFailed(ctx, SettleAsyncJobsReactedFailedParams{
-		UpdatedAt: 1700000003, OwnerSessionID: "sess-1", ToolCallIds: []string{"call-1"},
-	})
+	_, err = q.SettleAsyncJobReactedFailedForSnapshotRow(ctx, snapshotSettle(claim1, "call-1", "msg-call-1"))
 	require.NoError(t, err)
 
 	failed, err := q.ListReactedFailedAsyncJobsForOwner(ctx, "sess-1")
@@ -148,20 +191,26 @@ func makeDoneSessionNotice(t *testing.T, ctx context.Context, q *Queries, owner,
 		CreatedAt: 1700000000, UpdatedAt: 1700000000,
 	})
 	require.NoError(t, err)
-	_, err = conn2(t, q).ExecContext(ctx, `UPDATE session_notices SET delivery = 'done' WHERE id = ?`, n.ID)
+	_, err = conn2(t, q).ExecContext(ctx, `UPDATE session_notices SET delivery = 'done', notice_message_id = ? WHERE id = ?`, "msg-"+text, n.ID)
 	require.NoError(t, err)
 	return n.ID
 }
 
-func TestIncrementSessionNoticeWakeAttempts_ScopedToIDSet(t *testing.T) {
+func TestIncrementSessionNoticeWakeAttemptsForSnapshotRow_OnlyTheSnapshotRow(t *testing.T) {
 	ctx, conn := setupPhase4DB(t)
 	q := New(conn)
 
 	id1 := makeDoneSessionNotice(t, ctx, q, "sess-1", "n1")
 	id2 := makeDoneSessionNotice(t, ctx, q, "sess-1", "n2")
 
-	rows, err := q.IncrementSessionNoticeWakeAttempts(ctx, IncrementSessionNoticeWakeAttemptsParams{
-		UpdatedAt: 1700000002, Ids: []int64{id1},
+	rows, err := q.IncrementSessionNoticeWakeAttemptsForSnapshotRow(ctx, IncrementSessionNoticeWakeAttemptsForSnapshotRowParams{
+		UpdatedAt: 1700000002, ID: id1, NoticeMessageID: "msg-other",
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, rows, "a re-pulled notice (different message) must not be incremented")
+
+	rows, err = q.IncrementSessionNoticeWakeAttemptsForSnapshotRow(ctx, IncrementSessionNoticeWakeAttemptsForSnapshotRowParams{
+		UpdatedAt: 1700000002, ID: id1, NoticeMessageID: "msg-n1",
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, rows)
@@ -169,30 +218,28 @@ func TestIncrementSessionNoticeWakeAttempts_ScopedToIDSet(t *testing.T) {
 	n1, err := q.GetSessionNotice(ctx, id1)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, n1.WakeAttempts)
-
 	n2, err := q.GetSessionNotice(ctx, id2)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, n2.WakeAttempts, "a notice outside the captured id set must not be incremented")
+	assert.EqualValues(t, 0, n2.WakeAttempts, "a notice outside the snapshot must not be incremented")
 }
 
-// TestSettleSessionNoticesReactedFailed_ScopedToIDSet is the session_notices
-// half of TestSettleAsyncJobsReactedFailed_ScopedToIDSet: a notice that
-// became 'done' after the failed turn's id set was captured must survive
-// the settle untouched.
-//
-// REVERT CHECK: same procedure as the async_jobs test -- drop the
-// `id IN (sqlc.slice('ids'))` scoping from SettleSessionNoticesReactedFailed
-// in sql/session_notices.sql, regenerate, and this test's second notice
-// assertion fails. Verified in this session; reverted back before commit.
-func TestSettleSessionNoticesReactedFailed_ScopedToIDSet(t *testing.T) {
+// TestSettleSessionNoticeReactedFailedForSnapshotRow_OnlyTheSnapshotRow is the
+// session_notices half of the async_jobs settle test.
+func TestSettleSessionNoticeReactedFailedForSnapshotRow_OnlyTheSnapshotRow(t *testing.T) {
 	ctx, conn := setupPhase4DB(t)
 	q := New(conn)
 
 	id1 := makeDoneSessionNotice(t, ctx, q, "sess-1", "n1")
 	id2 := makeDoneSessionNotice(t, ctx, q, "sess-1", "n2")
 
-	rows, err := q.SettleSessionNoticesReactedFailed(ctx, SettleSessionNoticesReactedFailedParams{
-		UpdatedAt: 1700000003, Ids: []int64{id1},
+	rows, err := q.SettleSessionNoticeReactedFailedForSnapshotRow(ctx, SettleSessionNoticeReactedFailedForSnapshotRowParams{
+		UpdatedAt: 1700000003, ID: id1, NoticeMessageID: "msg-other",
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, rows, "a re-pulled notice (different message) must not be settled")
+
+	rows, err = q.SettleSessionNoticeReactedFailedForSnapshotRow(ctx, SettleSessionNoticeReactedFailedForSnapshotRowParams{
+		UpdatedAt: 1700000003, ID: id1, NoticeMessageID: "msg-n1",
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, rows)
@@ -204,7 +251,7 @@ func TestSettleSessionNoticesReactedFailed_ScopedToIDSet(t *testing.T) {
 
 	n2, err := q.GetSessionNotice(ctx, id2)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, n2.Reacted, "a notice outside the captured id set must not be settled")
+	assert.EqualValues(t, 0, n2.Reacted, "a notice outside the snapshot must not be settled")
 	assert.EqualValues(t, 0, n2.ReactedFailed)
 }
 
@@ -215,8 +262,8 @@ func TestListReactedFailedSessionNoticesForOwner(t *testing.T) {
 	id1 := makeDoneSessionNotice(t, ctx, q, "sess-1", "n1")
 	makeDoneSessionNotice(t, ctx, q, "sess-1", "n2")
 
-	_, err := q.SettleSessionNoticesReactedFailed(ctx, SettleSessionNoticesReactedFailedParams{
-		UpdatedAt: 1700000003, Ids: []int64{id1},
+	_, err := q.SettleSessionNoticeReactedFailedForSnapshotRow(ctx, SettleSessionNoticeReactedFailedForSnapshotRowParams{
+		UpdatedAt: 1700000003, ID: id1, NoticeMessageID: "msg-n1",
 	})
 	require.NoError(t, err)
 

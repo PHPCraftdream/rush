@@ -53,12 +53,16 @@ func (s *AsyncJobStore) HostLiveness(hostID string) HostLockStatus {
 	if IsOwnHostID(hostID) {
 		return HostStatusAlive
 	}
-	status, err := ProbeHostShared(s.dataDir, hostID)
+	status, err := probeHostSharedFn(s.dataDir, hostID)
 	if err != nil && status != HostStatusDead {
 		return HostStatusUnknown
 	}
 	return status
 }
+
+// probeHostSharedFn is ProbeHostShared; a variable only so a test can count
+// probes (the per-call host cache of the batched readers).
+var probeHostSharedFn = ProbeHostShared
 
 // ListRunningAsyncJobsForOwners exposes the query LiveJobs walks (doc sec.5
 // step 7): every 'running' row owned by one of ownerIDs, batched per BFS
@@ -242,7 +246,7 @@ func (s *AsyncJobStore) JobsInTree(ctx context.Context, rootSessionID string) (j
 		}
 		var next []string
 		for _, owner := range queue {
-			rows, err := s.q.ListAsyncJobsForOwner(ctx, owner)
+			rows, err := s.readQuerier().ListAsyncJobsForOwner(ctx, owner)
 			if err != nil {
 				walkIncomplete = true
 				continue

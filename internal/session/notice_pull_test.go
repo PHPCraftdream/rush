@@ -412,3 +412,71 @@ func TestPullJobNotices_JobKillRowNeverSurfacesAsPulledNotice(t *testing.T) {
 	require.Empty(t, pulled, "a job_kill'd row (delivery='done' already) must never also surface as a pulled notice")
 	require.EqualValues(t, 0, countMessages(t, store.q, ctx, "owner-1"), "job_kill's own tool response is the answer -- the pull inserts no second message for it")
 }
+
+// TestPullSessionNotices_SupervisionVoidsWhenOnlyRunningRowIsVoided is R2A-9:
+// a Rerun voids a still-running delegation (delivery='void', state stays
+// 'running' while its executor is stopped); that row is not open scope, so a
+// supervision check-in with no other running row must void at pull time
+// instead of being delivered as a wake=1 notice over rolled-back work (§6).
+//
+// REVERT CHECK: the `r.Delivery == "void"` skip removed from
+// sessionNoticeVoidCondition's supervision branch -- the notice was delivered
+// (pulled had 1 entry) and the require.Empty below failed. Restored; re-ran,
+// passed.
+func TestPullSessionNotices_SupervisionVoidsWhenOnlyRunningRowIsVoided(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(store.q)
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-1", Kind: JobKindCommand, Input: "x", ToolName: "bash"})
+	require.NoError(t, err)
+	_, err = store.sqlDB.ExecContext(ctx, `UPDATE async_jobs SET delivery = 'void' WHERE owner_session_id = 'owner-1' AND tool_call_id = 'call-1'`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindSupervision, "check-in", true, ""))
+	pulled, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled, "a Rerun-voided running row is not open scope: the supervision check-in must void")
+
+	// Control: a second, non-voided running row keeps the scope open.
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call-2", Kind: JobKindCommand, Input: "y", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindSupervision, "check-in 2", true, ""))
+	pulled, err = store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Len(t, pulled, 1, "a live running row must still deliver the check-in")
+}
+
+// TestPullSessionNotices_WakeOnlyOfArchivedJobDoesNotFollowTheReusedKey is
+// R2A-4's wake_only half: a wake_only check-in names its job by tool_call_id
+// text. When the job's row is archived by a reused id, the check-in follows the
+// row (RepointSessionNoticesJobToolCallID); otherwise the text resolves to the
+// NEW running row and a check-in about the finished job is delivered as if it
+// were about the new one.
+//
+// REVERT CHECK: the RepointSessionNoticesJobToolCallID call removed from
+// claimOnce -- the old check-in was delivered (pulled had 1 entry) and the
+// require.Empty below failed. Restored; re-ran, passed.
+func TestPullSessionNotices_WakeOnlyOfArchivedJobDoesNotFollowTheReusedKey(t *testing.T) {
+	store, q, ctx := newTestStore(t)
+	require.NoError(t, seedSession(ctx, q, "owner-1"))
+	messages := message.NewService(store.q)
+
+	_, err := store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "first", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
+	// The check-in about the FIRST job is queued while it runs...
+	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindWakeOnly, "first job still running", true, "call_0"))
+	// ...the job then finishes, its result is delivered, and its id is reused
+	// before the check-in is pulled.
+	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "done", Wake: true})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
+	require.NoError(t, err)
+	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second", ToolName: "bash"})
+	require.NoError(t, err)
+
+	pulled, err := store.PullSessionNotices(ctx, messages, "owner-1", sessionNoticeParams)
+	require.NoError(t, err)
+	require.Empty(t, pulled, "the check-in about the finished first job must void, not resolve to the new running row")
+}
