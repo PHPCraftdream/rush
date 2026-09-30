@@ -86,41 +86,18 @@ type AsyncCompletion struct {
 type sessionJobs struct {
 	jobs    map[string]*asyncJob
 	changed chan struct{}
-	// hintSeq is a monotonic counter bumped every time something about
-	// owner's reaction debt may have changed (doc sec.3.4 "у сессии --
-	// счётчик подсказок"): a committed transition/notice with wake=1, and
-	// every wakeSession call regardless of outcome. Compared, not waited on
-	// directly -- see hintSeqLocked/waitForHint.
+	// hintSeq is a monotonic counter bumped every time a FACT about owner's
+	// reaction debt is committed (doc sec.3.4 "у сессии -- счётчик
+	// подсказок"): a transition/notice with wake=1. Release and tick
+	// re-checks do not bump it. Compared, not waited on directly -- see
+	// hintSeqLocked/waitForHint.
 	hintSeq uint64
-	// noTurnDrainRelease is set the instant a Drain call ends WITHOUT a
-	// provider turn (no debt, or policy forbade one) and this mailbox
-	// release is that Drain's own -- doc sec.3.4's anti-idle-loop rule (a):
-	// the NEXT release-triggered debt re-check is skipped when the hint
-	// counter is unchanged since the Drain's own check, but every other
-	// onSessionIdle side effect (recheckChild, supervision) still runs.
-	// Consumed (read-and-cleared) by consumeNoTurnDrainRelease.
-	noTurnDrainRelease bool
-	// noTurnDrainHintSeq is hintSeq's value at the moment the no-turn Drain
-	// made its OWN debt check, so the release-time re-check can tell "hint
-	// counter unchanged since then" apart from "something hinted again in
-	// between" (doc sec.3.4 rule (a)).
-	noTurnDrainHintSeq uint64
 	// externalDriver marks a session whose turns are driven by an external
 	// loop (the CLI root of a live `rush run` process, doc sec.3.4 "session
 	// with an external driver"): wakeSession must send it only a hint, never
 	// submit a Drain turn -- the loop re-evaluates its own scope/debt from
 	// the DB. Claimed/released by the loop itself (app_run_async.go).
 	externalDriver bool
-	// admissionRefusedRelease is set the instant runOwned refuses a call
-	// because another process already holds the session's OS lock (B2/C2
-	// fix, doc sec.3.4 rule (b)): the in-process mailbox reservation was
-	// claimed and immediately abandoned WITHOUT any turn (or even an
-	// attempt to run one) ever starting. Unlike noTurnDrainRelease this is
-	// never hint-gated: the refusal has nothing to do with reaction-debt
-	// hints, and retrying immediately is certain to fail identically (the
-	// foreign holder does not release just because our hint counter moved).
-	// Consumed (read-and-cleared) by consumeAdmissionRefusedRelease.
-	admissionRefusedRelease bool
 	// drain is the launch gate every Drain launch decision reads
 	// (drainPermitted); written only by accountDrainAttempt, noteDrainRefused
 	// and the human-message reset. See drainGate in work_ledger_reaction.go.

@@ -149,6 +149,8 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
+	// The committed row is debt the wake launches for.
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
 	// Wake: true -- a timed-out job's committed row always wakes (doc
 	// sec.3.4's wake-policy table); this is what deliverLocked now threads
 	// through as AsyncCompletion.Wake (work_ledger.go).

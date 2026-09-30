@@ -14,8 +14,10 @@ import (
 // after its own turn-start pull) should reach the provider at all. snap is
 // the visible (delivery='done') debt captured AFTER that pull: a pull that
 // never succeeds leaves rows 'pending', so it can never force a chain of
-// empty-prompt provider turns (doc sec.6). With visible debt the session
-// policy decides; the verdict says why a turn is refused.
+// empty-prompt provider turns (doc sec.6). With visible debt the ONE launch
+// predicate decides (policy, then the launch gate); the verdict says why a
+// turn is refused. A Drain queued before a failure commits under the
+// now-closed gate and only pulls.
 func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, snap session.DebtSnapshot) (bool, drainVerdict) {
 	if snap.Empty() {
 		return false, drainVerdict{kind: drainDeferred, reason: "no visible debt"}
@@ -23,16 +25,8 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, sn
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
 		return true, drainVerdict{kind: drainAllow}
 	}
-	allowed, _, polErr := a.asyncJobs.coord.sessionDrainPolicy(ctx, sessionID)
-	if polErr != nil {
-		slog.Warn("drain turn: session policy check failed; allowing the turn",
-			"session_id", sessionID, "err", polErr)
-		return true, drainVerdict{kind: drainAllow}
-	}
-	if !allowed {
-		return false, drainVerdict{kind: drainDeferred, reason: "session policy"}
-	}
-	return true, drainVerdict{kind: drainAllow}
+	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID)
+	return v.kind == drainAllow, v
 }
 
 // visibleDebtSnapshot reads owner's visible (delivery='done') debt row set.

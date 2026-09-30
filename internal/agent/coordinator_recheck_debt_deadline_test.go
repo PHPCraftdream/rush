@@ -1,6 +1,6 @@
 // B1 (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN): a release
 // re-check's own debt-existence read must never bound the Drain turn it
-// triggers. Before the fix, recheckDebtOnRelease (supervision.go) ran the
+// triggers. Before the fix, afterRelease (supervision.go) ran the
 // WHOLE wakeSession/agent.Run/runOwned turn loop under the SAME context as
 // its 30s debt-check deadline -- a Drain turn slower than that budget hit
 // DeadlineExceeded, was classified as a terminal provider error, and settled
@@ -26,10 +26,10 @@ import (
 // recheckDebtCheckBudget to a few milliseconds (a var precisely so a test
 // can do this instead of waiting out a real 30s window) and makes the
 // probe provider respond slower than that budget. The Drain triggered by
-// recheckDebtOnRelease must still reach the provider and successfully react
+// afterRelease must still reach the provider and successfully react
 // -- no DeadlineExceeded, no settled-by-failure marker.
 //
-// Revert-check performed: changed recheckDebtOnRelease's wakeSession call
+// Revert-check performed: changed afterRelease's wakeSession call
 // back to `c.wakeSession(checkCtx, id, true)` (the pre-fix shape) -- this
 // test FAILED: the provider request never completed inside runOwned before
 // checkCtx's tiny deadline fired, the turn errored with DeadlineExceeded,
@@ -38,10 +38,10 @@ import (
 // re-ran, passed.
 func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing.T) {
 	origBudget := recheckDebtCheckBudget
-	recheckDebtCheckBudget = 15 * time.Millisecond
+	recheckDebtCheckBudget = 100 * time.Millisecond
 	t.Cleanup(func() { recheckDebtCheckBudget = origBudget })
 
-	const providerDelay = 200 * time.Millisecond
+	const providerDelay = 500 * time.Millisecond
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(providerDelay)
@@ -88,7 +88,7 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 
 	// The function under test: this must complete (well past providerDelay)
 	// without the debt-check's own tiny budget ever reaching the turn.
-	coord.recheckDebtOnRelease(sess.ID)
+	coord.afterRelease(sess.ID)
 
 	require.EqualValues(t, 1, atomic.LoadInt32(&requests), "the Drain triggered by the release re-check must reach the provider")
 
@@ -114,19 +114,19 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 // SAME ctx as the debt check (checkCtx), which this test's shrunk budget
 // expires almost immediately.
 //
-// Revert-check performed: changed recheckDebtOnRelease's wakeSession call
+// Revert-check performed: changed afterRelease's wakeSession call
 // back to `c.wakeSession(checkCtx, id, true)` (passing the tiny-budget ctx
 // through instead of context.Background()) -- this test's queued call
 // FAILED: `agent.Run` for the queued prompt returned a context-deadline-
 // shaped error instead of a real reply, because the queued turn inherited
-// checkCtx and was torn down the instant recheckDebtOnRelease's own defer
+// checkCtx and was torn down the instant afterRelease's own defer
 // cancelled it. Restored `context.Background()`; re-ran, passed.
 func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	origBudget := recheckDebtCheckBudget
-	recheckDebtCheckBudget = 15 * time.Millisecond
+	recheckDebtCheckBudget = 100 * time.Millisecond
 	t.Cleanup(func() { recheckDebtCheckBudget = origBudget })
 
-	const providerDelay = 300 * time.Millisecond
+	const providerDelay = 600 * time.Millisecond
 	drainReqStarted := make(chan struct{})
 	var reqNum int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -178,7 +178,7 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		coord.recheckDebtOnRelease(sess.ID)
+		coord.afterRelease(sess.ID)
 	}()
 
 	select {
@@ -188,7 +188,7 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	}
 
 	// The Drain's own request is now in flight (past checkCtx's tiny
-	// deadline by construction, since it sleeps providerDelay > 15ms) --
+	// deadline by construction, since it sleeps providerDelay > 100ms) --
 	// submit a REAL user turn for the SAME session now, while the mailbox is
 	// busy: it must queue, not be refused or dropped. Run()'s own (nil, nil)
 	// "queued" contract (agent_run.go: "internal/app detects the queued case

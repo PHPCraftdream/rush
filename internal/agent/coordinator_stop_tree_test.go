@@ -49,7 +49,7 @@ func TestStop_OneSecondAfterNaturalFinish_NoNewTurn(t *testing.T) {
 	// A late/duplicate hint for the SAME completion (exactly what a
 	// goroutine racing Stop would eventually deliver) must not produce a
 	// turn: decideDrainTurn's own visible-debt check now sees wake=0.
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "Stop must prevent any turn over a race-won natural completion")
 }
@@ -132,7 +132,7 @@ func TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEqual(t, "running", delegationRow.State, "the delegation row itself must no longer be running")
 
-		err = coord.wakeSession(ctx, jobIdentity{owner: child.sessID, toolCallID: "call-bash"}, true)
+		err = coord.wakeSession(ctx, child.sessID, true)
 		require.NoError(t, err)
 	}
 

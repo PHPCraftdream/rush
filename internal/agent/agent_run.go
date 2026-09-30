@@ -412,16 +412,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 					"holder_pid", busyErr.HolderPID,
 					"lock_path", busyErr.Path,
 				)
-				// B2/C2 fix: this mailbox reservation is about to be abandoned
-				// (the deferred abandonOwnershipWithHandoff above) WITHOUT any
-				// turn ever starting. Mark the release so onSessionIdleHook
-				// skips its own automatic relaunch -- otherwise a Drain
-				// re-check that lands here immediately re-triggers itself via
-				// onSessionIdle on every single failed attempt, an unbounded
-				// hot loop with no pause (doc sec.3.4 rule (b)).
-				if a.asyncJobs != nil {
-					a.asyncJobs.markAdmissionRefusedRelease(call.SessionID)
-				}
+				// This reservation is abandoned WITHOUT any turn: the gate
+				// (noteDrainRefused) keeps the release that follows from
+				// relaunching a Drain at once (doc sec.3.4 rule (b)).
 				a.noteRefusal(call.SessionID, lockErr)
 				return nil, notAttempted(call, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr))
 			}
@@ -594,26 +587,6 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		mb.clearCurrentCall(epoch)
 		turnCancel()
 		if !hasNext {
-			// B6/C5a fix: extend rule (a) to a Drain that reached the
-			// provider and failed. The turn-loop's own defer
-			// (abandonOwnershipWithHandoff below) fires onSessionIdle
-			// SYNCHRONOUSLY as part of this Run() call unwinding -- marking
-			// AFTER Run returns (wakeSession's own recordDrainOutcome) would
-			// be too late, since onSessionIdleHook's relaunch decision for
-			// THIS release has already been made by then. Mark it here,
-			// before that defer runs, and add to the recheck set so a
-			// genuinely open debt is retried by the 60s pass (or a new
-			// hint) instead of never again -- never via an immediate
-			// relaunch (doc sec.3.4 rule (c), sec.6 "one-minute outage does
-			// not close the debt"). Admission refusals are excluded: those
-			// are B2/C2's own admissionRefusedRelease marker, set deeper
-			// inside this function before the turn loop even starts.
-			if call.IsDrain && err != nil && !turnAttemptRefused(err) && a.asyncJobs != nil {
-				a.asyncJobs.markNoTurnDrainRelease(call.SessionID, a.asyncJobs.hintSeqOf(call.SessionID))
-				if a.asyncJobs.coord != nil {
-					a.asyncJobs.coord.addToRecheckSet(call.SessionID)
-				}
-			}
 			return result, err
 		}
 		inheritReplacementIdentityCallback(&call, &next)

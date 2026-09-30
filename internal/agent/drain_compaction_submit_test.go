@@ -439,26 +439,18 @@ func TestReminderBeforeTail(t *testing.T) {
 	require.Equal(t, withReminder, reminderBeforeTail(withReminder, 0), "k=0: untouched")
 }
 
-// TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop pins B13: a
-// no-turn Drain's markNoTurnDrainRelease must fire ONLY for the release that
-// is actually its own -- not when a real call was already queued behind it
-// and runs next inside the SAME Run() loop (drainOrReleaseMerged's ok==true
-// branch), before any onSessionIdle fires. Before the fix the marker was
-// written unconditionally, so it could still be sitting there (and,
-// depending on the hint counter, suppress onSessionIdleHook's re-launch
-// check) by the time the REAL turn's own eventual release consults it --
-// even though that release has nothing to do with the no-turn Drain.
+// TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop pins B13: a no-turn Drain
+// (accounted before its release) must not swallow a real call already queued
+// behind it: drainOrReleaseMerged hands that call to the SAME Run() loop as
+// its next turn.
 //
 // runTurnToolsSnapshotSeam fires synchronously inside runTurn, strictly
-// before the notice pull / decideDrainTurn gate, so it deterministically
-// queues the second call into the SAME mailbox generation without any
-// timing race.
+// before the notice pull / commit decision, so it deterministically queues
+// the second call into the SAME mailbox generation without any timing race.
 //
-// Revert-check performed: restored the old unconditional
-// `markNoTurnDrainRelease` call (before drainOrReleaseMerged, regardless of
-// ok) -- this test FAILED (wasNoTurnDrain reported true after the real turn
-// ran). Reapplied the fix; re-ran, passed.
-func TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop(t *testing.T) {
+// Revert-check: making the no-turn branch release the mailbox without
+// draining (dropping the queued call) leaves result nil and this test red.
+func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -511,6 +503,4 @@ func TestNoTurnDrainMarker_NotSetWhenARealTurnFollowsInTheSameLoop(t *testing.T)
 	require.NotNil(t, result, "the queued real call must run as the loop's next turn")
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "the real call reached the provider exactly once")
 
-	wasNoTurnDrain, _ := ledger.consumeNoTurnDrainRelease(sess.ID)
-	require.False(t, wasNoTurnDrain, "the no-turn Drain's marker must not survive onto the real turn's own release")
 }

@@ -357,23 +357,35 @@ func TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession(t *testing.T) {
 	require.True(t, st.paused)
 }
 
-// TestSupervision_OnSessionIdleHookPushesDeadline: the hook wired onto every
-// SessionAgent's OnSessionIdle (coordinator_tools.go) must still push the
-// supervision deadline, not just retain the pre-existing phase-3 trigger.
-func TestSupervision_OnSessionIdleHookPushesDeadline(t *testing.T) {
-	l, coord := newSupervisionTestLedger(t)
+// TestSupervision_AfterTurnPushesDeadline: the turn epilogue (runOwned's
+// afterTurn) pushes the supervision deadline after every turn that reached
+// the provider -- but not after a Drain that ended without reaching it
+// (opening a tab must not reset the root's silence timer).
+//
+// Revert-check: dropping the pushDeadlineOnTurnEnd call from afterTurn turns
+// the first assertion red; pushing for every Drain leg turns the second red.
+func TestSupervision_AfterTurnPushesDeadline(t *testing.T) {
+	l, _ := newSupervisionTestLedger(t)
 	l.supervision.nextGen = 1
-	l.supervision.byRoot["hook-root"] = &supervisionState{
-		rootSessionID: "hook-root", cfg: DefaultSupervisionConfig(), interval: 5 * time.Millisecond, generation: 1,
+	for _, id := range []string{"hook-root", "quiet-root"} {
+		l.supervision.byRoot[id] = &supervisionState{
+			rootSessionID: id, cfg: DefaultSupervisionConfig(), interval: 5 * time.Millisecond, generation: 1,
+		}
 	}
+	sa := &sessionAgent{asyncJobs: l}
 
-	coord.onSessionIdleHook("hook-root")
-
+	sa.afterTurn(SessionAgentCall{SessionID: "hook-root"}, nil, nil)
 	l.supervision.mu.Lock()
-	st := l.supervision.byRoot["hook-root"]
+	pushed := l.supervision.byRoot["hook-root"].generation
 	l.supervision.mu.Unlock()
-	require.NotNil(t, st)
-	require.NotEqual(t, uint64(1), st.generation, "onSessionIdleHook must push the supervision deadline")
+	require.NotEqual(t, uint64(1), pushed, "a turn that reached the provider must push the supervision deadline")
+
+	noTurn := &drainAttempt{sessionID: "quiet-root", outcome: drainNoTurn}
+	sa.afterTurn(newDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil)
+	l.supervision.mu.Lock()
+	quiet := l.supervision.byRoot["quiet-root"].generation
+	l.supervision.mu.Unlock()
+	require.EqualValues(t, 1, quiet, "a no-turn Drain must not reset the silence timer")
 }
 
 // TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress drives

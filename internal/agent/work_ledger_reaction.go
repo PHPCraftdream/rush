@@ -1,9 +1,8 @@
 // Reaction-debt hint plumbing (phase-4 step 4, docs/plans/2026-09-28-async-
-// phase4-durable-core.md sec.3.4): the hint counter every wake/transition
+// phase4-durable-core.md sec.3.4): the hint counter every committed fact
 // bumps, the external-driver marker a live `rush run` loop claims so
-// wakeSession never submits it a Drain turn, and the no-turn-Drain-release
-// marker the anti-idle-loop rule (a) consults on the very next mailbox
-// release of the same session.
+// wakeSession never submits it a Drain turn, and the per-session Drain
+// launch gate (attempts design 1.2).
 package agent
 
 import (
@@ -15,9 +14,9 @@ import (
 
 // bumpHint increments owner's hint counter and signals its changed channel
 // (doc sec.3.4: "after a commit of a transition or notice with wake=1, a
-// non-blocking hint is sent to the session"). Also called from wakeSession
-// unconditionally (even when policy or external-driver routing skips an
-// actual Drain submission) -- the hint's only job is "something may have
+// non-blocking hint is sent to the session"). Called only for a FACT
+// (wakeSession fact=true), never from a release or tick re-check -- the
+// hint's only job is "something may have
 // changed, re-check", never a promise that a turn will follow.
 func (l *workLedger) bumpHint(owner string) {
 	if owner == "" {
@@ -68,69 +67,6 @@ func (l *workLedger) waitForHint(ctx context.Context, owner string, since uint64
 	}
 }
 
-// markNoTurnDrainRelease records that owner's mailbox is about to go idle
-// via a Drain call that ended WITHOUT a provider turn, together with the
-// hint counter value that Drain's own debt check observed. Consulted by
-// consumeNoTurnDrainRelease at this same release's onSessionIdle funnel
-// (doc sec.3.4 rule (a)).
-func (l *workLedger) markNoTurnDrainRelease(owner string, hintSeqAtCheck uint64) {
-	if owner == "" {
-		return
-	}
-	l.mu.Lock()
-	s := l.sessionLocked(owner)
-	s.noTurnDrainRelease = true
-	s.noTurnDrainHintSeq = hintSeqAtCheck
-	l.mu.Unlock()
-}
-
-// consumeNoTurnDrainRelease reads-and-clears owner's no-turn-Drain-release
-// marker, reporting whether the hint counter is STILL unchanged since that
-// Drain's own check (doc sec.3.4 rule (a): only then does the release-time
-// recheck skip launching another Drain -- every other onSessionIdle side
-// effect, e.g. recheckChild/supervision, is unaffected by this and always
-// runs regardless of this method's result).
-func (l *workLedger) consumeNoTurnDrainRelease(owner string) (wasNoTurnDrain, hintUnchanged bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil || !s.noTurnDrainRelease {
-		return false, false
-	}
-	s.noTurnDrainRelease = false
-	return true, s.hintSeq == s.noTurnDrainHintSeq
-}
-
-// markAdmissionRefusedRelease records that owner's upcoming mailbox release
-// is the result of an admission refusal (runOwned could not acquire the
-// session's OS lock -- another process already holds it) rather than any
-// turn attempt. Consulted by consumeAdmissionRefusedRelease at that same
-// release's onSessionIdle funnel (B2/C2 fix, doc sec.3.4 rule (b)).
-func (l *workLedger) markAdmissionRefusedRelease(owner string) {
-	if owner == "" {
-		return
-	}
-	l.mu.Lock()
-	l.sessionLocked(owner).admissionRefusedRelease = true
-	l.mu.Unlock()
-}
-
-// consumeAdmissionRefusedRelease reads-and-clears owner's admission-refused-
-// release marker. Unlike consumeNoTurnDrainRelease this is never hint-gated
-// -- an OS-lock refusal is certain to recur immediately if retried right
-// now, so onSessionIdleHook always skips the relaunch when this reports
-// true, relying on the 60s recheck pass (or a genuinely new hint) instead.
-func (l *workLedger) consumeAdmissionRefusedRelease(owner string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil || !s.admissionRefusedRelease {
-		return false
-	}
-	s.admissionRefusedRelease = false
-	return true
-}
-
 // claimExternalDriver marks owner as driven by an external loop (the CLI
 // root of a live `rush run` process): wakeSession must hint it, never
 // submit a Drain turn (doc sec.3.4).
@@ -173,17 +109,6 @@ func (l *workLedger) reactionDebtExists(ctx context.Context, owner string) (bool
 		return false, nil
 	}
 	return l.store.ReactionDebtExists(ctx, owner)
-}
-
-// visibleReactionDebtExists wraps the store's delivery='done'-scoped debt
-// predicate (doc sec.6 review fix, P1): what a Drain's turn-start decision
-// must use to decide whether to run the provider -- see reactionDebtExists'
-// own doc for why the plain (pending-inclusive) predicate is wrong there.
-func (l *workLedger) visibleReactionDebtExists(ctx context.Context, owner string) (bool, error) {
-	if l.store == nil {
-		return false, nil
-	}
-	return l.store.VisibleReactionDebtExists(ctx, owner)
 }
 
 // hasRunningDelegationFor wraps the store's child-delegation-running check
@@ -239,11 +164,12 @@ func (l *workLedger) drainGateOpen(owner string, now time.Time) (open, dormant b
 	return false, true, g.retryAt
 }
 
-// paceDrainGate shuts owner's gate for wait. unreacted counts the outcome
+// paceDrainGate shuts owner's gate for wait; it reports the moment the gate
+// turned dormant. unreacted counts the outcome
 // toward the dormant streak.
-func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens, unreacted bool) {
+func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens, unreacted bool) (becameDormant bool) {
 	if owner == "" {
-		return
+		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -253,7 +179,9 @@ func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Durati
 	g.hintOpens = hintOpens
 	if unreacted {
 		g.streak++
+		return g.streak == drainDormantStreak
 	}
+	return false
 }
 
 // resetDrainGate opens owner's gate and clears its streak.

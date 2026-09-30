@@ -216,7 +216,6 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 				"Timeout reached for async job %s (%s) — it is still running (elapsed %s). Latest output:\n\n%s\n\nThis was a one-time check-in; it will not repeat automatically. %s",
 				toolCallID, toolName, time.Since(deadline).Round(time.Second), summary.content, stopGuidanceFor(toolName),
 			)
-			id := jobIdentity{owner: owner, toolCallID: toolCallID}
 			store, coord := l.store, l.coord
 			go func() {
 				// Phase-4 step 3 (doc sec.3.2/3.4): a session_notices row,
@@ -229,7 +228,7 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 						"session_id", owner, "tool_call_id", toolCallID, "err", err)
 					return
 				}
-				_ = coord.wakeSession(context.Background(), id, true)
+				_ = coord.wakeSession(context.Background(), owner, true)
 			}()
 		}
 	default:

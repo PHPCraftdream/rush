@@ -29,12 +29,6 @@ import (
 type turnAdmission struct {
 	mu     sync.Mutex
 	queued bool
-	// reachedProvider records that a Drain call armed for this invocation
-	// actually passed its no-turn gate and committed to a provider turn
-	// (B7 fix) -- set via SessionAgentCall.onDrainTurnStarting, read by
-	// wakeSession after Run returns to decide whether this attempt counts
-	// against the consecutive-auto-turn cap.
-	reachedProvider bool
 }
 
 // newTurnAdmission returns a recorder whose invocation has not yet
@@ -58,23 +52,6 @@ func (t *turnAdmission) wasQueued() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.queued
-}
-
-// markReachedProvider records that the Drain call this recorder was armed
-// for passed its no-turn gate and committed to a provider turn (B7 fix).
-// Called from SessionAgentCall.onDrainTurnStarting, wired by wakeSession.
-func (t *turnAdmission) markReachedProvider() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.reachedProvider = true
-}
-
-// didReachProvider reports whether markReachedProvider was ever called for
-// this recorder.
-func (t *turnAdmission) didReachProvider() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.reachedProvider
 }
 
 // turnAdmissionCtxKey is the unexported key turnAdmission values travel

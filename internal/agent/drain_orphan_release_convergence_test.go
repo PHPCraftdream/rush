@@ -7,7 +7,7 @@
 // is always safe" since a later wake re-derives it). This file is that
 // "later wake": it proves the real production convergence path -- the
 // release hook's OWN separate-goroutine debt re-check (onSessionIdleHook ->
-// recheckDebtOnRelease, supervision.go) -- actually closes the gap the drop
+// afterRelease, supervision.go) -- actually closes the gap the drop
 // opens, using the REAL OnSessionIdle hook (newWakeDebtFixture, not the
 // NoIdleHook variant).
 package agent
@@ -32,12 +32,12 @@ import (
 //     (exactly what drainOrReleaseMerged/abandonOwnershipWithHandoff do with
 //     an `orphaned`/`popped` list) produces NO provider call, ever.
 //  3. The release hook's real OnSessionIdle -> onSessionIdleHook ->
-//     recheckDebtOnRelease chain (fired the same way abandonOwnershipWithHandoff
+//     afterRelease chain (fired the same way abandonOwnershipWithHandoff
 //     fires it on every real Run() exit) independently discovers the SAME
 //     debt from the DB and submits a fresh Drain, which DOES run: exactly
 //     one provider request, and the debt ends up reacted.
 //
-// REVERT CHECK: commented out the `go c.recheckDebtOnRelease(sessionID)`
+// REVERT CHECK: commented out the `go c.afterRelease(sessionID)`
 // call in onSessionIdleHook (supervision.go), leaving every other line
 // intact -- this test's final `require.Eventually` (provider request count
 // becoming nonzero) timed out and failed, exactly as expected: with the
@@ -95,7 +95,7 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	require.True(t, orphaned[0].IsDrain, "the orphaned call must be the Drain this test seeded")
 	// The plain (not Visible-only) predicate: the row is still
 	// delivery='pending' at this point (nothing has pulled it into history
-	// yet) -- exactly the shape recheckDebtOnRelease itself reads.
+	// yet) -- exactly the shape afterRelease itself reads.
 	debtNow, err := f.store.ReactionDebtExists(ctx, f.sessID)
 	require.NoError(t, err)
 	require.True(t, debtNow, "the race's own transition must have made the debt real before anything else runs")

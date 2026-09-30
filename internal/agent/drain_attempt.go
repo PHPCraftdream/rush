@@ -180,8 +180,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	case drainNoTurn:
 		switch {
 		case att.pendingLeft:
-			l.paceDrainGate(sid, att.hintAt, drainRetryAfterFailure(), true, true)
-			c.addToRecheckSet(sid)
+			c.paceUnreacted(sid, att.hintAt, true)
 		case att.snapshot.Empty():
 			l.resetDrainGate(sid)
 		default:
@@ -194,10 +193,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	if drainAttemptExempt(att, turnErr) || l.store == nil {
 		return
 	}
-	pace := func() {
-		l.paceDrainGate(sid, att.hintAt, drainRetryAfterFailure(), false, true)
-		c.addToRecheckSet(sid)
-	}
+	pace := func() { c.paceUnreacted(sid, att.hintAt, false) }
 	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {
 		slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
 		pace()
@@ -305,13 +301,25 @@ func (a *sessionAgent) noteRefusal(sessionID string, cause error) {
 
 // afterTurn is runOwned's per-leg epilogue, run right after runTurn returns
 // and before the mailbox can be released: it accounts a Drain leg runTurn did
-// not already close, and paces the gate after an ordinary turn that ended in
-// a provider failure. It returns the error runOwned should report (a Drain
-// that never reached the provider says so).
+// not already close, suspends automatic turns while a question the agent
+// asked awaits its answer, paces the gate after an ordinary turn that ended
+// in a provider failure, and pushes the supervision deadline unless the leg
+// was a Drain that never reached the provider. It returns the error runOwned
+// should report (a Drain that never reached the provider says so).
 func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err error) error {
 	a.closeDrainAttempt(att, err)
-	if att == nil && err != nil && a.asyncJobs != nil && a.asyncJobs.coord != nil && providerTurnFailed(err) {
-		a.asyncJobs.coord.noteTurnFailed(call.SessionID)
+	if a.asyncJobs != nil {
+		var awaiting *AwaitingAnswerError
+		coord := a.asyncJobs.coord
+		switch {
+		case coord != nil && errors.As(err, &awaiting):
+			coord.suspendAutoResume(call.SessionID)
+		case coord != nil && att == nil && err != nil && providerTurnFailed(err):
+			coord.noteTurnFailed(call.SessionID)
+		}
+		if att == nil || att.outcome == drainAttempted {
+			a.asyncJobs.pushDeadlineOnTurnEnd(call.SessionID)
+		}
 	}
 	if att != nil && att.outcome == drainNotAttempted {
 		return notAttempted(call, err)
@@ -326,4 +334,16 @@ func providerTurnFailed(err error) bool {
 		return false
 	}
 	return isProviderClassifiable(err)
+}
+
+// paceUnreacted shuts the gate after an unreacted outcome and queues the
+// session for a re-check tick. The moment the gate turns dormant it says so
+// once: the debt stays visible (`sessions why`), and only a newer event or a
+// human message reopens the gate.
+func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool) {
+	if c.asyncJobs.paceDrainGate(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, true) {
+		slog.Warn("drain launches for this session are paused: repeated attempts left the debt unreacted; a new event or a human message resumes them",
+			"session_id", sessionID)
+	}
+	c.addToRecheckSet(sessionID)
 }

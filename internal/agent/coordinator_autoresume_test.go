@@ -272,7 +272,8 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 
 	var err error
 	require.NotPanics(t, func() {
-		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, true)
+		require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-1", "manual_test_notice", "owed", true, ""))
+		err = coord.wakeSession(t.Context(), "sess-1", true)
 	})
 	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
 }
@@ -311,7 +312,8 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, true)
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")
 }

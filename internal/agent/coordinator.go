@@ -591,7 +591,7 @@ func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 
 // suspendAutoResume implements doc sec.3.4's "after Stop, automatic turns
 // are suspended until the next human message": marks sessionID suspended so
-// both autoResumeEligible and sessionDrainPolicy refuse EVERY kind of
+// both autoResumeEligible and drainPolicy refuse EVERY kind of
 // automatic turn until a human message (ResetAutoResumeCounter) clears it.
 // Kept apart from the bg-shell cap counter: that counter bounds only the SDK
 // background-shell auto-resume and must not pause other wakes when full.
@@ -624,6 +624,30 @@ func (c *coordinator) autoResumeEligible(sessionID string) bool {
 		c.persistentMode.Load() &&
 		!c.autoResumeSuspended(sessionID) &&
 		c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes
+}
+
+// claimAutoResume is autoResumeEligible plus the counter bump as ONE atomic
+// step: it reports whether a finished background shell may autonomously
+// resume the session and, if so, spends one of the maxConsecutiveAutoResumes
+// submissions allowed per human message. Nothing downstream re-checks the
+// counter, so exactly that many completions are submitted (R2B-16).
+func (c *coordinator) claimAutoResume(sessionID string) bool {
+	if !c.autonomyEnabled() || !c.persistentMode.Load() {
+		return false
+	}
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	if _, suspended := c.autoTurnsSuspended[sessionID]; suspended {
+		return false
+	}
+	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
+		return false
+	}
+	if c.consecutiveAutoResumes == nil {
+		c.consecutiveAutoResumes = make(map[string]int)
+	}
+	c.consecutiveAutoResumes[sessionID]++
+	return true
 }
 
 // SetAgentTimeoutOptions delegates to the current agent's SetTimeoutOptions.

@@ -27,7 +27,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/google/uuid"
 )
 
 // noticeKindSupervision tags a supervision tick's persisted message
@@ -49,7 +48,7 @@ const (
 	supervisionMinIntervalFloor = time.Second // guards against a pathological zero/negative override
 )
 
-// recheckDebtCheckBudget bounds ONLY the DB read in recheckDebtOnRelease
+// recheckDebtCheckBudget bounds ONLY the launch-decision reads in wakeSession
 // (B1 fix): a var, not a const, so a test can shrink it to reproduce "the
 // debt check's own budget must never bound the Drain turn it triggers" at
 // test timescale instead of a real 30s wait.
@@ -218,9 +217,10 @@ func (l *workLedger) recordProgress(sessionID string) {
 
 // pushDeadlineOnTurnEnd re-arms sessionID's CURRENT (possibly already grown)
 // interval from now, without touching interval size, tickCount or paused.
-// Wired onto sessionAgent.onSessionIdle (coordinator_tools.go's
-// onSessionIdleHook), the universal "a turn on this session just ended"
-// trigger fired for every SessionAgent this coordinator builds -- this is
+// Called from sessionAgent.afterTurn (drain_attempt.go) after every turn
+// that reached the provider (a Drain that never did -- opening a tab -- must
+// not reset the root's silence timer): the universal "a turn on this session
+// just ended" trigger -- this is
 // what implements "any new message in the root's chat resets the countdown"
 // for a plain user/model turn that involves no async-job notice at all,
 // without letting a supervision TICK's own resulting turn silently reset the
@@ -347,7 +347,6 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	}
 
 	coord := l.coord
-	id := jobIdentity{owner: rootSessionID, toolCallID: "supervision-" + uuid.NewString()}
 	go func() {
 		// Phase-4 step 3 (doc sec.3.2/3.3): persist the check-in as a
 		// session_notices row FIRST (no job_tool_call_id -- the void
@@ -362,7 +361,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 			slog.Error("supervision: failed to persist check-in notice", "session_id", rootSessionID, "err", err)
 			return
 		}
-		_ = coord.wakeSession(context.Background(), id, true)
+		_ = coord.wakeSession(context.Background(), rootSessionID, true)
 	}()
 }
 
@@ -442,87 +441,27 @@ func lastNonEmptyLine(s string) string {
 }
 
 // onSessionIdleHook is wired as every SessionAgent's OnSessionIdle
-// (coordinator_tools.go): the universal "a turn on this session just ended"
-// trigger. It fires the phase-3 delegation re-check (noteSubAgentChildRunEnded),
-// pushes back the caller's supervision deadline UNLESS this release is a
-// Drain that ended without ever reaching the provider (doc sec.3.4 last
-// paragraph: "opening a tab must not reset the root's silence timer"), and
-// implements doc sec.3.4 item 3 -- EVERY mailbox release checks the
-// session's reaction debt in the DB and submits a Drain if there is one, in
-// a SEPARATE goroutine, never from this (or any) defer. Rule (a)'s
-// anti-idle-loop exception: a no-turn Drain's OWN release skips this
-// re-launch check, but only if the hint counter is unchanged since that
-// Drain's own check -- every other side effect here (noteSubAgentChildRunEnded,
-// pushDeadlineOnTurnEnd) is unaffected and always runs.
+// (coordinator_tools.go): the universal "the mailbox of this session was
+// just released" trigger. It does no work on the releasing goroutine (no DB,
+// no lock): everything runs in one goroutine (afterRelease).
 func (c *coordinator) onSessionIdleHook(sessionID string) {
-	c.noteSubAgentChildRunEnded(sessionID)
-	// B2/C2 fix (doc sec.3.4 rule (b)): a release caused by an admission
-	// refusal (runOwned could not acquire the session's OS lock -- another
-	// process already holds it) ran no turn at all and must never trigger an
-	// immediate relaunch: the foreign holder does not release just because
-	// this process re-checks, so an unconditional recheckDebtOnRelease here
-	// would hot-loop (claim, refuse, release, re-check, claim, ...) with no
-	// pause. Route to the 60s recheck pass instead, exactly like a session-
-	// lock-busy Drain submission already does via recordDrainOutcome's own
-	// turnAttemptRefused branch -- this closes the SAME gap for every other
-	// caller of Run() that hits the same refusal, not only wakeSession's own.
-	if c.asyncJobs != nil && c.asyncJobs.consumeAdmissionRefusedRelease(sessionID) {
-		c.addToRecheckSet(sessionID)
-		return
-	}
-	wasNoTurnDrain, hintUnchanged := false, false
-	if c.asyncJobs != nil {
-		wasNoTurnDrain, hintUnchanged = c.asyncJobs.consumeNoTurnDrainRelease(sessionID)
-		if !wasNoTurnDrain {
-			c.asyncJobs.pushDeadlineOnTurnEnd(sessionID)
-		}
-	}
-	if wasNoTurnDrain && hintUnchanged {
-		return
-	}
-	go c.recheckDebtOnRelease(sessionID)
+	go c.afterRelease(sessionID)
 }
 
-// recheckDebtOnRelease is onSessionIdleHook's separate-goroutine debt check
-// (doc sec.3.4 item 3): reads sessionID's CURRENT reaction debt from the DB
-// and, if any, either hints an external-driver session (its own loop
-// re-checks) or submits a Drain the same way wakeSession would for a
-// completion's own hint -- this is what catches an "orphaned" Drain (a row
-// that arrived inside the release window) and a debt row left by a prior
-// pass that skipped its own re-launch under rule (a).
-//
-// B1 fix: the 30s budget bounds ONLY the debt-existence read. The Drain
-// itself is submitted/run on a context detached from that deadline
-// (context.Background(), not context.WithoutCancel(checkCtx) -- checkCtx is
-// about to be cancelled by this function's own return, which would cancel
-// a still-running Drain's whole turn the instant this function returns).
-// Before this fix, wakeSession/agent.Run/runOwned's whole turn loop ran
-// under the SAME 30s-deadline ctx as the debt check: a Drain turn longer
-// than 30s hit DeadlineExceeded, classified as a terminal provider error,
-// and settled the debt by failure (wake_failed marker) even though the
-// provider may have still been working. Shutdown is observed independently
-// inside runOwned/transition via the coordinator's own admission gate and
-// shutdown latch, not via this ctx's cancellation.
-func (c *coordinator) recheckDebtOnRelease(sessionID string) {
+// afterRelease is the release-time work: the phase-3 delegation re-check
+// (noteSubAgentChildRunEnded, which returns at once for a session that is
+// not a delegated child) and doc sec.3.4 item 3 -- the debt check that
+// submits a Drain if the session owes a reaction. Which launches are allowed
+// is decided by wakeSession's ONE predicate (policy, then the launch gate the
+// finished leg's accounting already wrote): a failed, refused or no-turn Drain
+// does not relaunch itself here, and an unreadable debt check goes to the
+// re-check set.
+func (c *coordinator) afterRelease(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
-	checkCtx, cancel := context.WithTimeout(context.Background(), recheckDebtCheckBudget)
-	debt, err := c.asyncJobs.reactionDebtExists(checkCtx, sessionID)
-	cancel()
-	if err != nil {
-		slog.Warn("onSessionIdle: reaction debt check failed", "session_id", sessionID, "err", err)
-		return
-	}
-	if !debt {
-		return
-	}
-	if c.asyncJobs.isExternalDriver(sessionID) {
-		c.asyncJobs.bumpHint(sessionID)
-		return
-	}
-	id := jobIdentity{owner: sessionID, toolCallID: "release-recheck"}
-	if err := c.wakeSession(context.Background(), id, true); err != nil {
+	c.noteSubAgentChildRunEnded(sessionID)
+	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
 }

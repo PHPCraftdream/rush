@@ -17,7 +17,7 @@ import (
 
 // CLIScopeState is the CLI loop's ONE answer to "what now" between turns
 // (CLIScope). TurnOwed and DeferredDebt are the two outcomes of a pending-
-// inclusive reaction debt, split by the SAME session policy (sessionDrainPolicy)
+// inclusive reaction debt, split by the SAME session policy (drainPolicy)
 // that wakeSession and the Drain turn-start re-check apply, so the loop never
 // waits for a turn the policy will not allow.
 type CLIScopeState struct {
@@ -41,7 +41,7 @@ type ReactionDebtSource interface {
 	// ClaimExternalDriver marks sessionID as externally driven for the
 	// lifetime of one `rush run` loop: the durable session_drivers marker
 	// first (so no OTHER process starts a reaction turn for it -- see
-	// sessionDrainPolicy), then the in-memory one wakeSession hints against.
+	// drainPolicy), then the in-memory one wakeSession hints against.
 	// A session already driven by another live loop is refused with
 	// *session.ErrSessionDrivenElsewhere and nothing is set. A data dir that
 	// cannot host the host lock (session.ErrDriverMarkerUnavailable) is not
@@ -259,15 +259,13 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if !debt {
 		return state, nil
 	}
-	allowed, _, polErr := c.sessionDrainPolicy(ctx, sessionID)
-	if polErr != nil {
-		// Same fail-open as decideDrainTurn/wakeSession: an unreadable
-		// policy input is not authoritative, the turn's own re-check is.
-		slog.Warn("cli scope: session policy check failed; treating the turn as allowed",
-			"session_id", sessionID, "err", polErr)
-		allowed = true
+	v := c.drainPolicy(ctx, sessionID)
+	if v.err != nil {
+		// An unreadable policy input is a read error the loop retries with a
+		// pause, never a silent exit.
+		return CLIScopeState{}, v.err
 	}
-	if allowed {
+	if v.kind == drainAllow {
 		state.TurnOwed = true
 	} else {
 		state.DeferredDebt = true

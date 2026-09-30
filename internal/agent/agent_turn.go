@@ -409,29 +409,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				}
 				preambleCancel()
 				a.closeDrainAttempt(att, nil)
-				// B13 fix: the release-time markers belong to the mailbox going
-				// idle NOW; a call queued behind this Drain runs next inside
-				// the same Run loop.
-				hintSeqAtCheck := uint64(0)
-				if a.asyncJobs != nil {
-					hintSeqAtCheck = a.asyncJobs.hintSeqOf(call.SessionID)
-				}
 				next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
 				if !ok {
-					if a.asyncJobs != nil {
-						a.asyncJobs.markNoTurnDrainRelease(call.SessionID, hintSeqAtCheck)
-					}
 					return nil, SessionAgentCall{}, false, nil
 				}
 				return nil, next, true, nil
 			}
 		}
-	}
-	// B7 fix: past this point a Drain call is committed to reaching the
-	// provider (decideDrainTurn returned true, or drainTurnCommitted already
-	// was) -- the ONE point wakeSession's cap-counting callback fires.
-	if call.IsDrain && call.onDrainTurnStarting != nil {
-		call.onDrainTurnStarting()
 	}
 
 	msgs, err := a.getSessionMessages(preambleCtx, currentSession)

@@ -85,7 +85,7 @@ func newWakeDebtFixtureWithHandler(t *testing.T, title string, onRequestBody fun
 // wired. A handful of tests fire two or more EXPLICIT, sequential
 // wakeSession calls on the SAME session and need each to complete
 // deterministically; with OnSessionIdle wired, the first call's own release
-// spawns a background recheckDebtOnRelease goroutine (production's own
+// spawns a background afterRelease goroutine (production's own
 // automatic convergence path) that races the test's own next explicit call
 // for the mailbox -- if that goroutine wins, the test's call can be queued
 // and then orphaned by agent_ownership.go's abandonOwnershipWithHandoff
@@ -177,10 +177,10 @@ func (f *wakeDebtFixture) claimAndFinish(t *testing.T, ctx context.Context, tool
 //
 // REVERT CHECK: changed decideDrainTurn (agent_drain_decision.go) back to
 // call reactionDebtExists (the plain, pending-inclusive predicate) instead
-// of visibleReactionDebtExists -- this test's `require.Zero(t, requests)`
+// of the visible-debt snapshot -- this test's `require.Zero(t, requests)`
 // FAILED (the probe server received requests: the permanently-pending row
 // still counted as debt, forcing an empty-prompt provider turn on every
-// wake). Restored visibleReactionDebtExists; re-ran, passed.
+// wake). Restored the visible-debt snapshot; re-ran, passed.
 func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -190,7 +190,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 
 	// Trigger 1: an ordinary wake (a fresh hint) -- the Drain runs, its own
 	// pull fails, decideDrainTurn sees no VISIBLE debt, no provider call.
-	err := f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "a permanently failing pull must never reach the provider")
 
@@ -219,51 +219,6 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	row, err = f.store.Get(ctx, f.sessID, "call-1")
 	require.NoError(t, err)
 	require.Equal(t, "pending", row.Delivery)
-}
-
-// TestOnSessionIdleHook_RuleA_SkipsRelaunchOnlyWhenHintUnchanged pins rule
-// (a) directly, at the gate itself: a no-turn Drain's own release skips the
-// re-launch check ONLY while the hint counter is unchanged since that
-// Drain's check; a hint bump in between makes the very next release recheck
-// (and, here, find real debt and submit).
-//
-// REVERT CHECK: changed onSessionIdleHook's gate (supervision.go) to
-// `if false && wasNoTurnDrain && hintUnchanged` -- this test's Half 1
-// assertion (require.Never requests>0) FAILED ("Condition satisfied": a
-// provider call happened even though the hint never moved). Restored the
-// gate (byte-identical diff confirmed); re-ran, both halves passed.
-func TestOnSessionIdleHook_RuleA_SkipsRelaunchOnlyWhenHintUnchanged(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	f := newWakeDebtFixture(t, "rule-a-gate")
-
-	// Seed REAL visible debt (a fully pulled, unreacted notice) so a
-	// recheck that actually runs would find something and submit a Drain.
-	f.claimAndFinish(t, ctx, "call-1")
-	pulled, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
-
-	hintAtCheck := f.ledger.hintSeqOf(f.sessID)
-	f.ledger.markNoTurnDrainRelease(f.sessID, hintAtCheck)
-
-	// Half 1: hint unchanged since the marked check -- onSessionIdleHook
-	// must skip the relaunch despite real debt sitting right there. The
-	// skip is synchronous (the gate is checked before the recheck goroutine
-	// is ever spawned), so there is nothing to race: if recheckDebtOnRelease
-	// were spawned, require.Never gives it ample time to reach the probe.
-	f.coord.onSessionIdleHook(f.sessID)
-	require.Never(t, func() bool { return f.requests.Load() > 0 }, 300*time.Millisecond, 10*time.Millisecond,
-		"rule (a) must skip the relaunch when the hint is unchanged")
-
-	// Half 2: bump the hint (something DID happen since), mark the SAME
-	// no-turn state again, then release -- this time the recheck must run
-	// and find the still-open debt.
-	f.ledger.bumpHint(f.sessID)
-	f.ledger.markNoTurnDrainRelease(f.sessID, hintAtCheck)
-	f.coord.onSessionIdleHook(f.sessID)
-	require.Eventually(t, func() bool { return f.requests.Load() > 0 }, 2*time.Second, 10*time.Millisecond,
-		"a hint bump since the last check must make the next release recheck and submit")
 }
 
 // TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall pins doc
@@ -299,13 +254,13 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
 	before := f.ledger.hintSeqOf(f.sessID)
 
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "an external-driver session must never get a Drain turn, only a hint")
 	require.NotEqual(t, before, f.ledger.hintSeqOf(f.sessID), "the hint must still be delivered so the loop can react")
 
 	f.coord.ReleaseExternalDriver(ctx, f.sessID)
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(),
 		"a non-persistent coordinator must NEVER release its external-driver marker (C4 fix) -- routing must stay hint-only")
@@ -338,12 +293,12 @@ func TestSessionDrainPolicy_StopSuspendsUntilHumanMessage(t *testing.T) {
 	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
 	require.NoError(t, err)
 
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "automatic turns must stay suspended after Stop until a human message")
 
 	f.coord.ResetAutoResumeCounter(f.sessID) // the human-message reset path
-	err = f.coord.wakeSession(ctx, jobIdentity{owner: f.sessID, toolCallID: "call-1"}, true)
+	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.NotZero(t, f.requests.Load(), "a human message must re-arm automatic turns")
 }

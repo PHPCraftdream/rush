@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +82,30 @@ func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 	require.False(t, coord.asyncJobs.hasParked())
 }
 
+// newBlockingWakeCoordinator builds a coordinator whose sessions each owe a
+// pending notice and whose driver's Run blocks until release is closed, so a
+// recheck-pass wake stays "in flight" at will. entered counts the Runs.
+func newBlockingWakeCoordinator(t *testing.T, ids ...string) (coord *coordinator, release chan struct{}, entered *atomic.Int32) {
+	t.Helper()
+	release = make(chan struct{})
+	entered = &atomic.Int32{}
+	store := newTestAsyncJobStore(t)
+	coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
+	coord.asyncJobs.store = store
+	coord.asyncJobs.coord = coord
+	blocked := &mockSessionAgent{runFunc: func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+		entered.Add(1)
+		<-release
+		return nil, nil
+	}}
+	for _, id := range ids {
+		require.NoError(t, store.InsertSessionNotice(context.Background(), id, "manual_test_notice", "owed", true, ""))
+		coord.subAgentDrivers.register(id, subAgentDriver{agent: blocked, call: SessionAgentCall{SessionID: id}})
+	}
+	return coord, release, entered
+}
+
 // TestRecheckPass_RecheckSetWakesRunConcurrentlyAndDetached pins the B12/C14
 // fix and its follow-up: the recheck-set wakes run concurrently (all in
 // flight before any finishes) and DETACHED (RecheckPass returns while they are
@@ -93,17 +118,7 @@ func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
 // "must not wait for them" assertion FAILED (the pass blocked until the wakes
 // were released).
 func TestRecheckPass_RecheckSetWakesRunConcurrentlyAndDetached(t *testing.T) {
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
-
-	release := make(chan struct{})
-	var entered atomic.Int32
-	wakeSessionAttemptSeam = func() {
-		entered.Add(1)
-		<-release
-	}
-	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
-
+	coord, release, entered := newBlockingWakeCoordinator(t, "sess-a", "sess-b")
 	coord.addToRecheckSet("sess-a")
 	coord.addToRecheckSet("sess-b")
 
@@ -133,16 +148,7 @@ func TestRecheckPass_RecheckSetWakesRunConcurrentlyAndDetached(t *testing.T) {
 // launchRecheckWake -- the second pass started a second wake (entered == 2
 // while the first was still blocked).
 func TestRecheckPass_SessionAlreadyBeingWoken_NotLaunchedTwice(t *testing.T) {
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
-
-	release := make(chan struct{})
-	var entered atomic.Int32
-	wakeSessionAttemptSeam = func() {
-		entered.Add(1)
-		<-release
-	}
-	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
+	coord, release, entered := newBlockingWakeCoordinator(t, "sess-a")
 
 	coord.addToRecheckSet("sess-a")
 	coord.RecheckPass(context.Background())
@@ -171,20 +177,14 @@ func TestRecheckPass_SessionAlreadyBeingWoken_NotLaunchedTwice(t *testing.T) {
 // Revert-check performed: removed the len(recheckWakeInFlight) bound -- all
 // sessions entered at once (entered > maxConcurrentRecheckWakes).
 func TestRecheckPass_WakeConcurrencyIsBounded(t *testing.T) {
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
-
-	release := make(chan struct{})
-	var entered atomic.Int32
-	wakeSessionAttemptSeam = func() {
-		entered.Add(1)
-		<-release
-	}
-	t.Cleanup(func() { wakeSessionAttemptSeam = nil })
-
 	const total = maxConcurrentRecheckWakes + 2
-	for i := range total {
-		coord.addToRecheckSet(fmt.Sprintf("sess-%d", i))
+	ids := make([]string, total)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("sess-%d", i)
+	}
+	coord, release, entered := newBlockingWakeCoordinator(t, ids...)
+	for _, id := range ids {
+		coord.addToRecheckSet(id)
 	}
 	coord.RecheckPass(context.Background())
 	require.Eventually(t, func() bool { return entered.Load() == maxConcurrentRecheckWakes }, 5*time.Second, 5*time.Millisecond)
@@ -210,24 +210,14 @@ func TestRecheckPass_WakeConcurrencyIsBounded(t *testing.T) {
 // (WaitGroup.Wait() at the end) -- sweeps stayed at 1 while the wake was
 // blocked and the Eventually below timed out.
 func TestRecheckTicker_SlowWakeDoesNotDelayNextSweep(t *testing.T) {
-	coord := &coordinator{currentAgent: &mockSessionAgent{}, subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
+	coord, release, entered := newBlockingWakeCoordinator(t, "sess-slow")
+	coord.currentAgent = &mockSessionAgent{}
 
-	release := make(chan struct{})
-	wakeEntered := make(chan struct{}, 1)
-	wakeSessionAttemptSeam = func() {
-		select {
-		case wakeEntered <- struct{}{}:
-		default:
-		}
-		<-release
-	}
 	var sweeps atomic.Int32
 	sweepSeam := func() { sweeps.Add(1) }
 	recheckPassSweepSeam.Store(&sweepSeam)
 	oldInterval := recheckPassIntervalNS.Swap(int64(20 * time.Millisecond))
 	t.Cleanup(func() {
-		wakeSessionAttemptSeam = nil
 		recheckPassSweepSeam.Store(nil)
 		recheckPassIntervalNS.Store(oldInterval)
 	})
@@ -242,11 +232,7 @@ func TestRecheckTicker_SlowWakeDoesNotDelayNextSweep(t *testing.T) {
 		coord.waitRecheckWakes()
 	})
 
-	select {
-	case <-wakeEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the recheck wake never started")
-	}
+	require.Eventually(t, func() bool { return entered.Load() >= 1 }, 5*time.Second, 5*time.Millisecond, "the recheck wake never started")
 	base := sweeps.Load()
 	require.Eventually(t, func() bool { return sweeps.Load() >= base+3 }, 5*time.Second, 5*time.Millisecond,
 		"later ticks must keep sweeping while a wake is still blocked")

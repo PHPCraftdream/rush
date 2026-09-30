@@ -104,6 +104,7 @@ func TestDrainAttempt_SwallowedReactionWrite_SettlesAtK(t *testing.T) {
 
 	for i := 1; i <= 2; i++ {
 		_, _ = f.drainRun(ctx)
+		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
 		row := f.row(ctx, "call-1")
 		require.EqualValues(t, i, row.WakeAttempts, "attempt %d is counted", i)
 		require.EqualValues(t, 0, row.Reacted, "attempt %d must not close the debt yet", i)

@@ -34,153 +34,111 @@ type drainVerdict struct {
 	retryAt time.Time
 	recheck bool
 	reason  string
+	// err is set when the refusal is an unreadable policy input (fail closed).
+	err error
 }
 
-// sessionDrainPolicy decides, BEFORE a Drain is submitted (doc sec.3.4),
-// whether sessionID's category currently permits a Drain TURN at all.
-// counted reports whether this category is subject to (and, on a
-// SUCCESSFUL turn, must increment) the consecutive-auto-turn cap -- true
-// only for the web/default branch: a delegated child's policy is "while its
-// delegation row runs", not a counter, and doc sec.3.4 is explicit that
-// "failed Drains do not consume the cap" is meaningful only where a cap
-// applies at all. Callers must route external-driver (CLI root) sessions to
-// a hint-only path before ever reaching this -- see wakeSession.
-func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) (allowed, counted bool, err error) {
-	// Durable external-driver marker (docs/reviews/2026-09-29-async-phase4-
-	// round1-rerun-design.md, Problem 2): a live `rush run` loop in ANOTHER
-	// process drives this session and reacts to its debt itself. This
-	// process never starts a reaction turn for it -- covers wakeSession
-	// before submit and decideDrainTurn at an already-admitted Drain's turn
-	// start (the latter then only transfers notices into history). The
-	// in-memory marker (own loop) skips the lookup.
-	if c.asyncJobs != nil && !c.asyncJobs.isExternalDriver(sessionID) {
-		foreign, drvErr := c.asyncJobs.foreignLiveDriver(ctx, sessionID)
-		switch {
-		case drvErr != nil && c.persistentMode.Load():
-			// Web coordinator: fail closed; the 60s pass retries.
-			slog.Warn("session drain policy: driver marker unreadable; refusing the turn for now",
-				"session_id", sessionID, "err", drvErr)
-			c.addToRecheckSet(sessionID)
-			return false, false, nil
-		case drvErr == nil && foreign:
-			if debt, _ := c.asyncJobs.reactionDebtExists(ctx, sessionID); debt {
-				c.addToRecheckSet(sessionID)
-			}
-			return false, false, nil
-		}
-		// A CLI coordinator (no recheck ticker) falls through on a read
-		// error: the existing fail-open.
+// drainPolicy decides whether sessionID's category permits a Drain TURN at
+// all (doc sec.3.4's "session policy" table): allow, or deferred (with
+// recheck when the refusal is worth a tick). It is the policy half of
+// drainPermitted; an unreadable input FAILS CLOSED for every session (a
+// wrong "allow" here would run a released child's Drain on the root agent).
+// A session driven by this process's own `rush run` loop skips the
+// delegation-child refusal: its turns always run on currentAgent anyway.
+func (c *coordinator) drainPolicy(ctx context.Context, sessionID string) drainVerdict {
+	l := c.asyncJobs
+	if l == nil {
+		return drainVerdict{kind: drainAllow}
 	}
-	if c.asyncJobs != nil {
-		running, runErr := c.asyncJobs.hasRunningDelegationFor(ctx, sessionID)
-		if runErr != nil {
-			return false, false, runErr
+	deferred := func(reason string, recheck bool) drainVerdict {
+		return drainVerdict{kind: drainDeferred, reason: reason, recheck: recheck}
+	}
+	unreadable := func(what string, err error) drainVerdict {
+		slog.Warn("drain policy: input unreadable; refusing the turn for now",
+			"session_id", sessionID, "input", what, "err", err)
+		v := deferred(what+" unreadable", true)
+		v.err = err
+		return v
+	}
+	own := l.isExternalDriver(sessionID)
+	if !own {
+		// A live `rush run` loop in ANOTHER process reacts to this session's
+		// debt itself; this process only transfers notices.
+		foreign, err := l.foreignLiveDriver(ctx, sessionID)
+		if err != nil {
+			return unreadable("driver marker", err)
 		}
-		if running {
-			// Delegated child, currently armed: a turn is allowed while its
-			// delegation row stays running (doc sec.3.4).
-			return true, false, nil
+		if foreign {
+			return deferred("another process drives the session", true)
 		}
-		// B3/C6 fix: no RUNNING delegation row claims sessionID right now.
-		// Before this fix, falling straight through to the generic
-		// web/default policy below let a released or expired child ride the
-		// SAME up-to-maxConsecutiveAutoResumes headroom as a real web
-		// session -- and by the time such a turn actually ran, agentFor's
-		// driver lookup (subAgentDrivers, already torn down by
-		// releaseDriverIfScopeClosed once scope closed) would fall back to
-		// c.currentAgent, the ROOT coder agent: full tool set, no
-		// RunAllowlist, no child system prompt (security-relevant). Key the
-		// refusal on DURABLE identity instead of the in-memory driver
-		// registry, which does not survive scope closing or a process
-		// restart: a session ever created as a delegation target carries
-		// ParentSessionID (session.CreateTaskSession) for its entire life.
-		// isDurableDelegationChild additionally confirms an async_jobs
-		// delegation row actually backs that ParentSessionID (item 8 fix,
-		// docs/reviews/2026-09-29-async-phase4-round1.md B3/C6): a
-		// `sessions fork --child X` session also sets ParentSessionID for an
-		// unrelated purpose but never claims a matching delegation job, so
-		// it is no longer swept into this refusal -- see that function's own
-		// doc for the exact signal and its retention-bounded caveat.
-		isChild, childErr := c.isDurableDelegationChild(ctx, sessionID)
-		if childErr != nil {
-			return false, false, childErr
+	}
+	// Stop and a pending question suspend automatic turns until a human
+	// message (or a fresh delegation on a child) lifts it.
+	if c.autoResumeSuspended(sessionID) {
+		return deferred("automatic turns suspended", false)
+	}
+	running, err := l.hasRunningDelegationFor(ctx, sessionID)
+	if err != nil {
+		return unreadable("delegation state", err)
+	}
+	if running {
+		return drainVerdict{kind: drainAllow} // a delegated child while its row runs
+	}
+	if !own {
+		// A released or expired child must never fall through to the root
+		// agent (B3/C6): the refusal is keyed on the durable delegation row.
+		isChild, err := c.isDurableDelegationChild(ctx, sessionID)
+		if err != nil {
+			return unreadable("delegation identity", err)
 		}
 		if isChild {
-			// A durable delegation child with no running delegation row:
-			// its delegation ended (or was stopped), so it gets no further
-			// Drain turn. The refusal is explicit, keyed on the parent's
-			// delegation row (isDurableDelegationChild), not implied by the
-			// driver registry -- never re-routed to whatever session
-			// currently answers agentFor(sessionID) once its driver is torn
-			// down.
-			return false, false, nil
+			return deferred("released delegation child", false)
 		}
-		// Not a delegation child at all (a bare test fixture, or a normal
-		// session that merely has no running delegation because it was
-		// never one) -- falls through to the generic policy below.
 	}
-	// B-dev6 fix (item 7, docs/reviews/2026-09-29-async-phase4-round1.md):
-	// the policy table's "Background shell: only with AutoResumeOnJobDone"
-	// row was enforced ONLY at notifyBackgroundJobDone's own hint-time call
-	// (coordinator_background.go) -- release-recheck (recheckDebtOnRelease)
-	// and the 60s pass call wakeSession from a plain context.Background()
-	// with no autoTurnCapAppliesCtxKey, so they fall into the UNCAPPED
-	// generic branch below with no idea the debt they are about to react to
-	// is a bg-shell notice at all. If AutoResumeOnJobDone is off and this
-	// session's ENTIRE current debt is bg-shell-done notices (no async job,
-	// no other notice kind mixed in), refuse here too -- exactly the policy
-	// the direct hint-time call already applies, just re-checked from a
-	// caller that cannot see the origin. A session with ANY other debt
-	// alongside a bg-shell notice still falls through (that other debt's own
-	// policy governs the turn; the bg-shell notice itself simply rides
-	// along, same as it would inside an ordinary allowed turn today).
-	autonomyOn := c.cfg != nil && c.autonomyEnabled()
-	if c.asyncJobs != nil && !autonomyOn {
-		bgOnly, bgErr := c.sessionDebtIsBGShellOnly(ctx, sessionID)
-		if bgErr != nil {
-			return false, false, bgErr
+	// "Background shell: only with AutoResumeOnJobDone": a session whose
+	// ENTIRE debt is bg-shell completions gets no turn with it off.
+	if !(c.cfg != nil && c.autonomyEnabled()) {
+		bgOnly, err := c.sessionDebtIsBGShellOnly(ctx, sessionID)
+		if err != nil {
+			return unreadable("debt kinds", err)
 		}
 		if bgOnly {
-			return false, false, nil
+			return deferred("background-shell completion with auto-resume off", false)
 		}
 	}
-	// B7 design decision (docs/reviews/2026-09-29-async-phase4-round1.md,
-	// operator HARD RULES item 1): the consecutive-auto-turn cap applies
-	// ONLY to the SDK background-shell auto-resume path
-	// (notifyBackgroundJobDone's AutoResumeOnJobDone branch), matching
-	// pre-phase-4 behavior -- NOT to ordinary async-job/delegation/
-	// supervision/wake_only notice wakes, which were UNCAPPED before phase
-	// 4 and are UNCAPPED again here. Applying the cap to those too (phase
-	// 4's regression) meant a session with enough background bash/delegation
-	// completions could be silently starved of further auto-wakes even
-	// though nothing about that traffic is runaway-turn-shaped the way
-	// repeated bg-shell auto-resumes are. autoTurnCapAppliesCtxKey is set on
-	// ctx ONLY by notifyBackgroundJobDone (coordinator_background.go) --
-	// its presence is this function's only reliable signal that THIS
-	// specific wake is a capped bg-shell auto-resume, since a Drain call's
-	// own AutoResumed/BackgroundJobNotice FIELDS are unconditionally true
-	// for every Drain regardless of origin (newDrainCall) and cannot be used
-	// to discriminate (see the CHANGELOG entry on the auto-turn cap).
-	//
-	// "No cap" means no THROTTLE on volume (counted=false, never
-	// incremented) -- it does NOT mean Stop's own "automatic turns paused
-	// until the next human message" stops applying: suspendAutoResume
-	// (coordinator_interrupt.go's Cancel) marks every id in a cancelled tree
-	// suspended, a state of its own (autoTurnsSuspended) that gates EVERY
-	// kind of automatic turn, capped or not. The bg-shell cap counter is a
-	// separate thing: filling it never pauses the uncapped category.
-	if c.autoResumeSuspended(sessionID) {
-		return false, false, nil
+	return drainVerdict{kind: drainAllow}
+}
+
+// drainPermitted is THE launch predicate: the session policy, then the
+// per-session launch gate (written only by the attempt accounting, the
+// refusal note and the human-message reset).
+func (c *coordinator) drainPermitted(ctx context.Context, sessionID string) drainVerdict {
+	v := c.drainPolicy(ctx, sessionID)
+	if v.kind != drainAllow || c.asyncJobs == nil {
+		return v
 	}
-	if _, capped := ctx.Value(autoTurnCapAppliesCtxKey{}).(bool); !capped {
-		return true, false, nil
+	open, dormant, retryAt := c.asyncJobs.drainGateOpen(sessionID, time.Now())
+	switch {
+	case open:
+		return v
+	case dormant:
+		return drainVerdict{kind: drainStuck, retryAt: retryAt, reason: "repeated unreacted attempts"}
+	default:
+		return drainVerdict{kind: drainPaced, retryAt: retryAt, recheck: true, reason: "retry pause after an unreacted attempt"}
 	}
-	// Web/default, bg-shell auto-resume (doc sec.3.4): the cap counter is
-	// reset by the last human message (resetConsecutiveResume/
-	// ResetAutoResumeCounter, the same event that lifts Stop's suspension).
-	// wakeSession increments it itself, ONLY on a successful turn that
-	// actually reached the provider (never a failed, queued, or no-turn one).
-	return c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes, true, nil
+}
+
+// drainDecision reads the pending-inclusive debt and, when there is some,
+// the launch verdict. No debt means nothing to launch for.
+func (c *coordinator) drainDecision(ctx context.Context, sessionID string) (debt bool, v drainVerdict, err error) {
+	if c.asyncJobs == nil {
+		return false, drainVerdict{}, nil
+	}
+	debt, err = c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	if err != nil || !debt {
+		return false, drainVerdict{}, err
+	}
+	return true, c.drainPermitted(ctx, sessionID), nil
 }
 
 // isDurableDelegationChild reports whether sessionID was EVER created as a
@@ -208,11 +166,10 @@ func (c *coordinator) sessionDrainPolicy(ctx context.Context, sessionID string) 
 // `sessions why` already use -- no new SQL) instead of the coarser
 // ParentSessionID-only check.
 //
-// The signal is durable only as long as retention keeps the row (7 days
-// past done+reacted, doc sec.3.7/A5) -- after that window a long-finished
-// delegation's child falls back to the generic web/default policy below,
-// which the ordinary auto-turn cap still bounds; this narrows the
-// false-positive (fork) case, it is not required to hold forever.
+// Retention keeps the row while the child still has a running row or
+// unreacted debt (R2A-10), so the signal outlives the child's work; a
+// finished delegation's child past that window is an ordinary session again.
+// An unreadable answer is not "not a child": drainPolicy fails closed.
 func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID string) (bool, error) {
 	if c.sessions == nil {
 		return false, nil
@@ -250,7 +207,7 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 // captureDebtSnapshot's delivery='done'-only scope, see below) consists of
 // bg-shell-done notices (session.NoticeKindBGShellDone) and nothing else --
 // no outstanding async-job debt, no other notice kind. Used by
-// sessionDrainPolicy's B-dev6 fix (item 7) to re-apply the "Background
+// drainPolicy's B-dev6 fix (item 7) to re-apply the "Background
 // shell: only with AutoResumeOnJobDone" policy-table row at release-recheck/
 // 60s-pass time, which (unlike the direct hint-time call) has no ctx-carried
 // signal of the debt's origin. false when there is no debt at all (nothing
