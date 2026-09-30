@@ -77,6 +77,13 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 			"session_id", ts.call.SessionID)
 	}
 	for _, inj := range pending {
+		// R8C-1: `sessions inject` saves the message before it queues the row, so
+		// a row queued while nothing ran points at a message the turn's history
+		// already holds; the row is consumed (DrainPendingInjects deleted it) but
+		// the message is not spliced a second time -- the mailbox's rule.
+		if _, inHistory := ts.historyIDs[inj.MessageID]; inHistory {
+			continue
+		}
 		injMsg, getErr := ts.a.messages.Get(callContext, inj.MessageID)
 		if getErr != nil {
 			// The referenced message vanished (e.g. cascade delete):
@@ -427,6 +434,12 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"session_id", ts.call.SessionID, "err", cancErr)
 	}
 	if cancErr == nil && canc {
+		// Honoured: the request is spent, unless the `rush run` loop of this process
+		// drives the session -- it reads the flag after the turn, ends the run
+		// canceled and clears it itself (R8A-2).
+		if l := ts.a.asyncJobs; l == nil || !l.isExternalDriver(ts.call.SessionID) {
+			clearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}

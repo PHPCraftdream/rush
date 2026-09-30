@@ -58,3 +58,48 @@ func TestStop_ReleasesTheChildDriverOfAParkedDelegation(t *testing.T) {
 		})
 	}
 }
+
+// TestStop_StaleExecutorReleasesTheChildDriverItsShellHeld (R8B-4): Stop lands
+// while the child's async bash executor is still inside its fixed fast-failure
+// sleep, so the child's shell sits in the table. The stop re-check finds the
+// child not drained (the shell runs) and leaves the driver; the executor then
+// kills the shell and calls finish for a job the stop already dropped. finish
+// must re-check the owner, or the driver record and allowlist entry live as
+// long as the process.
+//
+// Revert-check: dropping the recheckChild from finish's stale-job branch leaves
+// the driver registered after the executor returns.
+func TestStop_StaleExecutorReleasesTheChildDriverItsShellHeld(t *testing.T) {
+	stops := []struct {
+		name string
+		stop func(c *childBGFixture)
+	}{
+		{"Stop on the parent", func(c *childBGFixture) { c.coord.Cancel(c.parentID) }},
+		{"Stop on the child", func(c *childBGFixture) { c.coord.Cancel(c.childID) }},
+	}
+	for _, tc := range stops {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newChildBGFixture(t, childBGMode{})
+			c.coord.currentAgent = &mockSessionAgent{}
+			job, _, err := c.ledger.Start(c.childID, "child-job", "sleep 30", "bash", "", false, false, nil, func() {})
+			require.NoError(t, err)
+			c.ledger.acknowledged(job)
+			c.park()
+			require.Equal(t, 1, c.mgr.ActiveOwned(c.childID), "the executor's shell is in the table")
+
+			tc.stop(c)
+
+			_, registered := c.coord.subAgentDrivers.get(c.childID)
+			require.True(t, registered, "the shell still runs: the stop's own re-check cannot release the child yet")
+			require.False(t, c.ledger.running(c.childID), "the stop dropped the job")
+
+			// The executor wakes: awaitShell sees its ctx done, kills the shell, finish runs.
+			require.NoError(t, c.mgr.KillOwned(t.Context(), c.childID, c.held.ID))
+			c.ledger.finish(job, jobResult{content: "killed"})
+
+			_, registered = c.coord.subAgentDrivers.get(c.childID)
+			require.False(t, registered, "the stale executor's finish releases the child's driver")
+			require.False(t, c.ledger.hasParked())
+		})
+	}
+}

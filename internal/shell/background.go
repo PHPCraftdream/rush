@@ -283,6 +283,7 @@ type BackgroundShell struct {
 	releaseOnce sync.Once
 	onDoneCount atomic.Int64            // callbacks registered but not yet delivered
 	mgr         *BackgroundShellManager // set by start; nil for a hand-built shell (no completion hold)
+	detachedAt  atomic.Int64            // Unix timestamp of the first detach from the manager (0 while attached)
 
 	// retentionMu serializes attached retention, detached callback release,
 	// callback registration/completion, and the detached transition.
@@ -549,6 +550,9 @@ func (m *BackgroundShellManager) RemoveOwned(sessionID, id string) error {
 // Kill returns ctx.Err() — the shell has still been removed from the manager
 // and its cancel func called, but the underlying OS process may live on as an
 // orphan (see CLAUDE.md residual-risk note).
+//
+// A detach is stamped (detachedAt), so the completion hold of a shell that never
+// exits after this stops counting completionHoldMax later (R8B-2).
 func (m *BackgroundShellManager) Kill(ctx context.Context, id string) error {
 	shell, ok := m.shells.Take(id)
 	if !ok {

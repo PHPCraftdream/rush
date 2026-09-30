@@ -878,6 +878,12 @@ func (l *workLedger) finish(job *asyncJob, result jobResult) {
 	l.mu.Lock()
 	if !l.currentLocked(job) {
 		l.mu.Unlock()
+		// R8B-4: a Stop that landed while this executor was still killing its
+		// shell dropped the job and re-checked the owner too early (the shell was
+		// still in the table); no other trigger follows for a shell without a
+		// callback, so the owner's driver would live as long as the process.
+		// Cheap: a session with nothing armed and no driver returns at once.
+		l.recheckChild(owner)
 		return
 	}
 	// B9: mark this job's executor as having genuinely returned BEFORE

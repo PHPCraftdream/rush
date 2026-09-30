@@ -4,6 +4,7 @@
 package shell
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -167,4 +168,92 @@ func TestCompletionHold_ShutdownReleasesEveryHold(t *testing.T) {
 
 	eventuallyZero(t, m, "s1", "shutdown released s1")
 	eventuallyZero(t, m, "s2", "shutdown released s2")
+}
+
+// stuckShell registers a shell owned by "s1" whose `done` never closes: a
+// killed shell whose tree kill missed a descendant holding the output pipe.
+func stuckShell(t *testing.T, m *BackgroundShellManager) *BackgroundShell {
+	t.Helper()
+	_, cancel := context.WithCancel(t.Context())
+	bs := &BackgroundShell{ID: "stuck", SessionID: "s1", mgr: m, cancel: cancel, done: make(chan struct{})}
+	m.shells.Set(bs.ID, bs)
+	return bs
+}
+
+// TestCompletionHold_KilledShellThatNeverExitsExpires: a shell taken out of the
+// table by a kill whose process never exits (done stays open, completedAt 0)
+// holds its session's scope for at most completionHoldMax after the detach, not
+// forever (R8B-2). Detachment is stamped by every removal path.
+//
+// Revert-check: not stamping in detachFromManager fails the stamp assertion;
+// expiring only from completedAt leaves the hold counted after the stamp moves
+// back.
+func TestCompletionHold_KilledShellThatNeverExitsExpires(t *testing.T) {
+	t.Parallel()
+	past := time.Now().Add(-completionHoldMax - time.Minute).Unix()
+	kills := map[string]func(m *BackgroundShellManager, bs *BackgroundShell) error{
+		"KillOwned": func(m *BackgroundShellManager, bs *BackgroundShell) error {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			return m.KillOwned(ctx, "s1", bs.ID)
+		},
+		"Kill": func(m *BackgroundShellManager, bs *BackgroundShell) error {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			return m.Kill(ctx, bs.ID)
+		},
+		"Remove": func(m *BackgroundShellManager, bs *BackgroundShell) error { return m.Remove(bs.ID) },
+		"RemoveOwned": func(m *BackgroundShellManager, bs *BackgroundShell) error {
+			return m.RemoveOwned("s1", bs.ID)
+		},
+		"Close": func(m *BackgroundShellManager, bs *BackgroundShell) error {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			m.Close(ctx)
+			return nil
+		},
+		"KillAll": func(m *BackgroundShellManager, bs *BackgroundShell) error {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			m.KillAll(ctx)
+			return nil
+		},
+	}
+	for name, kill := range kills {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newBackgroundShellManager()
+			bs := stuckShell(t, m)
+			bs.OnDone(func() {})
+			require.Equal(t, 1, m.PendingCompletionsOwned("s1"), "held while registered")
+
+			err := kill(m, bs)
+			if name == "KillOwned" || name == "Kill" {
+				require.ErrorIs(t, err, context.DeadlineExceeded, "the shell never exits: the kill returns ctx.Err()")
+			} else {
+				require.NoError(t, err)
+			}
+			require.Zero(t, m.ActiveOwned("s1"), "out of the table")
+			require.NotZero(t, bs.detachedAt.Load(), "every removal path stamps the detach")
+			require.Equal(t, 1, m.PendingCompletionsOwned("s1"), "a fresh detach still counts")
+
+			bs.detachedAt.Store(past)
+			require.Zero(t, m.PendingCompletionsOwned("s1"), "past the bound a never-exiting killed shell no longer holds the scope")
+			require.Zero(t, m.PendingCompletionsOwned("s1"), "and the entry is dropped")
+		})
+	}
+}
+
+// TestCompletionHold_RunningAttachedShellNeverExpires: a shell still in the
+// table (attached, running) is counted by ActiveOwned and its hold must not
+// expire, however old its start.
+//
+// Revert-check: expiring an undetached, unfinished shell drops the count.
+func TestCompletionHold_RunningAttachedShellNeverExpires(t *testing.T) {
+	t.Parallel()
+	m := newBackgroundShellManager()
+	bs := stuckShell(t, m)
+	bs.OnDone(func() {})
+	bs.StartTime = time.Now().Add(-100 * completionHoldMax)
+	require.Equal(t, 1, m.PendingCompletionsOwned("s1"))
 }
