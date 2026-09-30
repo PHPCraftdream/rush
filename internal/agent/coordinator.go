@@ -326,10 +326,11 @@ type coordinator struct {
 	persistentMode         atomic.Bool
 	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes, bgShellOverCap and autoTurnsSuspended.
 	consecutiveAutoResumes map[string]int // sessionID -> consecutive bg-shell auto-resumes since last human message.
-	// bgShellOverCap counts, per session, the bg-shell completions that
-	// arrived with every slot already spent (since the last human message):
-	// their rows are the newest of the debt and stay deferred (bgshell_cap.go).
-	bgShellOverCap map[string]int
+	// bgShellOverCap holds, per session, the notice row ids of the bg-shell
+	// completions that arrived with every slot already spent (since the last
+	// human message): those rows stay deferred (bgshell_cap.go). A completion
+	// whose insert failed has no row and is not recorded.
+	bgShellOverCap map[string]map[int64]struct{}
 	// bgArrival makes a completion's "insert the notice row + claim/refuse a
 	// slot" one step relative to the cap check that reads both.
 	bgArrival ctxMutex
@@ -648,18 +649,25 @@ func (c *coordinator) autoResumeEligible(sessionID string) bool {
 // slots allowed per human message. The slot is spent at admission, before the
 // launch decision, so a paced or refused launch still spends it and its row
 // keeps being retried (bgShellCapDeferred tells it from an over-cap row). A
-// completion refused because every slot is spent is counted (bgShellOverCap),
-// whatever else would have refused it. Nothing downstream re-checks the counter
-// for the completion's own launch, so exactly that many completions are
-// submitted (R2B-16). Called under bgArrival (persistBGShellCompletion).
-func (c *coordinator) claimAutoResume(sessionID string) bool {
+// completion refused because every slot is spent is recorded by its notice
+// row id (bgShellOverCap), whatever else would have refused it; rowID 0 (the
+// insert failed: no row exists) records nothing. Nothing downstream re-checks
+// the cap for the completion's own launch, so at most that many completions
+// per human message launch a turn of their own (R2B-16). Called under
+// bgArrival (persistBGShellCompletion).
+func (c *coordinator) claimAutoResume(sessionID string, rowID int64) bool {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
 	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
-		if c.bgShellOverCap == nil {
-			c.bgShellOverCap = make(map[string]int)
+		if rowID != 0 {
+			if c.bgShellOverCap == nil {
+				c.bgShellOverCap = make(map[string]map[int64]struct{})
+			}
+			if c.bgShellOverCap[sessionID] == nil {
+				c.bgShellOverCap[sessionID] = make(map[int64]struct{})
+			}
+			c.bgShellOverCap[sessionID][rowID] = struct{}{}
 		}
-		c.bgShellOverCap[sessionID]++
 		return false
 	}
 	if !c.persistentMode.Load() || !c.autonomyEnabled() {

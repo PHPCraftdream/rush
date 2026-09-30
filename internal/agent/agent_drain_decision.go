@@ -25,10 +25,12 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, sn
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
 		return true, drainVerdict{kind: drainAllow}
 	}
-	// The commit never compares the bg-shell cap: the launch decision already
-	// did (or spent the slot itself), and a fact-launched Drain must not be
-	// refused for the slot it just took.
-	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID, true)
+	// The commit compares the bg-shell cap like a re-check (spent=false): a
+	// QUEUED Drain decides on debt its launch decision never saw (a completion
+	// over the cap that landed after the Drain that owned the last slot pulled),
+	// and it must not get a sixth automatic turn. A Drain's own slot row is not
+	// an over-cap row, so it is never refused for the slot it holds.
+	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID, false)
 	return v.kind == drainAllow, v
 }
 

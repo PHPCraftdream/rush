@@ -50,9 +50,9 @@ type drainVerdict struct {
 // delegation-child refusal: its turns always run on currentAgent anyway.
 // spent: the asker never compares the bg-shell cap (see the bg-shell row
 // below): a fact's own launch (wakeSession, fact=true) already spent its
-// auto-resume slot, and the Drain's turn-start commit (decideDrainTurn) follows
-// a launch decision that already compared it. A release, tick or CLI-scope
-// re-check passes false and compares the cap without spending a slot.
+// auto-resume slot. A release, tick or CLI-scope re-check, and the Drain's
+// turn-start commit (decideDrainTurn: a queued Drain decides on debt its
+// launch never saw), pass false and compare the cap without spending a slot.
 func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent bool) drainVerdict {
 	l := c.asyncJobs
 	if l == nil {
@@ -115,13 +115,13 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent b
 	}
 	// "Background shell: only with AutoResumeOnJobDone": a session whose
 	// ENTIRE debt is bg-shell completions gets no turn with it off -- and, with
-	// it on, none for a re-check launch (release, tick) once every slot per
-	// human message is spent AND no row of the debt holds a slot
-	// (bgShellCapDeferred: the debt is only completions that arrived over the
-	// cap). A completion's own launch (spent: claimAutoResume already took its
-	// slot) never compares, and a row whose slot was spent but whose launch
-	// was paced, refused, held or deferred is retried like any debt, so the
-	// cap bounds the chain of automatic turns without dropping a reaction.
+	// it on, none for a re-check launch (release, tick) or a Drain's turn-start
+	// commit once every slot per human message is spent AND no row of the debt
+	// holds a slot (bgShellCapDeferred: every row is a completion that arrived
+	// over the cap). A completion's own launch (spent: claimAutoResume already
+	// took its slot) never compares, and a row whose slot was spent but whose
+	// launch was paced, refused, held or deferred is retried like any debt, so
+	// the cap bounds the chain of automatic turns without dropping a reaction.
 	autonomy := c.cfg != nil && c.autonomyEnabled()
 	if autonomy && !spent {
 		capped, err := c.bgShellCapDeferred(ctx, sessionID)
@@ -133,7 +133,7 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent b
 		}
 	}
 	if !autonomy {
-		bgOnly, _, err := c.sessionDebtIsBGShellOnly(ctx, sessionID)
+		bgOnly, err := c.sessionDebtIsBGShellOnly(ctx, sessionID)
 		if err != nil {
 			return unreadable("debt kinds", err)
 		}
@@ -247,8 +247,7 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 // shell: only with AutoResumeOnJobDone" policy-table row at release-recheck/
 // 60s-pass time, which (unlike the direct hint-time call) has no ctx-carried
 // signal of the debt's origin. false when there is no debt at all (nothing
-// to gate) or on any job-id debt or mixed/non-bg-shell notice kind; rows is
-// the number of bg-shell notice rows in the debt (bgShellCapDeferred).
+// to gate) or on any job-id debt or mixed/non-bg-shell notice kind.
 //
 // W-DRAIN task A regression (found via the full internal/agent suite after
 // narrowing captureDebtSnapshot to delivery='done' for C18/B-dev1): this
@@ -260,24 +259,24 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 // silently skipping the refusal gate and letting AutoResumeOnJobDone=off
 // sessions get a Drain turn anyway. Reads the two tables directly instead,
 // at the SAME pending-inclusive scope ReactionDebtExists uses.
-func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID string) (bgOnly bool, rows int, err error) {
+func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID string) (bgOnly bool, err error) {
 	if c.asyncJobs.store == nil {
-		return false, 0, nil
+		return false, nil
 	}
 	hasJobDebt, noticeKinds, err := c.asyncJobs.store.PendingInclusiveDebtSummary(ctx, sessionID)
 	if err != nil {
-		return false, 0, err
+		return false, err
 	}
 	if hasJobDebt || len(noticeKinds) == 0 {
 		// Any outstanding async-job debt at all disqualifies -- this gate
 		// only ever applies to a session whose ENTIRE debt is bg-shell
 		// notices. No debt at all (nothing to gate) also disqualifies.
-		return false, 0, nil
+		return false, nil
 	}
 	for _, k := range noticeKinds {
 		if k != session.NoticeKindBGShellDone {
-			return false, 0, nil
+			return false, nil
 		}
 	}
-	return true, len(noticeKinds), nil
+	return true, nil
 }
