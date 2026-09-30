@@ -310,9 +310,17 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 		a.onSessionIdle(sessionID)
 	}
 	if popped != nil {
-		slog.Error(
-			"agent.Run: calls were pending when ownership had to be abandoned — starting detached runs to ensure they execute",
+		// Expected handoff, not a failure: a call (most often a completion
+		// Drain) raced into the mailbox while this Run was already exiting.
+		// Nothing is lost or duplicated — non-Drain calls are durably
+		// enqueued once below (idempotency key, ON CONFLICT), and a Drain is
+		// deliberately dropped (doc sec.3.4): the next driver's turn-start
+		// pull re-derives whatever it would have reacted to, and the
+		// coordinator's recheck pass re-issues a paced Drain.
+		slog.Info(
+			"agent.Run: calls were pending when ownership was abandoned — handing them to the durable orphan restart path",
 			"session_id", sessionID,
+			"num_calls", len(popped),
 		)
 		// Start detached runs for all work left in the mailbox.
 		// abandonOwnershipAndPopSubmitted already folded replacement into
@@ -456,6 +464,8 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			// re-derives whatever it would have reacted to, so dropping an
 			// orphaned Drain here is always safe.
 			if call.IsDrain {
+				slog.Debug("agent: dropping an orphaned Drain call (the next driver's turn-start pull re-derives it)",
+					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 				return
 			}
 
