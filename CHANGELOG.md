@@ -115,7 +115,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   its result stays the tool's answer (the real output captured before the
   stop) and is also recorded as delivered, so it is never pulled into
   history a second time. Applies to a background `bash` job and a
-  `run_command` job.
+  `run_command` job. If that result cannot be recorded with the row (an
+  error result, a failed write, a cancelled turn) the row goes back to the
+  ordinary pull, so the captured output is delivered instead of lost; a
+  stop whose shell is already gone (a concurrent Stop or timeout) still
+  answers with the captured output.
 - **Rerun (web "rerun from here") is one atomic step.** The target message,
   the tail after it and the ledger reconciliation commit in a single
   transaction. If the transaction fails, nothing was changed and the error

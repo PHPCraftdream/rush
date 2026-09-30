@@ -122,7 +122,7 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 	buf.write("line 1\nline 2\n")
 	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
-	_, stopErr := l.StopRunCommandJob("owner", "call")
+	_, _, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 	// Simulates run_command.go's own ctx-cancellation branch, which discards
 	// its own partial buffer content and returns a bare error (see
@@ -174,7 +174,7 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			markText, markVerdict = l.MarkJobStopped("owner", "call")
+			markText, _, markVerdict = l.MarkJobStopped("owner", "call")
 		}()
 		go func() {
 			defer wg.Done()
@@ -212,12 +212,12 @@ func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() { cancelCalls++ })
 	require.NoError(t, err)
 
-	stopText, stopErr := l.StopRunCommandJob("owner", "call")
+	stopText, _, stopErr := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, stopErr)
 	require.Contains(t, stopText, "job_kill", "task #1063: the fresh stop's own answer carries the real output/wording, not a placeholder")
 	require.Equal(t, 1, cancelCalls)
 
-	_, err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 	require.Equal(t, 1, cancelCalls, "a repeat stop must not cancel a second time")
@@ -233,7 +233,7 @@ func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
-	_, err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -348,7 +348,7 @@ func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *
 	require.NoError(t, err)
 	l.acknowledged(jobOf(l, "owner", "call"))
 
-	text, verdict := l.MarkJobStopped("owner", "call")
+	text, _, verdict := l.MarkJobStopped("owner", "call")
 	require.Equal(t, tools.JobStopStopped, verdict)
 	require.Contains(t, text, "job_kill")
 
@@ -375,7 +375,7 @@ func TestWorkLedger_StopRunCommandJob_RowGoesStraightToDone(t *testing.T) {
 	require.NoError(t, err)
 	l.acknowledged(jobOf(l, "owner", "call"))
 
-	text, err := l.StopRunCommandJob("owner", "call")
+	text, _, err := l.StopRunCommandJob("owner", "call")
 	require.NoError(t, err)
 	require.Contains(t, text, "job_kill")
 
@@ -409,7 +409,7 @@ func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *te
 			go func() {
 				defer wg.Done()
 				<-start
-				_, verdict := l.MarkJobStopped("owner", "call")
+				_, _, verdict := l.MarkJobStopped("owner", "call")
 				results[g] = verdict == tools.JobStopStopped
 			}()
 		}
@@ -453,7 +453,7 @@ func TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop(t 
 			go func() {
 				defer wg.Done()
 				<-start
-				_, err := l.StopRunCommandJob("owner", "call")
+				_, _, err := l.StopRunCommandJob("owner", "call")
 				errs[g] = err
 			}()
 		}

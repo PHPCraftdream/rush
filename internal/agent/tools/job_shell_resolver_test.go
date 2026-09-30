@@ -25,6 +25,7 @@ type fakeJobShellResolver struct {
 	// without touching the shell manager.
 	markText    string
 	markVerdict JobStopVerdict
+	markClaim   string
 }
 
 func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (string, error) {
@@ -35,9 +36,9 @@ func (f *fakeJobShellResolver) ResolveJobShellID(sessionID, jobID string) (strin
 	return f.shellID, nil
 }
 
-func (f *fakeJobShellResolver) MarkJobStopped(sessionID, jobID string) (string, JobStopVerdict) {
+func (f *fakeJobShellResolver) MarkJobStopped(sessionID, jobID string) (string, string, JobStopVerdict) {
 	f.stoppedSession, f.stoppedJob = sessionID, jobID
-	return f.markText, f.markVerdict
+	return f.markText, f.markClaim, f.markVerdict
 }
 
 func TestResolveShellID_NeitherGivenIsRejected(t *testing.T) {
@@ -301,4 +302,70 @@ func TestJobOutputTool_BothJobIDAndShellIDRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "exactly one of job_id or shell_id")
+}
+
+// TestJobKillTool_StoppedVerdictAnswersWithMarkTextAndMetadataWhenShellIsGone
+// pins R2B-11: once the ledger verdict is "stopped" the job IS stopped and
+// its output is in the mark text, so a missing shell or a kill cut short by
+// the caller's ctx (a concurrent Stop/timeout/close() cancelled the job
+// first) must still return that text WITH the metadata naming the row --
+// otherwise the result cannot be fused onto the row and the captured output
+// is lost behind "background shell not found".
+//
+// Revert-check: with the shell lookup/kill errors returned as errors again,
+// both subtests answered "background shell not found"/the kill error with no
+// metadata.
+func TestJobKillTool_StoppedVerdictAnswersWithMarkTextAndMetadataWhenShellIsGone(t *testing.T) {
+	const stopped = "Async job call-1 (bash) was stopped (job_kill). Partial output before the stop:\n\nsome output"
+	base := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
+	check := func(t *testing.T, resp fantasy.ToolResponse, shellID string) {
+		t.Helper()
+		require.False(t, resp.IsError)
+		require.Equal(t, stopped, resp.Content)
+		var meta JobKillResponseMetadata
+		require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+		require.Equal(t, "call-1", meta.JobID)
+		require.Equal(t, shellID, meta.ShellID)
+		require.Equal(t, "claim-1", meta.KilledClaimID)
+	}
+
+	t.Run("shell already gone", func(t *testing.T) {
+		bgManager := shell.NewBackgroundShellManager()
+		t.Cleanup(func() { bgManager.Close(context.Background()) })
+		resolver := &fakeJobShellResolver{shellID: "gone-shell", markText: stopped, markVerdict: JobStopStopped, markClaim: "claim-1"}
+		tool := NewJobKillTool(resolver, nil, bgManager)
+		input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+		require.NoError(t, err)
+		resp, err := tool.Run(base, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+		require.NoError(t, err)
+		check(t, resp, "gone-shell")
+	})
+
+	t.Run("kill cut short by the caller's ctx", func(t *testing.T) {
+		bgManager := shell.NewBackgroundShellManager()
+		t.Cleanup(func() { bgManager.Close(context.Background()) })
+		bgShell, err := bgManager.StartOwned(base, "session-a", t.TempDir(), nil, "sleep 30", "")
+		require.NoError(t, err)
+		resolver := &fakeJobShellResolver{shellID: bgShell.ID, markText: stopped, markVerdict: JobStopStopped, markClaim: "claim-1"}
+		tool := NewJobKillTool(resolver, nil, bgManager)
+		input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+		require.NoError(t, err)
+		cancelled, cancel := context.WithCancel(base)
+		cancel()
+		resp, err := tool.Run(cancelled, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+		require.NoError(t, err)
+		check(t, resp, bgShell.ID)
+	})
+
+	t.Run("a raw shell_id kill of a missing shell stays an error", func(t *testing.T) {
+		bgManager := shell.NewBackgroundShellManager()
+		t.Cleanup(func() { bgManager.Close(context.Background()) })
+		tool := NewJobKillTool(nil, nil, bgManager)
+		input, err := json.Marshal(JobKillParams{ShellID: "gone-shell"})
+		require.NoError(t, err)
+		resp, err := tool.Run(base, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "background shell not found")
+	})
 }

@@ -142,6 +142,11 @@ type workLedger struct {
 	// job either (Start fails closed -- see Start's doc).
 	store *session.AsyncJobStore
 
+	// jobKillRepend overrides the store as the target of a job_kill row
+	// re-pend (rependJobKill); tests only -- production resolves the store's
+	// own RependJobKillRowWithoutNotice.
+	jobKillRepend jobKillRepender
+
 	// coord backs childScopeDrained's background/mailbox-busy checks (see
 	// work_ledger_delegation.go) and recheckChild's DB refresh. Nil-safe:
 	// isolated ledger tests never set it. Same pattern as
@@ -687,9 +692,9 @@ func completionFromSnapshot(toolCallID, toolName string, snap jobOutcomeSnapshot
 // narrow window where a truly concurrent second call could otherwise race
 // ahead of the first's own transitioning latch and be handed the same
 // "proceed" verdict.
-func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verdict tools.JobStopVerdict) {
+func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text, claimID string, verdict tools.JobStopVerdict) {
 	if l == nil {
-		return "", tools.JobStopNotFound
+		return "", "", tools.JobStopNotFound
 	}
 	l.mu.Lock()
 	s := l.bySession[owner]
@@ -699,7 +704,7 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 	}
 	if job == nil || job.transitioning || job.killRequested {
 		l.mu.Unlock()
-		return "", tools.JobStopNotFound
+		return "", "", tools.JobStopNotFound
 	}
 	if job.state.terminal() {
 		// Already terminal via another cause but not yet delivered (e.g.
@@ -707,11 +712,12 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 		snap := jobOutcomeSnapshot{found: true, state: job.state, result: job.result}
 		name, timeoutSeconds := job.toolName, job.timeoutSeconds
 		l.mu.Unlock()
-		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, name, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, name, snap, timeoutSeconds)), "", tools.JobStopAlreadyTerminal
 	}
 	job.killRequested = true
 	sync := job.sync
 	toolName, shellID, timeoutSeconds := job.toolName, job.shellID, job.timeoutSeconds
+	killedClaim := job.claimID
 	l.mu.Unlock()
 
 	partial := l.capturePartial(owner, toolCallID, toolName, "", shellID, nil)
@@ -727,19 +733,19 @@ func (l *workLedger) MarkJobStopped(owner, toolCallID string) (text string, verd
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: toolCallID, ToolName: toolName,
 			Content: partial.content, IsError: partial.isError, Stopped: true,
-		}), tools.JobStopStopped
+		}), killedClaim, tools.JobStopStopped
 	}
 	outcome, snap := l.commitAndDeliver(job, causeJobKill, partial)
 	if outcome != commitWon {
 		if !snap.found {
-			return "", tools.JobStopNotFound
+			return "", "", tools.JobStopNotFound
 		}
-		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, toolName, snap, timeoutSeconds)), tools.JobStopAlreadyTerminal
+		return FormatAsyncCompletion(completionFromSnapshot(toolCallID, toolName, snap, timeoutSeconds)), "", tools.JobStopAlreadyTerminal
 	}
 	return FormatAsyncCompletion(AsyncCompletion{
 		ToolCallID: toolCallID, ToolName: toolName,
 		Content: partial.content, IsError: partial.isError, Stopped: true,
-	}), tools.JobStopStopped
+	}), killedClaim, tools.JobStopStopped
 }
 
 // setRunCommandBuffer records a run_command job's live output sink, as soon
@@ -803,9 +809,9 @@ func (l *workLedger) RunCommandOutput(owner, jobID string, cursor int64) (string
 // the race to a concurrent natural finish/timeout/Stop in the window between
 // the guard above and commitAndDeliver's store write -- the returned text
 // must reflect what actually committed, never assume this call caused it.
-func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err error) {
+func (l *workLedger) StopRunCommandJob(owner, jobID string) (text, claimID string, err error) {
 	if l == nil {
-		return "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
+		return "", "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
 	}
 	l.mu.Lock()
 	var job *asyncJob
@@ -814,18 +820,19 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 	}
 	if job == nil || job.toolName != tools.RunCommandToolName {
 		l.mu.Unlock()
-		return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
+		return "", "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or not a run_command job)", jobID)
 	}
 	if job.state.terminal() || job.transitioning || job.killRequested {
 		l.mu.Unlock()
 		// Idempotency rule (contract §1.5): a repeat stop on an already-
 		// stopping/stopped target is safe but reports the same "not found"
 		// shape, not a disguised second success.
-		return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
+		return "", "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
 	}
 	job.killRequested = true
 	sync := job.sync
 	timeoutSeconds := job.timeoutSeconds
+	killedClaim := job.claimID
 	var partial string
 	if job.outputBuf != nil {
 		partial = job.outputBuf.String()
@@ -844,7 +851,7 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: jobID, ToolName: tools.RunCommandToolName,
 			Content: result.content, IsError: result.isError, Stopped: true,
-		}), nil
+		}), killedClaim, nil
 	}
 	outcome, snap := l.commitAndDeliver(job, causeJobKill, result)
 	if cancel != nil {
@@ -852,14 +859,14 @@ func (l *workLedger) StopRunCommandJob(owner, jobID string) (text string, err er
 	}
 	if outcome != commitWon {
 		if !snap.found {
-			return "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
+			return "", "", fmt.Errorf("job %s not found (not owned by this session, already delivered, or already stopped)", jobID)
 		}
-		return FormatAsyncCompletion(completionFromSnapshot(jobID, tools.RunCommandToolName, snap, timeoutSeconds)), nil
+		return FormatAsyncCompletion(completionFromSnapshot(jobID, tools.RunCommandToolName, snap, timeoutSeconds)), "", nil
 	}
 	return FormatAsyncCompletion(AsyncCompletion{
 		ToolCallID: jobID, ToolName: tools.RunCommandToolName,
 		Content: result.content, IsError: result.isError, Stopped: true,
-	}), nil
+	}), killedClaim, nil
 }
 
 // finish is the terminal transition for a PLAIN job's (bash/run_command)

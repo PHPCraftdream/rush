@@ -201,7 +201,7 @@ func TestWorkLedger_TerminalCausesRecordOwnStateNoticeKindAndWake(t *testing.T) 
 		{
 			name: "job_kill via StopRunCommandJob",
 			act: func(l *workLedger) {
-				_, err := l.StopRunCommandJob("owner-1", "call-1")
+				_, _, err := l.StopRunCommandJob("owner-1", "call-1")
 				require.NoError(t, err)
 			},
 			wantState: "cancelled", wantNoticeKind: "job_kill", wantWake: 0,

@@ -22,9 +22,9 @@ func (f *fakeRunCommandJobResolver) ResolveJobShellID(_, jobID string) (string, 
 	return "", &RunCommandJobError{JobID: jobID}
 }
 
-func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) (string, JobStopVerdict) {
+func (f *fakeRunCommandJobResolver) MarkJobStopped(sessionID, jobID string) (string, string, JobStopVerdict) {
 	f.stoppedSession, f.stoppedJob = sessionID, jobID
-	return "", JobStopNotFound
+	return "", "", JobStopNotFound
 }
 
 // fakeDelegationJobResolver always classifies a job_id as a delegation.
@@ -34,8 +34,8 @@ func (f *fakeDelegationJobResolver) ResolveJobShellID(_, jobID string) (string, 
 	return "", &DelegationJobError{JobID: jobID, ChildSessionID: "child-session-x"}
 }
 
-func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) (string, JobStopVerdict) {
-	return "", JobStopNotFound
+func (f *fakeDelegationJobResolver) MarkJobStopped(string, string) (string, string, JobStopVerdict) {
+	return "", "", JobStopNotFound
 }
 
 // fakeRunCommandController is a minimal RunCommandController for testing.
@@ -54,6 +54,8 @@ type fakeRunCommandController struct {
 	// #1063). Empty in every test that does not set it, reproducing
 	// job_kill's pre-existing generic-wording fallback.
 	stopText string
+	// stopClaim is the claim id StopRunCommandJob reports for the row it stopped.
+	stopClaim string
 }
 
 func (f *fakeRunCommandController) RunCommandOutput(sessionID, jobID string, cursor int64) (string, bool, int64, error) {
@@ -64,12 +66,12 @@ func (f *fakeRunCommandController) RunCommandOutput(sessionID, jobID string, cur
 	return f.data, f.done, f.nextCursor, nil
 }
 
-func (f *fakeRunCommandController) StopRunCommandJob(sessionID, jobID string) (string, error) {
+func (f *fakeRunCommandController) StopRunCommandJob(sessionID, jobID string) (string, string, error) {
 	f.stopCalledSession, f.stopCalledJob = sessionID, jobID
 	if f.stopErr != nil {
-		return "", f.stopErr
+		return "", "", f.stopErr
 	}
-	return f.stopText, nil
+	return f.stopText, f.stopClaim, nil
 }
 
 // TestJobOutputTool_RunCommandJobRoutesToController proves job_output routes
@@ -239,3 +241,21 @@ func TestJobKillTool_MarksJobStoppedBeforeKilling(t *testing.T) {
 type errNotFoundForTest string
 
 func (e errNotFoundForTest) Error() string { return "job " + string(e) + " not found" }
+
+// TestJobKillTool_RunCommandStopReportsKilledClaimInMetadata pins R2A-8's
+// tool side for run_command: the claim of the row this call stopped is in the
+// result metadata, so the result is fused onto (or re-pends) exactly that row.
+func TestJobKillTool_RunCommandStopReportsKilledClaimInMetadata(t *testing.T) {
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "session-a")
+	runCtl := &fakeRunCommandController{stopText: "stopped text", stopClaim: "claim-9"}
+	tool := NewJobKillTool(&fakeRunCommandJobResolver{}, runCtl)
+
+	input, err := json.Marshal(JobKillParams{JobID: "call-1"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "kill-call", Name: JobKillToolName, Input: string(input)})
+	require.NoError(t, err)
+	var meta JobKillResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, "call-1", meta.JobID)
+	require.Equal(t, "claim-9", meta.KilledClaimID)
+}

@@ -32,7 +32,7 @@ func TestWorkLedger_MarkJobStopped_AlreadyTerminalAnswersFromCommittedRow(t *tes
 	// No l.acknowledged: the terminal job stays in the map, undelivered.
 	l.finish(jobOf(l, "owner", "call"), jobResult{content: "real committed output"})
 
-	text, verdict := l.MarkJobStopped("owner", "call")
+	text, _, verdict := l.MarkJobStopped("owner", "call")
 	require.Equal(t, tools.JobStopAlreadyTerminal, verdict)
 	require.Contains(t, text, "real committed output")
 	require.Contains(t, text, "finished")
@@ -40,7 +40,7 @@ func TestWorkLedger_MarkJobStopped_AlreadyTerminalAnswersFromCommittedRow(t *tes
 	require.False(t, cancelled)
 
 	// A gone job is NotFound, never AlreadyTerminal.
-	_, verdict = l.MarkJobStopped("owner", "no-such-call")
+	_, _, verdict = l.MarkJobStopped("owner", "no-such-call")
 	require.Equal(t, tools.JobStopNotFound, verdict)
 }
 

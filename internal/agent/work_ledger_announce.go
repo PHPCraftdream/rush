@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -76,8 +78,9 @@ func (l *workLedger) claimAck(ctx context.Context, sessionID string, result mess
 // ledger owes it. It is agent_turn_stream.go's onToolResult entry point:
 //   - a job's own tagged "started" result: fused with announced=1
 //     (acknowledgeWithMessageTx), or plain Create + acknowledged;
-//   - a successful job_kill result that acted on a tracked job: fused into
-//     that row's notice_message_id (jobKillResultMessageTx);
+//   - a job_kill result that stopped a tracked job: fused into that row's
+//     notice_message_id, with the row re-pended when that write does not
+//     happen (persistJobKillResult);
 //   - anything else: a plain Create, touching no job.
 func (l *workLedger) persistToolResult(ctx context.Context, sessionID string, result message.ToolResult, messages message.Service, params message.CreateMessageParams) error {
 	job := l.claimAck(ctx, sessionID, result)
@@ -85,12 +88,9 @@ func (l *workLedger) persistToolResult(ctx context.Context, sessionID string, re
 		if _, handled, err := l.acknowledgeWithMessageTx(ctx, job, messages, params); handled {
 			return err
 		}
-	} else if result.Name == tools.JobKillToolName && !result.IsError {
-		var meta tools.JobKillResponseMetadata
-		if json.Unmarshal([]byte(result.Metadata), &meta) == nil && meta.JobID != "" {
-			if _, handled, err := l.jobKillResultMessageTx(ctx, sessionID, meta.JobID, messages, params); handled {
-				return err
-			}
+	} else if result.Name == tools.JobKillToolName {
+		if handled, err := l.persistJobKillResult(ctx, sessionID, result, messages, params); handled {
+			return err
 		}
 	}
 	// The caller passes the turn's outer ctx, which survives genCtx's
@@ -164,33 +164,90 @@ func (l *workLedger) acknowledgeWithMessageTx(ctx context.Context, job *asyncJob
 	return msg, true, nil
 }
 
-// jobKillResultMessageTx is persistToolResult's job_kill entry point for A3
-// (doc sec.3.2's law "delivery='done' => the row names the message that
-// carries its result"): a job_kill CALL's own tool-result message, keyed by
-// targetToolCallID -- the async_jobs row job_kill just acted on
-// (JobKillResponseMetadata.JobID), NOT job_kill's own tool_call_id -- needs
-// that message's id fused into notice_message_id in the SAME transaction as
-// its insert, mirroring the ack gate's acknowledgeWithMessageTx.
+// jobKillRepender is the store method that puts a job_kill row whose fused
+// result write did not happen back into the ordinary pull path (R2A-8):
+// delivery='pending', reacted=0, wake=0, only while the row still matches
+// (owner, tool_call_id, claim_id), is 'done' by job_kill and has no
+// notice_message_id. Satisfied by *session.AsyncJobStore; the assertion in
+// rependJobKill keeps this file compiling against a store without it.
+type jobKillRepender interface {
+	RependJobKillRowWithoutNotice(ctx context.Context, owner, toolCallID, claimID string) error
+}
+
+// jobKillRependBudget bounds rependJobKill's retries.
+const jobKillRependBudget = 30 * time.Second
+
+// rependJobKill re-pends the job_kill row named by meta (see
+// jobKillRepender). Retried like every other store write on this path; the
+// caller's ctx may already be cancelled (that is one of the reasons the
+// fused write did not happen), so the write is detached from it.
+func (l *workLedger) rependJobKill(ctx context.Context, owner string, meta tools.JobKillResponseMetadata) {
+	repender := l.jobKillRepend
+	if repender == nil {
+		var r jobKillRepender
+		ok := false
+		if l.store != nil {
+			r, ok = any(l.store).(jobKillRepender)
+		}
+		if !ok {
+			slog.Error("job_kill result was not recorded and the store cannot re-pend its row; the output stays undelivered",
+				"session_id", owner, "tool_call_id", meta.JobID)
+			return
+		}
+		repender = r
+	}
+	// Detached from ctx (it may already be cancelled -- one reason the fused
+	// write did not happen) but bounded, so a store that keeps failing cannot
+	// hold the turn's tool-result callback forever.
+	detached, stop := context.WithTimeout(context.WithoutCancel(ctx), jobKillRependBudget)
+	defer stop()
+	if err := l.retryAsyncStoreOp(detached, func() error {
+		err := repender.RependJobKillRowWithoutNotice(detached, owner, meta.JobID, meta.KilledClaimID)
+		if errors.Is(err, session.ErrAsyncJobGone) {
+			return nil
+		}
+		return err
+	}); err != nil {
+		slog.Error("job_kill: failed to re-pend the row whose result was not recorded",
+			"session_id", owner, "tool_call_id", meta.JobID, "err", err)
+	}
+}
+
+// persistJobKillResult is persistToolResult's job_kill branch (A3 + R2A-8):
+// doc sec.3.2's law "delivery='done' => the row names the message that
+// carries its result". job_kill's Transition already set delivery='done' /
+// reacted=1, so nothing else ever writes notice_message_id -- this fuses
+// job_kill's own tool-result message id onto the TARGET row (named by the
+// result's metadata, NOT job_kill's own tool_call_id) in the SAME
+// transaction as the message insert. Whenever that fused write does not
+// happen -- the result is an error, the transaction fails, ctx is cancelled
+// -- the row is re-pended so the captured output is delivered by the
+// ordinary pull instead of being lost.
 //
-// handled=false (fall back to the caller's own plain Create) when there is
-// no store wired or targetToolCallID is empty -- an ordinary tool result, or
-// a job_kill call that never resolved to a tracked job (raw shell_id, or the
-// B11 refusal path, which builds no JobKillResponseMetadata at all). A
-// non-nil err here is a real failure (message insert itself failed): the
-// caller must propagate it, not fall back to its own Create (the row's
-// notice_message_id write and the message either both happen or neither
-// does -- this method's own tx handles that, unlike a caller-side retry
-// which would risk a second message for the same tool_use).
-func (l *workLedger) jobKillResultMessageTx(ctx context.Context, sessionID, targetToolCallID string, messages message.Service, params message.CreateMessageParams) (msg message.Message, handled bool, err error) {
+// handled=false (fall back to the caller's own plain Create) when the
+// result names no job it stopped: an ordinary result, a raw shell_id kill,
+// or a refusal (B11), none of which carry a killed claim.
+func (l *workLedger) persistJobKillResult(ctx context.Context, sessionID string, result message.ToolResult, messages message.Service, params message.CreateMessageParams) (handled bool, err error) {
+	var meta tools.JobKillResponseMetadata
+	if json.Unmarshal([]byte(result.Metadata), &meta) != nil || meta.JobID == "" || meta.KilledClaimID == "" {
+		return false, nil
+	}
 	l.mu.Lock()
 	store := l.store
 	l.mu.Unlock()
-	if store == nil || targetToolCallID == "" {
-		return message.Message{}, false, nil
+	if store == nil {
+		return false, nil
 	}
-	msg, err = store.AnnounceJobKillResult(ctx, messages, sessionID, targetToolCallID, params)
-	if err != nil {
-		return message.Message{}, true, err
+	if !result.IsError {
+		if _, err = store.AnnounceJobKillResult(ctx, messages, sessionID, meta.JobID, params); err == nil {
+			return true, nil
+		}
+		l.rependJobKill(ctx, sessionID, meta)
+		return true, err
 	}
-	return msg, true, nil
+	// An error result that still names a stopped job: persist the message
+	// the ordinary way, and never leave the row done without a notice.
+	_, err = messages.Create(ctx, sessionID, params)
+	l.rependJobKill(ctx, sessionID, meta)
+	return true, err
 }
