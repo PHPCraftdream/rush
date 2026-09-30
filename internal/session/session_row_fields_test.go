@@ -68,31 +68,37 @@ func TestSessionReaders_CarryEndedReasonBudgetAndCancelFlag(t *testing.T) {
 	}
 
 	t.Run("Get", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.Get(ctx, child.ID)
 		require.NoError(t, err)
 		check(t, child.ID, got)
 	})
 	t.Run("GetLast", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.GetLast(ctx)
 		require.NoError(t, err)
 		check(t, root.ID, got)
 	})
 	t.Run("List", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.List(ctx)
 		require.NoError(t, err)
 		check(t, root.ID, find(t, got, root.ID))
 	})
 	t.Run("ListSubSessions", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.ListSubSessions(ctx, root.ID)
 		require.NoError(t, err)
 		check(t, child.ID, find(t, got, child.ID))
 	})
 	t.Run("ListAll", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.ListAll(ctx)
 		require.NoError(t, err)
 		check(t, child.ID, find(t, got, child.ID))
 	})
 	t.Run("CreateTaskSession_existing", func(t *testing.T) {
+		t.Parallel()
 		got, err := svc.CreateTaskSession(ctx, "row-fields-child", root.ID, "again")
 		require.NoError(t, err)
 		check(t, child.ID, got)
