@@ -8,10 +8,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -130,6 +132,27 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	if coderAgentCfg.ID == "" {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
+	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
+	// core.md sec.5 step 2/7): App.New already builds this unconditionally
+	// (step 7: read-only status surfaces need it even when no provider is
+	// configured and InitCoderAgent never runs) -- this is now just the
+	// fallback for a test fixture that constructed *App by hand without
+	// going through App.New. A pump-only App with no data dir (dataDir ==
+	// "") still gets no store -- InitCoderAgent is never called on that
+	// shape in production (it has no coder agent to init), but a test
+	// fixture reaching this with dataDir == "" would get a coordinator that
+	// fails closed on the first non-sync async tool call, not a crash.
+	if app.asyncJobStore == nil && app.dataDir != "" {
+		// label is display-only (shown by `sessions jobs`, doc
+		// sec.3.6) -- this App type drives both `rush run` and the web
+		// server, and does not know which at construction time, so "app"
+		// is used uniformly rather than guessing "cli"/"web" wrong.
+		app.asyncJobStore = session.NewAsyncJobStore(app.DB(), app.dataDir, os.Getpid(), "app")
+		// Doc sec.3.7: the first-registration dead-host sweep (ensureHost)
+		// reads a recovered delegation's child text via this -- wired once,
+		// before the first Claim can happen.
+		app.asyncJobStore.SetMessages(app.Messages)
+	}
 	var err error
 	app.AgentCoordinator, err = agent.NewCoordinator(
 		ctx,
@@ -141,6 +164,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.FileTracker,
 		app.agentNotifications,
 		app.mcpOwner,
+		app.asyncJobStore,
 		app.BackgroundShellManager,
 	)
 	if err != nil {

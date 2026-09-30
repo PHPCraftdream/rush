@@ -44,8 +44,18 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	}
 	prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
 
+	// stepSplices collects every message THIS step's boundary inserts mid-
+	// turn (mailbox injects, cross-process injects, phase-4 notice pulls) --
+	// not appended to prepared.Messages directly. They land there together
+	// with every earlier step's own splices (ts.carriedSplices) below, so
+	// a step-3 splice is still visible verbatim at step 4, 5, … of this SAME
+	// turn (doc sec.3.4's second bullet): fantasy's own options.Messages for
+	// step N is initialPrompt + step responses, which does NOT carry
+	// forward whatever a PREVIOUS step's PrepareStep spliced in.
+	var stepSplices []fantasy.Message
+
 	for _, inj := range ts.a.drainDueInjects(ts.call.SessionID, ts.genID, ts.historyIDs) {
-		prepared.Messages = append(prepared.Messages, inj.ToAIMessage()...)
+		stepSplices = append(stepSplices, inj.ToAIMessage()...)
 	}
 
 	// Cross-process inject drain: rows written by another process
@@ -67,6 +77,13 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 			"session_id", ts.call.SessionID)
 	}
 	for _, inj := range pending {
+		// R8C-1: `sessions inject` saves the message before it queues the row, so
+		// a row queued while nothing ran points at a message the turn's history
+		// already holds; the row is consumed (DrainPendingInjects deleted it) but
+		// the message is not spliced a second time -- the mailbox's rule.
+		if _, inHistory := ts.historyIDs[inj.MessageID]; inHistory {
+			continue
+		}
 		injMsg, getErr := ts.a.messages.Get(callContext, inj.MessageID)
 		if getErr != nil {
 			// The referenced message vanished (e.g. cascade delete):
@@ -75,7 +92,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 				"session_id", ts.call.SessionID, "message_id", inj.MessageID, "error", getErr)
 			continue
 		}
-		prepared.Messages = append(prepared.Messages, injMsg.ToAIMessage()...)
+		stepSplices = append(stepSplices, injMsg.ToAIMessage()...)
 		// The row was written by a foreign process (`rush sessions
 		// inject`), so its Create() never published through THIS
 		// process's message broker. If a web UI happens to be
@@ -83,6 +100,22 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		// the already-persisted message so it renders live instead
 		// of waiting for a page reload.
 		ts.a.messages.Notify(injMsg)
+	}
+
+	// Phase-4 step 3 (DUR-3, doc sec.3.3): the step-boundary half of the
+	// driver's pull, alongside the inject drains above. Compaction steps
+	// use their own separate PrepareStep closures (agent_compaction.go) and
+	// never reach this method at all, so they never pull.
+	for _, msg := range ts.a.pullPendingNoticesForStep(callContext, ts.call.SessionID) {
+		stepSplices = append(stepSplices, msg.ToAIMessage()...)
+	}
+
+	// Re-insert every earlier step's mid-turn splice at the SAME position it
+	// first landed, then this step's own new ones at the end, BEFORE window
+	// trimming/cache marking below (doc sec.3.4).
+	prepared.Messages = spliceCarried(prepared.Messages, ts.carriedSplices, stepSplices)
+	if len(stepSplices) > 0 {
+		ts.carriedSplices = append(ts.carriedSplices, carriedSplice{pos: len(options.Messages), msgs: stepSplices})
 	}
 
 	// Sliding-window context management: when the context is nearly
@@ -192,6 +225,8 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 // must call activeRequests' cancelFn(), not just return an error, because
 // returning an error from OnStepFinish alone does not break fantasy's loop
 // (BUG-4, pinned by TestActiveRequests_HoldsLiveCancelDuringTurn).
+// persistStepFinish runs before both abort checks: the step that crossed a
+// cap is still a recorded reaction.
 func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.bumpActivity()
 	ts.recordStepHistory(stepResult)
@@ -208,13 +243,24 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	if err != nil {
 		return err
 	}
+	// The step's reaction is recorded BEFORE the abort checks: a step the
+	// provider already answered and billed is a reaction even when a cap or
+	// the peak-hours window ends the turn right after it (else the notice
+	// stays debt and a paid reaction turn repeats without bound).
+	persistErr := ts.persistStepFinish()
 	if err := ts.enforceRunawayCaps(updatedSession); err != nil {
+		if persistErr != nil {
+			slog.Warn("agent: step finish not persisted before a cap abort", "session_id", ts.call.SessionID, "err", persistErr)
+		}
 		return err
 	}
 	if err := ts.recheckPeakHours(); err != nil {
+		if persistErr != nil {
+			slog.Warn("agent: step finish not persisted before a peak-hours abort", "session_id", ts.call.SessionID, "err", persistErr)
+		}
 		return err
 	}
-	return ts.persistStepFinish()
+	return persistErr
 }
 
 // recordStepHistory accumulates this step and recomputes loop detection
@@ -388,6 +434,12 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"session_id", ts.call.SessionID, "err", cancErr)
 	}
 	if cancErr == nil && canc {
+		// Honoured: the request is spent, unless the `rush run` loop of this process
+		// drives the session -- it reads the flag after the turn, ends the run
+		// canceled and clears it itself (R8A-2).
+		if l := ts.a.asyncJobs; l == nil || !l.isExternalDriver(ts.call.SessionID) {
+			clearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}
@@ -400,6 +452,9 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"cost", updatedSession.Cost,
 			"max", ts.call.MaxCost,
 		)
+		if ts.att != nil {
+			ts.att.capAbort.Store(true)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}
@@ -414,6 +469,9 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"tokens", totalTokens,
 			"max", ts.call.MaxTokens,
 		)
+		if ts.att != nil {
+			ts.att.capAbort.Store(true)
+		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()
 		}
@@ -462,12 +520,45 @@ func (ts *turnStream) recheckPeakHours() error {
 	return pErr
 }
 
-// persistStepFinish is OnStepFinish's normal-path final write.
+// persistStepFinish is OnStepFinish's normal-path final write. Doc sec.3.4
+// (DUR-4): when this step's finish carries real content (stepIsReaction),
+// the write and the reaction-debt marker (reacted=1 on every currently
+// wake=1/reacted=0/delivery='done' row of this session, across async_jobs
+// AND session_notices) happen in ONE transaction via the store -- not two
+// separate commits, and not derived from clock/created_at order. A pull
+// only ever moves a row to delivery='done' during PrepareStep, before this
+// step's own provider call, so every such row was already visible in the
+// prompt that produced THIS step's content (see async_job_reaction.go's
+// MarkReactedWithMessageUpdate doc for the argument in full) -- no separate
+// "pulled before this step began" id set needs to be captured here.
 func (ts *turnStream) persistStepFinish() error {
 	ts.mu.Lock()
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
+	if stepIsReaction(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		return ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
+	}
 	return ts.a.messages.Update(ts.genCtx, snap)
+}
+
+// stepIsReaction reports whether a step's persisted finish counts as a
+// reaction to any notice visible in its own prompt (doc sec.3.4): real
+// content (text, a tool call, or reasoning) with a finish that is not
+// error/canceled. An empty assistant stub, a failed step, or (by
+// construction -- compaction never reaches persistStepFinish at all, see
+// this file's own doc) a compaction summary never qualify.
+func stepIsReaction(m message.Message) bool {
+	reason := m.FinishReason()
+	if reason == message.FinishReasonError || reason == message.FinishReasonCanceled {
+		return false
+	}
+	return hasReactionContent(m)
+}
+
+// hasReactionContent reports whether m carries real content (text, a tool
+// call or reasoning), whatever its finish.
+func hasReactionContent(m message.Message) bool {
+	return m.FullText() != "" || len(m.ToolCalls()) > 0 || m.ReasoningContent().Thinking != ""
 }
 
 func (ts *turnStream) stopConditions() []fantasy.StopCondition {
@@ -505,4 +596,38 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 			return detected
 		},
 	}
+}
+
+// carriedSplice is one step boundary's mid-turn insertion: msgs landed at
+// index pos of that step's options.Messages (initialPrompt + the step
+// responses so far).
+type carriedSplice struct {
+	pos  int
+	msgs []fantasy.Message
+}
+
+// spliceCarried builds a step's messages: base (fantasy's own
+// initialPrompt + step responses) with every earlier carried splice
+// re-inserted at its original position, then this step's own new splices
+// at the end. base grows only by appending between steps, so an earlier
+// pos still names the same boundary in a later step's base. Returns a
+// fresh slice; base is never appended to in place.
+func spliceCarried(base []fantasy.Message, carried []carriedSplice, stepSplices []fantasy.Message) []fantasy.Message {
+	if len(carried) == 0 && len(stepSplices) == 0 {
+		return base
+	}
+	n := len(base) + len(stepSplices)
+	for _, cs := range carried {
+		n += len(cs.msgs)
+	}
+	out := make([]fantasy.Message, 0, n)
+	prev := 0
+	for _, cs := range carried {
+		pos := min(max(cs.pos, prev), len(base))
+		out = append(out, base[prev:pos]...)
+		out = append(out, cs.msgs...)
+		prev = pos
+	}
+	out = append(out, base[prev:]...)
+	return append(out, stepSplices...)
 }

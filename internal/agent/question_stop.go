@@ -4,6 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/message"
+)
+
+// awaitingAnswerStoppedTitle is the finish title of a question-tool stop;
+// awaitingQuestionPrefix and awaitingGuidanceMarker frame the question (and
+// its options) inside the finish details, so a sub-agent's question can be
+// read back from history (subAgentQuestionFromFinish).
+const (
+	awaitingAnswerStoppedTitle = "Stopped: agent asked a question and is awaiting an answer"
+	awaitingQuestionPrefix     = "QUESTION: "
+	awaitingGuidanceMarker     = "\n\nThis is not a crash"
 )
 
 // AwaitingAnswerGuidance returns the orchestrator-facing instruction
@@ -25,8 +38,7 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string)
 		optsLine = "\n\nSuggested options: " + strings.Join(options, " | ")
 	}
 	return fmt.Sprintf(
-		"QUESTION: %s%s\n\n"+
-			"This is not a crash — rush is intentionally stopping this turn because "+
+		awaitingQuestionPrefix+"%s%s"+awaitingGuidanceMarker+" — rush is intentionally stopping this turn because "+
 			"the agent asked a question and needs an answer before it can continue. "+
 			"rush is exiting now; it will not retry or re-ask on its own.\n\n"+
 			"If an orchestrating agent is driving this session: decide the answer "+
@@ -56,13 +68,50 @@ func subAgentQuestionText(childSessionID string, ae *AwaitingAnswerError) string
 	if len(ae.Options) > 0 {
 		optsLine = "\nSuggested options: " + strings.Join(ae.Options, " | ")
 	}
+	return subAgentQuestionFrame(childSessionID, ae.Question+optsLine)
+}
+
+// subAgentQuestionFrame wraps a question block (the question and its
+// suggested options) in the text the parent model reads.
+func subAgentQuestionFrame(childSessionID, questionBlock string) string {
 	return fmt.Sprintf(
-		"SUB-AGENT QUESTION (session %s): %s%s\n"+
+		"SUB-AGENT QUESTION (session %s): %s\n"+
 			"The sub-agent is paused with its context intact. To answer, call the "+
 			"`agent` tool again with resume_session_id=\"%s\" and your answer as the "+
 			"prompt. To abandon it instead, just continue on your own.",
-		childSessionID, ae.Question, optsLine, childSessionID,
+		childSessionID, questionBlock, childSessionID,
 	)
+}
+
+// subAgentQuestionWithPreamble puts the words the child wrote before it asked
+// in front of the question frame, so the parent reads the context the question
+// refers to. Only the preamble is truncated: the frame (question, options,
+// resume guidance) always survives.
+func subAgentQuestionWithPreamble(preamble, frame string) string {
+	preamble = strings.TrimSpace(preamble)
+	if preamble == "" {
+		return frame
+	}
+	return tools.TruncateOutput(preamble) + "\n\n" + frame
+}
+
+// subAgentQuestionFromFinish reads a question-tool stop back from the finish
+// part it was recorded as (awaitingAnswerStoppedFinishText) and returns the
+// text the parent should get for a child that asked it in a Drain turn --
+// there is no live AwaitingAnswerError left at that point.
+func subAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (string, bool) {
+	if fp == nil || fp.Reason != message.FinishReasonError || fp.Message != awaitingAnswerStoppedTitle {
+		return "", false
+	}
+	_, rest, ok := strings.Cut(fp.Details, awaitingQuestionPrefix)
+	if !ok {
+		return "", false
+	}
+	block, _, ok := strings.Cut(rest, awaitingGuidanceMarker)
+	if !ok {
+		return "", false
+	}
+	return subAgentQuestionFrame(childSessionID, block), true
 }
 
 // awaitingAnswerStoppedFinishText builds the (msg, details) pair recorded as
@@ -72,7 +121,7 @@ func subAgentQuestionText(childSessionID string, ae *AwaitingAnswerError) string
 // an empty message looks identical to a voluntary finish), details carries
 // the underlying error verbatim plus the full orchestrator guidance.
 func awaitingAnswerStoppedFinishText(err error) (msg, details string) {
-	msg = "Stopped: agent asked a question and is awaiting an answer"
+	msg = awaitingAnswerStoppedTitle
 	var ae *AwaitingAnswerError
 	question := ""
 	var options []string

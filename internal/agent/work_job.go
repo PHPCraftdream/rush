@@ -85,14 +85,26 @@ type asyncJob struct {
 	toolName     string // "bash"/"run_command"/"agent"/"agentic_fetch" -- AsyncCompletion.ToolName
 	childSession string // non-empty only for a delegation (agent/agentic_fetch); see Start
 	cli          bool   // origin, verbatim today's asyncJobState.cli -- delivery routing unchanged (see deliverLocked)
+	// claimID (A11) is the claim_id store.Claim minted for THIS job's row,
+	// carried for the job's whole lifetime and threaded into every
+	// commitTransition call's TransitionParams.ClaimID -- closes the ABA
+	// where a deleted-then-re-claimed row lets a stale executor's late
+	// result commit onto a DIFFERENT (fresh) claim of the same (owner,
+	// toolCallID) key. Empty for a sync job (never touches the store).
+	claimID string
 	// startedAt is when Start registered this job. Used only by supervision's
 	// summary (supervision.go) to report how long each open job has run --
 	// no other reader needs it, so it is not threaded into AsyncCompletion.
 	startedAt time.Time
 
 	state     jobPhase
-	announced bool               // ack-gate: the "started" tool result is persisted (onToolResult)
-	cancel    context.CancelFunc // this job's executor context
+	announced bool // ack-gate: the "started" tool result is persisted (onToolResult)
+	// acking is set by claimAck under l.mu for the one tool result that has
+	// the right to acknowledge or abort this job (R2B-3), so a concurrent or
+	// repeated tagged result cannot start a second announce while the first
+	// is still writing.
+	acking bool
+	cancel context.CancelFunc // this job's executor context
 	// result is valid once state.terminal(). For an armed-but-still-running
 	// delegation (state still phaseRunning, indexed in workLedger.byChild),
 	// it holds the result captured at the child's first turn -- see
@@ -124,13 +136,58 @@ type asyncJob struct {
 	timeoutSeconds  int
 	timeoutNotified bool
 
-	// stopRequested is set by workLedger.MarkJobStopped/StopRunCommandJob
-	// BEFORE the caller actually kills the underlying shell/process (task
-	// #1023 §2.2). It does not itself transition state -- finish is still
-	// the only writer of state past phaseRunning (transitionToTerminal) --
-	// it only makes finish() build the distinct "stopped (job_kill)" result
-	// instead of whatever the killed process's own exit looked like.
-	stopRequested bool
+	// transitioning is the phase-4 step-2 "переход идёт" in-flight latch
+	// (doc sec.3.1/DUR-1): set by workLedger.transition while its retry loop
+	// is running store.Transition for THIS job, outside l.mu. A concurrent
+	// second cause for the same job SKIPS instead of waiting -- see
+	// workLedger.transition's doc.
+	transitioning bool
+	// shutdownCancelled is set by workLedger.close() right before it cancels
+	// this job's executor context (doc sec.3.1/3.7's shutdown latch): "caused
+	// by process shutdown" is workLedger.closed AND this flag, checked inside
+	// transition's retry loop. A transition suppressed this way writes
+	// nothing to the DB -- the row stays 'running' for the next host to
+	// recover. close() only sets this for a job that is BOTH non-terminal
+	// and not executorReturned (B9): a job whose real, natural outcome is
+	// already known (or being committed) must never be mistaken for one
+	// close() itself is cancelling, or its legitimate result is silently
+	// discarded and the row is left 'running' for no reason.
+	shutdownCancelled bool
+	// executorReturned is set by finish() (the plain-job natural-completion
+	// path) the INSTANT it acquires l.mu, before any DB work (B9): close()
+	// consults this so it never latches shutdownCancelled onto a job whose
+	// executor has ALREADY produced its real result and is merely waiting
+	// its turn for l.mu to report it -- a job cancelled by close() strictly
+	// BEFORE this flag exists to be checked. Not set by armDelegation's own
+	// (separate file, out of this fix's scope) equivalent path.
+	executorReturned bool
+	// stoppedBySession is set by cancelSession, under l.mu, for every job it
+	// targets, BEFORE releasing the lock to do its (now durable) DB I/O
+	// (review finding P2). This closes a race a plain, non-delegation job
+	// would otherwise lose: a concurrent natural finish() whose OWN
+	// transition call happens to win the DB CAS ahead of cancelSession's
+	// would otherwise still reach deliverLocked and wake the session right
+	// after the user pressed Stop. Because the flag is set synchronously,
+	// before either side's DB write even begins, transition's delivery step
+	// can drop a marked PLAIN job silently regardless of which cause
+	// actually won. Delegations ignore this flag -- they keep delivering
+	// their cancelled notice exactly as before.
+	stoppedBySession bool
+	// killRequested is set (under workLedger.mu) the instant MarkJobStopped/
+	// StopRunCommandJob begins acting on this job (task #1063), BEFORE the
+	// snapshot/transition/kill sequence runs -- distinct from transitioning
+	// (which only covers the DB-write window inside commitTransition): this
+	// closes the true-concurrency window where a second job_kill call could
+	// otherwise race ahead of the first's own transitioning flag and answer
+	// as if it, too, were the fresh stop. A racer that observes this already
+	// true gets JobStopNotFound from MarkJobStopped/an error from
+	// StopRunCommandJob. For run_command this also means no second kill
+	// attempt (StopRunCommandJob refuses before touching cancel()). For a
+	// bash job_id, job_kill.go acts on the verdict (B11): NotFound and
+	// AlreadyTerminal both return WITHOUT calling bgManager.KillOwned, only
+	// JobStopStopped kills -- so a racer performs no kill of its own on
+	// either path.
+	killRequested bool
 	// outputBuf is set by workLedger.setRunCommandBuffer once a run_command
 	// job's live output sink registers (async_tool.go, task #1023 §3):
 	// run_command has no BackgroundShellManager entry, so this is the only
@@ -138,11 +195,21 @@ type asyncJob struct {
 	// notice, while it is still running. Always nil for bash/agent/
 	// agentic_fetch jobs.
 	outputBuf tools.LiveOutputBuffer
+
+	// wake is the COMMITTED row's own wake bit (phase-4 step 3, doc
+	// sec.3.4's wake-policy table), set by commitTransition from
+	// outcome.Row.Wake right after transitionToTerminal. Meaningless (zero
+	// value) until state.terminal(); a sync job never sets it (no DB row) --
+	// see AsyncCompletion.Wake's doc for why callers only ever read this for
+	// a non-sync completion.
+	wake bool
 }
 
-// transitionToTerminal is the ONLY writer of state past phaseRunning. Called
-// under workLedger.mu from finish/cancelSession/close/recheckChild. Returns
-// false (no-op) once the job is already terminal -- that is the CAS:
+// transitionToTerminal is the in-memory half of a terminal transition,
+// called under workLedger.mu ONLY from workLedger.transition (work_ledger_
+// transition.go) -- the single async-job writer (DUR-1) that first commits
+// the DB CAS, then adopts its committed row into memory here. Returns false
+// (no-op) once the job is already terminal -- that is the in-memory CAS:
 // whichever caller holds workLedger.mu first for this job wins; every later
 // caller for the SAME job is a no-op. Closes BL-2/#1032
 // (docs/async-invariants.md, ASYNC-03): today's cancelSession swaps the

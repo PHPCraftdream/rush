@@ -47,11 +47,18 @@ export interface Session {
   // hidden, banner shown, polling drives live updates instead of pubsub.
   OwnedExternal?: boolean;
   OwnedByPID?: number;
-  // True when at least one descendant sub-agent session still holds a live
-  // lock (session is delegating, not done).
+  // True when the session has a running delegation row (async_jobs, a
+  // sub-agent or agentic_fetch) below it, at any depth, on a host that is
+  // not provably dead: the session is delegating, not done, even with no
+  // session lock held.
   HasLiveDescendantWork?: boolean;
-  // Descendant session IDs still holding live locks.
+  // Descendant session IDs those running delegation rows name (deduplicated).
   LiveDescendantIDs?: string[];
+  // True when the session is not finished although it holds no lock: it owns
+  // a running background job (bash/run_command) on a host that is not
+  // provably dead, or a live `rush run` loop drives it between turns. Does
+  // not imply that a job exists.
+  HasLiveOwnWork?: boolean;
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,10 +45,23 @@ import (
 func TestP342_SecondManualCompactCoalescedAfterFirstCompletes(t *testing.T) {
 	t.Parallel()
 
-	// Create a fake SSE provider for both Run and summarize.
+	// Create a fake SSE provider for both Run and summarize. The first
+	// /compact (call 2) is held until the test has observed it busy and
+	// queued the second one: an instant reply could finish it before the
+	// busy poll ever sees it.
 	var totalCalls atomic.Int64
+	releaseFirstCompact := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirstCompact) }) }
+	t.Cleanup(release)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		totalCalls.Add(1)
+		if totalCalls.Add(1) == 2 {
+			select {
+			case <-releaseFirstCompact:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
 
@@ -152,6 +166,7 @@ func TestP342_SecondManualCompactCoalescedAfterFirstCompletes(t *testing.T) {
 
 	// Verify the second /compact is in the queue.
 	require.True(t, sessionAgent.SummarizeQueued(sess.ID), "summarizeQueue must hold the pending second /compact")
+	release()
 
 	// Wait for first /compact to complete with a reasonable timeout.
 	require.Eventually(t, func() bool {

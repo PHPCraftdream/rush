@@ -82,6 +82,17 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		session = created
 	}
 
+	// A delegation starting on this child lifts any suspension of its
+	// automatic turns (a Stop, or a question it asked earlier and the parent
+	// now answers by resuming it): from here it is driven by this delegation.
+	c.resetConsecutiveResume(session.ID)
+
+	// A resumed child starts with a stale `sessions cancel` request spent: the
+	// delegation is a fresh, deliberate turn (R8A-2). A new child has no flag.
+	if params.ResumeSessionID != "" {
+		clearCancelRequest(ctx, c.sessions, session.ID)
+	}
+
 	// Propagate the PARENT session's auto-approve status to this child.
 	//
 	// A sub-agent runs under its own child session id
@@ -344,7 +355,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// above regardless of outcome.
 	var awaitingAnswer *AwaitingAnswerError
 	if errors.As(err, &awaitingAnswer) {
-		return fantasy.NewTextResponse(subAgentQuestionText(session.ID, awaitingAnswer)), nil
+		return fantasy.NewTextResponse(subAgentQuestionWithPreamble(
+			c.childQuestionPreamble(session.ID), subAgentQuestionText(session.ID, awaitingAnswer))), nil
 	}
 	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
@@ -380,6 +392,27 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 // ask_question, error) so no spent cost is ever silently dropped.
 func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string) error {
 	return c.sessions.TransferChildCostToParent(ctx, childSessionID, parentSessionID)
+}
+
+// chargeChildToParent is updateParentSessionCost for the moments no caller
+// waits on: a delegated child's spend AFTER its first turn (its Drain turns run
+// on its driver, not in runSubAgent) reaches the parent when its delegation
+// releases, before the release's notice commits (workLedger.recheckChild), and
+// at every run end of the child (afterRelease), so a Stop mid-turn is charged
+// too (R6C-3). Idempotent with runSubAgent's own charge and the app's
+// chargeRunningChildren: all three move the same parent_cost_accounted delta.
+// Detached from any caller's context (a Ctrl-C must not drop the spend); a
+// failure only logs, the delta stays for the next charge.
+func (c *coordinator) chargeChildToParent(childSessionID, parentSessionID string) {
+	if c.sessions == nil || childSessionID == "" || parentSessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := c.updateParentSessionCost(ctx, childSessionID, parentSessionID); err != nil {
+		slog.Warn("Failed to charge a delegated child's spend to its parent",
+			"child_session", childSessionID, "parent_session", parentSessionID, "error", err)
+	}
 }
 
 // discoverSkills runs skill discovery for this coordinator at session

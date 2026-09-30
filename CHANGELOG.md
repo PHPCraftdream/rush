@@ -8,6 +8,269 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`rush sessions jobs <id>`** lists a session's own durable async jobs
+  (bash/run_command/agent/agentic_fetch) plus its whole delegation tree
+  (following `child_session_id`, any state): tool call id, kind, state,
+  liveness (alive/dead/unknown, via the shared host-lock probe), host
+  id/pid/label, started/updated times, delivery/wake/reacted, and a short
+  result summary. Table and `--json`. A running row on a LIVE host owned by
+  another process prints that host's PID and the command that stops that
+  whole process (`kill -INT <pid>` on POSIX, `taskkill /F /T /PID <pid>` on
+  Windows) and says so: everything else that host runs stops with it. `-INT`
+  because rush catches SIGINT, not SIGTERM, and its graceful exit kills the
+  job process groups; a plain `kill <pid>` would end rush and leave the job
+  children running. The Windows form is forced (no cleanup runs; the job
+  children die with the process tree, and with rush's kill-on-close Job Object
+  when it could join one). `rush sessions
+  kill` kills the holder of the SESSION lock, which nothing holds between
+  turns, so it cannot stop such a job. There is still no job-level kill from
+  the CLI.
+- **`sessions gc --jobs-older-than <duration>`** purges terminal,
+  delivered-or-voided `async_jobs`/`session_notices` rows older than the
+  given age (`--dry-run` counts only). A `running` row, an undelivered
+  (`pending`) row and delivered-but-unreacted debt (`wake=1, reacted=0`)
+  are never purged, whatever their age; an age of zero or less is
+  rejected. `--json` prints one extra first line
+  `{"kind":"async_jobs","dry_run":...,"async_jobs":N,"session_notices":M}`
+  with the purged (or would-be-purged) counts; the plain output reports the
+  same counts on stderr. Opt-in: omitting the flag leaves job retention to
+  the automatic 7-day pass (see "Changed", retention).
+- **`sessions show`** now prints a one-line async job count summary
+  (`N total, M running`) for sessions that own any, pointing at
+  `sessions jobs <id>` for the full delegation-tree view.
+- **`sessions why`** now prints an "Async jobs:" section: totals, each
+  running job with its host and liveness, and the reaction-debt state. A
+  completed job whose result no model turn has reacted to yet is reported
+  as pending debt both when the result is already in history and when it
+  has not been pulled into history yet (the latter used to print "none").
+  The section reads the session's own rows. A root that only waits on its
+  own live plain background job (bash/run_command, no delegation) is
+  reported "running", not "done"/"at rest", by `sessions why` (naming the
+  job), `sessions list`, and the web list (new optional `HasLiveOwnWork`
+  field on the session; a crashed root stays crashed).
+
+### Changed
+
+- **`rush run` and a busy session.** The first turn of `rush run --session
+  <busy>` fails fast with the session-busy error, as before phase 4 (the
+  JSON envelope is still printed and `--on-finish` still runs). Only the
+  loop's own later reaction turns (they can legitimately race a web tab that
+  is pulling notices) retry on a lock-busy refusal: every 0.5s, for at most
+  30s of continuous contention, with a message on stderr, then the run
+  exits with `exit_reason: "error"`. A reaction turn that fails in setup
+  before it reaches the provider (a read error on the durable run queue, a
+  model override that no longer resolves) takes the same path: retried
+  every 0.5s for at most 30s, visible on stderr, then `exit_reason:
+  "error"`. Every exit after the first turn ran (lock-busy or setup give-up,
+  cancellation, a wait error, a budget cap, stuck debt, scope closed)
+  flushes the last completed turn's answer, and its cost, tokens, tool
+  calls, warnings, sub-agent outputs and duration cover every turn of the
+  run. A run refused before its first turn (the session is driven by another
+  loop), or whose first turn fails before it is launched (a session-setup
+  write or the pending-work drain failed), has nothing to flush: it exits with
+  that error, no envelope is printed and `--on-finish` does not run (no run
+  started). While the loop waits on running work it prints
+  a stderr heartbeat naming the job and host it waits on, once when the
+  wait starts and then at most every 60s over the whole run, and a
+  persistently unreadable database ends the wait after 30s instead of
+  retrying forever. A Ctrl-C or `--timeout`
+  that lands right after a turn finished cleanly ends the run with the
+  cancellation error and `exit_reason: "canceled"` (it used to exit 0 with a
+  canceled envelope).
+- **`rush run` no longer waits on debt it will not react to.** The loop asks
+  the same session policy the web wakes use whether a reaction turn is
+  allowed: a notice no automatic turn is allowed for (an SDK background-shell
+  completion while `auto_resume_on_job_done` is off, a released delegation
+  child, a session under a live foreign driver, a Stop-suspended session) is
+  neither waited on nor settled. The loop ends once nothing is running,
+  prints one line on stderr, and the notice stays for the next turn; the
+  exit reason is unaffected. Before, such a notice kept the loop re-checking
+  every 5s until `--timeout`/Ctrl-C.
+- **A second `rush run` on a session another live `rush run` loop already
+  drives fails fast, before it starts a turn or writes to the session,
+  naming the pid** ("session X is already driven by another `rush run`
+  (host H, pid P, alive); wait for it to finish"). The refused run has
+  already done its once-per-run dead-host sweep and retention purge and
+  registered its own host, which lives until it exits. A host whose
+  liveness cannot be determined counts as alive; the marker of a crashed
+  loop is taken over. The loop keeps its claim until it exits (also on
+  Ctrl-C).
+- **A web process never runs reaction turns on a CLI-driven root.** The
+  driving loop is recorded durably in the new `session_drivers` table (host
+  id, pid; the driver is alive exactly while its host lock is held, no
+  clock involved). While it is alive no other process starts a reaction turn
+  for that session, and a reaction turn that was already admitted only moves
+  notices into history without calling the provider; the loop sees the debt
+  within 5s and reacts itself, so its final answer and JSON envelope carry
+  the reaction. If the loop dies (`kill -9`) the web process takes the
+  session over on its next hint or its 60s pass. To make this possible
+  `rush run` registers a host (a `hosts/<uuid>.lock` file plus an
+  `async_hosts` row) as soon as it claims the session, even when it never
+  starts an async job, and keeps it until the process exits; a clean exit
+  removes both and a crashed one is reaped by the ordinary dead-host purge.
+- **The web auto-turn cap applies only to SDK background-shell
+  auto-resume** (`AutoResumeOnJobDone`), as before phase 4. Wakes for async
+  jobs, delegations, supervision check-ins and `wake_only` timeouts are
+  uncapped again (an intermediate phase-4 build had capped them). Stop still
+  pauses every kind of automatic turn until the next human message, through
+  a per-session suspension state of its own; five background-shell
+  auto-resumes fill only the cap counter and no longer pause async-job,
+  delegation or supervision wakes. A human message clears both.
+- **Stop is transitive over the delegation tree and leaves a "cancelled"
+  notice per stopped job.** Stopping a session cancels the live turn of the
+  session and of every session below it through running delegation rows,
+  stops their jobs, pauses automatic turns for all of them and durably
+  clears `wake` on every pending or delivered notice of the tree, so a job
+  that finished a moment before Stop cannot grant a stopped delegation a
+  turn. Each stopped plain job (bash/run_command) is recorded as a
+  `cancelled` row that wakes nobody; its "cancelled" notice is delivered on
+  the session's next turn (turn start or step boundary). A released,
+  timed-out or stopped delegation's child session gets no further reaction
+  turn; it is recognised by a delegation row of its parent, so a session
+  created by `sessions fork --child` is not affected.
+- **`job_kill` answers from the committed row.** If the job finished (or
+  was stopped by Stop or a timeout) between the call and the stop, the tool
+  says so with the committed outcome and does not touch the shell; a repeat
+  call reports "not found ... or already stopped". When its own stop wins,
+  its result stays the tool's answer (the real output captured before the
+  stop) and is also recorded as delivered, so it is never pulled into
+  history a second time. Applies to a background `bash` job and a
+  `run_command` job. If that result cannot be recorded with the row (an
+  error result, a failed write, a cancelled turn) the row goes back to the
+  ordinary pull, so the captured output is delivered instead of lost; a
+  stop whose shell is already gone (a concurrent Stop or timeout) still
+  answers with the captured output.
+- **Rerun (web "rerun from here") is one atomic step.** The target message,
+  the tail after it and the ledger reconciliation commit in a single
+  transaction. If the transaction fails, nothing was changed and the error
+  says to retry; a cancel before the commit point also changes nothing. Only
+  the deleted tail's jobs are stopped, after the commit (recorded as stopped by
+  the session, like Stop: `cancelled`, no wake, the row stays void); jobs started before
+  the rerun point keep running and their result reaches the new branch as a
+  notice. A delivered notice whose message was in the deleted tail is
+  delivered again to the new branch; a `wake_failed` marker in the tail is
+  dropped, since it described the deleted branch. Rerun now cancels only the
+  live turn instead of a full Stop: it no longer stops kept jobs, pauses
+  automatic turns or clears `wake` for the tree.
+- **`agent`/`agentic_fetch` with `resume_session_id` now refuses immediately
+  (before reporting "started") if that child session still has a delegation
+  running from a previous call, instead of queuing behind it.** The async
+  job ledger's durable core (phase 4) enforces at most one running
+  delegation per child session; a second one arrives as a tool error asking
+  the caller to wait for the first result. If the conflicting row's host is
+  provably dead, it is recovered in the same claim attempt and the new
+  delegation starts immediately instead of being refused.
+- **A tool-call id may be reused once its earlier call is history.** A
+  provider that numbers calls per response (`call_0`) starts a new job again
+  instead of being refused for up to 7 days ("already started earlier"): a
+  row that is terminal and delivered (or voided) is renamed out of the
+  active key (`<id>#reused#<uuid>`, still addressable by its message for
+  Rerun) when the id comes back. A terminal row that is announced but not
+  delivered yet is renamed the same way (its notice is still delivered, under
+  the id the model used); only a terminal row whose "started" result has not
+  been written yet keeps the id: a repeat of that call is refused with a tool
+  error ("was already started earlier; not starting it again", or, for a
+  different input, "is already in use by an unfinished call with different
+  input") and never starts a second executor. `job_kill` attaches its result
+  message to the killed job by its claim, not by the id, so a reused id cannot
+  misdirect it.
+- **Notices are durable rows, visible in history only when a turn pulls
+  them.** Async job outcomes, supervision check-ins, `wake_only` timeout
+  check-ins, wake-failure markers and SDK background-shell completions are
+  `async_jobs`/`session_notices` rows. A session's own turn moves them into
+  history (turn start or step boundary, one transaction per notice; nothing
+  writes them into a session that is between turns) and reacts to them where
+  the session policy allows a turn. Elsewhere (a CLI-driven root between
+  loop turns, a Stop-suspended session, causes that never wake such as Stop
+  or `job_kill`) a notice waits for the next turn. Every such message
+  carries `AutoResumed` and `BackgroundJobNotice`, plus its `NoticeKind` for
+  supervision, timeout and wake-failure notices.
+- **Async job state is durably recorded in SQLite as it happens and
+  survives a host restart.** A single transactional CAS is the only writer
+  of a job's terminal state; in-memory state is a cache that converges to
+  the row. If the database is unavailable, starting a new async job errors
+  instead of silently running untracked. If the host process of a running
+  job dies (crash, kill, power loss), the next process to touch that
+  session's scope, the next host to register, or the periodic sweep
+  recovers it: an announced job is marked `interrupted` and delivered as a
+  notice on the next turn; a job whose "started" result never made it to
+  the model is deleted without a trace (also when it had already finished); a
+  `job_kill` whose result message was never written (the host died between the
+  kill and the message) is delivered as a notice on the next turn, while one
+  whose result message was written is not delivered a second time; a delegation whose child messages
+  cannot be read is left `running` for a later sweep instead of reporting a
+  false empty answer. Recovery only records what happened: it never writes
+  history and never wakes a session, and it does not hold the dead host's lock
+  while it works, so a crashed `rush run`'s session can be taken over at once
+  instead of reading "alive" until the recovery ends. A natural completion that races a
+  graceful shutdown is still recorded (only jobs that shutdown itself
+  cancels stay `running` for the next host), and a Stop between a job's
+  claim and its "started" result no longer orphans the row. The old
+  in-memory ready queue, the CLI loop's poll/BFS over descendant work and
+  `internal/session/descendant_liveness.go`'s lock-file heartbeat heuristic
+  are gone.
+- **Forced shutdown keeps the host lock.** When the shutdown grace period
+  expires with turns still running, the process keeps its host lock until it
+  really exits, so another process cannot recover rows the still-running
+  goroutines are writing. Only a clean shutdown releases it. There is no later
+  in-process release: the goroutines that outlive the grace have no single
+  completion signal to wait on, so a long-lived embedding process that gets
+  `ShutdownResult.Forced` (or discards it with `Shutdown()`) must exit its
+  process, as the CLI does; until it does, the rows of that host stay
+  `running` and a new App in the same process cannot recover them.
+- **A sub-agent delegation whose last turn produced no text (only reasoning
+  or tool calls) now reports "завершено без итогового ответа" to its
+  parent**, instead of resurfacing the stale text captured when the
+  delegation was parked mid-flight. A child whose reaction was closed by
+  failure finishes its delegation as failed with the text of the closed
+  notices; that failure flag is cleared by the child's next real reaction
+  and by a new delegation on the child, so one transient failure no longer
+  marks every later delegation failed.
+- **Retention (7 days) and where it runs.** Terminal, delivered-or-voided
+  `async_jobs`/`session_notices` rows older than 7 days, dead drivers'
+  markers, empty dead hosts' lock files and orphan `hosts/*.lock` files are
+  purged. `running` rows, undelivered rows, unreacted debt and a delegation
+  row whose child session still has running work or unreacted debt never are, so
+  a Rerun reaches back only as far as retention keeps a delivered row. The
+  web server runs the purge every 60s together with the dead-host sweep, the
+  re-check of parked delegations and the re-check set. The re-check set's
+  wakes run detached (one per session, at most four at a time), so a slow
+  reaction turn never delays the next tick's sweep, purge or delegation
+  re-check. `rush run` runs the same 60s pass while its loop is alive (the
+  ticker starts with the loop's driver claim and stops at the process's
+  shutdown) and
+  the dead-host sweep and retention purge once more when the loop starts, and
+  a process that registers a host sweeps dead hosts once at registration. A
+  CLI-only install with no loop running has no ticker. Every turn start and
+  scope check recovers the session's own dead-host rows. Library/SDK use, and
+  commands other than `rush run` (except `sessions gc --jobs-older-than`),
+  never purge.
+- **Schema.** New migrations `20260929000001` (plain `(owner)` index on
+  `session_notices`), `20260929000002` (`async_jobs.claim_id`, closes the
+  terminal-transition ABA), `20260929000003` (`async_jobs.announce_message_id`,
+  lets Rerun void by the message it deleted) and `20260929000004` (the
+  `session_drivers` table). The phase-4 core migration
+  `20260928000002_add_async_phase4_core.sql` was edited in place during
+  development (three commits) before it shipped: a data directory that ran
+  an intermediate dev build of it keeps the old schema and must be
+  recreated. A data directory created by the rejected `async-phase4`
+  development branch (its migration `20260929000001_add_async_job_ledger.sql`)
+  shares the version number `20260929000001` with the index migration above, so
+  goose refuses it (it reports `20260928000002` as missing); only unreleased
+  development directories are affected and such a directory must be recreated.
+  Shipped migrations are never renumbered. From now on only new migration files
+  are added.
+- **Web session-list re-polls read on a separate connection**, so they no
+  longer stall behind write transactions (up to the 30s busy timeout); `sessions
+  jobs` reads there too. The list computes every session's live-work flags with
+  one batched reader call (one query per delegation-tree level and one
+  liveness probe per distinct host for the whole list, not per session). No
+  reader waits on a process's first host registration any more: registration
+  serialises on a lock of its own that no reader and no write transaction
+  takes, so it also cannot deadlock against a notice pull.
+
 ### Removed
 
 - **`rush run --codex-thread-id` and the Codex completion callback are
@@ -17,15 +280,390 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`rush sessions reset` is a real clean slate, and refuses while the
+  session is still worked on.** The wipe used to delete the messages only:
+  the session's background-job and supervision notices and its
+  done-but-unreacted debt survived, so the next `rush run --session <id>`
+  injected "job … cancelled / interrupted" into the fresh history. Now the
+  messages are deleted and every pending/delivered notice row of the session
+  is voided in one transaction. `reset` (with or without `--force`) refuses,
+  changing nothing, while a `rush run` loop drives the session (even between
+  turns), or one of its background jobs or delegations is running; stop it
+  first with `rush sessions cancel <id>` (or `rush sessions kill <id>` for a
+  hung process). `--force` still kills the process holding the session lock,
+  but no longer wipes under a live loop. Rows left by a force-killed run
+  (dead host) are recovered and voided as part of the reset.
+- **A legacy session's spend after a pre-fix reset is no longer lost when
+  `sessions reset` runs before the parent was charged.** A child whose cost
+  sits below its `parent_cost_accounted` (reset by an old binary, then
+  spending again) had its new spend dropped by `sessions reset`; it is
+  charged to the parent first, the same rule the transfer already applied.
+- **`rush run --continue --role worker|reviewer` uses the model pinned on the
+  session it continues.** `--continue` names its session only implicitly, and
+  the role fold used to look the pin up before that session was resolved, so
+  the worker/reviewer override set on the session was ignored in favour of
+  the config default. `--session` still takes precedence over `--continue`.
+- **Reaction turns (the turn a session takes after a job or delegation
+  finishes) no longer fail in the ways the first phase-4 review found.** A
+  reaction turn started from a mailbox release is no longer cut at 30s (it
+  used to close the debt as failed and write a wake-failure marker). A
+  release caused by another process holding the session lock no longer
+  hot-loops; the session is re-checked by the 60s pass instead. A transient
+  provider failure is no longer retried at once: the retry comes after a 60s
+  pause, and three failed passes (or a quota/401-class
+  error) close the debt with a visible wake-failure marker. Stop, shutdown,
+  Ctrl-C, `--timeout` and a pending question no longer close debt as
+  failed; only rows already visible in history when the turn
+  started can be closed, settle and marker are one transaction, and the
+  marker names a real tool call id, never an internal placeholder. An
+  auto-summarize inside a reaction turn keeps its continuation instead of
+  ending the run with tool results unanswered. The `rush run` loop paces
+  itself on a row whose pull keeps failing instead of spinning, and a
+  reaction write that always fails is bounded by the same three-pass
+  counter.
+- **A reaction turn is one counted attempt, retried at a pace, never
+  hot-looped.** Each reaction turn is accounted once, by the turn loop that
+  ran it, from what the database says: a turn that reached the provider and
+  left its notices unreacted (an error, an empty reply, a reaction write that
+  never landed, a watchdog stall, a `--max-tokens`/`--max-cost` cut) counts
+  as one attempt, waits 60s (a newer event does not shorten the pause after a
+  paid failure, so a one-minute provider outage never closes a notice; a
+  human message does) and, on the third attempt of THAT notice, or at once on
+  a quota-class error or a 401 whose credentials cannot be refreshed, closes
+  it with the visible wake-failure marker (a notice that arrived later keeps
+  its own count and is not closed with an older one). A 401 is refreshed
+  first (an expired OAuth token after a long job, also before a web or
+  delegated-child reaction turn starts): when the refresh works the attempt
+  counts and the next one runs on the new token. Ctrl-C, the run's own
+  `--timeout`, Stop, interrupts (including a human message that cuts the
+  reaction turn off), shutdown and any refusal before the provider (lock
+  busy, peak hours, provider not configured) count as nothing; a network
+  timeout of the provider call is a provider failure and counts. A reaction
+  turn makes one provider attempt (no coordinator retry loop). If both the
+  reaction write and the settle keep failing, launches stop after three
+  attempts until a human message; if only the notice pull keeps failing,
+  three empty launches pause until a new event or a human message. A question the assistant asks while reacting is
+  its reaction: the notice is closed, automatic turns pause until you answer,
+  and a delegated child's question reaches its parent as the delegation
+  result. A step that crosses `--max-tokens`/`--max-cost` is recorded as the
+  reaction, and `rush run` ends with an error instead of paying for the same
+  reaction again. `rush run` now also retries a delegated child's failed
+  reaction turn with the same 60s pass the web process runs, and its loop
+  follows the same launch decision as the web wake (run, wait for the retry,
+  or stop on stuck debt with one stderr line; `sessions why` shows the
+  stuck notice). Interrupting a reaction turn keeps the previous answer and
+  still adds the turn's usage to the run total.
+- **A Rerun no longer races a reaction turn.** From the moment the live turn
+  is cancelled until the replacement turn takes over, automatic reaction
+  turns are held off the session; stopping the voided jobs no longer keeps
+  the rerun waiting. While a delegated child is held, its parent's delegation
+  stays open (the hold is a temporary pause, not "nothing left to do"), so it
+  is no longer handed over with stale text.
+- **A delegated child's question reaches its parent as a question even when
+  the child wrote text first.** The text used to win and the delegation was
+  reported as failed without the question, options or resume guidance (the
+  parent then redid the work); now the question is delivered, with the text
+  kept as its preamble.
+- **A network timeout of the provider call is a provider failure, not your
+  `--timeout`.** A black-holed provider used to look like an operator deadline:
+  the reaction turn was relaunched at once with no attempt count, no pause and
+  dozens of "Run timeout exceeded" messages. The decision now comes from the
+  turn's own context, so such a turn is counted, paced and closed at three
+  attempts like any other failure, and only a real deadline of the run is
+  exempt. A reaction turn cut off by a message you send (interrupt-and-send,
+  Stop or Cancel with a message queued) is no longer counted as a failed
+  attempt either.
+- **Reaction turns refresh an expired OAuth token.** A web or delegated-child
+  reaction turn after a long job used to send the old token, get a 401 and
+  close the debt on the first attempt; the token is refreshed before the call
+  and its client rebuilt (also in `rush run`), and a 401 that still happens is
+  refreshed and counted like a transient failure. A delegated child whose
+  provider takes its key from a `$(command)` template now also runs its next
+  reaction turn on the refreshed key, and the refresh has its own 10-second
+  budget, so an unresponsive auth server no longer keeps the notice from being
+  closed with its failure marker.
+- **The background-shell auto-resume cap (5 per human message) cannot be
+  bypassed by a re-check.** A shell finishing while the last permitted reaction
+  turn was running started a chain of further turns through the release
+  re-check; the re-check now compares the cap without spending it. A shell
+  that finished while an earlier reaction turn was paused or refused has
+  already used its slot: its notice is still retried by the re-check and
+  closed after three attempts like any other, and only completions that
+  arrive after all five slots are used wait for your next message. The same
+  holds for a reaction turn queued behind the last permitted one: a shell
+  finishing while that turn runs no longer gets a sixth turn. Over-cap
+  completions are now tracked by their saved notice, so a completion whose
+  notice could not be saved (a locked database) no longer hides a notice that
+  is still owed, and an older owed notice is retried even after newer ones
+  were answered.
+- **Per-session bookkeeping is freed in a long-lived web process.** The 60s
+  pass drops the idle in-memory entries of sessions with no work (also a
+  retry pause that has already passed), and the auto-resume state of deleted
+  sessions.
 - **A root `rush run` no longer ends while a descendant sub-agent or async
   command it owns is still live at any depth.** The non-interactive loop
   holds the run open and feeds each descendant's terminal result back as the
-  next root turn; the reviewer pass also waits for descendant work.
+  next root turn; the reviewer pass runs once, when that work has drained and
+  the scope first closes, on the final text (work the review turn itself starts
+  is waited on too: see the review round 4 bullet below).
+- **`rush run` reaction turns no longer break the run's answer, totals or
+  session (review round 3).** The automatic reviewer pass runs once, when the
+  scope first closes (after the reaction turns so far), on the final text, and
+  its verdict is the run's answer unless reaction turns to work it started
+  follow it -- the answer is always the last completed turn (it used to be
+  started inside the last reaction turn, come back as a "queued" no-turn and
+  leave the first turn's text and usage as the result).
+  A first turn that fails before it is launched (a session-setup write, the
+  pending-work drain) ends the run with that error instead of being hidden by
+  a later reaction. A reaction turn that committed right before Ctrl-C or
+  `--timeout` keeps its answer. Reaction turns no longer re-write the session's
+  model overrides (a model changed in the web UI during a long wait is kept).
+  The envelope lists each sub-agent once and drops the `final_text` warnings of
+  turns another turn superseded; every failed, retried reaction attempt prints
+  one stderr line naming the error and the retry time; the reviewer-pass skip
+  line goes to the run's own stderr writer; a turn that queued behind another
+  owner no longer drops the usage the session spent meanwhile;
+  `--continue --role worker|reviewer` continues the very session whose pin it
+  read.
+- **`rush run`: work the reviewer pass starts is waited on, and the run's cost is
+  the whole session's (review round 4).** The reviewer turn keeps `bash`, and
+  every CLI `bash` is an async job: the run used to end right after the review
+  turn, so its "tests are running" text became the answer and the job was
+  cancelled at exit. The loop now goes back to waiting after the review turn:
+  the job's result is reacted to on the reviewer's model and options, the
+  reviewer runs at most once, and the answer is the last completed turn.
+  `delta_cost_usd` (and `RUSH_COST_USD` for `--on-finish`) is the session's cost
+  between the driver claim and the exit, so a delegated child's spend, charged
+  to the parent between its turns, and a human turn on the same session are
+  counted (`--max-cost` caps the session's total, and its error names that
+  total; the envelope reports this run's window, from the driver claim to the
+  exit -- the two differ when `--session` continues a session that already
+  had spend); tokens stay the sum of the turns' last-snapshot deltas. `rush run --continue` resolves the
+  most recently updated top-level session (a worker's child session updated
+  later is no longer taken for it); a CLI run on a coordinator that cannot drive
+  the loop fails with an error instead of silently running one plain turn.
+- **A delegated child whose background shell finishes is woken even when
+  auto-resume would not launch it, and its reaction turns are charged to the
+  parent (review round 6).** A child's `bash` that moved to the background and
+  finished while its delegation was parked left the child owing a reaction that
+  nothing launched (web with `AutoResumeOnJobDone` off, web with every slot
+  spent, and every `rush run`): the parent's delegation, and with it the run,
+  waited until Stop or the 6-hour cap. A child whose delegation row is still
+  running (read from the durable row, so a delegation another process owns
+  counts) now gets its Drain whatever the auto-resume claim says; the launch
+  gate and the policy (Stop, a question, a released child) are unchanged and a
+  root session keeps the auto-resume cap. The child's own spend after its first
+  turn (its reaction turns) reaches the parent when the delegation releases,
+  before the notice commits, and at every end of the child's turn (so a Stop
+  charges it too), through the same `parent_cost_accounted` delta as every other
+  charge: a normal exit and a Ctrl-C exit report the same cost. The test-only
+  supervision interval override no longer lets a value under one second defeat
+  the floor.
+- **A stream cut by the default wall-clock cap counts as a deadline on every
+  transport (review round 8).** On plain HTTP/1.1 providers (Ollama, LM Studio,
+  vLLM on `http://localhost`) net/http returns the cancellation cause itself,
+  and the cap's cause did not wrap `context.DeadlineExceeded`: the turn ended
+  as a generic "Provider Error" instead of the run-timeout text naming the cap,
+  and a Drain cut off by it was charged as a failed attempt (three such runs
+  closed the notice as failed) while the same cut by `--timeout` was exempt. The
+  cause now wraps the deadline error.
+- **A killed background shell that never exits stops holding its session's
+  scope after 10 minutes (review round 8).** A shell whose process tree kill
+  missed a descendant holding the output pipe (an ssh `ControlPersist` master,
+  the adb server) stays unfinished after `job_kill`; its completion hold had no
+  end, so a delegated child's parent stayed parked until the run's 6 h cap. The
+  hold now expires 10 minutes after the shell was taken out of the job table.
+- **Stop during an async `bash` start releases the child's driver (review round
+  8).** A Stop landing in the first second of a child's async `bash` (the fast
+  failure check) left the child's driver record and permission-allowlist entry
+  registered until the process ended; the finishing executor now re-checks its
+  owner.
+- **A Drain that fails because the history no longer fits the model's context
+  window says so (review round 8).** The "Event saved; continuation at the next
+  turn" marker was false for that failure (the events stay in history and every
+  later request fails the same way); it now names the cause and the remedy
+  (summarize the session or start a new one). Detected from the provider's
+  flagged context-size error, a 413, or a 400 naming the overflow.
+- **A message injected into an idle session reaches the next turn's prompt once
+  (review round 8).** `sessions inject` saves the user message before it queues
+  the pending row, so the next turn loaded it with the history and then spliced
+  it in a second time at step 1 (the model could act twice); a pending row whose
+  message is already in the turn's history is now only consumed.
+- **`sessions cancel` is a one-shot request (review round 8, agent part).** The
+  cancel flag stayed set after it stopped a turn, so a web session's next prompt
+  (and every automatic turn after it) was aborted after one step, and a child
+  resumed by a delegation likewise. A human-initiated turn (web/SDK `Run`, a
+  delegation resuming a child) now starts with the flag cleared, and an in-turn
+  abort that honours it clears it; a session driven by this process's `rush run`
+  loop keeps it for the loop, and Drain turns never clear it at their start.
+- **A delegated child's finished background shell keeps the delegation
+  parked until its result is recorded (review round 7).** A child's shell that
+  had exited but whose completion notice was not written yet (the write can wait
+  on the process-wide arrival lock and the single writer connection) counted as
+  no work: a delegation re-check landing in that window (the 60-second pass, a
+  release hook) handed the parent the child's stale first-turn text, and the
+  shell's result reached neither the child nor the parent. The shell manager now
+  keeps a per-shell completion hold from the moment its completion callback is
+  registered until the notice is durable (also released when the callback
+  returns or panics, and after 10 minutes at the latest), and the scope counts
+  it; the callback's own re-check runs after the release.
+- **Stopping a delegation releases its child's driver (review round 7).** A
+  delegation stopped while its child was parked on the child's own async job
+  left the child's driver record and permission-allowlist entry registered for
+  the life of the web process, and later Stop/inject on that child reached an
+  idle agent. Stop (and the Rerun tree stop) now re-checks every session of the
+  stopped tree.
+- **A run cut off by the default wall-clock cap says so (review round 7).** The
+  "Run timeout exceeded" message of a turn ended by the 6 h default cap named a
+  `--timeout` nobody passed; it now names the cap and
+  `RUSH_RUN_DEFAULT_HARD_TIMEOUT`.
+- **Documented: a delegated child's chain of background-shell wakes has no cap
+  of its own (review round 7).** Root supervision does not bound it; the bounds
+  are Stop, the delegation's own `timeout` (`terminate_and_wake`) and, in the
+  CLI, `--timeout`/the default cap and `--max-cost` (`docs/async-invariants.md`
+  ASYNC-09).
+- **`rush run`: a reviewer pass refused by the session lock keeps the run's
+  answer, and every loop exit records its exit reason (review round 6).** When
+  another process (a web tab's human turn, `sessions inject`) holds the
+  session lock as the loop's scope closes, the automatic reviewer turn is
+  skipped with a stderr line instead of replacing the run's answer with an
+  empty error envelope: the JSON envelope and terse output keep the last
+  completed answer, the exit is clean, and the refused turn no longer writes
+  `ended_reason` "error". A loop exit while waiting between turns (Ctrl-C,
+  `--timeout`, stuck debt, a cap or `sessions cancel` at the precheck, an
+  unreadable DB) now stores the envelope's `exit_reason` in the session's
+  `ended_reason` once, so `sessions show` no longer says "end_turn" beside an
+  envelope that says "canceled". The `HasLiveOwnWork` field is documented as
+  what it is: an own running job OR a live `rush run` driver between turns
+  (it does not imply a job exists); comments and docs only.
+- **`rush run`: `--no-supervision` / `--supervision-interval` cover the reviewer's
+  jobs, and cancel exits count a running child's spend (review round 5).** The
+  reviewer turn now carries the run's supervision options: since its jobs are
+  waited on, a `--no-supervision` run no longer gets check-in notices (and a
+  paid Drain on the reviewer model) for a long reviewer job, and
+  `--supervision-interval` applies to it. A refusal streak that ended when the
+  scope closed no longer counts against the first Drain refused after the
+  reviewer (it had made that refusal give up at once, without a "retrying"
+  line). On Ctrl-C, `--timeout` or a cap exit with a delegation still running,
+  the child's spend so far is charged to its parent (deepest first, delta-based
+  through `parent_cost_accounted`, so the later charge on shutdown adds only what
+  accrued after it) before the run's cost is read: `delta_cost_usd` and
+  `RUSH_COST_USD` include it, and `sessions cost` shows the same number. A live
+  `rush run` loop between turns (a paced retry after a failed reaction turn: no
+  session lock, no running row) is no longer reported at rest: `sessions why`
+  says `running` and names the loop's PID, `sessions list` shows `running`, and
+  the web session list sets `HasLiveOwnWork`, all from the durable driver marker
+  (host liveness, unknown counts as alive), read in one query for a whole list.
+- **`sessions watch`, `sessions tail --follow` and `sessions locks` no longer
+  call a live `rush run` loop ended or offline while it waits between turns
+  (review round 6).** The session lock is held only during a turn and its file is
+  truncated on release, so a loop waiting on a job (every CLI `bash` is one)
+  left an empty, aging lock file: `watch` printed "session ended" and exited 0,
+  `tail --follow` stopped at the first turn's finish, `locks` said `offline`, and
+  the `/rush` guidance concluded "the holder died" and advised a relaunch that
+  `rush run` then refuses. They now keep going while the driver marker, a running
+  own job or a live delegation exists, and say what they wait on; `locks` shows
+  `between turns (rush run PID n)` (JSON `between_turns`, `driver_pid`; not stale,
+  never pruned). The `/rush` guidance sends `offline` to `sessions why <id>`
+  first. A failed reaction turn's paced retry is `running` in `sessions list` and
+  `sessions why`, not `crashed`: an empty (PID-less) or driver-owned lock is a
+  clean release, and `crashed` stays for a recorded dead PID of another process
+  and for sessions with no live work.
+- **`rush run` without `--timeout` no longer force-kills a waiting loop at the
+  6 h default cap (review round 6).** The cap is now a graceful deadline like
+  `--timeout`: the loop ends through its normal exit (envelope, `--on-finish`,
+  shutdown; exit reason `canceled`) with a stderr line naming the cap;
+  `os.Exit(124)` remains only for a process still alive 60 s past the deadline.
+  The exit status of a run ended by the cap is 1 (it used to be 124): scripts
+  that matched 124 were matching a force-kill with no envelope; 124 now means
+  only that the 60 s hard-kill backstop fired.
+  A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
+  an explicit `--timeout`. `--timeout` itself is unchanged.
+- **`sessions cancel` stops a `rush run` that is waiting on a job (review round
+  7).** The flag was read only before a paid turn, so a loop waiting on a
+  long-running job (or on the launch gate's pause) ignored the cancel until the
+  job ended. The loop now reads it at every wake of that wait (at least every
+  5 s) and ends `canceled` like Ctrl-C: envelope, `--on-finish`, `ended_reason`,
+  and the jobs the run started are cancelled with the process.
+- **`sessions locks`, `sessions inject` and `sessions tail` handle ids with
+  path characters, loops between turns and hashes (review round 7).** A
+  session id with `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` or a space (for
+  example `--session fix/login-timeout`) has a lock file named with `_`, so the
+  round-6 "between turns" detection and the `--prune` guard missed it: such a
+  loop read `offline`, and `--prune` could take its lock. They now match by the
+  lock-file name. `sessions inject` into a session a live `rush run` loop drives
+  between turns answers `running: true` (JSON `between_turns`, `driver_pid`; the
+  message names the loop) instead of "no process is currently running this
+  session"; `--interrupt` has no running turn to cancel there and applies when
+  the loop starts its next one. `sessions tail <hash>` (the HASH column of
+  `sessions list`) prints the messages and `--follow` ends, and Ctrl-C ends
+  `tail --follow` with exit 0 as documented.
+- **`sessions show` prints how the last run ended and its budget, and
+  `sessions list --json` carries `ended_reason` (review round 7).** The
+  round-6 change that keeps `ended_reason` in step with the envelope was
+  invisible: `Sessions.Get` dropped the column, so `Ended:` and the budget never
+  appeared. `run.go`'s help now says what is written: the run's `exit_reason`
+  (the model's finish such as `end_turn`, `error` -- also for a
+  `--max-cost`/`--max-tokens` exit -- or `canceled` for Ctrl-C, `--timeout`, the
+  default cap and `sessions cancel`), empty while a run is in progress.
+- **`sessions inject`, `sessions reap`, `sessions locks` and `sessions cancel
+  --all` fixed (review round 8).** `sessions inject` into a web session that
+  waits between turns on its own running background job or a live delegation
+  (no `rush run` driver marker) answers `running: true` and names what keeps
+  the session open, instead of "persisted-offline". `sessions reap` keeps every
+  lock file that records no PID (what a clean release leaves: a `rush run` loop
+  or a web session between turns) unprobed, so it no longer takes the lock a
+  live loop needs next or reports "provably dead" for a live process; a crash's
+  PID-recording lock is still reclaimed. `sessions locks` finds the sub-agent
+  pulse of slug ids such as `fix/login-timeout` by the real session id, and
+  `sessions locks <id>` (id or hash prefix) now lists only that session's lock,
+  as the `/rush` guidance's watchdog recipe assumes. `sessions cancel --all`
+  flags only sessions with live work (a live lock, a `rush run` driver, a running
+  job or a live delegation) and prints how many idle sessions it skipped: the
+  cancel flag is a one-shot request, and one left on an idle web session would
+  abort its next turn. A named `sessions cancel <id>` still flags.
+- **`rush run` help, the README and the `/rush` guidance no longer say a run
+  has no time limit (review round 8).** Without `--timeout` a 6 h default
+  wall-clock cap applies (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`); `--idle-timeout`
+  watches turns only, so a run waiting between turns on a job, a delegation or
+  a retry pause is bounded by `--timeout` or the cap alone.
+- **`ended_reason` stays empty while a `rush run` is still running (review
+  round 8).** The per-turn write stored the first turn's `end_turn` while the
+  loop kept waiting on a job, so `sessions show` printed `Ended: end_turn` and
+  `sessions list --json` gave `{"status":"running","ended_reason":"end_turn"}`
+  for a live session (and kept saying it after a kill -9). The loop's turns no
+  longer write it; its exit writes the envelope's `exit_reason` once. Callers
+  that are not the loop (the SDK) keep the per-turn write. A run refused
+  because another process owns the session no longer writes `error` into that
+  session's row.
+- **`--max-cost` / `--max-tokens` bound a `rush run` that is waiting (review
+  round 8).** While the loop waited on a delegation or a job it checked only
+  `sessions cancel`, so a child polling in a chain of reaction turns (each
+  charged to the root) ran to the 6 h cap before the limit reported. The wait
+  now reads the limits at every wake (one session-row read, also answering the
+  cancel flag) and ends `error` through the usual exit: envelope,
+  `--on-finish`, and the run's jobs are cancelled.
+- **A `sessions cancel` that stopped a `rush run` no longer aborts the next
+  turn (review round 8).** The flag stayed set after the loop honoured it, so a
+  later web turn or takeover reaction turn on the same session was cancelled
+  after its first step. The loop clears it when the run ends `canceled`, before
+  the envelope is flushed.
+- **A closed stdout pipe no longer kills `rush run` before `--on-finish` and
+  shutdown (review round 8, Unix).** The envelope write raised SIGPIPE and the
+  process died with status 141, leaving the run's jobs running and the hook
+  unrun. Writes to a closed stdout/stderr now fail with EPIPE through the
+  normal exit path (hook and shutdown run, exit status 1), and spawned jobs keep
+  the default SIGPIPE behaviour.
 - **`sessions list` and `sessions why` no longer report a root as done
-  while a descendant session still holds a live lock**, cross-process.
+  while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
   carries `HasLiveDescendantWork` / `LiveDescendantIDs` for the web UI
-  (rendering pending).
+  (rendering pending). This now reads the durable `async_jobs` ledger
+  (a live delegation row, checked against its host's liveness) rather than
+  a session lock file, so it also covers a delegation whose child session
+  has not yet taken its own turn. The delegation walk counts delegation rows;
+  a session whose only live work is its own plain background job is reported
+  separately, as "running" (see Added: `HasLiveOwnWork`).
 - **Parked sub-agent outcomes are delivered exactly once and cancellations
   stay cancellations.** A canceled child can no longer be reported to its
   parent as a success carrying the child's last text.
@@ -38,11 +676,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `$myPrompts`).
 - **The composer's ArrowUp recall and history dropdown no longer leak
   supervision check-ins, one-time timeout check-ins, or wake-failure
-  markers.** These notices carry no `AutoResumed`/`BackgroundJobNotice` flag
-  and no web origin (they are persisted off a bare context), so the prior
-  filter missed them. A new server-computed `HumanTyped` field (`NoticeKind
-  != ""` is now also checked) and a single shared client-side filter close
-  the gap for every current and future notice kind.
+  markers.** A server-computed `HumanTyped` field (role, hidden/summary
+  flags, `NoticeKind`, `AutoResumed`, `BackgroundJobNotice`, origin; never
+  the text) and a single shared client-side filter decide what the recall
+  history shows. Every notice the driver pulls into history carries
+  `AutoResumed` and `BackgroundJobNotice` (supervision, timeout and
+  wake-failure ones also a `NoticeKind`), so any of the markers excludes it,
+  for every current and future notice kind.
 - **A delegated sub-agent in `rush run` now receives the results of its own
   async commands.** They used to land on a queue only the root read, so the
   sub-agent never saw its command output and the parent got the sub-agent's
@@ -119,7 +759,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   now go through the same job registry, CAS, and explicit-timeout support
   as CLI/web calls**, instead of a separate synchronous branch with no
   registry and no timeout support. The response returned to the caller is
-  unchanged.
+  unchanged; a `terminate_and_wake` timeout on such a call returns a timed-out error
+  result carrying the partial output.
 
 ### Added
 
@@ -173,8 +814,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   showing a short hint instead if the call isn't in the loaded transcript.
   The wire contract (`session_live_work` event, `get_session_live_work`
   request) is wired end-to-end on the client; the server-side emitter that
-  actually populates the lists from live jobs/sessions lands in a follow-up
-  once the DB-backed readers exist, so the panel shows Tasks only for now.
+  would populate the lists from live jobs/sessions is not written yet (the
+  DB-backed readers it needs, `AsyncJobStore.LiveJobs`/`LiveWorkForRoots`,
+  ship in the same release), so the panel shows Tasks only for now.
 
 ### Changed
 

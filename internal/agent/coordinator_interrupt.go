@@ -38,33 +38,99 @@ const interruptInjectTick = 3 * time.Second
 // a genuinely stuck tick doesn't block shutdown for an unreasonable duration.
 const interruptTickOperationTimeout = 10 * time.Second
 
+// Cancel is the full Stop: stopTree(sessionID).
 func (c *coordinator) Cancel(sessionID string) {
-	// cancelSession handles both directions in one pass under one mutex:
-	// jobs sessionID owns, AND delegations armed on it as a CHILD -- so a
-	// delegation notice can never have nowhere to land (see
-	// workLedger.cancelSession's doc). sessionID is usually the PARENT whose
-	// tool call started the delegation, but Cancel is also called on a
-	// child session id directly.
-	if c.asyncJobs != nil {
-		c.asyncJobs.cancelSession(sessionID)
+	c.stopTree(sessionID)
+}
+
+// CancelTurn cancels only sessionID's live generation -- no job stop, tree walk,
+// wake zeroing or auto-resume suspension. See Coordinator.CancelTurn.
+func (c *coordinator) CancelTurn(sessionID string) {
+	if ag := c.agentFor(sessionID); ag != nil {
+		ag.Cancel(sessionID)
 	}
-	// Task #1054: a delegated child session's live generation runs on its
-	// registered driver, never c.currentAgent (task #1049) -- routing
-	// through agentFor is the same choke point wakeSession uses, so Cancel
-	// on a child id actually reaches the SessionAgent that owns its
-	// mailbox instead of silently finding an untouched one on
-	// c.currentAgent (agent_control.go's genCancel == nil branch: no error,
-	// no log, just nothing happens).
-	c.agentFor(sessionID).Cancel(sessionID)
+}
+
+// stopTree is the body of Stop for sessionID: jobs, delegation tree, mailboxes,
+// auto-resume suspension and wake zeroing. Rerun also uses it for the child
+// tree of a voided delegation.
+func (c *coordinator) stopTree(sessionID string) {
+	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- cancelTree walks
+	// sessionID's current delegation tree (via still-RUNNING delegation
+	// rows) and, for EACH id, runs the same "jobs it owns AND delegations
+	// armed on it as a child" cancellation cancelSession always did
+	// (sessionID is usually the PARENT whose tool call started a
+	// delegation, but Cancel is also called on a child session id
+	// directly). A session with no running delegation children degenerates
+	// to the pre-existing single-id behavior.
+	var ids []string
+	if c.asyncJobs != nil {
+		ids = c.asyncJobs.cancelTree(sessionID)
+	} else {
+		ids = []string{sessionID}
+	}
+	for _, id := range ids {
+		// Task #1054: a delegated child session's live generation runs on
+		// its registered driver, never c.currentAgent (task #1049) --
+		// routing through agentFor is the same choke point wakeSession
+		// uses, so Cancel on a child id actually reaches the SessionAgent
+		// that owns its mailbox instead of silently finding an untouched
+		// one on c.currentAgent (agent_control.go's genCancel == nil
+		// branch: no error, no log, just nothing happens).
+		if ag := c.agentFor(id); ag != nil {
+			ag.Cancel(id)
+		}
+		// Doc sec.3.4's web session policy: after a Stop, automatic turns
+		// are suspended until the next human message. The suspension is a
+		// per-session state of its own (autoTurnsSuspended), separate from
+		// the bg-shell cap counter; the human-message reset path
+		// (ResetAutoResumeCounter) clears both.
+		c.suspendAutoResume(id)
+	}
+	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
+	// (pending/done) debt row across the whole stopped tree, closing the
+	// race where a job finished with wake=1 a moment before Stop but its
+	// notice was not yet reacted to -- a stopped delegation's child must
+	// never get a turn out of that race.
+	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+		zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
+			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
+		}
+	}
+	// R7B-2: a stopped child parked on its own job is not re-checked by any
+	// other trigger (the job is dropped silently, the idle mailbox fires no
+	// release hook), so its driver record and allowlist entry would outlive
+	// the Stop. After the wake zeroing, so debt a racing completion left is
+	// no longer owed; a child still running a turn is released by that turn's
+	// own end.
+	if c.asyncJobs != nil {
+		for _, id := range ids {
+			c.asyncJobs.recheckChild(id)
+		}
+	}
 }
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
-	// close() cancels every session's jobs (both directions, per session)
-	// and stops the safety-net ticker.
+	c.StopRecheckTicker()
+	// close() cancels the executor of every still-running job (their rows
+	// stay 'running' for the next host to recover, DUR-1) and stops the
+	// timeout service.
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}
-	return c.currentAgent.CancelAll()
+	stillBusy = c.currentAgent.CancelAll()
+	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from
+	// c.currentAgent (task #1049) -- CancelAll must reach it too, or its own
+	// in-flight Drain turn (built on context.Background(), doc sec.3.4)
+	// survives this process's shutdown entirely.
+	for _, driver := range c.subAgentDrivers.allDriverAgents() {
+		if driver.CancelAll() {
+			stillBusy = true
+		}
+	}
+	return stillBusy
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {
@@ -214,7 +280,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		// turn. It is not the policy context of that turn, and may already be
 		// stale after the dispatcher has moved to another queued call. Copy the
 		// published call so every policy and pinned value comes from that turn.
-		call = activeCall
+		// callFromActive: the operator's message never inherits the active
+		// call's kind or notice flags (a Drain, a wake turn).
+		call = callFromActive(activeCall)
 		call.Prompt = injMsg.FullText()
 		call.Attachments = nil
 	} else {
@@ -363,7 +431,7 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	token activeCallToken,
 	tokenAvailable bool,
 ) (bool, error) {
-	call := active
+	call := callFromActive(active)
 	call.Prompt = msg.FullText()
 	call.ExistingMessageID = pi.MessageID
 	call.InjectID = ""
@@ -468,6 +536,14 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 // pump picks up the same call before we return. If durable enqueue fails, we
 // recreate the row so a future tick can retry (P0-2).
 func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCall) error {
+	// Phase-4 step 3 (doc sec.3.4): a Drain call is NEVER durably enqueued.
+	// Unreachable in practice today (a Drain never goes through
+	// InterruptAndReplace/QueueExistingMessage), but this guard documents
+	// the invariant at every EnqueueRunQueueEntry call site, not just the
+	// one on the ordinary orphan-restart path.
+	if call.IsDrain {
+		return nil
+	}
 	// Layer 1 (T9 shape, design doc §7.3): refuse outright, before
 	// touching anything (including the pending_injects row below), a
 	// call carrying a caller-supplied DiskProvider. It has no

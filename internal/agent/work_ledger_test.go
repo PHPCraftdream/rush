@@ -7,10 +7,10 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -30,30 +30,44 @@ func drainCompletions(ch chan AsyncCompletion) []AsyncCompletion {
 
 // TestWorkLedger_WaitsForPersistedToolResult ports
 // TestAsyncJobRegistryWaitsForPersistedToolResult: delivery waits for
-// acknowledged, and the ready queue is FIFO.
+// acknowledged. Phase-4 step 4 deleted the in-memory ready queue (doc
+// sec.3.5) -- every non-sync completion now routes through onWebDone
+// (work_ledger.go's deliverLocked), CLI-origin or not, so this observes
+// delivery via a callback channel instead of workLedger.next().
 func TestWorkLedger_WaitsForPersistedToolResult(t *testing.T) {
 	t.Parallel()
-	l := newWorkLedger(nil)
+	completed := make(chan AsyncCompletion, 1)
+	l := newWorkLedger(func(c AsyncCompletion) { completed <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, existing, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
-	want := AsyncCompletion{SessionID: "session", ToolCallID: "call", ToolName: "bash", Content: "done"}
-	l.finish("session", "call", jobResult{content: "done"})
+	l.finish(jobOf(l, "session", "call"), jobResult{content: "done"})
 
 	l.mu.Lock()
-	ready, pending := len(l.bySession["session"].ready), len(l.bySession["session"].jobs)
+	pending := len(l.bySession["session"].jobs)
 	l.mu.Unlock()
-	require.Zero(t, ready)
 	require.Equal(t, 1, pending)
+	select {
+	case got := <-completed:
+		t.Fatalf("must not deliver before acknowledged: %+v", got)
+	default:
+	}
 
-	l.acknowledged("session", "call")
-	got, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, want, got)
-	_, ok, err = l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	l.acknowledged(jobOf(l, "session", "call"))
+	select {
+	case got := <-completed:
+		require.Equal(t, "session", got.SessionID)
+		require.Equal(t, "call", got.ToolCallID)
+		require.Equal(t, "bash", got.ToolName)
+		require.Equal(t, "done", got.Content)
+		// Wake: true -- a natural finish's committed row always sets
+		// wake=1 (doc sec.3.4's wake-policy table; causeStateNoticeKindWake's
+		// causeNaturalFinish case), phase-4 step 3.
+		require.True(t, got.Wake)
+	case <-time.After(2 * time.Second):
+		t.Fatal("completion not delivered")
+	}
 }
 
 // TestWorkLedger_WebCallbackExactlyOnce ports
@@ -66,15 +80,14 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 		require.Equal(t, "call", got.ToolCallID)
 		calls.Add(1)
 	})
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", false, false, nil, nil)
 	require.NoError(t, err)
-	l.acknowledged("session", "call")
-	l.finish("session", "call", jobResult{})
-	l.finish("session", "call", jobResult{})
+	l.acknowledged(jobOf(l, "session", "call"))
+	l.finish(jobOf(l, "session", "call"), jobResult{})
+	l.finish(jobOf(l, "session", "call"), jobResult{})
 	require.EqualValues(t, 1, calls.Load())
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	require.False(t, l.running("session"))
 }
 
 // TestWorkLedger_ConcurrentFinishAndAcknowledge ports
@@ -82,38 +95,57 @@ func TestWorkLedger_WebCallbackExactlyOnce(t *testing.T) {
 // finish/acknowledged runs last is what delivers, exactly once.
 func TestWorkLedger_ConcurrentFinishAndAcknowledge(t *testing.T) {
 	t.Parallel()
-	l := newWorkLedger(nil)
+	completed := make(chan AsyncCompletion, 1)
+	l := newWorkLedger(func(c AsyncCompletion) { completed <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	var wg sync.WaitGroup
-	wg.Go(func() { l.finish("session", "call", jobResult{}) })
-	wg.Go(func() { l.acknowledged("session", "call") })
+	wg.Go(func() { l.finish(jobOf(l, "session", "call"), jobResult{}) })
+	wg.Go(func() { l.acknowledged(jobOf(l, "session", "call")) })
 	wg.Wait()
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.True(t, ok)
-	_, ok, err = l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	select {
+	case <-completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("completion not delivered")
+	}
+	require.False(t, l.running("session"))
 }
 
 // TestWorkLedger_CancelAndClose ports TestAsyncJobRegistryCancelAndClose:
 // close cancels every job's executor context and refuses further Start.
+//
+// Phase-4 step 2 deliberately changes one part of this test's old
+// assertion: close() no longer removes the job from memory or transitions
+// it (doc sec.3.1/3.7, "graceful exit = crash") -- the row stays 'running'
+// for the next host to recover, so nothing must block forever waiting for a
+// delivery that will never come. This test now asserts the executor IS
+// cancelled and the job REMAINS tracked (l.running still true).
+//
+// Revert-check performed: reverted close() to its pre-step-2 form (call
+// cancelSession per owner) -- this test's OLD assertion block (the old
+// l.next call returning not-ok) passed again, but TestWorkLedger_
+// ShutdownCausedCancellationLeavesRowRunningWritesNoNotice (work_ledger_
+// durable_test.go) FAILED (the row committed to a terminal state instead of
+// staying 'running'), proving the two tests pin opposite, mutually
+// exclusive behaviors and confirming THIS test's assertion is the one that
+// had to change. Restored close(); re-ran both, passed.
 func TestWorkLedger_CancelAndClose(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	_, _, err := l.Start("session", "call", "", "bash", "", true, false, nil, cancel)
 	require.NoError(t, err)
+	// Phase-4 step 4: waitForHint (next()'s replacement blocking primitive)
+	// must respect ctx cancellation instead of blocking forever.
 	waitCtx, stopWaiting := context.WithCancel(t.Context())
 	stopWaiting()
-	_, _, err = l.next(waitCtx, "session")
-	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, l.waitForHint(waitCtx, "session", l.hintSeqOf("session")),
+		"an already-canceled ctx must not block")
 	l.close()
-	require.ErrorIs(t, ctx.Err(), context.Canceled)
-	_, ok, err := l.next(t.Context(), "session")
-	require.NoError(t, err)
-	require.False(t, ok)
+	require.ErrorIs(t, ctx.Err(), context.Canceled, "close must cancel every job's executor context")
+	require.True(t, l.running("session"), "the job must stay tracked (DB row stays 'running' for recovery), not be dropped")
 	_, _, err = l.Start("session", "new-call", "", "bash", "", true, false, nil, nil)
 	require.ErrorContains(t, err, "closed")
 }
@@ -135,6 +167,7 @@ func TestWorkLedger_CancelAndClose(t *testing.T) {
 func TestWorkLedger_StartIsIdempotentPerToolCallID(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	job1, existing1, err := l.Start("owner", "call", "", "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing1)
@@ -152,6 +185,7 @@ func TestWorkLedger_StartIsIdempotentPerToolCallID(t *testing.T) {
 func TestWorkLedger_ReusedCallIDWithDifferentInputIsRefused(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call_0", `{"command":"go test"}`, "bash", "", true, false, nil, nil)
 	require.NoError(t, err)
 	_, existing, err := l.Start("owner", "call_0", `{"command":"rm -rf build"}`, "bash", "", true, false, nil, nil)
@@ -175,13 +209,14 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("parent", "call", "", AgentToolName, "child", false, false, nil, nil)
 	require.NoError(t, err)
 
 	// childScopeDrained is trivially true here: l.coord is nil, and the
 	// child owns no jobs of its own, so arming should be release-ready
 	// immediately -- announce is the only thing withholding delivery.
-	l.armDelegation("parent", "call", jobResult{content: "child yielded: done"})
+	l.armDelegation(jobOf(l, "parent", "call"), jobResult{content: "child yielded: done"})
 
 	select {
 	case <-delivered:
@@ -190,7 +225,7 @@ func TestWorkLedger_DelegationNeverDeliveredBeforeAnnounce(t *testing.T) {
 	}
 	require.True(t, l.running("parent"), "the job must still be present, waiting for announce")
 
-	l.acknowledged("parent", "call")
+	l.acknowledged(jobOf(l, "parent", "call"))
 	select {
 	case got := <-delivered:
 		require.Equal(t, "child yielded: done", got.Content)
@@ -234,9 +269,10 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", AgentToolName, "child", false, false, nil, nil)
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -244,12 +280,12 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "boom", isError: true})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "boom", isError: true})
 		}()
 		go func() {
 			defer wg.Done()
@@ -267,31 +303,31 @@ func TestWorkLedger_ConcurrentTerminalRaceYieldsExactlyOneOutcome(t *testing.T) 
 
 // TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone pins phase 2 §4.4: a
 // sync job's outcome is delivered ONLY through awaitSync/job.done, never
-// through the CLI ready queue or the web onWebDone callback.
+// through the web onWebDone callback (phase-4 step 4 deleted the separate
+// CLI ready queue entirely -- every non-sync completion now routes through
+// onWebDone too, so "never queued for CLI drain" and "never invokes
+// onWebDone" collapse into the one webDoneCalls assertion below).
 // Revert-check performed: removed the `if job.sync {...}` short-circuit at
 // the top of deliverLocked's body -- this test FAILED (onWebDone was
-// invoked, len(s.ready) became 1 for a cli=true job). Restored the
-// short-circuit; re-ran, passed.
+// invoked for a job with job.done still open). Restored the short-circuit;
+// re-ran, passed.
 func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	t.Parallel()
 	var webDoneCalls int
 	l := newWorkLedger(func(AsyncCompletion) { webDoneCalls++ })
+	l.store = newTestAsyncJobStore(t)
 	job, existing, err := l.Start("session", "call", "", "bash", "", true, true, nil, nil)
 	require.NoError(t, err)
 	require.False(t, existing)
 	require.NotNil(t, job.done)
 
-	l.finish("session", "call", jobResult{content: "sync result"})
+	l.finish(jobOf(l, "session", "call"), jobResult{content: "sync result"})
 
 	select {
 	case <-job.done:
 	default:
 		t.Fatal("job.done must be closed once the sync job is delivered")
 	}
-	l.mu.Lock()
-	ready := len(l.bySession["session"].ready)
-	l.mu.Unlock()
-	require.Zero(t, ready, "a sync job must never be queued for CLI drain")
 	require.Zero(t, webDoneCalls, "a sync job must never invoke onWebDone")
 
 	result, err := l.awaitSync(t.Context(), job)
@@ -299,54 +335,12 @@ func TestWorkLedger_SyncJobBypassesReadyQueueAndWebDone(t *testing.T) {
 	require.Equal(t, "sync result", result.content)
 }
 
-// TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep pins the orchestrator
-// review's P2 finding: consumeNotice used to delete only from l.noticedBefore,
-// leaving the key in l.noticedBeforeKeys forever -- N record+consume cycles
-// in a long-lived web process grew the slice unboundedly even though the map
-// itself never exceeded maxNoticedBefore (eviction there only fires once the
-// MAP is over the bound, so it never observed the orphaned slice growth).
-//
-// Revert-check performed: reverted consumeNotice to
-// `delete(l.noticedBefore, key)` only (no slice removal) -- this test FAILED
-// (noticedBeforeKeys had length 50 instead of 0). Restored the fix; re-ran,
-// passed.
-func TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep(t *testing.T) {
-	t.Parallel()
-	l := newWorkLedger(nil)
-	const n = 50
-	for i := 0; i < n; i++ {
-		job := jobIdentity{owner: "owner", toolCallID: fmt.Sprintf("call-%d", i)}
-		l.recordNotice(job, fmt.Sprintf("msg-%d", i))
-		l.consumeNotice(job)
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	require.Empty(t, l.noticedBefore, "every recorded notice was consumed; the map must end up empty")
-	require.Empty(t, l.noticedBeforeKeys, "every recorded notice was consumed; the key-order slice must end up empty too")
-}
-
-// TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey pins the
-// second half of the same finding: recording the SAME job identity again
-// after it was consumed must not leave a duplicate entry in
-// noticedBeforeKeys -- a duplicate let eviction pop a stale occurrence of the
-// key and delete the FRESH map entry that key now collides with, silently
-// losing a just-recorded notice's idempotency guard.
-//
-// Revert-check performed: same revert as above (consumeNotice not touching
-// noticedBeforeKeys) -- this test FAILED (len(noticedBeforeKeys) == 2:
-// "call-1" appeared once from the first recordNotice, and again from the
-// second, since consumeNotice never removed the first occurrence). Restored
-// the fix; re-ran, passed.
-func TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey(t *testing.T) {
-	t.Parallel()
-	l := newWorkLedger(nil)
-	job := jobIdentity{owner: "owner", toolCallID: "call-1"}
-	l.recordNotice(job, "msg-1")
-	l.consumeNotice(job)
-	l.recordNotice(job, "msg-2")
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	require.Len(t, l.noticedBeforeKeys, 1, "re-recording after consume must not leave a duplicate key")
-	require.Equal(t, "msg-2", l.noticedBefore[noticedBeforeKey(job.owner, job.toolCallID)])
-}
+// TestWorkLedger_ConsumeNoticeKeepsMapAndKeysInLockstep and
+// TestWorkLedger_NoticeReRecordedAfterConsumeDoesNotDuplicateKey (both pinning
+// the orchestrator review's earlier P2 finding about consumeNotice/
+// recordNotice/noticedBefore) were removed in phase-4 step 3: wakeSession no
+// longer persists a notice message itself (docs/plans/2026-09-28-async-
+// phase4-durable-core.md sec.3.4) -- the durable async_jobs/session_notices
+// delivery outbox is the sole idempotency mechanism now (DUR-3's pull CAS),
+// so noticedBefore/recordNotice/noticeFor/consumeNotice and their whole
+// class of bug are gone, not merely made to pass differently.

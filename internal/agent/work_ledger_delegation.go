@@ -25,6 +25,20 @@
 // real race (BL-2026-09-25-1, closed here by deletion rather than a fix).
 package agent
 
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+)
+
+// childScopeDBCheckTimeout bounds childScopeOpenAcrossProcesses's DB read
+// (B3/C6 fix): recheckChild runs synchronously on several hot paths, so this
+// stays well under a request-scoped budget rather than the 30s ceiling used
+// for fire-and-forget background writes elsewhere in this package.
+const childScopeDBCheckTimeout = 5 * time.Second
+
 // subAgentOutcomeCancelledText is the body delivered to the parent when a
 // delegation is released by Cancel/CancelAll rather than by the child
 // finishing its work.
@@ -40,15 +54,14 @@ const subAgentOutcomeCancelledText = "sub-agent canceled"
 // Synchronously tries the immediate release path (trigger (i), formerly a
 // separate tryRelease call after park): recheckChild is called once armed,
 // after releasing l.mu.
-func (l *workLedger) armDelegation(owner, toolCallID string, captured jobResult) {
-	l.mu.Lock()
-	s := l.bySession[owner]
-	if s == nil {
-		l.mu.Unlock()
+func (l *workLedger) armDelegation(job *asyncJob, captured jobResult) {
+	if job == nil || job.childSession == "" {
 		return
 	}
-	job := s.jobs[toolCallID]
-	if job == nil || job.childSession == "" {
+	l.mu.Lock()
+	if !l.currentLocked(job) {
+		// Superseded (A11): a stale executor must not arm, or re-check on
+		// behalf of, another claim's job.
 		l.mu.Unlock()
 		return
 	}
@@ -76,11 +89,29 @@ func (l *workLedger) armDelegation(owner, toolCallID string, captured jobResult)
 // discarded. That is what makes recheckChild race-safe against cancelSession
 // without a separate "claimed" latch: the mutex-protected state field IS the
 // latch (see asyncJob.transitionToTerminal's doc).
+// Phase-4 step 2: recheckChild does nothing once the ledger is closed (doc
+// sec.3.1/3.7): a child turn interrupted by shutdown must not count as
+// "child scope closed", so the delegation must not finish with truncated
+// text. The release itself now goes through workLedger.transition
+// (causeDelegationRelease) instead of calling transitionToTerminal
+// directly, so it is DB-durable (DUR-1) like every other terminal cause.
 func (l *workLedger) recheckChild(childSessionID string) {
 	if childSessionID == "" {
 		return
 	}
 	for {
+		l.mu.Lock()
+		closed := l.closed
+		l.mu.Unlock()
+		if closed {
+			return
+		}
+		// A session that was never a delegated child (nothing armed on it,
+		// no driver registered) has nothing to release: return before any
+		// scope read, so an ordinary session's release costs no DB work.
+		if !l.hasArmedOrDriver(childSessionID) {
+			return
+		}
 		if !l.childScopeDrained(childSessionID) {
 			return
 		}
@@ -99,28 +130,53 @@ func (l *workLedger) recheckChild(childSessionID string) {
 			}
 			return
 		}
-		owner, toolCallID := job.owner, job.toolCallID
+		owner, toolCallID, sync := job.owner, job.toolCallID, job.sync
 		snapshot := AsyncCompletion{
 			SessionID: childSessionID, ToolCallID: toolCallID, ToolName: job.toolName,
 			Content: job.result.content, IsError: job.result.isError,
 		}
 		l.mu.Unlock()
 
+		// R6C-3: the child's spend since its last transfer (its reaction turns)
+		// reaches the owner BEFORE the notice commits, so whoever sees the debt
+		// (the `rush run` loop, a cost cap) reads the complete cost.
+		if l.coord != nil {
+			l.coord.chargeChildToParent(childSessionID, owner)
+		}
+
 		refreshed := snapshot
 		if l.coord != nil {
 			refreshed = l.coord.refreshSubAgentCompletion(childSessionID, snapshot)
 		}
 
-		l.mu.Lock()
-		state := phaseCompleted
-		if refreshed.IsError {
-			state = phaseFailed
+		if sync {
+			// Sync (SDK-origin) delegations never touch the store (doc
+			// sec.3.1) -- old memory-only path, so awaitSync still unblocks
+			// via deliverLocked's own sync branch (closes job.done).
+			l.mu.Lock()
+			state := phaseCompleted
+			if refreshed.IsError {
+				state = phaseFailed
+			}
+			job.transitionToTerminal(state, jobResult{content: refreshed.Content, isError: refreshed.IsError})
+			completion, callback := l.deliverLocked(owner, job)
+			l.mu.Unlock()
+			if callback {
+				l.onWebDone(completion)
+			}
+		} else {
+			l.transition(job, causeDelegationRelease, jobResult{content: refreshed.Content, isError: refreshed.IsError})
 		}
-		job.transitionToTerminal(state, jobResult{content: refreshed.Content, isError: refreshed.IsError})
-		completion, callback := l.deliverLocked(owner, job)
+
+		l.mu.Lock()
+		stillRunning := job.state == phaseRunning
 		l.mu.Unlock()
-		if callback {
-			l.onWebDone(completion)
+		if stillRunning {
+			// l.transition SKIPPED -- a concurrent cause (e.g. cancelSession)
+			// is already mid-transition for this SAME job. Don't spin on
+			// it; a later trigger (its own completion, or another
+			// recheckChild call) will re-check.
+			return
 		}
 	}
 }
@@ -164,7 +220,12 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	if l.coord == nil {
 		return true
 	}
-	if l.coord.background != nil && l.coord.background.ActiveOwned(childID) > 0 {
+	// R7B-1: a shell that finished but whose bg_shell_done notice is not
+	// durable yet (its callback holds a completion hold until the row commits,
+	// notifyBackgroundJobDone) is still open work: without it a re-check in
+	// that window saw no job, no debt and released the delegation with stale
+	// text.
+	if bg := l.coord.background; bg != nil && (bg.ActiveOwned(childID) > 0 || bg.PendingCompletionsOwned(childID) > 0) {
 		return false
 	}
 	if driver, ok := l.coord.subAgentDrivers.get(childID); ok {
@@ -174,70 +235,218 @@ func (l *workLedger) childScopeDrained(childID string) bool {
 	} else if l.coord.currentAgent != nil && l.coord.currentAgent.IsSessionBusy(childID) {
 		return false
 	}
+	// B3/C6 fix: every check above is same-process/in-memory (this host's
+	// own workLedger job map plus IsSessionBusy). A child whose own async
+	// work moved to a DIFFERENT, still-live host, or whose pulled notice the
+	// child still owes a reaction to (DB reaction debt), has NOT actually
+	// drained -- releasing the delegation now would hand the parent a
+	// premature/truncated result. childScopeOpenAcrossProcesses reads
+	// CLIScope (doc sec.3.5: running row on a live host, or debt the child owes
+	// or is retrying a reaction to), deliberately omitting a mid-turn branch
+	// (already covered by the IsSessionBusy checks above).
+	if l.childScopeOpenAcrossProcesses(childID) {
+		return false
+	}
 	return true
 }
 
+// childScopeOpenAcrossProcesses is childScopeDrained's cross-process half
+// (B3/C6 fix), decided by the SAME scope answer the CLI loop uses (CLIScope):
+// the child's scope is open while it has running work on a host not provably
+// dead, or debt it owes (or is retrying after a failed attempt -- Paced) a
+// reaction to. Debt the policy defers (a question the child asked, Stop, a
+// foreign driver) or that stopped launching (Stuck) releases the delegation:
+// the child would never get a turn for it, so waiting would hang the parent.
+// Fails OPEN (reports true, "not drained yet") on a DB error or a nil store:
+// prematurely releasing a delegation whose child might still owe a reaction
+// is worse than deferring the release to a later recheckChild trigger.
+func (l *workLedger) childScopeOpenAcrossProcesses(childID string) bool {
+	if l.coord == nil || l.store == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), childScopeDBCheckTimeout)
+	defer cancel()
+	st, err := l.coord.CLIScope(ctx, childID)
+	if err != nil {
+		slog.Warn("childScopeDrained: cross-process scope check failed; treating scope as still open", "child_session_id", childID, "err", err)
+		return true
+	}
+	return st.WorkOpen || st.Drain == DrainOwed || st.Drain == DrainPaced
+}
+
+// cancelSessionTarget is a snapshot of one job cancelSession must act on,
+// captured entirely under l.mu so the rest of cancelSession's work (DB I/O,
+// doc sec.3.1's "с DB I/O outside l.mu") never touches job fields without
+// the lock.
+type cancelSessionTarget struct {
+	job          *asyncJob
+	owner        string
+	toolCallID   string
+	toolName     string
+	shellID      string
+	outputBuf    tools.LiveOutputBuffer
+	isDelegation bool
+	sync         bool
+	cancel       context.CancelFunc
+}
+
 // cancelSession forces every job sessionID owns, AND every delegation parked
-// on it as a CHILD (byChild[sessionID]), to a terminal cancelled outcome, in
-// one pass under one mutex hold. Replaces asyncJobRegistry.cancelSession +
-// coordinator.releaseSubAgentOutcomesForParentCancel/ForChildCancel combined.
+// on it as a CHILD (byChild[sessionID]), to a terminal cancelled outcome.
+// Replaces asyncJobRegistry.cancelSession + coordinator.
+// releaseSubAgentOutcomesForParentCancel/ForChildCancel combined.
 //
-// A PLAIN job (childSession == "") is dropped without going through
-// deliverLocked at all -- exactly like today's asyncJobRegistry.cancelSession,
-// which never produces a notice for a canceled bash/run_command job. A
-// DELEGATION job (childSession != "") IS delivered, with
-// subAgentOutcomeCancelledText, exactly like today's
-// coordinator.releaseCanceled -- deliverLocked is what a canceled delegation
-// has always gone through (via finishParked), so this keeps producing the
-// same one notice.
-//
-// A delegation canceled here never reads refreshSubAgentCompletion: the
-// result is fixed to the cancellation text before deliverLocked runs, so a
-// child's already-finished successful turn can never masquerade as this
-// delegation's outcome (regression: TestSubAgentOutcome_CancelSurvivesFinishedChildTurn).
+// Phase-4 step 2 (doc sec.3.4/3.8): every non-sync job now durably records
+// cancelled/session_cancel/wake=0 via commitTransition/transition, snapshot
+// -> transition -> cancel, with the DB I/O outside l.mu. A PLAIN job still
+// produces NO in-memory notice (commitTransition directly, bypassing
+// deliverLocked) -- only the DB row records the fact, same observable
+// behavior as before. A DELEGATION job IS delivered with
+// subAgentOutcomeCancelledText, exactly as before (via transition, which
+// does call deliverLocked) -- a delegation canceled here never reads
+// refreshSubAgentCompletion: the result is fixed to the cancellation text
+// up front, so a child's already-finished successful turn can never
+// masquerade as this delegation's outcome (regression:
+// TestSubAgentOutcome_CancelSurvivesFinishedChildTurn). A SYNC job (plain or
+// delegation) never touches the store -- it keeps the exact old in-memory-
+// only path (transitionToTerminal+deliverLocked for a delegation, so
+// awaitSync unblocks; a bare map delete for a plain job).
 func (l *workLedger) cancelSession(sessionID string) {
 	if sessionID == "" {
 		return
 	}
 	l.mu.Lock()
-	var pending []AsyncCompletion
+	var targets []cancelSessionTarget
 	if s := l.bySession[sessionID]; s != nil {
-		for id, job := range s.jobs {
-			if job.cancel != nil {
-				job.cancel()
-			}
-			if job.childSession == "" {
-				delete(s.jobs, id)
-				continue
-			}
-			job.transitionToTerminal(phaseCancelled, jobResult{content: subAgentOutcomeCancelledText, isError: true})
-			if completion, callback := l.deliverLocked(job.owner, job); callback {
-				pending = append(pending, completion)
-			}
+		for _, job := range s.jobs {
+			// Review finding P2: mark BEFORE releasing l.mu, synchronously
+			// with every other job this call targets -- this is what makes
+			// the later race-safe regardless of which cause's DB write (this
+			// call's, or a concurrent natural finish's) actually commits
+			// first; see transition's delivery-step doc.
+			job.stoppedBySession = true
+			targets = append(targets, cancelSessionTarget{
+				job: job, owner: job.owner, toolCallID: job.toolCallID, toolName: job.toolName,
+				shellID: job.shellID, outputBuf: job.outputBuf, isDelegation: job.childSession != "",
+				sync: job.sync, cancel: job.cancel,
+			})
 		}
 		signalWorkSession(s)
 	}
 	for _, job := range l.byChild[sessionID] {
-		if job.cancel != nil {
-			job.cancel()
-		}
-		job.transitionToTerminal(phaseCancelled, jobResult{content: subAgentOutcomeCancelledText, isError: true})
-		if completion, callback := l.deliverLocked(job.owner, job); callback {
-			pending = append(pending, completion)
-		}
+		job.stoppedBySession = true
+		targets = append(targets, cancelSessionTarget{
+			job: job, owner: job.owner, toolCallID: job.toolCallID, toolName: job.toolName,
+			shellID: job.shellID, outputBuf: job.outputBuf, isDelegation: true,
+			sync: job.sync, cancel: job.cancel,
+		})
 	}
 	l.mu.Unlock()
+
+	l.stopTargets(targets)
 	// A cancelled session's own supervision timer (if any) is dropped here
-	// unconditionally: the plain-job branch above deletes directly rather
-	// than through deliverLocked (whose own drop-on-empty hook this
-	// therefore cannot rely on alone), and cancelling is this codebase's
-	// closest existing proxy for "give up on this session's work" -- see
+	// unconditionally -- cancelling is this codebase's closest existing
+	// proxy for "give up on this session's work" -- see
 	// clearSupervisionIfPresent's own doc for the known gap around a bare
 	// session delete with no prior cancel.
 	l.clearSupervisionIfPresent(sessionID)
-	for _, completion := range pending {
-		l.onWebDone(completion)
+}
+
+// stopTargets runs the actual stop for every snapshotted target (cancelSession's
+// original inline loop, factored out so work_ledger_rerun.go's Rerun-scoped
+// stop can share it exactly): sync delegations unblock awaitSync in memory,
+// sync plain jobs are dropped from the map, and every non-sync job (plain or
+// delegation) takes the one durable transition path. Caller must NOT hold
+// l.mu; every target's stoppedBySession/killRequested marker (whichever the
+// caller set) must already be recorded under l.mu before calling this, so
+// the race described on cancelSession's own targets-capture loop is closed
+// regardless of which caller populated targets.
+func (l *workLedger) stopTargets(targets []cancelSessionTarget) {
+	for _, tgt := range targets {
+		switch {
+		case tgt.sync && tgt.isDelegation:
+			// Old memory-only path: unblocks awaitSync via deliverLocked's
+			// own sync branch (closes job.done). Sync jobs never touch the
+			// store (doc sec.3.1).
+			l.mu.Lock()
+			tgt.job.transitionToTerminal(phaseCancelled, jobResult{content: subAgentOutcomeCancelledText, isError: true})
+			completion, callback := l.deliverLocked(tgt.owner, tgt.job)
+			l.mu.Unlock()
+			if callback {
+				l.onWebDone(completion)
+			}
+		case tgt.sync:
+			l.mu.Lock()
+			if s := l.bySession[tgt.owner]; s != nil && s.jobs[tgt.toolCallID] == tgt.job {
+				delete(s.jobs, tgt.toolCallID)
+				signalWorkSession(s)
+			}
+			l.mu.Unlock()
+		default:
+			// Non-sync (plain OR delegation): ONE durable path (review
+			// finding P2 -- "one path is preferred"). transition's own
+			// delivery step drops a stoppedBySession-marked PLAIN job
+			// silently no matter which cause wins the CAS race, and still
+			// delivers a delegation's cancelled notice exactly as before.
+			content := jobResult{content: subAgentOutcomeCancelledText, isError: true}
+			if !tgt.isDelegation {
+				content = l.capturePartial(tgt.owner, tgt.toolCallID, tgt.toolName, "", tgt.shellID, tgt.outputBuf)
+			}
+			l.transition(tgt.job, causeSessionCancel, content)
+		}
+		if tgt.cancel != nil {
+			tgt.cancel()
+		}
 	}
+}
+
+// treeSessionIDs returns root plus every descendant reachable through a
+// still-RUNNING delegation job (doc sec.3.8: "Stop is transitive: cancelling
+// a session cancels the whole tree via running delegation rows"), walked and
+// snapshotted BEFORE any cancellation runs so the walk sees the pre-Stop
+// tree shape rather than racing its own cancellations. Descendants via
+// parent_session_id are deliberately NOT walked (doc sec.3.5's same rule):
+// only a delegation row still RUNNING represents live child scope.
+func (l *workLedger) treeSessionIDs(root string) []string {
+	if root == "" {
+		return nil
+	}
+	seen := map[string]bool{root: true}
+	order := []string{root}
+	frontier := []string{root}
+	for len(frontier) > 0 {
+		var next []string
+		l.mu.Lock()
+		for _, id := range frontier {
+			s := l.bySession[id]
+			if s == nil {
+				continue
+			}
+			for _, job := range s.jobs {
+				if job.childSession != "" && job.state == phaseRunning && !seen[job.childSession] {
+					seen[job.childSession] = true
+					next = append(next, job.childSession)
+				}
+			}
+		}
+		l.mu.Unlock()
+		order = append(order, next...)
+		frontier = next
+	}
+	return order
+}
+
+// cancelTree cancels root and every descendant session in its current
+// delegation tree (treeSessionIDs), returning every id it acted on so the
+// caller (coordinator.Cancel) can also hard-stop each session's mailbox and
+// zero the wake bit on every already-terminal debt row across the whole set
+// (doc sec.3.4/3.8: a race between a natural completion and Stop must never
+// grant a stopped delegation's child a turn).
+func (l *workLedger) cancelTree(root string) []string {
+	ids := l.treeSessionIDs(root)
+	for _, id := range ids {
+		l.cancelSession(id)
+	}
+	return ids
 }
 
 // gcChildLocked drops fully-resolved (terminal) entries from childID's
@@ -295,4 +504,43 @@ func (l *workLedger) parkedParentSessions() []string {
 		}
 	}
 	return parents
+}
+
+// parkedChildSessions returns the distinct CHILD session ids (byChild's own
+// keys) that still have at least one armed delegation -- i.e. exactly the
+// ids recheckChild itself expects (it indexes l.byChild by CHILD id, never
+// by parent/owner). B12/C14 fix: RecheckPass's 60s pass used to call
+// recheckChild with parkedParentSessions()' PARENT ids instead, so
+// byChild[parent] was always a miss and no child was ever actually
+// re-evaluated by the pass.
+func (l *workLedger) parkedChildSessions() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	children := make([]string, 0, len(l.byChild))
+	for childID, entries := range l.byChild {
+		for _, job := range entries {
+			if job.state == phaseRunning {
+				children = append(children, childID)
+				break
+			}
+		}
+	}
+	return children
+}
+
+// hasArmedOrDriver reports whether recheckChild has anything to decide for
+// childID: a delegation armed on it, or a driver registered for it (whose
+// release childScopeDrained still gates).
+func (l *workLedger) hasArmedOrDriver(childID string) bool {
+	l.mu.Lock()
+	armed := oldestArmedLocked(l.byChild[childID]) != nil
+	l.mu.Unlock()
+	if armed {
+		return true
+	}
+	if l.coord == nil {
+		return false
+	}
+	_, ok := l.coord.subAgentDrivers.get(childID)
+	return ok
 }

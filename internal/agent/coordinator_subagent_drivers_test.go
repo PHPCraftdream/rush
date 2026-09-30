@@ -22,6 +22,7 @@ func TestSubAgentWorkTerminal_DriverBusyIsNotTerminal(t *testing.T) {
 	t.Parallel()
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 

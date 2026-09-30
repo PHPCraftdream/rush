@@ -47,6 +47,13 @@ type mailboxLikeCoordinator struct {
 	epoch       uint64
 	reserveHits int // counts every ReserveExclusive call, successful or not.
 
+	// Recorded under mu: rerun must call CancelTurn (never the full Stop) and,
+	// after a committed truncation, StopRerunJobs with the voided set.
+	cancelTurnCalls int
+	stopCalls       int
+	stopRerunCalls  int
+	stopRerunVoided []session.VoidedAsyncJob
+
 	runSideEffect func()
 }
 
@@ -58,7 +65,11 @@ func (m *mailboxLikeCoordinator) RunWithOverrides(ctx context.Context, sessionID
 	return nil, nil
 }
 
-func (m *mailboxLikeCoordinator) Cancel(sessionID string) {}
+func (m *mailboxLikeCoordinator) Cancel(sessionID string) {
+	m.mu.Lock()
+	m.stopCalls++
+	m.mu.Unlock()
+}
 
 func (m *mailboxLikeCoordinator) CancelAll() (stillBusy bool) { return false }
 
@@ -120,6 +131,19 @@ func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, da
 
 func (m *mailboxLikeCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {
 	return nil, nil
+}
+
+func (m *mailboxLikeCoordinator) CancelTurn(sessionID string) {
+	m.mu.Lock()
+	m.cancelTurnCalls++
+	m.mu.Unlock()
+}
+
+func (m *mailboxLikeCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+	m.mu.Lock()
+	m.stopRerunCalls++
+	m.stopRerunVoided = append(m.stopRerunVoided, voided...)
+	m.mu.Unlock()
 }
 
 // ReserveExclusive is the atomic check-and-claim this whole test exists to

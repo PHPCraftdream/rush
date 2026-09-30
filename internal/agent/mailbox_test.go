@@ -807,3 +807,53 @@ func TestMailbox_AbandonOwnership_EpochMismatch_IsNoOp(t *testing.T) {
 	require.Len(t, mb.submitted, 1)
 	require.Equal(t, laterOwnerCall, mb.submitted[0], "the later owner's queued call must survive a stale abandon call untouched")
 }
+
+// TestMailbox_ReclaimReplacementOrKeep_DisplacedDrainDroppedWhenQueueNonEmpty
+// pins B17 (docs/reviews/2026-09-29-async-phase4-round1.md): a displaced
+// Drain being pushed back onto the queue must go through the SAME Drain-
+// merge rule as every other insertion path (doc sec.3.4: "at most one Drain
+// call in the queue, on ANY insertion path, including returning a displaced
+// call to the head") -- a bare prepend let it sit ALONGSIDE whatever was
+// already queued.
+//
+// Revert-check performed: changed reclaimReplacementOrKeep back to `mb.
+// submitted = append([]SessionAgentCall{call}, mb.submitted...)` (bare
+// prepend) -- this test's `require.Equal(t, []SessionAgentCall{callB},
+// mb.submitted)` FAILED (mb.submitted was [drainCall, callB]: two entries,
+// the displaced Drain sitting in front of the already-queued real call).
+// Restored the mergeQueuedCallAtHead call; re-ran, passed.
+func TestMailbox_ReclaimReplacementOrKeep_DisplacedDrainDroppedWhenQueueNonEmpty(t *testing.T) {
+	drainCall := newDrainCall(SessionAgentCall{SessionID: "s1"})
+	callB := SessionAgentCall{SessionID: "s1", Prompt: "B - already queued"}
+	replacement := SessionAgentCall{SessionID: "s1", Prompt: "replacement"}
+	mb := &mailbox{
+		replacement: &replacement,
+		submitted:   []SessionAgentCall{callB},
+	}
+
+	got := mb.reclaimReplacementOrKeep(drainCall)
+
+	require.Equal(t, replacement.Prompt, got.Prompt)
+	require.Equal(t, []SessionAgentCall{callB}, mb.submitted,
+		"a displaced Drain must be dropped, not queued alongside an already-non-empty queue")
+}
+
+// TestMailbox_ReclaimReplacementOrKeep_DisplacedRealCallDropsQueuedDrain is
+// the mirror: a displaced REAL call reclaiming the head must drop an
+// already-queued Drain (the stronger policy wins, matching mergeQueuedCall's
+// own rule for the tail-insertion path).
+func TestMailbox_ReclaimReplacementOrKeep_DisplacedRealCallDropsQueuedDrain(t *testing.T) {
+	displacedReal := SessionAgentCall{SessionID: "s1", Prompt: "displaced real call"}
+	queuedDrain := newDrainCall(SessionAgentCall{SessionID: "s1"})
+	replacement := SessionAgentCall{SessionID: "s1", Prompt: "replacement"}
+	mb := &mailbox{
+		replacement: &replacement,
+		submitted:   []SessionAgentCall{queuedDrain},
+	}
+
+	got := mb.reclaimReplacementOrKeep(displacedReal)
+
+	require.Equal(t, replacement.Prompt, got.Prompt)
+	require.Equal(t, []SessionAgentCall{displacedReal}, mb.submitted,
+		"a displaced real call must drop an already-queued Drain, not sit behind or alongside it")
+}

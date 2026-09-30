@@ -886,25 +886,7 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		Model:           reviewerCfg.Model,
 		ReasoningEffort: reviewerCfg.ReasoningEffort,
 	}
-	reviewCallOpts := &agent.CallOptions{
-		ModelRole:                config.SelectedModelTypeReviewer,
-		DisableSubAgents:         true,
-		TimeoutExtendsOnProgress: primary.TimeoutExtendsOnProgress,
-		TimeoutHardCap:           primary.TimeoutHardCap,
-		TimeoutOptionsSet:        primary.TimeoutOptionsSet,
-		IdleTimeout:              primary.IdleTimeout,
-		MaxCost:                  primary.MaxCost,
-		MaxTokens:                primary.MaxTokens,
-		AllowPeakHours:           primary.AllowPeakHours,
-		// R2-3: honor the caller's fail-fast busy policy on the review
-		// turn too. The decision itself stays at the mailbox reservation
-		// (sessionAgent.Run -> mailbox.submit), which is atomic under
-		// mb.mu: a competing claim between the phases is rejected for
-		// this call with nothing left in the other owner's queue.
-		FailIfSessionBusy: primary.FailIfSessionBusy,
-		FolderScope:       primary.FolderScope,
-		DiskProvider:      primary.DiskProvider,
-	}
+	reviewCallOpts := reviewerCallOptions(primary)
 	reviewCtx := agent.WithCallOptions(ctx, reviewCallOpts)
 	// R5-1: carry the temporary reviewer override on the review turn's
 	// ctx so the 401 rebuild path (coordinator.resolveCallModels)
@@ -919,4 +901,32 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		return app.AgentCoordinator.RunWithOverrides(ctx, sessionID, prompt, reviewerOverride, nil)
 	}
 	return reviewRunFn, reviewCtx
+}
+
+// reviewerCallOptions is the review turn's CallOptions: every field of the
+// caller's primary options carries over except ModelRole and DisableSubAgents,
+// overridden on purpose (TestReviewerCallOptionsCarryEveryPrimaryField keeps a
+// future field from being forgotten).
+func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
+	return &agent.CallOptions{
+		ModelRole:                config.SelectedModelTypeReviewer,
+		DisableSubAgents:         true,
+		TimeoutExtendsOnProgress: primary.TimeoutExtendsOnProgress,
+		TimeoutHardCap:           primary.TimeoutHardCap,
+		TimeoutOptionsSet:        primary.TimeoutOptionsSet,
+		IdleTimeout:              primary.IdleTimeout,
+		MaxCost:                  primary.MaxCost,
+		MaxTokens:                primary.MaxTokens,
+		AllowPeakHours:           primary.AllowPeakHours,
+		SupervisionDisabled:      primary.SupervisionDisabled,
+		SupervisionInterval:      primary.SupervisionInterval,
+		// R2-3: honor the caller's fail-fast busy policy on the review
+		// turn too. The decision itself stays at the mailbox reservation
+		// (sessionAgent.Run -> mailbox.submit), which is atomic under
+		// mb.mu: a competing claim between the phases is rejected for
+		// this call with nothing left in the other owner's queue.
+		FailIfSessionBusy: primary.FailIfSessionBusy,
+		FolderScope:       primary.FolderScope,
+		DiskProvider:      primary.DiskProvider,
+	}
 }

@@ -130,6 +130,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		LogicalCallID:       uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:         autoResumed,
 		BackgroundJobNotice: backgroundJobNotice,
+		IsDrain:             isDrainCallFrom(ctx),
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
@@ -194,6 +195,12 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
 	callOpts := callOptionsFrom(ctx)
+	// A human-initiated turn (web/SDK: no per-call options, not a Drain) starts
+	// with a stale `sessions cancel` request spent (R8A-2); the `rush run` loop's
+	// own turns (per-call options) and Drains leave it to the loop.
+	if callOpts == nil && !isDrainCallFrom(ctx) {
+		clearCancelRequest(ctx, c.sessions, sessionID)
+	}
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
 
 	maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -218,7 +225,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// (every-run, not just every-401) path.
 	providerCfg := pinned.providerCfg
 	if providerCfg.ID == "" {
-		return nil, errModelProviderNotConfigured
+		return nil, c.drainRefused(ctx, sessionID, errModelProviderNotConfigured)
 	}
 	// Fork patch (peak-hours bypass): consume the one-shot allow flag
 	// armed by SetAllowPeakHours (`rush run --allow-peak-hours`). Reset
@@ -237,16 +244,27 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	}
 	if !allowPeak {
 		if err := checkPeakHours(providerCfg); err != nil {
-			return nil, err
+			return nil, c.drainRefused(ctx, sessionID, err)
 		}
 	}
 
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 
-	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
+	if refreshed, err := c.refreshExpiredToken(ctx, providerCfg); err != nil {
 		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
 		// depends on the flow below. If refresh fails, proceed with the token we have.
 		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", err)
+	} else if refreshed && creds == nil {
+		// The model above was resolved BEFORE the refresh, so its client still
+		// carries the old token: rebuild it on the new one (same model). A
+		// Drain gets exactly one attempt, so it must not spend it on the
+		// stale client.
+		if fresh, rebuildErr := c.rebuildOnCurrentCredentials(ctx, model, false); rebuildErr != nil {
+			slog.Warn("Could not rebuild the model client after a token refresh; proceeding with the old client", "provider", providerCfg.ID, "error", rebuildErr)
+		} else {
+			model = fresh
+			pinned.smart = fresh
+		}
 	}
 
 	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
@@ -328,6 +346,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:          autoResumed,
 		BackgroundJobNotice:  backgroundJobNotice,
+		IsDrain:              isDrainCallFrom(ctx),
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 		// R3-1: the CURRENT attempt's sink (for multi-step or
 		// 401-retried runs the LAST prepared step wins). armAttempt
@@ -504,12 +523,26 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 
 	beforeLoaded := c.skillTracker.LoadedNames()
 	var result *fantasy.AgentResult
-	originalErr := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
-		var err error
+	var originalErr error
+	if agentCall.IsDrain {
+		// A Drain is ONE provider attempt (attempts design 1.6): no 401
+		// rebuild-and-retry leg here and no transient retry below -- the
+		// attempt is accounted by the turn loop and retried by the launch
+		// gate's pace. A 401 refreshes the credentials in that accounting
+		// (refreshAfterUnauthorized), before it decides, not here after it.
 		armAttempt()
-		result, err = run()
-		return err
-	}, rebuildCall)
+		result, originalErr = run()
+		if errors.Is(originalErr, ErrAgentShuttingDown) {
+			originalErr = c.drainRefused(ctx, sessionID, originalErr)
+		}
+	} else {
+		originalErr = c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
+			var err error
+			armAttempt()
+			result, err = run()
+			return err
+		}, rebuildCall)
+	}
 	// Only what THIS attempt's own turn reported before run() returned
 	// counts. A queued admission leaves it empty UNLESS the queued copy's
 	// dispatch fired the callback before this resolve() sealed it (R7-1);
@@ -532,8 +565,10 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
 
 	// Notify only if still unauthorized after retry — a successful
-	// retry means the user doesn't need to re-authenticate.
-	if originalErr != nil && c.isUnauthorized(originalErr) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
+	// retry means the user doesn't need to re-authenticate. A Drain's 401
+	// was refreshed, or found terminal, by its own accounting, which also
+	// publishes this notification when it stays terminal.
+	if originalErr != nil && !agentCall.IsDrain && c.isUnauthorized(originalErr) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
 		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
 			Type:       notify.TypeReAuthenticate,
 			ProviderID: model.ModelCfg.Provider,
@@ -582,6 +617,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		if maxRetries < 0 {
 			maxRetries = 0
 		}
+	}
+	if agentCall.IsDrain {
+		maxRetries = 0 // one attempt, see above
 	}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		// R7-1: ADMISSION OUTCOME gates retry classification, checked
@@ -656,7 +694,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 // smart/fast model overrides instead of the global config defaults.
 func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	// Carry session-level reasoning effort into the overrides so that
@@ -694,7 +732,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 
 	pinned, err := c.applyModelOverrides(ctx, smart, fast)
 	if err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)

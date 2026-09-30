@@ -83,3 +83,57 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	_, statErr := os.Stat(lockPath)
 	require.True(t, os.IsNotExist(statErr), "orphan lock file at the configured data dir must be removed")
 }
+
+// R8C-5: an aged EMPTY lock file is the leftover of a clean release (a live
+// `rush run` loop between turns, a web session between turns). Probing it
+// takes the lock the owner needs for its next turn and unlinks a path it will
+// reuse, so reap keeps it and reports "removed orphan ... provably dead" for
+// nothing that died. A lock recording a PID (a crash leaves one) is still
+// probed and reclaimed.
+//
+// Revert-check: dropping the PID-less skip makes the released lock read
+// "would remove orphan lock" (and, without --dry-run, unlinks it).
+func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
+	tmp := isolateConfigEnvForTests(t)
+	workDir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workDir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	dataDir := filepath.Join(tmp, "reap-released-data")
+	ensureRootFlagStandIns(sessionsReapCmd, dataDir)
+	if f := sessionsReapCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsReapCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsReapCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsReapCmd.Flags().Set("all", "false"))
+	sessionsReapCmd.SetContext(context.Background())
+
+	releasedLockPath := releasedLock(t, dataDir, "reap-released-loop")
+	ageLock(t, releasedLockPath, 2*time.Minute)
+	crashPath := writeLockFileAt(t, dataDir, "reap-crashed", 999999)
+	ageLock(t, crashPath, 2*time.Minute)
+	before, err := os.Stat(releasedLockPath)
+	require.NoError(t, err)
+
+	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "true"))
+	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
+	require.Contains(t, stderr, "would remove orphan lock session-reap-crashed.lock")
+	require.NotContains(t, stderr, "session-reap-released-loop.lock (holder provably dead",
+		"a clean-release leftover is not an orphan")
+	require.Contains(t, stderr, "kept   released lock session-reap-released-loop.lock")
+	require.Contains(t, stderr, "would have reclaimed 1 lock(s)")
+
+	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
+	// The dry run still probed the crash lock (freshening it): seed it again.
+	ageLock(t, writeLockFileAt(t, dataDir, "reap-crashed", 999999), 2*time.Minute)
+	stderr = captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
+	require.Contains(t, stderr, "reclaimed 1 lock(s)")
+	require.FileExists(t, releasedLockPath, "the loop's lock file stays in place")
+	after, err := os.Stat(releasedLockPath)
+	require.NoError(t, err)
+	require.True(t, before.ModTime().Equal(after.ModTime()), "not probed: the probe freshens the mtime")
+	_, err = os.Stat(crashPath)
+	require.True(t, os.IsNotExist(err), "the crash-orphan is reclaimed as before")
+}

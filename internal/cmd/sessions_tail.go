@@ -4,10 +4,12 @@ package cmd
 // optionally follow it until the session finishes.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +19,9 @@ var sessionsTailCmd = &cobra.Command{
 	Short: "Stream messages from a session",
 	Long: `Output messages from a session, one block per message. By default,
 prints all messages and exits. With --follow, polls for new messages
-until the session finishes (last message has a non-Partial finish reason)
+until the session finishes (last message has a non-Partial finish reason and
+no live "rush run" loop, running job or delegation still works on it: the
+lock is held only during a turn, so a first turn that yields is not the end)
 or until you press Ctrl+C.
 
 Use --from-message <id> to resume from a specific message (skips earlier
@@ -26,8 +30,7 @@ or other tools.
 
 Exit codes:
   0 — session completed or user interrupted with Ctrl+C
-  1 — session not found
-  2 — database error while streaming
+  1 — session not found, or a database error while streaming
   `,
 	Args: cobra.ExactArgs(1),
 	Example: `
@@ -62,12 +65,12 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	defer a.Shutdown()
 
-	sessionID := args[0]
-	// Verify session exists
-	_, err = resolveSessionID(cmd.Context(), a.Sessions, sessionID)
+	// The argument may be a HASH prefix: every read below uses the resolved id.
+	sess, err := resolveSessionID(cmd.Context(), a.Sessions, args[0])
 	if err != nil {
 		return err
 	}
+	sessionID := sess.ID
 
 	// Track the last message ID we've printed
 	lastPrinted := fromMsgID
@@ -119,26 +122,23 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Check if session is already finished
-	isFinished := func() bool {
-		msgs, err := a.Messages.List(cmd.Context(), sessionID)
-		if err != nil || len(msgs) == 0 {
-			return false
-		}
-		lastMsg := msgs[len(msgs)-1]
-		if f := lastMsg.FinishPart(); f != nil && !f.Partial {
-			return true
-		}
-		return false
-	}
+	workNoted := "" // last live-work note printed (one line per change)
 
 	// Poll for new messages
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-cmd.Context().Done():
+			return nil // Ctrl-C: exit 0, as documented
+		case <-ticker.C:
+		}
 		messages, err := a.Messages.List(cmd.Context(), sessionID)
 		if err != nil {
+			if cmd.Context().Err() != nil {
+				return nil // interrupted mid-read
+			}
 			return fmt.Errorf("database error: %w", err)
 		}
 
@@ -165,12 +165,36 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 		}
 
 		// Check if finished
-		if isFinished() {
+		finished, work := tailSessionFinished(cmd.Context(), a, sessionID)
+		if work != "" && work != workNoted {
+			fmt.Fprintf(os.Stderr, "(between turns — %s; still following)\n", work)
+			workNoted = work
+		}
+		if finished {
 			return nil
 		}
 	}
+}
 
-	return nil
+// tailSessionFinished reports whether `sessions tail --follow` should stop:
+// the newest message has a non-partial finish AND nothing keeps the session
+// open. The lock is held only during a turn, so that finish can be the first
+// turn's while a `rush run` loop waits on a job (R6C-1): a live driver marker,
+// own job or delegation keeps the follow going, and the second result names
+// it ("" when none).
+func tailSessionFinished(ctx context.Context, a *app.App, sessionID string) (bool, string) {
+	msgs, err := a.Messages.List(ctx, sessionID)
+	if err != nil || len(msgs) == 0 {
+		return false, ""
+	}
+	lastMsg := msgs[len(msgs)-1]
+	if f := lastMsg.FinishPart(); f == nil || f.Partial {
+		return false, ""
+	}
+	if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
+		return false, w.describe()
+	}
+	return true, ""
 }
 
 // indexByID returns the index of the message with the given id in

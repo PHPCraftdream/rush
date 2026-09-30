@@ -22,14 +22,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// latestSessionNoticeText returns the text of owner's most recently
+// inserted session_notices row (phase-4 step 3: supervision now persists
+// its check-in there instead of putting it directly on the woken call's
+// Prompt -- a Drain call carries neither text nor NoticeKind of its own,
+// see agent_drain.go). Fails the test if there are no rows.
+func latestSessionNoticeText(t *testing.T, l *workLedger, owner string) string {
+	t.Helper()
+	notices, err := l.store.ListSessionNotices(t.Context(), owner)
+	require.NoError(t, err)
+	require.NotEmpty(t, notices, "expected at least one session_notices row for %s", owner)
+	return notices[len(notices)-1].Text
+}
+
+// sessionNoticeTextAt returns the i-th (0-indexed, insertion order)
+// session_notices row's text for owner.
+func sessionNoticeTextAt(t *testing.T, l *workLedger, owner string, i int) string {
+	t.Helper()
+	notices, err := l.store.ListSessionNotices(t.Context(), owner)
+	require.NoError(t, err)
+	require.Greater(t, len(notices), i, "expected at least %d session_notices row(s) for %s", i+1, owner)
+	return notices[i].Text
+}
+
 // newSupervisionTestLedger builds a bare workLedger+coordinator pair wired
 // for supervision, with no timer service (tests that drive
 // handleSupervisionDeadline directly do not need the real timer; armFunc is
 // nil-receiver-safe, so a stray re-arm call from within it is a silent
 // no-op).
-func newSupervisionTestLedger() (*workLedger, *coordinator) {
+func newSupervisionTestLedger(t *testing.T) (*workLedger, *coordinator) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	l.supervision = newSupervisionRegistry()
 	coord.asyncJobs = l
@@ -43,7 +67,7 @@ func startOpenJob(t *testing.T, l *workLedger, sessionID, toolCallID string) {
 	t.Helper()
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", true, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged(sessionID, toolCallID)
+	l.acknowledged(jobOf(l, sessionID, toolCallID))
 }
 
 // TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot: a session
@@ -56,7 +80,7 @@ func startOpenJob(t *testing.T, l *workLedger, sessionID, toolCallID string) {
 // noteWorkStarted -- this test's child assertion FAILED (state was armed
 // for the delegated child too). Restored the guard; re-ran, passed.
 func TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	coord.subAgentDrivers.register("delegated-child", subAgentDriver{agent: &mockSessionAgent{}})
 
 	l.noteWorkStarted(context.Background(), "delegated-child")
@@ -80,7 +104,7 @@ func TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot(t *testing.T) {
 // return }` block -- this test FAILED (the spy agent's Run was invoked with
 // no open work at all). Restored the block; re-ran, passed.
 func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	spy := &mockSessionAgent{runFunc: func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		t.Fatal("must not wake a session with no open work")
 		return nil, nil
@@ -113,7 +137,7 @@ func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
 // test FAILED (the busy spy's Run was invoked). Restored the check; re-ran,
 // passed.
 func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "busy-root", "job-1")
 
 	busy := &busyStubAgent{}
@@ -147,7 +171,7 @@ func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
 // passed.
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -170,17 +194,20 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 
 	select {
 	case call := <-received:
-		require.Equal(t, "supervision", call.NoticeKind)
-		require.Contains(t, call.Prompt, "Supervision check-in (tick 1")
-		require.Contains(t, call.Prompt, "1 background job(s) running")
-		require.Contains(t, call.Prompt, "call-abc")
-		require.Contains(t, call.Prompt, "job_output")
-		require.Contains(t, call.Prompt, "job_kill")
-		require.NotContains(t, call.Prompt, "inspect_agent")
-		require.NotContains(t, call.Prompt, "stop_agent")
+		require.True(t, call.IsDrain, "a supervision tick wakes via a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("supervision tick never reached agent.Run")
 	}
+
+	text := latestSessionNoticeText(t, l, "tick-root")
+	require.Contains(t, text, "Supervision check-in (tick 1")
+	require.Contains(t, text, "1 background job(s) running")
+	require.Contains(t, text, "call-abc")
+	require.Contains(t, text, "job_output")
+	require.Contains(t, text, "job_kill")
+	require.NotContains(t, text, "inspect_agent")
+	require.NotContains(t, text, "stop_agent")
 }
 
 // TestSupervision_RecordProgressPushesDeadlineForward: recordProgress
@@ -198,7 +225,7 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 // recordProgress). Restored recordProgress; re-ran, passed.
 func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -270,7 +297,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 // deadline-only push; re-ran, passed.
 func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -307,7 +334,8 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 		t.Fatal("the rescheduled deadline never fired")
 	}
 	require.Len(t, prompts, 1)
-	require.Contains(t, prompts[0], "tick 3", "backoff continues from where it left off (3rd tick), not reset to 1")
+	text := latestSessionNoticeText(t, l, "turnend-root")
+	require.Contains(t, text, "tick 3", "backoff continues from where it left off (3rd tick), not reset to 1")
 }
 
 // TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession: a mere turn end
@@ -317,7 +345,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 // pushDeadlineOnTurnEnd's stale-check -- this test FAILED (generation
 // changed for a paused session). Restored the clause; re-ran, passed.
 func TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	l.supervision.byRoot["paused-root"] = &supervisionState{rootSessionID: "paused-root", cfg: DefaultSupervisionConfig(), paused: true, generation: 5}
 
 	l.pushDeadlineOnTurnEnd("paused-root")
@@ -329,23 +357,35 @@ func TestSupervision_PushDeadlineOnTurnEndSkipsPausedSession(t *testing.T) {
 	require.True(t, st.paused)
 }
 
-// TestSupervision_OnSessionIdleHookPushesDeadline: the hook wired onto every
-// SessionAgent's OnSessionIdle (coordinator_tools.go) must still push the
-// supervision deadline, not just retain the pre-existing phase-3 trigger.
-func TestSupervision_OnSessionIdleHookPushesDeadline(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+// TestSupervision_AfterTurnPushesDeadline: the turn epilogue (runOwned's
+// afterTurn) pushes the supervision deadline after every turn that reached
+// the provider -- but not after a Drain that ended without reaching it
+// (opening a tab must not reset the root's silence timer).
+//
+// Revert-check: dropping the pushDeadlineOnTurnEnd call from afterTurn turns
+// the first assertion red; pushing for every Drain leg turns the second red.
+func TestSupervision_AfterTurnPushesDeadline(t *testing.T) {
+	l, _ := newSupervisionTestLedger(t)
 	l.supervision.nextGen = 1
-	l.supervision.byRoot["hook-root"] = &supervisionState{
-		rootSessionID: "hook-root", cfg: DefaultSupervisionConfig(), interval: 5 * time.Millisecond, generation: 1,
+	for _, id := range []string{"hook-root", "quiet-root"} {
+		l.supervision.byRoot[id] = &supervisionState{
+			rootSessionID: id, cfg: DefaultSupervisionConfig(), interval: 5 * time.Millisecond, generation: 1,
+		}
 	}
+	sa := &sessionAgent{asyncJobs: l}
 
-	coord.onSessionIdleHook("hook-root")
-
+	sa.afterTurn(SessionAgentCall{SessionID: "hook-root"}, nil, nil, false)
 	l.supervision.mu.Lock()
-	st := l.supervision.byRoot["hook-root"]
+	pushed := l.supervision.byRoot["hook-root"].generation
 	l.supervision.mu.Unlock()
-	require.NotNil(t, st)
-	require.NotEqual(t, uint64(1), st.generation, "onSessionIdleHook must push the supervision deadline")
+	require.NotEqual(t, uint64(1), pushed, "a turn that reached the provider must push the supervision deadline")
+
+	noTurn := &drainAttempt{sessionID: "quiet-root", outcome: drainNoTurn}
+	sa.afterTurn(newDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil, false)
+	l.supervision.mu.Lock()
+	quiet := l.supervision.byRoot["quiet-root"].generation
+	l.supervision.mu.Unlock()
+	require.EqualValues(t, 1, quiet, "a no-turn Drain must not reset the silence timer")
 }
 
 // TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress drives
@@ -361,7 +401,7 @@ func TestSupervision_OnSessionIdleHookPushesDeadline(t *testing.T) {
 // of being blocked, and the "exactly 3 calls, then none" assertion FAILED.
 // Both restored; re-ran, passed.
 func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
-	l, coord := newSupervisionTestLedger()
+	l, coord := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "backoff-root", "call-1")
 
 	var mu sync.Mutex
@@ -370,11 +410,6 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 		mu.Lock()
 		prompts = append(prompts, p)
 		mu.Unlock()
-	}
-	promptAt := func(i int) string {
-		mu.Lock()
-		defer mu.Unlock()
-		return prompts[i]
 	}
 	promptCount := func() int {
 		mu.Lock()
@@ -404,7 +439,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.False(t, st.paused)
 	gen2 := st.generation
 	l.supervision.mu.Unlock()
-	require.Contains(t, promptAt(0), "tick 1")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 0), "tick 1")
 
 	fireAndWait(gen2, 2) // tick 2: 20ms -> 40ms (== cap)
 	l.supervision.mu.Lock()
@@ -421,7 +456,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.True(t, st.paused)
 	staleGenAfterPause := st.generation
 	l.supervision.mu.Unlock()
-	require.Contains(t, promptAt(2), "paused after 3 consecutive check-ins")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 2), "paused after 3 consecutive check-ins")
 
 	// A stale fire against the paused generation must not produce a 4th call.
 	l.handleSupervisionDeadline("backoff-root", staleGenAfterPause)
@@ -440,46 +475,37 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	require.NotEqual(t, staleGenAfterPause, resumedGen)
 
 	fireAndWait(resumedGen, 4)
-	require.Contains(t, promptAt(3), "tick 1", "a resumed session's next tick starts counting from 1 again")
+	require.Contains(t, sessionNoticeTextAt(t, l, "backoff-root", 3), "tick 1", "a resumed session's next tick starts counting from 1 again")
 }
 
 // TestSupervision_StateRemovedOnScopeClose: once a session's last open job
 // is delivered, deliverLocked drops its supervision state in the SAME
 // critical section that empties bySession[x].jobs -- the exact primitive
-// rush run's exit depends on (workLedger.next()) -- so a supervision timer
-// can never outlive, or delay noticing, the scope it was armed for.
+// rush run's own scope predicate (doc sec.3.5, coordinator.ScopeOpen) reads
+// via l.running -- so a supervision timer can never outlive, or delay
+// noticing, the scope it was armed for.
 //
 // Revert-check performed: removed both
 // `if len(s.jobs) == 0 { l.clearSupervisionIfPresent(owner) }` calls from
 // deliverLocked -- this test FAILED (supervision state was still present
 // after the job finished). Restored both; re-ran, passed.
 func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "closing-root", "call-1")
 	l.supervision.byRoot["closing-root"] = &supervisionState{rootSessionID: "closing-root", cfg: DefaultSupervisionConfig(), generation: 1}
+	require.True(t, l.running("closing-root"), "the job must still be open before it finishes")
 
-	l.finish("closing-root", "call-1", jobResult{content: "done"})
+	l.finish(jobOf(l, "closing-root", "call-1"), jobResult{content: "done"})
 
 	l.supervision.mu.Lock()
 	_, present := l.supervision.byRoot["closing-root"]
 	l.supervision.mu.Unlock()
 	require.False(t, present, "supervision state must be dropped the instant the scope's last job is delivered")
 
-	// The same event is what unblocks workLedger.next() -- rush run's own
-	// exit primitive -- proving supervision cannot hold it open. startOpenJob
-	// registers a `cli` job, so its single completion is queued on `ready`
-	// (byte-for-byte today's CLI routing, deliverLocked) -- drain that one
-	// real completion first, then a second call must report no more work at
-	// all, unblocked by any supervision timer.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, hasCompletion, err := l.next(ctx, "closing-root")
-	require.NoError(t, err)
-	require.True(t, hasCompletion, "the job's own completion must still be delivered normally")
-
-	_, hasCompletion, err = l.next(ctx, "closing-root")
-	require.NoError(t, err)
-	require.False(t, hasCompletion, "next() must report no more work once drained, unblocked by any supervision timer")
+	// The same critical section is what l.running (and, through it, the
+	// scope predicate rush run's own exit condition reads, doc sec.3.5)
+	// observes -- proving supervision cannot hold the scope open.
+	require.False(t, l.running("closing-root"), "the scope must be closed, unblocked by any supervision timer")
 }
 
 // TestSupervision_CancelSessionAlsoClearsState covers cancelSession's path
@@ -487,7 +513,7 @@ func TestSupervision_StateRemovedOnScopeClose(t *testing.T) {
 // through deliverLocked -- clearSupervisionIfPresent's own call site inside
 // cancelSession is what covers this, not deliverLocked's hook.
 func TestSupervision_CancelSessionAlsoClearsState(t *testing.T) {
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	startOpenJob(t, l, "cancel-root", "call-1")
 	l.supervision.byRoot["cancel-root"] = &supervisionState{rootSessionID: "cancel-root", cfg: DefaultSupervisionConfig(), generation: 1}
 
@@ -506,7 +532,7 @@ func TestSupervision_CancelSessionAlsoClearsState(t *testing.T) {
 func TestSupervision_SingleGoroutineRegardlessOfSessionCount(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
-	l, _ := newSupervisionTestLedger()
+	l, _ := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 

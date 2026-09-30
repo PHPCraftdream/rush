@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -51,7 +52,7 @@ var executeRunDoneCaseSeam func()
 // streaming behaviour). Streaming output goes to req.Stdout, diagnostics to
 // req.Stderr; nil falls back to io.Discard. For RunModeJSON the caller is
 // responsible for encoding the returned *RunResult.
-func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, error) {
+func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, runErr error) {
 	mode := req.Mode
 	continueSessionID := req.ContinueSessionID
 	useLast := req.UseLast
@@ -80,12 +81,14 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 
 	defer stopSpinner()
 
-	sess, err := app.resolveSession(ctx, continueSessionID, useLast)
+	sess, err := app.resolveRunSession(ctx, req.mutationFree(), continueSessionID, useLast)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 	if req.onSessionResolved != nil {
-		req.onSessionResolved(sess.ID)
+		if err := req.onSessionResolved(sess.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Durable work accepted earlier for this session runs FIRST (FIFO), in
@@ -237,7 +240,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if systemPrompt != "" {
+	// A follow-up turn (req.mutationFree: a Drain, the reviewer pass) is
+	// mutation-free: the invocation's own setup -- system prompt, reasoning
+	// effort, model slots, cancel flag, budget, ended_reason, title -- ran once
+	// with the first turn (R2C-7).
+	if systemPrompt != "" && !req.mutationFree() {
 		if err := app.Sessions.UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
 			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
 		}
@@ -249,7 +256,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if overrides.ReasoningEffort != "" {
+	if overrides.ReasoningEffort != "" && !req.mutationFree() {
 		smart := sess.SmartModelReasoningEffort
 		fast := sess.FastModelReasoningEffort
 		if overrides.RoleSmart {
@@ -349,18 +356,22 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if err := app.Sessions.ClearCancelRequest(mutCtx, sess.ID); err != nil {
-		slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
+	if !req.mutationFree() {
+		if err := app.Sessions.ClearCancelRequest(mutCtx, sess.ID); err != nil {
+			slog.Warn("Failed to clear cancel request flag", "session_id", sess.ID, "err", err)
+		}
 	}
 
 	// Fork patch (operator UX): persist budget at run start so
 	// `sessions show` / `sessions locks` can display "cost vs limit".
 	// Also clear ended_reason since the session is being (re)started.
-	if err := app.Sessions.SetBudget(mutCtx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
-		slog.Warn("Failed to persist budget", "session_id", sess.ID, "err", err)
-	}
-	if err := app.Sessions.SetEndedReason(mutCtx, sess.ID, ""); err != nil {
-		slog.Warn("Failed to clear ended_reason", "session_id", sess.ID, "err", err)
+	if !req.mutationFree() {
+		if err := app.Sessions.SetBudget(mutCtx, sess.ID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
+			slog.Warn("Failed to persist budget", "session_id", sess.ID, "err", err)
+		}
+		if err := app.Sessions.SetEndedReason(mutCtx, sess.ID, ""); err != nil {
+			slog.Warn("Failed to clear ended_reason", "session_id", sess.ID, "err", err)
+		}
 	}
 
 	// Fork patch (operator UX): auto-title from first user prompt. If the
@@ -413,6 +424,17 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	defer func() {
 		if admissionAborted {
 			slog.Info("Skipping ended_reason write: the run never started (canceled during admission)", "session_id", sess.ID)
+			return
+		}
+		if req.loopTurn {
+			// The `rush run` loop's exit is the only writer for its turns: the
+			// column stays empty while the run is in progress (R8A-1).
+			return
+		}
+		if req.mutationFree() && (agent.IsDrainNotAttempted(runErr) || errors.Is(runErr, ErrRunQueued) || turnRefusedByOwner(runErr)) {
+			// A follow-up turn that ran nothing (a Drain refused, or queued
+			// behind another owner; a reviewer turn refused by the lock holder)
+			// must not rewrite how the session's run ended.
 			return
 		}
 		reason := hookExitReason
@@ -469,6 +491,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		hookExitReason = "cancelled"
 		return nil, err
 	}
+	if req.reviewerConfig {
+		// A Drain after the loop's reviewer turn reacts to that turn's own async
+		// work, so it runs as that turn did: reviewer model, sub-agents off.
+		runFn, ctx = app.buildReviewerPassTurn(ctx, setup.callOpts)
+	}
 	// The event loop now lives on executeRunLoop (app_run_reviewer.go) so
 	// it can run twice: once for the primary turn, and — only when the
 	// reviewer pass fires — once more for the review turn, whose finish()
@@ -506,6 +533,21 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 		}
 	}()
 
+	if req.reviewerTurn {
+		// The loop's own reviewer pass: only the review phase runs, as an
+		// ordinary turn (the ctx carries no Drain marker).
+		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+		loop.resetForReviewerPass(reviewCtx)
+		if req.onTurnSubmitted != nil {
+			req.onTurnSubmitted()
+		}
+		result, resultErr := loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
+		loop.flushTerseOutput()
+		return result, resultErr
+	}
+	if req.onTurnSubmitted != nil {
+		req.onTurnSubmitted()
+	}
 	result, resultErr := loop.runTurnPhase(prompt, runFn)
 	// Fork patch (reviewer pass): a CLEAN primary phase (no error — which
 	// already excludes failed, canceled, timed-out, max-cost/max-tokens
@@ -532,20 +574,36 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (*RunResult, err
 	// answer; a review turn would run a new phase under a dead context.
 	// Root terminality is transitive here too: a reviewer pass is a NEW
 	// phase on the root session, which must not open while any descendant
-	// sub-agent or async command it owns is still live at any depth. A
-	// delegation armed for sess.ID as its parent stays IN
-	// HasPendingAsyncJobs's own bySession[sess.ID].jobs entry until the
-	// child's scope drains and it is delivered (docs/plans/2026-09-28-
-	// async-phase3-spec.md §1.1) -- so this one check already covers both
-	// "root owns an undelivered async job" and "root's own delegation is
-	// still open", with no separate descendant walk needed.
-	asyncPending := false
-	if source, ok := app.AgentCoordinator.(agent.AsyncCompletionSource); ok {
-		asyncPending = source.HasPendingAsyncJobs(sess.ID)
-	}
-	if resultErr == nil && req.Credentials == nil && !asyncPending &&
+	// sub-agent or async command it owns is still live at any depth, or
+	// while the root itself still owes (or is retrying) a reaction turn. The
+	// gate reads the SAME CLIScope answer the CLI loop's own exit condition
+	// uses: running work (a delegation armed for sess.ID stays 'running' until
+	// the child's scope drains), an owed/paced/stuck reaction all block the
+	// pass; debt the policy defers (bg-shell with auto-resume off, a pending
+	// question) does not -- nothing will ever act on it, so waiting on it would
+	// silently skip the reviewer forever. Every skip says so on stderr.
+	//
+	// C16 fix: the cheap, in-memory checks below run FIRST, and the scope read
+	// is only consulted once they all already pass (it runs recovery writes and
+	// exclusive lock probes), so runs with no reviewer configured never pay for
+	// it; reviewerPassBlocked retries a DB read error with a pause.
+	//
+	// R3C-1: never inside a Drain iteration (its ctx is a Drain call: the review
+	// turn would inherit it, find nothing to pull and come back as a "queued"
+	// no-turn, dropping the run's real answer) and never when the `rush run`
+	// loop runs the pass itself, once, at its scope-closed exit.
+	reviewerCandidate := resultErr == nil && req.Credentials == nil &&
+		!req.drainTurn && !req.deferReviewer &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
-		shouldRunReviewerPass(overrides.ModelRole, app.config.Config()) {
+		shouldRunReviewerPass(overrides.ModelRole, app.config.Config())
+	if reviewerCandidate {
+		if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
+			if app.reviewerPassBlocked(ctx, source, sess.ID, stderr) {
+				reviewerCandidate = false
+			}
+		}
+	}
+	if reviewerCandidate {
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
 		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)

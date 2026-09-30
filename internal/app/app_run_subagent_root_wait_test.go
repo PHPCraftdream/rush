@@ -49,6 +49,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"sync"
@@ -164,6 +165,22 @@ func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
 		}
 	})
 	grantChildBackgroundShellTools(t, application)
+
+	// A rare full-package-only hang (61s = the ctx timeout below) left no
+	// evidence; on failure dump the served-request order and every goroutine.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		t.Logf("DIAG request order: %v", requestOrder.snapshot())
+		var buf strings.Builder
+		_ = pprof.Lookup("goroutine").WriteTo(&buf, 1)
+		dump := buf.String()
+		if len(dump) > 200_000 {
+			dump = dump[:200_000]
+		}
+		t.Logf("DIAG goroutines:\n%s", dump)
+	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()

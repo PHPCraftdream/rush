@@ -95,6 +95,7 @@ func TestCancelledFollowerLeavesOwnerInitReference(t *testing.T) {
 	}})
 	session := &ClientSession{}
 	sessions.Set(name, session)
+	t.Cleanup(func() { sessions.Del(name) })
 	lease := serverLeaseFor(name)
 	lease.Lock()
 

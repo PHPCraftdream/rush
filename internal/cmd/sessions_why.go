@@ -20,38 +20,60 @@ var sessionsWhyCmd = &cobra.Command{
 	Short: "Explain why a session has the status it has",
 	Long: `Print a one-shot diagnostic explaining a session's current status
 (running / crashed / done / at rest) and the evidence behind it, using
-only data rush itself owns: the session/message DB and the lock file.
+only data rush itself owns: the session/message DB (including the async job
+ledger) and the lock files -- session locks in .rush/locks, and the host locks
+in .rush/hosts that are probed (read-only) to tell whether the process
+running a job is alive.
 
 This is the command to reach for when "sessions list" shows a session as
 "crashed" and you want to know whether it genuinely died mid-turn or
 actually finished cleanly and left a stale lock behind. It does NOT read
-external log files or orchestrator redirect output — only the DB and the
-.rush/locks directory.
+external log files or orchestrator redirect output.
 
 The five possible verdicts:
 
-  done     — last assistant message finished with end_turn, no descendant
-             session is still working.
+  done     — last assistant message finished with end_turn, no delegation
+             is live and no background job of its own is running.
   crashed  — lock file exists, holder is dead (PID dead AND heartbeat
              stale), and no assistant message with a clean finish.
              Likely died mid-turn.
   running  — lock file exists, holder PID is alive OR the heartbeat is
              still fresh (PID alone is not trusted — on Windows it reads
-             as unreadable for the entire lifetime of a live session).
-  delegating — this session's own lock is gone (or stale) but at least one
-             DESCENDANT session still holds a live lock: delegated
-             sub-agent work is still in progress, so the session is NOT
-             done even though its own turn yielded.
-  at rest  — no lock file. Not running, not crashed, and no descendant
-             session is still working.
+             as unreadable for the entire lifetime of a live session). Also
+             reported when the session has no live session lock (or a stale one with
+             a clean finish) but still owns a RUNNING background job
+             (bash/run_command) on a host that is not provably dead: the
+             session is waiting on its own job, so it is NOT done. Also
+             reported when a live rush run loop drives the session between
+             turns (its durable driver marker names a host that is not
+             provably dead, e.g. a paced retry after a failed reaction turn):
+             the loop will still react, so it is NOT at rest.
+  delegating — this session's own session lock is gone (or stale) but a
+             delegation is still live: a running async_jobs row names a
+             DESCENDANT session and its host (the process running it, which
+             holds a per-process host lock) is alive or cannot be probed.
+             Delegated sub-agent work is still in progress, so the session
+             is NOT done even though its own turn yielded.
+  at rest  — no session lock file. Not running, not crashed, no live
+             delegation, no running background job of its own and no live
+             rush run driver.
 
 When the raw lock signal says "crashed" but the last assistant message
 finished cleanly (end_turn), the verdict says so explicitly and treats
 the session as done — this is the same reclassification "sessions list"
 applies via reclassifyCrashedAsDone, surfaced here in plain language.
-That reclassification is suppressed when a descendant session still holds a
-live lock: the parent's end_turn is its own yield before the delegation,
-not completion.`,
+That reclassification is suppressed while a delegation is live (a running
+delegation row on a host that is not provably dead) or the session's own
+background job is running: the end_turn is the session's own yield, not
+completion.
+
+The session lock is held only during a turn and its file is truncated on
+release, so an empty (PID-less) stale lock is a clean release, not a dead
+holder: while a live driver, a running own job or a live delegation exists
+the verdict is running / delegating whatever the last finish is (an error
+finish after a failed reaction turn is a retry the loop paces, not a crash).
+"crashed" stays for a recorded dead PID that is not the live driver's and for
+a session with no live work.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?
@@ -106,11 +128,13 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // but for a single session, and adds the "at rest" case those helpers
 // don't represent (they only return entries for sessions that HAVE a lock).
 //
-// The descendant check (session.LiveDescendants) is the cross-process
+// The descendant check (AsyncJobStore.LiveDescendantJobs) is the cross-process
 // layer `sessions list` applies through markDelegatingLiveDescendants: a
-// session whose own per-turn lock was released is NOT done while any
-// descendant session still holds a live lock. It is computed before the
-// verdict switch so every branch can consult it.
+// session whose own per-turn lock was released is NOT done while a live
+// delegation row (on a host not provably dead) names a descendant session.
+// It is computed before the verdict switch so every branch can consult it.
+// Only delegation rows count: the session's own plain background jobs are
+// reported by describeAsyncJobsAndDebt, not by this verdict.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	msgs, err := a.Messages.List(ctx, sessionID)
 	if err != nil {
@@ -200,17 +224,53 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	// Descendant work: this session's own lock says nothing about work
 	// still running in a DESCENDANT session. A parent that delegated to a
 	// sub-agent releases its per-turn lock the moment it yields, so the
-	// signal that the workflow is still alive lives on the child rows
-	// (parent_session_id linkage) and the children's own locks — both
-	// visible to any process. Same walk `sessions list` applies through
-	// markDelegatingLiveDescendants; see session.LiveDescendants.
-	liveDescendants, walkIncomplete := session.LiveDescendants(ctx, a.Sessions, dataDir, sessionID)
+	// signal that the workflow is still alive lives on live async_jobs
+	// delegation rows (child_session_id), each checked against its owning
+	// host's liveness — visible to any process. Same walk `sessions list`
+	// applies through markDelegatingLiveDescendants; see
+	// session.AsyncJobStore.LiveDescendantJobs.
+	//
+	// Own jobs: the same holds for the session's OWN running plain job
+	// (bash/run_command) -- LiveDescendantJobs only sees delegation rows, so
+	// a root waiting on its own job would read as done/at rest. Same
+	// promotion `sessions list` applies through markRunningOwnJobs.
+	var (
+		liveDescendants []session.LiveJob
+		walkIncomplete  bool
+		ownJobs         []session.LiveJob
+		ownIncomplete   bool
+	)
+	if store := a.AsyncJobStore(); store != nil {
+		liveDescendants, walkIncomplete = store.LiveDescendantJobs(ctx, sessionID)
+		ownJobs, ownIncomplete = store.LiveOwnJobs(ctx, sessionID)
+	}
+	// Driver: a live `rush run` loop between turns (a paced retry after a failed
+	// Drain, debt pending) holds no session lock and has no running row, so the
+	// durable driver marker (host liveness, unknown = alive) is the only fact
+	// that the scope is still open (ASYNC-02). Same promotion `sessions list`
+	// applies through markLiveRunDrivers.
+	var (
+		driver      *session.SessionDriver
+		driverOwes  bool
+		driverShown bool
+	)
+	if drivers, driverErr := a.LiveSessionDrivers(ctx); driverErr == nil {
+		if d, ok := drivers[sessionID]; ok {
+			driver = &d
+			if store := a.AsyncJobStore(); store != nil {
+				driverOwes, _ = store.ReactionDebtExists(ctx, sessionID)
+			}
+		}
+	}
 	descendantCaveat := ""
 	if walkIncomplete && len(liveDescendants) == 0 {
 		// A failed child listing means the tree could not be fully
 		// enumerated, so a terminal verdict below is only as trustworthy
 		// as that enumeration. Say so instead of asserting done flatly.
-		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live sub-agent lock may exist that this check could not see.\n"
+		descendantCaveat = "WARNING: could not enumerate this session's descendant sessions; a live delegation may exist that this check could not see.\n"
+	}
+	if ownIncomplete && len(ownJobs) == 0 {
+		descendantCaveat += "WARNING: could not read this session's own async jobs; a running job may exist that this check could not see.\n"
 	}
 
 	// Verdict + reason text. The cases match the Long help above; "at
@@ -234,6 +294,19 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			} else {
 				fmt.Fprintf(out, "last assistant message did not finish cleanly (%s).\n", finishReasonOrUnknown(finish))
 			}
+		} else if len(ownJobs) > 0 {
+			// At rest as far as locks go, but the session is waiting on its
+			// OWN running background job -- NOT done.
+			fmt.Fprintf(out, "status: running\n")
+			fmt.Fprintf(out, "reason: no lock file present for this session (idle between turns), but %s — the session is waiting on it, so it is NOT done.\n",
+				describeLiveOwnJobs(ownJobs))
+		} else if driver != nil {
+			// At rest as far as locks go, but a live `rush run` loop drives the
+			// session between turns -- NOT at rest.
+			driverShown = true
+			fmt.Fprintf(out, "status: running\n")
+			fmt.Fprintf(out, "reason: no lock file present for this session (idle between turns), but %s — the session is NOT at rest.\n",
+				describeRunDriver(*driver, driverOwes))
 		} else {
 			fmt.Fprintf(out, "status: at rest\n")
 			fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
@@ -321,6 +394,9 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		default:
 			holderDeadReason = fmt.Sprintf("lock file exists but holder PID %d is not alive", pid)
 		}
+		// A lock that records no PID (an empty file after a clean release) or
+		// the live driver's own PID is not a dead holder.
+		cleanRelease := pid <= 0 || (driver != nil && int64(pid) == driver.PID)
 		if finish != nil && finish.Reason == message.FinishReasonEndTurn {
 			if len(liveDescendants) > 0 {
 				// The reclassification to "done" is suppressed: the
@@ -332,6 +408,19 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 				fmt.Fprintf(out, "status: delegating (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is this session's own yield before the delegation, so the session is NOT done.\n",
 					holderDeadReason, describeLiveDescendants(liveDescendants))
+			} else if len(ownJobs) > 0 {
+				// Same suppression for the session's own running job: the
+				// end_turn is its yield while the job runs, not completion.
+				fmt.Fprintf(out, "status: running (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is this session's own yield while the job runs, so the session is NOT done.\n",
+					holderDeadReason, describeLiveOwnJobs(ownJobs))
+			} else if driver != nil {
+				// Same suppression for a live `rush run` driver: the end_turn is a
+				// turn of the run it is still driving, not completion.
+				driverShown = true
+				fmt.Fprintf(out, "status: running (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is not completion, so the session is NOT done.\n",
+					holderDeadReason, describeRunDriver(*driver, driverOwes))
 			} else {
 				fmt.Fprintf(out, "status: done (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; last assistant message finished cleanly (end_turn).\n", holderDeadReason)
@@ -344,6 +433,24 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 					fmt.Fprint(out, descendantCaveat)
 				}
 			}
+		} else if cleanRelease && (len(liveDescendants) > 0 || len(ownJobs) > 0 || driver != nil) {
+			// A failed turn (error finish) whose lock is only a clean-release
+			// leftover -- an empty file, or one naming the live driver -- is
+			// not a crash while the session has live work: the loop retries
+			// (R6C-2). A recorded dead PID of another process stays a crash.
+			status, clause := "running", ""
+			switch {
+			case len(liveDescendants) > 0:
+				status, clause = "delegating", describeLiveDescendants(liveDescendants)
+			case len(ownJobs) > 0:
+				clause = describeLiveOwnJobs(ownJobs)
+			default:
+				driverShown = true
+				clause = describeRunDriver(*driver, driverOwes)
+			}
+			fmt.Fprintf(out, "status: %s (stale lock)\n", status)
+			fmt.Fprintf(out, "reason: %s; %s — the lock is a leftover of a clean release, not a crash, so the last finish (%s) does not mean the session died; it is NOT done.\n",
+				holderDeadReason, clause, finishReasonOrUnknown(finish))
 		} else {
 			fmt.Fprintf(out, "status: crashed\n")
 			fmt.Fprintf(out, "reason: %s.\n", holderDeadReason)
@@ -356,6 +463,12 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			fmt.Fprintf(out, "time this session's lock went stale — Execute's top-level recover logs\n")
 			fmt.Fprintf(out, "the panic and stack trace there before the process exits.\n")
 		}
+	}
+
+	// Every other verdict still names the driver: who runs the reaction loop
+	// is part of why the session is (or is not) waiting.
+	if driver != nil && !driverShown {
+		fmt.Fprintf(out, "driver: %s.\n", describeRunDriver(*driver, driverOwes))
 	}
 
 	// Always surface the raw last-assistant finish reason + error text if
@@ -376,32 +489,115 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		}
 	}
 
+	describeAsyncJobsAndDebt(ctx, a, sessionID, out)
+
 	return nil
 }
 
 // describeLiveDescendants renders the "why" clause naming every descendant
-// session that still holds a live lock, e.g.
+// session a live async_jobs delegation row points at, e.g.
 //
-//	"descendant session 8a3f0c2b holds a live lock (PID 4242, heartbeat 2s old, depth 1)"
+//	"descendant session 8a3f0c2b has live work (delegated by 1234abcd, tool call call-1, host xyz alive)"
 //
-// so the operator can see WHICH sub-agent is keeping the session alive and
-// how fresh its heartbeat is. Multiple live descendants are listed
+// so the operator can see WHICH sub-agent is keeping the session alive, WHO
+// delegated to it, and on which host. Multiple live descendants are listed
 // together rather than collapsing to a count — the whole point of the
 // command is to name the evidence.
-func describeLiveDescendants(live []session.LiveDescendant) string {
+func describeLiveDescendants(live []session.LiveJob) string {
 	items := make([]string, 0, len(live))
-	for _, d := range live {
-		holder := "holder PID unreadable"
-		if d.Lock.PID > 0 {
-			holder = fmt.Sprintf("holder PID %d", d.Lock.PID)
-		}
-		items = append(items, fmt.Sprintf("%s (%s, heartbeat %s old, depth %d)",
-			short(session.HashID(d.ID)), holder, formatDurationShort(d.Lock.Age), d.Depth))
+	for _, j := range live {
+		items = append(items, fmt.Sprintf("%s (delegated by %s, tool call %s, host %s %s)",
+			short(session.HashID(j.ChildSessionID)), short(session.HashID(j.SessionID)),
+			j.ToolCallID, short(j.HostID), strings.ToLower(j.HostStatus.String())))
 	}
 	if len(items) == 1 {
-		return "descendant session " + items[0] + " holds a live lock"
+		return "descendant session " + items[0] + " has live work"
 	}
-	return "descendant sessions " + strings.Join(items, ", ") + " still hold live locks"
+	return "descendant sessions " + strings.Join(items, ", ") + " still have live work"
+}
+
+// describeRunDriver renders the "why" clause naming the live `rush run` loop
+// that drives a session, e.g.
+//
+//	"a `rush run` loop (PID 1234, host 8a3f0c2b alive) drives this session; a reaction is owed and it retries at its next opportunity"
+func describeRunDriver(d session.SessionDriver, reactionOwed bool) string {
+	clause := fmt.Sprintf("a `rush run` loop (PID %d, host %s %s) drives this session", d.PID, short(d.HostID), strings.ToLower(d.Status.String()))
+	if reactionOwed {
+		return clause + "; a reaction is owed and it retries at its next opportunity"
+	}
+	return clause + "; it waits for its scope to close"
+}
+
+// describeLiveOwnJobs renders the "why" clause naming the session's own
+// running plain jobs, e.g.
+//
+//	"its own background job call-1 (command, host xyz alive) is still running"
+func describeLiveOwnJobs(live []session.LiveJob) string {
+	items := make([]string, 0, len(live))
+	for _, j := range live {
+		items = append(items, fmt.Sprintf("%s (%s, host %s %s)",
+			j.ToolCallID, j.Kind, short(j.HostID), strings.ToLower(j.HostStatus.String())))
+	}
+	if len(items) == 1 {
+		return "its own background job " + items[0] + " is still running"
+	}
+	return "its own background jobs " + strings.Join(items, ", ") + " are still running"
+}
+
+// describeAsyncJobsAndDebt renders the plain-language jobs/debt section of
+// `sessions why` (doc sec.5 step 7): which jobs are running on which host,
+// whether a reaction debt is pending, and whether recovery already marked
+// something interrupted. Silent (writes nothing) when this App has no
+// AsyncJobStore (SkipAgentSetup, or an App built without one in a test).
+func describeAsyncJobsAndDebt(ctx context.Context, a *app.App, sessionID string, out io.Writer) {
+	store := a.AsyncJobStore()
+	if store == nil {
+		return
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Async jobs:")
+	jobs, err := store.ListAsyncJobsForOwner(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(out, "  (could not read: %v)\n", err)
+		return
+	}
+	if len(jobs) == 0 {
+		fmt.Fprintln(out, "  (none)")
+	} else {
+		var running, interrupted int
+		for _, j := range jobs {
+			switch j.State {
+			case "running":
+				running++
+			case "interrupted":
+				interrupted++
+			}
+		}
+		fmt.Fprintf(out, "  %d total, %d running, %d marked interrupted by recovery\n", len(jobs), running, interrupted)
+		for _, j := range jobs {
+			if j.State != "running" {
+				continue
+			}
+			fmt.Fprintf(out, "  running: tool call %s (%s) on host %s [%s]\n",
+				j.ToolCallID, j.Kind, short(j.HostID), strings.ToLower(store.HostLiveness(j.HostID).String()))
+		}
+	}
+	// C12: DUR-4's debt predicate counts a completed job whose notice is still
+	// 'pending' (nothing has pulled it into history yet) exactly like one
+	// already delivered but unreacted -- reporting only the delivered half
+	// showed "none" for a session that still owes the model a turn.
+	anyDebt, anyErr := store.ReactionDebtExists(ctx, sessionID)
+	visible, visErr := store.VisibleReactionDebtExists(ctx, sessionID)
+	switch {
+	case anyErr != nil && visErr != nil:
+		// Both reads failed: say nothing rather than a wrong "none".
+	case visErr == nil && visible:
+		fmt.Fprintln(out, "  reaction debt: pending — a completed job's result is in history but no model turn has reacted to it yet")
+	case anyErr == nil && anyDebt:
+		fmt.Fprintln(out, "  reaction debt: pending — a completed job's result has not been delivered into history yet, and no model turn has reacted to it")
+	case anyErr == nil:
+		fmt.Fprintln(out, "  reaction debt: none")
+	}
 }
 
 // finishReasonOrUnknown returns the finish reason string, or "(unknown)"

@@ -233,6 +233,23 @@ type Coordinator interface {
 	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 	// call is already fully reconstructed with all necessary data.
 	RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
+	// CancelTurn cancels ONLY sessionID's live generation (its own agent's
+	// Cancel): no job stop, no delegation-tree walk, no wake zeroing, no
+	// auto-resume suspension -- unlike Cancel, which is the full Stop. Rerun
+	// uses it so a kept history's running jobs, unreacted debt and autonomy
+	// survive the rerun (docs/reviews/2026-09-29-async-phase4-round1-rerun-
+	// design.md).
+	CancelTurn(sessionID string)
+	// StopRerunJobs stops the jobs a committed Rerun truncation voided
+	// (session.TruncateForRerun's Voided set): each still-running row this
+	// process executes is stopped with Stop semantics (a session cancel:
+	// `cancelled`, notice kind session_cancel, wake=0, delivery stays `void` --
+	// not job_kill's stopped notice), and every voided delegation's child tree
+	// is stopped like Stop (stopTree). Best effort,
+	// called strictly AFTER the truncation transaction committed -- a stop
+	// that fails or cannot reach a foreign host's executor is safe: the row
+	// is already void, so its completion commits void (no debt, never pulled).
+	StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob)
 }
 
 type coordinator struct {
@@ -307,8 +324,49 @@ type coordinator struct {
 	// SetPersistentMode call path — atomic.Bool costs nothing and keeps
 	// this field consistent with its neighbors under `go test -race`.
 	persistentMode         atomic.Bool
-	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes.
-	consecutiveAutoResumes map[string]int // sessionID -> consecutive auto-resumes since last human message.
+	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes, bgShellOverCap and autoTurnsSuspended.
+	consecutiveAutoResumes map[string]int // sessionID -> consecutive bg-shell auto-resumes since last human message.
+	// bgShellOverCap holds, per session, the notice row ids of the bg-shell
+	// completions that arrived with every slot already spent (since the last
+	// human message): those rows stay deferred (bgshell_cap.go). A completion
+	// whose insert failed has no row and is not recorded.
+	bgShellOverCap map[string]map[int64]struct{}
+	// bgArrival makes a completion's "insert the notice row + claim/refuse a
+	// slot" one step relative to the cap check that reads both.
+	bgArrival ctxMutex
+	// autoTurnsSuspended is Stop's own per-session "automatic turns paused
+	// until the next human message" state, deliberately separate from the
+	// bg-shell cap counter above: filling that cap must not pause async-job/
+	// delegation/supervision wakes, and Stop must pause every kind.
+	autoTurnsSuspended map[string]struct{}
+	// turnHolds counts the reruns currently holding a session's automatic turns
+	// (HoldAutomaticTurns), guarded by autoResumeMu.
+	turnHolds map[string]int
+
+	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (the
+	// web process, and `rush run` through ClaimExternalDriver's ticker): a
+	// session whose launch must be retried -- refused by an admission gate (the
+	// session-lock held by another process, shutdown), paced by the launch
+	// gate, held by a rerun, or whose launch decision could not be read -- is
+	// never forgotten: it goes here, and RecheckPass (coordinator_recheck.go)
+	// retries it on the next tick rather than losing the wake.
+	recheckMu   sync.Mutex
+	recheckSet  map[string]struct{}
+	recheckOnce sync.Once
+	recheckStop context.CancelFunc
+	// recheckDone is closed when the ticker goroutine actually returns
+	// (mirrors startInterruptTicker's identical done-channel pattern,
+	// coordinator_interrupt.go) -- lets a test (or a future graceful-
+	// shutdown path) observe the goroutine's real exit instead of the
+	// runtime's noisy, non-deterministic NumGoroutine() count.
+	recheckDone chan struct{}
+	// recheckWakeInFlight (guarded by recheckMu) is the set of sessions with
+	// a detached recheck-pass wake running right now: one per session, and
+	// its size is the concurrency bound. recheckWakes lets a caller wait for
+	// them, and for the detached wakes of bg-shell completions, to finish
+	// (waitRecheckWakes).
+	recheckWakeInFlight map[string]struct{}
+	recheckWakes        sync.WaitGroup
 
 	// modelCache caches resolved (smart, fast) Model pairs keyed by their
 	// combined provider+model+reasoning_effort tuple. Used by
@@ -345,6 +403,14 @@ type modelPairCache interface {
 // generations and arbitrary per-session overrides cannot grow without bound.
 const modelCacheMaxEntries = 16
 
+// NewCoordinator wires the agent coordinator. asyncStore is the phase-4
+// durable job store (docs/plans/2026-09-28-async-phase4-durable-core.md
+// sec.5 step 2): the DB row, not memory, now decides a non-sync async job's
+// outcome (DUR-1/DUR-8). nil disables async bash/run_command/agent/
+// agentic_fetch tool calls entirely (Start fails closed) -- callers that
+// never exercise those tools (a handful of narrow regression fixtures) may
+// pass nil; every real caller (internal/app) must build one via
+// session.NewAsyncJobStore over its own writer *sql.DB and data dir.
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -355,6 +421,7 @@ func NewCoordinator(
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
 	mcpOwner *mcp.Owner,
+	asyncStore *session.AsyncJobStore,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -392,6 +459,7 @@ func NewCoordinator(
 	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
 	// before.
 	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
+	c.asyncJobs.store = asyncStore
 	c.asyncJobs.coord = c
 	c.asyncJobs.timeouts = newTimeoutService(c.asyncJobs)
 	c.asyncJobs.supervision = newSupervisionRegistry()
@@ -437,7 +505,7 @@ func NewCoordinator(
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
-		return nil, err
+		return nil, c.drainRefused(ctx, sessionID, err)
 	}
 
 	// Resolve the session's model configuration from the DB or config defaults.
@@ -445,7 +513,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	// runs with a complete, self-contained model configuration.
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve session models: %w", err)
+		return nil, c.drainRefused(ctx, sessionID, fmt.Errorf("failed to resolve session models: %w", err))
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)
@@ -481,6 +549,14 @@ func (c *coordinator) SetAllowPeakHours(allow bool) {
 // false.
 func (c *coordinator) SetPersistentMode(persistent bool) {
 	c.persistentMode.Store(persistent)
+	if persistent {
+		// Doc sec.3.5: hints live only inside this process, so the web
+		// process runs the 60s host-level pass (RecheckPass). `rush run` does
+		// not call this: ClaimExternalDriver starts the same ticker for it,
+		// and it also runs RunMaintenanceSweep once at loop start and
+		// re-reads the DB itself while it waits.
+		c.StartRecheckTicker()
+	}
 }
 
 // autonomyEnabled reports whether Phase 4 auto-resume is opted in via config.
@@ -489,8 +565,9 @@ func (c *coordinator) autonomyEnabled() bool {
 	return opts != nil && opts.AutoResumeOnJobDone != nil && *opts.AutoResumeOnJobDone
 }
 
-// consecutiveResume returns the number of auto-resumes for sessionID since the
-// last human message.
+// consecutiveResume returns the number of SDK background-shell auto-resumes
+// for sessionID since the last human message (the cap counter only; Stop's
+// suspension is autoResumeSuspended).
 func (c *coordinator) consecutiveResume(sessionID string) int {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
@@ -501,15 +578,26 @@ func (c *coordinator) consecutiveResume(sessionID string) int {
 func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
 	defer c.autoResumeMu.Unlock()
+	if c.consecutiveAutoResumes == nil {
+		c.consecutiveAutoResumes = make(map[string]int)
+	}
 	c.consecutiveAutoResumes[sessionID]++
 }
 
-// resetConsecutiveResume clears the auto-resume counter for sessionID. Called
-// from the human send path so a human re-entering the loop re-arms autonomy.
+// resetConsecutiveResume clears both the bg-shell cap counter and Stop's
+// suspension for sessionID. Called from the human send path so a human
+// re-entering the loop re-arms autonomy.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
 	delete(c.consecutiveAutoResumes, sessionID)
+	delete(c.bgShellOverCap, sessionID)
+	delete(c.autoTurnsSuspended, sessionID)
+	c.autoResumeMu.Unlock()
+	// A human message also reopens the Drain launch gate: the one thing that
+	// reopens EVERY dormant gate (a newer fact reopens only a failing pull's).
+	if c.asyncJobs != nil {
+		c.asyncJobs.resetDrainGate(sessionID)
+	}
 }
 
 // ResetAutoResumeCounter is the exported wrapper around resetConsecutiveResume
@@ -518,16 +606,81 @@ func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 	c.resetConsecutiveResume(sessionID)
 }
 
+// suspendAutoResume implements doc sec.3.4's "after Stop, automatic turns
+// are suspended until the next human message": marks sessionID suspended so
+// both autoResumeEligible and drainPolicy refuse EVERY kind of
+// automatic turn until a human message (ResetAutoResumeCounter) clears it.
+// Kept apart from the bg-shell cap counter: that counter bounds only the SDK
+// background-shell auto-resume and must not pause other wakes when full.
+func (c *coordinator) suspendAutoResume(sessionID string) {
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	if c.autoTurnsSuspended == nil {
+		c.autoTurnsSuspended = make(map[string]struct{})
+	}
+	c.autoTurnsSuspended[sessionID] = struct{}{}
+}
+
+// autoResumeSuspended reports whether Stop suspended automatic turns for
+// sessionID and no human message has lifted it yet.
+func (c *coordinator) autoResumeSuspended(sessionID string) bool {
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	_, ok := c.autoTurnsSuspended[sessionID]
+	return ok
+}
+
 // autoResumeEligible reports whether a finished background job should
 // autonomously resume the (idle-or-busy; Run handles that) owning session.
-// Pure autonomy policy: opt-in config, persistent (web) coordinator only, and
-// under the consecutive-resume runaway bound. Per-turn cost/token caps are
+// Pure autonomy policy: opt-in config, persistent (web) coordinator only, not
+// Stop-suspended, and under the consecutive-resume runaway bound. Per-turn cost/token caps are
 // still enforced by the normal Run path; a Cancel aborts the auto-turn like any
 // other. NEVER eligible for rush run (persistentMode stays false there).
 func (c *coordinator) autoResumeEligible(sessionID string) bool {
 	return c.autonomyEnabled() &&
 		c.persistentMode.Load() &&
+		!c.autoResumeSuspended(sessionID) &&
 		c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes
+}
+
+// claimAutoResume is autoResumeEligible plus the counter bump as ONE atomic
+// step: it reports whether a finished background shell may autonomously
+// resume the session and, if so, spends one of the maxConsecutiveAutoResumes
+// slots allowed per human message. The slot is spent at admission, before the
+// launch decision, so a paced or refused launch still spends it and its row
+// keeps being retried (bgShellCapDeferred tells it from an over-cap row). A
+// completion refused because every slot is spent is recorded by its notice
+// row id (bgShellOverCap), whatever else would have refused it; rowID 0 (the
+// insert failed: no row exists) records nothing. Nothing downstream re-checks
+// the cap for the completion's own launch, so at most that many completions
+// per human message launch a turn of their own (R2B-16). Called under
+// bgArrival (persistBGShellCompletion).
+func (c *coordinator) claimAutoResume(sessionID string, rowID int64) bool {
+	c.autoResumeMu.Lock()
+	defer c.autoResumeMu.Unlock()
+	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
+		if rowID != 0 {
+			if c.bgShellOverCap == nil {
+				c.bgShellOverCap = make(map[string]map[int64]struct{})
+			}
+			if c.bgShellOverCap[sessionID] == nil {
+				c.bgShellOverCap[sessionID] = make(map[int64]struct{})
+			}
+			c.bgShellOverCap[sessionID][rowID] = struct{}{}
+		}
+		return false
+	}
+	if !c.persistentMode.Load() || !c.autonomyEnabled() {
+		return false
+	}
+	if _, suspended := c.autoTurnsSuspended[sessionID]; suspended {
+		return false
+	}
+	if c.consecutiveAutoResumes == nil {
+		c.consecutiveAutoResumes = make(map[string]int)
+	}
+	c.consecutiveAutoResumes[sessionID]++
+	return true
 }
 
 // SetAgentTimeoutOptions delegates to the current agent's SetTimeoutOptions.

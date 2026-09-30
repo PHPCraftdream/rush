@@ -6,6 +6,15 @@ package app
 // inside the executor goroutine until the job is already finished. Before
 // the fix, job_kill only accepted shell_id, so the model had no way to
 // cancel a still-running command it started itself.
+//
+// Updated for task #1063 (phase-4 durable-core step 6): job_kill's own tool
+// result now carries the real output snapshot directly (delivery='done' the
+// instant the transition commits, doc sec.3.2/3.4) instead of a generic
+// "terminated successfully" placeholder followed by a SEPARATE completion
+// notice on a later root turn. This test's fixture and assertions moved
+// accordingly: the "final" turn is job_kill's own turn now, not a second
+// ExecuteRun round-trip, and exactly ZERO BackgroundJobNotice messages are
+// expected for the killed job (its row is never pulled as a notice at all).
 
 import (
 	"context"
@@ -38,14 +47,6 @@ func TestRunNonInteractiveRootKillsOwnAsyncJobByJobID(t *testing.T) {
 		case strings.Contains(system, "short title"):
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Job Kill By ID"), admissionSSEStop("title", "stop")})
 
-		// Root's second ExecuteRun call (outer async-drain loop): the
-		// completion notice for the killed job is fed back as a NEW user
-		// message. Checked before the (stale, still-present) lastTool
-		// conditions below, since this session's lastTool keeps carrying
-		// job_kill's own result until a new tool call happens.
-		case strings.Contains(lastUser, "Async job call-bash (bash)"):
-			admissionWriteSSE(w, []string{admissionSSEText("final", "root final: job stopped"), admissionSSEStop("final", "stop")})
-
 		// Turn 2: the bash tool's "started" result is the newest tool
 		// result. Extract the job id from it exactly as the model would,
 		// then call job_kill with job_id (not shell_id).
@@ -72,11 +73,11 @@ func TestRunNonInteractiveRootKillsOwnAsyncJobByJobID(t *testing.T) {
 				admissionSSEStop("kill", "tool_calls"),
 			})
 
-		// Turn 3: job_kill's own immediate response. Yield -- the async
-		// completion for the now-terminated job arrives as the NEXT root
-		// turn (matched above), not within this ExecuteRun call.
-		case strings.Contains(lastTool, "terminated successfully"):
-			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded after kill"), admissionSSEStop("yield", "stop")})
+		// Turn 3: job_kill's own immediate response now carries the real
+		// output snapshot directly (task #1063) -- the run ends HERE, no
+		// second notice/turn follows.
+		case strings.Contains(lastTool, "was stopped (job_kill)"):
+			admissionWriteSSE(w, []string{admissionSSEText("final", "root final: job stopped"), admissionSSEStop("final", "stop")})
 
 		// Turn 1: the initial prompt. Start a command that outlives the
 		// test many times over so a broken job_id resolution would leave
@@ -114,13 +115,13 @@ func TestRunNonInteractiveRootKillsOwnAsyncJobByJobID(t *testing.T) {
 	require.Less(t, elapsed, 30*time.Second,
 		"job_kill(job_id) must stop the command well before its natural end")
 
-	// Killing via job_kill must produce EXACTLY ONE completion notice for
-	// the job -- not zero (the model would never learn it stopped) and not
-	// two (a duplicate from both the kill and the shell's own natural exit
-	// racing). Checked directly against persisted messages rather than
-	// inferred from the stub's control flow, which would keep passing even
-	// on a duplicate (the second notice matches the same "final" route and
-	// just overwrites result.FinalText with an identical value).
+	// Task #1063: killing via job_kill must produce ZERO background-job
+	// notices for the job -- its result is job_kill's OWN tool answer, and
+	// the row commits delivery='done' the instant the transition does, so it
+	// is never a pull candidate (no second notice, and so no double
+	// completion either, from both the kill and the shell's own natural
+	// exit racing). Checked directly against persisted messages rather than
+	// inferred from the stub's control flow.
 	msgs, listErr := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, listErr)
 	var notices int
@@ -129,5 +130,5 @@ func TestRunNonInteractiveRootKillsOwnAsyncJobByJobID(t *testing.T) {
 			notices++
 		}
 	}
-	require.Equal(t, 1, notices, "exactly one completion notice may reach the session for the killed job")
+	require.Equal(t, 0, notices, "job_kill's result is its own tool answer, never a separate background-job notice")
 }

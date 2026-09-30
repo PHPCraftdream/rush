@@ -201,10 +201,40 @@ type RunRequest struct {
 	Stdout            io.Writer // nil → io.Discard
 	Stderr            io.Writer // nil → io.Discard
 	HideSpinner       bool
-	// onSessionResolved lets the CLI wait for jobs even if this turn later fails.
-	onSessionResolved func(string)
+	// onSessionResolved lets the CLI wait for jobs even if this turn later fails,
+	// and claims the session's durable driver marker. It runs right after the
+	// session resolves, before draining pending work and before any session
+	// write, so a non-nil error (the session is driven by another live loop)
+	// aborts the run having changed nothing.
+	onSessionResolved func(string) error
 	// captureResult returns a structured outcome even in terse or stream mode.
 	captureResult bool
+	// loopTurn marks every turn the `rush run` loop issues (first turn, Drains,
+	// reviewer pass): ExecuteRun does not write ended_reason for it, because the
+	// column is empty while a run is in progress and the loop's exit is the only
+	// writer (persistEndedReason, R8A-1). Callers that are not the loop keep the
+	// per-turn write.
+	loopTurn bool
+	// drainTurn marks a `rush run` loop Drain iteration: mutation-free setup (the
+	// invocation's own setup ran once with the first turn) and no ended_reason
+	// write when it ran no turn.
+	drainTurn bool
+	// reviewerTurn makes this call the automatic reviewer pass and nothing else:
+	// the `rush run` loop issues it once, from its scope-closed exit, as an
+	// ordinary (non-Drain) turn on the session it already claimed. Setup is
+	// mutation-free like a Drain's.
+	reviewerTurn bool
+	// deferReviewer tells ExecuteRun not to run the reviewer pass itself: the
+	// `rush run` loop runs it once when its scope closes (reviewerTurn).
+	deferReviewer bool
+	// reviewerConfig makes a Drain run on the reviewer pass's call options and
+	// model (buildReviewerPassTurn): set for the loop's Drains after its reviewer
+	// turn, which react to the async work that turn started.
+	reviewerConfig bool
+	// onTurnSubmitted runs right before the turn is launched: every setup step
+	// that can fail has passed. It lets the loop tell a first turn that never
+	// reached the model from one that ran and failed.
+	onTurnSubmitted func()
 
 	// Credentials, when non-nil, runs THIS invocation on the given
 	// provider credentials instead of whatever rush.json/env would
@@ -232,3 +262,9 @@ type RunRequest struct {
 	// message.OriginSDK when the caller left it unspecified.
 	Origin message.Origin
 }
+
+// mutationFree reports a follow-up call of a `rush run` invocation (a Drain
+// iteration or the loop's reviewer pass): the invocation's own session setup --
+// system prompt, reasoning effort, model slots, cancel flag, budget,
+// ended_reason -- ran once with the first turn and is not repeated.
+func (r RunRequest) mutationFree() bool { return r.drainTurn || r.reviewerTurn }

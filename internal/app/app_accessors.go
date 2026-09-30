@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // Config returns the pure-data configuration.
@@ -36,4 +37,25 @@ func (app *App) SendEvent(msg any) {
 // AgentNotifications returns the broker for agent notification events.
 func (app *App) AgentNotifications() *pubsub.Broker[notify.Notification] {
 	return app.agentNotifications
+}
+
+// AsyncJobStore returns the phase-4 durable job store App.New builds
+// unconditionally whenever this App has a data dir (docs/plans/2026-09-28-
+// async-phase4-durable-core.md sec.5 step 7's readers: `sessions jobs`, the
+// LiveJobs-based STATUS surfaces) -- available even when no provider is
+// configured, since it is a pure DB/lock-file reader, not the agent
+// runtime. nil under SkipAgentSetup or when this App has no data dir;
+// callers must treat a nil store as "no async job data available", not
+// panic.
+func (app *App) AsyncJobStore() *session.AsyncJobStore {
+	return app.asyncJobStore
+}
+
+// SetAsyncJobStoreForTest wires an AsyncJobStore into an App built WITHOUT
+// InitCoderAgent -- a lightweight &App{...} literal, the pattern several
+// `sessions why`/`sessions list` unit tests use to test the command's own
+// logic without standing up a full agent coordinator. Test-only; mirrors
+// AsyncJobStore's own SimulateCrashForTest seam.
+func (app *App) SetAsyncJobStoreForTest(s *session.AsyncJobStore) {
+	app.asyncJobStore = s
 }

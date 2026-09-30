@@ -144,20 +144,14 @@ type MessageWire struct {
 // wake-failed marker, ...) or a prompt that arrived through another entry
 // channel (CLI `rush run`/`rush sessions inject`, SDK).
 //
-// Computed ONLY from structured fields, never message text, and ONLY from
-// fields already load-bearing before this predicate existed (Origin,
-// AutoResumed, BackgroundJobNotice) plus NoticeKind. That last one matters:
-// the supervision check-in (NoticeKind="supervision") and the one-time
-// timeout check-in (NoticeKind="timeout_wake_only") are persisted via
-// wakeSession with a plain context.Background(), so they carry neither
-// AutoResumed nor BackgroundJobNotice nor a web Origin -- NoticeKind is
-// their ONLY structured marker. Any current or future notice kind is
-// excluded by the same NoticeKind != "" check, without needing to enumerate
-// values here: the wake/async job machinery's contract is that every notice
-// it persists sets NoticeKind, AutoResumed, or BackgroundJobNotice (see
-// coordinator_wake.go's wakeNoticeCall), so this predicate stays correct
-// even if that machinery is later rewritten, as long as it keeps stamping
-// one of those markers.
+// Computed ONLY from structured fields, never message text: Origin,
+// AutoResumed, BackgroundJobNotice and NoticeKind. Every notice the driver
+// pulls into history (agent.buildJobNoticeMessageParams/
+// buildSessionNoticeMessageParams) sets AutoResumed and BackgroundJobNotice,
+// and a supervision, timeout or wake-failed one also a NoticeKind, so any of
+// the markers excludes it. The NoticeKind != "" check keeps a future notice
+// kind out without enumerating values here, as long as the pull keeps
+// stamping one of those markers.
 func isHumanTyped(m message.Message) bool {
 	if m.Role != message.User || m.Hidden || m.IsSummaryMessage {
 		return false

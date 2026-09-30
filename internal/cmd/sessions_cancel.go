@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -16,13 +18,32 @@ Sets a database flag that the running agent checks after each step. Works
 across processes — use it from a second terminal or orchestrator to stop
 a ` + "`rush run`" + ` that is running in the background.
 
-The running agent will stop within one step of the flag being set.`,
+The running agent will stop within one step of the flag being set. A
+` + "`rush run`" + ` loop that is waiting between turns (on a running job, a
+delegation or a retry pause) re-reads the flag at least every 5 seconds and
+ends the run as "canceled" (envelope, --on-finish and ended_reason as for
+Ctrl-C; the jobs the run started are cancelled), instead of waiting for the
+work to finish.
+
+The flag is a ONE-SHOT request, not a state: it is cleared when it is
+honoured (the run loop exits "canceled", or the running turn aborts) and when
+a human-initiated turn starts on the session (a web prompt, a resumed
+delegation), so it does not abort later work. A flag set on a session that
+nothing is running stays set until such a turn starts; in the meantime a
+background reaction turn or a "rush run" loop on that session sees it and
+stops. Cancel a session that has work to stop.
+
+With --all only sessions that have live work are flagged — a live lock, a
+"rush run" driver, a running job of their own or a live delegation. Idle
+sessions (a web tab with nothing running) are skipped and counted: Ctrl-C
+leaves no flag behind either, and a flag on an idle session would abort its
+next turn. Name a session explicitly to flag it regardless.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Cancel a specific session
 rush sessions cancel my-session-id
 
-# Cancel all sessions
+# Cancel every session that has live work
 rush sessions cancel --all
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -40,15 +61,20 @@ rush sessions cancel --all
 			if err != nil {
 				return fmt.Errorf("failed to list sessions: %w", err)
 			}
-			count := 0
+			dataDir := a.Config().Options.DataDirectory
+			count, skipped := 0, 0
 			for _, s := range sessions {
+				if !sessionHasLiveWork(ctx, a, dataDir, s.ID) {
+					skipped++
+					continue
+				}
 				if err := a.Sessions.RequestCancel(ctx, s.ID); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to cancel session %s: %v\n", s.ID, err)
 					continue
 				}
 				count++
 			}
-			fmt.Fprintf(os.Stderr, "cancellation requested for %d session(s)\n", count)
+			fmt.Fprintf(os.Stderr, "cancellation requested for %d session(s); skipped %d session(s) with no live work\n", count, skipped)
 			return nil
 		}
 
@@ -68,6 +94,13 @@ rush sessions cancel --all
 	},
 }
 
+// sessionHasLiveWork reports whether something is running or waiting for the
+// session: a live lock (a turn), a driver marker, a running own job or a live
+// delegation. An unreadable read counts as live (the codebase's convention).
+func sessionHasLiveWork(ctx context.Context, a *app.App, dataDir, sessionID string) bool {
+	return isSessionLockAlive(dataDir, sessionID) || inspectSessionLiveWork(ctx, a, sessionID).active()
+}
+
 func init() {
-	sessionsCancelCmd.Flags().Bool("all", false, "Cancel all top-level sessions")
+	sessionsCancelCmd.Flags().Bool("all", false, "Cancel every top-level session that has live work (idle sessions are skipped)")
 }

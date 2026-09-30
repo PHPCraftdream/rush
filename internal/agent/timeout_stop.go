@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 // WatchdogResumeGuidance returns the orchestrator-facing resume
 // instruction for a timeout-caused stop (a tool/sub-agent that ran past
@@ -25,5 +29,30 @@ func WatchdogResumeGuidance(sessionID, timeoutFlag string) string {
 			"This is a normal continuation, not a retry from scratch — the "+
 			"session's context is intact.",
 		sessionID, timeoutFlag,
+	)
+}
+
+// ErrRunDefaultCap is the cancellation cause of a `rush run` whose wall-clock
+// deadline is the default cap (no --timeout set): the run installs its deadline
+// with context.WithTimeoutCause(ctx, d, ErrRunDefaultCap), and a turn cut off by
+// it reads the cause (context.Cause) to name the cap instead of a --timeout the
+// operator never passed. A --timeout deadline carries no cause.
+//
+// It wraps context.DeadlineExceeded: net/http HTTP/1.1 returns
+// context.Cause(ctx) itself from a cut stream, and that must still classify as
+// a deadline (isRunTimeout, operatorStop) exactly like the same cut by
+// --timeout (R8B-1). errors.Is(DeadlineExceeded, ErrRunDefaultCap) stays false.
+var ErrRunDefaultCap = fmt.Errorf("run default wall-clock cap reached: %w", context.DeadlineExceeded)
+
+// runTimeoutFinishText is the finish message of a turn cut off by the run's
+// deadline; cause is context.Cause of the turn's context.
+func runTimeoutFinishText(cause error, sessionID string) (title, details string) {
+	what := "The run's --timeout deadline expired"
+	if errors.Is(cause, ErrRunDefaultCap) {
+		what = "The run's default wall-clock cap expired (no --timeout was set; RUSH_RUN_DEFAULT_HARD_TIMEOUT sets it)"
+	}
+	return "Run timeout exceeded", fmt.Sprintf(
+		"%s while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
+		what, WatchdogResumeGuidance(sessionID, "--timeout"),
 	)
 }

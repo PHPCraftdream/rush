@@ -37,7 +37,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// admission status travels beside the contract, not inside the error.
 	adm := turnAdmissionFrom(ctx)
 	ctx = withoutTurnAdmission(ctx)
-	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+	// A Drain call's whole point is an empty prompt (doc sec.3.4): it reacts
+	// (if at all) purely to history the turn-start pull just inserted, never
+	// to typed text. ErrEmptyPrompt is lifted ONLY for IsDrain.
+	if call.Prompt == "" && !call.IsDrain && !message.ContainsTextAttachment(call.Attachments) {
 		return nil, ErrEmptyPrompt
 	}
 	if call.SessionID == "" {
@@ -230,7 +233,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // actually releases and durably enqueues the queued work (proven by
 // p641_mbstopped_rebind_test.go).
 func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call SessionAgentCall, epoch uint64, reserveCancel context.CancelFunc, onHandoff func()) (*fantasy.AgentResult, error) {
-	if call.Prompt == "" && !message.ContainsTextAttachment(call.Attachments) {
+	if call.Prompt == "" && !call.IsDrain && !message.ContainsTextAttachment(call.Attachments) {
 		// Before the handoff line: this function must release what
 		// ReserveExclusive claimed. reserveCancel's placeholder context was
 		// never superseded (rebindDispatcher hasn't run yet), so cancel it
@@ -409,7 +412,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 					"holder_pid", busyErr.HolderPID,
 					"lock_path", busyErr.Path,
 				)
-				return nil, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr)
+				// This reservation is abandoned WITHOUT any turn: the gate
+				// (noteDrainRefused) keeps the release that follows from
+				// relaunching a Drain at once (doc sec.3.4 rule (b)).
+				a.noteRefusal(call.SessionID, lockErr)
+				return nil, notAttempted(call, fmt.Errorf("session %q is already in use: %w", call.SessionID, lockErr))
 			}
 			// Unidentified error (not "busy") — e.g. permission denied,
 			// IO error, or any other failure that isn't "someone else
@@ -422,7 +429,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			// proceed unprotected.
 			slog.Error("agent.Run: failed to acquire inter-process session lock, refusing to run unprotected",
 				"session_id", call.SessionID, "err", lockErr)
-			return nil, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr)
+			a.noteRefusal(call.SessionID, lockErr)
+			return nil, notAttempted(call, fmt.Errorf("session %q: could not acquire session lock: %w", call.SessionID, lockErr))
 		}
 		// Release the lock in the abandonOwnershipWithHandoff defer above.
 		defer func() {
@@ -519,10 +527,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		call = mb.reclaimReplacementOrKeep(call)
 		inheritReplacementIdentityCallback(&previousCall, &call)
 		if err := persistCallModels(call); err != nil {
+			a.noteRefusal(call.SessionID, err)
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				return nil, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+				return nil, notAttempted(call, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr))
 			}
-			return nil, err
+			return nil, notAttempted(call, err)
 		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
@@ -569,7 +578,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
-		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel)
+		att := a.newDrainAttempt(call)
+		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}

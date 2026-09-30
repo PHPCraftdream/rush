@@ -69,6 +69,11 @@ type RunResult struct {
 	// on the latest unfinished assistant row). Contains the partial text
 	// so the orchestrator can salvage it. Fork patch: batch 8.
 	RecoveredPartial *RecoveredPartial `json:"recovered_partial,omitempty"`
+
+	// finalTextWarnings is the subset of Warnings that describes THIS turn's
+	// final_text (empty, truncated, reduced). Not on the wire: the `rush run`
+	// loop drops it for a turn another turn superseded as the answer.
+	finalTextWarnings []string
 }
 
 // RecoveredPartial describes an orphaned partial assistant message found
@@ -236,7 +241,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	sort.Slice(calls, func(i, j int) bool { return calls[i].Name < calls[j].Name })
 
 	// Warnings: non-fatal observations the orchestrator should see.
-	var warnings []string
+	var warnings, textWarnings []string
 	if reason == "queued" {
 		warnings = append(warnings, "prompt was queued behind an active session run; this invocation did not execute it")
 	}
@@ -255,6 +260,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 				"final_text is empty after %d sub-agent fan-out call(s). The model dispatched sub-agents but did not compose a top-level reply — query the sub-session DB rows directly, or prompt the model to summarise into final_text.",
 				fanoutCalls,
 			))
+			textWarnings = append(textWarnings, warnings[len(warnings)-1])
 		} else {
 			// Fork patch (orchestrator UX): the model ended the turn on a
 			// tool_call without composing a final assistant text. The
@@ -267,6 +273,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 			} else {
 				warnings = append(warnings, "final_text is empty and no tools were called this turn. The model produced nothing actionable.")
 			}
+			textWarnings = append(textWarnings, warnings[len(warnings)-1])
 		}
 	}
 	errMsg := ""
@@ -342,6 +349,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 					"final_text appears truncated (ends with %q) — model was likely composing more output when the error fired. Last 80 chars: %q",
 					string(last), tailN(trimmed, 80),
 				))
+				textWarnings = append(textWarnings, warnings[len(warnings)-1])
 			}
 		}
 	}
@@ -364,6 +372,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// first in the array.
 	if reductionWarning != "" {
 		warnings = append(warnings, reductionWarning)
+		textWarnings = append(textWarnings, reductionWarning)
 	}
 	return RunResult{
 		SessionID:       sessionID,
@@ -380,6 +389,8 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 			DeltaCostUSD: deltaCost,
 		},
 		DurationMs: duration.Milliseconds(),
+
+		finalTextWarnings: textWarnings,
 	}
 }
 

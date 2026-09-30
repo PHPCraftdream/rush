@@ -102,9 +102,13 @@ first 60 characters of the user prompt are used as the title. This makes
 
 Budget persistence: --max-cost, --max-tokens, and --timeout values are
 saved on the session row. "sessions show" displays cost vs budget, and
-"sessions locks" shows an ELAPSED / BUDGET column. ended_reason is set
-when the run finishes (done, canceled, timeout, max_cost, max_tokens,
-error) and appears in "sessions show" and "sessions list --json".
+"sessions locks" shows an ELAPSED / BUDGET column. ended_reason is written
+when the run ends and equals its exit_reason (the --json envelope's): the
+model's finish (end_turn, stop, max_tokens, ...), "error" (a failed run; also
+a --max-cost/--max-tokens exit), or "canceled" (Ctrl-C, --timeout, the default
+6h cap, "sessions cancel"; a turn cut short before its envelope exists can
+leave the older spelling "cancelled"). It is empty while a run is in progress
+and appears in "sessions show" and "sessions list --json" (ended_reason).
 
 Output modes (mutually exclusive --stream / --json):
   - default (terse): tool-call names on stderr as "▶ <toolName>"; only
@@ -189,10 +193,13 @@ Runaway protection:
                       (supports k/M suffixes: 100k = 100000, 1M = 1000000)
   Both checks fire after each agent step. The session is saved with its
   partial work so you can inspect or fork from it.
-  Even with --timeout 0 (no graceful deadline), a 6h default hard wall-clock
-  backstop force-kills a true zombie (deadlock / a read that ignores ctx).
-  Override via RUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a
-  Go duration like 30m/2h; invalid/non-positive falls back to the 6h default).
+  Without --timeout a 6h default wall-clock cap applies: a GRACEFUL deadline
+  like --timeout (a run waiting on jobs ends through its normal exit, with an
+  envelope and exit_reason "canceled"); a process still alive 60s past it
+  (deadlock / a read that ignores ctx) is force-killed. A wait longer than the
+  cap needs an explicit --timeout. Override the cap via
+  RUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a Go duration like
+  30m/2h; invalid/non-positive falls back to the 6h default).
 
 Peak-hours override:
   --allow-peak-hours  bypass a provider's configured peak_hours refusal for
@@ -284,11 +291,16 @@ is targeted; the model then either retries with a different path or
 falls back to returning the content via final_text — both of which
 keep the redirect target intact.
 
-Time limits (usually leave both alone): --timeout bounds the WHOLE run
-and defaults to 0 (disabled — no limit). --idle-timeout (default 15m)
-already ends the run if the agent goes quiet for that long, so most
-invocations don't need --timeout at all; only reach for it when a run
-must fit a hard external deadline (a CI job slot, a cron window).`,
+Time limits (usually leave both alone): --timeout bounds the WHOLE run and
+defaults to 0 (disabled), but a run is never unbounded: without --timeout
+the 6h default wall-clock cap applies (see "Runaway protection" above;
+override via RUSH_RUN_DEFAULT_HARD_TIMEOUT), and a wait known to be longer
+(an 8h soak test) needs an explicit --timeout. --idle-timeout (default 15m)
+ends the run if the agent goes quiet for that long DURING A TURN; it does not
+watch a run that is waiting between turns on a job, a delegation or a retry
+pause -- that wait is bounded only by --timeout or the cap. Only reach for
+--timeout when a run must fit a hard external deadline (a CI job slot, a
+cron window) or must outlive the cap.`,
 	Example: `
 # Run a simple prompt
 rush run "Guess my 5 favorite Pokémon"
@@ -400,9 +412,10 @@ rush run --restrict-run --role fast \
           --allow-bash 'git diff' --allow-bash 'glob:go *' \
           --session "ci-123" "summarize the diff"
 
-# Rarely needed: a run has no overall time limit by default (--idle-timeout
-# already ends it after 15m of inactivity). --timeout is only for fitting a
-# hard external deadline, e.g. a CI job slot.
+# Rarely needed: a run has no --timeout deadline by default (--idle-timeout ends
+# it after 15m of inactivity; a graceful 6h wall-clock cap ends a very long
+# wait). --timeout is for fitting a hard external deadline, e.g. a CI job
+# slot, or for waiting longer than that cap.
 rush run --role smart --timeout 5m --session "long-task" "refactor the storage layer"
   `,
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
@@ -594,7 +607,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			// call's inactivity backstop" — the underlying stream
 			// watchdog has no native off-switch, so a very large
 			// duration stands in for one. Still bounded eventually by
-			// --timeout (if set) and the default hard wall-clock backstop
+			// --timeout (if set) and the default wall-clock cap
 			// below.
 			idleTimeoutDur = idleTimeoutDisabledSentinel
 		}
@@ -624,6 +637,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// rationale.
 		uninstallConsoleCtrlFilter := installConsoleCtrlFilter()
 		defer uninstallConsoleCtrlFilter()
+
+		// A closed stdout pipe fails the exit flush instead of killing the run
+		// (hook and Shutdown still run, R8C-7).
+		defer keepBrokenPipeAsError()()
 
 		// Cancel on SIGINT or SIGTERM.
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -664,70 +681,20 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			os.Exit(130)
 		}()
 
-		// Optional hard deadline. The agent run gets context.DeadlineExceeded
-		// instead of context.Canceled; agent.go's Run() distinguishes the two
-		// (see isRunTimeout there) so the in-flight assistant message finishes
+		// Wall-clock deadline: --timeout, or the default cap when it is not
+		// set. The agent run gets context.DeadlineExceeded instead of
+		// context.Canceled; agent.go's Run() distinguishes the two (see
+		// isRunTimeout there) so the in-flight assistant message finishes
 		// with a clear "Run timeout exceeded" error instead of being
 		// misreported as a generic provider failure or an unlabeled cancel.
-		var installedHardKill *time.Timer
-		if timeoutDur > 0 {
-			var timeoutCancel context.CancelFunc
-			ctx, timeoutCancel = context.WithTimeout(ctx, timeoutDur)
-			defer timeoutCancel()
-
-			// Hard wall-clock kill. The context deadline above is the GRACEFUL
-			// path — it only unblocks code that actually observes ctx. A real
-			// freeze (deadlock on a shared mutex, a provider/LSP read that
-			// ignores ctx) won't honour it, and the process can zombie for
-			// hours holding its session lock — observed: a ~2h hang where even
-			// the stream watchdog's cancel() couldn't unblock it. This timer
-			// depends on nothing inside the app: after the deadline plus a
-			// grace window for clean shutdown, it force-exits. The defer stops
-			// it on any normal return, so it only ever fires on a true hang.
-			// os.Exit skips defers, leaving the lock file with a now-dead PID —
-			// `rush sessions reap`/`kill` reclaims it, far better than a live
-			// zombie holding the handle. (Fork patch.)
-			const hardKillGrace = 60 * time.Second
-			hardDeadline := timeoutDur + hardKillGrace
-			installedHardKill = time.AfterFunc(hardDeadline, func() {
-				fmt.Fprintf(os.Stderr,
-					"rush: run exceeded %s (timeout %s + %s grace) without exiting — force-killing\n",
-					hardDeadline, timeoutDur, hardKillGrace)
-				os.Exit(124)
-			})
-		} else {
-			// No --timeout (or --timeout 0). The operator's intent in passing
-			// --timeout 0 is to disable the GRACEFUL deadline so a legitimately
-			// long task isn't interrupted — NOT to disable the force-kill safety
-			// net. Without this backstop, a genuine freeze (deadlock, a
-			// provider/LSP read that ignores ctx — the same class of bug already
-			// fixed in internal/agent/cliprovider/provider.go) would zombie
-			// indefinitely holding its session lock, recoverable only via
-			// manual `rush sessions kill`. Install a generous DEFAULT hard cap.
-			//
-			// Unlike the --timeout path, NO separate grace window is added
-			// here: there's no graceful deadline to give time to wrap up
-			// (the operator deliberately disabled it), so the cap IS the
-			// deadline. The generous default value itself is the slack.
-			//
-			// Default: 6h. Rationale: this is a backstop-of-last-resort, NOT a
-			// task-completion expectation. 6h is long enough that no legitimate
-			// `rush run` (which is a single agentic turn bounded by the model's
-			// context window and tool latency) should ever approach it, yet
-			// short enough that a true zombie is reaped within a workday instead
-			// of holding its session lock across days. The observed real freeze
-			// was ~2h; 6h gives 3x headroom over that while still bounding the
-			// worst case. Override via RUSH_RUN_DEFAULT_HARD_TIMEOUT (parsed by
-			// resolveDefaultHardTimeout).
-			hardDeadline := resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT"))
-			installedHardKill = time.AfterFunc(hardDeadline, func() {
-				fmt.Fprintf(os.Stderr,
-					"rush: run exceeded its default hard backstop of %s (no --timeout set; override via RUSH_RUN_DEFAULT_HARD_TIMEOUT) without exiting — force-killing\n",
-					hardDeadline)
-				os.Exit(124)
-			})
-		}
-		defer installedHardKill.Stop()
+		// A loop waiting between turns ends through its normal exit
+		// (envelope, --on-finish, Shutdown); only a process still alive
+		// hardKillGrace past the deadline is force-killed (installRunDeadline).
+		var stopDeadline func()
+		ctx, stopDeadline = installRunDeadline(ctx, timeoutDur,
+			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
+			hardKillGrace, os.Stderr, os.Exit)
+		defer stopDeadline()
 
 		a, err := setupApp(cmd)
 		if err != nil {
@@ -749,22 +716,11 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
 
-		// Fold --role into smartModel: without an explicit --model, prefer a
-		// worker/reviewer override pinned on THIS session (task #1060,
-		// sessionRoleModelOverride — same set_session_models path as
-		// smart/fast), else the config's default for that role's slot. The
-		// agent always uses its `smart` slot for the turn; --role decides
-		// which catalog entry fills it.
-		if modelType != config.SelectedModelTypeSmart && smartModel == "" {
-			if override := sessionRoleModelOverride(ctx, a, sessionID, modelType); override != "" {
-				smartModel = override
-			} else {
-				roleModel, ok := a.Config().Models[modelType]
-				if !ok || roleModel.Model == "" {
-					return fmt.Errorf("--role %s: no %s model configured (run \"rush models use --%s <model>\" first)", role, modelType, modelType)
-				}
-				smartModel = roleModel.Provider + "/" + roleModel.Model
-			}
+		// Fold --role into smartModel (see foldRoleModel); resolves
+		// --continue's session first so its worker/reviewer pin applies.
+		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
+		if err != nil {
+			return err
 		}
 
 		if verbose {
@@ -848,7 +804,7 @@ func init() {
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Persisted on the session so subsequent runs inherit it.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (disabled — the run has no overall time limit; see --idle-timeout for the inactivity backstop and RUSH_RUN_DEFAULT_HARD_TIMEOUT for the 6h last-resort cap).")
+	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (no --timeout deadline; a graceful 6h default cap still applies, RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides it, and --timeout is how to wait longer; see --idle-timeout for the inactivity backstop).")
 	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
@@ -941,11 +897,12 @@ func parseDurationFlexible(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// defaultHardKillTimeout is the default wall-clock backstop installed for
-// `rush run` when the operator does NOT pass --timeout (or passes --timeout 0).
-// It is a backstop-of-last-resort against a true zombie (deadlock / a read that
-// ignores ctx), NOT a task-completion expectation — see the comment at the
-// call site for the full rationale.
+// defaultHardKillTimeout is the default wall-clock cap of `rush run` when the
+// operator does NOT pass --timeout (or passes --timeout 0): a graceful deadline
+// like --timeout (installRunDeadline), whose hard-kill grace is the zombie
+// backstop. 6h is long enough for ordinary work and short enough that a wedged
+// process does not hold its session lock across days; a longer wait (a soak
+// test) needs an explicit --timeout.
 const defaultHardKillTimeout = 6 * time.Hour
 
 // idleTimeoutDisabledSentinel stands in for "no inactivity backstop" when
@@ -953,7 +910,7 @@ const defaultHardKillTimeout = 6 * time.Hour
 // no native off-switch, only a threshold, so a duration long enough to
 // never practically fire (well short of overflowing time.Time arithmetic)
 // serves the same purpose. The run is still eventually bounded by
-// --timeout (if set) and the default hard wall-clock backstop.
+// --timeout (if set) and the default wall-clock cap.
 const idleTimeoutDisabledSentinel = 100 * 365 * 24 * time.Hour
 
 // resolveDefaultHardTimeout resolves the default hard-kill backstop duration

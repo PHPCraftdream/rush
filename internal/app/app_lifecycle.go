@@ -23,6 +23,16 @@ type ShutdownResult struct {
 	// exiting, but a long-lived host process must decide its own
 	// follow-up (e.g. db.ReleaseAll once it knows no writers remain).
 	//
+	// The phase-4 host lock is pinned the same way, with no in-process
+	// follow-up: the goroutines that outlive the grace (agent runs, pump
+	// workers, ledger executors) have only per-agent/per-job signals, no
+	// single one to wait on for all of them, so no moment exists at which
+	// releasing the lock is provably safe (A12). The rows this App's host
+	// had running stay `running` on a locked host, and a new App in the SAME
+	// process cannot recover them (the host id is still this process's own)
+	// until the process exits. A library caller that sees Forced must exit
+	// its process, as the CLI does.
+	//
 	// On the ShutdownAfterDrain path (the SDK's Close) the same holds,
 	// with one refinement: a caller-side drain that stalls past its
 	// grace period is cancelled first, and Forced reflects whether work
@@ -241,6 +251,39 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		errMu.Unlock()
 	}
 
+	// Release this App's phase-4 host identity (docs/plans/2026-09-28-async-
+	// phase4-durable-core.md sec.3.6) AFTER agent work has been cancelled
+	// (cancelAgentsBeforeRelease already ran, above, on every path into
+	// releaseResources) -- graceful exit is deliberately NOT a clean
+	// transition of any still-running row (sec.3.7: "graceful exit = crash"),
+	// this only releases the OS lock / deletes the host's own row if it has
+	// no jobs left.
+	//
+	// Run SEQUENTIALLY, before the parallel cleanup batch below, and bounded
+	// by the same shutdownCtx -- not inside the parallel wg. DeleteAsyncHost
+	// IfNoJobs is a DB write that must complete (or be abandoned on its own
+	// bounded budget) before anything else in this function assumes the DB
+	// is free to close; racing it against an arbitrary set of cleanupFuncs
+	// under one best-effort timeout (which can abandon a goroutine still
+	// mid-write) is exactly the ordering this sequencing avoids.
+	//
+	// A12 (docs/reviews/2026-09-29-async-phase4-round1.md): on the FORCED
+	// path, live Run goroutines did not finish within the grace period and
+	// may still be writing through this store -- releasing the host lock
+	// here would let another process recover this host's still-in-flight
+	// rows while they are still being written (DUR-5 only holds for a
+	// process that has actually exited). Keep the lock held until the
+	// process itself exits, exactly like DB close is already skipped on this
+	// same path below -- CloseKeepLock only forgets the in-memory handle.
+	if app.asyncJobStore != nil {
+		if stillBusy {
+			app.asyncJobStore.CloseKeepLock()
+		} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
+			slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
+			recordCleanupError(err)
+		}
+	}
+
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
@@ -335,7 +378,10 @@ func (app *App) ShutdownWithResult() ShutdownResult {
 
 // Shutdown performs the same shutdown as ShutdownWithResult and discards
 // the result. Kept as the call-site-compatible entry point for the CLI's
-// many `defer a.Shutdown()` sites.
+// many `defer a.Shutdown()` sites. A caller that discards the result also
+// discards ShutdownResult.Forced: after a forced shutdown the DB and the host
+// lock stay pinned for the process's life, so a long-lived embedder should
+// use ShutdownWithResult and exit the process when Forced is set.
 func (app *App) Shutdown() {
 	app.ShutdownWithResult()
 }

@@ -217,6 +217,17 @@ func TestAutoResumeEligible(t *testing.T) {
 		coord.bumpConsecutiveResume(sid)
 		assert.False(t, coord.autoResumeEligible(sid), "at the cap autonomy must stop")
 	})
+
+	t.Run("Stop-suspended with the cap counter at zero is not eligible; a human reset re-arms", func(t *testing.T) {
+		cfg.Config().Options = &config.Options{AutoResumeOnJobDone: boolPtr(true)}
+		coord.persistentMode.Store(true)
+		coord.resetConsecutiveResume(sid)
+		coord.suspendAutoResume(sid)
+		require.Zero(t, coord.consecutiveResume(sid))
+		assert.False(t, coord.autoResumeEligible(sid), "Stop must suspend bg-shell auto-resume")
+		coord.resetConsecutiveResume(sid)
+		assert.True(t, coord.autoResumeEligible(sid), "a human message re-arms it")
+	})
 }
 
 func TestResetAutoResumeCounter(t *testing.T) {
@@ -251,49 +262,20 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	}
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	// Registering a driver (rather than routing through c.currentAgent)
-	// keeps wakeNoticeCall on its driver.callFor branch, which needs no
+	// keeps drainCallFor on its driver.callFor branch, which needs no
 	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
 	var err error
 	require.NotPanics(t, func() {
-		err = coord.wakeSession(t.Context(), jobIdentity{owner: "sess-1", toolCallID: "call-1"}, "notice text", "", true)
+		require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-1", "manual_test_notice", "owed", true, ""))
+		err = coord.wakeSession(t.Context(), "sess-1", true)
 	})
 	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
-}
-
-// TestWakeSession_RunErrorIsVisibleNotDebug pins ASYNC-09/§1.4: a wake whose
-// Run attempt fails after the notice was already persisted must produce a
-// visible marker (a second InjectMessage call, tagged NoticeKind
-// "wake_failed" -- orchestrator decision 2026-09-28), not just a Debug log
-// line nobody sees. Revert-check performed: removed the
-// persistWakeFailedMarker call from wakeSession's error branch -- this test
-// FAILED (queuedCalls had length 1, only the original notice) -- restored
-// the call, re-ran, passed (length 2, second call's NoticeKind
-// "wake_failed").
-func TestWakeSession_RunErrorIsVisibleNotDebug(t *testing.T) {
-	agent := &mockSessionAgent{
-		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			return nil, assert.AnError
-		},
-	}
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.subAgentDrivers.register("sess-2", subAgentDriver{agent: agent})
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.coord = coord
-
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "sess-2", toolCallID: "call-2"}, "notice text", "", true)
-	require.Error(t, err)
-
-	agent.mu.Lock()
-	calls := append([]SessionAgentCall(nil), agent.queuedCalls...)
-	agent.mu.Unlock()
-	require.Len(t, calls, 2, "expected the original notice persist plus a wake-failed marker")
-	require.Equal(t, "wake_failed", calls[1].NoticeKind)
-	require.Contains(t, calls[1].Prompt, "call-2")
 }
 
 // TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy pins the fix for
@@ -327,9 +309,11 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
-	err := coord.wakeSession(t.Context(), jobIdentity{owner: "child-1", toolCallID: "call-1"}, "notice text", "", true)
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")
 }

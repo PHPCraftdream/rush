@@ -79,14 +79,38 @@ func (e *ErrLockContended) Error() string {
 // exclusive non-blocking lock. Returns immediately with an error if
 // another process holds the lock. The lock file directory is created if
 // it does not exist.
+//
+// Classification (host-lock module, docs/plans/2026-09-28-async-phase4-
+// durable-core.md sec.3.6): tryLockFile's error is wrapped as
+// *ErrLockContended ONLY when isLockContentionError says it genuinely means
+// "another process holds this lock right now" (EWOULDBLOCK/EAGAIN on POSIX,
+// ERROR_LOCK_VIOLATION/ERROR_SHARING_VIOLATION on Windows). Any other error
+// (permission denied, a filesystem without lock support, ...) is returned
+// as-is, unwrapped. Before this, every tryLockFile failure was blanket-
+// wrapped as contended, which made isContentionError (and therefore
+// AcquireFileLockContext's retry loop) misclassify a genuine, non-retryable
+// failure as ordinary contention and poll it all the way to the caller's
+// timeout instead of surfacing it immediately.
 func TryAcquireFileLock(lockPath string) (*FileLock, error) {
 	f, err := openLockFile(lockPath)
 	if err != nil {
 		return nil, err
 	}
+	return classifyAndLock(f, lockPath)
+}
+
+// classifyAndLock takes the exclusive non-blocking lock on an already-open
+// f and applies TryAcquireFileLock's error classification. Split out from
+// TryAcquireFileLock so a test can exercise the classification with a
+// deliberately broken fd (EBADF from flock, not EWOULDBLOCK) without
+// depending on OS-specific contention setup.
+func classifyAndLock(f *os.File, lockPath string) (*FileLock, error) {
 	if err := tryLockFile(f); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("%w: %w", &ErrLockContended{Path: lockPath}, err)
+		if isLockContentionError(err) {
+			return nil, fmt.Errorf("%w: %w", &ErrLockContended{Path: lockPath}, err)
+		}
+		return nil, fmt.Errorf("file lock %s: %w", lockPath, err)
 	}
 	return &FileLock{Path: lockPath, f: f}, nil
 }

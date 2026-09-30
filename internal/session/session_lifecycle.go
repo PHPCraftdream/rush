@@ -7,6 +7,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/google/uuid"
+	sqlitedriver "modernc.org/sqlite"
 )
 
 func (s *service) createWithOrigin(ctx context.Context, id string, title string, origin message.Origin) (Session, error) {
@@ -38,6 +40,15 @@ func (s *service) CreateWithID(ctx context.Context, id, title string) (Session, 
 	return s.createWithOrigin(ctx, id, title, message.OriginUnspecified)
 }
 
+// CreateTaskSession creates the durable per-delegation session row keyed by
+// toolCallID (deterministic: async_jobs.child_session_id is claimed with the
+// SAME id before this row exists, doc sec.3.8). Idempotent for a repeated
+// call naming the SAME (toolCallID, parentSessionID) pair -- closes task
+// #1038: a delegation whose claim already committed the row (e.g. a retried
+// tool call, or an ASYNC-01 dead-host recovery that reused the id) must get
+// the EXISTING session back, not a UNIQUE-constraint error. A toolCallID
+// that already exists under a DIFFERENT parent stays an error -- id reuse
+// across unrelated parents is never silently accepted.
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		ID:              toolCallID,
@@ -45,11 +56,44 @@ func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessi
 		Title:           title,
 	})
 	if err != nil {
+		if isSessionsIDUniqueConstraintError(err) {
+			existing, getErr := s.q.GetSessionByID(ctx, toolCallID)
+			if getErr != nil {
+				return Session{}, fmt.Errorf("create task session: id %s already exists but re-read failed: %w", toolCallID, getErr)
+			}
+			if !existing.ParentSessionID.Valid || existing.ParentSessionID.String != parentSessionID {
+				return Session{}, fmt.Errorf("create task session: id %s already exists under a different parent", toolCallID)
+			}
+			return s.fromDBItem(existing), nil
+		}
 		return Session{}, err
 	}
 	session := s.fromDBItem(dbSession)
 	s.Publish(pubsub.CreatedEvent, session)
 	return session, nil
+}
+
+// isSessionsIDUniqueConstraintError reports whether err is a SQLite PRIMARY
+// KEY/UNIQUE constraint violation on sessions.id -- the shape
+// CreateTaskSession's idempotent-retry path (task #1038) needs to
+// distinguish from any other insert failure. Same two-layer approach as
+// internal/app's isSessionsIDConstraintError (typed Code()&0xff==19 fast
+// path, plus a textual "constraint failed"+"sessions.id" check for drivers
+// without a typed error) -- duplicated here rather than imported because
+// internal/app depends on internal/session, not the other way around.
+func isSessionsIDUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	const sqliteConstraintCode = 19
+	var sqliteErr *sqlitedriver.Error
+	isTypedConstraint := errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteConstraintCode
+	msg := err.Error()
+	isTextualConstraint := strings.Contains(msg, "constraint failed")
+	if !isTypedConstraint && !isTextualConstraint {
+		return false
+	}
+	return strings.Contains(msg, "sessions.id")
 }
 
 func (s *service) CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error) {

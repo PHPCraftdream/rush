@@ -7,12 +7,14 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // timeoutEntry is one heap item: a deadline plus the action to run when it
@@ -166,24 +168,40 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 	}
 	switch job.timeoutKind {
 	case timeoutTerminateAndWake:
-		if job.cancel != nil {
-			job.cancel() // best-effort: ask the executor to stop; partial output captured below regardless of whether it stops in time
-		}
 		owner, toolCallID, toolName, childSession, shellID, outputBuf := job.owner, job.toolCallID, job.toolName, job.childSession, job.shellID, job.outputBuf
+		sync, timeoutSeconds := job.sync, job.timeoutSeconds
+		cancel := job.cancel
 		l.mu.Unlock()
 
-		// capturePartial does its own (possibly DB-backed, for a delegation)
-		// I/O OUTSIDE l.mu, mirroring recheckChild's own established
-		// snapshot-then-refresh-then-relock pattern (work_ledger_delegation.go)
-		// rather than holding the ledger lock across a round trip.
+		// Phase-4 step 2 (doc sec.3.1's external-cause order): snapshot ->
+		// transition -> stop executor. Capturing partial output BEFORE
+		// cancelling (this used to cancel first) matters once transition is
+		// DB-durable: cancelling first risks the executor's own
+		// ctx-cancellation return racing ahead of and being captured as
+		// THIS transition's own result, instead of the intended timeout
+		// summary. capturePartial does its own (possibly DB-backed, for a
+		// delegation) I/O OUTSIDE l.mu, mirroring recheckChild's own
+		// established snapshot-then-refresh-then-relock pattern.
 		partial := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
 
-		l.mu.Lock()
-		job.transitionToTerminal(phaseTimedOut, partial) // CAS: a concurrent finish/cancel may already have won; deliverLocked below is safe to call unconditionally either way
-		completion, callback := l.deliverLocked(owner, job)
-		l.mu.Unlock()
-		if callback {
-			l.onWebDone(completion)
+		if sync {
+			// A sync job has no row to commit (doc sec.3.1): reach the
+			// timed-out outcome in memory, like job_kill's transitionSync, so
+			// the blocked awaitSync caller gets it with the partial output
+			// instead of the executor's "context canceled" once cancel below
+			// fires.
+			l.transitionSync(job, phaseTimedOut, jobResult{
+				content: FormatAsyncCompletion(AsyncCompletion{
+					ToolCallID: toolCallID, ToolName: toolName, Content: partial.content,
+					TimedOut: true, TimeoutSeconds: timeoutSeconds,
+				}),
+				isError: true,
+			})
+		} else {
+			l.transition(job, causeTimeoutTerminated, partial)
+		}
+		if cancel != nil {
+			cancel() // best-effort: ask the executor to stop, now that the cause is durably recorded
 		}
 		// Delivery reaches wakeSession through the ORDINARY path
 		// (deliverLocked -> notifyAsyncCompletion), exactly like finish/
@@ -191,7 +209,15 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		// text and NoticeKind are selected by notifyAsyncCompletion/
 		// FormatAsyncCompletion, keyed off completion.TimedOut.
 	case timeoutWakeOnly:
-		if job.timeoutNotified {
+		if job.timeoutNotified || job.sync {
+			// B-dev9: a sync job (SDK/library caller blocked in awaitSync,
+			// doc sec.3.1) has no async_jobs row and no session_notices
+			// concept -- a wake_only check-in has nothing to attach to
+			// (job_tool_call_id would name a row that was never claimed) and
+			// nobody to wake (there is no session-driven turn for it, only
+			// the ONE blocked caller). Only terminate_and_wake, via the
+			// ordinary ctx cancellation above, applies to a sync call at
+			// all.
 			l.mu.Unlock()
 			return
 		}
@@ -201,14 +227,24 @@ func (l *workLedger) handleTimeout(job *asyncJob) {
 		l.mu.Unlock()
 
 		summary := l.capturePartial(owner, toolCallID, toolName, childSession, shellID, outputBuf)
-		if l.coord != nil {
+		if l.coord != nil && l.store != nil {
 			text := fmt.Sprintf(
 				"Timeout reached for async job %s (%s) — it is still running (elapsed %s). Latest output:\n\n%s\n\nThis was a one-time check-in; it will not repeat automatically. %s",
 				toolCallID, toolName, time.Since(deadline).Round(time.Second), summary.content, stopGuidanceFor(toolName),
 			)
-			id := jobIdentity{owner: owner, toolCallID: toolCallID}
+			store, coord := l.store, l.coord
 			go func() {
-				_ = l.coord.wakeSession(context.Background(), id, text, "timeout_wake_only", true)
+				// Phase-4 step 3 (doc sec.3.2/3.4): a session_notices row,
+				// keyed to THIS job (job_tool_call_id) so the pull's void
+				// condition (agent_notice_pull.go/sessionNoticeVoidCondition)
+				// can drop it if the job is no longer running by the time it
+				// is pulled. wake=1 per the wake-policy table.
+				if err := store.InsertSessionNotice(context.Background(), owner, session.NoticeKindWakeOnly, text, true, toolCallID); err != nil {
+					slog.Error("timeout: failed to persist wake_only check-in notice",
+						"session_id", owner, "tool_call_id", toolCallID, "err", err)
+					return
+				}
+				_ = coord.wakeSession(context.Background(), owner, true)
 			}()
 		}
 	default:

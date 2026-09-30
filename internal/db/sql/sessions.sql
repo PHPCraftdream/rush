@@ -78,8 +78,11 @@ FROM sessions
 WHERE id = ? LIMIT 1;
 
 -- name: GetLastSession :one
+-- The most recently updated TOP-LEVEL session (`rush run --continue`): a
+-- delegated child updated later must never be taken for it.
 SELECT *
 FROM sessions
+WHERE parent_session_id IS NULL
 ORDER BY updated_at DESC
 LIMIT 1;
 

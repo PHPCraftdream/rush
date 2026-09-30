@@ -57,7 +57,32 @@ type Service interface {
 	pubsub.Subscriber[Message]
 	pubsub.Shutdowner
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
+	// CreateTx is Create's transaction-aware counterpart (phase-4 step 3,
+	// docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.3): the INSERT
+	// runs on tx instead of this service's own connection, so a caller that
+	// also needs to UPDATE another table (async_jobs/session_notices'
+	// delivery outbox) in the SAME transaction can do so atomically -- "one
+	// transaction per notice: UPDATE ... RETURNING -> INSERT the history
+	// message -> id in the row". Deliberately does NOT publish CreatedEvent
+	// (tx may still roll back) -- the caller commits tx first, then calls
+	// PublishCreated with the returned Message.
+	CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params CreateMessageParams) (Message, error)
+	// PublishCreated publishes msg's CreatedEvent exactly as Create does,
+	// for a caller that created the row itself via CreateTx after its own
+	// transaction committed (see CreateTx's doc).
+	PublishCreated(msg Message)
 	Update(ctx context.Context, message Message) error
+	// UpdateTx is Update's transaction-aware counterpart (phase-4 step 4,
+	// docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.4): the same
+	// write, but against tx instead of this service's own connection, and
+	// with publishing deferred to the returned func -- call it ONLY after
+	// tx commits (the reaction-debt marker writes the step's final message
+	// and marks async_jobs/session_notices rows reacted=1 in ONE
+	// transaction; publishing before commit could let a subscriber observe
+	// a write that still rolls back). On success the returned func is never
+	// nil; it publishes nothing when the update affected 0 rows (e.g. the
+	// message was concurrently deleted). On error it is nil.
+	UpdateTx(ctx context.Context, tx *sql.Tx, message Message) (publish func(), err error)
 	// Notify publishes a message update to the UI without writing to the database.
 	// Use this for high-frequency streaming updates where DB durability is not
 	// required on every token; call Update at the end to persist the final state.
@@ -142,6 +167,13 @@ type Service interface {
 	// is truly orphaned before calling this method; otherwise it can corrupt
 	// the transcript by deleting a message a live turn is still writing to.
 	ForceDelete(ctx context.Context, id string) error
+	// DeleteTx is Rerun truncation's batch delete: it removes the given rows
+	// of sessionID on tx, UNCONDITIONALLY (no streaming guard -- the caller
+	// must hold the same proofs as for ForceDelete), and returns exactly the
+	// rows this statement deleted (an id already gone is absent). Nothing is
+	// published: call the returned publish func only AFTER tx commits (it
+	// bumps the delete generation and publishes one DeletedEvent per row).
+	DeleteTx(ctx context.Context, tx *sql.Tx, sessionID string, ids []string) (deleted []Message, publish func(), err error)
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	SetPinned(ctx context.Context, id string, pinned bool) error
 	// SetUsage records this message's token accounting and prompt-cache
@@ -360,6 +392,44 @@ func (s *service) ForceDelete(ctx context.Context, id string) error {
 }
 
 func (s *service) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
+	message, err := s.createWith(ctx, s.q, sessionID, params)
+	if err != nil {
+		return Message{}, err
+	}
+	// Clone the message before publishing to avoid race conditions with
+	// concurrent modifications to the Parts slice.
+	//
+	// Create is deliberately left on best-effort Publish: a brand-new
+	// message is (outside of Hidden/summary rows) about to be updated
+	// repeatedly as the assistant streams, via Notify/Update below,
+	// which already use must-deliver where it matters. If this
+	// CreatedEvent is dropped under contention, the next Update quickly
+	// re-establishes the message for subscribers; there's no terminal
+	// state here worth blocking the caller for.
+	s.Publish(pubsub.CreatedEvent, message.Clone())
+	return message, nil
+}
+
+// CreateTx is Create's transaction-aware counterpart -- see the Service
+// interface doc comment for the full contract. It shares createWith with
+// Create, differing only in which db.Querier the INSERT runs against and in
+// NOT publishing (the caller commits tx first, then calls PublishCreated).
+func (s *service) CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params CreateMessageParams) (Message, error) {
+	return s.createWith(ctx, db.New(tx), sessionID, params)
+}
+
+// PublishCreated publishes msg's CreatedEvent -- see the Service interface
+// doc comment on CreateTx for why this is a separate call.
+func (s *service) PublishCreated(msg Message) {
+	s.Publish(pubsub.CreatedEvent, msg.Clone())
+}
+
+// createWith is Create/CreateTx's shared body, parameterized on the
+// db.Querier the INSERT runs against (the service's own connection, or a
+// caller-owned *sql.Tx via db.New(tx)) so a phase-4 notice pull can insert
+// the history message in the SAME transaction as its delivery-outbox UPDATE
+// (docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.3).
+func (s *service) createWith(ctx context.Context, q db.Querier, sessionID string, params CreateMessageParams) (Message, error) {
 	if params.Role != Assistant {
 		params.Parts = append(params.Parts, Finish{
 			Reason: "stop",
@@ -385,7 +455,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if params.BackgroundJobNotice {
 		backgroundJobNotice = 1
 	}
-	dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
+	dbMessage, err := q.CreateMessage(ctx, db.CreateMessageParams{
 		ID:                  uuid.New().String(),
 		SessionID:           sessionID,
 		Role:                string(params.Role),
@@ -403,22 +473,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if err != nil {
 		return Message{}, err
 	}
-	message, err := s.fromDBItem(dbMessage)
-	if err != nil {
-		return Message{}, err
-	}
-	// Clone the message before publishing to avoid race conditions with
-	// concurrent modifications to the Parts slice.
-	//
-	// Create is deliberately left on best-effort Publish: a brand-new
-	// message is (outside of Hidden/summary rows) about to be updated
-	// repeatedly as the assistant streams, via Notify/Update below,
-	// which already use must-deliver where it matters. If this
-	// CreatedEvent is dropped under contention, the next Update quickly
-	// re-establishes the message for subscribers; there's no terminal
-	// state here worth blocking the caller for.
-	s.Publish(pubsub.CreatedEvent, message.Clone())
-	return message, nil
+	return s.fromDBItem(dbMessage)
 }
 
 // DeleteSessionMessages deletes all messages for a session in a single DB
@@ -468,17 +523,44 @@ func (s *service) Notify(message Message) {
 }
 
 func (s *service) Update(ctx context.Context, message Message) error {
-	parts, err := marshalParts(message.Parts)
+	rowsAffected, partialCheckpoint, err := s.updateWith(ctx, s.q, message)
 	if err != nil {
 		return err
 	}
+	message.UpdatedAt = time.Now().Unix()
+	s.publishUpdate(ctx, message, rowsAffected, partialCheckpoint)
+	return nil
+}
+
+// UpdateTx is Update's transaction-aware counterpart -- see the Service
+// interface doc comment. Shares updateWith's DB-write body, differing only
+// in which db.Querier it runs against, and defers publishing to the
+// returned func so the caller can invoke it strictly after tx commits.
+func (s *service) UpdateTx(ctx context.Context, tx *sql.Tx, message Message) (func(), error) {
+	rowsAffected, partialCheckpoint, err := s.updateWith(ctx, db.New(tx), message)
+	if err != nil {
+		return nil, err
+	}
+	message.UpdatedAt = time.Now().Unix()
+	return func() { s.publishUpdate(ctx, message, rowsAffected, partialCheckpoint) }, nil
+}
+
+// updateWith is Update/UpdateTx's shared DB-write body, parameterized on the
+// db.Querier the UPDATE runs against (see createWith's identical rationale
+// for CreateTx). Returns rowsAffected and whether this write was a partial
+// checkpoint, both needed by publishUpdate to decide delivery semantics.
+func (s *service) updateWith(ctx context.Context, q db.Querier, message Message) (rowsAffected int64, partialCheckpoint bool, err error) {
+	parts, err := marshalParts(message.Parts)
+	if err != nil {
+		return 0, false, err
+	}
 	finishedAt := sql.NullInt64{}
-	// Fork patch: batch 8 — a Partial finish is NOT a real finish;
+	// Fork patch: batch 8 -- a Partial finish is NOT a real finish;
 	// finished_at stays NULL so the row is still "in progress".
 	// The auto-checkpoint ticker uses this to persist mid-stream state
 	// without confusing IsFinished / recovery.
 	finish := message.FinishPart()
-	partialCheckpoint := finish != nil && finish.Partial
+	partialCheckpoint = finish != nil && finish.Partial
 	if finish != nil && !finish.Partial {
 		finishedAt.Int64 = finish.Time
 		finishedAt.Valid = true
@@ -490,8 +572,6 @@ func (s *service) Update(ctx context.Context, message Message) error {
 	// UpdateMessageIfNotTerminal skips the update (0 rows affected), which
 	// is the correct outcome: the terminal state wins, the stale checkpoint
 	// is safely discarded.
-	var rowsAffected int64
-	var dbErr error
 	if partialCheckpoint {
 		// The DB update is conditional: it only touches rows that still
 		// have finished_at IS NULL (no terminal finish yet). If a real
@@ -502,7 +582,7 @@ func (s *service) Update(ctx context.Context, message Message) error {
 		// SET stamps the row with it, and the WHERE rejects the write if the
 		// row already carries a newer one. See the query's own comment for
 		// why the comparison is <= rather than <.
-		rowsAffected, dbErr = s.q.UpdateMessageIfNotTerminal(ctx, db.UpdateMessageIfNotTerminalParams{
+		rowsAffected, err = q.UpdateMessageIfNotTerminal(ctx, db.UpdateMessageIfNotTerminalParams{
 			ID:                     message.ID,
 			Parts:                  string(parts),
 			FinishedAt:             finishedAt,
@@ -523,60 +603,44 @@ func (s *service) Update(ctx context.Context, message Message) error {
 		// DB to back it and no further event to correct it until reload.
 		// UpdateMessage is now :execrows so rowsAffected reflects what the DB
 		// actually did.
-		rowsAffected, dbErr = s.q.UpdateMessage(ctx, db.UpdateMessageParams{
+		rowsAffected, err = q.UpdateMessage(ctx, db.UpdateMessageParams{
 			ID:         message.ID,
 			Parts:      string(parts),
 			FinishedAt: finishedAt,
 		})
 	}
-	if dbErr != nil {
-		return dbErr
-	}
-	message.UpdatedAt = time.Now().Unix()
-	// Clone the message before publishing to avoid race conditions with
-	// concurrent modifications to the Parts slice.
-	//
-	// Delivery semantics split on whether this is a terminal write or a
-	// mid-stream checkpoint snapshot:
-	//
-	//   - Terminal (real non-Partial Finish, tool-result flush,
-	//     summary): PublishMustDeliver, so a momentarily full
-	//     subscriber buffer doesn't silently eat the final state. The
-	//     caller is bounded by mustDeliverTimeout per subscriber. BUT
-	//     only if rowsAffected > 0 (task #595) -- see the comment above
-	//     the UpdateMessage call for why a terminal write can legitimately
-	//     affect 0 rows (the row was deleted concurrently) and must not
-	//     publish a phantom update for a message that no longer exists.
-	//
-	//   - Partial checkpoint (Finish.Partial == true, written by the
-	//     auto-checkpoint ticker every ~2s during streaming):
-	//     best-effort Publish, but ONLY if the update actually touched
-	//     the DB (rowsAffected > 0). A stale checkpoint that returns 0 rows
-	//     because a terminal finish already landed must NOT be published,
-	//     or the UI will show the last event as an incomplete partial snapshot.
-	//     Losing a tick for a slow subscriber is harmless because the next
-	//     update re-establishes current state. Routing it through
-	//     PublishMustDeliver would make every ~2s checkpoint pay the
-	//     full bounded-blocking wait per slow subscriber for nothing.
+	return rowsAffected, partialCheckpoint, err
+}
+
+// publishUpdate implements Update's delivery semantics: a terminal write
+// must-deliver (bounded per-subscriber wait), a partial checkpoint is
+// best-effort, and either is skipped entirely when rowsAffected == 0 (the
+// row was concurrently deleted/superseded) to avoid resurrecting or
+// reverting the UI. message is cloned before publishing to avoid races with
+// concurrent Parts mutation.
+//
+//   - Terminal (real non-Partial Finish, tool-result flush, summary):
+//     PublishMustDeliver, so a momentarily full subscriber buffer doesn't
+//     silently eat the final state, but only if rowsAffected > 0 (task
+//     #595) -- a terminal write can legitimately affect 0 rows (the row
+//     was deleted concurrently) and must not publish a phantom update for
+//     a message that no longer exists.
+//   - Partial checkpoint (Finish.Partial == true, written by the
+//     auto-checkpoint ticker every ~2s during streaming): best-effort
+//     Publish, but ONLY if the update actually touched the DB. A stale
+//     checkpoint that returns 0 rows because a terminal finish already
+//     landed must NOT be published, or the UI would show an incomplete
+//     partial snapshot as the last event.
+func (s *service) publishUpdate(ctx context.Context, message Message, rowsAffected int64, partialCheckpoint bool) {
 	if partialCheckpoint {
-		// P0-2: Only publish partial checkpoint if we actually updated the DB.
-		// If rowsAffected == 0, a terminal finish already won and publishing
-		// a stale partial would revert the UI to an incomplete state.
 		if rowsAffected > 0 {
 			s.Publish(pubsub.UpdatedEvent, message.Clone())
 		}
-	} else if rowsAffected > 0 {
-		// task #595: rowsAffected == 0 here means the row was deleted
-		// (concurrently, by an operator or a rerun/tail-cleanup path) between
-		// whatever load produced this Message and this terminal write landing.
-		// Silently skipping the publish -- rather than erroring the caller,
-		// which is almost always an in-flight agent turn's OnStepFinish that
-		// should not fail the turn over a message the operator intentionally
-		// removed -- is the correct outcome: no event, no resurrection, and
-		// the DB and every subscriber agree the message is gone.
+		return
+	}
+	if rowsAffected > 0 {
 		s.PublishMustDeliver(ctx, pubsub.UpdatedEvent, message.Clone())
 	}
-	return nil
 }
 
 func (s *service) Get(ctx context.Context, id string) (Message, error) {

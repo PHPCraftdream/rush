@@ -130,10 +130,13 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 const getLastSession = `-- name: GetLastSession :one
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin
 FROM sessions
+WHERE parent_session_id IS NULL
 ORDER BY updated_at DESC
 LIMIT 1
 `
 
+// The most recently updated TOP-LEVEL session (`rush run --continue`): a
+// delegated child updated later must never be taken for it.
 func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 	row := q.queryRow(ctx, q.getLastSessionStmt, getLastSession)
 	var i Session

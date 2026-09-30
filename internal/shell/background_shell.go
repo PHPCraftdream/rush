@@ -132,6 +132,7 @@ func (bs *BackgroundShell) armDetachedReleaseTimerLocked() {
 // output immediately. If completion is still in flight, detached makes its
 // completion path perform the release after the process exits.
 func (bs *BackgroundShell) detachFromManager() {
+	bs.detachedAt.CompareAndSwap(0, time.Now().Unix())
 	bs.retentionMu.Lock()
 	bs.detached = true
 	retentionTimer := bs.retentionTimer
@@ -176,12 +177,23 @@ func (bs *BackgroundShell) OnDone(fn func()) {
 	// detached release decision, instead of racing a zero-count observation.
 	bs.retentionMu.Lock()
 	bs.onDoneCount.Add(1)
+	// The completion hold (background_completion.go) starts with the
+	// registration, before the process can finish or while the registering
+	// call still runs, so no moment exists where the job is finished, its
+	// callback owes work, and nothing reports it. Taken and released under
+	// retentionMu with the count, so a late registration is never released
+	// by an earlier callback's return.
+	bs.takeCompletionHold()
 	bs.retentionMu.Unlock()
 	go func() {
 		<-bs.done
 		defer func() {
+			// Deferred, so a panicking callback (recovered below) releases too.
 			bs.retentionMu.Lock()
 			lastCallback := bs.onDoneCount.Add(-1) == 0
+			if lastCallback {
+				bs.releaseCompletionHold()
+			}
 			shouldRelease := bs.detached && lastCallback && (bs.completedAt.Load() > 0 || bs.IsDone())
 			detachedTimer := bs.detachedReleaseTimer
 			if shouldRelease {

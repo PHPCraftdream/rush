@@ -423,3 +423,8 @@ func (a *sessionAgentCoordinatorAdapter) RunSessionAgentCall(ctx context.Context
 	// For this test, delegate to sessionAgent.Run - not used by App.Shutdown()
 	return a.sessionAgent.Run(ctx, call)
 }
+
+func (a *sessionAgentCoordinatorAdapter) CancelTurn(sessionID string) {}
+
+func (a *sessionAgentCoordinatorAdapter) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+}

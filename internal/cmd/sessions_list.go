@@ -3,8 +3,10 @@ package cmd
 // The `sessions list` subcommand: table / NDJSON listing of top-level
 // sessions, plus the STATUS-column machinery that classifies each session
 // as running / crashed / done / delegating from the locks directory, the
-// shared call-tree activity signal, and the cross-process descendant-lock
-// walk (session.LiveDescendants).
+// shared call-tree activity signal, and the cross-process durable-state
+// walk over live async_jobs delegation rows (session.AsyncJobStore.
+// LiveDescendantJobs), the session's own running plain jobs (LiveOwnJobs) and
+// the durable driver marker of a live `rush run` loop (LiveSessionDrivers).
 
 import (
 	"context"
@@ -78,6 +80,12 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// lock actually hit the message store.
 		statusByID = reclassifyCrashedAsDone(cmd.Context(), a, sessions, statusByID)
 
+		// A "crashed" verdict for an empty (PID-less) or driver-owned lock is
+		// a clean release, not a crash, while the session has live work: a
+		// failed reaction turn's paced retry (error finish, empty back-dated
+		// lock, live driver marker) is running (R6C-2).
+		statusByID = promoteCleanReleaseCrashes(cmd.Context(), a, a.Config().Options.DataDirectory, sessions, statusByID)
+
 		// Sub-agent awareness: a "running" session that is currently blocked
 		// inside an `agent` delegation gets promoted to "delegating" so the
 		// STATUS column distinguishes "top-level agent is working" from "top-
@@ -98,9 +106,18 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// Sub-agent awareness, cross-process half: the durable-state layer
 		// beneath markParkedDelegationSessions. The coordinator registry
 		// above only this process can see; here the session's own lock is
-		// gone (or stale) but a DESCENDANT session still holds a live one,
-		// which the DB linkage + the locks directory prove to any process.
+		// gone (or stale) but a live async_jobs delegation row, on a host
+		// that is not provably dead, points at a DESCENDANT session -- any
+		// process can read that from the DB.
 		statusByID = markDelegatingLiveDescendants(cmd.Context(), a, sessions, statusByID)
+
+		// Own-job half: a root with no lock of its own that is waiting on
+		// its OWN running background job is working, not done.
+		statusByID = markRunningOwnJobs(cmd.Context(), a, sessions, statusByID)
+
+		// Driver half: a session a live `rush run` loop drives between turns
+		// (no lock, no running row) is working too.
+		statusByID = markLiveRunDrivers(cmd.Context(), a, sessions, statusByID)
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -369,17 +386,18 @@ func markParkedDelegationSessions(
 // markParkedDelegationSessions: it promotes a session that would otherwise
 // read as finished ("done", via reclassifyCrashedAsDone) or at rest (blank
 // — no lock of its own) to "delegating" when at least one DESCENDANT
-// session still holds a live lock.
+// session still has live work.
 //
 // Why a second layer: markParkedDelegationSessions reads the coordinator's
 // in-process parked-delegation registry, which only the process that OWNS
 // the delegation can see. `sessions list` runs in whatever process the
 // operator typed it in — usually a different one — so the registry is empty
 // there and the parked-delegation shape reads as done/at rest. The durable
-// state is visible everywhere though: the child session rows (linked
-// through parent_session_id) and the children's own session locks.
-// session.LiveDescendants walks exactly that, so a parent waiting on a
-// sub-agent that lives in another process still shows "delegating" here.
+// state is visible everywhere though: live async_jobs delegation rows
+// (child_session_id), each checked against its owning host's liveness
+// (doc sec.3.6/3.8). AsyncJobStore.LiveDescendantJobs walks exactly that,
+// so a parent waiting on a sub-agent that lives in another process still
+// shows "delegating" here.
 //
 // Only terminal / at-rest verdicts are promoted. A session that is
 // genuinely "running" (its own live lock), "crashed" (dead holder, no
@@ -394,11 +412,11 @@ func markDelegatingLiveDescendants(
 	sessions []session.Session,
 	statusByID map[string]string,
 ) map[string]string {
-	if a == nil || a.Sessions == nil {
+	if a == nil {
 		return statusByID
 	}
-	dataDir := a.Config().Options.DataDirectory
-	if dataDir == "" {
+	store := a.AsyncJobStore()
+	if store == nil {
 		return statusByID
 	}
 	for _, s := range sessions {
@@ -409,7 +427,7 @@ func markDelegatingLiveDescendants(
 			// running / crashed / delegating keep their own signal.
 			continue
 		}
-		live, _ := session.LiveDescendants(ctx, a.Sessions, dataDir, s.ID)
+		live, _ := store.LiveDescendantJobs(ctx, s.ID)
 		if len(live) == 0 {
 			continue
 		}
@@ -420,6 +438,49 @@ func markDelegatingLiveDescendants(
 			statusByID = make(map[string]string, len(sessions))
 		}
 		statusByID[s.ID] = "delegating"
+	}
+	return statusByID
+}
+
+// markRunningOwnJobs promotes a session that would otherwise read as
+// finished ("done") or at rest (blank) to "running" when it OWNS a running
+// plain background job (bash/run_command) on a host not provably dead --
+// the own-job counterpart of markDelegatingLiveDescendants, which only sees
+// delegation rows. A `rush run` waiting on such a job holds no session lock
+// between turns, so without this the root headlined "done" while the loop
+// was still going to react to the job. It runs AFTER the delegating layers
+// and never downgrades: running / crashed / delegating keep their own
+// signal, a crashed root stays crashed. The vocabulary is the existing one
+// ("running": the session has live work); `sessions why` gives the same
+// verdict with the job named.
+func markRunningOwnJobs(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil {
+		return statusByID
+	}
+	store := a.AsyncJobStore()
+	if store == nil {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			continue
+		}
+		live, _ := store.LiveOwnJobs(ctx, s.ID)
+		if len(live) == 0 {
+			continue
+		}
+		if statusByID == nil {
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "running"
 	}
 	return statusByID
 }
@@ -445,6 +506,9 @@ type sessionListItem struct {
 	Tokens       int64   `json:"tokens"`
 	CostUSD      float64 `json:"cost_usd"`
 	YoloEnabled  bool    `json:"yolo_enabled"`
+	// EndedReason is how the session's last run ended (its exit_reason);
+	// empty while a run is in progress or when none ever ended.
+	EndedReason string `json:"ended_reason,omitempty"`
 	// Status is "running" (lock exists, holder PID alive), "crashed"
 	// (lock exists but PID dead — will be auto-reclaimed) or "" (at rest).
 	// Computed live from the locks directory at list time. omitempty so
@@ -466,5 +530,46 @@ func makeSessionListItem(s session.Session) sessionListItem {
 		Tokens:       s.PromptTokens + s.CompletionTokens,
 		CostUSD:      s.Cost,
 		YoloEnabled:  s.YoloEnabled,
+		EndedReason:  s.EndedReason,
 	}
+}
+
+// markLiveRunDrivers promotes a session that would otherwise read as finished
+// ("done") or at rest (blank) to "running" when a live `rush run` loop drives it
+// (the durable driver marker on a host not provably dead; App.LiveSessionDrivers,
+// ONE read for the whole list). Between turns -- a paced retry after a failed
+// Drain, debt pending -- such a loop holds no session lock and has no running
+// row, so without this the session headlined "done" while the loop was still
+// going to react (ASYNC-02: the scope is open). Runs last and never downgrades:
+// running / crashed / delegating keep their own signal (a crash whose lock is
+// only a clean release is rescued earlier, by promoteCleanReleaseCrashes).
+func markLiveRunDrivers(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil {
+		return statusByID
+	}
+	drivers, err := a.LiveSessionDrivers(ctx)
+	if err != nil || len(drivers) == 0 {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			continue
+		}
+		if _, driven := drivers[s.ID]; !driven {
+			continue
+		}
+		if statusByID == nil {
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "running"
+	}
+	return statusByID
 }

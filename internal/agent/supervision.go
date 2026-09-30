@@ -20,12 +20,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/google/uuid"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // noticeKindSupervision tags a supervision tick's persisted message
@@ -47,6 +49,12 @@ const (
 	supervisionMinIntervalFloor = time.Second // guards against a pathological zero/negative override
 )
 
+// recheckDebtCheckBudget bounds ONLY the launch-decision reads in wakeSession
+// (B1 fix): a var, not a const, so a test can shrink it to reproduce "the
+// debt check's own budget must never bound the Drain turn it triggers" at
+// test timescale instead of a real 30s wait.
+var recheckDebtCheckBudget = 30 * time.Second
+
 // SupervisionConfig is one root session's effective supervision policy,
 // resolved once per noteWorkStarted/recordProgress call from config +
 // per-call CallOptions (coordinator.resolveSupervisionConfig).
@@ -63,7 +71,7 @@ type SupervisionConfig struct {
 func DefaultSupervisionConfig() SupervisionConfig {
 	return SupervisionConfig{
 		Enabled:       true,
-		Interval:      supervisionDefaultInterval,
+		Interval:      defaultSupervisionInterval(),
 		MaxInterval:   supervisionMaxInterval,
 		MaxNoProgress: supervisionMaxNoProgress,
 	}
@@ -94,7 +102,7 @@ func (c *coordinator) resolveSupervisionConfig(ctx context.Context) SupervisionC
 		}
 	}
 	if cfg.Interval < supervisionMinIntervalFloor {
-		cfg.Interval = supervisionDefaultInterval
+		cfg.Interval = defaultSupervisionInterval()
 	}
 	return cfg
 }
@@ -183,7 +191,8 @@ func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
 // recordProgress resets sessionID's backoff to its base interval and clears
 // the no-progress/paused counters: a real completion (job/sub-agent/timeout
 // notice) is "progress" regardless of how many no-progress ticks preceded
-// it. Called from wakeSession for every notice EXCEPT supervision's own
+// it. Called from pullPendingNotices (agent_notice_pull.go) when a notice
+// moves into history, for every notice EXCEPT supervision's own
 // (noticeKindSupervision) -- see that call site's comment for why the tick's
 // own resulting turn must not reset the very backoff it just grew.
 func (l *workLedger) recordProgress(sessionID string) {
@@ -210,9 +219,10 @@ func (l *workLedger) recordProgress(sessionID string) {
 
 // pushDeadlineOnTurnEnd re-arms sessionID's CURRENT (possibly already grown)
 // interval from now, without touching interval size, tickCount or paused.
-// Wired onto sessionAgent.onSessionIdle (coordinator_tools.go's
-// onSessionIdleHook), the universal "a turn on this session just ended"
-// trigger fired for every SessionAgent this coordinator builds -- this is
+// Called from sessionAgent.afterTurn (drain_attempt.go) after every turn
+// that reached the provider (a Drain that never did -- opening a tab -- must
+// not reset the root's silence timer): the universal "a turn on this session
+// just ended" trigger -- this is
 // what implements "any new message in the root's chat resets the countdown"
 // for a plain user/model turn that involves no async-job notice at all,
 // without letting a supervision TICK's own resulting turn silently reset the
@@ -301,7 +311,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	}
 
 	// Only while the root is not running a turn. If busy, do nothing here:
-	// pushDeadlineOnTurnEnd (onSessionIdle) reschedules once that turn ends,
+	// pushDeadlineOnTurnEnd (called from afterTurn) reschedules once that turn ends,
 	// using the SAME (unchanged) interval -- this fire is simply skipped,
 	// not counted as a no-progress tick.
 	if l.coord.agentFor(rootSessionID).IsSessionBusy(rootSessionID) {
@@ -339,9 +349,21 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	}
 
 	coord := l.coord
-	id := jobIdentity{owner: rootSessionID, toolCallID: "supervision-" + uuid.NewString()}
 	go func() {
-		_ = coord.wakeSession(context.Background(), id, text, noticeKindSupervision, true)
+		// Phase-4 step 3 (doc sec.3.2/3.3): persist the check-in as a
+		// session_notices row FIRST (no job_tool_call_id -- the void
+		// condition for kind=supervision checks "any running row for
+		// owner", not one specific job), then submit the wake hint. wake=1
+		// per the wake-policy table; the pull (agent_notice_pull.go) voids
+		// it instead of delivering it if the scope has since closed.
+		if l.store == nil {
+			return
+		}
+		if err := l.store.InsertSessionNotice(context.Background(), rootSessionID, session.NoticeKindSupervision, text, true, ""); err != nil {
+			slog.Error("supervision: failed to persist check-in notice", "session_id", rootSessionID, "err", err)
+			return
+		}
+		_ = coord.wakeSession(context.Background(), rootSessionID, true)
 	}()
 }
 
@@ -421,15 +443,45 @@ func lastNonEmptyLine(s string) string {
 }
 
 // onSessionIdleHook is wired as every SessionAgent's OnSessionIdle
-// (coordinator_tools.go), replacing the bare c.noteSubAgentChildRunEnded
-// reference: it still fires that phase-3 trigger, and additionally pushes
-// back the caller's supervision deadline (pushDeadlineOnTurnEnd) -- a no-op
-// for a session with no active supervision state. Both are safe, cheap,
-// idempotent no-ops for the overwhelming majority of sessions that are
-// neither a delegation parent/child nor under active supervision.
+// (coordinator_tools.go): the universal "the mailbox of this session was
+// just released" trigger. It does no work on the releasing goroutine (no DB,
+// no lock): everything runs in one goroutine (afterRelease).
 func (c *coordinator) onSessionIdleHook(sessionID string) {
-	c.noteSubAgentChildRunEnded(sessionID)
-	if c.asyncJobs != nil {
-		c.asyncJobs.pushDeadlineOnTurnEnd(sessionID)
+	go c.afterRelease(sessionID)
+}
+
+// afterRelease is the release-time work: the phase-3 delegation re-check
+// (noteSubAgentChildRunEnded, which returns at once for a session that is
+// not a delegated child) and doc sec.3.4 item 3 -- the debt check that
+// submits a Drain if the session owes a reaction. Which launches are allowed
+// is decided by wakeSession's ONE predicate (policy, then the launch gate the
+// finished leg's accounting already wrote): a failed, refused or no-turn Drain
+// does not relaunch itself here, and an unreadable debt check goes to the
+// re-check set.
+func (c *coordinator) afterRelease(sessionID string) {
+	if c.asyncJobs == nil || sessionID == "" {
+		return
 	}
+	// A delegated child's turn just ended (its first turn, a Drain turn, a turn a
+	// Stop cut off): charge its spend to the parent before the release re-check
+	// (R6C-3). A root has no driver, so nothing happens for it.
+	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
+		c.chargeChildToParent(sessionID, driver.parentSessionID)
+	}
+	c.noteSubAgentChildRunEnded(sessionID)
+	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
+		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
+	}
+}
+
+// supervisionIntervalNS shrinks the built-in initial interval for tests
+// (SetSupervisionDefaultIntervalForTest); a value below supervisionMinIntervalFloor
+// (0 included) keeps supervisionDefaultInterval.
+var supervisionIntervalNS atomic.Int64
+
+func defaultSupervisionInterval() time.Duration {
+	if ns := supervisionIntervalNS.Load(); time.Duration(ns) >= supervisionMinIntervalFloor {
+		return time.Duration(ns)
+	}
+	return supervisionDefaultInterval
 }

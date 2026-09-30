@@ -308,30 +308,17 @@ func TestSessionsLocksCmdRun_RemoveFailureAfterProvablyDead_Surfaced(t *testing.
 	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	// Sanity: nobody holds the real OS lock, so lockHolderProvablyDead must
-	// report true — this test is about what happens to the SUBSEQUENT
-	// os.Remove, not about the probe itself. NOTE: this precondition call
-	// itself performs a full acquire+release cycle, which (like the real
-	// probe inside sessionsLocksCmdRun) freshens the lock file's mtime as a
-	// side effect (see lockHolderProvablyDead's doc comment) — so the mtime
-	// must be re-backdated afterward, or the real run below would see a
-	// fresh mtime and never enter the auto-delete branch at all.
-	require.True(t, lockHolderProvablyDead(dataDir, sessionID),
+	// report true -- this test is about what happens to the SUBSEQUENT
+	// os.Remove, not about the probe itself. Probed on a decoy lock in its own
+	// data dir: the probe's Release leaves a background metadata-cleanup
+	// goroutine on the file it probed, so probing THIS file would make the test
+	// wait on its timing.
+	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: probe must report the holder provably dead before this test's Remove-failure scenario is meaningful")
-	// lockHolderProvablyDead's own Release() returns as soon as its
-	// synchronous unlock/close finish (session.SessionLock's Mechanism-1
-	// fix) — the background metadata-cleanup goroutine it spawns can still
-	// be holding the OS lock through its own Truncate/Sync for a brief
-	// moment afterward. Wait for it to finish before touching the lock
-	// file directly below, or this raw os.Chtimes can collide with that
-	// held lock on Windows (mandatory LockFileEx) and fail spuriously.
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "precondition probe's background cleanup should finish")
-	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	// Hold a plain, unlocked handle open on the lock file. This blocks
 	// os.Remove via Windows delete-sharing (confirmed independent of the
-	// LockFileEx advisory lock the probe above already took and released).
+	// LockFileEx advisory lock the command's own probe takes and releases).
 	blocker, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	defer blocker.Close()
@@ -413,28 +400,11 @@ func TestSessionsLocksCmdRun_ConcurrentDeleteBeforeRemove_ENOENTIsSuccess(t *tes
 	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	// Sanity: nobody holds the real OS lock, so lockHolderProvablyDead must
-	// report true. Like TestSessionsLocksCmdRun_RemoveFailureAfterProvablyDead_Surfaced,
-	// this precondition call itself performs a full acquire+release cycle
-	// (freshening mtime as a side effect), so the mtime must be re-backdated
-	// afterward or the real run below would never enter the auto-delete
-	// branch at all.
-	require.True(t, lockHolderProvablyDead(dataDir, sessionID),
+	// report true. Probed on a decoy lock in its own data dir: the probe's
+	// Release leaves a background metadata-cleanup goroutine on the file it
+	// probed, so probing THIS file would make the test wait on its timing.
+	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: probe must report the holder provably dead before this test's race scenario is meaningful")
-	// lockHolderProvablyDead's own Release() returns as soon as its
-	// synchronous unlock/close finish (session.SessionLock's Mechanism-1
-	// fix) — its background metadata-cleanup goroutine can still be
-	// holding the OS lock through its own Truncate/Sync for a brief moment
-	// afterward. Wait for it to finish before overwriting the lock file
-	// directly below, or this raw os.WriteFile can collide with that held
-	// lock on Windows (mandatory LockFileEx) and fail spuriously.
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "precondition probe's background cleanup should finish")
-	// The precondition probe's own Release() already truncated the file to
-	// empty (see clearHolderMetadata) — restore non-empty placeholder
-	// content so the test is meaningful (file exists before hook deletes it).
-	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
-	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	// Install the test seam: delete the file between the probe and
 	// os.Remove, deterministically forcing os.Remove to observe
@@ -443,7 +413,13 @@ func TestSessionsLocksCmdRun_ConcurrentDeleteBeforeRemove_ENOENTIsSuccess(t *tes
 	origHook := preAutoDeleteRemoveHook
 	preAutoDeleteRemoveHook = func(path string) {
 		require.Equal(t, lockPath, path)
-		require.NoError(t, os.Remove(path))
+		// The command's own probe that just proved the holder dead released its
+		// lock a moment ago, but its background metadata cleanup can still hold
+		// the file (a Windows sharing violation for a raw remove); that goroutine
+		// belongs to the production probe and cannot be joined from here. Retry
+		// until the concurrent deleter (this hook) gets the file.
+		require.Eventually(t, func() bool { return os.Remove(path) == nil }, 5*time.Second, 5*time.Millisecond,
+			"the simulated concurrent deleter must be able to remove the lock file once the probe's cleanup finished")
 		hookFired = true
 	}
 	t.Cleanup(func() { preAutoDeleteRemoveHook = origHook })
@@ -516,28 +492,11 @@ func TestSessionsLocksCmdRun_AutoDeleteRemovesStaleLock(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	// Sanity: nobody holds the real OS lock, so lockHolderProvablyDead must
-	// report true. Like TestSessionsLocksCmdRun_RemoveFailureAfterProvablyDead_Surfaced,
-	// this precondition call itself performs a full acquire+release cycle
-	// (freshening mtime as a side effect), so the mtime must be re-backdated
-	// afterward or the real run below would never enter the auto-delete
-	// branch at all.
-	require.True(t, lockHolderProvablyDead(dataDir, sessionID),
+	// report true. Probed on a decoy lock in its own data dir: the probe's
+	// Release leaves a background metadata-cleanup goroutine on the file it
+	// probed, so probing THIS file would make the test wait on its timing.
+	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: probe must report the holder provably dead before this test's race scenario is meaningful")
-	// lockHolderProvablyDead's own Release() returns as soon as its
-	// synchronous unlock/close finish (session.SessionLock's Mechanism-1
-	// fix) — its background metadata-cleanup goroutine can still be
-	// holding the OS lock through its own Truncate/Sync for a brief moment
-	// afterward. Wait for it to finish before overwriting the lock file
-	// directly below, or this raw os.WriteFile can collide with that held
-	// lock on Windows (mandatory LockFileEx) and fail spuriously.
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "precondition probe's background cleanup should finish")
-	// The precondition probe's own Release() already truncated the file to
-	// empty (see clearHolderMetadata) — restore non-empty placeholder
-	// content so the test is meaningful (file exists before auto-delete).
-	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
-	require.NoError(t, os.Chtimes(lockPath, oldTime, oldTime))
 
 	stdout, stderr := captureStdoutAndStderr(t, func() {
 		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)

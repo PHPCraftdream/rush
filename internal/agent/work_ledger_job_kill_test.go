@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -43,41 +44,57 @@ func (f *fakeLiveOutputBuffer) write(s string) {
 var _ tools.LiveOutputBuffer = (*fakeLiveOutputBuffer)(nil)
 
 // TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome pins
-// §2.2: a job marked stopped BEFORE finish() reaches a distinct phaseCancelled
-// outcome (Stopped=true), not phaseFailed/phaseCompleted from whatever the
-// killed process's own exit looked like -- and FormatAsyncCompletion renders
-// the contract's exact "stopped (job_kill)" wording, not a double-wrapped
+// §2.2: a job marked stopped reaches a distinct phaseCancelled outcome
+// (Stopped=true), not phaseFailed/phaseCompleted from whatever the killed
+// process's own exit looked like -- and FormatAsyncCompletion renders the
+// contract's exact "stopped (job_kill)" wording, not a double-wrapped
 // "finished"/"failed" text around it.
 //
-// Revert-check performed: removed finish()'s `if job.stopRequested` branch
-// (state always derived from result.isError) -- this test FAILED (state was
-// phaseFailed, Stopped was false, and the rendered text was the generic
-// "failed" wording instead of "was stopped (job_kill)"). Restored the fix;
-// re-ran, passed.
+// Phase-4 step 2 changed WHERE the content comes from: MarkJobStopped now
+// snapshots (via capturePartial) and durably transitions the job to
+// cancelled BEFORE the caller kills the process (doc sec.3.1's "snapshot ->
+// transition -> stop executor"), instead of finish()'s OLD stopRequested
+// special-case reusing whatever content the killed process's own exit
+// carried. This isolated test wires no l.coord/background manager, so
+// capturePartial's bash branch falls through to its generic "still running"
+// placeholder -- a real background shell would be reflected here instead
+// (see work_ledger_timeout.go's capturePartial for the read path). The
+// executor's later finish() call is now a no-op (the job is already
+// terminal), not a second content-bearing write.
+//
+// Revert-check performed: reverted MarkJobStopped to the old body (set
+// stopRequested=true only) plus finish()'s old stopRequested branch -- this
+// test FAILED (0 completions delivered before finish() ran; content came
+// from finish()'s literal argument instead of the pre-kill snapshot).
+// Restored the step-2 versions; re-ran, passed. Diffed work_ledger.go
+// against git HEAD after restoring: matches the committed step-2 code.
 func TestWorkLedger_MarkJobStopped_BashProducesDistinctCancelledOutcome(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	l.MarkJobStopped("owner", "call")
-	// The executor's own finish() call still happens exactly once, exactly
-	// as if the killed process had reported a plain error -- MarkJobStopped
-	// only changes what THIS call records, not whether it is called.
-	l.finish("owner", "call", jobResult{content: "killed: exit status 1", isError: true})
+	// The executor's own finish() call still happens exactly once (the
+	// caller always calls it after killing the process), but it is now a
+	// no-op: the job is already terminal from MarkJobStopped's own
+	// transition, so this must NOT change the recorded outcome.
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "killed: exit status 1", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
 	require.True(t, got[0].Stopped, "stopped-on-request outcome must be marked Stopped")
 	require.False(t, got[0].IsError, "a job_kill stop is not a failure")
 	require.False(t, got[0].TimedOut)
-	require.Equal(t, "killed: exit status 1", got[0].Content, "raw partial content, unformatted -- FormatAsyncCompletion formats it")
+	require.Equal(t, "job call (bash) is still running; no partial output is available yet", got[0].Content,
+		"capturePartial's fallback placeholder (no l.coord/background wired in this isolated test) -- the SNAPSHOT taken before the kill, not finish()'s later argument")
 
 	text := FormatAsyncCompletion(got[0])
 	require.Contains(t, text, "was stopped (job_kill)")
-	require.Contains(t, text, "killed: exit status 1")
+	require.NotContains(t, text, "killed: exit status 1", "finish()'s later content must never surface -- the job was already terminal")
 	require.NotContains(t, text, "finished", "must not double-wrap with the generic finished/failed wording")
 	require.NotContains(t, text, "failed")
 
@@ -96,19 +113,21 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
 	l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("line 1\nline 2\n")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
-	require.NoError(t, l.StopRunCommandJob("owner", "call"))
+	_, _, stopErr := l.StopRunCommandJob("owner", "call")
+	require.NoError(t, stopErr)
 	// Simulates run_command.go's own ctx-cancellation branch, which discards
 	// its own partial buffer content and returns a bare error (see
 	// run_command.go's `case ctx.Err() == context.Canceled`).
-	l.finish("owner", "call", jobResult{content: "context canceled", isError: true})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "context canceled", isError: true})
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -120,34 +139,65 @@ func TestWorkLedger_MarkJobStopped_RunCommandUsesLiveBufferForPartialOutput(t *t
 // race coverage with MarkJobStopped racing finish -- a job_kill call landing
 // at (almost) the same moment the job finishes on its own. Whichever wins,
 // transitionToTerminal's CAS must still yield exactly one delivered outcome.
+//
+// B11: additionally asserts job_kill's OWN answer (text/ok, not just what
+// was delivered) is honest about which side actually won -- the pre-fix
+// code always answered "stopped (job_kill)" regardless, because MarkJobStopped
+// called the plain l.transition wrapper and threw away commitTransition's
+// own outcome. Over enough iterations of a true, unsynchronized release both
+// orderings occur; sawFinishWon guards against the race window silently
+// closing (e.g. a future change serializing these two calls) and no longer
+// exercising the losing branch this test exists to cover.
+//
+// Revert-check performed: reverted MarkJobStopped to answer unconditionally
+// with Stopped:true (ignoring commitAndDeliver's outcome) -- this test
+// FAILED on every iteration where `got[0].Stopped` was false (markText still
+// contained "was stopped (job_kill)"). Restored the outcome-based answer;
+// re-ran, passed. Diffed work_ledger.go against git HEAD after restoring:
+// matches the committed fix.
 func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 	t.Parallel()
-	for i := 0; i < 30; i++ {
+	sawFinishWon := false
+	for i := 0; i < 60; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
+		var markText string
+		var markVerdict tools.JobStopVerdict
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			<-start
-			l.MarkJobStopped("owner", "call")
+			markText, _, markVerdict = l.MarkJobStopped("owner", "call")
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		close(start)
 		wg.Wait()
 
 		got := drainCompletions(delivered)
 		require.Len(t, got, 1, "exactly one terminal outcome must be delivered per race (iteration %d)", i)
+
+		if got[0].Stopped {
+			require.Equal(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill won the race but did not report JobStopStopped", i)
+			require.Contains(t, markText, "was stopped (job_kill)", "iteration %d", i)
+		} else {
+			sawFinishWon = true
+			require.NotEqual(t, tools.JobStopStopped, markVerdict, "iteration %d: job_kill lost the race but reported JobStopStopped", i)
+			require.NotContains(t, markText, "was stopped (job_kill)",
+				"iteration %d: job_kill lost the race to natural finish but its own answer still claimed it stopped the job", i)
+		}
 	}
+	require.True(t, sawFinishWon, "the race must be tight enough for finish to occasionally win; widen the window if this becomes flaky")
 }
 
 // TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent pins §1.5's
@@ -157,14 +207,17 @@ func TestWorkLedger_JobKillRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	var cancelCalls int
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() { cancelCalls++ })
 	require.NoError(t, err)
 
-	require.NoError(t, l.StopRunCommandJob("owner", "call"))
+	stopText, _, stopErr := l.StopRunCommandJob("owner", "call")
+	require.NoError(t, stopErr)
+	require.Contains(t, stopText, "job_kill", "task #1063: the fresh stop's own answer carries the real output/wording, not a placeholder")
 	require.Equal(t, 1, cancelCalls)
 
-	err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 	require.Equal(t, 1, cancelCalls, "a repeat stop must not cancel a second time")
@@ -176,10 +229,11 @@ func TestWorkLedger_StopRunCommandJob_CancelsAndIsIdempotent(t *testing.T) {
 func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
-	err = l.StopRunCommandJob("owner", "call")
+	_, _, err = l.StopRunCommandJob("owner", "call")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -191,13 +245,14 @@ func TestWorkLedger_StopRunCommandJob_RejectsNonRunCommandJob(t *testing.T) {
 func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	buf := &fakeLiveOutputBuffer{}
 	buf.write("hello ")
-	l.setRunCommandBuffer("owner", "call", buf)
+	l.setRunCommandBuffer(jobOf(l, "owner", "call"), buf)
 
 	data, done, next, err := l.RunCommandOutput("owner", "call", 0)
 	require.NoError(t, err)
@@ -220,7 +275,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello world", data)
 
-	l.finish("owner", "call", jobResult{content: "hello world"})
+	l.finish(jobOf(l, "owner", "call"), jobResult{content: "hello world"})
 	// Terminal but not yet delivered would show done=true; here finish's own
 	// deliverLocked already removed the job (task #1023 item 5's retention
 	// bound), so a subsequent call correctly reports not-found.
@@ -236,6 +291,7 @@ func TestWorkLedger_RunCommandOutput_CursorSemantics(t *testing.T) {
 func TestWorkLedger_RunCommandOutput_StillStartingRaceIsNotAnError(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
 	require.NoError(t, err)
 
@@ -252,6 +308,7 @@ func TestWorkLedger_RunCommandOutput_StillStartingRaceIsNotAnError(t *testing.T)
 func TestWorkLedger_ResolveJobShellID_TypedErrors(t *testing.T) {
 	t.Parallel()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	_, _, err := l.Start("owner", "rc-call", "", "run_command", "", false, false, nil, nil)
 	require.NoError(t, err)
 	_, err = l.ResolveJobShellID("owner", "rc-call")
@@ -268,4 +325,148 @@ func TestWorkLedger_ResolveJobShellID_TypedErrors(t *testing.T) {
 	require.Equal(t, "child-session", delErr.ChildSessionID)
 	require.Contains(t, delErr.Error(), "child session child-session")
 	require.NotContains(t, delErr.Error(), "stop_agent", "stop_agent does not exist yet (stage 3); must not tell the model to call it")
+}
+
+// TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice
+// pins task #1063/doc sec.3.4's wake paragraph: a job_kill'd row commits
+// delivery='done'/reacted=1/wake=0 in the SAME transition -- it is never a
+// pull candidate (ListPendingAsyncJobNoticesForOwner requires
+// delivery='pending') and never reaction debt (AsyncReactionDebtExists
+// requires wake=1), so job_kill produces no second notice and no turn.
+//
+// Revert-check performed: reverted causeStateNoticeKindWake's causeJobKill
+// branch to the step-3 body (delivery stayed "pending", no reacted
+// override). This test FAILED (delivery=="pending", reacted==0). Restored
+// the step-6 version; re-ran, passed. Diffed work_ledger_transition.go
+// against git HEAD after restoring: matches the committed step-6 code.
+func TestWorkLedger_MarkJobStopped_RowGoesStraightToDoneNeitherDebtNorNotice(t *testing.T) {
+	t.Parallel()
+	l := newWorkLedger(nil)
+	store := newTestAsyncJobStore(t)
+	l.store = store
+	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	l.acknowledged(jobOf(l, "owner", "call"))
+
+	text, _, verdict := l.MarkJobStopped("owner", "call")
+	require.Equal(t, tools.JobStopStopped, verdict)
+	require.Contains(t, text, "job_kill")
+
+	ctx := context.Background()
+	row, err := store.Get(ctx, "owner", "call")
+	require.NoError(t, err)
+	require.Equal(t, "done", row.Delivery, "job_kill's row is delivered immediately, never a pull candidate")
+	require.EqualValues(t, 1, row.Reacted)
+	require.EqualValues(t, 0, row.Wake)
+
+	jobPulled, err := store.PullJobNotices(ctx, nil, "owner", buildJobNoticeMessageParams)
+	require.NoError(t, err)
+	require.Empty(t, jobPulled, "a job_kill'd row must never surface as a pulled notice")
+}
+
+// TestWorkLedger_StopRunCommandJob_RowGoesStraightToDone is the run_command
+// counterpart of the bash test above.
+func TestWorkLedger_StopRunCommandJob_RowGoesStraightToDone(t *testing.T) {
+	t.Parallel()
+	l := newWorkLedger(nil)
+	store := newTestAsyncJobStore(t)
+	l.store = store
+	_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {})
+	require.NoError(t, err)
+	l.acknowledged(jobOf(l, "owner", "call"))
+
+	text, _, err := l.StopRunCommandJob("owner", "call")
+	require.NoError(t, err)
+	require.Contains(t, text, "job_kill")
+
+	row, err := store.Get(context.Background(), "owner", "call")
+	require.NoError(t, err)
+	require.Equal(t, "done", row.Delivery)
+	require.EqualValues(t, 1, row.Reacted)
+	require.EqualValues(t, 0, row.Wake)
+}
+
+// TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop pins
+// task #1063's concurrency rule at the ledger's own guard (killRequested):
+// two callers racing job_kill for the SAME job must see exactly one "fresh"
+// stop (ok=true, non-empty text) and the other must see ok=false --
+// never two fresh stops, never a double kill attempt.
+func TestWorkLedger_MarkJobStopped_ConcurrentCallsYieldExactlyOneFreshStop(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 20; i++ {
+		l := newWorkLedger(nil)
+		l.store = newTestAsyncJobStore(t)
+		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
+		require.NoError(t, err)
+		l.acknowledged(jobOf(l, "owner", "call"))
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		results := make([]bool, 2)
+		wg.Add(2)
+		for g := 0; g < 2; g++ {
+			g := g
+			go func() {
+				defer wg.Done()
+				<-start
+				_, _, verdict := l.MarkJobStopped("owner", "call")
+				results[g] = verdict == tools.JobStopStopped
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		freshCount := 0
+		for _, ok := range results {
+			if ok {
+				freshCount++
+			}
+		}
+		require.Equal(t, 1, freshCount, "iteration %d: exactly one concurrent job_kill must see a fresh stop", i)
+	}
+}
+
+// TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop
+// is the run_command counterpart, additionally asserting cancel() (the
+// process-kill trigger) fires exactly once.
+func TestWorkLedger_StopRunCommandJob_ConcurrentCallsYieldExactlyOneFreshStop(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 20; i++ {
+		l := newWorkLedger(nil)
+		l.store = newTestAsyncJobStore(t)
+		var cancelCalls int
+		var mu sync.Mutex
+		_, _, err := l.Start("owner", "call", "", "run_command", "", false, false, nil, func() {
+			mu.Lock()
+			cancelCalls++
+			mu.Unlock()
+		})
+		require.NoError(t, err)
+		l.acknowledged(jobOf(l, "owner", "call"))
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		wg.Add(2)
+		for g := 0; g < 2; g++ {
+			g := g
+			go func() {
+				defer wg.Done()
+				<-start
+				_, _, err := l.StopRunCommandJob("owner", "call")
+				errs[g] = err
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		successCount := 0
+		for _, err := range errs {
+			if err == nil {
+				successCount++
+			}
+		}
+		require.Equal(t, 1, successCount, "iteration %d: exactly one concurrent job_kill must succeed", i)
+		require.Equal(t, 1, cancelCalls, "iteration %d: cancel must fire exactly once, never twice", i)
+	}
 }

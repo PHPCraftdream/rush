@@ -11,16 +11,82 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
 // refreshTokenIfExpired proactively refreshes the OAuth token if it has expired.
 func (c *coordinator) refreshTokenIfExpired(ctx context.Context, providerCfg config.ProviderConfig) error {
+	_, err := c.refreshExpiredToken(ctx, providerCfg)
+	return err
+}
+
+// refreshExpiredToken is refreshTokenIfExpired that also says whether a
+// refresh really happened: a caller that resolved its model BEFORE the refresh
+// holds a client built on the old token and must rebuild it.
+func (c *coordinator) refreshExpiredToken(ctx context.Context, providerCfg config.ProviderConfig) (bool, error) {
 	if providerCfg.OAuthToken == nil || !providerCfg.OAuthToken.IsExpired() {
-		return nil
+		return false, nil
 	}
 	slog.Debug("Token needs to be refreshed", "provider", providerCfg.ID)
-	return c.refreshOAuth2Token(ctx, providerCfg)
+	if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// rebuildOnCurrentCredentials rebuilds model's provider client from the
+// current config snapshot, keeping the model itself pinned (same model, new
+// client): the pinned/frozen models of a call resolved before a credential
+// refresh, and of a delegated child's driver template, carry the old token.
+func (c *coordinator) rebuildOnCurrentCredentials(ctx context.Context, model Model, isSubAgent bool) (Model, error) {
+	cfg, providerCfg, err := c.rebuildInputs(model.ModelCfg.Provider)
+	if err != nil {
+		return Model{}, err
+	}
+	return c.rebuildPinnedModel(ctx, cfg, model, providerCfg, isSubAgent)
+}
+
+// publishReauthenticate asks the operator to re-authenticate with providerID
+// when it is the hyper provider (the only one with an interactive login flow
+// behind the notification).
+func (c *coordinator) publishReauthenticate(providerID string) {
+	if c.notify == nil || providerID != hyper.Name {
+		return
+	}
+	c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
+		Type:       notify.TypeReAuthenticate,
+		ProviderID: providerID,
+	})
+}
+
+// refreshAfterUnauthorized refreshes providerID's credentials after a Drain
+// attempt got a 401. It is the ONE place a Drain's 401 refreshes them: the turn
+// loop that accounts the attempt calls it before the verdict, because a
+// launcher (web wake, delegated child) never sees the error in time and the
+// CLI's runInternal returns after the accounting. True means the credentials
+// were refreshed (OAuth token or API-key template), so the next attempt can
+// succeed and the 401 is a transient failure; false means there is no refresh
+// path or it failed, and the 401 stays terminal.
+func (c *coordinator) refreshAfterUnauthorized(ctx context.Context, providerID string) bool {
+	if c == nil || c.cfg == nil || providerID == "" {
+		return false
+	}
+	_, providerCfg, err := c.rebuildInputs(providerID)
+	if err != nil {
+		return false
+	}
+	// The refresh has its own budget, detached from ctx: a slow auth endpoint
+	// must not eat what the settle after it needs (R4B-3).
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainRefreshBudget())
+	defer cancel()
+	if err := c.retryAfterUnauthorized(refreshCtx, providerCfg); err != nil {
+		slog.Warn("401 on a Drain: credential refresh skipped", "provider", providerID, "error", err)
+		return false
+	}
+	return true
 }
 
 // checkLivePeakHours returns the current peak-hours decision for providerID.
@@ -202,4 +268,11 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 		return err
 	}
 	return nil
+}
+
+// hasRefreshableCredential reports whether providerCfg's credentials can
+// change under a running process: an OAuth token, or an API key resolved from a
+// `$` template (retryAfterUnauthorized refreshes exactly these two).
+func hasRefreshableCredential(providerCfg config.ProviderConfig) bool {
+	return providerCfg.OAuthToken != nil || strings.Contains(providerCfg.APIKeyTemplate, "$")
 }

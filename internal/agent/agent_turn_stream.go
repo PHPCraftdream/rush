@@ -47,6 +47,8 @@ type turnStreamConfig struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	// att is the Drain leg being accounted (nil for any other call).
+	att *drainAttempt
 
 	smartModel     Model
 	promptPrefix   string
@@ -109,6 +111,7 @@ type turnStream struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	att    *drainAttempt
 
 	smartModel   Model
 	promptPrefix string
@@ -141,6 +144,17 @@ type turnStream struct {
 	silentCompactNeeded bool
 	currentSession      session.Session
 
+	// carriedSplices is every mid-turn insertion (notice pulls AND mailbox
+	// injects) this turn's PrepareStep has spliced into a step's prompt,
+	// each with the position it landed at (phase-4 step 3, doc sec.3.4's
+	// second bullet). fantasy builds each step's input as initialPrompt +
+	// step responses, so a splice made at one step's boundary is otherwise
+	// visible to that ONE step only; spliceCarried re-inserts every one at
+	// its original position at every later step's boundary (BEFORE window
+	// trimming and cache marking). Callback-sequence-only state, like
+	// stepHistory above.
+	carriedSplices []carriedSplice
+
 	// currentAssistant is shared with the ticker goroutines; every touch,
 	// from ANY goroutine including these callbacks, holds mu.
 	mu               sync.Mutex
@@ -158,6 +172,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		genCtx:               cfg.genCtx,
 		cancel:               cfg.cancel,
 		call:                 cfg.call,
+		att:                  cfg.att,
 		genID:                cfg.genID,
 		smartModel:           cfg.smartModel,
 		promptPrefix:         cfg.promptPrefix,
@@ -378,20 +393,21 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	ts.mu.Lock()
 	sessionID := ts.currentAssistant.SessionID
 	ts.mu.Unlock()
-	// Use parent ctx instead of genCtx to ensure the message is created
-	// even if the request is canceled mid-stream
-	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, message.CreateMessageParams{
+	params := message.CreateMessageParams{
 		Role: message.Tool,
 		Parts: []message.ContentPart{
 			toolResult,
 		},
-	})
-	if ts.a.asyncJobs != nil {
-		if createMsgErr != nil {
-			ts.a.asyncJobs.abort(sessionID, result.ToolCallID)
-		} else {
-			ts.a.asyncJobs.acknowledged(sessionID, result.ToolCallID)
-		}
 	}
+	// Ack gate (DUR-7, doc sec.3.8) and job_kill result fusion (A3): the
+	// ledger decides which results are a tracked job's own -- by claim tag,
+	// never by tool_call_id alone -- and writes them in one transaction with
+	// the job's row. Every other result is a plain Create. The outer ctx is
+	// used so the message is created even if the request is canceled
+	// mid-stream.
+	if ts.a.asyncJobs != nil {
+		return ts.a.asyncJobs.persistToolResult(ts.ctx, sessionID, toolResult, ts.a.messages, params)
+	}
+	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, params)
 	return createMsgErr
 }

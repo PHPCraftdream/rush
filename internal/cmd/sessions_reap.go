@@ -29,17 +29,21 @@ Use --dry-run to see what would be reclaimed without touching anything.
 
 Note: an empty lock file with no held OS lock is harmless (the next
 acquirer reopens and overwrites it; see internal/session/lock.go's
-Release), so removing these files is cosmetic cleanup, not a correctness
-requirement — reap exists to keep the locks directory tidy for operators.
+Release). It is also what a CLEAN release leaves — a "rush run" loop
+waiting between turns on a job, a delegation or a retry, or a web session
+between turns, holds no lock — so reap keeps every lock file that records
+no PID, unprobed (probing would take the lock the owner needs for its next
+turn). Only locks that record a PID, which is what a crash leaves behind,
+are probed and reclaimed; reap exists to tidy those for operators.
 
 The legacy --all flag is accepted for backward compatibility but is now a
-no-op: removal is decided solely by the OS-lock probe, so a lock with an
-unreadable PID is removed if (and only if) the probe proves no live holder,
-regardless of --all.`,
+no-op: a lock that records a PID is removed if (and only if) the OS-lock
+probe proves no live holder, regardless of --all; a lock with no readable
+PID is kept.`,
 	Example: `
 rush sessions reap
 rush sessions reap --dry-run
-rush sessions reap --all      # also nuke locks with unreadable PIDs
+rush sessions reap --all      # legacy no-op
   `,
 	RunE: sessionsReapCmdRun,
 }
@@ -56,7 +60,7 @@ type reapItem struct {
 	Path   string
 	PID    int
 	AgeSec int
-	Action string // "remove-dead", "remove-unreadable", "skip-alive", "skip-young"
+	Action string // "remove-dead", "remove-unreadable", "skip-alive", "skip-young", "skip-released"
 }
 
 func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
@@ -129,6 +133,18 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		// reap is for. Skipping them costs nothing — they are not the backlog.
 		if age < heartbeatThreshold {
 			item.Action = "skip-young"
+			items = append(items, item)
+			continue
+		}
+
+		// A lock file with no recorded PID is what a CLEAN release leaves (the
+		// holder truncates it): a `rush run` loop waiting between turns, a web
+		// session between turns. Nothing died, so there is nothing to reclaim,
+		// and probing it takes the lock the owner needs for its next turn and
+		// unlinks a path it will reuse (R8C-5; the same guard `sessions locks
+		// --prune` has). A crash leaves its PID in the file and is still swept.
+		if pid <= 0 {
+			item.Action = "skip-released"
 			items = append(items, item)
 			continue
 		}
@@ -237,6 +253,9 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		case "skip-probe-error":
 			fmt.Fprintf(os.Stderr, "kept   lock %s (probe inconclusive; left untouched, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
+		case "skip-released":
+			fmt.Fprintf(os.Stderr, "kept   released lock %s (no recorded PID: a clean release, e.g. a loop between turns; not probed, age %ds)\n",
+				filepath.Base(it.Path), it.AgeSec)
 		case "skip-young":
 			fmt.Fprintf(os.Stderr, "kept   young lock %s (age %ds, may still be mid-acquisition — not probed)\n",
 				filepath.Base(it.Path), it.AgeSec)
@@ -271,5 +290,5 @@ func countAction(items []reapItem, action string) int {
 
 func init() {
 	sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
-	sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so unreadable-PID locks are reaped iff proven uncontended regardless of this flag")
+	sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
 }

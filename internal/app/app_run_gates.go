@@ -5,8 +5,13 @@
 package app
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -130,6 +135,57 @@ func shouldRunReviewerPass(role config.SelectedModelType, cfg *config.Config) bo
 	}
 	reviewerModelCfg, ok := cfg.Models[config.SelectedModelTypeReviewer]
 	return ok && reviewerModelCfg.Model != ""
+}
+
+// reviewerPassScopeOpenRetries bounds how many times reviewerPassBlocked
+// retries a failed CLIScope read before giving up and defaulting to
+// "blocked" (skip the reviewer pass) -- C16 fix: doc sec.3.5 requires a DB
+// read error to retry with a pause, never a silent skip on the very first
+// error.
+const reviewerPassScopeOpenRetries = 3
+
+// reviewerPassBlocked reports whether the automatic reviewer pass must not
+// open a new phase on sessionID: it has running work, or owes (Owed), is
+// retrying (Paced) or gave up on (Stuck) a reaction turn. Debt the policy
+// defers (DrainDeferred: nothing will ever act on it) does not block. Every
+// skip is one line on stderr -- the run's own writer (RunRequest.Stderr), never
+// the process's -- so a silently missing review is never a mystery.
+// A DB read error retries reviewerPassScopeOpenRetries times (paced by
+// cliDBRetryPause); persistent failure blocks -- running a possibly-conflicting
+// reviewer phase while the scope is unknown is the riskier guess.
+//
+// Only called when every cheap, in-memory gate (ExecuteRun's own error,
+// credentials, cancellation, shouldRunReviewerPass) already passed.
+func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
+	var lastErr error
+	for attempt := 1; attempt <= reviewerPassScopeOpenRetries; attempt++ {
+		state, err := source.CLIScope(ctx, sessionID)
+		if err == nil {
+			why := ""
+			switch {
+			case state.WorkOpen:
+				why = "it still has running work"
+			case state.Drain == agent.DrainOwed:
+				why = "it owes a reaction turn"
+			case state.Drain == agent.DrainPaced:
+				why = "a failed reaction turn is being retried"
+			case state.Drain == agent.DrainStuck:
+				why = "a notice it stopped reacting to is still pending"
+			}
+			if why != "" {
+				fmt.Fprintf(stderr, "rush run: reviewer pass skipped for session %q: %s\n", sessionID, why)
+				return true
+			}
+			return false
+		}
+		lastErr = err
+		slog.Warn("reviewer pass: scope check failed; retrying", "session_id", sessionID, "attempt", attempt, "err", err)
+		if attempt == reviewerPassScopeOpenRetries || !sleepOrCtxDone(ctx, cliDBRetryPause) {
+			break
+		}
+	}
+	fmt.Fprintf(stderr, "rush run: reviewer pass skipped for session %q: its scope could not be read (%v)\n", sessionID, lastErr)
+	return true
 }
 
 // runAllowlistSpecFromConfig reads the config-derived restricted-run

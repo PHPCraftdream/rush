@@ -267,7 +267,7 @@ var runTurnToolsSnapshotSeam func()
 // — this function builds it, calls Stream, and dispatches on the result;
 // the preamble above and the tail below are deliberately NOT moved there,
 // since neither is fantasy callback state.
-func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
+func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
 	// A real turn is starting: any stale keep-alive scheduled for this
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
@@ -359,6 +359,65 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
+	// Phase-4 step 5 (DUR-5/DUR-6, doc sec.3.5/3.7): recover this session's
+	// OWN scope's dead-host rows to 'interrupted' BEFORE the pull below, so
+	// an interruption discovered right now is already delivery='pending' and
+	// gets pulled into history in THIS turn, not a later one. Recovery never
+	// writes history or wakes anyone itself -- see RecoverOwnerScope's doc.
+	if a.asyncJobs != nil && a.asyncJobs.store != nil {
+		a.asyncJobs.store.RecoverOwnerScope(preambleCtx, call.SessionID, a.messages)
+	}
+
+	// Phase-4 step 3 (DUR-3, doc sec.3.3): the driver pulls pending
+	// async_jobs/session_notices rows into history BEFORE history loads for
+	// the prompt, so a notice lands in msgs below exactly like any other
+	// persisted message -- no separate splice path for it. Runs for EVERY
+	// turn (not just Drain): a plain user turn that happens to start right
+	// after a background job finished picks the notice up here too. Never
+	// fails the turn (pullPendingNotices logs and skips per-row).
+	pulledAtStart := a.pullPendingNotices(preambleCtx, call.SessionID)
+	if att != nil {
+		// Doc sec.3.4 / attempts design 1.5: the visible debt is read AFTER
+		// this Drain's own pull (a row pulled by an earlier failed attempt
+		// counts too), then the commit decision runs on it. A failing read
+		// leaves the leg "not attempted": a refusal, never a count.
+		snap, snapErr := a.visibleDebtSnapshot(preambleCtx, call.SessionID)
+		switch {
+		case snapErr == nil:
+			att.snapshot = snap
+		case call.drainTurnCommitted:
+			slog.Warn("drain turn: debt snapshot failed on a committed continuation; it runs uncounted",
+				"session_id", call.SessionID, "err", snapErr)
+		default:
+			preambleCancel()
+			return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", snapErr)
+		}
+		if !call.drainTurnCommitted {
+			commit, verdict := a.decideDrainTurn(preambleCtx, call.SessionID, att.snapshot)
+			if !commit {
+				// No visible debt, or policy forbids a turn: finish through the
+				// normal turn end WITHOUT reaching the provider (doc sec.3.4) --
+				// no empty assistant message, no Stream call.
+				// drainOrReleaseMerged still runs so a call queued behind this
+				// Drain executes as the loop's next turn instead of being
+				// orphaned. The leg is accounted BEFORE the release: the
+				// release hook reads the gate the accounting writes.
+				att.outcome = drainNoTurn
+				att.commitNo = verdict
+				if att.snapshot.Empty() {
+					att.pendingLeft = a.pendingDebtLeft(preambleCtx, call.SessionID)
+				}
+				preambleCancel()
+				a.closeDrainAttempt(att, nil)
+				next, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
+				if !ok {
+					return nil, SessionAgentCall{}, false, nil
+				}
+				return nil, next, true, nil
+			}
+		}
+	}
+
 	msgs, err := a.getSessionMessages(preambleCtx, currentSession)
 	if err != nil {
 		preambleCancel()
@@ -413,8 +472,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// ErrCallAlreadyAttempted to prevent duplicate execution on retry.
 	// If call.ExistingMessageID is set, the user message already exists,
 	// so we're already in the "attempted" state.
+	// Phase-4 step 3 (doc sec.3.4's "empty prompt" rule): a Drain call that
+	// reaches here (call.IsDrain && anyWake, checked above) has an empty
+	// Prompt by construction (newDrainCall) -- it must NEVER get a
+	// createUserMessage call, which would persist an empty user-role row.
+	// Its reaction is purely to the notice(s) the turn-start pull already
+	// spliced into msgs/history above.
 	userMessageCreated := call.ExistingMessageID != ""
-	if call.ExistingMessageID == "" {
+	skipUserMessage := call.IsDrain && call.Prompt == "" && call.ExistingMessageID == ""
+	if call.ExistingMessageID == "" && !skipUserMessage {
 		createdMsg, err := a.createUserMessage(preambleCtx, call)
 		if err != nil {
 			preambleCancel()
@@ -587,6 +653,27 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	history, files := a.preparePrompt(msgs, currentSession.Todos, call.Attachments...)
 
+	// Phase-4 step 3 (doc sec.3.4): a Drain call's empty prompt relies on
+	// history already ending in a fresh user-role notice (the turn-start
+	// pull above). If it does not -- e.g. the last message is a dangling
+	// assistant turn interrupted mid-stream -- append a NON-PERSISTED nudge
+	// so the provider still has a well-formed prompt to react to. Never
+	// creates a DB row; history/msgs above are untouched.
+	if call.IsDrain && call.Prompt == "" {
+		// With no prompt of its own, the Drain reacts to the notices its
+		// turn-start pull just appended; keep them as the final user
+		// message(s) instead of preparePrompt's trailing todo reminder.
+		history = reminderBeforeTail(history, len(pulledAtStart))
+		last := len(history) - 1
+		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
+			nudge := "Continue based on the notice(s) above."
+			if call.drainTurnCommitted {
+				nudge = "The conversation was summarized; continue reacting to the notice(s) above."
+			}
+			history = append(history, fantasy.NewUserMessage(nudge))
+		}
+	}
+
 	// historyIDs is the dedup set for mailbox-injected messages (design §5):
 	// an inject whose DB row was already loaded into msgs by this turn's
 	// preamble must not be spliced again from the mailbox's injects queue.
@@ -611,6 +698,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		cancel:           cancel,
 		call:             call,
 		genID:            genID,
+		att:              att,
 		smartModel:       smartModel,
 		promptPrefix:     promptPrefix,
 		historyIDs:       historyIDs,
@@ -657,6 +745,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
+	// The leg reached the provider from here on: the Stream call itself is
+	// the "attempted" mark (a pre-Stream failure stays a refusal).
+	if att != nil {
+		att.outcome = drainAttempted
+		att.provider = smartModel.ModelCfg.Provider
+		att.credentialed = call.Credentials != nil
+	}
 	result, err := agent.Stream(genCtx, ts.streamCall(history, files, maxOutputTokens))
 	// Defensive: normally OnStepFinish stops the checkpoint ticker (via
 	// stopCheckpoint()) before its own final write. But if agent.Stream
@@ -702,7 +797,24 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// Returning early here means drainOrReleaseMerged below is never reached,
 			// which is correct: we're not releasing ownership yet, we're continuing.
 			continuationCall := call
-			continuationCall.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			if call.IsDrain {
+				// A Drain has no user request: its continuation keeps the empty
+				// prompt (no user row is persisted) and runTurn's non-persisted
+				// nudge says what to do (R2B-15).
+				continuationCall.Prompt = ""
+			} else {
+				continuationCall.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
+			}
+			// B4 fix: this continuation resumes a Drain turn that ALREADY
+			// committed to reaching the provider (its own turn-start pull ran
+			// above, before shouldSummarize could even be computed) -- it must
+			// never re-gate on decideDrainTurn at the top of the next runTurn
+			// call. Without this, a step's real content already marked the
+			// pulled notice reacted=1, so the re-gate finds no visible debt and
+			// takes the no-turn branch, ending the turn with the compaction's
+			// pending tool calls never answered (mirrors coordinator_run.go's
+			// own `trackCall.drainTurnCommitted = trackCall.IsDrain` retry rule).
+			continuationCall.drainTurnCommitted = continuationCall.IsDrain
 			return nil, continuationCall, true, nil
 		}
 	}
@@ -753,6 +865,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// makes the emptiness check, the ownership release, and the OS lock
 	// release one atomic operation under the mailbox's own lock — no
 	// concurrent submit can land in a gap that no longer exists.
+	// The leg is accounted before the release: the release hook reads the
+	// gate this writes (the turn itself ended without error here).
+	a.closeDrainAttempt(att, nil)
 	firstQueuedMessage, ok := a.drainOrReleaseMerged(call.SessionID, epoch, lk, runCancel)
 	if !ok {
 		return result, SessionAgentCall{}, false, err

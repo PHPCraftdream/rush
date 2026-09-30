@@ -28,6 +28,7 @@ func TestTimeoutService_SingleGoroutineForManyJobs(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -58,6 +59,7 @@ func TestTimeoutService_FiresNearestFirst(t *testing.T) {
 		order = append(order, c.ToolCallID)
 		mu.Unlock()
 	})
+	l.store = newTestAsyncJobStore(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
@@ -66,13 +68,13 @@ func TestTimeoutService_FiresNearestFirst(t *testing.T) {
 		Deadline: now.Add(200 * time.Millisecond), Kind: timeoutTerminateAndWake, Seconds: 1,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "far")
+	l.acknowledged(jobOf(l, "owner", "far"))
 
 	_, _, err = l.Start("owner", "near", "", "bash", "", false, false, &TimeoutSpec{
 		Deadline: now.Add(50 * time.Millisecond), Kind: timeoutTerminateAndWake, Seconds: 1,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "near")
+	l.acknowledged(jobOf(l, "owner", "near"))
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -92,12 +94,13 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 	t.Parallel()
 	var delivered []AsyncCompletion
 	l := newWorkLedger(func(c AsyncCompletion) { delivered = append(delivered, c) })
+	l.store = newTestAsyncJobStore(t)
 	var cancelled bool
 	_, _, err := l.Start("owner", "call", "", "bash", "", false, false, &TimeoutSpec{
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
 	}, func() { cancelled = true })
 	require.NoError(t, err)
-	l.acknowledged("owner", "call")
+	l.acknowledged(jobOf(l, "owner", "call"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call"]
@@ -114,9 +117,13 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 }
 
 // TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind:
-// FormatAsyncCompletion's timeout wording matches the contract verbatim, and
-// notifyAsyncCompletion's wake carries noticeKind="timeout_terminated" for a
-// TimedOut completion.
+// FormatAsyncCompletion's timeout wording matches the contract verbatim
+// (unchanged by step 3 -- it is now called from the PULL path,
+// agent_notice_pull.go's buildJobNoticeMessageParams, instead of here), and
+// notifyAsyncCompletion submits the Drain wake hint iff the completion's own
+// Wake bit (the committed row's wake, phase-4 step 3) is set -- text/
+// NoticeKind are no longer this callback's job at all; the pull reconstructs
+// both from the row at pull time.
 // Revert-check performed: reverted FormatAsyncCompletion to the
 // unconditional "finished/failed" text -- the text assertion below FAILED
 // (got the generic "finished" wording instead of "timed out after...").
@@ -139,26 +146,34 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.store = newTestAsyncJobStore(t)
 	coord.asyncJobs.coord = coord
 
+	// The committed row is debt the wake launches for.
+	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	// Wake: true -- a timed-out job's committed row always wakes (doc
+	// sec.3.4's wake-policy table); this is what deliverLocked now threads
+	// through as AsyncCompletion.Wake (work_ledger.go).
 	coord.notifyAsyncCompletion(AsyncCompletion{
 		SessionID: "child-1", ToolCallID: "call-1", ToolName: "bash",
-		Content: "partial output", TimedOut: true, TimeoutSeconds: 900,
+		Content: "partial output", TimedOut: true, TimeoutSeconds: 900, Wake: true,
 	})
 
 	select {
 	case call := <-received:
-		require.Equal(t, "timeout_terminated", call.NoticeKind)
-		require.Contains(t, call.Prompt, "timed out after 900s")
+		require.True(t, call.IsDrain, "a wake hint submits a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("notifyAsyncCompletion's wake never reached agent.Run")
 	}
 }
 
 // TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind: handleTimeout's
-// wake_only branch calls wakeSession directly with
-// noticeKind="timeout_wake_only", and does NOT transition the job to
-// terminal (it stays phaseRunning).
+// wake_only branch persists a durable session_notices row (kind
+// NoticeKindWakeOnly == "timeout_wake_only") BEFORE submitting the wake --
+// step 3 moved the notice off the in-process call entirely (a Drain call
+// carries no notice text/NoticeKind of its own, doc sec.3.4) -- and does NOT
+// transition the job to terminal (it stays phaseRunning).
 func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 	t.Parallel()
 	received := make(chan SessionAgentCall, 1)
@@ -169,6 +184,7 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	coord.asyncJobs = l
 
@@ -176,7 +192,7 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call-1")
+	l.acknowledged(jobOf(l, "owner", "call-1"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call-1"]
@@ -186,12 +202,70 @@ func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
 
 	select {
 	case call := <-received:
-		require.Equal(t, "timeout_wake_only", call.NoticeKind)
-		require.Contains(t, call.Prompt, "still running")
+		require.True(t, call.IsDrain, "wake_only's wake must submit a Drain call, not a text-carrying one")
+		require.Empty(t, call.NoticeKind, "a Drain call itself carries no NoticeKind -- the pull reconstructs it from the row")
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleTimeout's wake_only branch never reached agent.Run")
 	}
 	require.Equal(t, phaseRunning, job.state, "wake_only must not transition the job to terminal")
+
+	notices, err := l.store.ListSessionNotices(t.Context(), "owner")
+	require.NoError(t, err)
+	require.Len(t, notices, 1)
+	require.Equal(t, "timeout_wake_only", notices[0].Kind)
+	require.Contains(t, notices[0].Text, "still running")
+}
+
+// TestWorkLedger_WakeOnly_SyncJobProducesNoNoticeOrWake pins B-dev9:
+// handleTimeout's wake_only branch had no job.sync check at all -- for a
+// sync (SDK/library, no async_jobs row, doc sec.3.1) job it would still
+// persist a session_notices row and submit a Drain wake, even though there
+// is no durable row for job_tool_call_id to name and no session-driven turn
+// to wake at all (the job's only consumer is the ONE goroutine blocked in
+// awaitSync). Only terminate_and_wake (via ordinary ctx cancellation) makes
+// sense for a sync call.
+//
+// Revert-check performed: removed the `|| job.sync` from handleTimeout's
+// wake_only guard -- this test FAILED (a session_notices row was created and
+// agent.Run received a Drain call). Restored the guard; re-ran, passed.
+// Diffed work_ledger_timeout.go against git HEAD after restoring: matches
+// the committed fix.
+func TestWorkLedger_WakeOnly_SyncJobProducesNoNoticeOrWake(t *testing.T) {
+	t.Parallel()
+	received := make(chan SessionAgentCall, 1)
+	agent := &mockSessionAgent{runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		received <- call
+		return agentResultWithText("ok"), nil
+	}}
+	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
+	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
+	l.coord = coord
+	coord.asyncJobs = l
+
+	_, _, err := l.Start("owner", "call-1", "", "bash", "", false, true, &TimeoutSpec{
+		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
+	}, func() {})
+	require.NoError(t, err)
+
+	l.mu.Lock()
+	job := l.bySession["owner"].jobs["call-1"]
+	l.mu.Unlock()
+	require.True(t, job.sync)
+
+	l.handleTimeout(job)
+
+	select {
+	case call := <-received:
+		t.Fatalf("a sync job's wake_only timeout must never submit a Drain call: %+v", call)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	notices, err := l.store.ListSessionNotices(context.Background(), "owner")
+	require.NoError(t, err)
+	require.Empty(t, notices, "a sync job's wake_only timeout must not persist a session_notices row")
+	require.Equal(t, phaseRunning, job.state)
 }
 
 // TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning: calling
@@ -210,6 +284,7 @@ func TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("owner", subAgentDriver{agent: agent})
 	l := newWorkLedger(nil)
+	l.store = newTestAsyncJobStore(t)
 	l.coord = coord
 	coord.asyncJobs = l
 
@@ -217,7 +292,7 @@ func TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning(t *testing.T) {
 		Deadline: time.Now().Add(-time.Hour), Kind: timeoutWakeOnly, Seconds: 30,
 	}, func() {})
 	require.NoError(t, err)
-	l.acknowledged("owner", "call-1")
+	l.acknowledged(jobOf(l, "owner", "call-1"))
 
 	l.mu.Lock()
 	job := l.bySession["owner"].jobs["call-1"]
@@ -240,11 +315,12 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		delivered := make(chan AsyncCompletion, 8)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
+		l.store = newTestAsyncJobStore(t)
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, &TimeoutSpec{
 			Deadline: time.Now().Add(-time.Hour), Kind: timeoutTerminateAndWake, Seconds: 30,
 		}, func() {})
 		require.NoError(t, err)
-		l.acknowledged("owner", "call")
+		l.acknowledged(jobOf(l, "owner", "call"))
 
 		l.mu.Lock()
 		job := l.bySession["owner"].jobs["call"]
@@ -256,7 +332,7 @@ func TestWorkLedger_TimeoutRaceAgainstFinishYieldsOneOutcome(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			l.finish("owner", "call", jobResult{content: "ok"})
+			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
 		}()
 		go func() {
 			defer wg.Done()

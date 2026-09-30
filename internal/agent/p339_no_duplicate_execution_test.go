@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,12 +71,28 @@ func (m *mockMessageService) Create(ctx context.Context, sessionID string, param
 	return m.inner.Create(ctx, sessionID, params)
 }
 
+func (m *mockMessageService) CreateTx(ctx context.Context, tx *sql.Tx, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	return m.inner.CreateTx(ctx, tx, sessionID, params)
+}
+
+func (m *mockMessageService) PublishCreated(msg message.Message) {
+	m.inner.PublishCreated(msg)
+}
+
 func (m *mockMessageService) Update(ctx context.Context, msg message.Message) error {
 	count := m.callCount.Add(1)
 	if m.shouldFail(count) {
 		return m.failWith
 	}
 	return m.inner.Update(ctx, msg)
+}
+
+func (m *mockMessageService) UpdateTx(ctx context.Context, tx *sql.Tx, msg message.Message) (func(), error) {
+	count := m.callCount.Add(1)
+	if m.shouldFail(count) {
+		return nil, m.failWith
+	}
+	return m.inner.UpdateTx(ctx, tx, msg)
 }
 
 func (m *mockMessageService) List(ctx context.Context, sessionID string) ([]message.Message, error) {
@@ -100,6 +117,10 @@ func (m *mockMessageService) Delete(ctx context.Context, messageID string) error
 
 func (m *mockMessageService) ForceDelete(ctx context.Context, messageID string) error {
 	return m.inner.ForceDelete(ctx, messageID)
+}
+
+func (m *mockMessageService) DeleteTx(ctx context.Context, tx *sql.Tx, sessionID string, ids []string) ([]message.Message, func(), error) {
+	return m.inner.DeleteTx(ctx, tx, sessionID, ids)
 }
 
 func (m *mockMessageService) ListPaginated(ctx context.Context, sessionID string, limit, offset int) ([]message.Message, error) {

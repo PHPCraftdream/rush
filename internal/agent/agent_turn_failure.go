@@ -33,14 +33,28 @@ func (ts *turnStream) handleStreamFailure(
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
 	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	// The TURN's own context decides what a deadline error means: a net/http
+	// timeout satisfies errors.Is(err, context.DeadlineExceeded) with a live
+	// turn context and is a provider failure, not an operator stop.
+	turnCtxDone := ts.genCtx.Err() != nil
+	if ts.att != nil {
+		// A watchdog stall surfaces as context.Canceled but is a real,
+		// paid attempt (accountDrainAttempt does not exempt it).
+		ts.att.stalled.Store(isWatchdogStall)
+		ts.att.turnCtxDone.Store(turnCtxDone)
+		ts.att.streamErr = err
+	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires
 	// mid-turn, ctx.Err() is context.DeadlineExceeded, NOT
 	// context.Canceled, so isCancelErr above never catches it. Without
 	// this branch it fell into the generic `else` below as "Provider
 	// Error" with a bare "context deadline exceeded" — indistinguishable
-	// from a real provider failure and useless to `sessions why`.
-	isRunTimeout := errors.Is(err, context.DeadlineExceeded)
+	// from a real provider failure and useless to `sessions why`. Only a
+	// deadline of the turn's own context counts: a transport timeout
+	// (net/http Client.Timeout) is a provider failure and takes the generic
+	// branch, not this "--timeout" text.
+	isRunTimeout := errors.Is(err, context.DeadlineExceeded) && turnCtxDone
 	// If userMessageCreated is true (either we just created it or
 	// call.ExistingMessageID was set), the call has already left a
 	// persistent trace. Wrap the error to prevent duplicate execution
@@ -185,14 +199,8 @@ func (ts *turnStream) handleStreamFailure(
 	} else if isCancelErr {
 		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 	} else if isRunTimeout {
-		ts.currentAssistant.AddFinish(
-			message.FinishReasonError,
-			"Run timeout exceeded",
-			fmt.Sprintf(
-				"The run's --timeout deadline expired while this turn was still in flight (e.g. a long tool call or sub-agent delegation).\n\n%s",
-				WatchdogResumeGuidance(ts.call.SessionID, "--timeout"),
-			),
-		)
+		title, details := runTimeoutFinishText(context.Cause(ts.genCtx), ts.call.SessionID)
+		ts.currentAssistant.AddFinish(message.FinishReasonError, title, details)
 	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 		ts.currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
 	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
@@ -255,7 +263,7 @@ func (ts *turnStream) handleStreamFailure(
 	// MUST land on disk — without it the assistant message has tool
 	// calls but no finish part, and the WUI/recovery sees it as still
 	// in-flight forever.
-	updateErr := ts.a.messages.Update(flushCtx, snap)
+	updateErr := ts.persistFailureFinish(flushCtx, snap, awaitingErr != nil)
 	if updateErr != nil {
 		slog.Error(
 			"agent: failed to persist final finish part",
@@ -281,4 +289,21 @@ func (ts *turnStream) handleStreamFailure(
 	// userMessageCreated), so return it directly rather than wrapping
 	// it a second time.
 	return nil, SessionAgentCall{}, false, err
+}
+
+// persistFailureFinish writes the error-path final finish. A question the
+// agent asked is a reaction (it answered the notices visible in its prompt
+// with real content), so its finish goes through the same one-transaction
+// write as a normal step and marks the owner's delivered debt reacted; a
+// failed mark falls back to the plain update so the finish still lands.
+func (ts *turnStream) persistFailureFinish(ctx context.Context, snap message.Message, awaiting bool) error {
+	if awaiting && hasReactionContent(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		err := ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, ts.a.messages, ts.call.SessionID, snap)
+		if err == nil {
+			return nil
+		}
+		slog.Warn("agent: recording the question as a reaction failed; writing the finish alone",
+			"session_id", ts.call.SessionID, "err", err)
+	}
+	return ts.a.messages.Update(ctx, snap)
 }

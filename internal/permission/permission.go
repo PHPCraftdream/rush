@@ -205,7 +205,7 @@ type SessionRunAllowlistManager interface {
 	// specific copy. Used at the three call sites that re-inherit a
 	// delegated child's allowlist on every delegation/wake
 	// (coordinator_subagents.go's runSubAgent, async_tool.go's Run,
-	// coordinator_wake.go's wakeNoticeCall) instead of the ungoverned
+	// agent_drain.go's drainCallFor) instead of the ungoverned
 	// InheritSessionRunAllowlist, so their entry can finally be cleared once
 	// the child's scope closes without risking the §6.3 race a plain
 	// Set/ClearSessionRunAllowlist pair would reopen.

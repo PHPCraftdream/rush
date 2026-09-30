@@ -21,11 +21,39 @@ type JobShellResolver interface {
 	ResolveJobShellID(sessionID, jobID string) (string, error)
 	// MarkJobStopped records that jobID (owned by sessionID) is being
 	// stopped by an explicit job_kill call, BEFORE job_kill actually kills
-	// the underlying shell (task #1023 §2.2). Best-effort: a jobID that
-	// does not resolve is silently ignored, since job_kill's actual kill
-	// call is the operation of record, not this bookkeeping.
-	MarkJobStopped(sessionID, jobID string)
+	// the underlying shell (task #1023 §2.2), and returns job_kill's own
+	// final answer text (task #1063) plus a verdict (B11):
+	//   - JobStopStopped: this call's own transition won; text is the real
+	//     output snapshot worded "stopped (job_kill)" and job_kill must now
+	//     kill the shell.
+	//   - JobStopAlreadyTerminal: the ledger row already reached a terminal
+	//     state via another cause (natural finish, timeout, Stop) -- text is
+	//     worded from that COMMITTED row, and job_kill must return it as is
+	//     WITHOUT touching the shell manager.
+	//   - JobStopNotFound: jobID is not a live, ledger-tracked job (unknown,
+	//     already delivered, or a concurrent job_kill already claimed it) --
+	//     text is empty and job_kill refuses with the idempotent "not found
+	//     ... or already stopped" answer (contract §1.5), again without
+	//     touching the shell manager.
+	// claimID is the claim of the row a JobStopStopped call stopped (empty
+	// otherwise, and for a job that has no durable row): job_kill puts it in
+	// its result metadata so the ledger can fuse that result onto exactly that
+	// row, or re-pend exactly that row if the result is not recorded (R2A-8).
+	MarkJobStopped(sessionID, jobID string) (text, claimID string, verdict JobStopVerdict)
 }
+
+// JobStopVerdict is MarkJobStopped's three-way outcome.
+type JobStopVerdict int
+
+const (
+	// JobStopNotFound: no live tracked job to stop; refuse.
+	JobStopNotFound JobStopVerdict = iota
+	// JobStopStopped: this call won the stop; kill the shell, answer with text.
+	JobStopStopped
+	// JobStopAlreadyTerminal: the row is already terminal via another cause;
+	// answer with text, do not kill.
+	JobStopAlreadyTerminal
+)
 
 // RunCommandController lets job_kill/job_output act on a run_command job,
 // which has no background shell for BackgroundShellManager to operate on
@@ -38,11 +66,14 @@ type RunCommandController interface {
 	// call. err is model-safe (not found / not owned / already delivered).
 	RunCommandOutput(sessionID, jobID string, cursor int64) (data string, done bool, nextCursor int64, err error)
 	// StopRunCommandJob marks jobID stopped-on-request (§2.2) and cancels
-	// its executor context -- the only way to stop a run_command job. err
-	// is model-safe; a second call on an already-stopped job returns the
-	// same "not found" shape as any other refusal (contract §1.5's
-	// idempotency rule).
-	StopRunCommandJob(sessionID, jobID string) error
+	// its executor context -- the only way to stop a run_command job. On
+	// success, text is job_kill's own final answer (task #1063): the real
+	// output snapshot taken before the kill, worded like
+	// JobShellResolver.MarkJobStopped's. err is model-safe; a second call on
+	// an already-stopped job returns the same "not found" shape as any other
+	// refusal (contract §1.5's idempotency rule). claimID is as for
+	// MarkJobStopped.
+	StopRunCommandJob(sessionID, jobID string) (text, claimID string, err error)
 }
 
 // RunCommandJobError is returned by JobShellResolver.ResolveJobShellID when

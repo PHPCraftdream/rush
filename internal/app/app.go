@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -96,6 +97,14 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
+	// asyncJobStore is the phase-4 durable job store (docs/plans/2026-09-28-
+	// async-phase4-durable-core.md sec.5 step 2), built once in
+	// InitCoderAgent and handed to agent.NewCoordinator. Its host identity
+	// is released in releaseResources, after agent work is cancelled. Read
+	// externally via AsyncJobStore(); nil under SkipAgentSetup or when
+	// dataDir=="".
+	asyncJobStore *session.AsyncJobStore
+
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
 	RunQueuePump *session.RunQueuePump
@@ -105,6 +114,11 @@ type App struct {
 	// DB is the underlying SQLite connection. Exposed for queue and other
 	// raw-SQL features that don't have their own sqlc-generated package.
 	DB func() *sql.DB
+
+	// readDB is the read-only pool shared with the session/message services
+	// (nil when it failed to open or the App was assembled by hand): the
+	// driver-marker reader runs on it, off the single writer connection.
+	readDB *sql.DB
 
 	// dataDir is the path to .rush/ where the database lives. Stored here for
 	// shutdown policy and diagnostics.
@@ -269,6 +283,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		BackgroundShellManager: shell.NewBackgroundShellManager(),
 
 		DB:      func() *sql.DB { return conn },
+		readDB:  readConn,
 		dataDir: dataDir,
 
 		globalCtx: ctx,
@@ -276,6 +291,33 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		config:             store,
 		agentNotifications: pubsub.NewBroker[notify.Notification](),
 		events:             pubsub.NewBroker[any](),
+	}
+
+	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
+	// core.md sec.5 step 7): constructed here, unconditionally (whenever
+	// this App has a data dir and isn't a config-only SkipAgentSetup
+	// command), NOT deferred to InitCoderAgent -- read-only status surfaces
+	// (`sessions jobs/why/list/gc`) must be able to read async_jobs/
+	// async_hosts/session_notices even when no provider is configured yet
+	// and InitCoderAgent therefore never runs (cfg.IsConfigured()==false
+	// below). Constructing the struct does no I/O and registers no host
+	// lock -- RegisterHost only happens lazily, on this store's first Claim or
+	// ClaimSessionDriver (see AsyncJobStore's own doc), so building it
+	// unconditionally here is free for every caller that never starts an
+	// async job or a driver. InitCoderAgent reuses this same instance (its own nil-guard already handles that).
+	if !o.skipAgentSetup && dataDir != "" {
+		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
+		app.asyncJobStore.SetMessages(messages)
+		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
+		// SAME read-only pool session/message already share above, so
+		// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/
+		// ListAsyncJobsForOwner (the `sessions jobs`/`sessions why`/web
+		// session-list readers) run concurrently with the single writer
+		// connection instead of stalling behind a write transaction.
+		// readConn is nil if the pool failed to open (logged above) --
+		// SetReadConn no-ops and readers keep using the writer, exactly like
+		// before this fix.
+		app.asyncJobStore.SetReadConn(readConn)
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.
