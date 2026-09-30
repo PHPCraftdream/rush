@@ -80,10 +80,14 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	require.NoError(t, deadSeed.Release())
 	q := db.New(a.DB())
 	for _, row := range []db.ClaimAsyncJobParams{
-		{OwnerSessionID: rootDead.ID, ToolCallID: "dd1", Kind: "agent", ToolName: "agent", InputHash: "h1", HostID: "batch-dead-host",
-			ChildSessionID: sql.NullString{String: deadChild.ID, Valid: true}, CreatedAt: 1700000000, UpdatedAt: 1700000000},
-		{OwnerSessionID: rootDead.ID, ToolCallID: "dp1", Kind: "command", ToolName: "bash", InputHash: "h2", HostID: "batch-dead-host",
-			CreatedAt: 1700000000, UpdatedAt: 1700000000},
+		{
+			OwnerSessionID: rootDead.ID, ToolCallID: "dd1", Kind: "agent", ToolName: "agent", InputHash: "h1", HostID: "batch-dead-host",
+			ChildSessionID: sql.NullString{String: deadChild.ID, Valid: true}, CreatedAt: 1700000000, UpdatedAt: 1700000000,
+		},
+		{
+			OwnerSessionID: rootDead.ID, ToolCallID: "dp1", Kind: "command", ToolName: "bash", InputHash: "h2", HostID: "batch-dead-host",
+			CreatedAt: 1700000000, UpdatedAt: 1700000000,
+		},
 	} {
 		_, err = q.ClaimAsyncJob(ctx, row)
 		require.NoError(t, err)
