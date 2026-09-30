@@ -10,6 +10,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Durable wake schedules (stage 4a)**: a `wake_schedules` table (migration
+  `20260929000005`) and the `session.WakeScheduleStore` service behind it:
+  `once`/`loop` schedules owned by a session, lease-based `ClaimDue`,
+  exactly-once `FireOccurrence` (fired occurrences reach the session through
+  a `wake_fired` session notice), idempotent owner-checked cancel, lease
+  recovery, the 20-active-per-session limit, and cascade/cancel on session
+  delete/reset. Worker and tools are stages 4b/4c. New invariants SCHED-01…
+  SCHED-05 in `docs/async-invariants.md`.
 - **`rush sessions jobs <id>`** lists a session's own durable async jobs
   (bash/run_command/agent/agentic_fetch) plus its whole delegation tree
   (following `child_session_id`, any state): tool call id, kind, state,

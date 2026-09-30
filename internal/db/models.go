@@ -213,3 +213,20 @@ type SessionRunQueue struct {
 	CreatedAt       int64          `json:"created_at"`
 	UpdatedAt       int64          `json:"updated_at"`
 }
+
+type WakeSchedule struct {
+	ID             string         `json:"id"`
+	OwnerSessionID string         `json:"owner_session_id"`
+	Kind           string         `json:"kind"`
+	Message        string         `json:"message"`
+	NextRunAt      int64          `json:"next_run_at"`
+	EveryMs        int64          `json:"every_ms"`
+	MaxRuns        sql.NullInt64  `json:"max_runs"`
+	UntilAt        sql.NullInt64  `json:"until_at"`
+	State          string         `json:"state"`
+	Occurrence     int64          `json:"occurrence"`
+	LeaseOwner     sql.NullString `json:"lease_owner"`
+	LeaseExpiresAt sql.NullInt64  `json:"lease_expires_at"`
+	CreatedAt      int64          `json:"created_at"`
+	UpdatedAt      int64          `json:"updated_at"`
+}

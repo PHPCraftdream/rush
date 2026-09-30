@@ -19,6 +19,10 @@ type Querier interface {
 	// under a pathological scheduling stall) could Ack a row a DIFFERENT,
 	// currently-live executor now owns, deleting work out from under it.
 	AckRunQueueEntry(ctx context.Context, arg AckRunQueueEntryParams) (string, error)
+	// loop: occurrence advances and next_run_at moves to the FIRST schedule
+	// boundary strictly after the fired one that is >= the fire time (computed
+	// by the caller from the SCHEDULED time, never from the fire time -- SCHED-3).
+	AdvanceLoopWakeOccurrence(ctx context.Context, arg AdvanceLoopWakeOccurrenceParams) (int64, error)
 	// B14/A14b fix: a (owner_session_id, tool_call_id) key whose row is already
 	// HISTORY (state != 'running' AND delivery IN ('done', 'void')) is renamed
 	// out of the active key namespace so a REUSED tool_call_id (a provider that
@@ -56,6 +60,12 @@ type Querier interface {
 	// was wasted for nothing. session_notices carries no announced concept
 	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// `sessions reset` (R8A-3 sibling): no active schedule may survive a wiped
+	// history. Done/cancelled rows are history and stay.
+	CancelAllWakeSchedulesForOwner(ctx context.Context, arg CancelAllWakeSchedulesForOwnerParams) (int64, error)
+	// Owner-checked, idempotent CAS: only an active row moves to cancelled. A
+	// done/cancelled row is a no-op (SCHED-5); a foreign owner never matches.
+	CancelWakeSchedule(ctx context.Context, arg CancelWakeScheduleParams) (int64, error)
 	// Durable idempotent start. ON CONFLICT DO NOTHING mirrors
 	// EnqueueRunQueueEntry: a caller retrying the same (owner_session_id,
 	// tool_call_id) after a crash must not error just because an earlier
@@ -75,6 +85,9 @@ type Querier interface {
 	// result commit onto the NEW claim just because both share
 	// (owner_session_id, tool_call_id) and state='running'.
 	ClaimAsyncJob(ctx context.Context, arg ClaimAsyncJobParams) (AsyncJob, error)
+	// Per-row CAS half of the atomic claim: 0 rows means another leader won
+	// this row between the read and the write; the caller skips it.
+	ClaimWakeScheduleLease(ctx context.Context, arg ClaimWakeScheduleLeaseParams) (int64, error)
 	// Reset stale leased entries back to pending (lease expiry recovery).
 	// Run periodically to recover from crashed pump instances.
 	// Increments attempts: a lease that expired without a matching Ack/Nack
@@ -101,6 +114,11 @@ type Querier interface {
 	// session_notices half of ClearReactedFailedForOwner (A1) -- see that
 	// query's doc for the full rationale.
 	ClearSessionNoticesReactedFailedForOwner(ctx context.Context, arg ClearSessionNoticesReactedFailedForOwnerParams) (int64, error)
+	// once: the occurrence fired -> done. Keyed by the lease so a stale fire
+	// (lease lost or recovered) is a no-op; the row can never fire twice
+	// (SCHED-1).
+	CompleteOnceWakeSchedule(ctx context.Context, arg CompleteOnceWakeScheduleParams) (int64, error)
+	CountActiveWakeSchedulesForOwner(ctx context.Context, ownerSessionID string) (int64, error)
 	// Same predicate as PurgeAsyncJobsOlderThan, read-only, for
 	// `sessions gc --dry-run`.
 	CountAsyncJobsOlderThan(ctx context.Context, updatedAt int64) (int64, error)
@@ -237,6 +255,9 @@ type Querier interface {
 	// row's contents; the caller (session.EnqueueRunQueueEntry) treats that
 	// specifically as "already enqueued", not as a failure.
 	EnqueueRunQueueEntry(ctx context.Context, arg EnqueueRunQueueEntryParams) (SessionRunQueue, error)
+	// loop: max_runs reached or until_at crossed -> done instead of advancing.
+	// Same lease-keyed CAS as CompleteOnceWakeSchedule.
+	FinishLoopWakeSchedule(ctx context.Context, arg FinishLoopWakeScheduleParams) (int64, error)
 	GetAsyncHost(ctx context.Context, id string) (AsyncHost, error)
 	GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (AsyncJob, error)
 	// Debt-snapshot row lookup (R2A-4): a snapshot names a row by its claim_id,
@@ -341,6 +362,7 @@ type Querier interface {
 	GetUsageByDayOfWeek(ctx context.Context) ([]GetUsageByDayOfWeekRow, error)
 	GetUsageByHour(ctx context.Context) ([]GetUsageByHourRow, error)
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
+	GetWakeSchedule(ctx context.Context, id string) (WakeSchedule, error)
 	// Report whether ANY row for this session is still outstanding, in EITHER
 	// status ('pending' or 'leased') -- not just 'pending'. Used by
 	// DrainSessionNow's terminal check (task #610): a row leased by a
@@ -400,6 +422,11 @@ type Querier interface {
 	// doc sec.2/3.2). Created with delivery='pending' so it is a drain
 	// candidate immediately.
 	InsertSessionNotice(ctx context.Context, arg InsertSessionNoticeParams) (SessionNotice, error)
+	// Wake schedules (stage 4a, wake_schedules table). Storage layer only: the
+	// worker/timer that calls ClaimDue is stage 4b. Every statement is a CAS or
+	// a lease write so two concurrent schedulers can never double-fire an
+	// occurrence (SCHED-1/SCHED-2).
+	InsertWakeSchedule(ctx context.Context, arg InsertWakeScheduleParams) (WakeSchedule, error)
 	// Claim a specific entry by ID (call after GetOldestPendingRunQueueEntryForSession in a transaction).
 	// Does not increment attempts: leasing only claims the row for execution.
 	// NackRunQueueEntry and CleanupExpiredLeases are the only sites that count
@@ -468,6 +495,10 @@ type Querier interface {
 	// is done but never got its result message (R2A-8). Liveness itself is
 	// decided by the host lock module (OS lock probe), not by this query.
 	ListDistinctRecoverableHostIDs(ctx context.Context) ([]string, error)
+	// The due, claimable rows, soonest first, bounded by the caller's limit.
+	// Read INSIDE the claim transaction: the writer connection holds the write
+	// lock from BEGIN, so nothing can lease them out before the CAS below.
+	ListDueWakeSchedules(ctx context.Context, arg ListDueWakeSchedulesParams) ([]WakeSchedule, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
@@ -572,6 +603,7 @@ type Querier interface {
 	// unsuitable as a tiebreaker), so (created_at DESC, rowid DESC) is a
 	// deterministic newest-first total order.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
+	ListWakeSchedulesForOwner(ctx context.Context, ownerSessionID string) ([]WakeSchedule, error)
 	// Ack gate (DUR-7): "started" and announced=1 are one transaction with NO
 	// condition on state -- a job that raced to terminal before its own
 	// "started" tool-result committed must still be marked announced (the
@@ -605,6 +637,8 @@ type Querier interface {
 	// for releasing a mismatched attempts-exhausted lease unharmed.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, arg NackRunQueueEntryNoAttemptPenaltyParams) (SessionRunQueue, error)
+	// Earliest next_run_at among active rows, for the scheduler's timer.
+	NextDueWakeScheduleAt(ctx context.Context) (interface{}, error)
 	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
 	// caller does this, then INSERTs the history message, then stores
 	// notice_message_id via SetAsyncJobNoticeMessageID, all in the SAME tx. 0
@@ -652,6 +686,10 @@ type Querier interface {
 	// See this file's header for why this is a separate write, why a double
 	// count across pump instances is acceptable, and why RETURNING is `*`.
 	RecordOrphanOutboxFailure(ctx context.Context, arg RecordOrphanOutboxFailureParams) (OrphanCallOutbox, error)
+	// Lease recovery: a claimed row whose lease expired without firing goes
+	// back to unclaimed. The row was never fired (firing clears the lease in
+	// the same tx as the advance), so no duplicate is possible (SCHED-2).
+	RecoverExpiredWakeLeases(ctx context.Context, arg RecoverExpiredWakeLeasesParams) (int64, error)
 	// Lazy registration at first claim (doc sec.3.6): the host row is
 	// display-only bookkeeping, created once per process lifetime alongside the
 	// OS lock file. Never consulted to decide liveness.

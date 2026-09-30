@@ -129,6 +129,23 @@ only for a session with no registered driver (bare test fixtures). Proof:
 `TestSubAgentWorkTerminal_DriverBusyIsNotTerminal`
 (`internal/agent/coordinator_subagent_drivers_test.go`).
 
+## Invariants: SCHED-01…SCHED-05 (stage 4a, durable wake schedules)
+
+Added by stage 4a (`docs/plans/2026-09-24-agent-wakes-and-async-job-control.md`
+sec.4, contract `docs/plans/2026-09-27-wake-tools-contract.md` sec.1/sec.6):
+the durable wake-schedule store (`internal/session/wake_schedule_store.go`,
+`wake_schedule_fire.go`, the `wake_schedules` table,
+migration `20260929000005_add_wake_schedules.sql`). The worker/timer that
+polls it is stage 4b; these laws bind the storage layer it will sit on.
+
+| ID | Закон | Где сегодня (файл:функция) | Доказывающие тесты | Статус |
+|---|---|---|---|---|
+| SCHED-01 | Одно occurrence — одно событие: повторная обработка одного lease (replayed `FireOccurrence`, потерянный или восстановленный lease) не создаёт второе уведомление и не продвигает расписание второй раз. | The fire is ONE transaction whose state change is a lease-keyed CAS: `WakeScheduleStore.FireOccurrence` (`internal/session/wake_schedule_fire.go`) over `CompleteOnceWakeSchedule`/`FinishLoopWakeSchedule`/`AdvanceLoopWakeOccurrence` (`internal/db/sql/wake_schedules.sql`) — `WHERE id = ? AND lease_owner = ? AND state = 'active'`; the loser and any replay see the lease gone and change nothing. The idempotency key `schedule_id#occurrence` is visible in the notice text (occurrence number), not a separate column — the CAS is the mechanism. | `TestWakeScheduleStore_OnceFiresExactlyOnce`, `TestWakeScheduleStore_ConcurrentClaimAndFireIsExactlyOnce` (`internal/session/wake_schedule_store_test.go`). | Выполняется. |
+| SCHED-02 | Lease recovery без дублей: истёкший lease снова захватываем другим планировщиком, но сработавшая строка восстановлению не подлежит (firing стирает lease в той же транзакции, что и продвижение). | `WakeScheduleStore.ClaimDue` (`internal/session/wake_schedule_store.go`): read + per-row `ClaimWakeScheduleLease` CAS + commit in ONE tx; `RecoverExpiredLeases` clears only `lease_expires_at < now` on still-active rows. | `TestWakeScheduleStore_LeaseExpiryHandsRowToAnotherClaimant`, `TestWakeScheduleStore_ConcurrentClaimAndFireIsExactlyOnce`. | Выполняется. |
+| SCHED-03 | `loop` не догоняет пропущенное: следующий срок считается от ЗАПЛАНИРОВАННОГО времени (первая граница сетки строго позже момента срабатывания), не от конца работы; после простоя — не больше одного немедленного срабатывания. | `nextLoopRun` (`internal/session/wake_schedule_fire.go`); the boundary feeds `AdvanceLoopWakeOccurrence.next_run_at`. | `TestWakeScheduleStore_LoopSkipsMissedIntervals`, `TestWakeScheduleStore_LoopOrderAndMaxRuns`. | Выполняется. |
+| SCHED-04 | Лимит 20 активных расписаний на сессию: создание сверх лимита отказывает (`ErrWakeScheduleLimit`), отмена освобождает слот; проверка и вставка — одна транзакция. | `WakeScheduleStore.CreateSchedule` (count + insert in one tx), `MaxActiveWakeSchedulesPerSession` (`internal/session/wake_schedule_store.go`). | `TestWakeScheduleStore_LimitTwentyActive`. | Выполняется. |
+| SCHED-05 | Cancel идемпотентен и не воскрешает: повторная отмена — no-op, чужая сессия получает отказ, отменённое никогда не захватывается и не срабатывает; `sessions reset` отменяет все активные расписания владельца в транзакции сброса. | `WakeScheduleStore.CancelSchedule` (owner-checked CAS on `state='active'`), `CancelAllWakeSchedulesForOwner` wired into `AsyncJobStore.ResetOwnerHistory` (`internal/session/async_job_reset.go`); a session DELETE cascades via the FK (`wake_schedules.owner_session_id ... ON DELETE CASCADE`). | `TestWakeScheduleStore_CancelIdempotentAndOwned`, `TestWakeScheduleStore_ResetCancelsActive`, `TestWakeScheduleStore_SessionDeleteCascades`. | Выполняется. |
+
 ## Пропущенные/убранные сценарии
 
 Phase 0's candidates a/b/c/d, unchanged by phase 4 (the task agent is never

@@ -29,9 +29,10 @@ var ErrResetJobsRunning = errors.New("session reset: the session still has runni
 
 // ResetOutcome is what one committed reset removed or voided.
 type ResetOutcome struct {
-	MessagesDeleted int
-	JobsVoided      int64
-	NoticesVoided   int64
+	MessagesDeleted    int
+	JobsVoided         int64
+	NoticesVoided      int64
+	SchedulesCancelled int64
 }
 
 // resetStepSeam is a test-only hook fired inside the reset transaction
@@ -97,6 +98,13 @@ func (s *AsyncJobStore) ResetOwnerHistory(ctx context.Context, messages message.
 	}
 	if err := resetStep("voided"); err != nil {
 		return ResetOutcome{}, err
+	}
+	// No active wake schedule may survive a wiped history (stage 4a):
+	// done/cancelled rows are history and stay, like the voided ledger rows.
+	if out.SchedulesCancelled, err = q.CancelAllWakeSchedulesForOwner(ctx, db.CancelAllWakeSchedulesForOwnerParams{
+		UpdatedAt: now, OwnerSessionID: owner,
+	}); err != nil {
+		return ResetOutcome{}, fmt.Errorf("session reset: cancel wake schedules: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return ResetOutcome{}, fmt.Errorf("session reset: commit: %w", err)
