@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,7 +205,13 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 0, 200*time.Millisecond)()
 	childJobKilled := make(chan struct{})
-	var failedOnce, killedOnce atomic.Bool
+	// closeGate closes childJobKilled exactly once from either post-kill
+	// child branch: which of them serves the child's last turn is a
+	// scheduling race (the completion Drain can merge into the post-job_kill
+	// continuation, or that merged turn can be restarted detached after an
+	// ownership handoff), so neither branch alone may hold the gate.
+	var closeGate sync.Once
+	var failedOnce atomic.Bool
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch routeModelRequest(body) {
@@ -219,6 +226,7 @@ func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
 			}
 			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
 		case "child:final":
+			closeGate.Do(func() { close(childJobKilled) })
 			if failedOnce.CompareAndSwap(false, true) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -227,9 +235,7 @@ func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
 			}
 			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child final: gate job reported"), admissionSSEStop("child-result", "stop")})
 		case "child:yield":
-			if killedOnce.CompareAndSwap(false, true) {
-				close(childJobKilled)
-			}
+			closeGate.Do(func() { close(childJobKilled) })
 			admissionWriteSSE(w, []string{admissionSSEText("child-yield", "child yielded: gate still running"), admissionSSEStop("child-yield", "stop")})
 		case "child:kill":
 			admissionWriteSSE(w, []string{
