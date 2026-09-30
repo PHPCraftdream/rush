@@ -467,8 +467,11 @@ func TestPullSessionNotices_WakeOnlyOfArchivedJobDoesNotFollowTheReusedKey(t *te
 	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call_0"))
 	// The check-in about the FIRST job is queued while it runs...
 	require.NoError(t, store.InsertSessionNotice(ctx, "owner-1", NoticeKindWakeOnly, "first job still running", true, "call_0"))
-	// ...the job then finishes and its id is reused before the check-in is pulled.
+	// ...the job then finishes, its result is delivered, and its id is reused
+	// before the check-in is pulled.
 	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call_0", State: "completed", ResultSummary: "done", Wake: true})
+	require.NoError(t, err)
+	_, err = store.PullJobNotices(ctx, messages, "owner-1", buildTestJobNoticeParams)
 	require.NoError(t, err)
 	_, err = store.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "second", ToolName: "bash"})
 	require.NoError(t, err)
