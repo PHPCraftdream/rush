@@ -75,23 +75,12 @@ func TestSessionsLocks_ReadOnlyByDefault_StaleLockNotPruned(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, old, old))
 
 	// Sanity: the lock IS provably dead (no live OS holder), so the ONLY thing
-	// standing between this file and removal is the --prune gate. This probe
-	// call freshens mtime + clears content as a side effect, so restore both
-	// afterward or the real run below would not see a stale-by-mtime entry.
-	require.True(t, lockHolderProvablyDead(dataDir, sessionID),
+	// standing between this file and removal is the --prune gate. The probe
+	// runs against a decoy lock in its own data dir: its Release leaves a
+	// background metadata-cleanup goroutine on the file it probed, so probing
+	// THIS file would make the test wait on that goroutine's timing.
+	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: lock must be provably dead for the --prune gate to be the only barrier")
-	// lockHolderProvablyDead's own Release() returns as soon as its
-	// synchronous unlock/close finish (session.SessionLock's Mechanism-1
-	// fix) — its background metadata-cleanup goroutine can still be holding
-	// the OS lock through its own Truncate/Sync for a brief moment
-	// afterward. Wait for it to finish before overwriting the lock file
-	// directly below, or this raw os.WriteFile can collide with that held
-	// lock on Windows (mandatory LockFileEx) and fail spuriously.
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "precondition probe's background cleanup should finish")
-	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
-	require.NoError(t, os.Chtimes(lockPath, old, old))
 
 	stdout, stderr := captureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsLocksCmd.RunE(sessionsLocksCmd, nil))
@@ -299,15 +288,10 @@ func TestSessionsReset_ForceHoldsLockDuringDBReset(t *testing.T) {
 
 	require.NoError(t, lk.Release())
 
-	// With background cleanup (P0 fix), we need to wait for the cleanup
-	// goroutine to complete before reacquiring. The cleanup goroutine now
-	// holds the OS lock through Truncate/Sync, so acquisition will fail
-	// until it completes.
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
-	require.Eventually(t, func() bool {
-		return session.ReadLockPID(lockPath) == 0
-	}, 2*time.Second, 10*time.Millisecond, "cleanup should complete before reacquire")
-
+	// Release unlocks and closes BEFORE its background metadata cleanup, and
+	// the lock contract (internal/session/lock.go) is that the session is
+	// reacquirable immediately once Release returns -- so nothing here waits
+	// for that cleanup, and the assertion below does not depend on its timing.
 	// After release, the session is free again (the empty lock file remains,
 	// harmless — but acquisition must succeed).
 	lk2, err3 := session.TryAcquireSessionLock(dataDir, sessionID)
@@ -375,4 +359,22 @@ func TestSessionsReap_YoungLockNotProbedOrRemoved(t *testing.T) {
 		"a young lock must not even be classified as an orphan; it was never probed")
 	require.Contains(t, stderr, "kept   young lock",
 		"reap must report explicitly that it skipped a young lock rather than silently doing nothing")
+}
+
+// requireProbeReportsDeadLock proves lockHolderProvablyDead calls a dead lock
+// dead. The probe runs on a decoy lock file in a data dir of its own: the
+// probe's Release leaves a background metadata-cleanup goroutine on the file
+// it probed, so probing the file a test then reads, overwrites or removes would
+// make that test wait on a goroutine's completion time (a load-dependent
+// flake). Nothing but this call ever touches the decoy.
+func requireProbeReportsDeadLock(t *testing.T, sessionID, msg string) {
+	t.Helper()
+	dataDir := t.TempDir()
+	lockDir := filepath.Join(dataDir, "locks")
+	require.NoError(t, os.MkdirAll(lockDir, 0o755))
+	lockPath := filepath.Join(lockDir, "session-"+sessionID+".lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte("999999\n"), 0o644))
+	old := time.Now().Add(-5 * time.Minute)
+	require.NoError(t, os.Chtimes(lockPath, old, old))
+	require.True(t, lockHolderProvablyDead(dataDir, sessionID), msg)
 }
