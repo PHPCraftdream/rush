@@ -132,3 +132,9 @@ WHERE owner = ? AND reacted_failed = 1;
 -- inserts, so every notice matching the old text belongs to the old row.
 UPDATE session_notices SET job_tool_call_id = @new_job_tool_call_id
 WHERE owner = @owner AND job_tool_call_id = @old_job_tool_call_id;
+
+-- name: VoidUndeliveredSessionNoticesForOwner :execrows
+-- session_notices half of VoidUndeliveredAsyncJobsForOwner (`sessions reset`,
+-- R8A-3): every pending or delivered notice of the owner becomes void.
+UPDATE session_notices SET delivery = 'void', reacted_failed = 0, updated_at = ?
+WHERE owner = ? AND delivery IN ('pending', 'done');

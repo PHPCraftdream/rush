@@ -513,6 +513,26 @@ func (q *Queries) VoidPendingSessionNotice(ctx context.Context, arg VoidPendingS
 	return result.RowsAffected()
 }
 
+const voidUndeliveredSessionNoticesForOwner = `-- name: VoidUndeliveredSessionNoticesForOwner :execrows
+UPDATE session_notices SET delivery = 'void', reacted_failed = 0, updated_at = ?
+WHERE owner = ? AND delivery IN ('pending', 'done')
+`
+
+type VoidUndeliveredSessionNoticesForOwnerParams struct {
+	UpdatedAt int64  `json:"updated_at"`
+	Owner     string `json:"owner"`
+}
+
+// session_notices half of VoidUndeliveredAsyncJobsForOwner (`sessions reset`,
+// R8A-3): every pending or delivered notice of the owner becomes void.
+func (q *Queries) VoidUndeliveredSessionNoticesForOwner(ctx context.Context, arg VoidUndeliveredSessionNoticesForOwnerParams) (int64, error) {
+	result, err := q.exec(ctx, q.voidUndeliveredSessionNoticesForOwnerStmt, voidUndeliveredSessionNoticesForOwner, arg.UpdatedAt, arg.Owner)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const voidWakeFailedNoticesByMessageIDs = `-- name: VoidWakeFailedNoticesByMessageIDs :execrows
 UPDATE session_notices SET delivery = 'void', updated_at = ?
 WHERE owner = ? AND kind = 'wake_failed' AND delivery = 'done' AND notice_message_id IN (/*SLICE:message_ids*/?)

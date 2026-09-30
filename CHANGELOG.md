@@ -280,6 +280,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`rush sessions reset` is a real clean slate, and refuses while the
+  session is still worked on.** The wipe used to delete the messages only:
+  the session's background-job and supervision notices and its
+  done-but-unreacted debt survived, so the next `rush run --session <id>`
+  injected "job … cancelled / interrupted" into the fresh history. Now the
+  messages are deleted and every pending/delivered notice row of the session
+  is voided in one transaction. `reset` (with or without `--force`) refuses,
+  changing nothing, while a `rush run` loop drives the session (even between
+  turns), or one of its background jobs or delegations is running; stop it
+  first with `rush sessions cancel <id>` (or `rush sessions kill <id>` for a
+  hung process). `--force` still kills the process holding the session lock,
+  but no longer wipes under a live loop. Rows left by a force-killed run
+  (dead host) are recovered and voided as part of the reset.
+- **A legacy session's spend after a pre-fix reset is no longer lost when
+  `sessions reset` runs before the parent was charged.** A child whose cost
+  sits below its `parent_cost_accounted` (reset by an old binary, then
+  spending again) had its new spend dropped by `sessions reset`; it is
+  charged to the parent first, the same rule the transfer already applied.
 - **`rush run --continue --role worker|reviewer` uses the model pinned on the
   session it continues.** `--continue` names its session only implicitly, and
   the role fold used to look the pin up before that session was resolved, so
