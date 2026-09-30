@@ -599,6 +599,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   only that the 60 s hard-kill backstop fired.
   A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
   an explicit `--timeout`. `--timeout` itself is unchanged.
+- **`rush run --json` always prints its envelope when the deadline cuts the first turn.**
+  A `--timeout` (or the default cap) expiring while the user's own turn was still
+  generating left stdout empty with exit status 1; the run now flushes one
+  envelope (`exit_reason: "canceled"`, the deadline error, usage so far) and
+  records `ended_reason` like every other cancel.
 - **`sessions cancel` stops a `rush run` that is waiting on a job (review round
   7).** The flag was read only before a paid turn, so a loop waiting on a
   long-running job (or on the launch gate's pause) ignored the cancel until the

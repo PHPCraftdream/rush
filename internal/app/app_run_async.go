@@ -737,6 +737,14 @@ func (l *cliLoop) exitCanceled() (*RunResult, error) {
 	if err == nil {
 		err = l.ctx.Err()
 	}
+	if l.final == nil && l.ctx.Err() != nil && l.sessionID != "" {
+		// The first turn was cut short before it produced an envelope: the
+		// run still owes its caller one (session, reason, usage so far).
+		l.final = &RunResult{SessionID: l.sessionID, ToolCalls: []ToolCallStat{}}
+		if l.lastBuffered == nil {
+			l.lastBuffered = &bytes.Buffer{}
+		}
+	}
 	if l.final != nil && l.ctx.Err() != nil {
 		l.final.ExitReason = "canceled"
 		l.final.Error = l.ctx.Err().Error()
