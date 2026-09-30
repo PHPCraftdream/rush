@@ -183,7 +183,7 @@ type AsyncJobStore struct {
 	// instead of quoting the child's last message.
 	messages message.Service
 	// readQ is A8/C9's fix: a separate read-only connection pool for the
-	// cross-process readers (LiveJobs/JobsInTree/ReactionDebtExists/
+	// cross-process readers (LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/
 	// ListAsyncJobsForOwner), wired once via SetReadConn -- see that
 	// method's doc. Nil means "no reader pool wired": every reader method
 	// falls back to the writer's own *db.Queries (today's behavior),
@@ -209,7 +209,7 @@ func (s *AsyncJobStore) messageService() message.Service {
 
 // SetReadConn wires a separate read-only connection pool for this store's
 // cross-process readers (A8/C9, docs/reviews/2026-09-29-async-phase4-round1.md):
-// LiveJobs/JobsInTree/ReactionDebtExists/VisibleReactionDebtExists/
+// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/VisibleReactionDebtExists/
 // ListAsyncJobsForOwner run on it instead of the single writer connection
 // (SetMaxOpenConns(1)), so a web session-list re-poll no longer stalls
 // behind a write transaction for up to busy_timeout (30s). Mirrors the same
@@ -618,8 +618,13 @@ func (s *AsyncJobStore) Close(ctx context.Context) error {
 // forgets the in-memory host handle WITHOUT releasing the OS lock, deleting
 // the async_hosts row, or touching the lock file -- the OS releases the lock
 // automatically when the process truly exits, same as an uncontrolled crash;
-// a later recoverer then sees exactly what DUR-6 expects. Safe to call on a
-// store that never claimed anything (no-op).
+// a later recoverer then sees exactly what DUR-6 expects. The pin (and the
+// own-host-id mark, which stays) lasts for the process's whole life on
+// purpose: the stuck goroutines share no single completion signal, so no
+// point exists at which an in-process release is provably safe (R2C-10); a
+// long-lived embedder must exit after a forced shutdown, and until then the
+// rows stay `running` on a locked host that a new App in this process cannot
+// recover. Safe to call on a store that never claimed anything (no-op).
 func (s *AsyncJobStore) CloseKeepLock() {
 	h := s.takeHost()
 	// Pin the OS lock: the *os.File finalizer would release it at next GC.

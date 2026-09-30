@@ -141,7 +141,7 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 // the web half of the `sessions list`/`sessions why` "running, not done"
 // promotion. HasLiveDescendantWork stays false: nothing below it is working.
 //
-// Revert-check performed: dropped the annotateLiveOwnWork call from
+// Revert-check performed: dropped the HasLiveOwnWork assignment from
 // handleListSessions -- the HasLiveOwnWork assertion FAILED.
 func TestHandleListSessions_LiveOwnWorkAnnotation(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
