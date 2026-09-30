@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -42,8 +43,12 @@ func (deadlineExceededModel) Model() string    { return "deadline-exceeded" }
 type waitForDeadlineModel struct{ deadlineExceededModel }
 
 func (waitForDeadlineModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(10 * time.Second):
+		return nil, errors.New("waitForDeadlineModel: the deadline never arrived")
+	}
 }
 
 func (waitForDeadlineModel) Model() string { return "wait-for-deadline" }
@@ -64,7 +69,13 @@ func TestRun_RunTimeoutDeadlineExceededSurfacesClearFinish(t *testing.T) {
 	env := testEnv(t)
 	agent := testSessionAgent(env, waitForDeadlineModel{}, waitForDeadlineModel{}, "test system prompt")
 
-	sess, err := env.sessions.Create(t.Context(), "New Session")
+	// A titled session with history: no title generation (which would also
+	// wait on the model) races the deadline.
+	sess, err := env.sessions.Create(t.Context(), "Run timeout")
+	require.NoError(t, err)
+	_, err = env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier"}},
+	})
 	require.NoError(t, err)
 
 	runCtx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
