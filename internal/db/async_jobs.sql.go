@@ -249,9 +249,11 @@ DELETE FROM async_hosts
 WHERE id = ? AND NOT EXISTS (SELECT 1 FROM async_jobs WHERE host_id = async_hosts.id)
 `
 
-// Owner deletes its own row at exit if it has no rows (doc sec.3.6); a
-// recoverer holding a dead host's lock calls this too, after deleting the
-// lock file itself. No FK enforces this -- the guard is explicit here.
+// Deletes a host row that no async_jobs row references (doc sec.3.6): the owner
+// at exit, a recoverer or the empty-host reaper for a dead host. Every caller
+// deletes the ROW before the lock file, so a file can outlive its row until
+// whoever wins its exclusive lock removes it (else purgeOrphanHostLockFiles).
+// No FK enforces this -- the guard is explicit here.
 // The subquery is correlated against async_hosts.id (not a second bound
 // parameter): sqlc's SQLite plugin does not reliably rewrite a repeated
 // same-named placeholder once one occurrence sits in the outer WHERE and
@@ -1276,10 +1278,11 @@ type SetAsyncJobNoticeMessageIDForClaimIfDoneParams struct {
 // (R3A-2): a new claim under a reused id archives the killed row while
 // job_kill is still running, and a tool_call_id lookup would then name the
 // NEW row (or nothing). Guarded to delivery='done' AND notice_message_id IS
-// NULL: a row that is no longer in that state (Rerun re-pended it, another
-// writer named it, it was deleted) is left completely alone -- 0 rows
-// affected is not an error, the caller's tool-result message is persisted
-// either way.
+// NULL, defensively: the caller passes a claim only after its own Transition
+// won, and no other writer re-pends or names a done job_kill row (Rerun
+// re-pends by notice_message_id, which an unnamed row never matches). The one
+// reachable 0-rows cause is deletion (the owner session's cascade); it is not
+// an error, the caller's tool-result message is persisted either way.
 func (q *Queries) SetAsyncJobNoticeMessageIDForClaimIfDone(ctx context.Context, arg SetAsyncJobNoticeMessageIDForClaimIfDoneParams) (int64, error) {
 	result, err := q.exec(ctx, q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt, setAsyncJobNoticeMessageIDForClaimIfDone,
 		arg.NoticeMessageID,

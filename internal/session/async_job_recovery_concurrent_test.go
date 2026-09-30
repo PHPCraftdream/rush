@@ -222,7 +222,7 @@ func TestRecoverDeadHost_ConcurrentRecoverers_HostRemovedOnce(t *testing.T) {
 
 	total, removed := sumOutcomes(concurrentRecoverers(t, ctx, stores, dead))
 	require.Equal(t, 3, total.Deleted)
-	require.Equal(t, 1, removed, "exactly one recoverer removes the host")
+	require.Equal(t, 1, removed, "exactly one recoverer deletes the async_hosts row")
 	_, statErr := os.Stat(HostLockPath(stores[0].dataDir, dead))
 	require.ErrorIs(t, statErr, os.ErrNotExist, "the lock file is removed")
 	hosts, err := q.ListAsyncHosts(ctx)
@@ -273,4 +273,50 @@ func TestRecoverDeadHost_StaleListing_KeepsFreshClaimOfSameToolCallID(t *testing
 	require.NoError(t, err, "the live host's fresh claim must survive the stale recoverer")
 	require.Equal(t, fresh.Row.ClaimID, got.ClaimID)
 	require.Equal(t, "running", got.State)
+}
+
+// TestRecoverDeadHost_StaleListing_AnnouncedRow_KeepsLiveReclaim: recoverer A
+// listed an ANNOUNCED running row X of the dead host (claim cX) and parks before
+// its Transition. Recoverer B interrupts X (pending, announced), the model's next
+// response claims the same tool_call_id again -- X is archived and a new running
+// row Y (claim cY, live host) takes the key. When A resumes, its Transition is
+// keyed by cX and must lose: Y stays running under cY. Without the claim guard
+// ("" resolves to Y's current claim) A would mark the live Y interrupted.
+//
+// Revert-check: pass ClaimID "" in RecoverDeadHost's TransitionParams -> Y is
+// 'interrupted'.
+func TestRecoverDeadHost_StaleListing_AnnouncedRow_KeepsLiveReclaim(t *testing.T) {
+	stores, q, ctx := nStores(t, 2, "owner-1")
+	a, b := stores[0], stores[1]
+	_, err := b.ensureHost(ctx)
+	require.NoError(t, err)
+
+	const dead = "dead-host-r4a1"
+	fabricateDeadHost(t, ctx, q, a.dataDir, dead)
+	seedRunningJob(t, ctx, q, "owner-1", "call_0", dead, "", true)
+
+	paused, release := holdRecovererAtFirstRow(t, dead)
+	done := make(chan error, 1)
+	go func() {
+		_, recErr := a.RecoverDeadHost(ctx, dead, nil)
+		done <- recErr
+	}()
+	<-paused // A has listed X (claim-call_0) and parks before its Transition
+
+	out, err := b.RecoverDeadHost(ctx, dead, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, out.Interrupted, "B interrupts the row A listed")
+	fresh, err := b.Claim(ctx, ClaimParams{Owner: "owner-1", ToolCallID: "call_0", Kind: JobKindCommand, Input: "again", ToolName: "bash"})
+	require.NoError(t, err)
+	require.False(t, fresh.Existing, "the interrupted, announced row is archived and the key claimed afresh")
+	require.NotEqual(t, "claim-call_0", fresh.Row.ClaimID)
+
+	release()
+	require.NoError(t, <-done)
+
+	got, err := b.Get(ctx, "owner-1", "call_0")
+	require.NoError(t, err)
+	require.Equal(t, "running", got.State, "the stale recoverer must not interrupt the live re-claim")
+	require.Equal(t, fresh.Row.ClaimID, got.ClaimID)
+	require.Equal(t, b.HostID(), got.HostID)
 }

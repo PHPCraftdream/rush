@@ -374,12 +374,14 @@ func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Se
 // killed; the claim job_kill's own transition won) -- never its tool_call_id:
 // a new claim under a reused id archives the killed row while job_kill is
 // still running (R3A-2), and a claim id names one incarnation of a job.
-// params' own tool_call_id is job_kill's own call. 0 rows affected by the
-// guarded write (SetAsyncJobNoticeMessageIDForClaimIfDone) is not an error:
-// the row is no longer 'done' and unnamed -- it changed after the transition
-// job_kill won (a Rerun re-pended it, it was deleted) -- so there is nothing to
-// fuse; job_kill's tool-result message is persisted regardless, since a
-// tool_use must always get a tool_result.
+// params' own tool_call_id is job_kill's own call. The guarded write
+// (SetAsyncJobNoticeMessageIDForClaimIfDone) is defensive: killedClaimID is
+// passed only after job_kill's own Transition won, and no other writer
+// re-pends or names a done job_kill row (Rerun re-pends by notice_message_id,
+// which an unnamed row never matches). The one reachable 0-rows cause is
+// deletion (the owner session's cascade); it is not an error -- job_kill's
+// tool-result message is persisted regardless, since a tool_use must always
+// get a tool_result.
 func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages message.Service, owner, killedClaimID string, params message.CreateMessageParams) (message.Message, error) {
 	if killedClaimID == "" {
 		return message.Message{}, errors.New("async job store: announce job_kill result: empty claim id")
