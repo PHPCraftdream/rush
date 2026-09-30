@@ -548,6 +548,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (the model's finish such as `end_turn`, `error` -- also for a
   `--max-cost`/`--max-tokens` exit -- or `canceled` for Ctrl-C, `--timeout`, the
   default cap and `sessions cancel`), empty while a run is in progress.
+- **`ended_reason` stays empty while a `rush run` is still running (review
+  round 8).** The per-turn write stored the first turn's `end_turn` while the
+  loop kept waiting on a job, so `sessions show` printed `Ended: end_turn` and
+  `sessions list --json` gave `{"status":"running","ended_reason":"end_turn"}`
+  for a live session (and kept saying it after a kill -9). The loop's turns no
+  longer write it; its exit writes the envelope's `exit_reason` once. Callers
+  that are not the loop (the SDK) keep the per-turn write. A run refused
+  because another process owns the session no longer writes `error` into that
+  session's row.
+- **`--max-cost` / `--max-tokens` bound a `rush run` that is waiting (review
+  round 8).** While the loop waited on a delegation or a job it checked only
+  `sessions cancel`, so a child polling in a chain of reaction turns (each
+  charged to the root) ran to the 6 h cap before the limit reported. The wait
+  now reads the limits at every wake (one session-row read, also answering the
+  cancel flag) and ends `error` through the usual exit: envelope,
+  `--on-finish`, and the run's jobs are cancelled.
+- **A `sessions cancel` that stopped a `rush run` no longer aborts the next
+  turn (review round 8).** The flag stayed set after the loop honoured it, so a
+  later web turn or takeover reaction turn on the same session was cancelled
+  after its first step. The loop clears it when the run ends `canceled`, before
+  the envelope is flushed.
+- **A closed stdout pipe no longer kills `rush run` before `--on-finish` and
+  shutdown (review round 8, Unix).** The envelope write raised SIGPIPE and the
+  process died with status 141, leaving the run's jobs running and the hook
+  unrun. Writes to a closed stdout/stderr now fail with EPIPE through the
+  normal exit path (hook and shutdown run, exit status 1), and spawned jobs keep
+  the default SIGPIPE behaviour.
 - **`sessions list` and `sessions why` no longer report a root as done
   while a descendant session still has live work**, cross-process.
   `sessions why` names the live descendant, and the session-list API now
