@@ -40,8 +40,8 @@ import {
   removeSubAgentMessage,
   trackMessageParts,
 } from "./store";
-import { applyLiveWorkSnapshot, sendGetSessionLiveWork, isLiveWorkRequestID } from "./store_livework";
-import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload } from "./types";
+import { applyLiveWorkSnapshot, sendGetSessionLiveWork, isLiveWorkRequestID, applyWakeSchedulesSnapshot, sendGetSessionWakeSchedules, isWakeSchedulesGetRequestID, isWakeSchedulesCancelRequestID, $wakeScheduleCancelError } from "./store_livework";
+import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload, SessionWakeSchedulesPayload } from "./types";
 import { isKeepAliveRunning, startKeepAlive, stopKeepAlive, installKeepAliveAutoResume } from "./keepAlive";
 import { installSitterAutoRestore } from "./sitter";
 
@@ -457,11 +457,26 @@ export function useWS() {
         applyLiveWorkSnapshot(msg.payload as SessionLiveWorkPayload);
       }),
 
+      // Wake-schedules panel (stage 5b): full snapshot every time, whether
+      // pushed unsolicited or replying to get_session_wake_schedules /
+      // cancel_wake_schedule -- keyed by its own sessionID field.
+      ws.on("session_wake_schedules", (msg: WSMessage) => {
+        applyWakeSchedulesSnapshot(msg.payload as SessionWakeSchedulesPayload);
+      }),
+
       ws.on("error", (msg: WSMessage) => {
         // get_session_live_work has no server handler until #1058 lands
         // (see store_livework.ts) -- its "unknown command" reply must be
-        // swallowed silently, not shown as a user-facing failure.
-        if (isLiveWorkRequestID(msg.id)) return;
+        // swallowed silently, not shown as a user-facing failure. Wake-
+        // schedules GET requests swallow the same way. A cancel error is
+        // explicit -- but it lands INLINE in the still-open ConfirmDialog
+        // (its error prop), not in the global banner the operator is not
+        // looking at.
+        if (isLiveWorkRequestID(msg.id) || isWakeSchedulesGetRequestID(msg.id)) return;
+        if (isWakeSchedulesCancelRequestID(msg.id)) {
+          $wakeScheduleCancelError.set((msg.error as string) || "Failed to cancel the schedule");
+          return;
+        }
         $agentError.set((msg.error as string) || "Unknown error");
         setTimeout(() => $agentError.set(null), 8000);
       }),
@@ -473,7 +488,10 @@ export function useWS() {
       // (hashchange, session_created, sessions_list routing, Sidebar)
       // funnels through.
       $activeSessionID.listen((id) => {
-        if (id) sendGetSessionLiveWork(id);
+        if (id) {
+          sendGetSessionLiveWork(id);
+          sendGetSessionWakeSchedules(id);
+        }
       }),
     ];
 

@@ -48,6 +48,11 @@ const (
 	// AsyncJobStore.LiveJobs/LiveWorkForRoots, exist); #1059 only wires this
 	// shared shape plus the client-side tabbed panel.
 	EventSessionLiveWork = "session_live_work"
+	// EventSessionWakeSchedules carries a wake-schedule snapshot (stage 5b)
+	// for one session -- pushed on change and replied to
+	// CmdGetSessionWakeSchedules and CmdCancelWakeSchedule, always a full
+	// snapshot, never a delta. handlers_wake_schedules.go builds it.
+	EventSessionWakeSchedules = "session_wake_schedules"
 )
 
 // Inbound command types (client → server).
@@ -89,6 +94,13 @@ const (
 	// for one session -- sent when a session becomes active and after a
 	// reconnect; handleGetSessionLiveWork (handlers_livework.go) answers it.
 	CmdGetSessionLiveWork = "get_session_live_work"
+	// CmdGetSessionWakeSchedules asks for a fresh EventSessionWakeSchedules
+	// snapshot for one session (stage 5b); handleGetSessionWakeSchedules
+	// (handlers_wake_schedules.go) answers it.
+	CmdGetSessionWakeSchedules = "get_session_wake_schedules"
+	// CmdCancelWakeSchedule cancels one of the session's own wake schedules
+	// (stage 5b); handleCancelWakeSchedule answers it with a fresh snapshot.
+	CmdCancelWakeSchedule = "cancel_wake_schedule"
 	// CmdShutdownServer asks the server process to gracefully shut itself down
 	// (task #714). The handler acks first, then triggers the same shutdown path
 	// a SIGINT takes.
@@ -729,4 +741,50 @@ type SessionLiveWorkPayload struct {
 	SessionID string             `json:"sessionID"`
 	Commands  []LiveWorkItemWire `json:"commands"`
 	Agents    []LiveWorkItemWire `json:"agents"`
+}
+
+// ── Wake schedules panel (stage 5b) ─────────────────────────────────────────
+//
+// handlers_wake_schedules.go builds the snapshot from the durable
+// wake_schedules table (session.WakeScheduleStore.ListSchedules, the owner's
+// rows only), pushes EventSessionWakeSchedules on change events, answers
+// CmdGetSessionWakeSchedules with it, and answers CmdCancelWakeSchedule with
+// a fresh snapshot after the cancel commits.
+
+// GetSessionWakeSchedulesPayload requests the wake-schedule snapshot for
+// one session.
+type GetSessionWakeSchedulesPayload struct {
+	SessionID string `json:"sessionID"`
+}
+
+// CancelWakeSchedulePayload asks to cancel one schedule owned by SessionID.
+// A foreign or unknown ScheduleID is an explicit error, never a silent no-op.
+type CancelWakeSchedulePayload struct {
+	SessionID  string `json:"sessionID"`
+	ScheduleID string `json:"scheduleID"`
+}
+
+// WakeScheduleWire is one wake_schedules row for the panel. NextRunAt and
+// UntilAt are unix milliseconds (UntilAt 0 = unset); MaxRuns 0 = unbounded.
+// Message is truncated to the live-work title budget. Mirrors
+// web/src/types.ts's WakeScheduleItem.
+type WakeScheduleWire struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Message    string `json:"message"`
+	NextRunAt  int64  `json:"nextRunAt"`
+	EveryMs    int64  `json:"everyMs"`
+	MaxRuns    int64  `json:"maxRuns"`
+	UntilAt    int64  `json:"untilAt"`
+	State      string `json:"state"`
+	Occurrence int64  `json:"occurrence"`
+	CreatedAt  int64  `json:"createdAt"`
+}
+
+// SessionWakeSchedulesPayload is the session_wake_schedules push and the
+// get/cancel reply: a full snapshot of one session's wake schedules,
+// replacing any prior snapshot for this SessionID client-side. Never a delta.
+type SessionWakeSchedulesPayload struct {
+	SessionID string             `json:"sessionID"`
+	Schedules []WakeScheduleWire `json:"schedules"`
 }

@@ -151,6 +151,10 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	case CmdGetSessionLiveWork:
 		c.dispatch("handleGetSessionLiveWork", msg.ID, func() { handleGetSessionLiveWork(ctx, a, c, msg) })
+	case CmdGetSessionWakeSchedules:
+		c.dispatch("handleGetSessionWakeSchedules", msg.ID, func() { handleGetSessionWakeSchedules(ctx, a, c, msg) })
+	case CmdCancelWakeSchedule:
+		c.dispatch("handleCancelWakeSchedule", msg.ID, func() { handleCancelWakeSchedule(ctx, a, c, msg) })
 	default:
 		slog.Debug("ws: unknown command", "type", msg.Type)
 		c.reply(msg.ID, EventError, nil, "unknown command: "+msg.Type)

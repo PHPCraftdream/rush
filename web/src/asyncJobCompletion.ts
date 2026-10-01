@@ -1,6 +1,9 @@
 import type { Message, ToolResult } from "./types";
 
-export type AsyncJobStatus = "finished" | "failed";
+// Stage 5b: the terminal-cause statuses the contract's §5.1 texts carry.
+// "timed_out"/"stopped"/"cancelled" arrive via FormatAsyncCompletion's
+// stop/timeout/cancel wordings, matched by asyncStoppedPattern below.
+export type AsyncJobStatus = "finished" | "failed" | "timed_out" | "stopped" | "cancelled";
 
 export interface AsyncJobCompletion {
   status: AsyncJobStatus;
@@ -26,10 +29,24 @@ function resultMetadata(part: ToolResult): { async?: boolean; job_id?: string; b
 }
 
 const asyncNoticePattern = /^Async job (\S+) \([^)]*\) (finished|failed)\.\n\n([\s\S]*)$/;
+// Non-finished terminal causes, each mapped to its own status so the tool-call
+// block can show "timed out" / "stopped by user" / "cancelled" distinctly
+// (stage 5b). Same lead-in as asyncNoticePattern by construction (both are
+// FormatAsyncCompletion outputs).
+const asyncStoppedPattern =
+  /^Async job (\S+) \([^)]*\) (timed out after \d+s and was stopped|was stopped \(job_kill\)|was cancelled \(session stopped\))\. Partial output( before the stop)?:\n\n([\s\S]*)$/;
+
+function stoppedStatus(cause: string): AsyncJobStatus {
+  if (cause.startsWith("timed out")) return "timed_out";
+  if (cause.includes("job_kill")) return "stopped";
+  return "cancelled";
+}
 const legacyNoticePattern = /^Background job (\S+) \([^\n]*\) finished: exit (-?\d+), ran [^\n]+\./;
 
 export function isAsyncCompletionNotice(message: Message): boolean {
-  return message.Role === "user" && asyncNoticePattern.test(messageText(message));
+  if (message.Role !== "user") return false;
+  const text = messageText(message);
+  return asyncNoticePattern.test(text) || asyncStoppedPattern.test(text);
 }
 
 export function indexAsyncJobCompletions(messages: Message[]): AsyncJobCompletionIndex {
@@ -52,7 +69,28 @@ export function indexAsyncJobCompletions(messages: Message[]): AsyncJobCompletio
     if (asyncMatch) {
       const toolCallID = asyncCalls.get(asyncMatch[1]);
       if (toolCallID) {
-        byToolCallID.set(toolCallID, { status: asyncMatch[2] as AsyncJobStatus, content: asyncMatch[3] });
+        // A user-stopped delegation (stop_agent) reaches the parent as a
+        // plain FAILED completion whose entire content is
+        // subAgentOutcomeCancelledText (internal/agent/work_ledger_delegation.go)
+        // — the child did not fail, the parent stopped it. Map that exact
+        // shape to "stopped" so the block shows "stopped by user", not
+        // "error". Both delegation tool names (agent/agentic_fetch) share
+        // this delivery path.
+        const status: AsyncJobStatus =
+          asyncMatch[2] === "failed" && asyncMatch[3].trim() === "sub-agent canceled"
+            ? "stopped"
+            : (asyncMatch[2] as AsyncJobStatus);
+        byToolCallID.set(toolCallID, { status, content: asyncMatch[3] });
+        attachedNoticeIDs.add(message.ID);
+      }
+      continue;
+    }
+
+    const stoppedMatch = asyncStoppedPattern.exec(text);
+    if (stoppedMatch) {
+      const toolCallID = asyncCalls.get(stoppedMatch[1]);
+      if (toolCallID) {
+        byToolCallID.set(toolCallID, { status: stoppedStatus(stoppedMatch[2]), content: stoppedMatch[4] });
         attachedNoticeIDs.add(message.ID);
       }
       continue;

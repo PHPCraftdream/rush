@@ -382,4 +382,9 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 		return
 	}
 	p.h.Broadcast(EventSessionLiveWork, snap)
+	// Stage 5b: the same coalescing window also carries the wake-schedule
+	// snapshot — a schedule's create/fire/cancel always arrives as a notice
+	// or tool message, so the existing marks cover it with no extra
+	// subscription and no DB polling.
+	pushWakeSchedules(p.ctx, p.a, p.h, sessionID)
 }

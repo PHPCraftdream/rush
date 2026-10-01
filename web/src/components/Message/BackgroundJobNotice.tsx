@@ -13,6 +13,28 @@ import { extractText } from "./textParts";
 // the job's result) but the operator never typed them, so they render on the
 // LEFT as a muted system notice — mirroring SummaryMessage's container idiom.
 
+// noticeKindLabel maps the message's NoticeKind to the header chip. Every
+// kind is a system event injected by rush — never a human's words — so the
+// chip names WHICH system event this is (stage 5b: wake events must read as
+// system events, not as a user reply). Absent kind keeps the generic
+// background-job chip.
+function noticeKindLabel(kind: string | undefined): { icon: string; label: string; title: string } {
+  switch (kind) {
+    case "wake_fired":
+      return { icon: "⏰", label: "wake", title: "scheduled wake fired — injected by rush, not typed by you" };
+    case "supervision":
+      return { icon: "👁", label: "supervision", title: "supervision check-in — injected by rush, not typed by you" };
+    case "timeout_wake_only":
+      return { icon: "⏱", label: "timeout (still running)", title: "async job timeout check-in — injected by rush, not typed by you" };
+    case "timeout_terminated":
+      return { icon: "⏱", label: "timed out", title: "async job timed out — injected by rush, not typed by you" };
+    case "wake_failed":
+      return { icon: "⏰", label: "wake failed", title: "wake delivery failed — injected by rush, not typed by you" };
+    default:
+      return { icon: "⚙", label: "background job", title: "background job finished — injected by rush, not typed by you" };
+  }
+}
+
 export const BackgroundJobNotice = memo(function BackgroundJobNotice({ message }: { message: Msg }) {
   const text = useMemo(() => extractText(message.Parts), [message.Parts]);
   // Collapsed by default — orchestrator output is noise the operator only
@@ -20,15 +42,17 @@ export const BackgroundJobNotice = memo(function BackgroundJobNotice({ message }
   // other orchestrator block (mirrors SummaryMessage's toggle).
   const [open, setOpen] = useState(false);
   useCollapseAllSignal(() => setOpen(false));
+  const kind = noticeKindLabel(message.NoticeKind);
   return (
     <div className="px-8 py-3">
       <div className="summary-card">
         <div className="summary-header">
           <span
+            data-test-id="notice-kind-label"
             className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px]"
-            title="background job finished — injected by rush, not typed by you"
+            title={kind.title}
           >
-            ⚙ background job
+            {kind.icon} {kind.label}
           </span>
           {message.AutoResumed && (
             <span

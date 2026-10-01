@@ -89,3 +89,66 @@ export function requestExpandToolCall(toolCallID: string) {
   expandNonce += 1;
   $expandToolCallRequest.set({ toolCallID, nonce: expandNonce });
 }
+
+// ── Wake schedules slice (stage 5b) ──────────────────────────────────────────
+//
+// The Schedules tab's data: wake_schedules rows for the active session,
+// delivered as full `session_wake_schedules` snapshots (pushed on change by
+// the same coalescing worker as live work, or replied to
+// get_session_wake_schedules / cancel_wake_schedule). Same
+// pass-the-map-explicitly rule as pickLiveWork above: the React Compiler
+// can't see through atom reads inside plain functions.
+
+import type { SessionWakeSchedulesPayload, WakeScheduleItem } from "./types";
+
+const EMPTY_SCHEDULES: WakeScheduleItem[] = [];
+
+export const $wakeSchedulesBySession = atom<Map<string, WakeScheduleItem[]>>(new Map());
+
+export function pickWakeSchedules(map: Map<string, WakeScheduleItem[]>, sessionID: string | null): WakeScheduleItem[] {
+  if (!sessionID) return EMPTY_SCHEDULES;
+  return map.get(sessionID) ?? EMPTY_SCHEDULES;
+}
+
+/** Applies a full session_wake_schedules snapshot -- always replaces, never
+ * merges, per the wire contract. */
+export function applyWakeSchedulesSnapshot(payload: SessionWakeSchedulesPayload) {
+  const next = new Map($wakeSchedulesBySession.get());
+  next.set(payload.sessionID, payload.schedules ?? []);
+  $wakeSchedulesBySession.set(next);
+}
+
+const WAKE_SCHEDULES_GET_PREFIX = "wakesched-get-";
+const WAKE_SCHEDULES_CANCEL_PREFIX = "wakesched-cancel-";
+
+/** Requests a fresh wake-schedule snapshot for sessionID. Fire-and-forget:
+ * the reply arrives as an ordinary session_wake_schedules push keyed by its
+ * own SessionID field. */
+export function sendGetSessionWakeSchedules(sessionID: string) {
+  ws.send("get_session_wake_schedules", { sessionID }, WAKE_SCHEDULES_GET_PREFIX + crypto.randomUUID());
+}
+
+/** Cancels one of the session's own wake schedules. The server replies with
+ * a fresh session_wake_schedules snapshot; an unknown/foreign scheduleID is
+ * an explicit error reply (surfaced by the dialog's inline error). */
+export function sendCancelWakeSchedule(sessionID: string, scheduleID: string) {
+  ws.send("cancel_wake_schedule", { sessionID, scheduleID }, WAKE_SCHEDULES_CANCEL_PREFIX + crypto.randomUUID());
+}
+
+/** True if id belongs to a wake-schedules GET request -- see
+ * WAKE_SCHEDULES_GET_PREFIX above. */
+export function isWakeSchedulesGetRequestID(id: string | undefined): boolean {
+  return !!id && id.startsWith(WAKE_SCHEDULES_GET_PREFIX);
+}
+
+/** Inline error from a rejected cancel (unknown/foreign scheduleID,
+ * transport): shown inside the still-open ConfirmDialog via its error prop,
+ * never the global banner -- the operator's attention is already on the
+ * dialog. Cleared by WakeScheduleList when the dialog closes or reopens. */
+export const $wakeScheduleCancelError = atom<string | null>(null);
+
+/** True if id belongs to a wake-schedules CANCEL request -- see
+ * WAKE_SCHEDULES_CANCEL_PREFIX above. */
+export function isWakeSchedulesCancelRequestID(id: string | undefined): boolean {
+  return !!id && id.startsWith(WAKE_SCHEDULES_CANCEL_PREFIX);
+}

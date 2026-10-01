@@ -295,6 +295,35 @@ export interface SessionLiveWorkPayload {
   agents: LiveWorkItem[];
 }
 
+// ─── Wake schedules panel (stage 5b) ────────────────────────────────────────
+//
+// One wake_schedules row, sourced from internal/server/protocol.go's
+// WakeScheduleWire (handlers_wake_schedules.go's snapshot emitter).
+export interface WakeScheduleItem {
+  id: string;
+  // "once" | "loop"
+  kind: string;
+  // Truncated to the server's title budget (~120 runes).
+  message: string;
+  nextRunAt: number; // unix ms, the SCHEDULED time
+  everyMs: number; // loop only; 0 for once
+  maxRuns: number; // loop only; 0 = unbounded
+  untilAt: number; // unix ms; 0 = unset (loop only)
+  // "active" | "done" | "cancelled"
+  state: string;
+  occurrence: number; // completed occurrences so far
+  createdAt: number; // unix ms
+}
+
+// SessionWakeSchedulesPayload mirrors the server's SessionWakeSchedulesPayload:
+// the `session_wake_schedules` push and the `get_session_wake_schedules` /
+// `cancel_wake_schedule` replies all carry this shape, always as a FULL
+// snapshot -- never a delta.
+export interface SessionWakeSchedulesPayload {
+  sessionID: string;
+  schedules: WakeScheduleItem[];
+}
+
 export interface AgentBusyPayload {
   SessionID: string;
   Busy: boolean;

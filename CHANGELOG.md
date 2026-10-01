@@ -22,6 +22,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Web: wake events and schedules (stage 5b)**: the web UI now surfaces the
+  wake/async lifecycle. Fired wakes and other system notices render with a
+  kind-specific chip (`⏰ wake`, supervision, timeouts) on the left-side
+  system-event card — never as a human-typed reply. Async tool-call blocks
+  show a distinguishable outcome: `timed out`, `stopped by user` (job_kill)
+  and `cancelled` are distinct from a plain `error`, derived from the
+  completion notice the client already received. The live-work panel gains a
+  Schedules tab: the session's durable wake schedules (kind, message, next
+  fire in local time, occurrences, max_runs/until, state) via new
+  `get_session_wake_schedules`/`session_wake_schedules` WS messages (same
+  coalescing change-worker as the Commands/Agents tabs, no DB polling,
+  session-isolated), and an explicit Cancel button (shared confirm dialog) →
+  `cancel_wake_schedule` → store `CancelSchedule`; an unknown or foreign
+  schedule id is an explicit "not found" error, a repeat cancel is
+  idempotent, and the scheduler worker's timer is recomputed after the
+  cancel commits.
+
 - **Wake tools (stage 4c)**: `wakein`, `wakeon`, `loop`, `wake_list` and
   `wake_cancel` (wake-tools contract §1). The coder (and the root session)
   can schedule one-shot delays, absolute RFC3339 wake-ups (explicit zone

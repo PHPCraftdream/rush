@@ -257,8 +257,17 @@ export const SubAgentBlock = memo(function SubAgentBlock({
         {model && <span className="text-xs text-text-subtle font-mono shrink-0">{model}</span>}
         <EffortBadge effort={effort} />
         {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
+        {/* Stage 5b: the delegation's terminal cause must be distinguishable,
+            same rule as the command accordion's ActionRow — timed out /
+            stopped by the parent (stop_agent) / cancelled (session stop)
+            must not read as a plain child failure. A terminal error finish
+            on the child transcript still wins: it is the richer signal. */}
         {done && (errorFinish || asyncStatus === "failed" ? (
           <span className="text-xs text-red font-medium">error</span>
+        ) : asyncStatus === "timed_out" || asyncStatus === "stopped" || asyncStatus === "cancelled" ? (
+          <span data-test-id="sub-agent-status" className="text-xs text-text-subtle font-medium shrink-0">
+            {asyncStatus === "timed_out" ? "timed out" : asyncStatus === "stopped" ? "stopped by user" : "cancelled"}
+          </span>
         ) : (
           <span className="text-xs text-green font-medium">done</span>
         ))}

@@ -189,6 +189,11 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   const running = !!call && (!result || (pendingJob && !completion));
   const errored = !!result?.IsError || completion?.status === "failed";
   const completed = pendingJob && completion?.status === "finished";
+  // Stage 5b: the terminal-cause badges — timed out / stopped by the user
+  // (job_kill) / cancelled (session stop) must be distinguishable from a
+  // plain failure, sourced from the completion notice the client already
+  // received (asyncStoppedPattern), never synthesized from message text
+  // shown as a user reply.
   return (
     <div data-test-id="action-row" data-tool-call-id={toolCallID} className="action-row">
       <button
@@ -210,6 +215,9 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
         </span>
         {item.repeatCount && item.repeatCount > 1 && <span className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px] shrink-0">×{item.repeatCount}</span>}
         {running && <span className="text-text-subtle text-xs animate-pulse shrink-0">running…</span>}
+        {completion?.status === "timed_out" && <span data-test-id="action-row-status" className="text-xs text-yellow font-medium shrink-0">timed out</span>}
+        {completion?.status === "stopped" && <span data-test-id="action-row-status" className="text-xs text-text-subtle font-medium shrink-0">stopped by user</span>}
+        {completion?.status === "cancelled" && <span data-test-id="action-row-status" className="text-xs text-text-subtle font-medium shrink-0">cancelled</span>}
         {errored && <span className="badge-error shrink-0">error</span>}
         {completed && <span className="text-xs text-green font-medium shrink-0">done</span>}
         <TimeBadge epochSec={item.createdAt} />
