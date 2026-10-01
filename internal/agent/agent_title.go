@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openaicompat"
 )
 
 // titleGenerationMaxDurationDefault bounds how long the background
@@ -90,6 +92,76 @@ func cleanTitle(raw string) string {
 	t = thinkTagRegex.ReplaceAllString(t, "")
 	t = orphanThinkTagRegex.ReplaceAllString(t, "")
 	return strings.TrimSpace(t)
+}
+
+// titleFromReasoning extracts a title candidate from a reasoning-only
+// response. Thinking models (z.ai/glm via the openai-compat provider) can
+// stream their whole answer as `reasoning_content`, leaving
+// ResponseContent.Text() empty; the final answer typically sits on the last
+// non-empty line of the reasoning stream, so that line is the best title
+// candidate.
+func titleFromReasoning(reasoning string) string {
+	lines := strings.Split(reasoning, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// titleMaxReasoningLen caps a title recovered from a reasoning line.
+const titleMaxReasoningLen = 80
+
+// sanitizeReasoningTitle cleans a title candidate recovered from a reasoning
+// stream: strip answer prefixes ("Title:"/"Заголовок:" and friends) and
+// wrapping quotes, then cap the length — reasoning lines can run long and a
+// title must stay short. A cut longer than titleMaxReasoningLen falls back
+// to the last space inside the window so no word is split mid-token.
+func sanitizeReasoningTitle(raw string) string {
+	t := cleanTitle(raw)
+	for _, p := range []string{"Title:", "Заголовок:", "Title -", "Заголовок -"} {
+		if len(t) >= len(p) && strings.EqualFold(t[:len(p)], p) {
+			t = strings.TrimSpace(t[len(p):])
+		}
+	}
+	t = strings.Trim(t, "\"'«»„“”")
+	runes := []rune(t)
+	if len(runes) <= titleMaxReasoningLen {
+		return t
+	}
+	cut := titleMaxReasoningLen
+	if sp := strings.LastIndex(string(runes[:titleMaxReasoningLen]), " "); sp > titleMaxReasoningLen/2 {
+		cut = sp
+	}
+	return strings.TrimSpace(string(runes[:cut]))
+}
+
+// titleProviderOptions returns the request-level options that stop a
+// thinking-by-default openai-compat provider (classified by the CONFIGURED
+// provider ID, the same domain getProviderOptions switches on) from thinking
+// on the title call. The prompt-level "/no_think" and "<think></think>"
+// tricks are ignored by z.ai's GLM models, so without this the whole title
+// answer streams as reasoning_content and Response.Content.Text() is empty.
+// GLM-5.3 model IDs cannot disable thinking at all (see zai53ModelIDs), so
+// they get their minimal level instead — mirroring getProviderOptions'
+// "off" → "low" degradation. Any other provider keeps its default behavior.
+func titleProviderOptions(model Model) *fantasy.ProviderOptions {
+	if model.ModelCfg.Provider != string(catwalk.InferenceProviderZAI) {
+		return nil
+	}
+	extraBody := map[string]any{}
+	if zai53ModelIDs[strings.ToLower(model.ModelCfg.Model)] {
+		extraBody["thinking"] = map[string]any{"type": "enabled"}
+		extraBody["reasoning_effort"] = "low"
+	} else {
+		extraBody["thinking"] = map[string]any{"type": "disabled"}
+	}
+	parsed, err := openaicompat.ParseOptions(map[string]any{"extra_body": extraBody})
+	if err != nil {
+		return nil
+	}
+	return &fantasy.ProviderOptions{openaicompat.Name: parsed}
 }
 
 // generateTitle generates a session title based on the initial prompt.
@@ -170,9 +242,19 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		)
 	}
 
+	var reasoningBuf strings.Builder
 	streamCall := fantasy.AgentStreamCall{
 		Prompt:  fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
 		Headers: sessionHeaders(sessionID),
+		// A reasoning-only stream (the whole answer as `reasoning_content`, no
+		// text part) never flushes fantasy's ReasoningContent — the openaicompat
+		// hook only emits ReasoningEnd when a content delta follows the reasoning
+		// — so Response.Content would carry neither text nor reasoning. Capture
+		// the reasoning deltas here instead so the fallback below can use them.
+		OnReasoningDelta: func(_, text string) error {
+			reasoningBuf.WriteString(text)
+			return nil
+		},
 		PrepareStep: func(callCtx context.Context, opts fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
 			prepared.Messages = opts.Messages
 			if systemPromptPrefix != "" {
@@ -212,6 +294,12 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 			tok = attempt.model.CatwalkCfg.DefaultMaxTokens
 		}
 		agent := newAgent(attempt.model.Model, titlePrompt, tok)
+		reasoningBuf.Reset()
+		if opts := titleProviderOptions(attempt.model); opts != nil {
+			streamCall.ProviderOptions = *opts
+		} else {
+			streamCall.ProviderOptions = nil
+		}
 		resp, err = agent.Stream(ctx, streamCall)
 		if err != nil {
 			slog.Error("Error generating title with "+attempt.name+" model; trying next", "err", err)
@@ -226,12 +314,32 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		// Discarding a truncated-but-good title just retries the same tiny
 		// budget on the next model, typically fails the same way, and leaves
 		// the session "Untitled" for a transient reason.
+		textLen := len(resp.Response.Content.Text())
+		reasoning := cmp.Or(resp.Response.Content.ReasoningText(), reasoningBuf.String())
+		reasoningLen := len(reasoning)
+		finishReason := resp.Response.FinishReason
 		candidate := cleanTitle(resp.Response.Content.Text())
+		// A length-truncated reasoning stream ends mid-thought: its last line
+		// is a fragment, not an answer, so the reasoning fallback is used ONLY
+		// when reasoning actually completed. Length-truncated-but-textful
+		// responses above are still accepted — text truncation keeps the
+		// title readable, a truncated reasoning stream does not.
+		if candidate == "" && reasoningLen > 0 && finishReason != fantasy.FinishReasonLength {
+			// Thinking models can stream the whole answer as
+			// reasoning_content with no text part at all; recover the title
+			// from the reasoning stream (see titleFromReasoning).
+			slog.Warn("Title model produced reasoning-only response; extracting title from reasoning",
+				"model", attempt.name, "finish_reason", finishReason,
+				"text_len", textLen, "reasoning_len", reasoningLen)
+			candidate = sanitizeReasoningTitle(titleFromReasoning(reasoning))
+		}
 		if candidate == "" {
-			slog.Error("Title generation produced no usable text with " + attempt.name + " model; trying next")
+			slog.Warn("Title generation produced no usable text with "+attempt.name+" model; trying next",
+				"finish_reason", finishReason,
+				"text_len", textLen, "reasoning_len", reasoningLen)
 			continue
 		}
-		if resp.Response.FinishReason == fantasy.FinishReasonLength {
+		if finishReason == fantasy.FinishReasonLength {
 			slog.Debug("Title truncated (FinishReasonLength) but usable with " + attempt.name + " model")
 		} else {
 			slog.Debug("Generated title with " + attempt.name + " model")

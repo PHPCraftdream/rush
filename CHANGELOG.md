@@ -76,6 +76,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `rush sessions cache` shows the real ~99% hit ratio; unlisted
   openai-compat endpoints (local, cache-silent) keep the honest n/a.
 
+- **#1138: session title generation no longer fails on z.ai/glm reasoning models.**
+  The title request now disables thinking at the request level (`extra_body.thinking`
+  `{type:disabled}` for z.ai-configured providers; GLM-5.3 gets its minimal
+  `low` effort), and when reasoning still streams the whole answer with no text
+  part, the title is recovered from the completed reasoning stream (sanitised,
+  length-capped) instead of falling back to "Untitled Session"; a
+  length-truncated reasoning stream is never used. Misses are logged as
+  warnings with finish reason and text/reasoning lengths.
+
 - **#1101: a refused first turn no longer touches the session's state.** The
   preparatory writes a `rush run` / SDK turn performed before admission —
   clearing a stale `sessions cancel` request, persisting the budget, clearing
