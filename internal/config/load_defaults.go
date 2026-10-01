@@ -59,15 +59,18 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	slices.Sort(c.Options.ContextPaths)
 	c.Options.ContextPaths = slices.Compact(c.Options.ContextPaths)
 
-	// Add the default skills directories if not already present.
-	for _, dir := range GlobalSkillsDirs() {
+	// Add the prompt-advertised default skills directories if not already
+	// present. These are the prompt-facing lists: other tools' directories
+	// (~/.claude/skills, .claude/skills, .cursor/skills) are excluded, while
+	// command loading still discovers the full set (see load_skills.go).
+	for _, dir := range GlobalPromptSkillsDirs() {
 		if !slices.Contains(c.Options.SkillsPaths, dir) {
 			c.Options.SkillsPaths = append(c.Options.SkillsPaths, dir)
 		}
 	}
 
-	// Project specific skills dirs.
-	c.Options.SkillsPaths = append(c.Options.SkillsPaths, ProjectSkillsDir(workingDir)...)
+	// Project specific skills dirs, prompt-advertised subset.
+	c.Options.SkillsPaths = append(c.Options.SkillsPaths, ProjectPromptSkillsDirs(workingDir)...)
 
 	if str, ok := os.LookupEnv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE"); ok {
 		c.Options.DisableProviderAutoUpdate, _ = strconv.ParseBool(str)

@@ -342,3 +342,67 @@ func TestBuild_WorkerConfiguredButModelUnregistered_NoBogusNumber(t *testing.T) 
 	require.Contains(t, got, "Chunk the work")
 	require.NotRegexp(t, `\(~[^)]*\d[^)]*\)`, got, "must not render any parenthesized number for the context window when the model is unregistered")
 }
+
+// TestBuild_DefaultSkillsDirs_ExcludeClaudeSkills is the end-to-end revert
+// oracle for task #1156: the rendered coder prompt must advertise the
+// project-local skill found in Rush's own Agent Skills spec directory
+// (.agents/skills) but never one from another tool's directory
+// (.claude/skills). The prompt-with-skills plumbing (builtins + discovery +
+// <available_skills>) exercises real paths here, not just a config-level
+// dir list.
+//
+// The exclusion itself lives in ProjectPromptSkillsDirs, which
+// load_defaults.go uses when populating the default Options.SkillsPaths;
+// re-pointing that at ProjectSkillsDir turns this test red.
+//
+// NOTE: this test must NOT call t.Parallel — it uses t.Setenv.
+func TestBuild_DefaultSkillsDirs_ExcludeClaudeSkills(t *testing.T) {
+	tmp := t.TempDir()
+	// Isolate every global-config location config.Init consults. The
+	// explicit RUSH_SKILLS_DIR override (kept as an empty dir) pins global
+	// discovery to a controlled location so the machine's real global
+	// skills cannot leak into the assertion; GlobalPromptSkillsDirs
+	// returns an explicit override as-is by design.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(tmp, "global-config"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(tmp, "global-data"))
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
+	overrideSkills := filepath.Join(tmp, "override-skills")
+	require.NoError(t, os.MkdirAll(overrideSkills, 0o755))
+	t.Setenv("RUSH_SKILLS_DIR", overrideSkills)
+
+	workingDir := t.TempDir()
+
+	// Rush's own spec location that prompt discovery must scan.
+	rushSkillDir := filepath.Join(workingDir, ".agents", "skills", "rushonly")
+	require.NoError(t, os.MkdirAll(rushSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(rushSkillDir, "SKILL.md"),
+		[]byte("---\nname: rushonly\ndescription: Discovered from the shared agents skills dir.\n---\nBody.\n"),
+		0o644,
+	))
+
+	// Other tool's project directory that prompt discovery must skip.
+	claudeSkillDir := filepath.Join(workingDir, ".claude", "skills", "claudeonly")
+	require.NoError(t, os.MkdirAll(claudeSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(claudeSkillDir, "SKILL.md"),
+		[]byte("---\nname: claudeonly\ndescription: Only Claude Code should see this.\n---\nBody.\n"),
+		0o644,
+	))
+
+	store, err := config.Init(workingDir, "", false)
+	require.NoError(t, err)
+
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
+	require.NoError(t, err)
+
+	require.Contains(t, got, "rushonly",
+		"prompt must advertise the skill from the project's .agents/skills dir")
+	require.NotContains(t, got, "claudeonly",
+		"prompt must not advertise skills from other tools' directories")
+	require.Contains(t, got, "rush://skills/jq/SKILL.md",
+		"builtin skills must still be advertised by default")
+}

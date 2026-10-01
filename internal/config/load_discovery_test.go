@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
@@ -347,4 +348,134 @@ func TestLoadFromConfigPaths_InvalidJSON(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 	})
+}
+
+// TestGlobalSkillsDirs_KeepOtherToolDirsForCommands is the revert oracle for
+// task #1156: command-facing discovery must keep other tools' directories
+// (~/.claude/skills) so skills installed by other agent tools remain
+// loadable as slash commands; only the agent system prompt filters them out.
+// Removing that directory from globalSkillsDirs turns this test red.
+func TestGlobalSkillsDirs_KeepOtherToolDirsForCommands(t *testing.T) {
+	// NOTE: deliberately NOT t.Parallel() — t.Setenv panics when combined
+	// with t.Parallel.
+	t.Setenv("RUSH_SKILLS_DIR", "")
+
+	got := GlobalSkillsDirs()
+	require.NotEmpty(t, got)
+
+	var found bool
+	for _, dir := range got {
+		if strings.HasSuffix(dir, filepath.Join(".claude", "skills")) {
+			found = true
+			break
+		}
+	}
+	require.True(t, found,
+		"command discovery must keep ~/.claude/skills: %v", got)
+
+	homeDir := t.TempDir()
+	withHome := globalSkillsDirs(homeDir)
+	require.Contains(t, withHome, filepath.Join(homeDir, ".claude", "skills"),
+		"home-scoped global discovery must keep ~/.claude/skills: %v", withHome)
+	require.Contains(t, withHome, filepath.Join(homeDir, ".agents", "skills"),
+		"home-scoped global discovery must keep ~/.agents/skills: %v", withHome)
+}
+
+// TestGlobalPromptSkillsDirs_ExcludeOtherToolDirs locks the prompt-facing
+// half of task #1156: the global list advertised in the agent system prompt
+// drops other tools' directories (~/.claude/skills, .cursor/skills), while
+// the command-facing list keeps them.
+func TestGlobalPromptSkillsDirs_ExcludeOtherToolDirs(t *testing.T) {
+	// NOTE: deliberately NOT t.Parallel() — t.Setenv panics when combined
+	// with t.Parallel.
+	t.Setenv("RUSH_SKILLS_DIR", "")
+
+	full := GlobalSkillsDirs()
+	prompt := GlobalPromptSkillsDirs()
+
+	require.NotEmpty(t, full)
+	require.NotEmpty(t, prompt)
+	require.Less(t, len(prompt), len(full),
+		"prompt list must be a strict subset of the command list: %v vs %v", full, prompt)
+
+	for _, dir := range prompt {
+		require.NotContains(t, dir, ".claude",
+			"prompt discovery must not advertise ~/.claude/skills: %v", prompt)
+		require.NotContains(t, dir, ".cursor",
+			"prompt discovery must not advertise .cursor/skills: %v", prompt)
+		if strings.HasSuffix(dir, "skills") {
+			require.Contains(t, full, dir,
+				"prompt dirs must still come from the command-facing list")
+		}
+	}
+}
+
+// TestProjectPromptSkillsDirs_ExcludeOtherToolDirs locks the project-side
+// split: ProjectSkillsDir stays the command-facing full list (4 subdirs,
+// including other tools' dirs), while ProjectPromptSkillsDirs — what the
+// system prompt advertises — keeps only Rush's own and the Agent Skills
+// spec directories.
+func TestProjectPromptSkillsDirs_ExcludeOtherToolDirs(t *testing.T) {
+	t.Parallel()
+
+	nonGit := t.TempDir()
+
+	full := ProjectSkillsDir(nonGit)
+	require.Len(t, full, 4)
+	require.Contains(t, full, filepath.Join(nonGit, ".claude", "skills"))
+	require.Contains(t, full, filepath.Join(nonGit, ".cursor", "skills"))
+
+	prompt := ProjectPromptSkillsDirs(nonGit)
+	require.Len(t, prompt, 2)
+	require.Contains(t, prompt, filepath.Join(nonGit, ".agents", "skills"))
+	require.Contains(t, prompt, filepath.Join(nonGit, ".rush", "skills"))
+
+	for _, dir := range prompt {
+		require.NotContains(t, dir, ".claude",
+			"prompt discovery must not advertise .claude/skills: %v", prompt)
+		require.NotContains(t, dir, ".cursor",
+			"prompt discovery must not advertise .cursor/skills: %v", prompt)
+	}
+}
+
+// TestConfig_ExplicitSkillsPathsClaudeDirKept proves #1156 only removed the
+// *default* scanning of other tools' directories: an explicitly configured
+// skills_paths entry is honored verbatim, even when it points at a
+// .claude-flavored directory. That is the documented opt-back-in path.
+func TestConfig_ExplicitSkillsPathsClaudeDirKept(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, ".claude-skills")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(claudeDir, "SKILL.md"),
+		[]byte("---\nname: optin\ndescription: Explicitly opted-in skill.\n---\nBody.\n"),
+		0o644,
+	))
+
+	path := filepath.Join(tmp, "rush.json")
+	data, err := json.Marshal(map[string]any{
+		"options": map[string]any{
+			"skills_paths": []string{filepath.ToSlash(claudeDir)},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	cfg, _, err := loadFromConfigPaths([]string{path})
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.NotNil(t, cfg.Options)
+
+	var found bool
+	for _, p := range cfg.Options.SkillsPaths {
+		if strings.Contains(p, ".claude") {
+			found = true
+			break
+		}
+	}
+	require.True(t, found,
+		"explicit skills_paths entries must be preserved verbatim, got: %v",
+		cfg.Options.SkillsPaths)
 }

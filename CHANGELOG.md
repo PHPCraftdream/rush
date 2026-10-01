@@ -53,6 +53,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   ("unknown tool \"gash\" — did you mean \"bash\"?") or, when nothing is
   close, the list of available tools — instead of a bare "tool not found".
 
+- Changed: skills from other tools' directories (`~/.claude/skills`, the
+  project's `.claude/skills` and `.cursor/skills`) are no longer advertised
+  in the agent system prompt; the discovery defaults that feed the prompt now
+  list only Rush's own dirs and the Agent Skills spec locations
+  (`~/.agents/skills`, `$XDG_CONFIG_HOME/agents/skills`, `.agents/skills`,
+  `.rush/skills`). Slash-command loading from those directories is unchanged
+  (skills installed by other tools remain available as `user:`/`project:`
+  commands), and an explicit `options.skills_paths` entry still adds any
+  directory to the prompt.
+
 - Web session list: the sidebar's liveness and external-ownership
   annotations now come from the same session-activity classifier the
   `sessions` commands use (one batched read per poll, previously a second,

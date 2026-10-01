@@ -1224,6 +1224,8 @@ relative paths:
 * `.claude/skills`
 * `.cursor/skills`
 
+Skills from other tools' directories are loaded and available as slash commands, but only Rush's own and Agent Skills spec directories are advertised in the agent system prompt.
+
 ```jsonc
 {
   "$schema": "https://charm.land/crush.json",
