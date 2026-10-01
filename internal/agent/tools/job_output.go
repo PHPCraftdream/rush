@@ -73,6 +73,13 @@ func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, ma
 				if errors.As(err, &rcErr) && runCtl != nil {
 					return runCommandOutputResponse(runCtl, sessionID, params)
 				}
+				var deliveryStatus *JobDeliveryStatusError
+				if errors.As(err, &deliveryStatus) {
+					// B1: the job's result is already committed (or already
+					// delivered) -- a plain text answer, not an error, so the
+					// turn is not spent on a false "not found".
+					return fantasy.NewTextResponse(deliveryStatus.Error()), nil
+				}
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
@@ -161,7 +168,17 @@ func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, ma
 				header = fmt.Sprintf("Status: %s (elapsed %s)", status, elapsed)
 			}
 			result := fmt.Sprintf("%s\n\n%s", header, output)
-			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
+			resp := fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata)
+			if params.Wait && !done && params.JobID != "" {
+				// A13: a timed-out wait on a ledger-tracked job_id ENDS the
+				// turn -- the job's completion is delivered as a session
+				// message, so any further poll in this turn only spends
+				// tokens. StopTurn also makes a same-turn repeat structurally
+				// impossible: the turn does not continue past this result.
+				// A raw shell_id keeps the old poll-hint behavior.
+				resp.StopTurn = true
+			}
+			return resp, nil
 		},
 	)
 }
@@ -194,11 +211,12 @@ func runCommandOutputResponse(runCtl RunCommandController, sessionID string, par
 
 // stillRunningHint closes a wait that timed out on a running job. A job_id
 // job is ledger-tracked: its completion is delivered as a session message,
-// so polling again only spends turns (A13); a raw shell_id may have no such
-// delivery, so the poll hint stays.
+// so polling again only spends turns (A13) -- the answer carries StopTurn so
+// the turn ends here. A raw shell_id may have no such delivery, so the poll
+// hint stays.
 func stillRunningHint(ledgerJob bool) string {
 	if ledgerJob {
-		return "\n\n(still running after the wait window — its completion will arrive as a session message; end your turn instead of calling job_output again)"
+		return "\n\n(still running after the wait window — end your turn now (no tool call); its result arrives as a session message when the job finishes)"
 	}
 	return "\n\n(still running after the wait window — call job_output again to keep waiting)"
 }

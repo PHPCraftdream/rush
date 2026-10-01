@@ -89,6 +89,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   controlled externally with `rush logs prune`; its help text now
   matches the new behavior. lumberjack is gone from go.mod.
 
+- **#1137 (B1): job_output no longer lies "not found … or already delivered"
+  for a job that already finished.** A fast background command can finish and
+  leave the ledger's in-memory map while its durable row is still
+  delivery='pending' (the result is delivered as the next session message).
+  job_output on such a job_id now answers with plain text -- "finished; its
+  result is delivered as the next message -- end your turn now" (or an honest
+  "already delivered above" once the row is delivery='done') -- instead of an
+  error that spent the turn.
+
+- **#1135 (A13): job_output(wait=true) on the session's own still-running
+  ledger job now ends the turn.** The answer carries StopTurn ("end your turn
+  now; its result arrives as a session message"), so the model cannot spend
+  dozens of poll calls (up to 59 job_output per 19 bash calls observed on
+  glm) waiting on work whose completion wakes the session anyway. A raw
+  shell_id (background shells outside the ledger) keeps the old poll-hint
+  behavior.
+
 - **#1139: zai sessions no longer lose their cache hit ratio.** openai-compat
   providers are now classified as cache reporters by the configured provider
   ID (e.g. `zai`) instead of the wire type, so the cache-silent warm-up turns

@@ -158,11 +158,13 @@ func TestJobOutputTool_CursorReturnsOnlyNewBytesSinceLastCall(t *testing.T) {
 
 // TestJobOutputTool_JobIDWaitTellsTheModelToEndItsTurn pins A13: a wait that
 // times out on a ledger-tracked job_id must not invite another poll -- the
-// completion arrives as a session message -- while a raw shell_id keeps the
-// poll hint.
+// completion arrives as a session message -- and must carry StopTurn so the
+// agent loop ends the turn on this very result. A raw shell_id keeps the
+// poll hint and never sets StopTurn.
 //
-// Revert-check: return the poll hint for both in stillRunningHint and the
-// job_id case goes red.
+// Revert-check: drop resp.StopTurn = true (or restore the poll hint for
+// job_id in stillRunningHint) and the job_id case goes red; make the
+// shell_id path set StopTurn and the shell_id case goes red.
 func TestJobOutputTool_JobIDWaitTellsTheModelToEndItsTurn(t *testing.T) {
 	// NOT t.Parallel(): shares the package-global jobOutputMaxWait.
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "job-output-session")
@@ -181,6 +183,45 @@ func TestJobOutputTool_JobIDWaitTellsTheModelToEndItsTurn(t *testing.T) {
 	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: JobOutputToolName, Input: string(input)})
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
-	require.Contains(t, resp.Content, "end your turn instead of calling job_output again")
+	require.True(t, resp.StopTurn, "a timed-out wait on a ledger job must end the turn (A13)")
+	require.Contains(t, resp.Content, "end your turn now")
 	require.NotContains(t, resp.Content, "call job_output again to keep waiting")
+
+	shellInput, err := json.Marshal(JobOutputParams{ShellID: bgShell.ID, Wait: true})
+	require.NoError(t, err)
+	shellResp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call-shell", Name: JobOutputToolName, Input: string(shellInput)})
+	require.NoError(t, err)
+	require.False(t, shellResp.IsError)
+	require.False(t, shellResp.StopTurn, "a raw shell_id keeps the poll-hint behavior")
+	require.Contains(t, shellResp.Content, "call job_output again to keep waiting")
+}
+
+// TestJobOutputTool_PendingDeliveryAnswersAsText pins B1: when the resolver
+// reports the job's durable row instead of a shell id -- result still pending
+// delivery (the finished-and-dropped-from-the-map window), or already
+// delivered -- job_output answers with plain text, not an error.
+//
+// Revert-check: remove the errors.As(*JobDeliveryStatusError) branch and the
+// pending case goes red (the answer becomes an error response).
+func TestJobOutputTool_PendingDeliveryAnswersAsText(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "pending-delivery-session")
+	tool := NewJobOutputTool(&fakeJobShellResolver{
+		err: &JobDeliveryStatusError{JobID: "call_x"},
+	}, nil, shell.NewBackgroundShellManager())
+	input, err := json.Marshal(JobOutputParams{JobID: "call_x"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: JobOutputToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "job call_x finished")
+	require.Contains(t, resp.Content, "end your turn now")
+
+	delivered := NewJobOutputTool(&fakeJobShellResolver{
+		err: &JobDeliveryStatusError{JobID: "call_x", Delivered: true},
+	}, nil, shell.NewBackgroundShellManager())
+	resp, err = delivered.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: JobOutputToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "already delivered")
 }

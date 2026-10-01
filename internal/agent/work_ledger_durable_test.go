@@ -54,7 +54,9 @@ func lowBusyTimeoutStore(t *testing.T, dataDir string) *session.AsyncJobStore {
 func holdWriteLock(t *testing.T, dataDir string, hold time.Duration) {
 	t.Helper()
 	path := filepath.Join(dataDir, "rush.db")
-	conn, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)")
+	// busy_timeout lets the holder WAIT for an in-flight store write before
+	// it takes the lock (0 failed with SQLITE_BUSY under load).
+	conn, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	require.NoError(t, err)
 	defer conn.Close()
 	conn.SetMaxOpenConns(1)
@@ -65,6 +67,37 @@ func holdWriteLock(t *testing.T, dataDir string, hold time.Duration) {
 	require.NoError(t, err)
 	time.Sleep(hold)
 	require.NoError(t, tx.Commit())
+}
+
+// holdWriteLockUntilReleased holds an open write transaction like
+// holdWriteLock, but signals once the lock is held and keeps it until release
+// is closed. Errors go to the returned channel (no require in a goroutine).
+func holdWriteLockUntilReleased(dataDir string, release <-chan struct{}) (acquired <-chan struct{}, done <-chan error) {
+	acq := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() {
+		errc <- func() error {
+			conn, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db")+"?_pragma=busy_timeout(5000)")
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			conn.SetMaxOpenConns(1)
+			ctx := context.Background()
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO async_hosts (id, pid, label, started_at) VALUES (?, 1, '', 0)`, uniqueHostRowID()); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			close(acq)
+			<-release
+			return tx.Commit()
+		}()
+	}()
+	return acq, errc
 }
 
 // uniqueHostRowID returns a fresh id for holdWriteLock's throwaway
@@ -133,12 +166,11 @@ func TestWorkLedger_TransitionRetriesUnderBusyDBThenCommits(t *testing.T) {
 // (the busy-DB window above), a SECOND cause arriving for the SAME job
 // returns immediately (SKIP) rather than blocking behind the first.
 //
-// Revert check performed: temporarily removed the `job.transitioning`
-// short-circuit from commitTransition's guard clause -- this test FAILED
-// (the second call's elapsed time matched the first's ~250ms+ retry
-// window instead of returning near-instantly, because it entered its own
-// retry loop against the same busy DB). Restored the guard; re-ran, passed.
-// Diffed work_ledger_transition.go against git HEAD: no diff.
+// Revert check: without the `job.transitioning` short-circuit in
+// commitTransition's guard the second call enters its own retry loop behind
+// the held DB lock and never returns while the first is blocked -- the 5 s
+// guard below fails the test. Ordering is driven by signals, not sleeps
+// (sleep-ordered timing flaked under parallel load).
 func TestWorkLedger_InFlightLatchSkipsSecondTriggerWithoutBlocking(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
@@ -158,28 +190,55 @@ func TestWorkLedger_InFlightLatchSkipsSecondTriggerWithoutBlocking(t *testing.T)
 	require.NoError(t, err)
 	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
-	busyDone := make(chan struct{})
-	go func() {
-		defer close(busyDone)
-		holdWriteLock(t, dataDir, 300*time.Millisecond)
-	}()
-	time.Sleep(30 * time.Millisecond)
+	// Ordering by signals, not sleeps: the DB lock is held before the first
+	// cause starts, the first cause is inside its retry loop before the
+	// second arrives, and the lock is released only after the second returns.
+	release := make(chan struct{})
+	acquired, holderDone := holdWriteLockUntilReleased(dataDir, release)
+	select {
+	case <-acquired:
+	case err := <-holderDone:
+		t.Fatalf("write-lock holder failed before acquiring: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("write-lock holder never acquired the lock")
+	}
 
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
 		l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "first"})
 	}()
-	time.Sleep(30 * time.Millisecond) // let the first call actually start retrying
+	job := jobOf(l, "owner-1", "call-1")
+	require.Eventually(t, func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return job.transitioning
+	}, 10*time.Second, time.Millisecond, "the first cause must be inside its retry loop")
 
-	secondStart := time.Now()
-	l.transition(jobOf(l, "owner-1", "call-1"), causeJobKill, jobResult{content: "second"})
-	secondElapsed := time.Since(secondStart)
-
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		l.transition(job, causeJobKill, jobResult{content: "second"})
+	}()
+	var firstFinishedFirst bool
+	select {
+	case <-secondDone:
+		select {
+		case <-firstDone:
+			firstFinishedFirst = true
+		default:
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		<-firstDone
+		<-secondDone
+		t.Fatal("a second trigger while the first is retrying must SKIP immediately, not wait behind it")
+	}
+	close(release)
 	<-firstDone
-	<-busyDone
+	require.NoError(t, <-holderDone)
 
-	require.Less(t, secondElapsed, 20*time.Millisecond, "a second trigger while the first is retrying must SKIP immediately, not wait")
+	require.False(t, firstFinishedFirst, "the second trigger must return while the first is still blocked on the DB lock")
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "exactly one cause must ever be written/delivered")
 	require.Equal(t, "first", got[0].Content, "the SKIPPED second cause must never overwrite the in-flight first one")

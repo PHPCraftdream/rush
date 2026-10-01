@@ -582,14 +582,26 @@ func (l *workLedger) ResolveJobShellID(owner, jobID string) (string, error) {
 		return "", fmt.Errorf("job %s not found (async job tracking is unavailable)", jobID)
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	var job *asyncJob
 	if s := l.bySession[owner]; s != nil {
 		job = s.jobs[jobID]
 	}
 	if job == nil {
+		l.mu.Unlock()
+		// B1: deliverLocked drops a finished job from the map the moment its
+		// terminal state commits, but the row stays delivery='pending' until
+		// the turn boundary pulls it -- the plain "already delivered" text
+		// below would be a lie in exactly that window. The durable row
+		// decides: pending -> the result is still coming; done -> genuinely
+		// delivered; anything else keeps the plain not-found error. Read
+		// outside l.mu (no DB I/O under the ledger lock): a row that left the
+		// map only moves pending -> done, so either answer is true when read.
+		if status := l.durableDeliveryStatus(owner, jobID); status != nil {
+			return "", status
+		}
 		return "", fmt.Errorf("job %s not found (not owned by this session, or already delivered)", jobID)
 	}
+	defer l.mu.Unlock()
 	if job.toolName == tools.RunCommandToolName {
 		// No background shell to resolve to; callers route this to
 		// RunCommandController instead (task #1023 §3).
