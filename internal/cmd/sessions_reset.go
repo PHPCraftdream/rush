@@ -128,6 +128,11 @@ rush sessions reset pr-42 --force
 			fmt.Fprintf(os.Stderr, "voided %d background job notice(s) and %d session notice(s) of the wiped history\n",
 				outcome.JobsVoided, outcome.NoticesVoided)
 		}
+		// Task #1153: --force proved the previous holder dead; its queued runs
+		// and injects must not survive the reset either.
+		if force {
+			purgeQueuedWorkAfterStop(cmd, sess.ID)
+		}
 		return nil
 	},
 }

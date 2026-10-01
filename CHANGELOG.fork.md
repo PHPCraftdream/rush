@@ -2333,3 +2333,24 @@ fits inside the test's own 6–9s tolerance. And this entry said "seven
 commits, `f8ffb68c` … `a1bfccbc`" when the range holds six — the same
 off-by-one the sixth review had already flagged in the previous checkpoint,
 repeated rather than learned from.
+
+### 2026-10-01 — `sessions kill` / `cancel` / `reset --force` purge durable queued work (#1153)
+
+`sessions inject <id> --interrupt` followed by `sessions kill <id>` left the
+durable queued-work rows (`session_run_queue`, `pending_injects`) behind. The
+RunQueuePump of the next rush process on the same data directory picked them
+up and kept driving the session the operator had just stopped — observed
+live: a killed `wguard` session resurrected inside `wguard4`'s process and
+ran ~197 extra steps.
+
+Fix: new `session.Service.PurgeQueuedWorkForSession` removes all of the
+session's durable queued work in one transaction — run-queue rows in either
+status (a proven-dead holder also proves its lease dead), pending injects
+(merge and interrupt), and `orphan_call_outbox` fallback rows — and all three
+stop commands call it once the holder is stopped (`kill`: only on
+ConfirmedDead; `reset`: only under `--force`; `cancel`: after the flag is
+set). Messages are NOT deleted: kill is not delete-history, and a plain
+inject into a session that is NOT stopped is untouched and delivered as
+before (kill ≠ inject). The purge opens the DB with setupAppLite (no pump,
+no startup recovery) and is best-effort: when the DB cannot be opened the
+commands print a warning naming the consequence instead of failing.

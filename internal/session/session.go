@@ -366,6 +366,14 @@ type Service interface {
 	// query that was never scoped to answer "is the queue empty" in the
 	// first place.
 	HasOutstandingRunQueueEntriesForSession(ctx context.Context, sessionID string) (bool, error)
+	// PurgeQueuedWorkForSession removes every durable queued-work row of
+	// sessionID (run queue, pending injects, orphan-call outbox) in one
+	// transaction. Used by the operator stop commands (kill / cancel /
+	// reset --force) after — and only after — the session's holder is
+	// stopped, so the next process's RunQueuePump cannot resurrect the
+	// stopped session from a row the dead holder left behind. Returns the
+	// per-table deletion counts.
+	PurgeQueuedWorkForSession(ctx context.Context, sessionID string) (PurgedQueuedWork, error)
 
 	// Orphan call outbox (P0-3 fix): durable fallback when main run queue enqueue fails
 	WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error

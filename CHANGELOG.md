@@ -8,6 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- `rush sessions kill` / `cancel` / `reset --force` (A26): they now also remove
+  the session's queued runs, pending injects and orphan-call outbox rows. Before,
+  a session killed with a queued `sessions inject` was resurrected by the next
+  rush process on the same data directory (its run queue pump claimed the
+  leftover rows) and kept running. Conversation history is not touched; an
+  inject into a session that was not stopped is delivered as before.
+
 - CLI и web: короткие команды (`bash`/`run_command`, завершившиеся за ~3
   секунды) теперь возвращают свой результат прямо в ответе инструмента
   вместо «Async bash job ... started» и отдельного уведомления позже.

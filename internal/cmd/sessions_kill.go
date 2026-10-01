@@ -193,6 +193,14 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprint(os.Stderr, sweepReport.String())
 	}
 
+	// Task #1153: the holder is proven dead, so its queued runs, pending
+	// injects, and orphan-outbox fallback rows are work nobody will ever
+	// claim — but the RunQueuePump of the next process on this DB WOULD
+	// pick them up and resurrect the killed session. Remove them now.
+	if kr.ConfirmedDead {
+		purgeQueuedWorkAfterStop(cmd, id)
+	}
+
 	if keepLock {
 		fmt.Fprintf(os.Stderr, "lock file kept at %s (age %ds)\n", lockPath, age(info))
 		return nil

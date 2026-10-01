@@ -38,7 +38,9 @@ With --all only sessions that have live work are flagged — a live lock, a
 "rush run" driver, a running job of their own or a live delegation. Idle
 sessions (a web tab with nothing running) are skipped and counted: Ctrl-C
 leaves no flag behind either, and a flag on an idle session would abort its
-next turn. Name a session explicitly to flag it regardless.`,
+next turn. Name a session explicitly to flag it regardless. Stopping a session
+also removes its queued runs and pending injects, so a stopped session is not
+resurrected by the next rush process on this data directory.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Cancel a specific session
@@ -74,6 +76,7 @@ rush sessions cancel --all
 					continue
 				}
 				cancelWakeSchedules(ctx, a, s.ID)
+				purgeQueuedWorkAfterStop(cmd, s.ID)
 				count++
 			}
 			fmt.Fprintf(os.Stderr, "cancellation requested for %d session(s); skipped %d session(s) with no live work\n", count, skipped)
@@ -94,6 +97,7 @@ rush sessions cancel --all
 		if n := cancelWakeSchedules(ctx, a, sess.ID); n > 0 {
 			fmt.Fprintf(os.Stderr, "cancelled %d wake schedule(s) of session %s\n", n, sess.ID)
 		}
+		purgeQueuedWorkAfterStop(cmd, sess.ID)
 		fmt.Fprintf(os.Stderr, "cancellation requested for session %s\n", sess.ID)
 		return nil
 	},
