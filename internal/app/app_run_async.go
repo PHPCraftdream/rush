@@ -218,11 +218,9 @@ type cliLoop struct {
 	lastBuffered *bytes.Buffer // terse output of the last completed turn
 	tot          loopTotals
 
-	refusalSince time.Time
-	// failedAttempt is the error of the last Drain that ran and failed; it
-	// names the retry on stderr (pacedNoticeAt dedupes one line per attempt).
-	failedAttempt error
-	pacedNoticeAt time.Time
+	// streak is the retry state of the current run of Drains (see drainStreak):
+	// replaced with a zero value every time the scope closes (R5C-2).
+	streak drainStreak
 	// queuedMark is the session's usage when the first not-yet-folded queued
 	// iteration began (see afterDrain); flushQueuedUsage adds what the session
 	// spent since.
@@ -408,53 +406,57 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 	return result, buffered, err
 }
 
-// scopeClosed handles a closed scope: the reviewer pass first, when due. A
-// clean review turn returns again == true and its result is the run's answer so
-// far: the turn keeps bash (every CLI bash is an async job), so the loop goes
-// back through nextStep -- running work waited on, Owed debt Drained on the
-// reviewer's options -- and the answer becomes the last completed turn (R4C-1).
-// Every other outcome ends the run: a failed review is the run's error, like
-// the pass inside ExecuteRun (work it started is cancelled with the run, as at
-// any error exit), a review that queued behind another owner or was refused by
-// the session lock's holder did not run and the run keeps its answer (R6C-4),
-// and a cancelled run keeps its last completed answer.
-func (l *cliLoop) scopeClosed() (again bool, final *RunResult, err error) {
+// closePhase handles a closed scope: the reviewer pass first, when due. A
+// clean review turn returns evCloseAgain: the turn keeps bash (every CLI bash
+// is an async job), so the loop decides again -- running work waited on, Owed
+// debt Drained on the reviewer's options -- and the answer becomes the last
+// completed turn (R4C-1). Every other outcome ends the run: a failed review is
+// the run's error, like the pass inside ExecuteRun (work it started is
+// cancelled with the run, as at any error exit), a review that queued behind
+// another owner or was refused by the session lock's holder did not run and
+// the run keeps its answer (R6C-4), and a cancelled run keeps its last
+// completed answer.
+func (l *cliLoop) closePhase() cliStepResult {
 	if !l.reviewerDue() {
-		final, err = l.exit(l.runErr, "")
-		return false, final, err
+		final, err := l.exit(l.runErr, "")
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	}
 	l.reviewerDone = true
 	if precheckErr := l.stopError(); precheckErr != nil {
-		final, err = l.exitPrecheck(precheckErr)
-		return false, final, err
+		final, err := l.exitPrecheck(precheckErr)
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	}
 	usageBefore := l.sessionUsage()
 	l.flushQueuedUsage(usageBefore)
 	result, buffered, turnErr := l.runReviewerTurn()
 	switch {
 	case l.ctx.Err() != nil:
-		final, err = l.turnCanceled(result, buffered, turnErr, usageBefore)
+		final, err := l.turnCanceled(result, buffered, turnErr, usageBefore)
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	case errors.Is(turnErr, ErrRunQueued):
 		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass queued behind another owner and did not run\n", l.sessionID)
 		l.queuedMark = &usageBefore
-		final, err = l.exit(l.runErr, "")
+		final, err := l.exit(l.runErr, "")
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	case turnRefusedByOwner(turnErr):
 		// Another process holds the session lock (a human turn): the review ran
 		// nothing, so the run keeps its last completed answer and ends clean.
 		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass did not run, another owner holds the session (%v); the run keeps its last answer\n", l.sessionID, turnErr)
 		l.queuedMark = &usageBefore
-		final, err = l.exit(l.runErr, "")
+		final, err := l.exit(l.runErr, "")
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	case result == nil:
-		final, err = l.exit(turnErr, "error")
+		final, err := l.exit(turnErr, "error")
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	default:
 		l.tot.add(result)
 		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, turnErr, nil
 		if turnErr == nil {
-			return true, nil, nil
+			return cliStepResult{ev: evCloseAgain}
 		}
-		final, err = l.exit(turnErr, "")
+		final, err := l.exit(turnErr, "")
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	}
-	return false, final, err
 }
 
 // turnCanceled ends the run after a turn that ran while the run's ctx was
@@ -474,15 +476,44 @@ func (l *cliLoop) turnCanceled(result *RunResult, buffered *bytes.Buffer, err er
 	return l.exitCanceled()
 }
 
+// run drives the explicit state machine (app_run_async_fsm.go): each phase
+// handler returns its event and, when the event ends the run, the result; the
+// transition table picks the next phase. Entering phaseClose, or re-entering
+// phaseDecide after it, recreates the Drain streak (R5C-2) -- stale streak
+// state is unrepresentable across a scope close.
 func (l *cliLoop) run() (*RunResult, error) {
+	phase := phaseFirst
+	res := cliStepResult{ev: evBegin}
+	for phase != phaseExit {
+		if res.ev == evScopeClosed || res.ev == evCloseAgain {
+			l.streak = drainStreak{}
+		}
+		switch phase {
+		case phaseDecide:
+			res = l.decidePhase()
+		case phaseDrain:
+			res = l.drainPhase()
+		case phaseClose:
+			res = l.closePhase()
+		case phaseFirst:
+			res = l.firstTurnPhase()
+		}
+		phase = transition(phase, res.ev)
+	}
+	return res.final, res.err
+}
+
+// firstTurnPhase runs the user's own turn and classifies how it ended.
+func (l *cliLoop) firstTurnPhase() cliStepResult {
 	result, buffered, err := l.runTurn(true)
 	// The session never resolved, its driver claim was refused (another live
 	// loop drives it), or a setup step failed before the user's turn was
 	// launched (R3C-3): the request never reached the model, so there is
 	// nothing of ours to wait on and no later Drain may turn the failure into
-	// an exit 0 -- fail now with that error, having run nothing.
+	// an exit 0 -- fail now with that error, having run nothing and without
+	// the exit effects (no envelope, no ended_reason).
 	if err != nil && (!l.driverClaimed || !l.firstSubmitted) {
-		return nil, err
+		return cliStepResult{ev: evFirstDead, err: err}
 	}
 	l.final, l.runErr, l.lastBuffered = result, err, buffered
 	l.tot.add(result)
@@ -499,99 +530,108 @@ func (l *cliLoop) run() (*RunResult, error) {
 		// Another process owns the session: this run ran nothing, so it records
 		// no ended_reason and honours no cancel request on it (R8A-1/R8A-2).
 		l.refusedByOwner = true
-		return l.exit(err, "")
+		final, exitErr := l.exit(err, "")
+		return cliStepResult{ev: evFirstLockBusy, final: final, err: exitErr}
 	}
 	if l.sessionID == "" || l.ctx.Err() != nil {
-		return l.exitCanceled()
+		final, exitErr := l.exitCanceled()
+		return cliStepResult{ev: evFirstCanceled, final: final, err: exitErr}
 	}
+	return cliStepResult{ev: evFirstContinue}
+}
 
-	for {
-		step, why, waitErr := l.nextStep()
-		switch {
-		case step == stepCanceled:
-			return l.exitPrecheck(waitErr)
-		case waitErr != nil:
-			return l.exitWait(waitErr)
-		case step == stepExit:
-			// A closed scope ends any refusal/failure streak: later Drains (after the
-			// reviewer turn) start a fresh retry budget (R5C-2).
-			l.refusalSince, l.failedAttempt, l.pacedNoticeAt = time.Time{}, nil, time.Time{}
-			// Stage 5a: the close is the one exit that cancels the session's
-			// loop schedules -- before the exit flush, so the warning lands in
-			// the envelope. Once schedules never reach here (WorkOpen).
-			l.cancelLoopSchedulesAtClose()
-			again, final, exitErr := l.scopeClosed()
-			if !again {
-				return final, exitErr
-			}
-			continue
-		case step == stepStuck:
-			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
-			return l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
-		}
-		if err := l.stopError(); err != nil {
-			return l.exitPrecheck(err)
-		}
+// decidePhase asks nextStep what to do and maps its answer onto an event; the
+// waits (paced retry, open work) block inside nextStep.
+func (l *cliLoop) decidePhase() cliStepResult {
+	step, why, waitErr := l.nextStep()
+	switch {
+	case step == stepCanceled:
+		final, err := l.exitPrecheck(waitErr)
+		return cliStepResult{ev: evScopeStop, final: final, err: err}
+	case waitErr != nil:
+		final, err := l.exitWait(waitErr)
+		return cliStepResult{ev: evScopeWaitErr, final: final, err: err}
+	case step == stepStuck:
+		fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
+		final, err := l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
+		return cliStepResult{ev: evScopeStuck, final: final, err: err}
+	case step == stepExit:
+		// Stage 5a: the close is the one exit that cancels the session's loop
+		// schedules -- before the exit flush, so the warning lands in the
+		// envelope. Once schedules never reach here (WorkOpen).
+		l.cancelLoopSchedulesAtClose()
+		return cliStepResult{ev: evScopeClosed}
+	}
+	return cliStepResult{ev: evScopeDrain}
+}
 
-		usageBefore := l.sessionUsage()
-		l.flushQueuedUsage(usageBefore)
-		if cliLoopBeforeDrainSeam != nil {
-			cliLoopBeforeDrainSeam()
-		}
-		result, buffered, err = l.runTurn(false)
-		if l.ctx.Err() != nil {
-			return l.turnCanceled(result, buffered, err, usageBefore)
-		}
-		// A Drain that crossed the run's budget ends the run: its result is not the
-		// answer, and no further paid turn follows.
-		if !agent.IsDrainNotAttempted(err) && !errors.Is(err, ErrRunQueued) {
-			if capErr := l.capError(); capErr != nil {
-				l.tot.add(result)
-				return l.exitPrecheck(capErr)
-			}
-		}
-		if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
-			return l.exit(exitErr, "error")
+// drainPhase runs one Drain iteration: the pre-launch checks, the turn, the
+// classification of its outcome (afterDrain).
+func (l *cliLoop) drainPhase() cliStepResult {
+	if err := l.stopError(); err != nil {
+		final, exitErr := l.exitPrecheck(err)
+		return cliStepResult{ev: evScopeStop, final: final, err: exitErr}
+	}
+	usageBefore := l.sessionUsage()
+	l.flushQueuedUsage(usageBefore)
+	if cliLoopBeforeDrainSeam != nil {
+		cliLoopBeforeDrainSeam()
+	}
+	result, buffered, err := l.runTurn(false)
+	if l.ctx.Err() != nil {
+		final, exitErr := l.turnCanceled(result, buffered, err, usageBefore)
+		return cliStepResult{ev: evDrainCanceled, final: final, err: exitErr}
+	}
+	// A Drain that crossed the run's budget ends the run: its result is not the
+	// answer, and no further paid turn follows.
+	if !agent.IsDrainNotAttempted(err) && !errors.Is(err, ErrRunQueued) {
+		if capErr := l.capError(); capErr != nil {
+			l.tot.add(result)
+			final, exitErr := l.exitPrecheck(capErr)
+			return cliStepResult{ev: evDrainCapped, final: final, err: exitErr}
 		}
 	}
+	if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
+		final, exitFinal := l.exit(exitErr, "error")
+		return cliStepResult{ev: evDrainGaveUp, final: final, err: exitFinal}
+	}
+	return cliStepResult{ev: evDrainContinues}
 }
 
 // afterDrain classifies one finished Drain iteration. done reports that the
 // loop must end now (the refusal budget ran out) with exitErr.
 func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffer, usageBefore usageMark) (done bool, exitErr error) {
-	var awaiting *agent.AwaitingAnswerError
-	switch {
-	case errors.Is(err, ErrRunQueued):
+	switch verdict := classifyDrainOutcome(result, err); verdict {
+	case drainQueued:
 		// It queued behind another owner (or the Drain found nothing visible to
 		// react to): no turn of ours to account for the debt -- the owner's loop
 		// already did, and the owner's answer is not this run's. What the session
 		// spends meanwhile is still the run's cost: it is folded in at the next
 		// turn or the exit (queuedMark), never dropped.
-		l.refusalSince = time.Time{}
-		l.failedAttempt = nil
+		l.streak = drainStreak{}
 		if l.queuedMark == nil {
 			l.queuedMark = &usageBefore
 		}
 		l.source.WaitForHint(l.ctx, l.sessionID, time.Now().Add(cliQueuedDrainPause))
 		return false, nil
-	case agent.IsDrainNotAttempted(err), result == nil && err != nil && !errors.As(err, &awaiting):
+	case drainRefused, drainSetupFailed:
 		// A refusal is never counted or settled: the launch gate paces the retry
 		// (0.5s for this loop's own session); the loop only bounds the streak.
 		// A setup failure before any turn (no result: a model override that no
 		// longer resolves, a run-queue read error, ...) has no gate behind it,
 		// so it takes the same bounded/visible path and the loop paces it
 		// itself; unbounded it would relaunch as fast as it fails.
-		l.failedAttempt = nil
-		refused := agent.IsDrainNotAttempted(err)
+		l.streak.failed = nil
+		refused := verdict == drainRefused
 		first, still := "was refused", "is still refused"
 		if !refused {
 			first, still = "could not be set up", "still cannot be set up"
 		}
-		if l.refusalSince.IsZero() {
-			l.refusalSince = time.Now()
+		if l.streak.since.IsZero() {
+			l.streak.since = time.Now()
 			fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn %s (%v); retrying\n", l.sessionID, first, err)
 		}
-		if time.Since(l.refusalSince) > cliLockBusyRetryOverallLimit {
+		if time.Since(l.streak.since) > cliLockBusyRetryOverallLimit {
 			fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn %s after %s (%v); giving up\n",
 				l.sessionID, still, cliLockBusyRetryOverallLimit, err)
 			return true, err
@@ -601,10 +641,10 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 		}
 		return false, nil
 	}
-	l.refusalSince = time.Time{}
+	l.streak = drainStreak{}
 	l.tot.add(result)
-	switch {
-	case err == nil || errors.As(err, &awaiting):
+	switch classifyDrainOutcome(result, err) {
+	case drainCompleted:
 		// A completed turn (or a question -- an answer of its own kind): it is
 		// now the run's answer.
 		if result != nil {
@@ -612,12 +652,12 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 			l.lastBuffered = buffered
 		}
 		l.runErr, l.lastFailed = err, nil
-		l.failedAttempt = nil
+		l.streak.failed = nil
 	default:
 		// A failed Drain never replaces the last completed answer; the error
 		// exit carries its classification.
 		l.runErr, l.lastFailed = err, result
-		l.failedAttempt = err
+		l.streak.failed = err
 	}
 	return false, nil
 }
@@ -690,17 +730,17 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			fmt.Fprintf(l.errOut(), "rush run: %s\n", chainText)
 			l.tot.extraWarnings = append(l.tot.extraWarnings, chainText)
 		}
-		switch {
-		case state.Drain == agent.DrainOwed:
+		switch classifyScope(state) {
+		case scopeActDrain:
 			return stepDrain, "", nil
-		case state.Drain == agent.DrainPaced:
+		case scopeActWaitPaced:
 			if stopErr := l.stopError(); stopErr != nil {
 				return stepCanceled, "", stopErr
 			}
 			l.noticePaced(state)
 			l.source.WaitForHint(l.ctx, l.sessionID, state.RetryAt)
 			continue
-		case state.WorkOpen:
+		case scopeActWaitOpen:
 			if stopErr := l.stopError(); stopErr != nil {
 				return stepCanceled, "", stopErr
 			}
@@ -710,12 +750,16 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			}
 			l.source.WaitForHint(l.ctx, l.sessionID, time.Time{})
 			continue
-		case state.Drain == agent.DrainStuck:
+		case scopeActStuck:
 			return stepStuck, state.Reason, nil
-		case state.Drain == agent.DrainDeferred:
-			fmt.Fprintf(l.errOut(), "rush run: session %q has a notice no automatic turn is allowed for (%s); it stays for the next turn\n", l.sessionID, state.Reason)
+		case scopeActExit:
+			// Deferred: the notice stays for the next (human) turn; with
+			// nothing else open the scope is closed.
+			if state.Drain == agent.DrainDeferred {
+				fmt.Fprintf(l.errOut(), "rush run: session %q has a notice no automatic turn is allowed for (%s); it stays for the next turn\n", l.sessionID, state.Reason)
+			}
+			return stepExit, "", nil
 		}
-		return stepExit, "", nil
 	}
 }
 
@@ -723,24 +767,20 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 // when the retry comes (R3C-8): the wait can last up to two minutes. A refusal
 // has its own line (afterDrain) and clears failedAttempt.
 func (l *cliLoop) noticePaced(state agent.CLIScopeState) {
-	if l.failedAttempt == nil || state.RetryAt.IsZero() || state.RetryAt.Equal(l.pacedNoticeAt) {
+	if l.streak.failed == nil || state.RetryAt.IsZero() || state.RetryAt.Equal(l.streak.pacedNoticeAt) {
 		return
 	}
-	l.pacedNoticeAt = state.RetryAt
+	l.streak.pacedNoticeAt = state.RetryAt
 	fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn failed (%v); retrying at %s\n",
-		l.sessionID, l.failedAttempt, state.RetryAt.Format(time.RFC3339))
+		l.sessionID, l.streak.failed, state.RetryAt.Format(time.RFC3339))
 }
 
-// exit ends the loop: totals of every real turn are applied to the final
-// envelope, the envelope is flushed through the one common path, and the
-// caller gets (final, err); the session row's ended_reason is made to match
-// the envelope (persistEndedReason). reason, when set, is the exit_reason to
-// record for err; otherwise a failed last Drain's own classification is
-// carried over.
+// exit computes the exit envelope's reason for err (reason, when set, is the
+// exit_reason to record; otherwise a failed last Drain's own classification is
+// carried over) and finishes the run.
 func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 	final := l.final
 	if final != nil {
-		l.applyTotals(final)
 		switch {
 		case err != nil && reason != "":
 			final.ExitReason = reason
@@ -750,12 +790,26 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 			final.Error = l.lastFailed.Error
 		}
 	}
-	l.clearHonouredCancel(final, err)
-	l.persistEndedReason(final, err)
-	if flushErr := flushLoopExit(l.output, l.mode, final, l.lastBuffered); flushErr != nil {
-		return final, flushErr
+	return l.finish(err)
+}
+
+// finish is the loop's ONE exit path: totals of every real turn are applied
+// to the final envelope, the operator's honoured cancel request is cleared,
+// the session row's ended_reason is made to match the envelope
+// (persistEndedReason), and the envelope is flushed through the one common
+// path; the caller gets (final, err). Every loop exit -- refusal give-up,
+// ctx cancellation, a wait error, a stuck debt, or the ordinary scope-closed
+// end -- goes through here exactly once.
+func (l *cliLoop) finish(err error) (*RunResult, error) {
+	if l.final != nil {
+		l.applyTotals(l.final)
 	}
-	return final, err
+	l.clearHonouredCancel(l.final, err)
+	l.persistEndedReason(l.final, err)
+	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
+		return l.final, flushErr
+	}
+	return l.final, err
 }
 
 func (l *cliLoop) exitCanceled() (*RunResult, error) {
@@ -775,21 +829,7 @@ func (l *cliLoop) exitCanceled() (*RunResult, error) {
 		l.final.ExitReason = "canceled"
 		l.final.Error = l.ctx.Err().Error()
 	}
-	return l.flushed(err)
-}
-
-// flushed applies the totals, persists the envelope's reason and flushes,
-// without touching the exit reason.
-func (l *cliLoop) flushed(err error) (*RunResult, error) {
-	if l.final != nil {
-		l.applyTotals(l.final)
-	}
-	l.clearHonouredCancel(l.final, err)
-	l.persistEndedReason(l.final, err)
-	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
-		return l.final, flushErr
-	}
-	return l.final, err
+	return l.finish(err)
 }
 
 func (l *cliLoop) exitWait(waitErr error) (*RunResult, error) {
@@ -801,7 +841,7 @@ func (l *cliLoop) exitWait(waitErr error) (*RunResult, error) {
 		}
 		l.final.Error = waitErr.Error()
 	}
-	return l.flushed(waitErr)
+	return l.finish(waitErr)
 }
 
 func (l *cliLoop) exitPrecheck(err error) (*RunResult, error) {

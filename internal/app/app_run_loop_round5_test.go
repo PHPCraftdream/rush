@@ -251,7 +251,7 @@ func TestCLILoop_RefusalStreakDoesNotOutliveClosedScope(t *testing.T) {
 	t.Cleanup(func() { cliLoopTurnDoneSeam = nil })
 	var out syncBuffer
 	l := r4LoopWith(loopCtx(t), rh, driverSource(t, rh.app), &out, stderr)
-	l.refusalSince = time.Now().Add(-time.Minute) // a streak from before the scope closed
+	l.streak = drainStreak{since: time.Now().Add(-time.Minute)} // a streak from before the scope closed
 
 	res, err := l.run()
 

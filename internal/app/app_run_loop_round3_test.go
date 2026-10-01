@@ -456,7 +456,7 @@ func TestBuildRunResult_FlagsFinalTextWarnings(t *testing.T) {
 // wake-up.
 func TestCLILoop_NoticePacedOncePerFailedAttempt(t *testing.T) {
 	var stderr bytes.Buffer
-	l := &cliLoop{sessionID: "s1", stderr: &stderr, failedAttempt: errors.New("provider said no")}
+	l := &cliLoop{sessionID: "s1", stderr: &stderr, streak: drainStreak{failed: errors.New("provider said no")}}
 	t1 := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 
 	l.noticePaced(agent.CLIScopeState{Drain: agent.DrainPaced, RetryAt: t1})
@@ -469,7 +469,7 @@ func TestCLILoop_NoticePacedOncePerFailedAttempt(t *testing.T) {
 	require.Equal(t, 2, strings.Count(stderr.String(), "the reaction turn failed"), "the next failed attempt prints again")
 
 	stderr.Reset()
-	l.failedAttempt = nil // a refusal clears it: afterDrain prints its own line
+	l.streak.failed = nil // a refusal clears it: afterDrain prints its own line
 	l.noticePaced(agent.CLIScopeState{Drain: agent.DrainPaced, RetryAt: t1.Add(2 * time.Minute)})
 	require.Empty(t, stderr.String())
 }
