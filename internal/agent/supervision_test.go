@@ -12,7 +12,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -530,23 +529,28 @@ func TestSupervision_CancelSessionAlsoClearsState(t *testing.T) {
 // distinct root sessions must not spawn N goroutines -- the SAME shared
 // timeoutService services both asyncJob deadlines and supervision deadlines.
 func TestSupervision_SingleGoroutineRegardlessOfSessionCount(t *testing.T) {
-	runtime.GC()
-	before := runtime.NumGoroutine()
 	l, _ := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
-	const n = 50
-	for i := 0; i < n; i++ {
+	arm := func(i int) {
 		sessionID := fmt.Sprintf("root-%d", i)
 		startOpenJob(t, l, sessionID, "call-1")
 		l.noteWorkStarted(context.Background(), sessionID)
 	}
+	// Baseline after the fixture and one armed session (see
+	// TestTimeoutService_SingleGoroutineForManyJobs).
+	arm(0)
+	base := goroutineBaseline()
 
-	time.Sleep(50 * time.Millisecond)
-	after := runtime.NumGoroutine()
-	require.LessOrEqual(t, after-before, 3,
-		"arming supervision for %d sessions must not spawn %d goroutines, got a delta of %d", n, n, after-before)
+	const n = 50
+	for i := 1; i < n; i++ {
+		arm(i)
+	}
+
+	delta := settledGoroutineDelta(base)
+	require.LessOrEqual(t, delta, 2,
+		"arming supervision for %d sessions must not spawn %d goroutines, got a delta of %d", n, n, delta)
 }
 
 // TestDropSupersededSupervisionNotices: only the newest NoticeKind

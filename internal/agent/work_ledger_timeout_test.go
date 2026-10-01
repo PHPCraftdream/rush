@@ -25,25 +25,50 @@ import (
 // `go time.AfterFunc(...)`-per-job (see inline note) -- goroutine count grew
 // with N. Restored the heap-based single-goroutine arm; re-ran, passed.
 func TestTimeoutService_SingleGoroutineForManyJobs(t *testing.T) {
-	runtime.GC()
-	before := runtime.NumGoroutine()
 	l := newWorkLedger(nil)
 	l.store = newTestAsyncJobStore(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
 
-	const n = 50
-	for i := 0; i < n; i++ {
+	start := func(i int) {
 		_, _, err := l.Start("owner", fmt.Sprintf("call-%d", i), "", "bash", "", false, false, &TimeoutSpec{
 			Deadline: time.Now().Add(time.Hour), Kind: timeoutTerminateAndWake, Seconds: 3600,
 		}, func() {})
 		require.NoError(t, err)
 	}
+	// Baseline after the fixture and one armed job: the store's pool and the
+	// timer goroutine are not what this test measures.
+	start(0)
+	base := goroutineBaseline()
 
-	time.Sleep(50 * time.Millisecond)
-	after := runtime.NumGoroutine()
-	require.LessOrEqual(t, after-before, 3,
-		"arming %d jobs must not spawn %d goroutines -- expected at most the ONE timer goroutine (plus scheduler slack), got a delta of %d", n, n, after-before)
+	const n = 50
+	for i := 1; i < n; i++ {
+		start(i)
+	}
+
+	delta := settledGoroutineDelta(base)
+	require.LessOrEqual(t, delta, 2,
+		"arming %d jobs must not spawn %d goroutines -- the ONE timer goroutine serves them all, got a delta of %d", n, n, delta)
+}
+
+// goroutineBaseline is runtime.NumGoroutine after a GC, for a delta check.
+func goroutineBaseline() int {
+	runtime.GC()
+	return runtime.NumGoroutine()
+}
+
+// settledGoroutineDelta is the smallest goroutine delta over base seen within
+// 2s. NumGoroutine is process-wide: a goroutine left by an earlier test exits
+// within the window, a goroutine per armed item does not.
+func settledGoroutineDelta(base int) int {
+	best := runtime.NumGoroutine() - base
+	for deadline := time.Now().Add(2 * time.Second); best > 0 && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+		if d := runtime.NumGoroutine() - base; d < best {
+			best = d
+		}
+	}
+	return best
 }
 
 // TestTimeoutService_FiresNearestFirst: two deadlines armed in FAR-then-NEAR
