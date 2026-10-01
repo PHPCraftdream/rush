@@ -256,9 +256,21 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 // - Execution runs for 1s (well within the safe window)
 // - No watchdog cancellation should occur
 //
-// This is a timing-stable test with generous margins to avoid flakiness
-// under -race load (based on lessons from P1-2 tests, where TTL had to be
-// expanded from 200-500ms to 2s).
+// This is a fake-clock test (see pump_fake_clock_test.go): fake time moves
+// only when this test advances it, so "a renewal landed" and "the watchdog
+// is still short of its deadline" are facts about the clock the pump itself
+// reads, not a race between a real 800ms sleep and a real deadline. The
+// earlier real-time shape (TTL=2s, margin=500ms, sleep 800ms, then assert
+// not-cancelled and renewals >= 1) flaked under load: the single renewal
+// tick (interval TTL/3 = 666ms of real time) could miss the entire 800ms
+// execution window, failing the final renewals assertion with "0 is not
+// greater than or equal to 1" (reproduced 2026-10-01 under heavy.sh).
+//
+// The margins keep their original meaning: the watchdog fires only at
+// last-renewal + TTL - margin = lease + 1.5s of FAKE time, and this test
+// never advances past lease + ~867ms, so a cancellation here is impossible
+// unless the watchdog wrongly fires on healthy renewals — the false
+// positive this test is the only regression guard for.
 func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
@@ -278,74 +290,69 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	coord.blockCh = blockCh
 	coord.mu.Unlock()
 
-	// TTL=2s with safety_margin=500ms: renewal interval=666ms, watchdog fires at 1500ms.
-	// Execution runs for 800ms below (>1 renewal interval, so at least one renewal
-	// attempt is guaranteed) while leaving ~700ms of headroom before the watchdog
-	// would fire — matches the doc comment's stated scenario. The previous
-	// ttl=500ms/margin=100ms (400ms safe budget, only 150ms headroom against a
-	// 250ms sleep) was confirmed flaky under -race load: this is the only
-	// regression guard for the watchdog's false-positive-cancels-healthy-work
-	// failure mode, so tight margins here are worse than on an ordinary timing
-	// test (found and fixed after an independent review flagged the doc-vs-code
-	// mismatch and reproduced the flake).
 	const (
 		ttl          = 2 * time.Second
 		safetyMargin = 500 * time.Millisecond
+		tick         = ttl / 10
 	)
 
-	// All renewals succeed immediately (no hang)
-	hangingSvc := &hangingRenewalsService{
-		Service:        svc,
-		firstRenewalOK: true,
-	}
-
+	clk := newFakePumpClock(fakePumpEpoch)
+	probe := newFakeClockService(svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
-		Sessions:                      hangingSvc,
+		Sessions:                      probe,
 		Coordinator:                   coord,
 		PumpInstanceID:                "p1-1-false-positive-pump",
-		TestTick:                      func() time.Duration { return 10 * time.Millisecond },
+		TestTick:                      func() time.Duration { return tick },
 		TestLeaseTTL:                  ttl,
 		TestLeaseWatchdogSafetyMargin: safetyMargin,
+		TestClock:                     clk,
 	})
 	pump.Start()
 	// t.Cleanup safety net: Stop() is idempotent (guarded by p.started), so
-	// this is harmless alongside the explicit pump.Stop() below on the
-	// normal path, but still runs pump.Stop() if a require.* above that line
-	// fails and unwinds early — see TestP1_1_WatchdogCancelsBeforeExpiry's
-	// identical comment for why an unstopped pump matters (DB-closed log
-	// spam once setupTestSessionWithDB's own t.Cleanup closes the *sql.DB).
+	// this is harmless on the normal path, but still runs pump.Stop() if a
+	// require below fails and unwinds early — see
+	// TestP1_1_WatchdogCancelsBeforeExpiry's identical comment for why an
+	// unstopped pump matters (DB-closed log spam once
+	// setupTestSessionWithDB's own t.Cleanup closes the *sql.DB).
 	t.Cleanup(func() { pump.Stop() })
 
-	// Wait for the coordinator to be called
-	require.Eventually(t, func() bool {
-		return coord.entryCount.Load() > 0
-	}, 5*time.Second, 20*time.Millisecond)
+	// Scan tick + the execution's watchdog and renewal tickers must all be
+	// registered before fake time moves, or their first period would start
+	// late (same discipline as
+	// TestReleaseGate_P350_LeaseRenewedDuringLongExecution).
+	awaitPump(t, func() bool { return clk.liveTickers() >= 1 }, "scan ticker must be registered")
 
-	// Let execution run for 800ms (well within the 1500ms safe window from TTL-margin)
-	// With renewal interval TTL/3=666ms, we should get at least one renewal attempt
-	time.Sleep(800 * time.Millisecond)
+	// One scan tick of fake time leases and dispatches the entry.
+	clk.Advance(tick)
+	awaitPump(t, func() bool { return coord.entryCount.Load() > 0 },
+		"coordinator must be called (worker started)")
+	awaitPump(t, func() bool { return clk.liveTickers() >= 3 },
+		"watchdog and renewal tickers must be registered")
 
-	// Verify coordinator did NOT observe cancellation
-	// The watchdog should NOT fire because renewals are working normally
+	// One renewal interval of fake time makes the renewal loop's tick fire.
+	clk.Advance(ttl / 3)
+	awaitPump(t, func() bool { return probe.renewals.Load() >= 1 },
+		"at least one renewal must land while renewals are healthy")
+
+	// Fake time now sits at lease + ~867ms, well short of the watchdog's
+	// lease + 1.5s fire point: no cancellation is possible here unless the
+	// watchdog itself is broken.
 	require.False(t, coord.ctxCanceled.Load(),
 		"coordinator should NOT observe cancellation with fast renewals")
 
 	// Unblock and let execution finish normally
 	close(blockCh)
+	awaitPump(t, func() bool {
+		select {
+		case <-coord.completedCh:
+			return true
+		default:
+			return false
+		}
+	}, "execution must complete normally after healthy renewals")
 
-	// Wait for execution to complete
-	select {
-	case <-coord.completedCh:
-		// Expected: execution completed normally
-	case <-time.After(5 * time.Second):
-		t.Fatal("execution did not complete within 5s")
-	}
-
-	// Stop the pump
-	pump.Stop()
-
-	// Verify at least one renewal was attempted (showing renewal loop was active)
-	require.GreaterOrEqual(t, hangingSvc.renewalsAttempted.Load(), int64(1),
+	// The renewal-loop-active guarantee the event wait above established.
+	require.GreaterOrEqual(t, probe.renewals.Load(), int64(1),
 		"at least 1 renewal should have been attempted during execution")
 }
 

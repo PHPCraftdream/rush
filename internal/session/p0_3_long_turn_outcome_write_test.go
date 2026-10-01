@@ -73,15 +73,46 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	// already be expired by the time the post-Run Ack ran.
 	coord := &sleepingCoordinator{sleep: 150 * time.Millisecond}
 
+	// Run on the fake pump clock (pump_fake_clock_test.go). With the real
+	// clock, the lease watchdog's margin defaults to production 5s clamped
+	// to TTL/2 = 100ms, and its deadline is seeded from the whole-Unix-
+	// seconds lease_expires_at column — up to ~1s later than a 200ms TTL —
+	// so the watchdog fired on REAL time as early as ~100ms after the
+	// lease, racing this test's 150ms Run sleep depending on the arbitrary
+	// wall-clock phase the lease landed on: a mid-sleep cancellation made
+	// Run return ctx.Err, the row was Nacked back to pending and re-leased,
+	// and the row-deletion wait below timed out. That was a watchdog-vs-
+	// test race, not the outcome-write property this test protects. On the
+	// fake clock the deadline sits at lease + 100ms of FAKE time and fake
+	// time never advances past the single lease tick, so the watchdog is
+	// deterministically silent while the Run sleep and the Ack proceed on
+	// real time (only the pump's scheduling decisions run on the fake
+	// clock).
+	clk := newFakePumpClock(fakePumpEpoch)
+	probe := newFakeClockService(svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
-		Sessions:           svc,
+		Sessions:           probe,
 		Coordinator:        coord,
 		PumpInstanceID:     "p0-3-long-turn-pump",
-		TestTick:           func() time.Duration { return 10 * time.Millisecond },
+		TestTick:           func() time.Duration { return 100 * time.Millisecond },
 		TestLeaseTTL:       200 * time.Millisecond,
 		TestDBWriteTimeout: 50 * time.Millisecond,
+		TestClock:          clk,
 	})
 	pump.Start()
+	// t.Cleanup so pump.Stop() still runs if the require below fails and
+	// unwinds early — same rationale as
+	// TestP1_1_WatchdogCancelsBeforeExpiry's identical comment.
+	t.Cleanup(func() { pump.Stop() })
+
+	// Wait for the pump's scan ticker to exist, then advance exactly one
+	// scan tick of fake time to lease and dispatch the entry; fake time
+	// never moves again, so the watchdog (lease + TTL - margin = lease +
+	// 100ms of fake time) cannot fire while the 150ms real-time Run sleep
+	// is in flight.
+	awaitPump(t, func() bool { return clk.liveTickers() >= 1 },
+		"scan ticker must be registered")
+	clk.Advance(100 * time.Millisecond)
 
 	// Wait for the entry to be Acked (deleted) — poll for the row's
 	// disappearance rather than a fixed sleep, since exact scheduling
