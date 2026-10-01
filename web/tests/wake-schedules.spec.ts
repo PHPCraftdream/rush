@@ -162,6 +162,23 @@ test("a wake_fired notice renders as a system event, not a user bubble", async (
   await expect(page.getByText("check the build")).toHaveCount(0);
 });
 
+test("a reaction_chain marker renders as a system event", async ({ page }) => {
+  await selectSession(page, "ws-chain", "WS Chain");
+  await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: "ws-chain", Messages: [
+    makeMessage({
+      ID: "msg-chain",
+      SessionID: "ws-chain",
+      Role: "user",
+      BackgroundJobNotice: true,
+      NoticeKind: "reaction_chain",
+      Parts: [{ type: "text", Text: "Reaction chain stopped: 3 automatic turns only ran sleep/echo" }],
+    }),
+  ] } });
+
+  await expect(page.getByTestId("notice-kind-label")).toHaveText(/reaction chain stopped/);
+  await expect(page.getByText("only ran sleep/echo")).toHaveCount(0);
+});
+
 // ── 6. Distinct terminal badges on async tool-call blocks ───────────────────
 
 test("timed out and user-stopped async commands get distinct badges", async ({ page }) => {

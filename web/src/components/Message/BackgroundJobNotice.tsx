@@ -28,6 +28,8 @@ function noticeKindLabel(kind: string | undefined): { icon: string; label: strin
       return { icon: "⏱", label: "timeout (still running)", title: "async job timeout check-in — injected by rush, not typed by you" };
     case "timeout_terminated":
       return { icon: "⏱", label: "timed out", title: "async job timed out — injected by rush, not typed by you" };
+    case "reaction_chain":
+      return { icon: "🔁", label: "reaction chain stopped", title: "automatic turns paused: only sleep/echo commands, no progress — injected by rush, not typed by you" };
     case "wake_failed":
       return { icon: "⏰", label: "wake failed", title: "wake delivery failed — injected by rush, not typed by you" };
     default:
