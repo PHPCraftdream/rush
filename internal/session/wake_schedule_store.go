@@ -176,22 +176,32 @@ func (s *WakeScheduleStore) CountActive(ctx context.Context, owner string) (int6
 // (SCHED-5). Cancelling a leased row also drops the lease so a pending
 // claim can never fire a cancelled schedule.
 func (s *WakeScheduleStore) CancelSchedule(ctx context.Context, owner, id string, now time.Time) error {
+	_, err := s.CancelScheduleReport(ctx, owner, id, now)
+	return err
+}
+
+// CancelScheduleReport is CancelSchedule that also reports whether THIS call
+// moved the row from active to cancelled -- the CAS's own rows-affected, so a
+// schedule that fired between the caller's look and the cancel reads as
+// "nothing cancelled", never as a disguised success.
+func (s *WakeScheduleStore) CancelScheduleReport(ctx context.Context, owner, id string, now time.Time) (bool, error) {
 	row, err := s.q.GetWakeSchedule(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // nothing to cancel
+		return false, nil // nothing to cancel
 	}
 	if err != nil {
-		return fmt.Errorf("wake schedule: get: %w", err)
+		return false, fmt.Errorf("wake schedule: get: %w", err)
 	}
 	if row.OwnerSessionID != owner {
-		return ErrWakeScheduleNotOwned
+		return false, ErrWakeScheduleNotOwned
 	}
-	if _, err := s.q.CancelWakeSchedule(ctx, db.CancelWakeScheduleParams{
+	n, err := s.q.CancelWakeSchedule(ctx, db.CancelWakeScheduleParams{
 		UpdatedAt: now.Unix(), ID: id, OwnerSessionID: owner,
-	}); err != nil {
-		return fmt.Errorf("wake schedule: cancel: %w", err)
+	})
+	if err != nil {
+		return false, fmt.Errorf("wake schedule: cancel: %w", err)
 	}
-	return nil
+	return n > 0, nil
 }
 
 // CancelAllForOwner cancels every active schedule of the owner

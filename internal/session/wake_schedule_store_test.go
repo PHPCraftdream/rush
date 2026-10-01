@@ -334,6 +334,41 @@ func TestWakeScheduleStore_CancelIdempotentAndOwned(t *testing.T) {
 	require.EqualValues(t, 0, f.noticeCount())
 }
 
+// CancelScheduleReport answers from the CAS itself: true only for the call
+// that moved an active row, false for a schedule that already fired or was
+// cancelled between the caller's look and the cancel (SCHED-5).
+func TestWakeScheduleStore_CancelReportIsTheCAS(t *testing.T) {
+	t.Parallel()
+	f := newWakeFx(t)
+	due := f.base.Add(time.Minute)
+	fired := f.create(WakeKindOnce, due, nil)
+	live := f.create(WakeKindOnce, f.base.Add(time.Hour), nil)
+
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	fire, err := f.wake.FireOccurrence(f.ctx, fired.ID, "worker-1", due)
+	require.NoError(t, err)
+	require.True(t, fire.Fired)
+
+	cancelled, err := f.wake.CancelScheduleReport(f.ctx, rerunOwner, fired.ID, due)
+	require.NoError(t, err)
+	require.False(t, cancelled, "a schedule that already fired is not 'cancelled' by this call")
+
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, live.ID, due)
+	require.NoError(t, err)
+	require.True(t, cancelled)
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, live.ID, due)
+	require.NoError(t, err)
+	require.False(t, cancelled, "the second cancel moves nothing")
+
+	_, err = f.wake.CancelScheduleReport(f.ctx, "other-session", live.ID, due)
+	require.ErrorIs(t, err, ErrWakeScheduleNotOwned)
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, "wake_missing", due)
+	require.NoError(t, err)
+	require.False(t, cancelled)
+}
+
 // Cancel of an unknown id is a no-op, and ClaimDue honours its limit.
 func TestWakeScheduleStore_CancelUnknownAndClaimLimit(t *testing.T) {
 	t.Parallel()

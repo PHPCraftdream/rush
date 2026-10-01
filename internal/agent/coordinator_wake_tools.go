@@ -238,32 +238,27 @@ func (c *coordinator) ListWakeSchedules(ctx context.Context, sessionID string) (
 // CancelWakeSchedule implements tools.WakeControl (§1.5). The single
 // not-found error covers never-existed, foreign, already-fired and
 // already-cancelled alike (§1.5's idempotency rule: a safe no-op with the
-// same error, never a disguised success). The pre-check against the owner's
-// own active list is what distinguishes "nothing to cancel" from a real
-// cancel: the store's CancelSchedule is a silent no-op on inactive rows.
+// same error, never a disguised success): "cancelled" is answered only when
+// this call's own CAS moved the row (CancelScheduleReport).
 func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, scheduleID string) (string, error) {
 	sched, err := c.wakeSchedulerFor()
 	if err != nil {
 		return "", err
 	}
-	rows, err := sched.store.ListSchedules(ctx, sessionID)
+	notFound := fmt.Errorf(
+		"schedule %s not found (never existed, already fired, already cancelled, or belongs to another session)", scheduleID,
+	)
+	// The report is the CAS's own outcome: a schedule that fired between a
+	// look and the cancel is "not found", never a disguised success.
+	cancelled, err := sched.store.CancelScheduleReport(ctx, sessionID, scheduleID, sched.now())
+	if errors.Is(err, session.ErrWakeScheduleNotOwned) {
+		return "", notFound
+	}
 	if err != nil {
-		return "", fmt.Errorf("failed to list wake schedules: %w", err)
-	}
-	active := false
-	for _, row := range rows {
-		if row.ID == scheduleID && row.State == "active" {
-			active = true
-			break
-		}
-	}
-	if !active {
-		return "", fmt.Errorf(
-			"schedule %s not found (never existed, already fired, already cancelled, or belongs to another session)", scheduleID,
-		)
-	}
-	if err := sched.store.CancelSchedule(ctx, sessionID, scheduleID, sched.now()); err != nil {
 		return "", fmt.Errorf("failed to cancel wake schedule: %w", err)
+	}
+	if !cancelled {
+		return "", notFound
 	}
 	sched.Notify()
 	return fmt.Sprintf("Schedule %s cancelled.", scheduleID), nil
