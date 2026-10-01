@@ -69,6 +69,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **#1139: zai sessions no longer lose their cache hit ratio.** openai-compat
+  providers are now classified as cache reporters by the configured provider
+  ID (e.g. `zai`) instead of the wire type, so the cache-silent warm-up turns
+  no longer degrade a whole session's aggregate to "no cache reporting" and
+  `rush sessions cache` shows the real ~99% hit ratio; unlisted
+  openai-compat endpoints (local, cache-silent) keep the honest n/a.
+
 - **#1101: a refused first turn no longer touches the session's state.** The
   preparatory writes a `rush run` / SDK turn performed before admission —
   clearing a stale `sessions cancel` request, persisting the budget, clearing

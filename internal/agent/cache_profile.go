@@ -91,6 +91,18 @@ var cacheProfiles = map[string]cacheProfile{
 	},
 }
 
+// cacheReporterProviderIDs lists CONFIGURED provider IDs (the `provider` key
+// in rush.json, config.SelectedModel.Provider) confirmed to emit cache
+// counters even though their fantasy provider TYPE (openai-compat) cannot be
+// trusted: the same wire protocol serves both cache-reporting endpoints
+// (e.g. zai's GLM) and local endpoints that never report caching. Adding
+// openaicompat.Name to cacheProfiles would fabricate 0% for the silent ones,
+// so the classification falls back to this ID list instead. A provider ID not
+// listed here keeps the honest CacheSupportNone on zero-counter turns.
+var cacheReporterProviderIDs = map[string]bool{
+	"zai": true,
+}
+
 // cacheProfileFor returns provider's cache profile, or the zero value
 // (today's "unknown provider" behavior) if it is not listed.
 func cacheProfileFor(provider string) cacheProfile {

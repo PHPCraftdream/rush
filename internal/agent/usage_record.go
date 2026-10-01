@@ -22,11 +22,16 @@ import (
 // bedrock. A provider NOT in that list — including any new provider type
 // added without updating cacheProfiles — is classified CacheSupportNone: an
 // honest "n/a" beats a fabricated 0%.
-func providerCacheSupport(provider string, usage fantasy.Usage) message.CacheSupport {
+//
+// The type-name list cannot carry openai-compat: the same fantasy provider
+// serves cache-silent local endpoints too. Those cases are covered by
+// providerID (the configured rush.json provider ID, e.g. "zai") checked
+// against cacheReporterProviderIDs (cache_profile.go).
+func providerCacheSupport(provider, providerID string, usage fantasy.Usage) message.CacheSupport {
 	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
 		return message.CacheSupportNative
 	}
-	if cacheProfileFor(provider).knownCacheReporter {
+	if cacheProfileFor(provider).knownCacheReporter || cacheReporterProviderIDs[providerID] {
 		return message.CacheSupportNative
 	}
 	return message.CacheSupportNone
@@ -67,7 +72,7 @@ func (a *sessionAgent) recordMessageUsage(
 		// worse than the inconsistency that change set out to fix.
 		Provider:     model.Model.Provider(),
 		Model:        model.Model.Model(),
-		CacheSupport: providerCacheSupport(model.Model.Provider(), usage),
+		CacheSupport: providerCacheSupport(model.Model.Provider(), model.ModelCfg.Provider, usage),
 		Estimated:    estimated,
 	}
 	// An estimate is a guess derived from message lengths, not a measurement;
