@@ -14,10 +14,13 @@ var logsPruneCmd = &cobra.Command{
 	Short: "Truncate the rush log file to zero bytes",
 	Long: `Truncate .rush/logs/rush.log to reclaim disk space.
 
-rush does not auto-rotate its log file — on busy workspaces it can
-grow to hundreds of megabytes. This command blanks it atomically (the
-same way logrotate's copytruncate works) so running sessions keep
-appending without a reopen.`,
+The log file is append-only and shared by every rush process on the
+workspace (web server, rush run sessions): rush never rotates or
+truncates it on its own, so on busy workspaces it can grow to hundreds
+of megabytes and pruning is the only size control. This command blanks
+the file in place (like logrotate's copytruncate); running processes
+keep appending safely because their handles are opened with O_APPEND —
+each new record lands at the end of the (now empty) file.`,
 	Example: `
 rush logs prune
 rush logs path    # check size before/after

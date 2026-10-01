@@ -22,7 +22,13 @@ func TestNewLogger_DoesNotTouchDefault(t *testing.T) {
 	t.Parallel()
 
 	captured := slog.Default()
-	logger := NewLogger(filepath.Join(t.TempDir(), "test.log"), false)
+	// Not t.TempDir: the append-only writer opens the log file handle
+	// eagerly, so Windows cannot unlink it during cleanup. Best-effort
+	// removal instead, ignoring the sharing violation.
+	dir, err := os.MkdirTemp("", "rush-log-default")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(dir) }()
+	logger := NewLogger(filepath.Join(dir, "test.log"), false)
 	require.NotNil(t, logger)
 
 	require.Same(t, captured, slog.Default(),
@@ -35,9 +41,9 @@ func TestNewLogger_DoesNotTouchDefault(t *testing.T) {
 func TestNewLogger_WritesToFileWithPID(t *testing.T) {
 	t.Parallel()
 
-	// Not t.TempDir: lumberjack keeps the log file open for the life of the
-	// logger, so Windows cannot unlink it during cleanup. Best-effort removal
-	// instead, ignoring the inevitable sharing violation.
+	// Not t.TempDir: the log file handle stays open for the life of the
+	// logger, so Windows cannot unlink it during cleanup. Best-effort
+	// removal instead, ignoring the inevitable sharing violation.
 	dir, err := os.MkdirTemp("", "rush-log-test")
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(dir) }()
@@ -47,7 +53,7 @@ func TestNewLogger_WritesToFileWithPID(t *testing.T) {
 	logger.Info("phase three hello")
 
 	bts, err := os.ReadFile(logPath)
-	require.NoError(t, err, "lumberjack must have created the log file on first write")
+	require.NoError(t, err, "log file must have been created on first write")
 
 	line := strings.TrimSpace(string(bts))
 	require.NotEmpty(t, line)

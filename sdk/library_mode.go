@@ -294,6 +294,7 @@ func openLibrary(ctx context.Context, o Options) (*Client, error) {
 	if o.SetupLogging && dataDir != "" {
 		// See Options.SetupLogging for the process-singleton caveat.
 		rushlog.Setup(filepath.Join(dataDir, "logs", "rush.log"), o.Debug)
+		rushlog.ProcessStart("sdk library", "")
 	} else if o.SetupLogging {
 		slog.Warn("sdk: SetupLogging is ignored for an ephemeral in-memory session (no data directory to write logs into)")
 	}

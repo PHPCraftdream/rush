@@ -334,6 +334,14 @@ func mcpAppOptions(cmd *cobra.Command) []app.Option {
 	return []app.Option{app.RestrictMCPToCLI()}
 }
 
+// cmdFlagString reads a string flag, returning "" when the command has
+// no such flag — used for best-effort attribution (process start log
+// record) on commands that may or may not define the flag.
+func cmdFlagString(cmd *cobra.Command, name string) string {
+	v, _ := cmd.Flags().GetString(name)
+	return v
+}
+
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
 func setupApp(cmd *cobra.Command) (*app.App, error) {
@@ -364,6 +372,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	// the call here in setupApp re-points the default logger at the same
 	// file path the WUI/Logs modal already expects to read from.
 	rushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log"), debug)
+	rushlog.ProcessStart(cmd.CommandPath(), cmdFlagString(cmd, "session"))
 
 	// Register this project in the centralized projects list.
 	if err := projects.Register(cwd, cfg.Options.DataDirectory); err != nil {
@@ -432,6 +441,7 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 	}
 
 	rushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log"), debug)
+	rushlog.ProcessStart(cmd.CommandPath(), cmdFlagString(cmd, "session"))
 
 	if err := projects.Register(cwd, cfg.Options.DataDirectory); err != nil {
 		slog.Warn("Failed to register project", "error", err)

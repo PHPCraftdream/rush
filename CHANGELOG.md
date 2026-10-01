@@ -76,6 +76,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   every age, and an in-turn holder the verdict proves alive is no longer
   shown "offline".
 
+- **Log lines are no longer lost or overwritten when several rush
+  processes write to one log.** `logs/rush.log` is now append-only
+  (`O_APPEND`, no in-process rotation): the previous lumberjack writer
+  truncated other processes' lines (non-appending open), lost records
+  on rename-based rotation, and on Windows stopped a process from
+  logging entirely whenever the file was held open by another rush or
+  had reached the rotation size. Every record now also carries a `ws`
+  attribute (the canonical checkout root) alongside the existing `pid`,
+  and each process writes a single `process start` record (pid, ppid,
+  version, command, cwd, ws, branch, data_dir, `--session`). Size is
+  controlled externally with `rush logs prune`; its help text now
+  matches the new behavior. lumberjack is gone from go.mod.
+
 - **#1139: zai sessions no longer lose their cache hit ratio.** openai-compat
   providers are now classified as cache reporters by the configured provider
   ID (e.g. `zai`) instead of the wire type, so the cache-silent warm-up turns

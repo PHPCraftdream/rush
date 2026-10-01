@@ -455,6 +455,7 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 	if o.SetupLogging {
 		// See Options.SetupLogging for the process-singleton caveat.
 		rushlog.Setup(filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log"), o.Debug)
+		rushlog.ProcessStart("sdk", "")
 	}
 
 	// Register the project so `rush projects` / `rush dirs` see embedded
