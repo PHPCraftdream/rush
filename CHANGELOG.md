@@ -689,6 +689,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   only that the 60 s hard-kill backstop fired.
   A wait longer than the cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`, default 6 h) needs
   an explicit `--timeout`. `--timeout` itself is unchanged.
+- **A message injected while a tool runs no longer breaks the session history.**
+  A web `InjectMessage` or `rush sessions inject` landing between an assistant
+  `tool_use` and the tool's result was persisted in that gap, so the next turn
+  sent the provider `tool_use, user, tool_result` and it rejected the request on
+  every later turn. History assembly now moves such user messages after the tool
+  round (a round whose result never arrives is unchanged).
 - **`rush run --json` always prints its envelope when the deadline cuts the first turn.**
   A `--timeout` (or the default cap) expiring while the user's own turn was still
   generating left stdout empty with exit status 1; the run now flushes one

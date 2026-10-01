@@ -170,6 +170,9 @@ If not, please feel free to ignore. Again do not mention this message to the use
 		)
 		hasReminder = true
 	}
+	// A user message created while a tool ran must not split tool_use from
+	// its tool_result (#1066).
+	msgs = deferUserMessagesPastToolRound(msgs)
 	// Collect all tool call IDs present in assistant messages and all tool
 	// result IDs present in tool messages. This lets us detect both orphaned
 	// tool results (result without a call) and orphaned tool calls (call
