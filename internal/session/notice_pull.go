@@ -423,7 +423,82 @@ func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages mess
 	return msg, nil
 }
 
-// ListSessionNotices is a thin read-only wrapper for tests and diagnostics
+// InlineAnnouncement is AnnounceInlineResult's outcome: the committed
+// tool-result message plus how many rows the delivery CAS closed.
+type InlineAnnouncement struct {
+	Msg message.Message
+	// DeliveryRows is DeliverAsyncJobInline's rows-affected. 1 = the row's
+	// delivery closed as 'done' in the same transaction (the normal case).
+	// 0 = the row was already voided by a Rerun (or deleted): the announce
+	// half (announced=1, announce_message_id) still committed -- the tool
+	// result must exist in history -- but there is no pending delivery to
+	// close; the caller takes the ordinary in-memory tail and never waits
+	// for a wake.
+	DeliveryRows int64
+}
+
+// AnnounceInlineResult is the A14 inline window's Tx2 (docs/plans/2026-10-
+// 01-inline-window.md), the inline counterpart of AnnounceStarted beside
+// which it lives: the inline tool-result message (which already carries the
+// job's output) and the row's delivery close in ONE transaction, so a crash
+// can never leave the row 'pending' with its result already in history.
+// Shape is job_kill's DUR-11 fusion: insert message -> DeliverAsyncJobInline
+// CAS (claim-keyed, terminal, delivery='pending' -> done/wake=0/reacted=1).
+//
+// ErrAsyncJobGone (MarkAsyncJobAnnounced's 0 rows, same key as
+// AnnounceStarted) rolls the whole transaction back; the caller falls back
+// to a plain messages.Create exactly like the B15 path. A 0 from the
+// delivery CAS is NOT an error (only a Rerun's void or a delete reaches it
+// -- the caller checked the committed terminal state under the ledger lock
+// moments earlier): the announce half commits so the result stays in
+// history, and the caller takes the ordinary tail with no delivery to
+// wait for.
+func (s *AsyncJobStore) AnnounceInlineResult(ctx context.Context, messages message.Service, owner, toolCallID, claimID string, params message.CreateMessageParams) (InlineAnnouncement, error) {
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	q := db.New(tx)
+
+	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	if err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: create message: %w", err)
+	}
+	rows, err := q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
+		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: toolCallID,
+	})
+	if err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: mark announced: %w", err)
+	}
+	if rows == 0 {
+		return InlineAnnouncement{}, ErrAsyncJobGone
+	}
+	// Same Rerun-by-message rule as AnnounceStarted: the row is voided by
+	// the message id it deleted, and this inline result IS that message.
+	if _, err := q.SetAsyncJobAnnounceMessageID(ctx, db.SetAsyncJobAnnounceMessageIDParams{
+		AnnounceMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
+		OwnerSessionID: owner, ToolCallID: toolCallID,
+	}); err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: set announce message id: %w", err)
+	}
+	deliveryRows, err := q.DeliverAsyncJobInline(ctx, db.DeliverAsyncJobInlineParams{
+		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
+		OwnerSessionID: owner, ClaimID: claimID,
+	})
+	if err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: deliver: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: commit: %w", err)
+	}
+	// Publish AFTER commit (doc sec.3.3's same rule as every other fused
+	// write): a subscriber must never observe an event for a row that could
+	// still roll back.
+	messages.PublishCreated(msg)
+	return InlineAnnouncement{Msg: msg, DeliveryRows: deliveryRows}, nil
+}
+
 // (the full `sessions why`/`sessions jobs` reader is doc sec.5 step 7's
 // job) -- every row for owner, oldest first, regardless of delivery state.
 func (s *AsyncJobStore) ListSessionNotices(ctx context.Context, owner string) ([]SessionNoticeRow, error) {

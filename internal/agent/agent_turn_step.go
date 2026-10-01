@@ -321,10 +321,20 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 }
 
 // chainIdleClaim reports whether call is an async launch of a pure wait
-// command, and returns its claim id when it is.
+// command, and returns its claim id when it is. An INLINE result (A14,
+// meta.Async false but meta.Inline true) of a pure wait command is idle too
+// -- but with NO claim: it never produced a "started" result, so there is no
+// launch for the guard to exclude (an inline `sleep 2` must not read as
+// progress, nor as an outstanding launch).
 func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (string, bool) {
-	if !meta.Async || meta.ClaimID == "" {
+	isAsyncLaunch := meta.Async && meta.ClaimID != ""
+	isInlineResult := !meta.Async && meta.Inline
+	if !isAsyncLaunch && !isInlineResult {
 		return "", false
+	}
+	claim := meta.ClaimID
+	if isInlineResult {
+		claim = "" // inline results carry no outstanding launch to exclude
 	}
 	switch call.ToolName {
 	case tools.BashToolName:
@@ -334,7 +344,7 @@ func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (strin
 		if json.Unmarshal([]byte(call.Input), &params) != nil {
 			return "", false
 		}
-		return meta.ClaimID, shell.IsNoOpCommand(params.Command)
+		return claim, shell.IsNoOpCommand(params.Command)
 	case tools.RunCommandToolName:
 		var params struct {
 			Program string `json:"program"`
@@ -343,7 +353,7 @@ func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (strin
 			return "", false
 		}
 		idle := params.Program == "sleep" || params.Program == "timeout"
-		return meta.ClaimID, idle
+		return claim, idle
 	default:
 		return "", false
 	}

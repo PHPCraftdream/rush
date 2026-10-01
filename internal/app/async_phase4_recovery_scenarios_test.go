@@ -31,6 +31,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -94,6 +95,9 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	require.NoError(t, err)
 	appA, err = New(context.Background(), connA, storeA, WithMCPOwner(ownerA))
 	require.NoError(t, err)
+	// A14 seam: the scenario scripts match the literal "Async ... started"
+	// text and count pulled notices -- the flow the inline window replaces.
+	agent.SetInlineWindowForTest(appA.AgentCoordinator, false)
 	// App.Shutdown is the ONLY thing that correctly tears down every
 	// resource New()/InitCoderAgent opened (the run queue pump goroutine,
 	// New()'s own internal ConnectRead on top of this Connect, the MCP
@@ -122,6 +126,7 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	require.NoError(t, err)
 	appB, err = New(context.Background(), connB, storeB, WithMCPOwner(ownerB))
 	require.NoError(t, err)
+	agent.SetInlineWindowForTest(appB.AgentCoordinator, false)
 	t.Cleanup(appB.Shutdown)
 
 	return appA, appB, sessionID

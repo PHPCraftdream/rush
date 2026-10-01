@@ -201,8 +201,13 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("error starting background shell: %s", err)), nil
 				}
 
-				// Wait a short time to detect fast failures (blocked commands, syntax errors, etc.)
-				time.Sleep(1 * time.Second)
+				// Wait up to a second for fast failures (blocked commands,
+				// syntax errors, fast commands generally) instead of a fixed
+				// sleep: a command that finishes in 50ms must not cost a
+				// full second (A14).
+				waitCtx, cancelWait := context.WithTimeout(ctx, time.Second)
+				bgShell.WaitContext(waitCtx)
+				cancelWait()
 				stdout, stderr, done, execErr := bgShell.GetOutput()
 
 				if done {

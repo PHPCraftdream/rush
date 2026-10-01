@@ -144,6 +144,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteUnannouncedAsyncJobForClaimStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJobForClaim); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJobForClaim: %w", err)
 	}
+	if q.deliverAsyncJobInlineStmt, err = db.PrepareContext(ctx, deliverAsyncJobInline); err != nil {
+		return nil, fmt.Errorf("error preparing query DeliverAsyncJobInline: %w", err)
+	}
 	if q.enqueueRunQueueEntryStmt, err = db.PrepareContext(ctx, enqueueRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query EnqueueRunQueueEntry: %w", err)
 	}
@@ -752,6 +755,11 @@ func (q *Queries) Close() error {
 	if q.deleteUnannouncedAsyncJobForClaimStmt != nil {
 		if cerr := q.deleteUnannouncedAsyncJobForClaimStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobForClaimStmt: %w", cerr)
+		}
+	}
+	if q.deliverAsyncJobInlineStmt != nil {
+		if cerr := q.deliverAsyncJobInlineStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deliverAsyncJobInlineStmt: %w", cerr)
 		}
 	}
 	if q.enqueueRunQueueEntryStmt != nil {
@@ -1508,6 +1516,7 @@ type Queries struct {
 	deleteTerminalUnannouncedAsyncJobsForHostStmt        *sql.Stmt
 	deleteUnannouncedAsyncJobStmt                        *sql.Stmt
 	deleteUnannouncedAsyncJobForClaimStmt                *sql.Stmt
+	deliverAsyncJobInlineStmt                            *sql.Stmt
 	enqueueRunQueueEntryStmt                             *sql.Stmt
 	finishLoopWakeScheduleStmt                           *sql.Stmt
 	getAsyncHostStmt                                     *sql.Stmt
@@ -1689,6 +1698,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteTerminalUnannouncedAsyncJobsForHostStmt:        q.deleteTerminalUnannouncedAsyncJobsForHostStmt,
 		deleteUnannouncedAsyncJobStmt:                        q.deleteUnannouncedAsyncJobStmt,
 		deleteUnannouncedAsyncJobForClaimStmt:                q.deleteUnannouncedAsyncJobForClaimStmt,
+		deliverAsyncJobInlineStmt:                            q.deliverAsyncJobInlineStmt,
 		enqueueRunQueueEntryStmt:                             q.enqueueRunQueueEntryStmt,
 		finishLoopWakeScheduleStmt:                           q.finishLoopWakeScheduleStmt,
 		getAsyncHostStmt:                                     q.getAsyncHostStmt,

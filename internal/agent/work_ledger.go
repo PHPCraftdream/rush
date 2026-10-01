@@ -119,6 +119,15 @@ type workLedger struct {
 	// job either (Start fails closed -- see Start's doc).
 	store *session.AsyncJobStore
 
+	// inlineWindow is the A14 immediate-answer window (docs/plans/2026-10-
+	// 01-inline-window.md): a bash/run_command job whose NATURAL terminal
+	// transition commits within this window is answered by its own tool
+	// call instead of a "started" response. 0 (zero value) disables the
+	// window entirely; production wires inlineWindowSeconds, tests wire 0
+	// or a short value. The single source of truth for both Start (which
+	// allocates job.settled) and asyncTool's awaitInline branch.
+	inlineWindow time.Duration
+
 	// jobKillRepend overrides the store as the target of a job_kill row
 	// re-pend (rependJobKill); tests only -- production resolves the store's
 	// own RependJobKillRowWithoutNotice.
@@ -322,6 +331,10 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 	}
 	if sync {
 		job.done = make(chan struct{})
+	} else if l.inlineWindow > 0 && inlineWindowApplies(toolName) {
+		// A14: only jobs inside the window get a settled channel --
+		// transitionToTerminal closes it at the Tx1/in-memory boundary.
+		job.settled = make(chan struct{})
 	}
 	if timeout != nil {
 		job.deadline = timeout.Deadline

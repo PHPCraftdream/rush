@@ -1,7 +1,9 @@
 // The reaction chain guard (#1113), end to end through the real `rush run`
 // loop (design test 6): the first turn launches a HELD background job W plus a
-// pure wait command (`echo tick`); every chain Drain the model makes is only
-// another `echo tickN`. The guard must stop the chain after exactly 3 Drain
+// pure wait command (`sleep 1`; slow enough that its completion lands
+// AFTER the leg that issued it, which the bash fast-pass would otherwise
+// collapse into the same turn); every chain Drain the model makes is only
+// another `sleep 1`. The guard must stop the chain after exactly 3 Drain
 // turns -- one stderr line, one envelope warning -- while the loop keeps
 // waiting on W; releasing W produces exactly one more Drain (a real fact) and
 // the run ends with the last turn's answer and exit reason. Without W the loop
@@ -86,20 +88,20 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 				calls = append(calls, sseToolCallIndex("w", "call-w", "bash",
 					`{"command":"until [ -f `+donePath+` ]; do sleep 5; done; echo W-DONE","description":"held job"}`, 1))
 			}
-			calls = append(calls, admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"echo tick1","description":"tick"}`))
+			calls = append(calls, admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"sleep 1","description":"tick"}`))
 			calls = append(calls, admissionSSEStop("turn", "tool_calls"))
 			admissionWriteSSE(w, calls)
 		case n == 2:
 			admissionWriteSSE(w, []string{admissionSSEText("a", "first answer"), admissionSSEStop("a", "stop")})
 		case n >= 3 && n <= 8:
-			// Each chain Drain is two provider steps: one bash `echo tickN`
+			// Each chain Drain is two provider steps: one bash `sleep 1`
 			// tool call, then a plain text step that ends the leg (the model
 			// has nothing to say while waiting). n=3/4 -> tick2, 5/6 -> tick3,
 			// 7/8 -> tick4.
 			step := n - 2
 			if step%2 == 1 {
 				admissionWriteSSE(w, []string{
-					admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"echo tick`+itoa(int(step/2+2))+`","description":"tick"}`),
+					admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"sleep 1","description":"tick"}`),
 					admissionSSEStop("t", "tool_calls"),
 				})
 				return

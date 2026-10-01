@@ -255,6 +255,17 @@ type Querier interface {
 	// other's delete runs. Keyed by the listed row's claim so only that
 	// incarnation can be removed.
 	DeleteUnannouncedAsyncJobForClaim(ctx context.Context, arg DeleteUnannouncedAsyncJobForClaimParams) (int64, error)
+	// A14 inline window (Tx2, docs/plans/2026-10-01-inline-window.md): the
+	// inline tool-result message already carries the result, so the row's
+	// delivery closes in the SAME transaction as that message's insert
+	// (AnnounceInlineResult) -- exactly job_kill's DUR-11 shape. CAS on
+	// claim_id (one incarnation of a job) and delivery='pending' only: a
+	// running row can never be inline-delivered (the caller checked the
+	// committed terminal state), and 0 rows means the row was voided by a
+	// Rerun (or deleted) -- the announce half still commits, the caller falls
+	// back to the ordinary in-memory tail. notice_kind is NOT touched: it
+	// stays whatever the committed transition wrote, never a delivery marker.
+	DeliverAsyncJobInline(ctx context.Context, arg DeliverAsyncJobInlineParams) (int64, error)
 	// ON CONFLICT DO NOTHING makes this idempotent on id (P2-1): a caller that
 	// retries with the same, stable idempotency key must not error just because
 	// its own earlier attempt already committed the row. Returns zero rows on

@@ -20,6 +20,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -62,6 +63,7 @@ func newLockBusyCLITestApp(t *testing.T, handler http.HandlerFunc) (application 
 	application, err = New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
+	agent.SetInlineWindowForTest(application.AgentCoordinator, false)
 
 	sess, err := application.Sessions.Create(context.Background(), "lock-busy-cli-test")
 	require.NoError(t, err)

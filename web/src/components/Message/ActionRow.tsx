@@ -15,6 +15,7 @@ import { TimeBadge } from "./TimeBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
 import { useExpandToolCallSignal } from "./useExpandToolCallSignal";
+import { isPendingJob } from "../../asyncJobMetadata";
 
 export type ActionItem =
   | {
@@ -47,16 +48,6 @@ interface ActionRowProps {
   model?: string;
   effort?: string;
   jobCompletions: Map<string, AsyncJobCompletion>;
-}
-
-function isPendingJob(metadata?: string): boolean {
-  if (!metadata) return false;
-  try {
-    const parsed = JSON.parse(metadata) as { async?: boolean; job_id?: string; background?: boolean; shell_id?: string };
-    return (parsed.async === true && !!parsed.job_id) || (parsed.background === true && !!parsed.shell_id);
-  } catch {
-    return false;
-  }
 }
 
 export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAutoCurrent, model, effort, jobCompletions }: ActionRowProps) {

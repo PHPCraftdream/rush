@@ -203,6 +203,20 @@ type asyncJob struct {
 	// see AsyncCompletion.Wake's doc for why callers only ever read this for
 	// a non-sync completion.
 	wake bool
+
+	// settled is closed exactly once, by transitionToTerminal, after the
+	// committed terminal state was adopted in memory (A14's Tx1 boundary):
+	// awaitInline waits on it for at most the inline window. Allocated by
+	// Start for every non-sync job launched with the inline window enabled;
+	// nil otherwise, and transitionToTerminal's close is nil-guarded.
+	settled chan struct{}
+	// inlinePending is set, under workLedger.mu, by awaitInline when THIS
+	// call won the right to answer inline: the job's ack now belongs to the
+	// INLINE tool result only (claimAck refuses every other tagged result,
+	// including an idempotent-retry "started" response that races the
+	// window), and the in-memory tail is finishInlineLocally, never the
+	// onWebDone hint. One bool, one writer, both readers under l.mu.
+	inlinePending bool
 }
 
 // transitionToTerminal is the in-memory half of a terminal transition,
@@ -229,5 +243,14 @@ func (j *asyncJob) transitionToTerminal(state jobPhase, result jobResult) bool {
 	}
 	j.state = state
 	j.result = result
+	// A14 inline window: settled closes only AFTER the in-memory CAS adopted
+	// the committed terminal state (Tx1's DB write precedes this call in
+	// commitTransition), so an awaitInline waiter never sees a decision
+	// before the row itself is terminal in the DB. Called under workLedger.mu,
+	// like every other field write here. Nil for sync jobs (no window) and
+	// for any job started with the window disabled.
+	if j.settled != nil {
+		close(j.settled)
+	}
 	return true
 }

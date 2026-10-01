@@ -30,31 +30,46 @@ import (
 // job incarnation.
 type ackTag struct {
 	ClaimID string `json:"claim_id,omitempty"`
+	// Inline marks the A14 inline window's result: this tagged result is the
+	// job's own OUTCOME (Tx2 fuses it with the row's delivery), not a
+	// "started" ack. Parsed from the same metadata as ClaimID.
+	Inline bool `json:"inline,omitempty"`
 }
 
-// claimAck returns the job toolResult acknowledges, or nil when it is an
-// ordinary result (including one whose tool_call_id collides with a running
-// job's). A non-nil job carries the right to acknowledge or abort: it is
-// handed to exactly one caller (job.acking), only while the job is still
-// unannounced in memory AND in the durable row, so a colliding or repeated
-// result can neither overwrite announce_message_id nor abort a job that is
-// already announced.
-func (l *workLedger) claimAck(ctx context.Context, sessionID string, result message.ToolResult) *asyncJob {
-	if l == nil || result.Metadata == "" {
-		return nil
-	}
+// claimAck returns the job toolResult acknowledges (with the parsed tag),
+// or nil when it is an ordinary result (including one whose tool_call_id
+// collides with a running job's). A non-nil job carries the right to
+// acknowledge or abort: it is handed to exactly one caller (job.acking),
+// only while the job is still unannounced in memory AND in the durable row,
+// so a colliding or repeated result can neither overwrite announce_message_id
+// nor abort a job that is already announced.
+//
+// A14: a job that won its inline window (job.inlinePending, set by
+// awaitInline) accepts ONLY the inline-tagged result of that same claim --
+// notably not an idempotent retry's "started" response racing the window --
+// and that inline result is accepted even though job.acking was already set
+// by awaitInline: awaitInline's claim and this result's claim are the same
+// right, handed over.
+func (l *workLedger) claimAck(ctx context.Context, sessionID string, result message.ToolResult) (*asyncJob, ackTag) {
 	var tag ackTag
+	if l == nil || result.Metadata == "" {
+		return nil, tag
+	}
 	if json.Unmarshal([]byte(result.Metadata), &tag) != nil || tag.ClaimID == "" {
-		return nil
+		return nil, tag
 	}
 	l.mu.Lock()
 	var job *asyncJob
 	if s := l.bySession[sessionID]; s != nil {
 		job = s.jobs[result.ToolCallID]
 	}
-	if job == nil || job.sync || job.claimID != tag.ClaimID || job.announced || job.acking {
+	if job == nil || job.sync || job.claimID != tag.ClaimID || job.announced {
 		l.mu.Unlock()
-		return nil
+		return nil, tag
+	}
+	if tag.Inline != job.inlinePending || (job.acking && !job.inlinePending) {
+		l.mu.Unlock()
+		return nil, tag
 	}
 	job.acking = true
 	store := l.store
@@ -68,24 +83,31 @@ func (l *workLedger) claimAck(ctx context.Context, sessionID string, result mess
 			l.mu.Lock()
 			job.acking = false
 			l.mu.Unlock()
-			return nil
+			return nil, tag
 		}
 	}
-	return job
+	return job, tag
 }
 
 // persistToolResult writes one tool-result message and settles whatever the
 // ledger owes it. It is agent_turn_stream.go's onToolResult entry point:
 //   - a job's own tagged "started" result: fused with announced=1
 //     (acknowledgeWithMessageTx), or plain Create + acknowledged;
+//   - a job's own inline result (A14, ackTag.Inline): fused with announced=1
+//     AND delivery='done' (acknowledgeInlineResult), or plain Create +
+//     acknowledged when the row is gone;
 //   - a job_kill result that stopped a tracked job: fused into that row's
 //     notice_message_id, with the row re-pended when that write does not
 //     happen (persistJobKillResult);
 //   - anything else: a plain Create, touching no job.
 func (l *workLedger) persistToolResult(ctx context.Context, sessionID string, result message.ToolResult, messages message.Service, params message.CreateMessageParams) error {
-	job := l.claimAck(ctx, sessionID, result)
+	job, tag := l.claimAck(ctx, sessionID, result)
 	if job != nil {
-		if _, handled, err := l.acknowledgeWithMessageTx(ctx, job, messages, params); handled {
+		if tag.Inline {
+			if _, handled, err := l.acknowledgeInlineResult(ctx, job, messages, params); handled {
+				return err
+			}
+		} else if _, handled, err := l.acknowledgeWithMessageTx(ctx, job, messages, params); handled {
 			return err
 		}
 	} else if result.Name == tools.JobKillToolName {

@@ -81,6 +81,9 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
+	// A14 seam: these e2e scripts match the literal "Async ... started" text
+	// and count pulled notices -- the flow the inline window replaces.
+	agent.SetInlineWindowForTest(application.AgentCoordinator, false)
 
 	sess, err := application.Sessions.Create(context.Background(), "admission-race-title")
 	require.NoError(t, err)

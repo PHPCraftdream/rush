@@ -8,6 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- CLI и web: короткие команды (`bash`/`run_command`, завершившиеся за ~3
+  секунды) теперь возвращают свой результат прямо в ответе инструмента
+  вместо «Async bash job ... started» и отдельного уведомления позже.
+  Модели это видно: результат приходит немедленно, одним сообщением, без
+  промежуточного хода; длинные команды и все остальные случаи ведут себя
+  как раньше.
+
 - `rush run` (A15): a top-level `ask_question` asked while the session still
   has its own running background tasks no longer ends the run with
   `awaiting_answer` (which orphaned that work). The tool hands the model a

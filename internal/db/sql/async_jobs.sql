@@ -257,6 +257,22 @@ RETURNING *;
 UPDATE async_jobs SET notice_message_id = ?, updated_at = ?
 WHERE owner_session_id = ? AND tool_call_id = ?;
 
+-- name: DeliverAsyncJobInline :execrows
+-- A14 inline window (Tx2, docs/plans/2026-10-01-inline-window.md): the
+-- inline tool-result message already carries the result, so the row's
+-- delivery closes in the SAME transaction as that message's insert
+-- (AnnounceInlineResult) -- exactly job_kill's DUR-11 shape. CAS on
+-- claim_id (one incarnation of a job) and delivery='pending' only: a
+-- running row can never be inline-delivered (the caller checked the
+-- committed terminal state), and 0 rows means the row was voided by a
+-- Rerun (or deleted) -- the announce half still commits, the caller falls
+-- back to the ordinary in-memory tail. notice_kind is NOT touched: it
+-- stays whatever the committed transition wrote, never a delivery marker.
+UPDATE async_jobs
+SET delivery = 'done', notice_message_id = ?, wake = 0, reacted = 1, updated_at = ?
+WHERE owner_session_id = ? AND claim_id = ? AND claim_id != ''
+  AND state != 'running' AND delivery = 'pending';
+
 -- name: SetAsyncJobNoticeMessageIDForClaimIfDone :execrows
 -- A3 (docs/reviews/2026-09-29-async-phase4-round1.md): job_kill's own
 -- Transition call sets delivery='done' directly, bypassing the ordinary

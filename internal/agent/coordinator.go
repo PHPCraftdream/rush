@@ -457,6 +457,10 @@ func NewCoordinator(
 	c.asyncJobs.coord = c
 	c.asyncJobs.timeouts = newTimeoutService(c.asyncJobs)
 	c.asyncJobs.supervision = newSupervisionRegistry()
+	// A14: production runs the inline window (a fixed constant, not a
+	// setting); tests may zero it on their own ledger to keep the old
+	// "started" flow byte-for-byte.
+	c.asyncJobs.inlineWindow = inlineWindow
 	c.subAgentDrivers = newSubAgentDriverRegistry()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]

@@ -75,5 +75,7 @@ func TestAsyncTool_LaunchPanicOnResumedDelegationFailsRowNotChildsOldAnswer(t *t
 	var tag ackTag
 	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &tag))
 	require.Equal(t, row.ClaimID, tag.ClaimID)
-	require.NotNil(t, registry.claimAck(ctx, parent.ID, message.ToolResult{ToolCallID: "call", Metadata: resp.Metadata}))
+	job, tag := registry.claimAck(ctx, parent.ID, message.ToolResult{ToolCallID: "call", Metadata: resp.Metadata})
+	require.NotNil(t, job)
+	require.Equal(t, row.ClaimID, tag.ClaimID)
 }

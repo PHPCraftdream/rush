@@ -21,7 +21,12 @@ type asyncTool struct {
 }
 
 type asyncToolMetadata struct {
-	Async          bool   `json:"async"`
+	Async bool `json:"async"`
+	// Inline marks the A14 immediate-answer form: this result IS the job's
+	// outcome (a natural completed/failed finish that committed within the
+	// inline window). Web must treat async:false as not-pending
+	// (isPendingJob, ActionRow.tsx).
+	Inline         bool   `json:"inline,omitempty"`
 	JobID          string `json:"job_id"`
 	ChildSessionID string `json:"child_session_id,omitempty"`
 	Status         string `json:"status"`
@@ -34,7 +39,17 @@ type asyncToolMetadata struct {
 func (t *asyncTool) Info() fantasy.ToolInfo {
 	info := t.inner.Info()
 	info.Description += "\n\nIn web and CLI sessions this tool starts asynchronously. It returns a job ID immediately; Rush sends the result as a new session message and resumes the agent. Continue independent work instead of blocking or polling for this job."
+	if t.inlineEnabled() {
+		info.Description += fmt.Sprintf("\n\nA command that finishes within %s returns its result directly in this response instead.", inlineWindow)
+	}
 	return info
+}
+
+// inlineEnabled reports whether this tool's calls run inside the A14 inline
+// window: a non-sync bash/run_command job whose ledger wired the window.
+func (t *asyncTool) inlineEnabled() bool {
+	return t.coordinator != nil && t.coordinator.asyncJobs != nil &&
+		t.coordinator.asyncJobs.inlineWindow > 0 && inlineWindowApplies(t.name)
 }
 
 func (t *asyncTool) ProviderOptions() fantasy.ProviderOptions { return t.inner.ProviderOptions() }
@@ -138,6 +153,15 @@ func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.C
 		}
 	}
 	if !sync {
+		if t.inlineEnabled() {
+			// A14: a windowed bash/run_command job answers noteWorkStarted
+			// only on the "started" fallback -- an inline-answered call is
+			// over before the window closes, and must not lift the
+			// supervision pause (supervision.go) for work that produced no
+			// open scope.
+			go t.run(jobCtx, cancel, job, sessionID, childSessionID, call, sync)
+			return t.launchInline(ctx, job, childSessionID, call.ID)
+		}
 		// Supervision (design doc §7): new open work for a CLI/web owner
 		// arms (or resumes) its root-session check-in timer. A no-op for a
 		// delegated child session (never supervised directly) or when
@@ -149,6 +173,29 @@ func (t *asyncTool) launchExecutor(ctx, jobCtx context.Context, cancel context.C
 		return t.awaitAndFinish(ctx, job)
 	}
 	return t.startedResponse(call.ID, childSessionID, job.claimID), nil
+}
+
+// launchInline waits the inline window for the job's natural Tx1 and
+// answers with its result (the inline response, tagged with the job's claim
+// so persistToolResult fuses Tx2); anything else inside the window falls
+// back to the ordinary "started" response, noteWorkStarted included, exactly
+// like a pre-window job.
+func (t *asyncTool) launchInline(ctx context.Context, job *asyncJob, childSessionID, jobID string) (fantasy.ToolResponse, error) {
+	result, inline := t.coordinator.asyncJobs.awaitInline(ctx, job)
+	if !inline {
+		t.coordinator.asyncJobs.noteWorkStarted(ctx, job.owner)
+		return t.startedResponse(jobID, childSessionID, job.claimID), nil
+	}
+	status := "completed"
+	if result.isError {
+		status = "failed"
+	}
+	return fantasy.WithResponseMetadata(fantasy.ToolResponse{
+		Type: "text", Content: result.content, Metadata: result.metadata, IsError: result.isError,
+	}, asyncToolMetadata{
+		Async: false, Inline: true, JobID: jobID, ChildSessionID: childSessionID,
+		Status: status, ClaimID: job.claimID,
+	}), nil
 }
 
 // awaitAndFinish blocks until job's sync outcome is ready (workLedger.
@@ -168,6 +215,12 @@ func (t *asyncTool) awaitAndFinish(ctx context.Context, job *asyncJob) (fantasy.
 // Shared by the fresh-start and idempotent-retry (existing job) paths, so a
 // retried tool call reports the SAME child session id the first Start call
 // registered.
+//
+// A14: an idempotent retry arriving while the FIRST call is still inside
+// its inline window gets this "started" response too, but the window
+// holder (job.inlinePending) wins the ack -- the retried call's tagged
+// result is persisted as an ordinary tool result and the job's outcome
+// arrives as the first call's inline response.
 func (t *asyncTool) startedResponse(jobID, childSessionID, claimID string) fantasy.ToolResponse {
 	content := fmt.Sprintf("Async %s job %s started. Its result will arrive as a new session message; continue independent work, or end your turn if none is left. Do not wait with sleep/echo commands: each completion wakes you again.", t.name, jobID)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), asyncToolMetadata{
