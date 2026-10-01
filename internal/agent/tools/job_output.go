@@ -28,7 +28,7 @@ var jobOutputMaxWait = 90 * time.Second
 type JobOutputParams struct {
 	JobID   string `json:"job_id,omitempty" description:"The async job id returned when the command started (e.g. from \"Async bash job <id> started\"). Preferred over shell_id. Exactly one of job_id/shell_id is required."`
 	ShellID string `json:"shell_id,omitempty" description:"The ID of the background shell to retrieve output from, when you have a raw shell id instead of a job id. Exactly one of job_id/shell_id is required."`
-	Wait    bool   `json:"wait" description:"If true, wait up to ~90s for the background shell to complete before returning; if it's still running, returns the current output with Status: running so you can poll again (the wait never blocks the turn indefinitely)."`
+	Wait    bool   `json:"wait" description:"If true, wait up to ~90s for the background shell to complete before returning; if it's still running, returns the current output with Status: running (the wait never blocks the turn indefinitely). A job_id job's completion arrives as a session message on its own: do not loop on wait to await it."`
 	Cursor  int64  `json:"cursor,omitempty" description:"Byte offset from a previous call's next_cursor, to fetch only output written since then. Omit to get the whole buffer from the start. A stale or out-of-range cursor is treated as 0, not an error."`
 }
 
@@ -135,7 +135,7 @@ func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, ma
 				if output == "" {
 					output = BashNoOutput
 				}
-				output = output + "\n\n(still running after the wait window — call job_output again to keep waiting)"
+				output += stillRunningHint(params.JobID != "")
 			}
 
 			metadata := JobOutputResponseMetadata{
@@ -190,4 +190,15 @@ func runCommandOutputResponse(runCtl RunCommandController, sessionID string, par
 	}
 	result := fmt.Sprintf("Status: %s\n\n%s", status, output)
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
+}
+
+// stillRunningHint closes a wait that timed out on a running job. A job_id
+// job is ledger-tracked: its completion is delivered as a session message,
+// so polling again only spends turns (A13); a raw shell_id may have no such
+// delivery, so the poll hint stays.
+func stillRunningHint(ledgerJob bool) string {
+	if ledgerJob {
+		return "\n\n(still running after the wait window — its completion will arrive as a session message; end your turn instead of calling job_output again)"
+	}
+	return "\n\n(still running after the wait window — call job_output again to keep waiting)"
 }

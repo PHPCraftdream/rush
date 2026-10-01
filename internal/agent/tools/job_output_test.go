@@ -155,3 +155,32 @@ func TestJobOutputTool_CursorReturnsOnlyNewBytesSinceLastCall(t *testing.T) {
 	require.Contains(t, secondResp.Content, "BBB")
 	require.NotContains(t, secondResp.Content, "AAA", "must not repeat output already returned by the first call")
 }
+
+// TestJobOutputTool_JobIDWaitTellsTheModelToEndItsTurn pins A13: a wait that
+// times out on a ledger-tracked job_id must not invite another poll -- the
+// completion arrives as a session message -- while a raw shell_id keeps the
+// poll hint.
+//
+// Revert-check: return the poll hint for both in stillRunningHint and the
+// job_id case goes red.
+func TestJobOutputTool_JobIDWaitTellsTheModelToEndItsTurn(t *testing.T) {
+	// NOT t.Parallel(): shares the package-global jobOutputMaxWait.
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "job-output-session")
+	bgManager := shell.NewBackgroundShellManager()
+	bgShell, err := bgManager.StartOwned(ctx, "job-output-session", t.TempDir(), nil, "sleep 30", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { bgManager.Close(context.Background()) })
+
+	originalMaxWait := jobOutputMaxWait
+	jobOutputMaxWait = 100 * time.Millisecond
+	t.Cleanup(func() { jobOutputMaxWait = originalMaxWait })
+
+	tool := NewJobOutputTool(&fakeJobShellResolver{shellID: bgShell.ID}, nil, bgManager)
+	input, err := json.Marshal(JobOutputParams{JobID: "call_x", Wait: true})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: JobOutputToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "end your turn instead of calling job_output again")
+	require.NotContains(t, resp.Content, "call job_output again to keep waiting")
+}
