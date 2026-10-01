@@ -95,7 +95,8 @@ func buildTreeNode(s session.Session, children map[string][]session.Session, max
 		ID:    s.ID,
 		Title: s.Title,
 		Msgs:  s.MessageCount,
-		Cost:  s.Cost,
+		// #1130: per-node OWN spend; the parent never carries the child's.
+		Cost: s.OwnCost,
 	}
 	if maxDepth > 0 && currentDepth >= maxDepth {
 		return node
@@ -119,7 +120,7 @@ func printTreeNode(w *os.File, s session.Session, children map[string][]session.
 
 	title := truncate(s.Title, 40)
 	fmt.Fprintf(w, "%s%s%-40s (%d msgs, $%.2f)\n",
-		prefix, connector, title, s.MessageCount, s.Cost)
+		prefix, connector, title, s.MessageCount, s.OwnCost)
 
 	if maxDepth > 0 && currentDepth >= maxDepth {
 		return

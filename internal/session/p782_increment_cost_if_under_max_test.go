@@ -54,13 +54,13 @@ func TestIncrementCostIfUnderMax_ConcurrentChargesCannotJointlyOvershoot(t *test
 		sess, charged, err := svc.IncrementCostIfUnderMax(ctx, sess.ID, 0.06, 0.10)
 		require.NoError(t, err)
 		require.True(t, charged, "first charge must succeed (0.06 < 0.10)")
-		require.InDelta(t, 0.06, sess.Cost, 1e-9, "cost must be charged")
+		require.InDelta(t, 0.06, sess.OwnCost, 1e-9, "cost must be charged")
 
 		// Second charge: 0.06 + 0.06 = 0.12 >= 0.10, so must be refused.
 		sess, charged, err = svc.IncrementCostIfUnderMax(ctx, sess.ID, 0.06, 0.10)
 		require.NoError(t, err)
 		require.False(t, charged, "second charge must be refused (0.06 + 0.06 >= 0.10)")
-		require.InDelta(t, 0.06, sess.Cost, 1e-9, "cost must remain unchanged")
+		require.InDelta(t, 0.06, sess.OwnCost, 1e-9, "cost must remain unchanged")
 	})
 
 	// Concurrent case: pre-charge to 0.04, then fire 8 concurrent charges of
@@ -74,7 +74,7 @@ func TestIncrementCostIfUnderMax_ConcurrentChargesCannotJointlyOvershoot(t *test
 		// Pre-charge to 0.04, leaving 0.06 headroom.
 		sess, err = svc.IncrementCost(ctx, sess.ID, 0.04)
 		require.NoError(t, err)
-		require.InDelta(t, 0.04, sess.Cost, 1e-9)
+		require.InDelta(t, 0.04, sess.OwnCost, 1e-9)
 
 		const numChargers = 8
 		const delta = 0.02
@@ -104,11 +104,11 @@ func TestIncrementCostIfUnderMax_ConcurrentChargesCannotJointlyOvershoot(t *test
 		// Final cost must be <= maxCost, never overshot.
 		updated, err := svc.Get(ctx, sess.ID)
 		require.NoError(t, err)
-		require.LessOrEqual(t, updated.Cost, maxCost+1e-9,
+		require.LessOrEqual(t, updated.OwnCost, maxCost+1e-9,
 			"the cap can NEVER be overshot, no matter how many racers land")
 
 		// Final cost must equal pre-charge + delta * trues (no partial charges).
-		require.InDelta(t, 0.04+delta*float64(trues.Load()), updated.Cost, 1e-9,
+		require.InDelta(t, 0.04+delta*float64(trues.Load()), updated.OwnCost, 1e-9,
 			"cost must reflect exactly the number of successful charges")
 	})
 }

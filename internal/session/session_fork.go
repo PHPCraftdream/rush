@@ -103,6 +103,8 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 		ID:     forkID,
 		Title:  resolvedTitle,
 		Origin: src.Origin,
+		// No CostParentID: a fork is its OWN cost root (#1130), even when it
+		// points at a parent for history.
 	}
 	if o.ParentID != "" {
 		createParams.ParentSessionID = sql.NullString{String: o.ParentID, Valid: true}

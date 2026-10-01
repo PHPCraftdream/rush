@@ -529,21 +529,31 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		}
 		return fmt.Errorf("session %s cancelled by user", ts.call.SessionID)
 	}
-	if ts.call.MaxCost > 0 && updatedSession.Cost > ts.call.MaxCost {
-		slog.Warn(
-			"agent: aborting — max-cost exceeded",
-			"session_id", ts.call.SessionID,
-			"cost", updatedSession.Cost,
-			"max", ts.call.MaxCost,
-		)
-		if ts.att != nil {
-			ts.att.capAbort.Store(true)
+	if ts.call.MaxCost > 0 {
+		// #1130: the cap is the SUBTREE budget (own + delegation children,
+		// minus the reset base) read from the DB — the same query the rush
+		// run loop's stopError/capError run — not the in-memory row value,
+		// which only ever covers this node.
+		budget, budgetErr := ts.a.sessions.SubtreeBudget(ts.ctx, ts.call.SessionID)
+		if budgetErr == nil && budget > ts.call.MaxCost {
+			slog.Warn(
+				"agent: aborting — max-cost exceeded",
+				"session_id", ts.call.SessionID,
+				"cost", budget,
+				"max", ts.call.MaxCost,
+			)
+			if ts.att != nil {
+				ts.att.capAbort.Store(true)
+			}
+			if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
+				cancelFn()
+			}
+			return fmt.Errorf("session %s aborted: cost $%.4f exceeds max $%.4f",
+				ts.call.SessionID, budget, ts.call.MaxCost)
 		}
-		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
-			cancelFn()
-		}
-		return fmt.Errorf("session %s aborted: cost $%.4f exceeds max $%.4f",
-			ts.call.SessionID, updatedSession.Cost, ts.call.MaxCost)
+		// A failed budget read is NOT treated as an abort: like the cancel
+		// flag above, a transient DB error is no evidence the budget is
+		// spent. The rush run loop re-checks on its own cadence.
 	}
 	totalTokens := updatedSession.PromptTokens + updatedSession.CompletionTokens
 	if ts.call.MaxTokens > 0 && totalTokens > ts.call.MaxTokens {

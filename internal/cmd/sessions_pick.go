@@ -82,7 +82,7 @@ func sessionsPickCmdRun(cmd *cobra.Command, args []string) error {
 			hash:    short(session.HashID(s.ID)),
 			title:   truncate(s.Title, 40),
 			updated: time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"),
-			cost:    s.Cost,
+			cost:    sessionBudget(cmd.Context(), a.Sessions, s),
 			ago:     formatAge(now.Sub(time.Unix(s.UpdatedAt, 0))),
 		}
 	}

@@ -1,7 +1,7 @@
-// Column-scoped session state updates: cost accrual and transfer, usage
-// and summary pointers, todos, model slots, reasoning effort, system
-// prompt, and rename — plus the cross-process cancel flag and the
-// fork-patch budget/ended-reason persistence.
+// Column-scoped session state updates: cost accrual, usage and summary
+// pointers, todos, model slots, reasoning effort, system prompt, rename —
+// plus the cross-process cancel flag and the fork-patch budget/ended-reason
+// persistence.
 
 package session
 
@@ -14,18 +14,21 @@ import (
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
-// IncrementCost adds delta to the session cost atomically. See interface
-// doc on Service.IncrementCost for rationale.
+// IncrementCost adds delta to the session's OWN cost (cost_self) atomically.
+// The only writer of the monotonic per-node ledger (#1130); a negative delta
+// is an error — `sessions reset` freezes a budget via ResetCostBase instead
+// of lowering anything.
 func (s *service) IncrementCost(ctx context.Context, sessionID string, delta float64) (Session, error) {
 	if delta == 0 {
 		return s.Get(ctx, sessionID)
 	}
 	if delta < 0 {
-		return s.decrementCost(ctx, sessionID, delta)
+		return Session{}, fmt.Errorf("increment cost: negative deltas are not supported, reset the budget via ResetCostBase instead")
 	}
 	dbSession, err := s.q.IncrementSessionCost(ctx, db.IncrementSessionCostParams{
-		ID:   sessionID,
-		Cost: delta,
+		ID:       sessionID,
+		Cost:     delta,
+		CostSelf: delta,
 	})
 	if err != nil {
 		return Session{}, err
@@ -37,13 +40,13 @@ func (s *service) IncrementCost(ctx context.Context, sessionID string, delta flo
 
 // IncrementCostIfUnderMax — see interface doc on
 // Service.IncrementCostIfUnderMax for rationale. maxCost <= 0 means
-// "unlimited": the predicate would otherwise reject every charge (cost +
-// delta < 0 is never true for non-negative cost/delta), so that case falls
-// through to the same unconditional path as IncrementCost. A negative delta
-// takes that path too: a decrease cannot overshoot a budget, and it must
-// settle the parent ledger like every other negative delta.
+// "unlimited" and falls through to the unconditional path. The budget read
+// and the charge share one transaction on the single-connection writer pool
+// (SetMaxOpenConns(1)), so two concurrent callers cannot both pass the
+// check: the second sees the first one's cost_self — the #782 TOCTOU stays
+// closed with the budget now being the SUBTREE budget (#1130).
 func (s *service) IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (Session, bool, error) {
-	if maxCost <= 0 || delta < 0 {
+	if maxCost <= 0 {
 		sess, err := s.IncrementCost(ctx, sessionID, delta)
 		return sess, err == nil, err
 	}
@@ -51,88 +54,45 @@ func (s *service) IncrementCostIfUnderMax(ctx context.Context, sessionID string,
 		sess, err := s.Get(ctx, sessionID)
 		return sess, err == nil, err
 	}
-	rows, err := s.q.IncrementSessionCostIfUnderMax(ctx, db.IncrementSessionCostIfUnderMaxParams{
-		ID:      sessionID,
-		Delta:   delta,
-		MaxCost: maxCost,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	qtx := s.q.WithTx(tx)
+
+	spent, err := qtx.GetSubtreeSpent(ctx, sessionID)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("read subtree spent: %w", err)
+	}
+	base, err := qtx.GetSessionCostBase(ctx, sessionID)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("read cost base: %w", err)
+	}
+	if max(0, spent-base)+delta >= maxCost {
+		// Refused: no charge lands. Read the snapshot INSIDE the tx (the
+		// writer pool has one connection — a Get after the tx would wait on
+		// this very tx), then let the deferred rollback discard it.
+		item, getErr := qtx.GetSessionByID(ctx, sessionID)
+		if getErr != nil {
+			return Session{}, false, getErr
+		}
+		return s.fromDBItem(item), false, nil
+	}
+	dbSession, err := qtx.IncrementSessionCost(ctx, db.IncrementSessionCostParams{
+		ID:       sessionID,
+		Cost:     delta,
+		CostSelf: delta,
 	})
 	if err != nil {
 		return Session{}, false, err
 	}
-	if rows == 0 {
-		sess, getErr := s.Get(ctx, sessionID)
-		if getErr != nil {
-			return Session{}, false, getErr
-		}
-		return sess, false, nil
+	if err := tx.Commit(); err != nil {
+		return Session{}, false, fmt.Errorf("commit charge: %w", err)
 	}
-	sess, err := s.Get(ctx, sessionID)
-	if err != nil {
-		return Session{}, false, err
-	}
+	sess := s.fromDBItem(dbSession)
 	s.Publish(pubsub.UpdatedEvent, sess)
 	return sess, true, nil
-}
-
-// TransferChildCostToParent — see Service.TransferChildCostToParent doc.
-//
-// The whole operation runs in one transaction so the parent charge and the
-// child's accounted marker advance together or not at all: a crash between
-// them can neither double-charge the parent nor lose the child's delta. The
-// parent is always touched (even when delta is 0) so a deleted parent still
-// surfaces as an error via the RETURNING clause — preserving the not-found
-// semantics the previous IncrementCost(id, 0) short-circuit gave callers.
-func (s *service) TransferChildCostToParent(ctx context.Context, childSessionID, parentSessionID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	qtx := s.q.WithTx(tx)
-
-	accounting, err := qtx.GetSessionCostAccounting(ctx, childSessionID)
-	if err != nil {
-		return fmt.Errorf("get child session: %w", err)
-	}
-
-	// The read above is the first statement of an IMMEDIATE transaction, so
-	// the write lock is already held: a concurrent reset (negative
-	// IncrementCost) is serialised entirely before or after this call.
-	delta := owedChildCost(accounting.Cost, accounting.ParentCostAccounted)
-
-	// Always run the parent UPDATE: for delta 0 it is a no-op write, but the
-	// RETURNING clause still surfaces sql.ErrNoRows if the parent was deleted
-	// between the child finishing and this call.
-	if _, err := qtx.IncrementSessionCost(ctx, db.IncrementSessionCostParams{
-		ID:   parentSessionID,
-		Cost: delta,
-	}); err != nil {
-		return fmt.Errorf("increment parent session cost: %w", err)
-	}
-
-	// Advance the child's accounted marker to its current cost so the next
-	// call charges only newly accrued cost. Inside the same tx as the parent
-	// charge, so a crash cannot leave the parent billed but the child lagging.
-	if err := qtx.SetParentCostAccounted(ctx, db.SetParentCostAccountedParams{
-		ID:                  childSessionID,
-		ParentCostAccounted: accounting.Cost,
-	}); err != nil {
-		return fmt.Errorf("set child accounted cost: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transfer: %w", err)
-	}
-
-	// Publish refreshed snapshots so the UI reflects both new balances.
-	if sess, err := s.Get(ctx, childSessionID); err == nil {
-		s.Publish(pubsub.UpdatedEvent, sess)
-	}
-	if sess, err := s.Get(ctx, parentSessionID); err == nil {
-		s.Publish(pubsub.UpdatedEvent, sess)
-	}
-	return nil
 }
 
 // UpdateSystemPrompt saves a custom system prompt for a session.

@@ -358,10 +358,10 @@ func TestFormatWatchSummary_Full(t *testing.T) {
 		Title:            "fix windows kill",
 		PromptTokens:     12345,
 		CompletionTokens: 678,
-		Cost:             0.1234,
+		OwnCost:          0.1234,
 		CreatedAt:        created.Unix(),
 	}
-	out := formatWatchSummary(sess, "stop", now)
+	out := formatWatchSummary(sess, sess.OwnCost, "stop", now)
 	assert.Contains(t, out, "--- session ended ---")
 	assert.Contains(t, out, "id:       abc-123")
 	assert.Contains(t, out, "title:    fix windows kill")
@@ -378,16 +378,16 @@ func TestFormatWatchSummary_Full(t *testing.T) {
 func TestFormatWatchSummary_WithBudget(t *testing.T) {
 	sess := session.Session{
 		ID:            "s1",
-		Cost:          0.05,
+		OwnCost:       0.05,
 		BudgetMaxCost: 1.0,
 	}
-	out := formatWatchSummary(sess, "max_cost", time.Now())
+	out := formatWatchSummary(sess, sess.OwnCost, "max_cost", time.Now())
 	assert.Contains(t, out, "cost:     $0.0500 / $1.0000 budget")
 }
 
 func TestFormatWatchSummary_NoTitle(t *testing.T) {
 	sess := session.Session{ID: "s1"}
-	out := formatWatchSummary(sess, "stop", time.Now())
+	out := formatWatchSummary(sess, sess.OwnCost, "stop", time.Now())
 	assert.NotContains(t, out, "title:", "empty title must be omitted entirely")
 	assert.Contains(t, out, "id:       s1")
 }
@@ -470,7 +470,7 @@ func TestFormatWatchSummary_NoCreatedAt(t *testing.T) {
 	// Session with CreatedAt == 0 (e.g. a synthetic / unreal session)
 	// should not panic on time.Unix and should print a 0s duration.
 	sess := session.Session{ID: "s1", CreatedAt: 0}
-	out := formatWatchSummary(sess, "stop", time.Now())
+	out := formatWatchSummary(sess, sess.OwnCost, "stop", time.Now())
 	assert.Contains(t, out, "duration: 0s")
 }
 

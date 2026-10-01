@@ -891,28 +891,31 @@ func cmpName(a, b string) int {
 	}
 }
 
-// flushQueuedUsage folds what the session spent since the first queued
-// iteration (turns of another owner) into the run's totals.
+// flushQueuedUsage folds the TOKENS accrued since the first queued
+// iteration into the run's totals. The run's cost needs no folding: the
+// window is a subtree difference (startMark vs the exit reading), so spend
+// between turns — whoever made it — is already inside (#1130).
 func (l *cliLoop) flushQueuedUsage(now usageMark) {
 	if l.queuedMark != nil {
-		l.tot.addSince(*l.queuedMark, now)
+		l.tot.addSinceTokens(*l.queuedMark, now)
 		l.queuedMark = nil
 	}
 }
 
 // applyTotals writes the run's totals into the envelope about to be flushed.
 func (l *cliLoop) applyTotals(final *RunResult) {
-	l.chargeRunningChildren()
 	if l.queuedMark != nil {
+		// Token folding for queued iterations: their spend needs no folding —
+		// the subtree window below already contains it (#1130).
 		l.flushQueuedUsage(l.sessionUsage())
 	}
 	l.tot.applyTo(final, l.started)
-	// The run's cost is the session's spend from the claim to now: it covers
-	// what happened between turns (a delegated child's cost is charged to the
-	// root there -- for a child still running, by chargeRunningChildren just
-	// above -- and a human turn on the same session is spend too), which the
-	// turns' own deltas miss. The per-turn sum stays as the fallback when a
-	// session read failed. Tokens are last-snapshot counters, summed per turn.
+	// The run's cost is the SUBTREE spend from the claim to now (#1130):
+	// sum of cost_self over the delegation subtree minus nothing else — the
+	// difference covers what happened between turns (a delegated child's
+	// spend, a human turn on the same session), which the turns' own deltas
+	// miss. The per-turn sum stays as the fallback when a read failed.
+	// Tokens are last-snapshot counters, summed per turn.
 	if end := l.sessionUsage(); l.startMark.ok && end.ok {
 		final.Usage.DeltaCostUSD = max(end.cost-l.startMark.cost, 0)
 	}
@@ -925,7 +928,9 @@ type usageMark struct {
 	ok     bool
 }
 
-// sessionUsage reads the session totals on a context that survives Ctrl-C.
+// sessionUsage reads the run's usage marks on a context that survives
+// Ctrl-C: tokens are the root row's snapshot counters, cost is the SUBTREE
+// spend (sum of cost_self over the delegation subtree, #1130).
 func (l *cliLoop) sessionUsage() usageMark {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
 	defer cancel()
@@ -933,14 +938,29 @@ func (l *cliLoop) sessionUsage() usageMark {
 	if err != nil {
 		return usageMark{}
 	}
-	return usageMark{tokens: sess.PromptTokens + sess.CompletionTokens, cost: sess.Cost, ok: true}
+	spent, err := l.app.Sessions.SubtreeSpent(ctx, l.sessionID)
+	if err != nil {
+		return usageMark{}
+	}
+	return usageMark{tokens: sess.PromptTokens + sess.CompletionTokens, cost: spent, ok: true}
 }
 
-// addSince adds what the session totals gained between two marks.
+// addSince adds what the session totals gained between two marks: the
+// interrupted-turn path, whose own deltas never landed anywhere else.
 func (t *loopTotals) addSince(before, after usageMark) {
 	if !before.ok || !after.ok {
 		return
 	}
 	t.tokens += max(after.tokens-before.tokens, 0)
 	t.cost += max(after.cost-before.cost, 0)
+}
+
+// addSinceTokens folds only the token counters between two marks: the
+// queued-iteration path (#1130 — the run's cost is the subtree window, so
+// folding queued spend here would double-count it at the exit).
+func (t *loopTotals) addSinceTokens(before, after usageMark) {
+	if !before.ok || !after.ok {
+		return
+	}
+	t.tokens += max(after.tokens-before.tokens, 0)
 }

@@ -1,11 +1,10 @@
-// R6C-3: a delegated child's spend after its first turn (its Drain turns) must
-// reach the parent's cost whichever way the delegation ends. runSubAgent
-// charges the parent when the child's FIRST turn returns; the child's reaction
-// turns run on its driver later and were charged to the child alone, so a
-// normal exit (no running row left for the app's chargeRunningChildren)
-// reported less than a Ctrl-C exit for the same work. The transfer is the
-// session store's parent_cost_accounted delta, so every charge below is
-// idempotent with the others.
+// #1130: the delegation cost tests, rewritten for the subtree-read model.
+// The transfer ledger is gone: a child charges its OWN cost_self as it runs,
+// and the parent's "including children" number is Service.SubtreeBudget —
+// a query over the delegation tree at read time. The old R6C-3 hazard
+// (a Drain turn's spend reaching the parent only via a release-ordered
+// transfer) is structurally gone: there is no moment the spend is not
+// already visible to the query.
 package agent
 
 import (
@@ -37,71 +36,66 @@ func (f *attemptFixture) sessionCost(id string) float64 {
 	f.t.Helper()
 	sess, err := f.env.sessions.Get(context.Background(), id)
 	require.NoError(f.t, err)
-	return sess.Cost
+	return sess.OwnCost
 }
 
-// TestDelegationRelease_ChargesChildReactionSpendBeforeTheNoticeCommits: the
-// child's first turn cost $0.10 and was transferred; its Drain turn costs $0.30;
-// the delegation then releases. The parent's cost holds both, exactly once,
-// and it already held them when the release's notice committed (a SQLite
-// trigger records the parent's cost at that commit): a `rush run` loop that
-// sees the notice as debt and exits reads the full cost. A late charge (the
-// child's own return, Shutdown, chargeRunningChildren) adds nothing.
+func (f *attemptFixture) subtreeBudget(id string) float64 {
+	f.t.Helper()
+	budget, err := f.env.sessions.SubtreeBudget(context.Background(), id)
+	require.NoError(f.t, err)
+	return budget
+}
+
+// TestDelegationRelease_ChildSpendVisibleToTheParentBudget: the child's
+// first turn costs $0.10, its Drain turn $0.30, the delegation then
+// releases. The parent's BUDGET holds both at every read, with no
+// transfer ordering to get wrong, and a release moves nothing anywhere.
 //
-// Revert-check: dropping the transfer from recheckChild's release leaves the
-// parent at $0.10 at the commit and after it, and this test goes red.
-func TestDelegationRelease_ChargesChildReactionSpendBeforeTheNoticeCommits(t *testing.T) {
+// Revert-check: dropping the delegation flag from CreateTaskSession (the
+// cost-tree edge) makes SubtreeBudget stop seeing the child entirely and
+// this test goes red at the first assertion.
+func TestDelegationRelease_ChildSpendVisibleToTheParentBudget(t *testing.T) {
 	ctx := context.Background()
 	c := newChildBGFixture(t, childBGMode{noIdle: true})
 	c.runs.SessionAgent = &spendingAgent{SessionAgent: c.sa, f: c.attemptFixture, child: c.childID, delta: 0.30}
-	c.exec(ctx, `CREATE TABLE fx_cost_at_commit (owner TEXT, cost REAL)`)
-	c.exec(ctx, `CREATE TRIGGER fx_cost_probe AFTER UPDATE OF state ON async_jobs
-		WHEN OLD.state = 'running' AND NEW.state <> 'running' AND NEW.child_session_id IS NOT NULL
-		BEGIN INSERT INTO fx_cost_at_commit SELECT NEW.owner_session_id, cost FROM sessions WHERE id = NEW.owner_session_id; END`)
 
-	// The first turn: spend, then runSubAgent's own transfer.
+	// The first turn: $0.10 lands in the child's own ledger and is already
+	// visible to the parent's budget before anything releases.
 	_, err := c.env.sessions.IncrementCost(ctx, c.childID, 0.10)
 	require.NoError(t, err)
-	require.NoError(t, c.coord.updateParentSessionCost(ctx, c.childID, c.parentID))
-	require.InDelta(t, 0.10, c.sessionCost(c.parentID), 1e-9)
+	require.InDelta(t, 0.10, c.subtreeBudget(c.parentID), 1e-9)
+	require.InDelta(t, 0, c.sessionCost(c.parentID), 1e-9, "the parent's own ledger carries nothing")
 	c.park()
 
 	c.finishShell() // the Drain turn: +$0.30 on the child
 	got := c.awaitRelease()
 	require.Equal(t, "delegate-1", got.ToolCallID)
 
-	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9, "both turns, once")
-	var atCommit float64
-	require.NoError(t, c.env.conn.QueryRowContext(ctx, `SELECT cost FROM fx_cost_at_commit WHERE owner = ?`, c.parentID).Scan(&atCommit))
-	require.InDelta(t, 0.40, atCommit, 1e-9, "the parent's cost is complete when the notice commits")
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9, "both turns, exactly once")
+	require.InDelta(t, 0, c.sessionCost(c.parentID), 1e-9, "no transfer ever touched the parent's row")
+	require.InDelta(t, 0.40, c.sessionCost(c.childID), 1e-9, "the child's ledger keeps the full spend")
 
-	// A later charge of the same child moves nothing (no double count).
-	require.NoError(t, c.coord.updateParentSessionCost(ctx, c.childID, c.parentID))
-	require.NoError(t, c.env.sessions.TransferChildCostToParent(ctx, c.childID, c.parentID))
-	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
-	require.InDelta(t, 0.40, c.sessionCost(c.childID), 1e-9)
+	// A second release moves nothing anywhere (there is nothing to move).
+	c.coord.afterRelease(c.childID)
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9)
+	require.InDelta(t, 0, c.sessionCost(c.parentID), 1e-9)
 }
 
-// TestChildRunEnd_ChargesTheParentItsSpend: a real Stop of a parked delegation
-// (the row goes terminal, the child's shell keeps running) after the child's
-// Drain turn spent $0.30. The Stop's own re-check cannot release the driver
-// (the shell still holds the scope), so the child's run end is the last thing
-// that can charge the parent: afterRelease charges FIRST, then its re-check
-// releases the driver, which is the order the plan relies on. Charged once; a
-// root's release charges nobody.
+// TestChildRunEnd_ReleaseChargesNothing: a real Stop of a parked delegation
+// after the child's Drain turn spent $0.30. The release machinery used to be
+// the only path the Drain spend had to the parent; now the budget was
+// complete all along, and the release is pure lifecycle: the driver is
+// released, no cost moves, and a root's release is a no-op.
 //
-// Revert-check: dropping the charge from afterRelease leaves the parent at
-// $0.10; swapping it with the re-check (noteSubAgentChildRunEnded first)
-// releases the driver before the charge finds it and leaves the parent at
-// $0.10 too: both turn this test red.
-func TestChildRunEnd_ChargesTheParentItsSpend(t *testing.T) {
+// Revert-check: re-adding any parent charge in afterRelease makes the
+// parent's own ledger non-zero and this test red.
+func TestChildRunEnd_ReleaseChargesNothing(t *testing.T) {
 	ctx := context.Background()
 	c := newChildBGFixture(t, childBGMode{noIdle: true})
 	c.coord.currentAgent = &mockSessionAgent{} // a root has no driver: Stop and the release route to it
 	c.park()
 	_, err := c.env.sessions.IncrementCost(ctx, c.childID, 0.10)
 	require.NoError(t, err)
-	require.NoError(t, c.coord.updateParentSessionCost(ctx, c.childID, c.parentID))
 
 	// A Drain turn spends $0.30, then the operator stops the delegation.
 	_, err = c.env.sessions.IncrementCost(ctx, c.childID, 0.30)
@@ -110,20 +104,21 @@ func TestChildRunEnd_ChargesTheParentItsSpend(t *testing.T) {
 	require.False(t, c.ledger.hasParked(), "the stopped delegation is terminal")
 	_, registered := c.coord.subAgentDrivers.get(c.childID)
 	require.True(t, registered, "the child's shell still holds its scope: the driver stays until the run end")
-	require.InDelta(t, 0.10, c.sessionCost(c.parentID), 1e-9, "nothing charged the Drain turn yet")
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9, "the budget never waited for a transfer")
 
-	// The shell ends and the child's mailbox is released.
+	// The shell ends and the child's mailbox is released: lifecycle only.
 	require.NoError(t, c.mgr.Kill(ctx, c.held.ID))
 	c.coord.afterRelease(c.childID)
 
-	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
 	_, registered = c.coord.subAgentDrivers.get(c.childID)
 	require.False(t, registered, "and its driver is released")
-	c.coord.afterRelease(c.childID) // a second release charges nothing more
-	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9)
+	require.InDelta(t, 0, c.sessionCost(c.parentID), 1e-9, "the release moved no cost")
+	c.coord.afterRelease(c.childID) // a second release still moves nothing
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9)
 
 	// A root session's release charges nobody.
 	c.coord.afterRelease(c.parentID)
-	require.InDelta(t, 0.40, c.sessionCost(c.parentID), 1e-9)
+	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9)
 	require.InDelta(t, 0, c.sessionCost(c.sessID), 1e-9)
 }

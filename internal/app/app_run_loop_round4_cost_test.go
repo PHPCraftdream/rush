@@ -48,9 +48,11 @@ func newDelegatingCostHarness(t *testing.T) (h *loopHarness, release func()) {
 
 func (h *loopHarness) sessionCost(t *testing.T) float64 {
 	t.Helper()
-	sess, err := h.app.Sessions.Get(context.Background(), h.sessionID)
+	// #1130: "the session's cost" for a running loop is the subtree budget
+	// (own + delegation children), the quantity the envelope windows over.
+	spent, err := h.app.Sessions.SubtreeSpent(context.Background(), h.sessionID)
 	require.NoError(t, err)
-	return sess.Cost
+	return spent
 }
 
 // The async child's spend is charged to the root between its turns; the run's

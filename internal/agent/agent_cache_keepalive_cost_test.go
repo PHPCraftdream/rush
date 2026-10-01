@@ -123,12 +123,12 @@ func TestFireCacheKeepAlive_RecordsReplayCost(t *testing.T) {
 	require.Eventually(t, func() bool {
 		updated, err := env.sessions.Get(t.Context(), sess.ID)
 		require.NoError(t, err)
-		return updated.Cost > 0
+		return updated.OwnCost > 0
 	}, 2*time.Second, 5*time.Millisecond, "expected replay cost to be recorded on the session")
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, expectedCost, updated.Cost, 1e-9, "recorded cost must match the usage-derived formula")
+	require.InDelta(t, expectedCost, updated.OwnCost, 1e-9, "recorded cost must match the usage-derived formula")
 
 	// PromptTokens/CompletionTokens are a session-level SNAPSHOT the main
 	// turn owns (see recordCacheKeepAliveCost's doc) — a replay must never
@@ -164,7 +164,7 @@ func TestFireCacheKeepAlive_SkipsWhenSessionAtMaxCost(t *testing.T) {
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, 5.0, updated.Cost, 1e-9, "cost must remain unchanged, no replay spend")
+	require.InDelta(t, 5.0, updated.OwnCost, 1e-9, "cost must remain unchanged, no replay spend")
 }
 
 // TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight proves
@@ -223,7 +223,7 @@ func TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight(t *tes
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, maxCost, updated.Cost, 1e-9,
+	require.InDelta(t, maxCost, updated.OwnCost, 1e-9,
 		"the replay's own cost must not be charged on top of an already-over-cap session")
 }
 
@@ -530,7 +530,7 @@ func TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost(t *testing.T
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, 0.09, updated.Cost, 1e-9,
+	require.InDelta(t, 0.09, updated.OwnCost, 1e-9,
 		"a charge whose delta would cross the remaining maxCost headroom must be refused atomically, not layered on top (K-2: 0.09 + 0.05 >= 0.10)")
 
 	require.EqualValues(t, 1, lm.calls.Load(),

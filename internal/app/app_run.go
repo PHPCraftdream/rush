@@ -401,7 +401,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	)
 	runStart := time.Now()
 	tokensBefore := sess.PromptTokens + sess.CompletionTokens
-	costBefore := sess.Cost
+	// #1130: the window is the SUBTREE spend (delegation children included),
+	// not the root row's own ledger. A failed read starts the window at 0 —
+	// the hook then under-reports instead of inventing a number.
+	costBefore, costBeforeErr := app.Sessions.SubtreeSpent(ctx, sess.ID)
+	if costBeforeErr != nil {
+		costBefore = 0
+	}
 
 	// Fork patch (operator UX): persist ended_reason when the run finishes.
 	// hookExitReason is always set before return, so this defer fires after it.
@@ -454,7 +460,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			defer cleanupCancel()
 			if freshSess, err := app.Sessions.Get(cleanupCtx, sess.ID); err == nil {
 				hookTokens = freshSess.PromptTokens + freshSess.CompletionTokens - tokensBefore
-				hookCost = freshSess.Cost - costBefore
+				spentNow, spentErr := app.Sessions.SubtreeSpent(cleanupCtx, sess.ID)
+				if spentErr != nil {
+					slog.Warn("Failed to refresh session budget for on-finish hook usage", "session_id", sess.ID, "err", spentErr)
+				}
+				hookCost = spentNow - costBefore
 			} else {
 				slog.Warn("Failed to refresh session for on-finish hook usage", "session_id", sess.ID, "err", err)
 			}

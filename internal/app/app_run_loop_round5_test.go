@@ -334,20 +334,24 @@ func (h *loopHarness) childSessionOf(t *testing.T) string {
 
 func (h *loopHarness) costOf(t *testing.T, id string) float64 {
 	t.Helper()
-	sess, err := h.app.Sessions.Get(context.Background(), id)
+	// #1130: the root's "cost" is the subtree spend; the root's own row
+	// never carries the child's.
+	spent, err := h.app.Sessions.SubtreeSpent(context.Background(), id)
 	require.NoError(t, err)
-	return sess.Cost
+	return spent
 }
 
-// R5C-3: a cancel exit (Ctrl-C, --timeout) with a delegation still running
-// reports the child's spend so far in the envelope: it is charged to the root
-// (delta-based, through parent_cost_accounted) before the window is read. The
-// later charge -- the child finishing, or App.Shutdown cancelling it -- adds
-// only what accrued after that, so the root's final total is its own spend
-// plus the child's total, never the child's spend twice.
+// R5C-3, subtree-read model (#1130): a cancel exit (Ctrl-C, --timeout) with a
+// delegation still running reports the child's spend so far in the envelope:
+// the window is a subtree difference, and the running child charges its own
+// cost_self the moment it spends, so the exit reading already contains it.
+// The later spend -- the child finishing, or App.Shutdown cancelling it --
+// grows the child's own ledger and, with it, every later budget read, never
+// the envelope that already flushed.
 //
-// Revert-check: dropping chargeRunningChildren from applyTotals reports only
-// the root's own fraction of a cent.
+// Revert-check: windowing over the root row's own ledger again (or summing
+// the turns' deltas) drops the running child: the envelope reports a
+// fraction of a cent next to an error naming a dollar.
 func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -374,15 +378,11 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			case <-time.After(30 * time.Second):
 				t.Fatal("the child never reached its second request")
 			}
-			rootOwn := h.sessionCost(t)
-			require.Less(t, rootOwn, 0.01, "before the exit only the root's own turns are charged to the root")
-			// Records every transfer of a child's spend to its parent (each one
-			// advances parent_cost_accounted).
-			_, err := h.app.DB().ExecContext(context.Background(), `CREATE TABLE fx_transfers (n INTEGER PRIMARY KEY AUTOINCREMENT, child TEXT)`)
-			require.NoError(t, err)
-			_, err = h.app.DB().ExecContext(context.Background(), `CREATE TRIGGER fx_transfer AFTER UPDATE OF parent_cost_accounted ON sessions
-				BEGIN INSERT INTO fx_transfers (child) VALUES (NEW.id); END`)
-			require.NoError(t, err)
+			// At this point the subtree already holds the running child's
+			// first-turn spend: the child paid its own row the moment it spent.
+			spentBeforeExit := h.sessionCost(t)
+			require.GreaterOrEqual(t, spentBeforeExit, r5ChildFirstCost,
+				"the running child's spend is in the subtree before any exit")
 			cancel()
 			var got outcome
 			select {
@@ -396,7 +396,10 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			require.Equal(t, "canceled", got.res.ExitReason)
 			require.GreaterOrEqual(t, got.res.Usage.DeltaCostUSD, r5ChildFirstCost,
 				"the envelope counts the running child's spend so far")
-			require.InDelta(t, rootOwn+r5ChildFirstCost, got.res.Usage.DeltaCostUSD, 0.001, "the envelope reports the root's spend plus the child's, once")
+			require.GreaterOrEqual(t, got.res.Usage.DeltaCostUSD, r5ChildFirstCost,
+				"the envelope counts the running child's spend so far")
+			require.InDelta(t, spentBeforeExit, got.res.Usage.DeltaCostUSD, 0.001,
+				"the envelope reports the subtree spend from the claim to the exit")
 
 			child := h.childSessionOf(t)
 			require.InDelta(t, r5ChildFirstCost, h.costOf(t, child), 0.01)
@@ -405,60 +408,54 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			} else {
 				h.app.CancelAgents()
 			}
-			// The child's own charge on the root is its second transfer (the first one
-			// was the loop's, at the exit).
+			// The child keeps charging its own ledger after the envelope has
+			// flushed; the flushed envelope is untouched, later budget reads
+			// see the growth, and nothing is counted twice.
+			var childTotal float64
 			require.Eventually(t, func() bool {
-				var n int
-				return h.app.DB().QueryRowContext(context.Background(),
-					`SELECT COUNT(*) FROM fx_transfers WHERE child = ?`, child).Scan(&n) == nil && n >= 2
-			}, 30*time.Second, 20*time.Millisecond, "the child's own charge on the root has run")
+				childTotal = h.costOf(t, child)
+				return childTotal >= r5ChildFirstCost+tc.childLate-0.005
+			}, 30*time.Second, 20*time.Millisecond, "the child's own ledger holds its total")
 
-			childTotal := h.costOf(t, child)
-			require.InDelta(t, r5ChildFirstCost+tc.childLate, childTotal, 0.01)
-			require.InDelta(t, rootOwn+childTotal, h.sessionCost(t), 1e-9,
-				"the child's spend reaches the root exactly once: the later charge is only the delta")
+			rootOwn, err := h.app.Sessions.Get(context.Background(), h.sessionID)
+			require.NoError(t, err)
+			require.InDelta(t, rootOwn.OwnCost+childTotal, h.sessionCost(t), 0.01,
+				"the child's spend reaches the root's budget exactly once: the later spend is only the delta")
 		})
 	}
 }
 
-// R5C-3: nested delegations are charged bottom-up (grandchild onto child, then
-// child -- now including it -- onto the root), and repeating the charge moves
-// nothing.
+// R5C-3, rewritten for the subtree-read model (#1130): nested delegations
+// sum bottom-up in one query (grandchild into child's subtree, child into
+// root's), and repeating the read moves nothing — there is no transfer left
+// to double-fire.
 //
-// Revert-check: dropping the deepest-first sort in chargeRunningChildren
-// charges the root the child's own spend only, before the grandchild's arrives.
+// Revert-check: a tree walk that is not a true recursion (e.g. a fixed-depth
+// join) under-reports the root; a UNION ALL CTE double-counts a node reachable
+// by two paths.
 func TestChargeRunningChildren_NestedDelegationsBottomUpAndIdempotent(t *testing.T) {
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "first answer", 11, 3)
 	})
 	ctx := context.Background()
-	newSession := func(title string, cost float64) string {
-		sess, err := h.app.Sessions.Create(ctx, title)
-		require.NoError(t, err)
-		_, err = h.app.Sessions.IncrementCost(ctx, sess.ID, cost)
-		require.NoError(t, err)
-		return sess.ID
-	}
-	root, child, grandchild := newSession("root", 0.1), newSession("child", 0.2), newSession("grandchild", 0.3)
-	// Rows are claimed shallow-first, so an unsorted walk charges the root before
-	// the grandchild's spend reached the child.
-	for _, edge := range [][2]string{{root, child}, {child, grandchild}} {
-		_, err := h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
-			Owner: edge[0], ToolCallID: "deleg-" + edge[1], Kind: session.JobKindAgent, Input: "x",
-			ChildSessionID: edge[1], ToolName: "agent",
-		})
+	spend := func(id string, cost float64) {
+		_, err := h.app.Sessions.IncrementCost(ctx, id, cost)
 		require.NoError(t, err)
 	}
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: root}
+	root, err := h.app.Sessions.Create(ctx, "root")
+	require.NoError(t, err)
+	spend(root.ID, 0.1)
+	child, err := h.app.Sessions.CreateTaskSession(ctx, "deleg-child", root.ID, "child")
+	require.NoError(t, err)
+	spend(child.ID, 0.2)
+	grandchild, err := h.app.Sessions.CreateTaskSession(ctx, "deleg-grandchild", child.ID, "grandchild")
+	require.NoError(t, err)
+	spend(grandchild.ID, 0.3)
 
-	l.chargeRunningChildren()
+	require.InDelta(t, 0.6, h.costOf(t, root.ID), 1e-9, "root: own 0.1 + child 0.2 + grandchild 0.3")
+	require.InDelta(t, 0.5, h.costOf(t, child.ID), 1e-9, "child: own 0.2 + grandchild 0.3")
+	require.InDelta(t, 0.3, h.costOf(t, grandchild.ID), 1e-9)
 
-	require.InDelta(t, 0.6, h.costOf(t, root), 1e-9, "root: own 0.1 + child 0.2 + grandchild 0.3")
-	require.InDelta(t, 0.5, h.costOf(t, child), 1e-9, "child: own 0.2 + grandchild 0.3")
-	require.InDelta(t, 0.3, h.costOf(t, grandchild), 1e-9)
-
-	l.chargeRunningChildren()
-
-	require.InDelta(t, 0.6, h.costOf(t, root), 1e-9, "a repeated charge moves only new spend")
-	require.InDelta(t, 0.5, h.costOf(t, child), 1e-9)
+	require.InDelta(t, 0.6, h.costOf(t, root.ID), 1e-9, "a repeated read moves nothing")
+	require.InDelta(t, 0.5, h.costOf(t, child.ID), 1e-9)
 }

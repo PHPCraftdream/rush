@@ -462,12 +462,9 @@ func (c *coordinator) afterRelease(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
-	// A delegated child's turn just ended (its first turn, a Drain turn, a turn a
-	// Stop cut off): charge its spend to the parent before the release re-check
-	// (R6C-3). A root has no driver, so nothing happens for it.
-	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
-		c.chargeChildToParent(sessionID, driver.parentSessionID)
-	}
+	// A delegated child's turn just ended (its first turn, a Drain turn, a
+	// turn a Stop cut off). #1130: no parent charge — the child paid its own
+	// cost_self as it ran, and readers sum the subtree on demand.
 	c.noteSubAgentChildRunEnded(sessionID)
 	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)

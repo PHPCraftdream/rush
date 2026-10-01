@@ -54,8 +54,8 @@ func TestPersistEndedReason_NoEnvelopeDerivesTheReasonFromTheError(t *testing.T)
 // countingSessions counts the reads a cap/cancel check costs.
 type countingSessions struct {
 	session.Service
-	gets, cancelReads atomic.Int32
-	sess              session.Session
+	gets, cancelReads, budgetReads atomic.Int32
+	sess                           session.Session
 }
 
 func (c *countingSessions) Get(context.Context, string) (session.Session, error) {
@@ -68,20 +68,28 @@ func (c *countingSessions) IsCancelRequested(context.Context, string) (bool, err
 	return c.sess.CancelRequested, nil
 }
 
-// R8B-3: the check per wake is ONE session-row read: the same row answers the
-// cap and the cancel flag. With no cap set the cheap flag read stays alone
-// (no full-row read at every wake).
+func (c *countingSessions) SubtreeBudget(context.Context, string) (float64, error) {
+	c.budgetReads.Add(1)
+	return c.sess.OwnCost, nil
+}
+
+// R8B-3: the check per wake is ONE session-row read for the cancel flag and
+// the token snapshots; the SUBTREE budget (#1130) is read only when a
+// max-cost is actually set (the budget, not the row's own ledger, is what
+// --max-cost compares). Without a cap only the cheap flag read runs.
 //
 // Revert-check: reading the flag separately (IsCancelRequested next to Get)
-// makes cancelReads 1 in the capped case.
+// makes cancelReads 1 in the capped case; reading the budget when no
+// max-cost is set makes budgetReads 1 in the "no caps" case.
 func TestStopError_OneReadPerWake(t *testing.T) {
 	t.Run("caps set", func(t *testing.T) {
-		svc := &countingSessions{sess: session.Session{Cost: 0.1}}
+		svc := &countingSessions{sess: session.Session{OwnCost: 0.1}}
 		l := &cliLoop{app: &App{Sessions: svc}, ctx: t.Context(), sessionID: "s", overrides: RunOverrides{MaxCost: 5}}
 
 		require.NoError(t, l.stopError())
 
 		require.EqualValues(t, 1, svc.gets.Load())
+		require.EqualValues(t, 1, svc.budgetReads.Load())
 		require.EqualValues(t, 0, svc.cancelReads.Load())
 	})
 	t.Run("caps set, cancel requested", func(t *testing.T) {
@@ -92,6 +100,7 @@ func TestStopError_OneReadPerWake(t *testing.T) {
 		require.ErrorAs(t, l.stopError(), &inc)
 		require.Equal(t, "canceled", inc.reason)
 		require.EqualValues(t, 1, svc.gets.Load())
+		require.EqualValues(t, 0, svc.budgetReads.Load(), "a token cap never reads the budget")
 		require.EqualValues(t, 0, svc.cancelReads.Load())
 	})
 	t.Run("no caps", func(t *testing.T) {
@@ -101,6 +110,7 @@ func TestStopError_OneReadPerWake(t *testing.T) {
 		require.NoError(t, l.stopError())
 
 		require.EqualValues(t, 0, svc.gets.Load())
+		require.EqualValues(t, 0, svc.budgetReads.Load())
 		require.EqualValues(t, 1, svc.cancelReads.Load())
 	})
 }

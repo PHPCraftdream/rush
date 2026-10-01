@@ -87,7 +87,9 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	sessions = visible
 
-	// Apply --since filter.
+	// Apply --since filter. #1130: a root's activity is its subtree's — a
+	// busy child keeps the root visible even though the root row itself is
+	// idle, without the child ever writing the parent's updated_at.
 	if sinceStr != "" {
 		sinceDur, err := parseSinceDuration(sinceStr)
 		if err != nil {
@@ -96,7 +98,11 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 		cutoff := time.Now().Add(-sinceDur).Unix()
 		filtered := sessions[:0]
 		for _, s := range sessions {
-			if s.UpdatedAt >= cutoff {
+			active, err := a.Sessions.SubtreeUpdatedAt(cmd.Context(), s.ID)
+			if err != nil {
+				active = s.UpdatedAt
+			}
+			if active >= cutoff {
 				filtered = append(filtered, s)
 			}
 		}
@@ -112,15 +118,17 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	budgets := sessionBudgets(cmd.Context(), a.Sessions, sessions)
+
 	switch by {
 	case "model", "":
-		return costByModel(sessions, asJSON)
+		return costByModel(sessions, budgets, asJSON)
 	case "day":
-		return costByDay(sessions, asJSON)
+		return costByDay(sessions, budgets, asJSON)
 	case "session":
-		return costBySession(sessions, asJSON, topN)
+		return costBySession(sessions, budgets, asJSON, topN)
 	case "total":
-		return costTotal(sessions, asJSON)
+		return costTotal(sessions, budgets, asJSON)
 	default:
 		return fmt.Errorf("--by: invalid value %q (allowed: model|day|session|total)", by)
 	}
@@ -161,7 +169,8 @@ type costRow struct {
 	CostUSD  float64 `json:"cost_usd"`
 }
 
-func costByModel(sessions []session.Session, asJSON bool) error {
+func costByModel(sessions []session.Session, budgets map[string]float64, asJSON bool) error {
+	cost := func(s session.Session) float64 { return budgets[s.ID] }
 	groups := make(map[string]*costRow)
 	var keys []string
 	var totalTokens int64
@@ -181,9 +190,9 @@ func costByModel(sessions []session.Session, asJSON bool) error {
 		}
 		row.Sessions++
 		row.Tokens += s.PromptTokens + s.CompletionTokens
-		row.CostUSD += s.Cost
+		row.CostUSD += cost(s)
 		totalTokens += s.PromptTokens + s.CompletionTokens
-		totalCost += s.Cost
+		totalCost += cost(s)
 		totalSessions++
 	}
 
@@ -214,7 +223,8 @@ func costByModel(sessions []session.Session, asJSON bool) error {
 	return tw.Flush()
 }
 
-func costByDay(sessions []session.Session, asJSON bool) error {
+func costByDay(sessions []session.Session, budgets map[string]float64, asJSON bool) error {
+	cost := func(s session.Session) float64 { return budgets[s.ID] }
 	groups := make(map[string]*costRow)
 	var keys []string
 	var totalTokens int64
@@ -231,9 +241,9 @@ func costByDay(sessions []session.Session, asJSON bool) error {
 		}
 		row.Sessions++
 		row.Tokens += s.PromptTokens + s.CompletionTokens
-		row.CostUSD += s.Cost
+		row.CostUSD += cost(s)
 		totalTokens += s.PromptTokens + s.CompletionTokens
-		totalCost += s.Cost
+		totalCost += cost(s)
 		totalSessions++
 	}
 
@@ -262,9 +272,10 @@ func costByDay(sessions []session.Session, asJSON bool) error {
 	return tw.Flush()
 }
 
-func costBySession(sessions []session.Session, asJSON bool, topN int) error {
+func costBySession(sessions []session.Session, budgets map[string]float64, asJSON bool, topN int) error {
+	cost := func(s session.Session) float64 { return budgets[s.ID] }
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].Cost > sessions[j].Cost
+		return cost(sessions[i]) > cost(sessions[j])
 	})
 
 	if topN > 0 && len(sessions) > topN {
@@ -285,7 +296,7 @@ func costBySession(sessions []session.Session, asJSON bool, topN int) error {
 				ID:        s.ID,
 				Title:     s.Title,
 				Tokens:    s.PromptTokens + s.CompletionTokens,
-				CostUSD:   s.Cost,
+				CostUSD:   cost(s),
 				UpdatedAt: s.UpdatedAt,
 			})
 		}
@@ -297,17 +308,18 @@ func costBySession(sessions []session.Session, asJSON bool, topN int) error {
 	fmt.Fprintln(tw, "ID\tTITLE\tTOKENS\tCOST")
 	for _, s := range sessions {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t$%.3f\n",
-			s.ID, truncate(s.Title, 40), formatInt64(s.PromptTokens+s.CompletionTokens), s.Cost)
+			s.ID, truncate(s.Title, 40), formatInt64(s.PromptTokens+s.CompletionTokens), cost(s))
 	}
 	return tw.Flush()
 }
 
-func costTotal(sessions []session.Session, asJSON bool) error {
+func costTotal(sessions []session.Session, budgets map[string]float64, asJSON bool) error {
+	cost := func(s session.Session) float64 { return budgets[s.ID] }
 	var totalTokens int64
 	var totalCost float64
 	for _, s := range sessions {
 		totalTokens += s.PromptTokens + s.CompletionTokens
-		totalCost += s.Cost
+		totalCost += cost(s)
 	}
 
 	if asJSON {

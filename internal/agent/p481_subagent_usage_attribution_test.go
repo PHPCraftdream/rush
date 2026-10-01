@@ -91,22 +91,20 @@ func TestSubAgentUsage_CostTransferDoesNotDuplicateMessageRows(t *testing.T) {
 		Provider: "zai", Model: "glm-5.3", CacheSupport: message.CacheSupportNative,
 	}))
 
-	// Charge the child's cost to the parent, the way a finished sub-agent does.
+	// The child charges its OWN ledger (#1130: no transfer); the parent's
+	// budget picks the spend up through the delegation tree.
 	_, err = env.sessions.IncrementCost(ctx, child.ID, 1.25)
 	require.NoError(t, err)
-	require.NoError(t, env.sessions.TransferChildCostToParent(ctx, child.ID, parent.ID))
+	budget, budgetErr := env.sessions.SubtreeBudget(ctx, parent.ID)
+	require.NoError(t, budgetErr)
+	require.InDelta(t, 1.25, budget, 1e-9,
+		"the subtree budget is the intended mechanism and must still work")
 
-	// The parent's SESSION cost moved...
-	freshParent, err := env.sessions.Get(ctx, parent.ID)
-	require.NoError(t, err)
-	require.InDelta(t, 1.25, freshParent.Cost, 1e-9,
-		"cost transfer is the intended mechanism and must still work")
-
-	// ...but no message row followed it.
+	// ...and no message row appeared on the parent.
 	parentReport, err := env.messages.UsageBySession(ctx, parent.ID)
 	require.NoError(t, err)
 	require.Empty(t, parentReport.ByModel,
-		"cost transfer must not create usage rows on the parent; the cross-session "+
+		"cross-session cost must not create usage rows on the parent; the cross-session "+
 			"aggregate includes child sessions and would double-count the turn")
 
 	// And the whole-fleet aggregate still sees the cost exactly once.

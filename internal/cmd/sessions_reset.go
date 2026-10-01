@@ -108,20 +108,15 @@ rush sessions reset pr-42 --force
 			return err
 		}
 		// Zero the per-session usage counters so a follow-up run starts
-		// from an honest "empty context" estimate.
-		//
-		// Fork patch (concurrency): cost is mutated only through
-		// IncrementCost now — Save no longer writes the column. Zero it
-		// by applying a negative delta equal to the current value. See
-		// CHANGELOG.fork.md (Section 4.I).
-		previousCost := sess.Cost
+		// from an honest "empty context" estimate. cost_self is never
+		// lowered (it is monotonic, #1130): the reset freezes the node's
+		// budget instead — cost_base = subtree_spent, so the budget
+		// (subtree minus base) starts from zero again.
 		if err := a.Sessions.SetSummaryAndUsage(cmd.Context(), sess.ID, "", 0, 0); err != nil {
 			return fmt.Errorf("failed to reset session counters for %s: %w", sess.ID, err)
 		}
-		if previousCost != 0 {
-			if _, err := a.Sessions.IncrementCost(cmd.Context(), sess.ID, -previousCost); err != nil {
-				return fmt.Errorf("failed to reset session cost for %s: %w", sess.ID, err)
-			}
+		if err := a.Sessions.ResetCostBase(cmd.Context(), sess.ID); err != nil {
+			return fmt.Errorf("failed to reset session cost for %s: %w", sess.ID, err)
 		}
 		fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sess.ID, short(session.HashID(sess.ID)))
 		if outcome.JobsVoided+outcome.NoticesVoided > 0 {

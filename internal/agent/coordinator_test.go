@@ -557,12 +557,10 @@ func TestRunSubAgent(t *testing.T) {
 		assert.True(t, resp.IsError, "the failure must still be surfaced as a tool error")
 		assert.Equal(t, "Failed to generate response: connection reset by peer", resp.Content)
 
-		// Despite the error, the parent must have been charged the 0.04 the
-		// child spent. This is the regression: previously this was 0.0.
-		updated, err := env.sessions.Get(t.Context(), parentSession.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.04, updated.Cost, 1e-9,
-			"a failed sub-agent run must still charge the parent for the cost it accrued before failing")
+		// Despite the error, the parent's budget must already include the
+		// 0.04 the child spent. This is the regression: previously 0.0.
+		assert.InDelta(t, 0.04, budgetOf(t, env, parentSession.ID), 1e-9,
+			"a failed sub-agent run must still charge the child's own ledger for the cost it accrued before failing")
 	})
 
 	// Gap 2 (Phase 3.2): resume_session_id must continue the SAME session -
@@ -727,9 +725,7 @@ func TestRunSubAgent(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		afterPauseParent, err := env.sessions.Get(t.Context(), parentSession.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.03, afterPauseParent.Cost, 1e-9, "the pre-pause cost must reach the parent exactly once")
+		assert.InDelta(t, 0.03, budgetOf(t, env, parentSession.ID), 1e-9, "the pre-pause cost must reach the parent's budget exactly once")
 
 		resumeAgent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 			// Simulate cost accruing on the resumed turn, ON TOP of the
@@ -750,10 +746,8 @@ func TestRunSubAgent(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		updatedParent, err := env.sessions.Get(t.Context(), parentSession.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.05, updatedParent.Cost, 1e-9,
-			"parent must be charged the child's total (0.03+0.02), not double-charged the pre-pause portion (0.03+0.05=0.08)")
+		assert.InDelta(t, 0.05, budgetOf(t, env, parentSession.ID), 1e-9,
+			"the budget must include the child's total (0.03+0.02), not double-count the pre-pause portion (0.03+0.05=0.08)")
 	})
 
 	t.Run("session setup callback is invoked", func(t *testing.T) {
@@ -809,8 +803,6 @@ func TestRunSubAgent(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		updated, err := env.sessions.Get(t.Context(), parentSession.ID)
-		require.NoError(t, err)
-		assert.InDelta(t, 0.05, updated.Cost, 1e-9)
+		assert.InDelta(t, 0.05, budgetOf(t, env, parentSession.ID), 1e-9)
 	})
 }

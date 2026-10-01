@@ -112,6 +112,7 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		PromptTokens     int64   `json:"prompt_tokens"`
 		CompletionTokens int64   `json:"completion_tokens"`
 		CostUSD          float64 `json:"cost_usd"`
+		OwnCostUSD       float64 `json:"own_cost_usd"`
 		EndedReason      string  `json:"ended_reason,omitempty"`
 		BudgetMaxCost    float64 `json:"budget_max_cost,omitempty"`
 		BudgetMaxTokens  int64   `json:"budget_max_tokens,omitempty"`
@@ -173,7 +174,9 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		MessageCount:     sess.MessageCount,
 		PromptTokens:     sess.PromptTokens,
 		CompletionTokens: sess.CompletionTokens,
-		CostUSD:          sess.Cost,
+		// #1130: cost_usd = subtree budget; OwnCostUSD = the node's own ledger.
+		CostUSD:          sessionBudget(cmd.Context(), a.Sessions, sess),
+		OwnCostUSD:       sess.OwnCost,
 		EndedReason:      sess.EndedReason,
 		BudgetMaxCost:    sess.BudgetMaxCost,
 		BudgetMaxTokens:  sess.BudgetMaxTokens,

@@ -106,7 +106,7 @@ func (m *mockSessionService) List(context.Context) ([]session.Session, error) {
 func (m *mockSessionService) IncrementCost(_ context.Context, id string, delta float64) (session.Session, error) {
 	for i, s := range m.sessions {
 		if s.ID == id {
-			m.sessions[i].Cost += delta
+			m.sessions[i].OwnCost += delta
 			return m.sessions[i], nil
 		}
 	}
@@ -116,7 +116,7 @@ func (m *mockSessionService) IncrementCost(_ context.Context, id string, delta f
 func (m *mockSessionService) IncrementCostIfUnderMax(ctx context.Context, id string, delta, maxCost float64) (session.Session, bool, error) {
 	if maxCost > 0 {
 		for _, s := range m.sessions {
-			if s.ID == id && s.Cost+delta >= maxCost {
+			if s.ID == id && s.OwnCost+delta >= maxCost {
 				return s, false, nil
 			}
 		}
@@ -125,7 +125,24 @@ func (m *mockSessionService) IncrementCostIfUnderMax(ctx context.Context, id str
 	return sess, err == nil, err
 }
 
-func (m *mockSessionService) TransferChildCostToParent(context.Context, string, string) error {
+func (m *mockSessionService) SubtreeBudget(context.Context, string) (float64, error) {
+	return 0, nil
+}
+
+func (m *mockSessionService) SubtreeSpent(context.Context, string) (float64, error) {
+	return 0, nil
+}
+
+func (m *mockSessionService) SubtreeUpdatedAt(ctx context.Context, sessionID string) (int64, error) {
+	for _, s := range m.sessions {
+		if s.ID == sessionID {
+			return s.UpdatedAt, nil
+		}
+	}
+	return 0, nil
+}
+
+func (m *mockSessionService) ResetCostBase(context.Context, string) error {
 	return nil
 }
 

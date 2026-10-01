@@ -52,6 +52,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Calling a non-existent tool now returns the closest real tool name
   ("unknown tool \"gash\" — did you mean \"bash\"?") or, when nothing is
   close, the list of available tools — instead of a bare "tool not found".
+- `rush run` cost model (#1130): "cost including children" is now a query
+  over the delegation tree at read time, not a transfer ledger. Each session
+  charges only its OWN cost (`cost_self`, monotonic); the per-node columns
+  `cost_self`/`cost_base`/`cost_parent_id` are added by migration
+  `20261001000001_run_cost_subtree.sql`, whose backfill preserves the old
+  displayed totals exactly (additive only: `cost` stays as a mirror for old
+  binaries; rollback = drop of the new columns). Visible contract changes:
+  `cost_usd` keeps its meaning (subtree budget since the last
+  `sessions reset`), `sessions show --json` adds `own_cost_usd`;
+  `--max-cost` now compares the root's subtree budget (a delegated child's
+  spend is visible to the cap the moment the child spends, previously only
+  after transfer points); `--max-tokens` still compares the root row only.
+  `sessions reset` no longer lowers any cost: it freezes the budget
+  (`cost_base`), so a reset can never lose spend from the ledger; the
+  `rush run` cost window (`delta_cost_usd`, `RUSH_COST_USD`) is a subtree
+  difference and is unaffected by resets. `sessions cost --since` and
+  `--continue`/list ordering now follow delegation-subtree activity
+  (max `updated_at` over the tree) — a busy child keeps its root visible
+  without writing the parent's `updated_at`.
 
 - Changed: skills from other tools' directories (`~/.claude/skills`, the
   project's `.claude/skills` and `.cursor/skills`) are no longer advertised

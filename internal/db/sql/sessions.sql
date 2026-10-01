@@ -15,7 +15,8 @@ INSERT INTO sessions (
     fast_model_provider,
     fast_model_id,
     yolo_enabled,
-    origin
+    origin,
+    cost_parent_id
 ) VALUES (
     ?,
     ?,
@@ -32,6 +33,7 @@ INSERT INTO sessions (
     ?,
     ?,
     0,
+    ?,
     ?
 ) RETURNING *;
 
@@ -77,15 +79,6 @@ SELECT *
 FROM sessions
 WHERE id = ? LIMIT 1;
 
--- name: GetLastSession :one
--- The most recently updated TOP-LEVEL session (`rush run --continue`): a
--- delegated child updated later must never be taken for it.
-SELECT *
-FROM sessions
-WHERE parent_session_id IS NULL
-ORDER BY updated_at DESC
-LIMIT 1;
-
 -- name: ListSessions :many
 SELECT *
 FROM sessions
@@ -109,13 +102,15 @@ WHERE parent_session_id = ?
 ORDER BY created_at ASC;
 
 -- name: IncrementSessionCost :one
--- Atomic additive update for session cost. Safe under fan-out (multiple
--- sub-agent goroutines finishing concurrently and each charging the
--- parent) and across processes (orchestrator with parallel rush runs).
--- Returns the updated row so the caller can refresh its snapshot.
+-- Atomic additive update for the node's OWN cost. Safe under fan-out and
+-- across processes. `cost_self` is the monotonic per-node ledger the
+-- delegation-tree queries read; `cost` is a mirror kept for old binaries
+-- (rollback path, #1130). Returns the updated row so the caller can
+-- refresh its snapshot.
 UPDATE sessions
 SET
     cost = cost + ?,
+    cost_self = cost_self + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
 RETURNING *;
@@ -137,15 +132,18 @@ RETURNING *;
 -- budget in the same shape and must keep their existing unconditional
 -- semantics.
 --
--- Returns rows affected: 0 means the charge was refused because
--- cost + delta would meet or exceed max_cost -- the caller must treat that
--- the same as an up-front max-cost skip (no charge landed).
+-- Returns rows affected: 0 means the charge was refused because the
+-- subtree budget + delta would meet or exceed max_cost. The subtree
+-- predicate lives in Go (session service, BEGIN IMMEDIATE tx): sqlc's
+-- parser cannot bind a WITH to an UPDATE, and the budget must be read in
+-- the same write transaction (SQLite serializes writers) to keep the #782
+-- TOCTOU closed. This query is the unconditional arm of that method.
 UPDATE sessions
 SET
     cost = cost + sqlc.arg('delta'),
+    cost_self = cost_self + sqlc.arg('delta'),
     updated_at = strftime('%s', 'now')
-WHERE id = sqlc.arg('id')
-  AND cost + sqlc.arg('delta') < sqlc.arg('max_cost');
+WHERE id = sqlc.arg('id');
 
 -- name: RenameSession :exec
 UPDATE sessions
@@ -173,25 +171,45 @@ SET
 WHERE id = ?;
 
 -- name: GetSessionCostAccounting :one
--- Returns the child's current cost and the amount already charged to the
--- parent (parent_cost_accounted). Used by TransferChildCostToParent inside
--- a transaction so delta = cost - accounted is computed from a single
--- consistent read within that transaction.
 SELECT cost, parent_cost_accounted
 FROM sessions
 WHERE id = ? LIMIT 1;
 
 -- name: SetParentCostAccounted :exec
--- Marks the child's full current cost as charged to the parent, so the
--- next TransferChildCostToParent call charges only new cost accrued above
--- this point. Run inside the same transaction as the parent's
--- IncrementSessionCost so a crash between the two cannot leave the parent
--- charged but the child's accounting lagging (or vice versa).
 UPDATE sessions
 SET
     parent_cost_accounted = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
+
+-- name: GetSubtreeSpent :one
+-- The run-cost reading of one node (#1130): spent = SUM(cost_self) over the
+-- node's delegation subtree. Budget = max(spent - cost_base(node), 0),
+-- clamped by the reader; cost_base comes from GetSessionCostBase (sqlc's
+-- editor cannot expand two parameters across a CTE + correlated subquery).
+-- The UNION makes a corrupted cost_parent_id cycle terminate and counts
+-- every node once.
+WITH RECURSIVE sub(node) AS (
+    SELECT s0.id FROM sessions s0 WHERE s0.id = ?
+    UNION
+    SELECT s.id FROM sessions s JOIN sub ON s.cost_parent_id = sub.node
+)
+SELECT CAST(COALESCE(SUM(n.cost_self), 0) AS REAL) AS spent FROM sub JOIN sessions n ON n.id = sub.node;
+
+-- name: GetSessionCostBase :one
+SELECT cost_base FROM sessions WHERE id = ?;
+
+-- name: GetSubtreeUpdatedAt :one
+-- Activity of one node's delegation subtree (max updated_at): what
+-- `--continue`, `sessions list` ordering and `sessions cost --since` read so
+-- a busy child keeps its root visible WITHOUT writing the parent's
+-- updated_at from the child (#1130).
+WITH RECURSIVE sub(node) AS (
+    SELECT s0.id FROM sessions s0 WHERE s0.id = ?
+    UNION
+    SELECT s.id FROM sessions s JOIN sub ON s.cost_parent_id = sub.node
+)
+SELECT CAST(COALESCE(MAX(n.updated_at), 0) AS INTEGER) AS updated_at FROM sub JOIN sessions n ON n.id = sub.node;
 
 -- name: ListSessionEndReasonsForIDs :many
 -- Batched ended_reason read for arbitrary ids (top-level AND child

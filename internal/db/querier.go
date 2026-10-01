@@ -314,15 +314,11 @@ type Querier interface {
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
 	GetFileRead(ctx context.Context, arg GetFileReadParams) (ReadFile, error)
 	GetHourDayHeatmap(ctx context.Context) ([]GetHourDayHeatmapRow, error)
-	// The most recently updated TOP-LEVEL session (`rush run --continue`): a
-	// delegated child updated later must never be taken for it.
-	GetLastSession(ctx context.Context) (Session, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	// Get the oldest pending entry for a session (for transactional lease).
 	GetOldestPendingRunQueueEntryForSession(ctx context.Context, sessionID string) (SessionRunQueue, error)
 	// Get a single entry by ID.
 	GetOrphanOutboxEntry(ctx context.Context, id string) (OrphanCallOutbox, error)
-	GetRecentActivity(ctx context.Context) ([]GetRecentActivityRow, error)
 	// Get a single entry by ID.
 	GetRunQueueEntry(ctx context.Context, id string) (SessionRunQueue, error)
 	// ASYNC-01 conflict check inside the claim transaction (doc sec.3.8): a
@@ -331,17 +327,25 @@ type Querier interface {
 	// attempt instead) rather than silently queuing behind it.
 	GetRunningAsyncJobByChildSession(ctx context.Context, childSessionID sql.NullString) (AsyncJob, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
-	// Returns the child's current cost and the amount already charged to the
-	// parent (parent_cost_accounted). Used by TransferChildCostToParent inside
-	// a transaction so delta = cost - accounted is computed from a single
-	// consistent read within that transaction.
 	GetSessionCostAccounting(ctx context.Context, id string) (GetSessionCostAccountingRow, error)
+	GetSessionCostBase(ctx context.Context, id string) (float64, error)
 	// The durable external-driver marker for a session (migration
 	// 20260929000004): which host's `rush run` loop drives it.
 	GetSessionDriver(ctx context.Context, sessionID string) (SessionDriver, error)
 	GetSessionNotice(ctx context.Context, id int64) (SessionNotice, error)
+	// The run-cost reading of one node (#1130): spent = SUM(cost_self) over the
+	// node's delegation subtree. Budget = max(spent - cost_base(node), 0),
+	// clamped by the reader; cost_base comes from GetSessionCostBase (sqlc's
+	// editor cannot expand two parameters across a CTE + correlated subquery).
+	// The UNION makes a corrupted cost_parent_id cycle terminate and counts
+	// every node once.
+	GetSubtreeSpent(ctx context.Context, id string) (float64, error)
+	// Activity of one node's delegation subtree (max updated_at): what
+	// `--continue`, `sessions list` ordering and `sessions cost --since` read so
+	// a busy child keeps its root visible WITHOUT writing the parent's
+	// updated_at from the child (#1130).
+	GetSubtreeUpdatedAt(ctx context.Context, id string) (int64, error)
 	GetToolUsage(ctx context.Context) ([]GetToolUsageRow, error)
-	GetTotalStats(ctx context.Context) (GetTotalStatsRow, error)
 	// Returns, in a SINGLE round trip, the (created_at, rowid) of the row at
 	// `offset` positions back from the newest message in the session, together
 	// with the session's total message count as of that same statement
@@ -376,7 +380,6 @@ type Querier interface {
 	// comment for why the keyset filter itself therefore avoids rowid in a WHERE
 	// clause entirely rather than fighting this further.
 	GetTranscriptWindowCursor(ctx context.Context, arg GetTranscriptWindowCursorParams) (GetTranscriptWindowCursorRow, error)
-	GetUsageByDay(ctx context.Context) ([]GetUsageByDayRow, error)
 	GetUsageByDayOfWeek(ctx context.Context) ([]GetUsageByDayOfWeekRow, error)
 	GetUsageByHour(ctx context.Context) ([]GetUsageByHourRow, error)
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
@@ -401,10 +404,11 @@ type Querier interface {
 	// still wake=1/reacted=0, so a row that settled or was re-pended in the
 	// meantime is left alone.
 	IncrementAsyncJobWakeAttemptsForSnapshotRow(ctx context.Context, arg IncrementAsyncJobWakeAttemptsForSnapshotRowParams) (int64, error)
-	// Atomic additive update for session cost. Safe under fan-out (multiple
-	// sub-agent goroutines finishing concurrently and each charging the
-	// parent) and across processes (orchestrator with parallel rush runs).
-	// Returns the updated row so the caller can refresh its snapshot.
+	// Atomic additive update for the node's OWN cost. Safe under fan-out and
+	// across processes. `cost_self` is the monotonic per-node ledger the
+	// delegation-tree queries read; `cost` is a mirror kept for old binaries
+	// (rollback path, #1130). Returns the updated row so the caller can
+	// refresh its snapshot.
 	IncrementSessionCost(ctx context.Context, arg IncrementSessionCostParams) (Session, error)
 	// task #782 (K-2, P1 release blocker): plain IncrementSessionCost has no
 	// budget predicate, so two concurrent callers (a real turn and a cache
@@ -422,9 +426,12 @@ type Querier interface {
 	// budget in the same shape and must keep their existing unconditional
 	// semantics.
 	//
-	// Returns rows affected: 0 means the charge was refused because
-	// cost + delta would meet or exceed max_cost -- the caller must treat that
-	// the same as an up-front max-cost skip (no charge landed).
+	// Returns rows affected: 0 means the charge was refused because the
+	// subtree budget + delta would meet or exceed max_cost. The subtree
+	// predicate lives in Go (session service, BEGIN IMMEDIATE tx): sqlc's
+	// parser cannot bind a WITH to an UPDATE, and the budget must be read in
+	// the same write transaction (SQLite serializes writers) to keep the #782
+	// TOCTOU closed. This query is the unconditional arm of that method.
 	IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error)
 	// Notices half of IncrementAsyncJobWakeAttemptsForSnapshotRow (doc sec.3.4,
 	// R2A-5): keyed by id (session_notices' own PK) because the settle-by-failure
@@ -814,11 +821,6 @@ type Querier interface {
 	// tree loses its wake bit in the same pass, so a race between natural
 	// completion and Stop can never grant a stopped delegation a turn.
 	SetAsyncJobsWakeZeroPendingForOwners(ctx context.Context, arg SetAsyncJobsWakeZeroPendingForOwnersParams) (int64, error)
-	// Marks the child's full current cost as charged to the parent, so the
-	// next TransferChildCostToParent call charges only new cost accrued above
-	// this point. Run inside the same transaction as the parent's
-	// IncrementSessionCost so a crash between the two cannot leave the parent
-	// charged but the child's accounting lagging (or vice versa).
 	SetParentCostAccounted(ctx context.Context, arg SetParentCostAccountedParams) error
 	SetSessionNoticeMessageID(ctx context.Context, arg SetSessionNoticeMessageIDParams) (int64, error)
 	// Stop transitivity (DUR-9, doc sec.3.8), notices half of

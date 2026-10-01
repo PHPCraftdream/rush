@@ -57,10 +57,15 @@ type Session struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	SummaryMessageID string
-	Cost             float64
-	Todos            []Todo
-	CreatedAt        int64
-	UpdatedAt        int64
+	// OwnCost is the node's OWN spend (cost_self): only this session's
+	// turns, compaction, title and keep-alive. It only ever grows.
+	// "Including children" is Service.SubtreeBudget, never a row field
+	// (#1130).
+	OwnCost   float64
+	CostBase  float64 // budget base frozen by the last `sessions reset`
+	Todos     []Todo
+	CreatedAt int64
+	UpdatedAt int64
 
 	SmartModelProvider        string
 	SmartModelID              string
@@ -177,49 +182,50 @@ type Service interface {
 	SetUsage(ctx context.Context, sessionID string, promptTokens, completionTokens int64) error
 	SetSummaryAndUsage(ctx context.Context, sessionID, summaryMessageID string, promptTokens, completionTokens int64) error
 	SetTodos(ctx context.Context, sessionID string, todos []Todo, deletedTodos []string) error
-	// IncrementCost atomically adds delta to the session's cost via an
-	// additive SQL UPDATE. Always prefer this over a read-modify-write of the
-	// cost column when accruing per-step or per-sub-agent cost: it is race-free
-	// under fan-out (multiple sub-agent goroutines completing concurrently
-	// and each charging the same parent) and across processes that ever
-	// share a session ID. Returns the refreshed session snapshot.
+	// IncrementCost atomically adds delta to the session's OWN cost
+	// (cost_self) via an additive SQL UPDATE (#1130). It is the ONLY writer
+	// of cost_self: the column never decreases. Race-free under fan-out and
+	// across processes that share a session ID. Returns the refreshed
+	// snapshot.
 	//
 	// Semantics for delta = 0: the implementation short-circuits to a
 	// plain Get, so IncrementCost(id, 0) is a "verify the session exists and
 	// grab its current snapshot" call without the cost of an UPDATE. Pass a
-	// non-zero delta only when you actually want to charge.
-	//
-	// Semantics for delta < 0 (`sessions reset` zeroes a session this way):
-	// the spend a parent was not yet charged for is charged to it first, then
-	// cost is lowered (never below zero) and parent_cost_accounted is set
-	// equal to it, all in one transaction, so the next
-	// TransferChildCostToParent charges exactly the spend after the decrease.
+	// non-zero delta only when you actually want to charge. A negative delta
+	// is an error: per-node cost is monotonic, `sessions reset` freezes a
+	// budget via ResetCostBase instead.
 	IncrementCost(ctx context.Context, sessionID string, delta float64) (Session, error)
 	// IncrementCostIfUnderMax is IncrementCost's budget-guarded sibling
 	// (task #782, K-2): the charge and the maxCost check happen in ONE
-	// atomic SQL statement (cost = cost + delta WHERE cost + delta <
-	// max_cost), so two concurrent callers racing to charge the same
-	// session cannot both pass a separate read-then-check and jointly
+	// immediate transaction — the SUBTREE BUDGET (sum of cost_self over the
+	// node's delegation subtree minus its cost_base, #1130) is read inside
+	// the same write transaction that applies the charge, so two concurrent
+	// callers racing to charge cannot both pass the check and jointly
 	// overshoot max_cost. Returns ok=false (no charge applied) when the
-	// combined cost would meet or exceed maxCost; the caller must treat
+	// budget + delta would meet or exceed maxCost; the caller must treat
 	// that exactly like a pre-charge budget-cap skip. maxCost <= 0 is
 	// treated as "unlimited" and always charges (delta == 0 still
-	// short-circuits to a plain Get, same as IncrementCost). A negative delta
-	// is a decrease and takes IncrementCost's path (it cannot overshoot).
+	// short-circuits to a plain Get, same as IncrementCost).
 	IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (sess Session, ok bool, err error)
-	// TransferChildCostToParent moves the child session's cost accrued since
-	// the last transfer into the parent session, atomically in one DB
-	// transaction. It reads the child's persisted parent_cost_accounted
-	// ledger, charges only the delta (cost - accounted) to the
-	// parent via the atomic IncrementSessionCost UPDATE (a cost below the
-	// ledger, left by a reset that predates the ledger-aware decrement, is
-	// treated as a reset: all of it is new), and advances the
-	// child's accounted marker to its current cost — all inside one tx so a
-	// crash between the parent charge and the child bookkeeping cannot leave
-	// them inconsistent. Idempotent: a repeat call with no new child cost
-	// charges zero. Replaces the old in-memory baseline scheme that lost cost
-	// on sub-agent error paths, process restarts, and failed charges.
-	TransferChildCostToParent(ctx context.Context, childSessionID, parentSessionID string) error
+	// SubtreeBudget returns the node's run-cost budget: sum of cost_self
+	// over its delegation subtree minus its cost_base, clamped at 0
+	// (#1130). This is the only "cost including children" there is: it is
+	// computed at read time, never transferred between rows.
+	SubtreeBudget(ctx context.Context, sessionID string) (float64, error)
+	// SubtreeSpent returns the raw subtree sum (without the base), the
+	// quantity run-cost WINDOWS are differenced over (`rush run`'s
+	// start-of-run mark vs its exit, RUSH_COST_USD).
+	SubtreeSpent(ctx context.Context, sessionID string) (float64, error)
+	// SubtreeUpdatedAt returns max(updated_at) over the node's delegation
+	// subtree: how `--continue`, `sessions list` ordering and
+	// `sessions cost --since` see a busy child WITHOUT the child writing
+	// its parent's updated_at.
+	SubtreeUpdatedAt(ctx context.Context, sessionID string) (int64, error)
+	// ResetCostBase freezes the node's budget: one UPDATE setting
+	// cost_base = subtree_spent. cost_self is never touched, so the reset
+	// cannot break the monotonic ledger, and a reset mid-run leaves the
+	// run's spend window (raw subtree difference) intact.
+	ResetCostBase(ctx context.Context, sessionID string) error
 	UpdateModels(ctx context.Context, sessionID string, smart, fast *ModelSlotUpdate) error
 	UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error
 	// UpdateWorkerReviewerModels and UpdateWorkerReviewerReasoningEffort are
@@ -448,7 +454,8 @@ func (s service) fromDBItem(item db.Session) Session {
 		PromptTokens:     item.PromptTokens,
 		CompletionTokens: item.CompletionTokens,
 		SummaryMessageID: item.SummaryMessageID.String,
-		Cost:             item.Cost,
+		OwnCost:          item.CostSelf,
+		CostBase:         item.CostBase,
 		Todos:            todos,
 		DeletedTodos:     deletedTodos,
 		CreatedAt:        item.CreatedAt,

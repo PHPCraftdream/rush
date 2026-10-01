@@ -183,9 +183,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getHourDayHeatmapStmt, err = db.PrepareContext(ctx, getHourDayHeatmap); err != nil {
 		return nil, fmt.Errorf("error preparing query GetHourDayHeatmap: %w", err)
 	}
-	if q.getLastSessionStmt, err = db.PrepareContext(ctx, getLastSession); err != nil {
-		return nil, fmt.Errorf("error preparing query GetLastSession: %w", err)
-	}
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
@@ -194,9 +191,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getOrphanOutboxEntryStmt, err = db.PrepareContext(ctx, getOrphanOutboxEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query GetOrphanOutboxEntry: %w", err)
-	}
-	if q.getRecentActivityStmt, err = db.PrepareContext(ctx, getRecentActivity); err != nil {
-		return nil, fmt.Errorf("error preparing query GetRecentActivity: %w", err)
 	}
 	if q.getRunQueueEntryStmt, err = db.PrepareContext(ctx, getRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query GetRunQueueEntry: %w", err)
@@ -210,23 +204,26 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getSessionCostAccountingStmt, err = db.PrepareContext(ctx, getSessionCostAccounting); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionCostAccounting: %w", err)
 	}
+	if q.getSessionCostBaseStmt, err = db.PrepareContext(ctx, getSessionCostBase); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSessionCostBase: %w", err)
+	}
 	if q.getSessionDriverStmt, err = db.PrepareContext(ctx, getSessionDriver); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionDriver: %w", err)
 	}
 	if q.getSessionNoticeStmt, err = db.PrepareContext(ctx, getSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionNotice: %w", err)
 	}
+	if q.getSubtreeSpentStmt, err = db.PrepareContext(ctx, getSubtreeSpent); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSubtreeSpent: %w", err)
+	}
+	if q.getSubtreeUpdatedAtStmt, err = db.PrepareContext(ctx, getSubtreeUpdatedAt); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSubtreeUpdatedAt: %w", err)
+	}
 	if q.getToolUsageStmt, err = db.PrepareContext(ctx, getToolUsage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetToolUsage: %w", err)
 	}
-	if q.getTotalStatsStmt, err = db.PrepareContext(ctx, getTotalStats); err != nil {
-		return nil, fmt.Errorf("error preparing query GetTotalStats: %w", err)
-	}
 	if q.getTranscriptWindowCursorStmt, err = db.PrepareContext(ctx, getTranscriptWindowCursor); err != nil {
 		return nil, fmt.Errorf("error preparing query GetTranscriptWindowCursor: %w", err)
-	}
-	if q.getUsageByDayStmt, err = db.PrepareContext(ctx, getUsageByDay); err != nil {
-		return nil, fmt.Errorf("error preparing query GetUsageByDay: %w", err)
 	}
 	if q.getUsageByDayOfWeekStmt, err = db.PrepareContext(ctx, getUsageByDayOfWeek); err != nil {
 		return nil, fmt.Errorf("error preparing query GetUsageByDayOfWeek: %w", err)
@@ -822,11 +819,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getHourDayHeatmapStmt: %w", cerr)
 		}
 	}
-	if q.getLastSessionStmt != nil {
-		if cerr := q.getLastSessionStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getLastSessionStmt: %w", cerr)
-		}
-	}
 	if q.getMessageStmt != nil {
 		if cerr := q.getMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
@@ -840,11 +832,6 @@ func (q *Queries) Close() error {
 	if q.getOrphanOutboxEntryStmt != nil {
 		if cerr := q.getOrphanOutboxEntryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getOrphanOutboxEntryStmt: %w", cerr)
-		}
-	}
-	if q.getRecentActivityStmt != nil {
-		if cerr := q.getRecentActivityStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getRecentActivityStmt: %w", cerr)
 		}
 	}
 	if q.getRunQueueEntryStmt != nil {
@@ -867,6 +854,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionCostAccountingStmt: %w", cerr)
 		}
 	}
+	if q.getSessionCostBaseStmt != nil {
+		if cerr := q.getSessionCostBaseStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSessionCostBaseStmt: %w", cerr)
+		}
+	}
 	if q.getSessionDriverStmt != nil {
 		if cerr := q.getSessionDriverStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionDriverStmt: %w", cerr)
@@ -877,24 +869,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionNoticeStmt: %w", cerr)
 		}
 	}
+	if q.getSubtreeSpentStmt != nil {
+		if cerr := q.getSubtreeSpentStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSubtreeSpentStmt: %w", cerr)
+		}
+	}
+	if q.getSubtreeUpdatedAtStmt != nil {
+		if cerr := q.getSubtreeUpdatedAtStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSubtreeUpdatedAtStmt: %w", cerr)
+		}
+	}
 	if q.getToolUsageStmt != nil {
 		if cerr := q.getToolUsageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getToolUsageStmt: %w", cerr)
 		}
 	}
-	if q.getTotalStatsStmt != nil {
-		if cerr := q.getTotalStatsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getTotalStatsStmt: %w", cerr)
-		}
-	}
 	if q.getTranscriptWindowCursorStmt != nil {
 		if cerr := q.getTranscriptWindowCursorStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getTranscriptWindowCursorStmt: %w", cerr)
-		}
-	}
-	if q.getUsageByDayStmt != nil {
-		if cerr := q.getUsageByDayStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getUsageByDayStmt: %w", cerr)
 		}
 	}
 	if q.getUsageByDayOfWeekStmt != nil {
@@ -1529,21 +1521,20 @@ type Queries struct {
 	getFileByPathAndSessionStmt                          *sql.Stmt
 	getFileReadStmt                                      *sql.Stmt
 	getHourDayHeatmapStmt                                *sql.Stmt
-	getLastSessionStmt                                   *sql.Stmt
 	getMessageStmt                                       *sql.Stmt
 	getOldestPendingRunQueueEntryForSessionStmt          *sql.Stmt
 	getOrphanOutboxEntryStmt                             *sql.Stmt
-	getRecentActivityStmt                                *sql.Stmt
 	getRunQueueEntryStmt                                 *sql.Stmt
 	getRunningAsyncJobByChildSessionStmt                 *sql.Stmt
 	getSessionByIDStmt                                   *sql.Stmt
 	getSessionCostAccountingStmt                         *sql.Stmt
+	getSessionCostBaseStmt                               *sql.Stmt
 	getSessionDriverStmt                                 *sql.Stmt
 	getSessionNoticeStmt                                 *sql.Stmt
+	getSubtreeSpentStmt                                  *sql.Stmt
+	getSubtreeUpdatedAtStmt                              *sql.Stmt
 	getToolUsageStmt                                     *sql.Stmt
-	getTotalStatsStmt                                    *sql.Stmt
 	getTranscriptWindowCursorStmt                        *sql.Stmt
-	getUsageByDayStmt                                    *sql.Stmt
 	getUsageByDayOfWeekStmt                              *sql.Stmt
 	getUsageByHourStmt                                   *sql.Stmt
 	getUsageByModelStmt                                  *sql.Stmt
@@ -1711,21 +1702,20 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getFileByPathAndSessionStmt:                          q.getFileByPathAndSessionStmt,
 		getFileReadStmt:                                      q.getFileReadStmt,
 		getHourDayHeatmapStmt:                                q.getHourDayHeatmapStmt,
-		getLastSessionStmt:                                   q.getLastSessionStmt,
 		getMessageStmt:                                       q.getMessageStmt,
 		getOldestPendingRunQueueEntryForSessionStmt:          q.getOldestPendingRunQueueEntryForSessionStmt,
 		getOrphanOutboxEntryStmt:                             q.getOrphanOutboxEntryStmt,
-		getRecentActivityStmt:                                q.getRecentActivityStmt,
 		getRunQueueEntryStmt:                                 q.getRunQueueEntryStmt,
 		getRunningAsyncJobByChildSessionStmt:                 q.getRunningAsyncJobByChildSessionStmt,
 		getSessionByIDStmt:                                   q.getSessionByIDStmt,
 		getSessionCostAccountingStmt:                         q.getSessionCostAccountingStmt,
+		getSessionCostBaseStmt:                               q.getSessionCostBaseStmt,
 		getSessionDriverStmt:                                 q.getSessionDriverStmt,
 		getSessionNoticeStmt:                                 q.getSessionNoticeStmt,
+		getSubtreeSpentStmt:                                  q.getSubtreeSpentStmt,
+		getSubtreeUpdatedAtStmt:                              q.getSubtreeUpdatedAtStmt,
 		getToolUsageStmt:                                     q.getToolUsageStmt,
-		getTotalStatsStmt:                                    q.getTotalStatsStmt,
 		getTranscriptWindowCursorStmt:                        q.getTranscriptWindowCursorStmt,
-		getUsageByDayStmt:                                    q.getUsageByDayStmt,
 		getUsageByDayOfWeekStmt:                              q.getUsageByDayOfWeekStmt,
 		getUsageByHourStmt:                                   q.getUsageByHourStmt,
 		getUsageByModelStmt:                                  q.getUsageByModelStmt,

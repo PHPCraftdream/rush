@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
@@ -315,36 +314,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			ProviderID: model.ModelCfg.Provider,
 		})
 	}
-	// Charge the parent for whatever the child spent on this run, on EVERY
-	// outcome (success, ask_question pause, or genuine error). This replaces
-	// the old in-memory baselineCost scheme: TransferChildCostToParent reads
-	// the child's persisted parent_cost_accounted ledger inside one
-	// transaction and charges only the delta since the last transfer, so the
-	// spent amount is never lost. A failed charge only logs a warning — the
-	// uncharged delta persists in (child.cost - child.parent_cost_accounted)
-	// and is recovered on the next successful call. The previous code skipped
-	// the charge on the generic-error path, permanently losing that cost.
-	//
-	// Detached timeout, same pattern as agent.go's error-path flush (see
-	// agent.go's flushCtx uses): ctx may already be cancelled here — by the
-	// parent's stream watchdog or a user Ctrl-C — since this runs after the
-	// child's own Run() returns. Charging the parent is a single short DB
-	// transaction, not tied to the run that just ended, so it must survive
-	// that cancellation rather than fail immediately with "begin
-	// transaction: context canceled" and silently drop the child's spend
-	// (recovery only happens if this same child is ever charged again,
-	// which is not guaranteed for a one-shot sub-agent).
-	costCtx, costCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	costErr := c.updateParentSessionCost(costCtx, session.ID, params.SessionID)
-	costCancel()
-	if costErr != nil {
-		slog.Warn(
-			"Failed to update parent session cost",
-			"child_session", session.ID,
-			"parent_session", params.SessionID,
-			"error", costErr,
-		)
-	}
+	// #1130: no parent charge here. The child pays into its own cost_self
+	// (agent_turn_step's IncrementCost); "including children" is a subtree
+	// query at read time, so there is nothing to transfer on any outcome.
 
 	// A sub-agent that called ask_question stops its turn via
 	// AwaitingAnswerError (see question_stop.go), not a genuine failure —
@@ -376,44 +348,9 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 	return result.Response.Content.Text()
 }
 
-// updateParentSessionCost transfers the cost a child session accrued since
-// the last transfer to its parent. It is a thin delegate to the
-// transactional session.Service.TransferChildCostToParent, which reads the
-// child's persisted parent_cost_accounted ledger, charges only the delta
-// (cost - accounted, clamped >= 0) to the parent via an atomic additive
-// UPDATE, and advances the child's accounted marker — all inside one DB
-// transaction.
-//
-// Because the baseline now lives in the database (parent_cost_accounted),
-// there is no in-memory baselineCost parameter: the function is safe across
-// process restarts, concurrent resumes of the same child, and failed
-// charges (an uncharged delta persists and is recovered on the next call).
-// Callers should invoke it on EVERY sub-agent outcome (success,
-// ask_question, error) so no spent cost is ever silently dropped.
-func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string) error {
-	return c.sessions.TransferChildCostToParent(ctx, childSessionID, parentSessionID)
-}
-
-// chargeChildToParent is updateParentSessionCost for the moments no caller
-// waits on: a delegated child's spend AFTER its first turn (its Drain turns run
-// on its driver, not in runSubAgent) reaches the parent when its delegation
-// releases, before the release's notice commits (workLedger.recheckChild), and
-// at every run end of the child (afterRelease), so a Stop mid-turn is charged
-// too (R6C-3). Idempotent with runSubAgent's own charge and the app's
-// chargeRunningChildren: all three move the same parent_cost_accounted delta.
-// Detached from any caller's context (a Ctrl-C must not drop the spend); a
-// failure only logs, the delta stays for the next charge.
-func (c *coordinator) chargeChildToParent(childSessionID, parentSessionID string) {
-	if c.sessions == nil || childSessionID == "" || parentSessionID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := c.updateParentSessionCost(ctx, childSessionID, parentSessionID); err != nil {
-		slog.Warn("Failed to charge a delegated child's spend to its parent",
-			"child_session", childSessionID, "parent_session", parentSessionID, "error", err)
-	}
-}
+// #1130: updateParentSessionCost/chargeChildToParent are gone with the
+// transfer ledger. A child charges its own cost_self as it runs; every
+// reader of "including children" sums the delegation subtree at read time.
 
 // discoverSkills runs skill discovery for this coordinator at session
 // start. Fork note: upstream threads a pre-built skills.Manager through

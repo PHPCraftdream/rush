@@ -102,6 +102,6 @@ func TestGenerateTitle_NormalizesInclusiveProviderUsageBeforeCosting(t *testing.
 	//
 	// The old (unnormalized) behavior would have priced the full 1000 raw
 	// input tokens: 1000/1e6*1.0 = 0.001, ten times too high.
-	require.InDelta(t, 0.00012, updated.Cost, 1e-9,
+	require.InDelta(t, 0.00012, updated.OwnCost, 1e-9,
 		"title cost must be computed from normalized (not raw, cache-inclusive) usage")
 }

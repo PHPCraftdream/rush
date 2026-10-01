@@ -262,7 +262,7 @@ func TestTitleGenerationDoesNotRaceMainTurnTokens(t *testing.T) {
 			"prompt_tokens must equal exactly what SetUsage wrote, unaffected by title generation")
 		assert.Equal(t, mainCompletionTokens, final.CompletionTokens,
 			"completion_tokens must equal exactly what SetUsage wrote, unaffected by title generation")
-		assert.InDelta(t, mainCost+titleCost, final.Cost, 1e-9,
+		assert.InDelta(t, mainCost+titleCost, final.OwnCost, 1e-9,
 			"cost must include both the main turn's and title generation's contributions")
 		assert.Equal(t, "Generated Title", final.Title)
 	}
@@ -341,7 +341,7 @@ func TestTitleGenerationConcurrentWithMainTurn(t *testing.T) {
 
 		assert.Equal(t, mainPromptTokens, final.PromptTokens, "iter %d", i)
 		assert.Equal(t, mainCompletionTokens, final.CompletionTokens, "iter %d", i)
-		assert.InDelta(t, mainCost+titleCost, final.Cost, 1e-9, "iter %d", i)
+		assert.InDelta(t, mainCost+titleCost, final.OwnCost, 1e-9, "iter %d", i)
 		assert.Equal(t, "Generated Title", final.Title, "iter %d", i)
 	}
 }

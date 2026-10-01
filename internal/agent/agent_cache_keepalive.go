@@ -231,14 +231,14 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 
 	if maxCost > 0 {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		sess, err := a.sessions.Get(checkCtx, sessionID)
+		budget, err := a.sessions.SubtreeBudget(checkCtx, sessionID)
 		checkCancel()
 		if err != nil {
-			slog.Debug("cache keep-alive: failed to load session for max-cost check", "session_id", sessionID, "err", err)
+			slog.Debug("cache keep-alive: failed to load session budget for max-cost check", "session_id", sessionID, "err", err)
 			return
 		}
-		if sess.Cost >= maxCost {
-			slog.Debug("cache keep-alive: skipping replay, session at or over max cost", "session_id", sessionID, "cost", sess.Cost, "max_cost", maxCost)
+		if budget >= maxCost {
+			slog.Debug("cache keep-alive: skipping replay, session at or over max cost", "session_id", sessionID, "cost", budget, "max_cost", maxCost)
 			return
 		}
 	}
@@ -434,7 +434,7 @@ func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, r
 		return false
 	}
 	if !charged {
-		slog.Debug("cache keep-alive: session crossed max cost while the replay was in flight; skipping charge", "session_id", sessionID, "cost", sess.Cost, "max_cost", maxCost)
+		slog.Debug("cache keep-alive: session crossed max cost while the replay was in flight; skipping charge", "session_id", sessionID, "cost", sess.OwnCost, "max_cost", maxCost)
 		return false
 	}
 	slog.Debug("cache keep-alive: replay cost recorded", "session_id", sessionID, "cost", cost)

@@ -164,6 +164,9 @@ type Session struct {
 	ReviewerModelID              sql.NullString `json:"reviewer_model_id"`
 	ReviewerModelReasoningEffort sql.NullString `json:"reviewer_model_reasoning_effort"`
 	Origin                       string         `json:"origin"`
+	CostSelf                     float64        `json:"cost_self"`
+	CostBase                     float64        `json:"cost_base"`
+	CostParentID                 string         `json:"cost_parent_id"`
 }
 
 type SessionDriver struct {

@@ -149,8 +149,11 @@ func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 			parent_cost_accounted REAL NOT NULL DEFAULT 0,
 			cost_checksum INTEGER NOT NULL DEFAULT 0,
 			origin TEXT DEFAULT '' NOT NULL,
+			cost_self REAL NOT NULL DEFAULT 0,
+			cost_base REAL NOT NULL DEFAULT 0,
+			cost_parent_id TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE CASCADE
-		);
+);
 
 		CREATE TABLE session_run_queue (
 			id TEXT PRIMARY KEY,

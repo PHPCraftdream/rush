@@ -57,7 +57,10 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			budget_max_tokens INTEGER NOT NULL DEFAULT 0,
 			budget_timeout_sec INTEGER NOT NULL DEFAULT 0,
 			parent_cost_accounted REAL NOT NULL DEFAULT 0,
-			origin TEXT DEFAULT '' NOT NULL
+			origin TEXT DEFAULT '' NOT NULL,
+			cost_self REAL NOT NULL DEFAULT 0,
+			cost_base REAL NOT NULL DEFAULT 0,
+			cost_parent_id TEXT NOT NULL DEFAULT ''
 		);
 
 		CREATE TABLE session_permissions (

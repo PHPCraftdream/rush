@@ -57,7 +57,10 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 		cost = 0
 	}
 
-	session.Cost += cost
+	// #1130: OwnCost mirrors the node's own ledger (cost_self) for the
+	// in-memory snapshot; the persisted truth is written by the caller's
+	// IncrementCost. Cap decisions read the subtree budget instead.
+	session.OwnCost += cost
 	updateSessionTokenCounters(session, usage)
 	return cost
 }

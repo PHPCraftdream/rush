@@ -1,15 +1,3 @@
--- name: GetUsageByDay :many
-SELECT
-    date(created_at, 'unixepoch') as day,
-    SUM(prompt_tokens) as prompt_tokens,
-    SUM(completion_tokens) as completion_tokens,
-    SUM(cost) as cost,
-    COUNT(*) as session_count
-FROM sessions
-WHERE parent_session_id IS NULL
-GROUP BY date(created_at, 'unixepoch')
-ORDER BY day DESC;
-
 -- name: GetUsageByModel :many
 SELECT
     COALESCE(model, 'unknown') as model,
@@ -39,30 +27,6 @@ FROM sessions
 WHERE parent_session_id IS NULL
 GROUP BY day_of_week
 ORDER BY day_of_week;
-
--- name: GetTotalStats :one
-SELECT
-    COUNT(*) as total_sessions,
-    COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
-    COALESCE(SUM(completion_tokens), 0) as total_completion_tokens,
-    COALESCE(SUM(cost), 0) as total_cost,
-    COALESCE(SUM(message_count), 0) as total_messages,
-    COALESCE(AVG(prompt_tokens + completion_tokens), 0) as avg_tokens_per_session,
-    COALESCE(AVG(message_count), 0) as avg_messages_per_session
-FROM sessions
-WHERE parent_session_id IS NULL;
-
--- name: GetRecentActivity :many
-SELECT
-    date(created_at, 'unixepoch') as day,
-    COUNT(*) as session_count,
-    SUM(prompt_tokens + completion_tokens) as total_tokens,
-    SUM(cost) as cost
-FROM sessions
-WHERE parent_session_id IS NULL
-  AND created_at >= strftime('%s', 'now', '-30 days')
-GROUP BY date(created_at, 'unixepoch')
-ORDER BY day ASC;
 
 -- name: GetAverageResponseTime :one
 SELECT

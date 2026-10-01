@@ -53,6 +53,12 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		}
 		sessions = visible
 
+		// Order by delegation-subtree activity (#1130): a busy child keeps
+		// its root on top without the child ever writing the parent's
+		// updated_at. A failed activity read degrades to the row's own
+		// timestamp (the unsorted order is still valid output).
+		orderBySubtreeActivity(cmd.Context(), a.Sessions, sessions)
+
 		// One classifier for the whole list (R-ACT): every STATUS comes from
 		// App.SessionActivityBatch -- the same verdicts `sessions why` prints --
 		// with no per-session promotion layers. The Kind -> STATUS mapping:
@@ -74,7 +80,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
 			for _, s := range sessions {
-				item := makeSessionListItem(s)
+				item := makeSessionListItem(s, sessionBudget(cmd.Context(), a.Sessions, s))
 				if st := statusByID[s.ID]; st != "" {
 					item.Status = st
 				}
@@ -97,7 +103,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				statusOrDash(statusByID[s.ID]),
 				time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"),
 				s.PromptTokens+s.CompletionTokens,
-				s.Cost,
+				s.OwnCost,
 			)
 		}
 		return tw.Flush()
@@ -165,7 +171,7 @@ type sessionListItem struct {
 
 // makeSessionListItem projects a session.Session into the wire-stable
 // sessionListItem shape used by `rush sessions list --json`.
-func makeSessionListItem(s session.Session) sessionListItem {
+func makeSessionListItem(s session.Session, costUSD float64) sessionListItem {
 	return sessionListItem{
 		ID:           s.ID,
 		Hash:         session.HashID(s.ID),
@@ -174,8 +180,10 @@ func makeSessionListItem(s session.Session) sessionListItem {
 		CreatedAt:    s.CreatedAt,
 		UpdatedAt:    s.UpdatedAt,
 		Tokens:       s.PromptTokens + s.CompletionTokens,
-		CostUSD:      s.Cost,
-		YoloEnabled:  s.YoloEnabled,
-		EndedReason:  s.EndedReason,
+		// #1130: cost_usd keeps its meaning (subtree budget since the last
+		// reset); the node's own ledger is shown separately where relevant.
+		CostUSD:     costUSD,
+		YoloEnabled: s.YoloEnabled,
+		EndedReason: s.EndedReason,
 	}
 }

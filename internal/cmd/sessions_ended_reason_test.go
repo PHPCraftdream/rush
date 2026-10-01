@@ -20,11 +20,11 @@ import (
 //
 // Revert-check: dropping EndedReason from makeSessionListItem loses the field.
 func TestMakeSessionListItem_CarriesEndedReason(t *testing.T) {
-	raw, err := json.Marshal(makeSessionListItem(session.Session{ID: "s", EndedReason: "canceled"}))
+	raw, err := json.Marshal(makeSessionListItem(session.Session{ID: "s", EndedReason: "canceled"}, 0))
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"ended_reason":"canceled"`)
 
-	raw, err = json.Marshal(makeSessionListItem(session.Session{ID: "s"}))
+	raw, err = json.Marshal(makeSessionListItem(session.Session{ID: "s"}, 0))
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "ended_reason", "a session without a finished run omits the field")
 }

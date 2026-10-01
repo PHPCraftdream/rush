@@ -54,6 +54,9 @@ func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessi
 		ID:              toolCallID,
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
 		Title:           title,
+		// The delegation edge IS the cost-tree edge (#1130): set once at
+		// creation, never re-pointed.
+		CostParentID: parentSessionID,
 	})
 	if err != nil {
 		if isSessionsIDUniqueConstraintError(err) {

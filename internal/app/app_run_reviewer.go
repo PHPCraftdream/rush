@@ -617,13 +617,20 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			slog.Warn("run: failed to read session usage for the JSON envelope; reporting zero deltas", "session", s.sess.ID, "err", usageErr)
 		} else {
 			deltaTokens = freshSess.PromptTokens + freshSess.CompletionTokens - s.tokensBefore
-			deltaCost = freshSess.Cost - s.costBefore
+			// #1130: the cost delta is the SUBTREE spend window (own +
+			// delegation children), matching costBefore's SubtreeSpent read.
+			spentNow, spentErr := s.app.Sessions.SubtreeSpent(finalCtx, s.sess.ID)
+			if spentErr != nil {
+				slog.Warn("run: failed to read session budget for the JSON envelope; reporting zero delta", "session", s.sess.ID, "err", spentErr)
+			} else {
+				deltaCost = spentNow - s.costBefore
+			}
 			if deltaTokens < 0 {
 				slog.Warn("run: session token usage moved backwards; reporting zero delta", "session", s.sess.ID, "before", s.tokensBefore, "after", freshSess.PromptTokens+freshSess.CompletionTokens)
 				deltaTokens = 0
 			}
 			if deltaCost < 0 {
-				slog.Warn("run: session cost moved backwards; reporting zero delta", "session", s.sess.ID, "before", s.costBefore, "after", freshSess.Cost)
+				slog.Warn("run: session cost moved backwards; reporting zero delta", "session", s.sess.ID, "before", s.costBefore, "after", spentNow)
 				deltaCost = 0
 			}
 		}

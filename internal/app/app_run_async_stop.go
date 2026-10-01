@@ -10,15 +10,15 @@ import (
 )
 
 // stopError is the run's end by its own limits or by the operator (nil when
-// neither applies): --max-cost/--max-tokens compare exactly like
-// enforceRunawayCaps, then `sessions cancel`. It is read before every paid
-// turn and at every wake of a wait on running work or on the launch gate (at
-// least every 5s), so a crossed cap or a cancel takes effect within one step,
-// not when the awaited work ends (R7C-1, R8B-3): a delegated child's Drains
-// charge the root while the loop waits, and nothing else reads the root's cost
-// until the delegation releases. One session-row read answers both when a cap
-// is set (the row carries the flag); without a cap only the cheap flag read
-// runs. The exit goes through exitPrecheck: envelope, ended_reason,
+// neither applies): --max-cost compares the SUBTREE BUDGET (#1130: own +
+// delegation children, minus the reset base — the same query the agent's
+// enforceRunawayCaps runs), --max-tokens compares the root row's token
+// snapshots (per-node counters, not tree-summed). Both are read before every
+// paid turn and at every wake of a wait on running work or on the launch
+// gate (at least every 5s), so a crossed cap or a cancel takes effect within
+// one step, not when the awaited work ends (R7C-1, R8B-3): a delegated child
+// charges its own cost_self the moment it spends, and the next budget read
+// sees it. The exit goes through exitPrecheck: envelope, ended_reason,
 // --on-finish, and the caller's Shutdown cancels the run's jobs as Ctrl-C does.
 func (l *cliLoop) stopError() error {
 	if l.overrides.MaxCost > 0 || l.overrides.MaxTokens > 0 {
@@ -48,9 +48,10 @@ func (l *cliLoop) cancelRequestedError() error {
 }
 
 // capError reports the run's --max-cost/--max-tokens as exceeded, comparing
-// the session totals exactly like the agent's enforceRunawayCaps. A single-step
-// turn that crosses a cap is not cut short (fantasy ignores the step
-// callback's error), so the loop checks after every Drain too.
+// the same quantities as the agent's enforceRunawayCaps (subtree budget for
+// cost, root-row snapshots for tokens). A single-step turn that crosses a
+// cap is not cut short (fantasy ignores the step callback's error), so the
+// loop checks after every Drain too.
 func (l *cliLoop) capError() error {
 	if l.overrides.MaxCost <= 0 && l.overrides.MaxTokens <= 0 {
 		return nil
@@ -63,9 +64,13 @@ func (l *cliLoop) capError() error {
 }
 
 func (l *cliLoop) capExceeded(sess session.Session) error {
-	if l.overrides.MaxCost > 0 && sess.Cost > l.overrides.MaxCost {
-		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
-			"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, sess.Cost, l.overrides.MaxCost)}
+	if l.overrides.MaxCost > 0 {
+		if budget, err := l.app.Sessions.SubtreeBudget(l.ctx, l.sessionID); err == nil && budget > l.overrides.MaxCost {
+			return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
+				"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, budget, l.overrides.MaxCost)}
+		}
+		// A failed budget read is not an abort: like stopError's snapshot
+		// read, a transient DB error is no evidence the cap is crossed.
 	}
 	if total := sess.PromptTokens + sess.CompletionTokens; l.overrides.MaxTokens > 0 && total > l.overrides.MaxTokens {
 		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(

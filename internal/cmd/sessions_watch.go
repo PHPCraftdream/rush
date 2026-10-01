@@ -658,7 +658,7 @@ func printWatchSummary(w io.Writer, ctx context.Context, a *app.App, sessionID, 
 		fmt.Fprintf(w, "\n--- session ended (could not load summary: %v) ---\n", err)
 		return
 	}
-	fmt.Fprint(w, formatWatchSummary(sess, reason, time.Now()))
+	fmt.Fprint(w, formatWatchSummary(sess, sessionBudget(ctx, a.Sessions, sess), reason, time.Now()))
 }
 
 // formatWatchSummary renders the human-readable end-of-watch block.
@@ -673,7 +673,7 @@ func printWatchSummary(w io.Writer, ctx context.Context, a *app.App, sessionID, 
 //	duration: <X>h<Y>m / <Y>m<Z>s / <Z>s  (compact form)
 //	tokens:   <total> (prompt <p> + completion <c>)
 //	cost:     $0.0000 [ / $X.XXXX budget ]
-func formatWatchSummary(sess session.Session, reason string, now time.Time) string {
+func formatWatchSummary(sess session.Session, costUSD float64, reason string, now time.Time) string {
 	duration := time.Duration(0)
 	if sess.CreatedAt > 0 {
 		duration = now.Sub(time.Unix(sess.CreatedAt, 0))
@@ -689,7 +689,7 @@ func formatWatchSummary(sess session.Session, reason string, now time.Time) stri
 	fmt.Fprintf(&b, "duration: %s\n", formatDurationShort(duration))
 	fmt.Fprintf(&b, "tokens:   %s (prompt %s + completion %s)\n",
 		formatWatchInt(tokens), formatWatchInt(sess.PromptTokens), formatWatchInt(sess.CompletionTokens))
-	fmt.Fprintf(&b, "cost:     $%.4f", sess.Cost)
+	fmt.Fprintf(&b, "cost:     $%.4f", costUSD)
 	if sess.BudgetMaxCost > 0 {
 		fmt.Fprintf(&b, " / $%.4f budget", sess.BudgetMaxCost)
 	}
@@ -726,7 +726,7 @@ func pickSessionForWatch(ctx context.Context, a *app.App) (string, error) {
 			hash:    short(session.HashID(s.ID)),
 			title:   truncate(s.Title, 40),
 			updated: time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"),
-			cost:    s.Cost,
+			cost:    sessionBudget(ctx, a.Sessions, s),
 			ago:     formatAge(now.Sub(time.Unix(s.UpdatedAt, 0))),
 		}
 	}
