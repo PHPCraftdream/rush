@@ -87,10 +87,11 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 		}
 		owner = sess.ID
 		wake := session.NewWakeScheduleStore(conn)
+		now := time.Now()
 		row, err := wake.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
 			Owner: owner, Kind: session.WakeKindOnce, Message: "wiring probe",
-			RunAt: time.Now().Add(session.MinWakeOnceDelay),
-		}, time.Now())
+			RunAt: now.Add(session.MinWakeOnceDelay),
+		}, now)
 		if err != nil {
 			return err
 		}
@@ -131,10 +132,11 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 	// A freshly due schedule must therefore stay active (unclaimed,
 	// unfired).
 	ctrl.StopWakeScheduler()
+	lateNow := time.Now()
 	late, err := wake.CreateSchedule(ctx, session.CreateWakeScheduleParams{
 		Owner: owner, Kind: session.WakeKindOnce, Message: "after stop",
-		RunAt: time.Now().Add(session.MinWakeOnceDelay),
-	}, time.Now())
+		RunAt: lateNow.Add(session.MinWakeOnceDelay),
+	}, lateNow)
 	require.NoError(t, err)
 	got, err := q.GetWakeSchedule(ctx, late.ID)
 	require.NoError(t, err)

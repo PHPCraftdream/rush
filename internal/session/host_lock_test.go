@@ -35,6 +35,7 @@ type failingStore struct{}
 func (failingStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostParams) (db.AsyncHost, error) {
 	return db.AsyncHost{}, errors.New("boom: db insert failed")
 }
+
 func (failingStore) DeleteAsyncHostIfNoJobs(context.Context, string) (int64, error) { return 0, nil }
 
 // spyStore records whether RegisterAsyncHost was ever called -- used to

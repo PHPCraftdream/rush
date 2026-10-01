@@ -131,6 +131,9 @@ while IFS= read -r file; do
 	internal/app/app_new_skip_agent_setup_test.go|\
 	internal/app/app_run_admission_race_test.go|\
 	internal/app/app_run_json_envelope_golden_test.go|\
+	internal/app/app_run_lockbusy_firstturn_test.go|\
+	internal/app/app_wake_schedule_wiring_test.go|\
+	internal/app/async_phase4_recovery_scenarios_test.go|\
 	internal/app/app_run_toolgate_restore_test.go|\
 	internal/app/p348_p0_1_ordering_race_test.go|\
 	internal/app/p348_p0_1_pump_coordinator_wiring_test.go|\

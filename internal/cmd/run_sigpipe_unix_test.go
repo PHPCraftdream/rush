@@ -45,7 +45,7 @@ func runBrokenPipeHelper(t *testing.T, mode string) (marker string, err error) {
 	require.NoError(t, r.Close()) // no reader: every write raises SIGPIPE
 	t.Cleanup(func() { _ = w.Close() })
 	marker = filepath.Join(t.TempDir(), "marker")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestBrokenPipeHelperProcess$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestBrokenPipeHelperProcess$")
 	cmd.Env = append(os.Environ(), sigpipeHelperEnv+"="+mode, sigpipeHelperEnv+"_MARKER="+marker)
 	cmd.Stdout = w
 	return marker, cmd.Run()

@@ -62,6 +62,11 @@ func TestMarkParkedDelegationSessions_AtRestParentIsDelegating(t *testing.T) {
 	require.Empty(t, statusByID[sess.ID],
 		"precondition: a session with no lock file must classify as at rest")
 
+	// The wrapper's embedded Coordinator is nil when no provider is configured
+	// (CI); restore the original before the env cleanup's Shutdown runs
+	// CancelAll through it.
+	origCoordinator := a.AgentCoordinator
+	t.Cleanup(func() { a.AgentCoordinator = origCoordinator })
 	a.AgentCoordinator = parkedDelegationReporter{Coordinator: a.AgentCoordinator, parents: []string{sess.ID}}
 	got := markParkedDelegationSessions([]session.Session{sess}, statusByID, []string{sess.ID})
 

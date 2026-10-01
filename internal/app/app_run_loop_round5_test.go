@@ -39,7 +39,7 @@ func fillCallOptions(t *testing.T) *agent.CallOptions {
 			f.SetFloat(1.5)
 		case reflect.String:
 			f.SetString("x")
-		case reflect.Ptr:
+		case reflect.Pointer:
 			f.Set(reflect.New(f.Type().Elem()))
 		case reflect.Interface:
 			switch f.Type() {

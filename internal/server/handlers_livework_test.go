@@ -273,7 +273,7 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	other, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	foreignStore := session.NewAsyncJobStore(other, dataDir, 0, "lw-test-other-process")
-	t.Cleanup(func() { _ = foreignStore.Close(ctx) })
+	t.Cleanup(func() { _ = foreignStore.Close(ctx); _ = db.Release(dataDir) })
 
 	_, err = foreignStore.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-remote", Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash"})
 	require.NoError(t, err)

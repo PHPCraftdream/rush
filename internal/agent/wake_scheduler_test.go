@@ -315,7 +315,7 @@ func TestWakeScheduler_OverdueAfterDowntimeFiresOnceNoCatchUp(t *testing.T) {
 	fresh := fx.schedule(row.ID)
 	next := time.Unix(fresh.NextRunAt, 0)
 	require.False(t, next.Before(fx.now()), "next_run_at must be in the future")
-	require.Zero(t, (next.Sub(start))%(300*time.Second), "next_run_at must stay on the original grid")
+	require.Zero(t, next.Sub(start)%(300*time.Second), "next_run_at must stay on the original grid")
 }
 
 // TestWakeScheduler_TwoSchedulersOneOccurrence: two workers on the same DB
