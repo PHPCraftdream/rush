@@ -174,6 +174,14 @@ func TestCoordinatorWakeTools_ListOnlyOwnActive(t *testing.T) {
 	require.Len(t, views, 1, "another session's schedules never leak into wake_list")
 	require.Equal(t, mine.ScheduleID, views[0].ScheduleID)
 
+	// The same handshake EndToEndWakein relies on: wait for the worker's
+	// post-Notify re-arm before firing. Without it fire() can release a
+	// stale timer channel the run loop has not replaced yet — the worker
+	// then parks on the new channel and the fired wake never arrives
+	// (lost wakeup, observed as an unbounded hang at the woken read
+	// below).
+	<-fx.armed
+
 	// Terminal rows are history, not active: fire the only mine schedule.
 	fx.fire(10 * time.Second)
 	require.Equal(t, "s", <-fx.woken)

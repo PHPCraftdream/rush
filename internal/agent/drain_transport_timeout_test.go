@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,8 +93,14 @@ func TestDrainAttempt_RunDeadlineIsExemptAndNamedAsTimeout(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-run-deadline", attemptFixtureOpts{noIdle: true, handler: stallUntilClientGone})
 	f.seedDebt(ctx, "call-1", false)
 
-	runCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer cancel()
+	// The deadline starts when the provider request is entered (the
+	// assistant message exists by then), not at Run entry — see
+	// deadlineAfterArm.
+	runCtx := newDeadlineAfterArm(ctx)
+	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		runCtx.arm()
+		stallUntilClientGone(w, r)
+	})
 	_, err := f.drainRun(runCtx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
@@ -120,3 +127,42 @@ func TestOrdinaryTurn_TransportTimeoutPacesTheGate(t *testing.T) {
 	open, _, _ := gateOpen(f.coord, f.sessID, time.Now())
 	require.False(t, open, "a failed user turn paces the Drain gate")
 }
+
+// deadlineAfterArm is a Context whose wall-clock deadline starts only at
+// arm(), not at construction. The drain-attempt deadline test needs the
+// --timeout premise "the deadline expired while the turn was in flight,
+// with an assistant message on disk" to hold deterministically: a plain
+// context.WithTimeout created before Run raced turn startup under load
+// and could expire before PrepareStep created the assistant row, ending
+// the turn with no finish part at all. arming from the provider handler
+// (entry ⇒ the assistant message exists) removes the race. Done's channel
+// identity is fixed at construction so net/http registers on it before
+// arming; Cause carries context.DeadlineExceeded so context propagation
+// surfaces the same error a real --timeout produces.
+type deadlineAfterArm struct {
+	context.Context
+	armOnce  sync.Once
+	deadline chan struct{}
+}
+
+func newDeadlineAfterArm(parent context.Context) *deadlineAfterArm {
+	return &deadlineAfterArm{Context: parent, deadline: make(chan struct{})}
+}
+
+// arm starts the deadline clock.
+func (c *deadlineAfterArm) arm() {
+	c.armOnce.Do(func() { time.AfterFunc(300*time.Millisecond, func() { close(c.deadline) }) })
+}
+
+func (c *deadlineAfterArm) Done() <-chan struct{} { return c.deadline }
+
+func (c *deadlineAfterArm) Err() error {
+	select {
+	case <-c.deadline:
+		return context.DeadlineExceeded
+	default:
+		return c.Context.Err()
+	}
+}
+
+func (c *deadlineAfterArm) Cause() error { return c.Err() }
