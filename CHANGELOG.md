@@ -8,6 +8,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- `rush run` (A15): a top-level `ask_question` asked while the session still
+  has its own running background tasks no longer ends the run with
+  `awaiting_answer` (which orphaned that work). The tool hands the model a
+  hint — finish the turn without tool calls, results arrive as messages —
+  and the run continues. Without running own work the behavior is unchanged.
+
+- `rush run` (A18): ending a turn while todos are still pending/in_progress
+  no longer silently ends the run on an announcement. The loop fires at most
+  `cliTodoNudgeLimit` unfinished-todos reminder turns (budget resets when the
+  todos change); once spent without progress the run ends with an
+  "ended with unfinished todos" envelope warning.
+
+- Changed: `rush run --json` (A10) — with an automatic reviewer pass,
+  `final_text` now stays the executor's own last answer, and the reviewer's
+  verdict moved to a new additive `review` field (empty when no reviewer
+  ran). Previously the verdict overwrote `final_text`.
+
 - Web session list: the sidebar's liveness and external-ownership
   annotations now come from the same session-activity classifier the
   `sessions` commands use (one batched read per poll, previously a second,

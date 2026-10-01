@@ -191,7 +191,8 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.EqualValues(t, 1, reviewerRequests.Load(), "the reviewer pass runs beside debt nothing will act on")
-	require.Equal(t, "REVIEWER VERDICT", res.FinalText, "the review turn's result is the run's answer")
+	require.Equal(t, "PRIMARY ANSWER", res.FinalText, "A10: final_text stays the executor's answer")
+	require.Equal(t, "REVIEWER VERDICT", res.Review, "the verdict is the additive review field")
 }
 
 // B5: a delegated child's reaction turn fails once (a transient 403); the

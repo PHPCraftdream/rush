@@ -25,6 +25,10 @@ const (
 	// phaseDrain runs one Drain iteration: the pre-launch checks, the turn,
 	// the classification of its outcome.
 	phaseDrain
+	// phaseNudge runs one unfinished-todos reminder turn (#A18): a prompted
+	// turn fired when the scope closed while todos are still open, so the
+	// executor finishes its list instead of the run ending on an announcement.
+	phaseNudge
 	// phaseClose handles a closed scope: the reviewer pass when due, then the
 	// run's end.
 	phaseClose
@@ -40,6 +44,8 @@ func (p cliPhase) String() string {
 		return "decide"
 	case phaseDrain:
 		return "drain"
+	case phaseNudge:
+		return "nudge"
 	case phaseClose:
 		return "close"
 	default:
@@ -61,6 +67,7 @@ const (
 	// phaseDecide outcomes.
 	evScopeDrain   // a Drain is owed
 	evScopeClosed  // deferred or no debt, nothing running: the scope closed
+	evTodosNudge   // the scope closed with unfinished todos: fire one reminder (#A18)
 	evScopeStuck   // a notice the loop stopped reacting to
 	evScopeStop    // `sessions cancel` or a crossed cap while waiting
 	evScopeWaitErr // the DB stayed unreadable past the limit, or the ctx died while waiting
@@ -69,6 +76,9 @@ const (
 	evDrainGaveUp    // the refusal/setup streak exceeded its budget
 	evDrainCanceled  // the ctx died while the Drain ran
 	evDrainCapped    // the Drain crossed the run's budget
+	// phaseNudge outcomes.
+	evNudgeAgain // the reminder turn ran; decide again
+	evNudgeEnded // the reminder path ended the run (stop, cancel, gave-up)
 	// phaseClose outcomes.
 	evCloseAgain // the reviewer ran clean: decide again, on its options
 	evCloseEnded // the close phase ended the run
@@ -91,7 +101,16 @@ func transition(phase cliPhase, ev cliEvent) cliPhase {
 			return phaseDrain
 		case evScopeClosed:
 			return phaseClose
+		case evTodosNudge:
+			return phaseNudge
 		case evScopeStuck, evScopeStop, evScopeWaitErr:
+			return phaseExit
+		}
+	case phaseNudge:
+		switch ev {
+		case evNudgeAgain:
+			return phaseDecide
+		case evNudgeEnded:
 			return phaseExit
 		}
 	case phaseDrain:

@@ -601,9 +601,20 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		}
 	}
 	if reviewerCandidate {
+		primaryResult := result
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
-		result, resultErr = loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
+		reviewResult, reviewErr := loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
+		// A10: the executor's answer stays final_text; the reviewer's
+		// verdict moves to the additive review field. Only a FAILED review
+		// turn still replaces the run's outcome, exactly as before.
+		if reviewErr == nil && reviewResult != nil && primaryResult != nil {
+			primaryResult.Review = reviewResult.FinalText
+			loop.finalText = primaryResult.FinalText
+			result, resultErr = primaryResult, nil
+		} else {
+			result, resultErr = reviewResult, reviewErr
+		}
 	}
 	// R5-3: terse output is published only now — after the gate has
 	// decided which phase's result is the run's single final answer.

@@ -236,7 +236,13 @@ type cliLoop struct {
 	lastScope agent.CLIScopeState
 	// loopSchedulesCancelled: the scope-close cancellation ran once per run.
 	loopSchedulesCancelled bool
-	stderr                 io.Writer
+	// Unfinished-todos reminder state (#A18): how many reminders fired in a
+	// row without the todos changing, their last (content,status)
+	// fingerprint, and whether the budget was spent without progress.
+	todoNudges      int
+	todoFingerprint string
+	todosGaveUp     bool
+	stderr          io.Writer
 }
 
 // cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
@@ -450,10 +456,17 @@ func (l *cliLoop) closePhase() cliStepResult {
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	default:
 		l.tot.add(result)
-		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, turnErr, nil
 		if turnErr == nil {
+			// A10: the executor's answer stays the run's final_text (and its
+			// terse output stays the printed answer); the reviewer's verdict
+			// is attached as the additive review field.
+			if l.final != nil {
+				l.final.Review = result.FinalText
+			}
+			l.runErr, l.lastFailed = nil, nil
 			return cliStepResult{ev: evCloseAgain}
 		}
+		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, turnErr, nil
 		final, err := l.exit(turnErr, "")
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	}
@@ -485,7 +498,7 @@ func (l *cliLoop) run() (*RunResult, error) {
 	phase := phaseFirst
 	res := cliStepResult{ev: evBegin}
 	for phase != phaseExit {
-		if res.ev == evScopeClosed || res.ev == evCloseAgain {
+		if res.ev == evScopeClosed || res.ev == evCloseAgain || res.ev == evNudgeAgain {
 			l.streak = drainStreak{}
 		}
 		switch phase {
@@ -493,6 +506,8 @@ func (l *cliLoop) run() (*RunResult, error) {
 			res = l.decidePhase()
 		case phaseDrain:
 			res = l.drainPhase()
+		case phaseNudge:
+			res = l.nudgePhase()
 		case phaseClose:
 			res = l.closePhase()
 		case phaseFirst:
@@ -560,6 +575,9 @@ func (l *cliLoop) decidePhase() cliStepResult {
 		// schedules -- before the exit flush, so the warning lands in the
 		// envelope. Once schedules never reach here (WorkOpen).
 		l.cancelLoopSchedulesAtClose()
+		if l.todoNudgeDue() {
+			return cliStepResult{ev: evTodosNudge}
+		}
 		return cliStepResult{ev: evScopeClosed}
 	}
 	return cliStepResult{ev: evScopeDrain}
@@ -803,6 +821,15 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 func (l *cliLoop) finish(err error) (*RunResult, error) {
 	if l.final != nil {
 		l.applyTotals(l.final)
+		// A18: the budget for unfinished-todos reminders was spent without
+		// the todos moving -- the orchestrator must see why the run ended
+		// with the list still open.
+		if l.todosGaveUp {
+			if n, _, todoErr := l.openTodos(); todoErr == nil && n > 0 {
+				l.final.Warnings = append(l.final.Warnings, fmt.Sprintf(
+					"ended with unfinished todos: %d item(s) still pending/in_progress after %d reminder(s)", n, l.todoNudges))
+			}
+		}
 	}
 	l.clearHonouredCancel(l.final, err)
 	l.persistEndedReason(l.final, err)

@@ -74,7 +74,8 @@ func (rh *reviewerHarness) reviewerBodies() []string {
 
 // R3C-1: a smart run with a reviewer whose first turn leaves work owed: the
 // Drain reacts, then the reviewer runs ONCE, at the scope-closed exit, on the
-// final text (the reaction), and its verdict is the run's answer with the
+// final text (the reaction); A10: the verdict lands in the additive review
+// field while final_text stays the executor's answer, with the
 // whole run's usage. Before the fix the last Drain ran the reviewer inside its
 // own Drain context: it found nothing to pull, came back as a "queued" no-turn,
 // the loop dropped it and exited with the FIRST turn's text and usage, the
@@ -93,9 +94,10 @@ func TestRunNonInteractive_ReviewerRunsOnceAfterDrainOnFinalText(t *testing.T) {
 	bodies := rh.reviewerBodies()
 	require.Len(t, bodies, 1, "the reviewer pass runs exactly once")
 	require.Contains(t, bodies[0], r3ReactionText, "the reviewer reviews the FINAL text, reaction included")
-	require.Equal(t, r3ReviewVerdict, res.FinalText, "the review turn's result is the run's answer")
+	require.Equal(t, r3ReactionText, res.FinalText, "A10: final_text stays the executor's answer")
+	require.Equal(t, r3ReviewVerdict, res.Review, "the verdict is the additive review field")
 	require.Contains(t, out, r3ReviewVerdict)
-	require.NotContains(t, out, r3ReactionText, "only the answer is in the envelope")
+	require.Contains(t, out, r3ReactionText, "the executor's answer is in the envelope")
 	require.Equal(t, "end_turn", res.ExitReason)
 	require.EqualValues(t, 65, res.Usage.DeltaTokens, "the totals reach the reviewer's turn (session counters are last-snapshot: 14, 40, 65; a dropped reviewer would leave 40)")
 	require.False(t, rh.debtOpen())

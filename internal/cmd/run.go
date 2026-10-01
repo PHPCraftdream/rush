@@ -66,10 +66,11 @@ Four roles exist:
                       a successful --role smart run is automatically
                       continued with one more turn on the Reviewer model
                       that reviews everything the session did and states
-                      its own conclusion. That conclusion — not the smart
-                      agent's own last message — becomes the run's actual
-                      output ("final_text" in --json, the printed text in
-                      the other modes). Runs that failed, were canceled,
+                      its own conclusion. The executor's own last answer
+                      stays the run's output ("final_text" in --json); the
+                      reviewer's conclusion is carried additively in the
+                      "review" field of the --json envelope (empty when no
+                      reviewer ran). Runs that failed, were canceled,
                       timed out, or queued are returned unchanged, and an
                       explicit --role reviewer invocation is never
                       extended. Unconfigure the reviewer to disable the
@@ -126,8 +127,11 @@ Output modes (mutually exclusive --stream / --json):
     the final assistant message on stdout.
   - --stream:        every assistant token streamed live to stdout.
   - --json:          a single JSON object on stdout when the run ends —
-                     {session_id, exit_reason, final_text, assistant_notes,
-                      tool_calls, usage, duration_ms, error}. Tool-call
+                     {session_id, exit_reason, final_text, review,
+                      assistant_notes, tool_calls, usage, duration_ms,
+                      error}. "review" carries the auto reviewer pass's
+                     verdict (empty when none ran); final_text stays the
+                     executor's answer. Tool-call
                      heartbeat still goes to stderr so wrappers can show
                      progress.
 

@@ -31,6 +31,10 @@ type RunResult struct {
 	//       as proof the content is valid JSON.
 	ExitReason string `json:"exit_reason"`
 	FinalText  string `json:"final_text"`
+	// Review carries the automatic reviewer pass's verdict when one ran
+	// after the executor's turn; final_text stays the executor's own last
+	// completed answer. Empty when no reviewer pass ran (the default).
+	Review string `json:"review,omitempty"`
 	// Fork patch (orchestrator UX): when --json or --format json
 	// triggered the fence/preamble stripper and the model HAD wrapped
 	// its answer in prose or a markdown fence, the unstripped original

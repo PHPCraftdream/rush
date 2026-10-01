@@ -248,10 +248,14 @@ func TestExecuteRunContinuationChainScopedToItsOwnPhase(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	require.Equal(t, contReviewText, result.FinalText,
-		"the reviewer pass's own response must be the final output, untouched by the primary turn's continuation chain")
-	assert.NotContains(t, result.FinalText, contPartialText)
-	assert.NotContains(t, result.FinalText, contFinalText)
+	// A10: final_text stays the primary phase's own answer (its
+	// continuation-chain text, untouched by the review turn); the
+	// reviewer's verdict moved to the additive review field.
+	require.Equal(t, contPartialText+contFinalText, result.FinalText)
+	require.Equal(t, contReviewText, result.Review,
+		"the reviewer pass's own response is the review field, untouched by the primary turn's continuation chain")
+	assert.NotContains(t, result.Review, contPartialText)
+	assert.NotContains(t, result.Review, contFinalText)
 }
 
 // TestContinuationChainText pins the walk rules directly: only the

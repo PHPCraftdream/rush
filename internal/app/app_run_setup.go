@@ -123,6 +123,19 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// on the user message. Empty/unspecified leaves both untouched.
 	ctx = agent.WithCallOrigin(ctx, req.Origin)
 
+	// The ask_question tool reads this to tell "a question asked while the
+	// session's own background work is still running" (turn continues, the
+	// tool hands back a hint) apart from "genuinely blocked" (the run ends
+	// with awaiting_answer). The fact is read at tool-call time through the
+	// activity classifier's live-work facts.
+	ctx = tools.WithOwnRunningJobsReader(ctx, func(ctx context.Context, sessionID string) (int, bool) {
+		act, err := app.SessionActivity(ctx, sessionID)
+		if err != nil {
+			return 0, false
+		}
+		return act.Facts.OwnRunningJobs, true
+	})
+
 	// Per-call credentials (sdk.Client.RunWithCredentials): validate the
 	// bundle before any session work so a malformed set fails fast, and
 	// keep the credentials-capable coordinator for the run handoff below.

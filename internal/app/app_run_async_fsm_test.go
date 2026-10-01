@@ -21,9 +21,10 @@ func TestCLILoopTransition_Table(t *testing.T) {
 	all := []cliEvent{
 		evBegin, evFirstContinue, evFirstDead, evFirstLockBusy, evFirstCanceled,
 		evScopeDrain, evScopeClosed, evScopeStuck, evScopeStop, evScopeWaitErr,
-		evDrainContinues, evDrainGaveUp, evDrainCanceled, evDrainCapped, evCloseAgain, evCloseEnded,
+		evDrainContinues, evDrainGaveUp, evDrainCanceled, evDrainCapped,
+		evTodosNudge, evNudgeAgain, evNudgeEnded, evCloseAgain, evCloseEnded,
 	}
-	phases := []cliPhase{phaseFirst, phaseDecide, phaseDrain, phaseClose, phaseExit}
+	phases := []cliPhase{phaseFirst, phaseDecide, phaseDrain, phaseNudge, phaseClose, phaseExit}
 	for _, phase := range phases {
 		for _, ev := range all {
 			// The forward edges, spelled out per source phase; every other
@@ -43,10 +44,19 @@ func TestCLILoopTransition_Table(t *testing.T) {
 					want = phaseDrain
 				case evScopeClosed:
 					want = phaseClose
+				case evTodosNudge:
+					want = phaseNudge
 				}
 			case phaseDrain:
 				if ev == evDrainContinues {
 					want = phaseDecide
+				}
+			case phaseNudge:
+				switch ev {
+				case evNudgeAgain:
+					want = phaseDecide
+				case evNudgeEnded:
+					want = phaseExit
 				}
 			case phaseClose:
 				switch ev {

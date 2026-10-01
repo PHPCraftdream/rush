@@ -75,8 +75,10 @@ func TestExecuteRunReviewerPassToolCallsSpanBothPhases(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	require.Equal(t, contReviewText, result.FinalText,
-		"the reviewer pass's own response must remain the final output")
+	require.Equal(t, contPartialText+contFinalText, result.FinalText,
+		"A10: final_text stays the primary phase's own answer")
+	require.Equal(t, contReviewText, result.Review,
+		"the reviewer pass's own response is the review field")
 	// The key F8 assertion: the primary phase's single view call must
 	// appear in the FINAL envelope even though the reviewer phase made
 	// no tool calls.

@@ -41,6 +41,7 @@ func TestRunNonInteractive_DeadlineWhileWaitingOnHeldJob_EndsThroughExitWait(t *
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason)
 	require.Contains(t, res.Error, "deadline exceeded")
-	require.Equal(t, r4Waiting, res.FinalText, "the last completed turn is the answer")
+	require.Equal(t, r4First, res.FinalText, "A10: final_text stays the executor's answer")
+	require.Equal(t, r4Waiting, res.Review, "the reviewer's completed turn is the review field")
 	require.Equal(t, 1, strings.Count(out.String(), `"final_text"`), "one envelope is flushed")
 }

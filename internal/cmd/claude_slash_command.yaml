@@ -136,8 +136,9 @@ blocks:
       **Reviewer auto-pass:** when a `reviewer` model is configured, a
       successful `--role smart` run is automatically continued with one more
       turn on the Reviewer model that reviews the whole session and ends with
-      its own conclusion — and that conclusion, not the smart agent's own
-      last message, is what the invocation returns as `final_text`. Failed,
+      its own conclusion. The executor's own last answer stays `final_text`;
+      the reviewer's conclusion is carried additively in the `review` field of
+      the `--json` envelope (empty when no reviewer ran). Failed,
       canceled, timed-out, or queued runs are returned unchanged; an explicit
       `--role reviewer` invocation is never extended; the reviewer override
       is never persisted on the session. Unconfigure the reviewer to turn
@@ -153,7 +154,11 @@ blocks:
         the process to answer it, so the process force-finishes its turn and
         **exits** with `exit_reason: "awaiting_answer"`. You see this as your
         background command completing, and you must resume it yourself with
-        a fresh `rush run --session <id> "<answer>"`.
+        a fresh `rush run --session <id> "<answer>"`. Exception: if the agent
+        still has its OWN running background tasks (bash jobs, delegations),
+        the tool refuses to end the run — the model gets a hint to finish the
+        turn without tool calls instead, the tasks' results arrive as
+        messages, and the run continues on its own.
       - **Worker sub-agent's question**: a worker delegated to via the
         `agent` tool calls `ask_question` on its own turn. This does **not**
         make the `rush run` process exit — it stays alive. Rush's own

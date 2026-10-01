@@ -203,8 +203,9 @@ func runReviewerPassExecuteRun(t *testing.T, h *reviewerPassApp, sessID string, 
 // TestExecuteRunReviewerPassContinuesCleanSmartRunWithReviewerModel is the
 // end-to-end proof: a clean --role smart run with a Reviewer model
 // configured is followed by ONE more turn on the reviewer model, carrying
-// the fixed reviewer prompt, and that reviewer turn's own response — not
-// the primary turn's — becomes the envelope's final_text. The reviewer
+// the fixed reviewer prompt. A10: the reviewer's verdict lands in the
+// envelope's additive review field while final_text stays the primary
+// turn's answer. The reviewer
 // override must be a one-off: nothing may be persisted onto the session's
 // model slots, so a later plain `rush run --session <same-id>` still
 // resolves the session's normal smart model.
@@ -224,8 +225,13 @@ func TestExecuteRunReviewerPassContinuesCleanSmartRunWithReviewerModel(t *testin
 	require.Contains(t, h.recordedBodies(), "independent reviewer",
 		"the second turn must carry the fixed reviewer-pass prompt")
 
-	require.Equal(t, reviewerPassReviewerText, result.FinalText,
-		"the reviewer's own response must become the run's final output, not the primary turn's")
+	// A10: final_text stays the EXECUTOR's answer; the reviewer's verdict
+	// moved to the additive review field. Orchestrators read final_text as
+	// the work report, not the review.
+	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
+		"final_text must stay the executor's own answer (A10)")
+	require.Equal(t, reviewerPassReviewerText, result.Review,
+		"the reviewer's verdict must land in the review field (A10)")
 	require.Equal(t, "end_turn", result.ExitReason, "a clean openai-compat run ends with the end_turn finish reason")
 
 	stored, err := h.app.Sessions.Get(context.Background(), sess.ID)
@@ -251,6 +257,7 @@ func TestExecuteRunNoReviewerConfiguredIsByteIdentical(t *testing.T) {
 	require.Equal(t, []string{"smart-default"}, h.requestedModels(),
 		"without a configured reviewer there must be exactly one provider turn")
 	require.Equal(t, reviewerPassPrimaryText, result.FinalText)
+	require.Empty(t, result.Review, "no reviewer pass: the review field must stay empty")
 	require.Equal(t, "end_turn", result.ExitReason, "a clean openai-compat run ends with the end_turn finish reason")
 }
 
@@ -313,7 +320,10 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 	assert.NotContains(t, sets[1], "agent", "the review turn must not carry the worker-delegation tool")
 	assert.NotContains(t, sets[1], "agentic_fetch")
 
-	require.Equal(t, reviewerPassReviewerText, result.FinalText)
+	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
+		"A10: final_text stays the executor's answer")
+	require.Equal(t, reviewerPassReviewerText, result.Review,
+		"the review turn ran on the reviewer call options; its verdict is the review field")
 }
 
 // TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim pins R2-3:

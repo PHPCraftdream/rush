@@ -22,6 +22,36 @@ type AskQuestionParams struct {
 	Options  []string `json:"options,omitempty" description:"Optional suggested answers, e.g. [\"yes\", \"no\", \"dry-run only\"]. Advisory only — any free-text answer is still accepted when the session resumes."`
 }
 
+// ownRunningJobsContextKey is the context-key type for the session's live
+// own-jobs reader.
+type ownRunningJobsContextKey string
+
+// OwnRunningJobsContextKey is the context key for the session's live
+// own-jobs reader (see RunningJobsReader).
+const OwnRunningJobsContextKey ownRunningJobsContextKey = "own_running_jobs"
+
+// RunningJobsReader reports how many of the session's OWN async jobs are
+// currently running. ok=false means the fact is unavailable (no reader
+// wired, or the read failed) — the tool then keeps the legacy force-finish
+// behavior rather than guessing.
+type RunningJobsReader func(ctx context.Context, sessionID string) (running int, ok bool)
+
+// WithOwnRunningJobsReader attaches the own-running-jobs reader to the
+// turn context.
+func WithOwnRunningJobsReader(ctx context.Context, r RunningJobsReader) context.Context {
+	return context.WithValue(ctx, OwnRunningJobsContextKey, r)
+}
+
+// OwnRunningJobsFromContext reads the session's running own-jobs count
+// through the context-carried reader. ok=false when no reader is wired.
+func OwnRunningJobsFromContext(ctx context.Context) (running int, ok bool) {
+	r, _ := ctx.Value(OwnRunningJobsContextKey).(RunningJobsReader)
+	if r == nil {
+		return 0, false
+	}
+	return r(ctx, GetSessionFromContext(ctx))
+}
+
 // AskQuestionError is the error the ask_question tool's Run returns to force
 // fantasy's agent loop to stop the current turn instead of continuing it
 // with a normal (successful) tool result.
@@ -47,15 +77,21 @@ func (e *AskQuestionError) Error() string {
 	return fmt.Sprintf("agent asked a question and is awaiting an answer (session %s): %s", e.SessionID, e.Question)
 }
 
-// NewAskQuestionTool builds the ask_question agent tool. Run never returns a
-// normal (successful) ToolResponse for a well-formed question: it always
-// returns a non-nil *AskQuestionError as the Go error, which fantasy's
+// NewAskQuestionTool builds the ask_question agent tool. For a well-formed
+// question asked while the session has NO running own async jobs, Run never
+// returns a normal (successful) ToolResponse: it returns a non-nil
+// *AskQuestionError as the Go error, which fantasy's
 // executeSingleTool treats as a critical error and propagates all the way up
 // as the agent loop's own error (see charm.land/fantasy's agent.go
 // executeSingleTool: a non-nil error from a tool's Run aborts the step and
 // is returned from Stream/Run verbatim). That is what lets agent.Run's
 // error-classification chain (agent_turn.go) catch it and force-finish the
 // turn via AddFinish, exactly like the existing PeakHoursError path.
+//
+// When the session DOES have running own async jobs, asking would end the
+// whole run and orphan that work: Run instead returns an ordinary hint
+// response (nil Go error) and the turn continues, so the model can finish
+// the turn without tool calls and let the jobs' results arrive as messages.
 func NewAskQuestionTool() fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		AskQuestionToolName,
@@ -72,6 +108,14 @@ func NewAskQuestionTool() fantasy.AgentTool {
 			}
 
 			sessionID := GetSessionFromContext(ctx)
+
+			if running, ok := OwnRunningJobsFromContext(ctx); ok && running > 0 {
+				// The agent has its own background work in flight: ending the
+				// run now would orphan it. Do NOT stop the turn — hand the
+				// model a hint it can act on and let the turn continue.
+				return fantasy.NewTextResponse(fmt.Sprintf(
+					"You still have %d running background task(s) of your own. ask_question does NOT wait for them — calling it would end the whole run and leave them orphaned. Finish this turn WITHOUT any tool call instead: their results will arrive as new messages and the run continues automatically. Reserve ask_question for a decision you cannot make yourself.", running)), nil
+			}
 
 			return fantasy.ToolResponse{}, &AskQuestionError{
 				Question:  question,

@@ -1,0 +1,113 @@
+package app
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/session"
+)
+
+// cliTodoNudgeLimit bounds how many unfinished-todos reminders the loop may
+// fire in a row without the todos changing (#A18), by analogy with the
+// reaction chain guard's fuse (#1113): a model that answers every reminder
+// with another announcement must not be prompted forever. The budget resets
+// whenever the todos' (content,status) fingerprint changes.
+const cliTodoNudgeLimit = 2
+
+// todoNudgePrompt is the fixed user prompt of the unfinished-todos reminder
+// turn (#A18). Like the reviewer pass's prompt it must steer to a concrete
+// outcome, never to more announcements.
+const todoNudgePrompt = `Your todo list still has unfinished items (pending or in_progress). Continue working on them now, or mark each finished item completed and each dropped item cancelled, then end your turn with a summary of what is done and what remains. Do not end the turn while actionable work remains.`
+
+// openTodos reads the session's todos and returns how many are pending or
+// in_progress plus a fingerprint of their (content,status) pairs; a read
+// failure is (0, "", err) and never fires a nudge.
+func (l *cliLoop) openTodos() (count int, fingerprint string, err error) {
+	sess, err := l.app.Sessions.Get(l.ctx, l.sessionID)
+	if err != nil {
+		return 0, "", err
+	}
+	var sb strings.Builder
+	for _, td := range sess.Todos {
+		if td.Status == session.TodoStatusCompleted {
+			continue
+		}
+		count++
+		sb.WriteString(td.Content)
+		sb.WriteByte(0)
+		sb.WriteString(string(td.Status))
+		sb.WriteByte(0)
+	}
+	return count, sb.String(), nil
+}
+
+// todoNudgeDue decides whether the close path must first fire one
+// unfinished-todos reminder turn (#A18). The budget resets when the todos
+// changed since the previous nudge; once the budget is spent without
+// progress the run is allowed to end, with a warning recorded at the exit.
+func (l *cliLoop) todoNudgeDue() bool {
+	n, fp, err := l.openTodos()
+	if err != nil || n == 0 {
+		return false
+	}
+	if fp != l.todoFingerprint {
+		l.todoFingerprint = fp
+		l.todoNudges = 0
+	}
+	if l.todoNudges >= cliTodoNudgeLimit {
+		if !l.todosGaveUp {
+			l.todosGaveUp = true
+			fmt.Fprintf(l.errOut(), "rush run: session %q still has %d unfinished todo(s) after %d reminder(s); ending the run (see the envelope warning)\n", l.sessionID, n, l.todoNudges)
+		}
+		return false
+	}
+	l.todoNudges++
+	return true
+}
+
+// nudgePhase runs one unfinished-todos reminder turn (#A18): a plain
+// prompted turn on the executor's model, then back to decide -- the closed
+// scope is re-read there, and the nudge fires again only if todos are still
+// open and the budget allows. Failures exit through the same paths a Drain's
+// would (afterDrain's streak, turnCanceled, stopError).
+func (l *cliLoop) nudgePhase() cliStepResult {
+	if err := l.stopError(); err != nil {
+		final, exitErr := l.exitPrecheck(err)
+		return cliStepResult{ev: evNudgeEnded, final: final, err: exitErr}
+	}
+	usageBefore := l.sessionUsage()
+	l.flushQueuedUsage(usageBefore)
+	result, buffered, err := l.runTodoNudgeTurn()
+	if l.ctx.Err() != nil {
+		final, exitErr := l.turnCanceled(result, buffered, err, usageBefore)
+		return cliStepResult{ev: evNudgeEnded, final: final, err: exitErr}
+	}
+	if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
+		final, exitFinal := l.exit(exitErr, "error")
+		return cliStepResult{ev: evNudgeEnded, final: final, err: exitFinal}
+	}
+	return cliStepResult{ev: evNudgeAgain}
+}
+
+// runTodoNudgeTurn runs the reminder as an ordinary prompted turn (not a
+// Drain: the reminder is a real user message, on the executor's model
+// unless the reviewer pass already ran).
+func (l *cliLoop) runTodoNudgeTurn() (*RunResult, *bytes.Buffer, error) {
+	buffered, turnOutput := l.turnSink()
+	result, err := l.app.ExecuteRun(l.ctx, RunRequest{
+		Prompt: todoNudgePrompt, Overrides: l.turnOverrides, Mode: l.mode,
+		ContinueSessionID: l.sessionID,
+		Origin:            l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
+		HideSpinner:       l.hideSpinner,
+		captureResult:     true,
+		loopTurn:          true,
+		deferReviewer:     true,
+		reviewerConfig:    l.reviewerDone,
+		onSessionResolved: l.claim,
+	})
+	if cliLoopTurnDoneSeam != nil {
+		cliLoopTurnDoneSeam()
+	}
+	return result, buffered, err
+}

@@ -19,6 +19,12 @@ non-interactive and web sessions both auto-approve permissions
 unconditionally, so "ask a question" means "stop cleanly and hand back a
 resume command", not "wait here". Do not call any other tool after this one
 in the same turn — it will not run.
+
+EXCEPTION: if you have running background tasks of your own (bash jobs,
+delegations) the call does NOT end the turn. You get a hint telling you to
+finish the turn without any tool call instead — the tasks' results arrive
+as new messages and the run continues on its own. Asking while work is
+running would end the whole run and orphan that work.
 </important>
 
 <tips>
