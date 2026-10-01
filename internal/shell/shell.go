@@ -46,6 +46,18 @@ func RushEnvMarkers() []string {
 	}
 }
 
+// hasEnvVar reports whether env already carries an entry for name (with
+// or without a value).
+func hasEnvVar(env []string, name string) bool {
+	prefix := name + "="
+	for _, entry := range env {
+		if entry == name || strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Logger interface for optional logging
 type Logger interface {
 	InfoPersist(msg string, keysAndValues ...any)
@@ -94,6 +106,15 @@ func NewShell(opts *Options) *Shell {
 
 	// Allow tools to detect execution by Rush.
 	env = append(env, RushEnvMarkers()...)
+
+	// Fork patch (A8): a timed-out/job-killed `git status` leaves
+	// .git/worktrees/<n>/index.lock behind, and every later git write in
+	// that worktree dies with "Unable to create index.lock". Disabling
+	// git's opportunistic index refresh makes read-only commands stop
+	// taking index.lock at all. An explicit user value wins.
+	if !hasEnvVar(env, "GIT_OPTIONAL_LOCKS") {
+		env = append(env, "GIT_OPTIONAL_LOCKS=0")
+	}
 
 	logger := opts.Logger
 	if logger == nil {

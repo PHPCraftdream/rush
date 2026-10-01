@@ -149,6 +149,17 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// Determine working directory
 			execWorkingDir := cmp.Or(params.WorkingDir, workingDir)
 
+			// Fork patch (A17): in a run rooted in a linked git worktree the
+			// orchestrator owns commits — the agent must not mutate shared
+			// git state (the incident: an agent's revert-check ran
+			// `git checkout -- <file>` on shared state). Main-checkout runs
+			// keep today's behavior; read-only git passes everywhere.
+			if agentguard.IsLinkedWorktree(execWorkingDir) {
+				if gitErr := agentguard.CheckGitWrites(params.Command); gitErr != nil {
+					return fantasy.NewTextErrorResponse(gitErr.Error()), nil
+				}
+			}
+
 			isSafeReadOnly := isSafeReadOnlyCommand(params.Command)
 
 			sessionID := GetSessionFromContext(ctx)

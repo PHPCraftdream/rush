@@ -152,6 +152,15 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				execDir = filepath.Join(workingDir, params.WorkingDir)
 			}
 
+			// A17: same orchestrator-commits rule as the bash tool — git
+			// writes are refused for runs rooted in a linked worktree, keyed
+			// on the resolved exec directory.
+			if agentguard.IsLinkedWorktree(execDir) {
+				if gitErr := agentguard.CheckGitWritesArgs(argv); gitErr != nil {
+					return fantasy.NewTextErrorResponse(gitErr.Error()), nil
+				}
+			}
+
 			n := params.TimeoutSeconds
 			clampNotice := ""
 			if n == 0 {

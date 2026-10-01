@@ -121,6 +121,11 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input mcpBashInput) (*mcp.CallToolResult, any, error) {
 		slog.Debug("cliprovider: MCP Bash called", "command", input.Command, "description", input.Description)
 
+		wd := workingDir
+		if input.WorkingDir != "" {
+			wd = input.WorkingDir
+		}
+
 		// Fork patch: batch 16 — refuse invocations of other AI agent CLIs
 		// (claude, codex, gemini, opencode, aider, rush itself, …) before
 		// they reach the shell, and — on Windows — commands that would pop
@@ -139,9 +144,13 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 			return toolError("command is not allowed for security reasons"), nil, nil
 		}
 
-		wd := workingDir
-		if input.WorkingDir != "" {
-			wd = input.WorkingDir
+		// A17: in runs rooted in a linked git worktree the orchestrator
+		// commits — refuse state-mutating git from this shell surface too,
+		// keyed on the resolved working directory.
+		if agentguard.IsLinkedWorktree(wd) {
+			if gitErr := agentguard.CheckGitWrites(input.Command); gitErr != nil {
+				return toolError(gitErr.Error()), nil, nil
+			}
 		}
 
 		id := uuid.New().String()

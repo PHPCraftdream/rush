@@ -386,6 +386,9 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	ts.toolFinished()
 	ts.phase = phaseToolBoundary // Fork patch: batch 8
 	toolResult := ts.a.convertToToolResult(result)
+	// Fork patch (#1147): hallucinated tool names get a self-correctable
+	// answer instead of a bare "tool not found".
+	toolResult = ts.a.augmentUnknownToolResult(toolResult)
 	if ts.sanitizedToolCalls[result.ToolCallID] {
 		toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
 		toolResult.IsError = true

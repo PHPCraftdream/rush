@@ -31,6 +31,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `final_text` now stays the executor's own last answer, and the reviewer's
   verdict moved to a new additive `review` field (empty when no reviewer
   ran). Previously the verdict overwrote `final_text`.
+- `rush run` agents working in a linked git worktree can no longer mutate
+  shared git state (`checkout`/`reset`/`commit`/`add`/`stash`/… via the
+  bash tool): such commands are refused with "git writes are not allowed
+  for this run; the orchestrator commits". Read-only git is unaffected;
+  runs rooted in a main checkout behave exactly as before.
+
+- Commands launched by an agent's bash tool now run with
+  `GIT_OPTIONAL_LOCKS=0` (an explicit user value wins), so a timed-out or
+  killed `git status` can no longer leave a stale
+  `.git/worktrees/<n>/index.lock` that blocks later git writes.
+
+- Calling a non-existent tool now returns the closest real tool name
+  ("unknown tool \"gash\" — did you mean \"bash\"?") or, when nothing is
+  close, the list of available tools — instead of a bare "tool not found".
 
 - Web session list: the sidebar's liveness and external-ownership
   annotations now come from the same session-activity classifier the
