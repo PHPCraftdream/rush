@@ -433,11 +433,14 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// delegation) says the scope is open: not stale, not offline.
 		var driverPID int
 		betweenTurns := false
-		if pulse == "offline" {
-			if v, ok := liveVerdict(sessionID); ok {
+		if v, ok := liveVerdict(sessionID); ok {
+			label, between := verdictPulse(pulse, v)
+			if between {
 				betweenTurns = true
 				driverPID = int(v.PID)
-				pulse, stale = "between-turns", false
+			}
+			if label != pulse {
+				pulse, stale = label, false
 			}
 		}
 
@@ -524,6 +527,22 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		)
 	}
 	return tw.Flush()
+}
+
+// verdictPulse relabels a lock's mtime pulse from a live verdict (R-ACT: the
+// classifier, not mtime, decides liveness). A released lock ages from the
+// moment a turn ends, so a session waiting between turns used to read
+// "ping"/"stopping" for 10-20 s -- as if its process were exiting. Between
+// turns or delegating is always "between-turns"; an in-turn holder keeps its
+// heartbeat pulse, except "offline", which the verdict proves wrong.
+func verdictPulse(pulse string, v session.ActivityVerdict) (label string, betweenTurns bool) {
+	if v.Kind == session.ActivityInTurn {
+		if pulse == "offline" {
+			return "alive", false
+		}
+		return pulse, false
+	}
+	return "between-turns", true
 }
 
 // kindIsLive reports whether a verdict Kind means the session's scope is

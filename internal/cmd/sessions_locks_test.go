@@ -743,3 +743,34 @@ func TestSessionsLocksCmdRun_TopLevelActivityOverridesStaleHeartbeat(t *testing.
 	assert.Empty(t, found.SubAgent,
 		"the freshness signal came from the session's OWN activity, not a delegation — sub_agent must stay empty")
 }
+
+// TestVerdictPulse: a live verdict decides the pulse label. Between turns and
+// delegating read "between-turns" at every lock age (a released lock used to
+// show "ping"/"stopping" 10-20 s after a turn ended); an in-turn holder keeps
+// its heartbeat pulse except "offline", which the verdict proves wrong.
+func TestVerdictPulse(t *testing.T) {
+	t.Parallel()
+	between := session.ActivityVerdict{Kind: session.ActivityBetweenTurns}
+	delegating := session.ActivityVerdict{Kind: session.ActivityDelegating}
+	inTurn := session.ActivityVerdict{Kind: session.ActivityInTurn}
+	for _, tc := range []struct {
+		pulse   string
+		v       session.ActivityVerdict
+		label   string
+		between bool
+	}{
+		{"alive", between, "between-turns", true},
+		{"ping", between, "between-turns", true},
+		{"stopping", between, "between-turns", true},
+		{"offline", between, "between-turns", true},
+		{"stopping", delegating, "between-turns", true},
+		{"alive", inTurn, "alive", false},
+		{"ping", inTurn, "ping", false},
+		{"stopping", inTurn, "stopping", false},
+		{"offline", inTurn, "alive", false},
+	} {
+		label, between := verdictPulse(tc.pulse, tc.v)
+		require.Equal(t, tc.label, label, "%s/%s", tc.pulse, tc.v.Kind)
+		require.Equal(t, tc.between, between, "%s/%s", tc.pulse, tc.v.Kind)
+	}
+}

@@ -297,7 +297,12 @@ func TestMaybePrependStdin_NamedPipeGoesSilentAfterFirstByteDoesNotHang(t *testi
 // total elapsed time (sum of the pauses) would trip the grace window and
 // truncate the data even though no individual gap ever exceeded it.
 func TestMaybePrependStdin_NamedPipeIdleTimerResetsPerChunk(t *testing.T) {
-	const grace = 150 * time.Millisecond
+	// Wide margins: each pause sits 650ms under the grace window, so a
+	// loaded scheduler cannot stretch a gap past it (an 80ms pause against
+	// a 150ms grace flaked under parallel test load), while the pauses still
+	// sum past one grace window.
+	const grace = time.Second
+	const pause = 350 * time.Millisecond
 
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
@@ -316,28 +321,25 @@ func TestMaybePrependStdin_NamedPipeIdleTimerResetsPerChunk(t *testing.T) {
 		}{got, err}
 	}()
 
-	// Three bursts, each pause well under the grace duration (150ms), but
-	// the bursts together span ~240ms total — longer than a single grace
-	// window from the start would allow, proving the timer resets per chunk.
-	const burst1 = "burst-one-"
-	const burst2 = "burst-two-"
-	const burst3 = "burst-three"
-	_, err = w.WriteString(burst1)
-	require.NoError(t, err)
-	time.Sleep(80 * time.Millisecond)
-	_, err = w.WriteString(burst2)
-	require.NoError(t, err)
-	time.Sleep(80 * time.Millisecond)
-	_, err = w.WriteString(burst3)
-	require.NoError(t, err)
+	// Four bursts, each pause well under the grace duration, but together
+	// spanning ~1.05s -- longer than a single grace window from the start
+	// would allow, proving the timer resets per chunk.
+	bursts := []string{"burst-one-", "burst-two-", "burst-three-", "burst-four"}
+	for i, b := range bursts {
+		if i > 0 {
+			time.Sleep(pause)
+		}
+		_, err = w.WriteString(b)
+		require.NoError(t, err)
+	}
 	require.NoError(t, w.Close())
 
 	select {
 	case res := <-done:
 		require.NoError(t, res.err)
-		require.Equal(t, burst1+burst2+burst3+"\n\nthe prompt", res.got,
+		require.Equal(t, strings.Join(bursts, "")+"\n\nthe prompt", res.got,
 			"all bursts must survive: no individual gap between them exceeded the grace duration, so the idle timer must have reset each time")
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("maybePrependStdin hung reading multiple bursts separated by pauses shorter than the grace duration")
 	}
 }

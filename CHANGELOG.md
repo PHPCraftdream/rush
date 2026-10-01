@@ -69,6 +69,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`rush sessions locks`: a session waiting between turns no longer reads as
+  "stopping".** A released lock ages from the moment a turn ends, so for
+  10-20 s the pulse showed "ping"/"stopping" for a loop that was simply
+  waiting on its jobs; the live verdict now labels it "between-turns" at
+  every age, and an in-turn holder the verdict proves alive is no longer
+  shown "offline".
+
 - **#1139: zai sessions no longer lose their cache hit ratio.** openai-compat
   providers are now classified as cache reporters by the configured provider
   ID (e.g. `zai`) instead of the wire type, so the cache-silent warm-up turns
