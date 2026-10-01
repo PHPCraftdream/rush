@@ -262,6 +262,13 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			}
 		}
 	}
+	// Open once wake schedules (stage 5a): a wakein/wakeon timer holds the
+	// session's `rush run` open with no lock and no running row -- the same
+	// not-done rule the own-jobs half applies, with the schedule named.
+	var openWakes []session.OpenWakeSchedule
+	if wake := a.WakeScheduleStore(); wake != nil {
+		openWakes, _ = session.OpenOnceWakeSchedules(ctx, wake, sessionID)
+	}
 	descendantCaveat := ""
 	if walkIncomplete && len(liveDescendants) == 0 {
 		// A failed child listing means the tree could not be fully
@@ -307,6 +314,12 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 			fmt.Fprintf(out, "status: running\n")
 			fmt.Fprintf(out, "reason: no lock file present for this session (idle between turns), but %s — the session is NOT at rest.\n",
 				describeRunDriver(*driver, driverOwes))
+		} else if len(openWakes) > 0 {
+			// At rest as far as locks go, but a one-shot wake schedule holds
+			// the session's `rush run` open (stage 5a) -- NOT at rest.
+			fmt.Fprintf(out, "status: running\n")
+			fmt.Fprintf(out, "reason: no lock file present for this session (idle between turns), but %s — the run is waiting on it, so it is NOT done.\n",
+				describeOpenWakeSchedules(openWakes))
 		} else {
 			fmt.Fprintf(out, "status: at rest\n")
 			fmt.Fprintf(out, "reason: no lock file present — not running, not crashed.\n")
@@ -421,6 +434,12 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 				fmt.Fprintf(out, "status: running (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is not completion, so the session is NOT done.\n",
 					holderDeadReason, describeRunDriver(*driver, driverOwes))
+			} else if len(openWakes) > 0 {
+				// Same suppression for an open once wake schedule: the end_turn
+				// is the run's yield while it waits on the timer, not completion.
+				fmt.Fprintf(out, "status: running (stale lock)\n")
+				fmt.Fprintf(out, "reason: %s; %s — the end_turn above is not completion, so the session is NOT done.\n",
+					holderDeadReason, describeOpenWakeSchedules(openWakes))
 			} else {
 				fmt.Fprintf(out, "status: done (stale lock)\n")
 				fmt.Fprintf(out, "reason: %s; last assistant message finished cleanly (end_turn).\n", holderDeadReason)
@@ -433,7 +452,7 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 					fmt.Fprint(out, descendantCaveat)
 				}
 			}
-		} else if cleanRelease && (len(liveDescendants) > 0 || len(ownJobs) > 0 || driver != nil) {
+		} else if cleanRelease && (len(liveDescendants) > 0 || len(ownJobs) > 0 || driver != nil || len(openWakes) > 0) {
 			// A failed turn (error finish) whose lock is only a clean-release
 			// leftover -- an empty file, or one naming the live driver -- is
 			// not a crash while the session has live work: the loop retries
@@ -444,6 +463,8 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 				status, clause = "delegating", describeLiveDescendants(liveDescendants)
 			case len(ownJobs) > 0:
 				clause = describeLiveOwnJobs(ownJobs)
+			case len(openWakes) > 0:
+				clause = describeOpenWakeSchedules(openWakes)
 			default:
 				driverShown = true
 				clause = describeRunDriver(*driver, driverOwes)

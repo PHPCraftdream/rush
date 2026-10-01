@@ -19,8 +19,16 @@ const cliOpenWorkNamed = 3
 // failure or an empty answer (the row finished a moment ago) falls back to
 // the generic wording; it is display only.
 func (l *cliLoop) describeOpenWork() string {
-	const generic = "a running job/delegation, or a host that is not provably dead"
+	const generic = "a running job/delegation, a host that is not provably dead, or an open wake schedule"
+	// Stage 5a: the once schedule the run is held open for (empty without).
+	var schedule []string
+	if clause := l.describeOnceWake(); clause != "" {
+		schedule = append(schedule, clause)
+	}
 	if l.app == nil || l.app.asyncJobStore == nil {
+		if len(schedule) > 0 {
+			return strings.Join(schedule, "; ")
+		}
 		return generic
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
@@ -28,9 +36,12 @@ func (l *cliLoop) describeOpenWork() string {
 	store := l.app.asyncJobStore
 	rows, err := store.ListRunningAsyncJobsForOwners(ctx, []string{l.sessionID})
 	if err != nil || len(rows) == 0 {
+		if len(schedule) > 0 {
+			return strings.Join(schedule, "; ")
+		}
 		return generic
 	}
-	parts := make([]string, 0, cliOpenWorkNamed)
+	parts := append(schedule, make([]string, 0, cliOpenWorkNamed)...)
 	for i, row := range rows {
 		if i == cliOpenWorkNamed {
 			parts = append(parts, fmt.Sprintf("%d more", len(rows)-cliOpenWorkNamed))

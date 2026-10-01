@@ -58,6 +58,14 @@ type CLIScopeState struct {
 	// loop reads this typed flag (never the Reason string) for its one
 	// stderr line and envelope warning.
 	ChainGuard bool
+	// OnceWakeOpen: the session owns an ACTIVE once (wakein/wakeon) schedule
+	// -- open work for the CLI lifetime policy (stage 5a): the run waits for
+	// it to fire, and it never pulls the wait past the run's own deadline.
+	OnceWakeOpen bool
+	// OnceWakeID / OnceWakeAt name the earliest open once schedule, for the
+	// wait heartbeat and `sessions why` (empty/zero without OnceWakeOpen).
+	OnceWakeID string
+	OnceWakeAt time.Time
 }
 
 // ReactionDebtSource is implemented by *coordinator; internal/app type-
@@ -227,6 +235,23 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 		return CLIScopeState{}, err
 	}
 	state := CLIScopeState{WorkOpen: workOpen}
+	// Stage 5a: an ACTIVE once schedule is open work too. Read AFTER the
+	// running rows (display fields, not a liveness factor) but BEFORE debt:
+	// it must keep the scope open even when no debt and no row exists.
+	once, err := c.openOnceWakeSchedules(ctx, sessionID)
+	if err != nil {
+		return CLIScopeState{}, err
+	}
+	for _, row := range once {
+		at := time.Unix(row.NextRunAt, 0).UTC()
+		if state.OnceWakeID == "" || at.Before(state.OnceWakeAt) {
+			state.OnceWakeID, state.OnceWakeAt = row.ID, at
+		}
+	}
+	state.OnceWakeOpen = len(once) > 0
+	if state.OnceWakeOpen {
+		state.WorkOpen = true
+	}
 	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
 	if err != nil {
 		return CLIScopeState{}, err

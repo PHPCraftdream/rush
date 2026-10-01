@@ -10,6 +10,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **CLI wake-schedule lifetime (stage 5a, #1106)**: a ONE-SHOT wake timer
+  (`wakein`/`wakeon`) now holds `rush run` open — the process waits for the
+  fire, reacts to the `wake_fired` event and exits as usual; `--timeout`, the
+  default 6h cap, Ctrl-C and `sessions cancel` stop the wait as `canceled`
+  (an overdue timer is never caught up). A `loop` schedule never holds a
+  non-interactive run: when the scope closes with no other open work, the
+  session's loop schedules are cancelled at run end (one stderr line and a
+  `--json` warnings entry), so an endless timer cannot pin the process.
+  `sessions why`/`list`/`watch`/`tail`/`reset` report a session held open by
+  a once schedule as running and name the schedule
+  ("waiting on wake schedule <id> at HH:MM"); `sessions cancel` also cancels
+  the session's wake schedules so the waiting run is not orphaned on its
+  timer. Registry: SCHED-10 in `docs/async-invariants.md`.
 - **Reaction chain guard (#1113)**: a session that waits on async commands by
   re-launching pure wait commands (`sleep 90`, `echo tick`, ...) no longer
   chains unbounded empty automatic turns. A Drain leg that only launches

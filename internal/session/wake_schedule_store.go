@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 	"unicode/utf8"
 
@@ -287,4 +288,35 @@ func (s *WakeScheduleStore) NextDue(ctx context.Context) (*time.Time, error) {
 	}
 	t := time.Unix(sec, 0).UTC()
 	return &t, nil
+}
+
+// OpenWakeSchedule is one ACTIVE once schedule as the CLI lifetime and the
+// `sessions` readers see it (stage 5a): a wakein/wakeon timer that still
+// holds its session's `rush run` open.
+type OpenWakeSchedule struct {
+	ID        string
+	Message   string
+	NextRunAt time.Time
+}
+
+// OpenOnceWakeSchedules lists owner's ACTIVE once schedules, soonest first.
+// Loop schedules are not open work (the CLI cancels them at scope close),
+// so they are not reported.
+func OpenOnceWakeSchedules(ctx context.Context, s *WakeScheduleStore, owner string) ([]OpenWakeSchedule, error) {
+	rows, err := s.ListSchedules(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	var open []OpenWakeSchedule
+	for _, row := range rows {
+		if row.Kind != string(WakeKindOnce) || row.State != "active" {
+			continue
+		}
+		open = append(open, OpenWakeSchedule{
+			ID: row.ID, Message: row.Message,
+			NextRunAt: time.Unix(row.NextRunAt, 0).UTC(),
+		})
+	}
+	sort.Slice(open, func(i, j int) bool { return open[i].NextRunAt.Before(open[j].NextRunAt) })
+	return open, nil
 }

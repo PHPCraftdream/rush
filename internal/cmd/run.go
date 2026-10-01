@@ -110,6 +110,17 @@ a --max-cost/--max-tokens exit), or "canceled" (Ctrl-C, --timeout, the default
 leave the older spelling "cancelled"). It is empty while a run is in progress
 and appears in "sessions show" and "sessions list --json" (ended_reason).
 
+Wake timers: the model can schedule its own wakeups with the wakein/wakeon
+(one-shot) and loop (recurring) tools. A ONE-SHOT timer holds this process
+open: the run waits until it fires, reacts to the wake_fired event, and
+exits as usual (--timeout, the 6h cap, Ctrl-C and "sessions cancel" still
+stop the wait, ending the run "canceled"; an overdue timer is not caught
+up). An endless loop schedule never holds a non-interactive run open: when
+the scope closes with no other open work, the session's loop schedules are
+cancelled at run end (one stderr line and a --json warnings entry), while a
+Ctrl-C/--timeout exit leaves them in the DB to fire when any rush process
+of that data directory runs.
+
 Output modes (mutually exclusive --stream / --json):
   - default (terse): tool-call names on stderr as "▶ <toolName>"; only
     the final assistant message on stdout.

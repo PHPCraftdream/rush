@@ -11,9 +11,11 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -25,13 +27,17 @@ type sessionLiveWork struct {
 	driverOwes  bool
 	ownJobs     []session.LiveJob
 	descendants []session.LiveJob
+	// wakeSchedules is the session's ACTIVE once (wakein/wakeon) schedules
+	// (stage 5a): a one-shot timer holds the `rush run` process open, so it
+	// is live work; loop schedules are NOT (the CLI cancels them at close).
+	wakeSchedules []session.OpenWakeSchedule
 	// unreadable lists reads that failed: unknown counts as live (the
 	// codebase's liveness convention), so a hiccup never ends a watch.
 	unreadable []string
 }
 
 func (w sessionLiveWork) active() bool {
-	return w.driver != nil || len(w.ownJobs) > 0 || len(w.descendants) > 0 || len(w.unreadable) > 0
+	return w.driver != nil || len(w.ownJobs) > 0 || len(w.descendants) > 0 || len(w.wakeSchedules) > 0 || len(w.unreadable) > 0
 }
 
 // describe renders the clauses naming the live work, "; "-separated.
@@ -46,6 +52,9 @@ func (w sessionLiveWork) describe() string {
 	if len(w.descendants) > 0 {
 		parts = append(parts, describeLiveDescendants(w.descendants))
 	}
+	if len(w.wakeSchedules) > 0 {
+		parts = append(parts, describeOpenWakeSchedules(w.wakeSchedules))
+	}
 	for _, u := range w.unreadable {
 		parts = append(parts, "could not read "+u+" (assuming it is live)")
 	}
@@ -53,8 +62,8 @@ func (w sessionLiveWork) describe() string {
 }
 
 // inspectSessionLiveWork reads the driver marker (ONE statement), the
-// session's own running jobs and its live delegations. An App without an
-// AsyncJobStore answers no live work.
+// session's own running jobs, its live delegations and its open once wake
+// schedules. An App without an AsyncJobStore answers no live work.
 func inspectSessionLiveWork(ctx context.Context, a *app.App, sessionID string) sessionLiveWork {
 	var w sessionLiveWork
 	if a == nil {
@@ -79,7 +88,34 @@ func inspectSessionLiveWork(ctx context.Context, a *app.App, sessionID string) s
 			w.unreadable = append(w.unreadable, "the session's delegations")
 		}
 	}
+	if wake := a.WakeScheduleStore(); wake != nil {
+		open, err := session.OpenOnceWakeSchedules(ctx, wake, sessionID)
+		if err != nil {
+			w.unreadable = append(w.unreadable, "the session's wake schedules")
+		} else {
+			w.wakeSchedules = open
+		}
+	}
 	return w
+}
+
+// describeOpenWakeSchedules renders the clause naming the session's open
+// once wake schedules (stage 5a), e.g.
+//
+//	"waiting on wake schedule wake_… at 14:32 (in 4m59s)"
+//
+// so the operator sees WHICH timer keeps the `rush run` open and until when.
+func describeOpenWakeSchedules(open []session.OpenWakeSchedule) string {
+	items := make([]string, 0, len(open))
+	for _, s := range open {
+		in := "now"
+		if d := time.Until(s.NextRunAt); d > 0 {
+			in = "in " + d.Round(time.Second).String()
+		}
+		items = append(items, fmt.Sprintf("wake schedule %s at %s (%s)",
+			s.ID, s.NextRunAt.Local().Format("15:04:05"), in))
+	}
+	return "waiting on " + strings.Join(items, ", ")
 }
 
 // lockIsCleanRelease reports whether sessionID's lock file is the leftover of

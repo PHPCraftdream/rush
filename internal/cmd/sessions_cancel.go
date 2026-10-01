@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/spf13/cobra"
@@ -72,6 +73,7 @@ rush sessions cancel --all
 					fmt.Fprintf(os.Stderr, "warning: failed to cancel session %s: %v\n", s.ID, err)
 					continue
 				}
+				cancelWakeSchedules(ctx, a, s.ID)
 				count++
 			}
 			fmt.Fprintf(os.Stderr, "cancellation requested for %d session(s); skipped %d session(s) with no live work\n", count, skipped)
@@ -89,9 +91,28 @@ rush sessions cancel --all
 		if err := a.Sessions.RequestCancel(ctx, sess.ID); err != nil {
 			return fmt.Errorf("failed to request cancellation: %w", err)
 		}
+		if n := cancelWakeSchedules(ctx, a, sess.ID); n > 0 {
+			fmt.Fprintf(os.Stderr, "cancelled %d wake schedule(s) of session %s\n", n, sess.ID)
+		}
 		fmt.Fprintf(os.Stderr, "cancellation requested for session %s\n", sess.ID)
 		return nil
 	},
+}
+
+// cancelWakeSchedules cancels every ACTIVE wake schedule (once and loop) of
+// the session (stage 5a): a `rush run` waiting on a one-shot timer would
+// otherwise keep waiting for a timer nobody will take down. Best effort: a
+// failure is a warning, never a cancel error.
+func cancelWakeSchedules(ctx context.Context, a *app.App, sessionID string) int64 {
+	wake := a.WakeScheduleStore()
+	if wake == nil {
+		return 0
+	}
+	n, err := wake.CancelAllForOwner(ctx, sessionID, time.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to cancel wake schedules of session %s: %v\n", sessionID, err)
+	}
+	return n
 }
 
 // sessionHasLiveWork reports whether something is running or waiting for the

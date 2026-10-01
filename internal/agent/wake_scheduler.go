@@ -118,27 +118,6 @@ func (c *coordinator) WakeSchedulerNotify() {
 	c.wakeScheduler.Notify()
 }
 
-// HasOpenOnceWakeSchedule reports whether sessionID owns at least one
-// ACTIVE once schedule — the stage-5a "should `rush run` hold the process
-// open" predicate (operator decision: a one-shot timer holds the run, a
-// loop does not). Reads the store through ListSchedules and filters here,
-// so no store/SQL change is needed.
-func (c *coordinator) HasOpenOnceWakeSchedule(ctx context.Context, sessionID string) (bool, error) {
-	if c == nil || c.wakeScheduler == nil {
-		return false, nil
-	}
-	rows, err := c.wakeScheduler.store.ListSchedules(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	for _, row := range rows {
-		if row.Kind == string(session.WakeKindOnce) && row.State == "active" {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func newWakeScheduler(store *session.WakeScheduleStore, leaseOwner string, wake func(ctx context.Context, sessionID string)) *wakeScheduler {
 	return &wakeScheduler{
 		store:      store,

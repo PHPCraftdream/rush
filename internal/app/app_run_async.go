@@ -233,7 +233,12 @@ type cliLoop struct {
 	// chainNoticePrinted: the reaction chain guard's (#1113) one stderr line
 	// and one envelope warning were already emitted for this run.
 	chainNoticePrinted bool
-	stderr             io.Writer
+	// lastScope is the most recent CLIScopeState read in nextStep: the wait
+	// heartbeat names its once schedule (stage 5a).
+	lastScope agent.CLIScopeState
+	// loopSchedulesCancelled: the scope-close cancellation ran once per run.
+	loopSchedulesCancelled bool
+	stderr                 io.Writer
 }
 
 // cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
@@ -511,6 +516,10 @@ func (l *cliLoop) run() (*RunResult, error) {
 			// A closed scope ends any refusal/failure streak: later Drains (after the
 			// reviewer turn) start a fresh retry budget (R5C-2).
 			l.refusalSince, l.failedAttempt, l.pacedNoticeAt = time.Time{}, nil, time.Time{}
+			// Stage 5a: the close is the one exit that cancels the session's
+			// loop schedules -- before the exit flush, so the warning lands in
+			// the envelope. Once schedules never reach here (WorkOpen).
+			l.cancelLoopSchedulesAtClose()
 			again, final, exitErr := l.scopeClosed()
 			if !again {
 				return final, exitErr
@@ -671,6 +680,7 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			continue
 		}
 		dbErrorRetryStart = time.Time{}
+		l.lastScope = state
 		// The guard's line and warning belong to the MOMENT it fires (#1113):
 		// even while the loop goes on waiting for open work, the operator must
 		// see why the chain stopped. Printed once per run.

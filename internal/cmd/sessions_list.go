@@ -119,6 +119,10 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// (no lock, no running row) is working too.
 		statusByID = markLiveRunDrivers(cmd.Context(), a, sessions, statusByID)
 
+		// Wake-schedule half (stage 5a): a session whose `rush run` is held
+		// open by an ACTIVE once (wakein/wakeon) schedule is working, not done.
+		statusByID = markOpenWakeSchedules(cmd.Context(), a, sessions, statusByID)
+
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
 			for _, s := range sessions {
@@ -475,6 +479,44 @@ func markRunningOwnJobs(
 		}
 		live, _ := store.LiveOwnJobs(ctx, s.ID)
 		if len(live) == 0 {
+			continue
+		}
+		if statusByID == nil {
+			statusByID = make(map[string]string, len(sessions))
+		}
+		statusByID[s.ID] = "running"
+	}
+	return statusByID
+}
+
+// markOpenWakeSchedules is the wake-schedule half of the list promotions
+// (stage 5a): a session whose ACTIVE once (wakein/wakeon) schedule holds its
+// `rush run` open (CLIScope answers WorkOpen for it) would otherwise read as
+// done/at rest once the lock released and the last turn finished. Same
+// never-downgrade rule as the other layers; `sessions why` names the
+// schedule with the same describeOpenWakeSchedules clause.
+func markOpenWakeSchedules(
+	ctx context.Context,
+	a *app.App,
+	sessions []session.Session,
+	statusByID map[string]string,
+) map[string]string {
+	if a == nil {
+		return statusByID
+	}
+	wake := a.WakeScheduleStore()
+	if wake == nil {
+		return statusByID
+	}
+	for _, s := range sessions {
+		switch statusByID[s.ID] {
+		case "done", "":
+			// Terminal or at rest — a candidate for promotion.
+		default:
+			continue
+		}
+		open, err := session.OpenOnceWakeSchedules(ctx, wake, s.ID)
+		if err != nil || len(open) == 0 {
 			continue
 		}
 		if statusByID == nil {

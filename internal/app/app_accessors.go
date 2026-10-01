@@ -59,3 +59,17 @@ func (app *App) AsyncJobStore() *session.AsyncJobStore {
 func (app *App) SetAsyncJobStoreForTest(s *session.AsyncJobStore) {
 	app.asyncJobStore = s
 }
+
+// WakeScheduleStore returns the stage-4b durable wake-schedule store
+// (same construction rules as AsyncJobStore: nil under SkipAgentSetup or
+// without a data dir; readers treat nil as "no schedule data available").
+func (app *App) WakeScheduleStore() *session.WakeScheduleStore {
+	return app.wakeScheduleStore
+}
+
+// SetWakeScheduleStoreForTest wires a WakeScheduleStore into an App built
+// WITHOUT InitCoderAgent (the &App{...} literal pattern); mirrors
+// SetAsyncJobStoreForTest.
+func (app *App) SetWakeScheduleStoreForTest(s *session.WakeScheduleStore) {
+	app.wakeScheduleStore = s
+}
