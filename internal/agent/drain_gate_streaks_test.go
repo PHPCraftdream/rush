@@ -68,7 +68,7 @@ func TestDrainGate_PullFailureDoesNotShortenThePaidBudget(t *testing.T) {
 // fact (and only by one: passes launch nothing).
 //
 // Revert-check: dropping hintOpens from the free pace (or the hint clause from
-// drainGateOpen) keeps the fourth launch from happening and this test goes red.
+// the arbiter gate rows) keeps the fourth launch from happening and this test goes red.
 func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	ctx := context.Background()
 	const retry = 100 * time.Millisecond

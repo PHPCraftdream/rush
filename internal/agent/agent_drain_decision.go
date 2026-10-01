@@ -25,13 +25,18 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, sn
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
 		return true, drainVerdict{kind: drainAllow}
 	}
-	// The commit compares the bg-shell cap like a re-check (spent=false): a
-	// QUEUED Drain decides on debt its launch decision never saw (a completion
-	// over the cap that landed after the Drain that owned the last slot pulled),
-	// and it must not get a sixth automatic turn. A Drain's own slot row is not
-	// an over-cap row, so it is never refused for the slot it holds.
-	v := a.asyncJobs.coord.drainPermitted(ctx, sessionID, false)
-	return v.kind == drainAllow, v
+	// The commit compares the bg-shell cap like a re-check (siteCommit: no
+	// slot): a QUEUED Drain decides on debt its launch decision never saw (a
+	// completion over the cap that landed after the Drain that owned the last
+	// slot pulled), and it must not get a sixth automatic turn. A Drain's own
+	// slot row is not an over-cap row, so it is never refused for the slot it
+	// holds.
+	v, _, err := a.asyncJobs.coord.arbiterVerdict(ctx, sessionID, siteCommit)
+	if err != nil {
+		return false, unreadablePolicyInput("launch decision input", sessionID, err)
+	}
+	dv := drainVerdictOf(v)
+	return dv.kind == drainAllow, dv
 }
 
 // visibleDebtSnapshot reads owner's visible (delivery='done') debt row set.

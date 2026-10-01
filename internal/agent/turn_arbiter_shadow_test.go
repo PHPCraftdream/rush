@@ -78,16 +78,16 @@ func shadowArbiterWord(v Verdict) string {
 // checkShadow compares one state: facts -> decide(site) vs drainPermitted
 // (spent per site) and, when asked, vs CLIScope (siteCLI). Returns the
 // report; the caller logs divergences, never fails.
-func checkShadow(ctx context.Context, t *testing.T, f *attemptFixture, site LaunchSite, name string, compareCLI bool) shadowReport {
+func checkShadow(ctx context.Context, t *testing.T, f *attemptFixture, sessionID string, site LaunchSite, name string, compareCLI bool) shadowReport {
 	t.Helper()
-	facts, err := f.coord.readTurnFacts(ctx, f.sessID, site)
+	facts, err := f.coord.readTurnFacts(ctx, sessionID, site)
 	require.NoError(t, err)
 	av := decide(facts)
 	spent := site == siteFact
-	cv := f.coord.drainPermitted(ctx, f.sessID, spent)
+	cv := f.coord.drainPermitted(ctx, sessionID, spent)
 	rep := shadowReport{name: name, arbiter: av, code: shadowVerdictWord(cv), facts: facts}
 	if compareCLI {
-		state, err := f.coord.CLIScope(ctx, f.sessID)
+		state, err := f.coord.CLIScope(ctx, sessionID)
 		require.NoError(t, err)
 		rep.CLIState = drainStateWord(state.Drain)
 	}
@@ -96,14 +96,14 @@ func checkShadow(ctx context.Context, t *testing.T, f *attemptFixture, site Laun
 	}
 	t.Logf("SHADOW divergence %q: arbiter=%q code=%q", name, shadowArbiterWord(av), rep.code)
 	if compareCLI {
-		t.Logf("SHADOW divergence %q: CLIScope=%s arbiter(CLI)=%q", name, rep.CLIState, shadowArbiterWord(decide(mustFacts(ctx, t, f, siteCLI))))
+		t.Logf("SHADOW divergence %q: CLIScope=%s arbiter(CLI)=%q", name, rep.CLIState, shadowArbiterWord(decide(mustFacts(ctx, t, f, sessionID, siteCLI))))
 	}
 	return rep
 }
 
-func mustFacts(ctx context.Context, t *testing.T, f *attemptFixture, site LaunchSite) TurnFacts {
+func mustFacts(ctx context.Context, t *testing.T, f *attemptFixture, sessionID string, site LaunchSite) TurnFacts {
 	t.Helper()
-	facts, err := f.coord.readTurnFacts(ctx, f.sessID, site)
+	facts, err := f.coord.readTurnFacts(ctx, sessionID, site)
 	require.NoError(t, err)
 	return facts
 }
@@ -136,13 +136,28 @@ func newShadowFixture(t *testing.T, title string) *attemptFixture {
 	return f
 }
 
+// newShadowDelegationFixture is a parent session with a delegated child; the
+// child's delegation row is RUNNING, or terminal (released) when running is
+// false. The child keeps its durable delegation identity either way.
+func newShadowDelegationFixture(t *testing.T, running bool) (*attemptFixture, string, string) {
+	t.Helper()
+	f, parentID, childID, _ := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
+	if !running {
+		_, err := f.store.Transition(context.Background(), session.TransitionParams{
+			Owner: parentID, ToolCallID: "delegate-1", State: "completed", ResultSummary: "done", Wake: true,
+		})
+		require.NoError(t, err)
+	}
+	return f, parentID, childID
+}
+
 // TestShadow_OpenGatePlainDebt: debt, open gate, no refusals -- both answers
 // are run.
 func TestShadow_OpenGatePlainDebt(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-open")
 	f.seedDebt(ctx, "shadow-open-1", true)
-	rep := checkShadow(ctx, t, f, siteFact, "open gate, fact", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "open gate, fact", true)
 	require.Equal(t, "run", rep.code, "fixture sanity: the running code admits this debt")
 	require.Equal(t, VRun, rep.arbiter.Kind)
 	require.True(t, rep.arbiter.Counted)
@@ -154,7 +169,7 @@ func TestShadow_PacedGate(t *testing.T) {
 	f := newShadowFixture(t, "shadow-paced")
 	f.seedDebt(ctx, "shadow-paced-1", true)
 	f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, true, pacePaidUnreacted)
-	rep := checkShadow(ctx, t, f, siteTick, "paced gate", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "paced gate", true)
 	require.Equal(t, VDefer, rep.arbiter.Kind)
 	require.Contains(t, shadowArbiterWord(rep.arbiter), "paced")
 	require.Contains(t, rep.code, "paced")
@@ -171,14 +186,14 @@ func TestShadow_PaidDormantGate(t *testing.T) {
 		f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, false, pacePaidUnreacted)
 	}
 	f.ledger.bumpHint(f.sessID)
-	rep := checkShadow(ctx, t, f, siteFact, "paid-dormant gate", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "paid-dormant gate", true)
 	require.Equal(t, "deferred(stuck): repeated unreacted attempts", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	require.Equal(t, "Stuck", rep.CLIState)
 }
 
 // TestShadow_FreeDormantGate: a failing pull's free dormancy; a newer fact
-// reopens both (the code's drainGateOpen and the arbiter's rule 10).
+// reopens both (the code's the arbiter gate rows and the arbiter's rule 10).
 func TestShadow_FreeDormantGateHintOpens(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-free-dormant")
@@ -187,12 +202,12 @@ func TestShadow_FreeDormantGateHintOpens(t *testing.T) {
 		f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, true, paceFreeNoTurn)
 	}
 	// Without a newer fact: stuck on both sides.
-	rep := checkShadow(ctx, t, f, siteTick, "free-dormant, no hint", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "free-dormant, no hint", true)
 	require.Equal(t, "deferred(stuck): repeated unreacted attempts", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	// With one: open on both sides.
 	f.ledger.bumpHint(f.sessID)
-	rep = checkShadow(ctx, t, f, siteTick, "free-dormant, newer hint", true)
+	rep = checkShadow(ctx, t, f, f.sessID, siteTick, "free-dormant, newer hint", true)
 	require.Equal(t, "run", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 }
@@ -203,7 +218,7 @@ func TestShadow_Suspended(t *testing.T) {
 	f := newShadowFixture(t, "shadow-suspended")
 	f.seedDebt(ctx, "shadow-suspended-1", true)
 	f.coord.suspendAutoResume(f.sessID)
-	rep := checkShadow(ctx, t, f, siteRelease, "suspended", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteRelease, "suspended", true)
 	require.Equal(t, "deferred: automatic turns suspended", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 }
@@ -215,7 +230,7 @@ func TestShadow_HeldByRerun(t *testing.T) {
 	f.seedDebt(ctx, "shadow-held-1", true)
 	release := f.coord.HoldAutomaticTurns(f.sessID)
 	defer release()
-	rep := checkShadow(ctx, t, f, siteTick, "held by rerun", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "held by rerun", true)
 	require.Equal(t, "deferred(paced): rerun in progress", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 }
@@ -228,24 +243,17 @@ func TestShadow_ChainGuard(t *testing.T) {
 	f.seedDebt(ctx, "shadow-chain-claim", false) // pending job debt
 	claim := f.row(ctx, "shadow-chain-claim").ClaimID
 	require.NotEmpty(t, claim)
-	f.coord.autoResumeMu.Lock()
-	f.coord.consecutiveDrainLinks = map[string]int{f.sessID: turnReactionChainLimit}
-	f.coord.reactionChainClaims = map[string]map[string]struct{}{
-		f.sessID: {claim: {}},
-	}
-	f.coord.autoResumeMu.Unlock()
+	f.coord.setReactionChain(f.sessID, turnReactionChainLimit, map[string]struct{}{claim: {}}, false)
 	// The running code's guard inserts a marker notice for a non-CLI session
 	// on the FIRST deferred read; pre-mark it so the comparison stays
-	// read-only (the marker insert is R-ARB-2's executor's job).
-	f.coord.autoResumeMu.Lock()
-	f.coord.reactionChainNoticed = map[string]struct{}{f.sessID: {}}
-	f.coord.autoResumeMu.Unlock()
-	rep := checkShadow(ctx, t, f, siteFact, "chain guard fires", true)
+	// read-only (the marker insert is the executor's job).
+	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) { s.chainNoticed = true })
+	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "chain guard fires", true)
 	require.Equal(t, "deferred: "+reactionChainReason, rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	// A debt row outside the chain's claims: a real fact -- run on both.
 	f.seedDebt(ctx, "shadow-chain-real", true)
-	rep = checkShadow(ctx, t, f, siteFact, "chain guard, foreign claim", true)
+	rep = checkShadow(ctx, t, f, f.sessID, siteFact, "chain guard, foreign claim", true)
 	require.Equal(t, "run", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 }
@@ -257,7 +265,7 @@ func TestShadow_BGShellOnlyAutoResumeOff(t *testing.T) {
 	f := newShadowFixture(t, "shadow-bgoff")
 	_, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
 	require.NoError(t, err)
-	rep := checkShadow(ctx, t, f, siteTick, "bg-shell only, autonomy off", true)
+	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "bg-shell only, autonomy off", true)
 	require.Contains(t, rep.code, "auto-resume off")
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 }
@@ -282,19 +290,12 @@ func TestShadow_OverCapBGShellDebt(t *testing.T) {
 		ids = append(ids, id)
 		_ = i
 	}
-	f.coord.autoResumeMu.Lock()
-	f.coord.consecutiveAutoResumes = map[string]int{f.sessID: turnAutoResumeCap}
-	over := make(map[int64]struct{}, n)
-	for _, id := range ids {
-		over[id] = struct{}{}
-	}
-	f.coord.bgShellOverCap = map[string]map[int64]struct{}{f.sessID: over}
-	f.coord.autoResumeMu.Unlock()
-	rep := checkShadow(ctx, t, f, siteRelease, "over-cap re-check", true)
+	f.coord.setOverCap(f.sessID, turnAutoResumeCap, ids)
+	rep := checkShadow(ctx, t, f, f.sessID, siteRelease, "over-cap re-check", true)
 	require.Contains(t, rep.code, "cap reached")
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	// The completion's own launch never compares the cap.
-	facts := mustFacts(ctx, t, f, siteFact)
+	facts := mustFacts(ctx, t, f, f.sessID, siteFact)
 	require.Equal(t, VRun, decide(facts).Kind)
 	cv := f.coord.drainPermitted(ctx, f.sessID, true)
 	require.Equal(t, drainAllow, cv.kind)
@@ -309,8 +310,35 @@ func TestShadow_ForeignLiveDriver(t *testing.T) {
 	other := session.NewAsyncJobStore(f.env.conn, f.env.workingDir, os.Getpid()+7777, "shadow-other-host")
 	t.Cleanup(func() { _ = other.Close(context.Background()) })
 	require.NoError(t, other.ClaimSessionDriver(ctx, f.sessID))
-	rep := checkShadow(ctx, t, f, siteFact, "foreign live driver", false)
+	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "foreign live driver", false)
 	require.Contains(t, rep.code, "another process drives")
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	require.True(t, rep.facts.Session.ForeignDriverLive)
+}
+
+// TestShadow_RunningDelegationChild (step-0 gap, R-ARB-2): a child whose
+// delegation row runs is driven by that delegation -- neither the
+// released-child refusal nor the bg-shell policy rows apply; both sides run.
+func TestShadow_RunningDelegationChild(t *testing.T) {
+	ctx := context.Background()
+	f, _, childID := newShadowDelegationFixture(t, true)
+	f.seedDebtFor(ctx, childID, "shadow-run-child-1", true)
+	rep := checkShadow(ctx, t, f, childID, siteFact, "running delegation child", true)
+	require.Equal(t, "run", rep.code, "fixture sanity: the running code admits the child")
+	require.Equal(t, VRun, rep.arbiter.Kind)
+	require.True(t, rep.facts.Session.RunningDelegation)
+	require.True(t, rep.facts.Session.DurableChild, "durable identity is set; rule 7 is skipped only by RunningDelegation")
+}
+
+// TestShadow_ReleasedDelegationChild (step-0 gap): a released child with debt
+// never falls through to the root agent -- deferred on both sides.
+func TestShadow_ReleasedDelegationChild(t *testing.T) {
+	ctx := context.Background()
+	f, _, childID := newShadowDelegationFixture(t, false)
+	f.seedDebtFor(ctx, childID, "shadow-rel-child-1", true)
+	rep := checkShadow(ctx, t, f, childID, siteRelease, "released delegation child", true)
+	require.Equal(t, "deferred: released delegation child", rep.code)
+	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
+	require.True(t, rep.facts.Session.DurableChild)
+	require.False(t, rep.facts.Session.RunningDelegation)
 }

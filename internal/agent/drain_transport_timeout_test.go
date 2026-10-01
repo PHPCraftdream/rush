@@ -117,6 +117,6 @@ func TestOrdinaryTurn_TransportTimeoutPacesTheGate(t *testing.T) {
 	_, err := f.sa.Run(ctx, SessionAgentCall{SessionID: f.sessID, Prompt: "hello"})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
-	open, _, _ := f.ledger.drainGateOpen(f.sessID, time.Now())
+	open, _, _ := gateOpen(f.coord, f.sessID, time.Now())
 	require.False(t, open, "a failed user turn paces the Drain gate")
 }

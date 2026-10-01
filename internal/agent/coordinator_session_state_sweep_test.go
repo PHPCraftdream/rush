@@ -18,35 +18,35 @@ func ledgerEntryIDs(l *workLedger) map[string]bool {
 	return out
 }
 
-// R3B-8: the sweep frees exactly the ledger entries that hold nothing.
+// R3B-8: the sweeps free exactly what holds nothing: the ledger's idle
+// entries, and the arbiter entries whose every field is idle.
 //
-// Revert-check: dropping any of the four conditions (no jobs, no external
-// driver, zero gate) from sweepIdleSessions frees a live entry and turns an
-// assertion red; dropping the sweep makes "idle" survive.
+// Revert-check: dropping a condition from either sweep frees live state and
+// turns an assertion red; dropping the sweep makes "idle" survive.
 func TestSweepIdleSessions_DropsOnlyEntriesThatHoldNothing(t *testing.T) {
 	l := newWorkLedger(nil)
+	c := &coordinator{asyncJobs: l}
 	l.bumpHint("idle") // a session that had a fact once, nothing now
-	l.bumpHint("paced")
-	l.paceDrainGate("paced", l.hintSeqOf("paced"), time.Hour, false, paceUncounted)
-	l.bumpHint("streaky")
-	l.paceDrainGate("streaky", 0, 0, false, pacePaidUnreacted)
-	l.resetDrainGate("streaky") // back to a zero gate: swept
+	c.arb.pace("paced", 0, time.Hour, false, paceUncounted)
+	c.arb.pace("streaky", 0, 0, false, pacePaidUnreacted)
+	c.arb.resetGate("streaky") // back to an open gate: idle, swept
 	l.claimExternalDriver("driven")
 	l.mu.Lock()
 	l.sessionLocked("busy").jobs["j"] = &asyncJob{}
 	l.mu.Unlock()
 
-	require.Equal(t, 2, l.sweepIdleSessions(), "idle and streaky (zero gate again) hold nothing")
-	ids := ledgerEntryIDs(l)
-	require.False(t, ids["idle"])
-	require.False(t, ids["streaky"])
-	require.True(t, ids["paced"], "a paced gate is live state")
-	require.True(t, ids["driven"], "an external driver is live state")
-	require.True(t, ids["busy"], "a session with a job is live state")
+	require.Equal(t, 1, l.sweepIdleSessions(), "only the idle LEDGER entry holds nothing")
+	require.False(t, ledgerEntryIDs(l)["idle"])
+	require.True(t, ledgerEntryIDs(l)["driven"], "an external driver is live state")
+	require.True(t, ledgerEntryIDs(l)["busy"], "a session with a job is live state")
 
-	l.resetDrainGate("paced")
-	require.Equal(t, 1, l.sweepIdleSessions())
-	require.False(t, ledgerEntryIDs(l)["paced"])
+	c.sweepArbiterEntries()
+	require.Contains(t, c.arb.sessionsWithState(), "paced", "a paced gate is live state")
+	require.NotContains(t, c.arb.sessionsWithState(), "streaky", "an open zero gate holds nothing")
+
+	c.arb.resetGate("paced")
+	c.sweepArbiterEntries()
+	require.NotContains(t, c.arb.sessionsWithState(), "paced")
 }
 
 // R3B-8: the 60s pass frees idle ledger entries and the auto-turn state of
@@ -65,11 +65,9 @@ func TestRecheckPass_FreesIdleSessionState(t *testing.T) {
 
 	f.ledger.bumpHint("never-had-a-session") // an idle entry, no jobs, zero gate
 	f.coord.bumpConsecutiveResume(gone.ID)
-	f.coord.autoResumeMu.Lock()
-	f.coord.bgShellOverCap = map[string]map[int64]struct{}{gone.ID: {1: {}}, f.sessID: {2: {}}}
-	f.coord.autoResumeMu.Unlock()
+	f.coord.setOverCap(gone.ID, maxConsecutiveAutoResumes, []int64{1})
+	f.coord.setOverCap(f.sessID, 1, []int64{2})
 	f.coord.suspendAutoResume(gone.ID)
-	f.coord.bumpConsecutiveResume(f.sessID)
 	f.coord.suspendAutoResume(f.sessID)
 	require.NoError(t, f.env.sessions.Delete(ctx, gone.ID))
 
@@ -97,17 +95,19 @@ func TestSweepIdleSessions_ExpiredPauseWithZeroStreaksIsIdle(t *testing.T) {
 	now := time.Now()
 	l := newWorkLedger(nil)
 	c := &coordinator{asyncJobs: l}
+	l.coord = c                     // production wiring: the ledger reaches the arbiter through it
 	c.noteTurnFailed("failed-turn") // the ordinary turn's pause: no debt, no streak
-	l.paceDrainGate("refused", 0, 30*time.Minute, true, paceUncounted)
-	l.paceDrainGate("paid", 0, 0, false, pacePaidUnreacted) // one paid streak
-	l.paceDrainGate("free", 0, 0, false, paceFreeNoTurn)    // one free streak
+	c.arb.pace("refused", 0, 30*time.Minute, true, paceUncounted)
+	c.arb.pace("paid", 0, 0, false, pacePaidUnreacted) // one paid streak
+	c.arb.pace("free", 0, 0, false, paceFreeNoTurn)    // one free streak
 
-	require.Zero(t, l.sweepIdleSessionsAt(now), "pauses still running (and streaks) keep their entries")
+	require.Len(t, c.arb.sessionsWithState(), 4, "pauses still running (and streaks) keep their entries")
 
-	require.Equal(t, 2, l.sweepIdleSessionsAt(now.Add(2*time.Hour)), "an expired pause with zero streaks holds nothing")
-	ids := ledgerEntryIDs(l)
-	require.False(t, ids["failed-turn"], "the failed turn's pause is over")
-	require.False(t, ids["refused"], "and the refusal's")
-	require.True(t, ids["paid"], "a streak is live state")
-	require.True(t, ids["free"], "a streak is live state")
+	// Two hours later the plain pauses are over; the streak entries stay.
+	c.sweepArbiterEntriesAt(now.Add(2 * time.Hour))
+	alive := c.arb.sessionsWithState()
+	require.NotContains(t, alive, "failed-turn", "the failed turn's pause is over")
+	require.NotContains(t, alive, "refused", "and the refusal's")
+	require.Contains(t, alive, "paid", "a streak is live state")
+	require.Contains(t, alive, "free", "a streak is live state")
 }

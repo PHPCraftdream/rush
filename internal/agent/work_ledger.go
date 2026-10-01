@@ -98,10 +98,6 @@ type sessionJobs struct {
 	// submit a Drain turn -- the loop re-evaluates its own scope/debt from
 	// the DB. Claimed/released by the loop itself (app_run_async.go).
 	externalDriver bool
-	// drain is the launch gate every Drain launch decision reads
-	// (drainPermitted); written only by accountDrainAttempt, noteDrainRefused
-	// and the human-message reset. See drainGate in work_ledger_reaction.go.
-	drain drainGate
 }
 
 // workLedger is the single owner of in-memory work state: plain async jobs

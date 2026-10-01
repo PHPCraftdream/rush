@@ -21,29 +21,29 @@ import (
 func boolPtr(b bool) *bool { return &b }
 
 func TestConsecutiveAutoResumeCounter(t *testing.T) {
-	coord := &coordinator{consecutiveAutoResumes: make(map[string]int)}
+	coord := &coordinator{}
 
 	t.Run("starts at zero", func(t *testing.T) {
 		assert.Equal(t, 0, coord.consecutiveResume("sess-1"))
 	})
 
 	t.Run("bump increments and consecutiveResume reflects it", func(t *testing.T) {
-		coord.bumpConsecutiveResume("sess-1")
-		coord.bumpConsecutiveResume("sess-1")
+		coord.claimAutoResumeSlot("sess-1", 0, true)
+		coord.claimAutoResumeSlot("sess-1", 0, true)
 		assert.Equal(t, 2, coord.consecutiveResume("sess-1"))
 	})
 
 	t.Run("reset clears to zero", func(t *testing.T) {
-		coord.bumpConsecutiveResume("sess-reset")
+		coord.claimAutoResumeSlot("sess-reset", 0, true)
 		require.Equal(t, 1, coord.consecutiveResume("sess-reset"))
 		coord.resetConsecutiveResume("sess-reset")
 		assert.Equal(t, 0, coord.consecutiveResume("sess-reset"))
 	})
 
 	t.Run("sessions are independent", func(t *testing.T) {
-		coord.bumpConsecutiveResume("a")
-		coord.bumpConsecutiveResume("a")
-		coord.bumpConsecutiveResume("b")
+		coord.claimAutoResumeSlot("a", 0, true)
+		coord.claimAutoResumeSlot("a", 0, true)
+		coord.claimAutoResumeSlot("b", 0, true)
 		assert.Equal(t, 2, coord.consecutiveResume("a"))
 		assert.Equal(t, 1, coord.consecutiveResume("b"))
 	})
@@ -61,11 +61,11 @@ func TestConsecutiveAutoResumeCounter(t *testing.T) {
 		for range n {
 			go func() {
 				defer wg.Done()
-				coord.bumpConsecutiveResume(sessionID)
+				coord.claimAutoResumeSlot(sessionID, 0, true)
 			}()
 		}
 		wg.Wait()
-		assert.Equal(t, n, coord.consecutiveResume(sessionID))
+		assert.Equal(t, maxConsecutiveAutoResumes, coord.consecutiveResume(sessionID))
 	})
 }
 
@@ -116,7 +116,7 @@ func TestSetPersistentMode(t *testing.T) {
 // many goroutines concurrently — under `go test -race` this fails loudly on
 // the old plain-bool field and passes cleanly on the atomic.Bool.
 func TestSetPersistentModeConcurrentAccess(t *testing.T) {
-	coord := &coordinator{consecutiveAutoResumes: make(map[string]int)}
+	coord := &coordinator{}
 
 	const n = 50
 	var wg sync.WaitGroup
@@ -176,7 +176,7 @@ func TestAutoResumeEligible(t *testing.T) {
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
-	coord := &coordinator{cfg: cfg, consecutiveAutoResumes: make(map[string]int)}
+	coord := &coordinator{cfg: cfg}
 	const sid = "sess-eligible"
 
 	t.Run("autonomy OFF (nil Options) is never eligible regardless of persistentMode", func(t *testing.T) {
@@ -210,11 +210,11 @@ func TestAutoResumeEligible(t *testing.T) {
 		coord.resetConsecutiveResume(sid)
 		// Bump to exactly the cap; one below the cap is still eligible.
 		for i := 0; i < maxConsecutiveAutoResumes-1; i++ {
-			coord.bumpConsecutiveResume(sid)
+			coord.claimAutoResumeSlot(sid, 0, true)
 		}
 		assert.True(t, coord.autoResumeEligible(sid), "one below the cap must still be eligible")
 		// The boundary bump that reaches the cap flips eligibility off.
-		coord.bumpConsecutiveResume(sid)
+		coord.claimAutoResumeSlot(sid, 0, true)
 		assert.False(t, coord.autoResumeEligible(sid), "at the cap autonomy must stop")
 	})
 
@@ -234,11 +234,11 @@ func TestResetAutoResumeCounter(t *testing.T) {
 	// The exported wrapper is what the server package calls on the human send
 	// path; it must clear the consecutive bound so a human message re-arms
 	// autonomy.
-	coord := &coordinator{consecutiveAutoResumes: make(map[string]int)}
+	coord := &coordinator{}
 	const sid = "sess-reset-exported"
 
-	coord.bumpConsecutiveResume(sid)
-	coord.bumpConsecutiveResume(sid)
+	coord.claimAutoResumeSlot(sid, 0, true)
+	coord.claimAutoResumeSlot(sid, 0, true)
 	require.Equal(t, 2, coord.consecutiveResume(sid))
 
 	coord.ResetAutoResumeCounter(sid)

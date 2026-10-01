@@ -1,7 +1,5 @@
 package agent
 
-import "sync"
-
 // AutoTurnHolder is the OPTIONAL Coordinator surface a rerun uses to keep
 // automatic (Drain) turns off a session while it cancels the live turn,
 // truncates history and hands the reservation to the replacement turn: a
@@ -21,30 +19,11 @@ type AutoTurnHolder interface {
 
 // HoldAutomaticTurns implements AutoTurnHolder.
 func (c *coordinator) HoldAutomaticTurns(sessionID string) (release func()) {
-	c.autoResumeMu.Lock()
-	if c.turnHolds == nil {
-		c.turnHolds = make(map[string]int)
-	}
-	c.turnHolds[sessionID]++
-	c.autoResumeMu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			c.autoResumeMu.Lock()
-			defer c.autoResumeMu.Unlock()
-			if c.turnHolds[sessionID] <= 1 {
-				delete(c.turnHolds, sessionID)
-				return
-			}
-			c.turnHolds[sessionID]--
-		})
-	}
+	return c.arb.hold(sessionID)
 }
 
 // automaticTurnsHeld reports whether a rerun currently holds sessionID's
 // automatic turns.
 func (c *coordinator) automaticTurnsHeld(sessionID string) bool {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	return c.turnHolds[sessionID] > 0
+	return c.arb.held(sessionID)
 }

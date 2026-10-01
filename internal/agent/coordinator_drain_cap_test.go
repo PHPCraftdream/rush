@@ -1,6 +1,6 @@
 // B7 (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN) and R2B-16: the
 // consecutive-auto-turn cap bounds ONLY the SDK background-shell auto-resume
-// (claimAutoResume spends one of maxConsecutiveAutoResumes per human message,
+// (claimAutoResumeSlot spends one of maxConsecutiveAutoResumes per human message,
 // atomically, at admission -- a paced or refused launch keeps its slot and
 // submits nothing); a completion's own launch never re-checks it, and a
 // re-check or a Drain's turn-start check defers only bg-shell-only debt whose
@@ -65,7 +65,7 @@ func TestDrainPolicy_StopSuspension_RefusesEveryAutomaticTurn(t *testing.T) {
 }
 
 // TestDrainPolicy_BgShellCapExhausted_DoesNotBlockAsyncWake: a full bg-shell
-// counter gates only claimAutoResume, never the launch policy: an ordinary
+// counter gates only claimAutoResumeSlot, never the launch policy: an ordinary
 // async-job/delegation/supervision wake was never capped.
 //
 // Revert-check: re-adding `consecutiveResume < max` to drainPolicy turns the
@@ -88,7 +88,7 @@ func TestDrainPolicy_BgShellCapExhausted_DoesNotBlockAsyncWake(t *testing.T) {
 // TestResetAutoResumeCounter_ClearsStopAndCap: the human-message reset lifts
 // Stop's suspension AND zeroes the bg-shell counter.
 //
-// Revert-check: dropping the `delete(c.autoTurnsSuspended, ...)` from
+// Revert-check: dropping the suspension clear from
 // resetConsecutiveResume turns the policy assertion red; dropping the counter
 // delete fails the counter assertion.
 func TestResetAutoResumeCounter_ClearsStopAndCap(t *testing.T) {
@@ -101,9 +101,7 @@ func TestResetAutoResumeCounter_ClearsStopAndCap(t *testing.T) {
 		coord.bumpConsecutiveResume(sess.ID)
 	}
 	coord.suspendAutoResume(sess.ID)
-	coord.autoResumeMu.Lock()
-	coord.bgShellOverCap = map[string]map[int64]struct{}{sess.ID: {7: {}, 8: {}}}
-	coord.autoResumeMu.Unlock()
+	coord.setOverCap(sess.ID, maxConsecutiveAutoResumes, []int64{7, 8})
 
 	coord.ResetAutoResumeCounter(sess.ID)
 

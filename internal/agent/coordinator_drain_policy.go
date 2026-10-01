@@ -41,140 +41,102 @@ type drainVerdict struct {
 	err error
 }
 
-// drainPolicy decides whether sessionID's category permits a Drain TURN at
-// all (doc sec.3.4's "session policy" table): allow, or deferred (with
-// recheck when the refusal is worth a tick). It is the policy half of
-// drainPermitted; an unreadable input FAILS CLOSED for every session (a
-// wrong "allow" here would run a released child's Drain on the root agent).
-// A session driven by this process's own `rush run` loop skips the
-// delegation-child refusal: its turns always run on currentAgent anyway.
-// spent: the asker never compares the bg-shell cap (see the bg-shell row
-// below): a fact's own launch (wakeSession, fact=true) already spent its
-// auto-resume slot. A release, tick or CLI-scope re-check, and the Drain's
-// turn-start commit (decideDrainTurn: a queued Drain decides on debt its
-// launch never saw), pass false and compare the cap without spending a slot.
-func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent bool) drainVerdict {
-	l := c.asyncJobs
-	if l == nil {
-		return drainVerdict{kind: drainAllow}
-	}
-	deferred := func(reason string, recheck bool) drainVerdict {
-		return drainVerdict{kind: drainDeferred, reason: reason, recheck: recheck}
-	}
-	unreadable := func(what string, err error) drainVerdict {
-		slog.Warn("drain policy: input unreadable; refusing the turn for now",
-			"session_id", sessionID, "input", what, "err", err)
-		v := deferred(what+" unreadable", true)
-		v.err = err
-		return v
-	}
-	own := l.isExternalDriver(sessionID)
-	if !own {
-		// A live `rush run` loop in ANOTHER process reacts to this session's
-		// debt itself; this process only transfers notices.
-		foreign, err := l.foreignLiveDriver(ctx, sessionID)
-		if err != nil {
-			return unreadable("driver marker", err)
-		}
-		if foreign {
-			return deferred("another process drives the session", true)
-		}
-	}
-	// A rerun holds the session while it cancels, truncates and hands off. A
-	// hold is TEMPORARY -- the debt is neither abandoned nor drained, and the
-	// turn the rerun hands off to is the session's next work -- so it is paced
-	// with no clock (the re-check tick and the release retry it), never
-	// "deferred": every scope consumer reads paced as still open, while a
-	// deferred verdict would let a delegated child's parent release the
-	// delegation with stale text during the hold.
-	if c.automaticTurnsHeld(sessionID) {
-		return drainVerdict{kind: drainPaced, recheck: true, reason: "rerun in progress"}
-	}
-	// Stop and a pending question suspend automatic turns until a human
-	// message (or a fresh delegation on a child) lifts it.
-	if c.autoResumeSuspended(sessionID) {
-		return deferred("automatic turns suspended", false)
-	}
-	// Reaction chain guard (#1113): N consecutive no-progress links whose
-	// entire debt is their own idle launches' completions get no further
-	// automatic turn. Deliberately BEFORE the running-delegation shortcut
-	// below: R6B-1 frees a child from the auto-resume policy, not from this
-	// guard. externallyDriven names a session this process's own `rush run`
-	// loop drives: its loop reports the guard itself (CLIScopeState.
-	// ChainGuard), so no marker notice is inserted for it.
-	if chain, err := c.chainGuardDeferred(ctx, sessionID, own); err != nil {
-		return unreadable("reaction chain state", err)
-	} else if chain {
-		return deferred(reactionChainReason, false)
-	}
-	running, err := l.hasRunningDelegationFor(ctx, sessionID)
+// The launch decision (R-ARB-2): readTurnFacts + decide is THE decision;
+// drainPolicy/drainPermitted are now thin adapters translating the arbiter's
+// verdict into the drainVerdict the internal callers and tests read. The old
+// policy/gate split is gone -- the gate rows (8-10 of the arbiter table) are
+// part of the same verdict. The reaction-chain guard's CONDITION is rule 5
+// (computed in readTurnFacts); this file executes its marker.
+
+// arbiterVerdict reads the facts for one launch site and decides. The site
+// encodes `spent`: only siteFact (a committed fact's own launch) spends a
+// bg-shell auto-resume slot.
+func (c *coordinator) arbiterVerdict(ctx context.Context, sessionID string, site LaunchSite) (Verdict, TurnFacts, error) {
+	facts, err := c.readTurnFacts(ctx, sessionID, site)
 	if err != nil {
-		return unreadable("delegation state", err)
+		return Verdict{}, facts, err
 	}
-	if running {
-		// A delegated child while its row runs: its delegation drives it, so
-		// neither the bg-shell policy nor the cap below applies (R6B-1).
-		return drainVerdict{kind: drainAllow}
-	}
-	if !own {
-		// A released or expired child must never fall through to the root
-		// agent (B3/C6): the refusal is keyed on the durable delegation row.
-		isChild, err := c.isDurableDelegationChild(ctx, sessionID)
-		if err != nil {
-			return unreadable("delegation identity", err)
-		}
-		if isChild {
-			return deferred("released delegation child", false)
-		}
-	}
-	// "Background shell: only with AutoResumeOnJobDone": a session whose
-	// ENTIRE debt is bg-shell completions gets no turn with it off -- and, with
-	// it on, none for a re-check launch (release, tick) or a Drain's turn-start
-	// commit once every slot per human message is spent AND no row of the debt
-	// holds a slot (bgShellCapDeferred: every row is a completion that arrived
-	// over the cap). A completion's own launch (spent: claimAutoResume already
-	// took its slot) never compares, and a row whose slot was spent but whose
-	// launch was paced, refused, held or deferred is retried like any debt, so
-	// the cap bounds the chain of automatic turns without dropping a reaction.
-	autonomy := c.cfg != nil && c.autonomyEnabled()
-	if autonomy && !spent {
-		capped, err := c.bgShellCapDeferred(ctx, sessionID)
-		if err != nil {
-			return unreadable("bg-shell cap state", err)
-		}
-		if capped {
-			return deferred("background-shell auto-resume cap reached", false)
-		}
-	}
-	if !autonomy {
-		bgOnly, err := c.sessionDebtIsBGShellOnly(ctx, sessionID)
-		if err != nil {
-			return unreadable("debt kinds", err)
-		}
-		if bgOnly {
-			return deferred("background-shell completion with auto-resume off", false)
-		}
-	}
-	return drainVerdict{kind: drainAllow}
+	return decide(facts), facts, nil
 }
 
-// drainPermitted is THE launch predicate: the session policy, then the
-// per-session launch gate (written only by the attempt accounting, the
-// refusal note and the human-message reset). spent: see drainPolicy.
+// drainVerdictOf maps an arbiter verdict onto the drainVerdict kinds the
+// callers (wakeSession's switch, the CLI loop, decideDrainTurn) still speak.
+// Texts and recheck-ness mirror today's policy exactly:
+//   - rerun hold and a gate pause read paced and are worth a tick (recheck);
+//   - a dormant gate reads stuck;
+//   - a foreign live driver is deferred but worth a tick;
+//   - every other policy refusal (suspension, chain guard, released child,
+//     cap, auto-resume off) is deferred without a tick.
+func drainVerdictOf(v Verdict) drainVerdict {
+	switch v.Kind {
+	case VRun, VNone:
+		return drainVerdict{kind: drainAllow}
+	}
+	switch v.Reason {
+	case "rerun in progress":
+		return drainVerdict{kind: drainPaced, recheck: true, reason: v.Reason}
+	case "retry pause after an unreacted attempt":
+		return drainVerdict{kind: drainPaced, retryAt: v.RecheckAt, recheck: true, reason: v.Reason}
+	case "repeated unreacted attempts":
+		return drainVerdict{kind: drainStuck, retryAt: v.RecheckAt, reason: v.Reason}
+	}
+	recheck := v.Reason == "another process drives the session"
+	return drainVerdict{kind: drainDeferred, recheck: recheck, reason: v.Reason}
+}
+
+// unreadable wraps a read error as a fail-closed deferred verdict (worth a
+// tick), as the old policy's per-input handler did.
+func unreadablePolicyInput(what string, sessionID string, err error) drainVerdict {
+	slog.Warn("drain policy: input unreadable; refusing the turn for now",
+		"session_id", sessionID, "input", what, "err", err)
+	v := drainVerdict{kind: drainDeferred, recheck: true, reason: what + " unreadable"}
+	v.err = err
+	return v
+}
+
+// siteForSpent maps the legacy `spent` flag onto the launch site: a fact's
+// own launch spent its slot at admission; everything else is a re-check.
+func siteForSpent(spent bool) LaunchSite {
+	if spent {
+		return siteFact
+	}
+	return siteRelease
+}
+
+// drainPolicy is the launch verdict (the arbiter's), with the
+// reaction-chain guard's marker executed on a web-driven session's first
+// deferred read. spent: see siteForSpent.
+func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent bool) drainVerdict {
+	v, facts, err := c.arbiterVerdict(ctx, sessionID, siteForSpent(spent))
+	if err != nil {
+		return unreadablePolicyInput("launch decision input", sessionID, err)
+	}
+	if v.Kind == VNone && v.Reason == "no debt" {
+		// The old policy refused a session regardless of debt (a foreign
+		// driver, a suspension, a released child refused even a debt-free
+		// one); the LAUNCHERS keep their own debt checks (drainDecision,
+		// CLIScope, decideDrainTurn), so rule 1 never launched anything for
+		// a debt-free session. Re-ask the arbiter without rule 1's
+		// short-circuit to keep that contract; a VRun answer on a debt-free
+		// session is still "nothing to launch" (allow).
+		facts.Debt.PendingIncl = true
+		v = decide(facts)
+		if v.Kind == VRun {
+			return drainVerdict{kind: drainAllow}
+		}
+	}
+	dv := drainVerdictOf(v)
+	if dv.kind == drainDeferred && dv.reason == reactionChainReason &&
+		!facts.Session.ChainNoticed && !facts.Session.ExternallyDrivenSelf {
+		c.chainGuardMarker(ctx, sessionID)
+	}
+	return dv
+}
+
+// drainPermitted is THE launch predicate: the one arbiter verdict, mapped.
+// spent: see siteForSpent.
 func (c *coordinator) drainPermitted(ctx context.Context, sessionID string, spent bool) drainVerdict {
-	v := c.drainPolicy(ctx, sessionID, spent)
-	if v.kind != drainAllow || c.asyncJobs == nil {
-		return v
-	}
-	open, dormant, retryAt := c.asyncJobs.drainGateOpen(sessionID, time.Now())
-	switch {
-	case open:
-		return v
-	case dormant:
-		return drainVerdict{kind: drainStuck, retryAt: retryAt, reason: "repeated unreacted attempts"}
-	default:
-		return drainVerdict{kind: drainPaced, retryAt: retryAt, recheck: true, reason: "retry pause after an unreacted attempt"}
-	}
+	return c.drainPolicy(ctx, sessionID, spent)
 }
 
 // drainDecision reads the pending-inclusive debt and, when there is some,
@@ -188,7 +150,7 @@ func (c *coordinator) drainDecision(ctx context.Context, sessionID string, spent
 	if err != nil || !debt {
 		return false, drainVerdict{}, err
 	}
-	return true, c.drainPermitted(ctx, sessionID, spent), nil
+	return true, c.drainPolicy(ctx, sessionID, spent), nil
 }
 
 // isDurableDelegationChild reports whether sessionID was EVER created as a

@@ -1,12 +1,13 @@
 // The web bg-shell auto-turn cap (docs/async-invariants.md ASYNC-09; plan
 // amendments (aa), (ad)). A finished SDK background shell spends one of
 // maxConsecutiveAutoResumes slots per human message at admission
-// (claimAutoResume); a completion that finds every slot spent is recorded by
-// its notice row id (bgShellOverCap) and never launches a turn. A release or
+// (claimAutoResumeSlot -- the arbiter's one writer of the cap, R-ARB-2); a
+// completion that finds every slot spent is recorded by its notice row id
+// (the arbiter state's overCap set) and never launches a turn. A release or
 // tick re-check, and a queued Drain's turn-start check, may still act on the
 // rows whose slot WAS spent (paced, refused, held or deferred launches), but
-// never on an over-cap row: they read the durable debt and defer only when
-// EVERY row of it is an over-cap id (bgShellCapDeferred).
+// never on an over-cap row: the arbiter (rule 11 of decide) defers only when
+// EVERY row of the debt is an over-cap id.
 package agent
 
 import (
@@ -49,9 +50,14 @@ var bgArrivalInsertedSeam atomic.Pointer[func()]
 // persistBGShellCompletion is entered, before it takes bgArrival.
 var bgArrivalEnteredSeam atomic.Pointer[func(sessionID string)]
 
+// readTurnFactsGateSeam is a test-only hook called in readTurnFacts right
+// before it takes bgArrival: the seam between the DB half and the arrival
+// gate (what an over-cap completion can slip through).
+var readTurnFactsGateSeam atomic.Pointer[func()]
+
 // persistBGShellCompletion writes a finished background shell's notice row and
 // takes (or refuses) its auto-resume slot as ONE step relative to the cap check
-// (bgShellCapDeferred): the check then never sees a row without its slot
+// (the arbiter cap rule): the check then never sees a row without its slot
 // decision. The row's id is what an over-cap completion is remembered by. A
 // failed insert is logged and the slot decision is made anyway, as before, but
 // with no row id: nothing exists to defer, so nothing is recorded as over-cap.
@@ -77,39 +83,8 @@ func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary strin
 	if seam := bgArrivalInsertedSeam.Load(); seam != nil {
 		(*seam)()
 	}
-	return c.claimAutoResume(sessionID, rowID)
-}
-
-// bgShellOverCapCount returns how many over-cap completion rows sessionID
-// currently remembers (since its last human message).
-func (c *coordinator) bgShellOverCapCount(sessionID string) int {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	return len(c.bgShellOverCap[sessionID])
-}
-
-// pruneBGShellOverCapLocked drops the over-cap ids of sessionID that are not in
-// debt (reacted, closed or void: the row no longer needs deferring), so the set
-// follows the durable debt instead of growing with every completion. notices
-// must be the COMPLETE notice debt: an id missing from a partial list would be
-// forgotten while still owed. Caller holds autoResumeMu.
-func (c *coordinator) pruneBGShellOverCapLocked(sessionID string, notices []session.PendingNoticeDebt) {
-	over := c.bgShellOverCap[sessionID]
-	if len(over) == 0 {
-		return
-	}
-	owed := make(map[int64]struct{}, len(notices))
-	for _, n := range notices {
-		owed[n.ID] = struct{}{}
-	}
-	for id := range over {
-		if _, ok := owed[id]; !ok {
-			delete(over, id)
-		}
-	}
-	if len(over) == 0 {
-		delete(c.bgShellOverCap, sessionID)
-	}
+	eligible := c.persistentMode.Load() && c.autonomyEnabled()
+	return c.claimAutoResumeSlot(sessionID, rowID, eligible)
 }
 
 // pruneBGShellOverCap is the best-effort prune at a completion's arrival (under
@@ -124,55 +99,11 @@ func (c *coordinator) pruneBGShellOverCap(sessionID string) {
 	if err != nil {
 		return
 	}
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	c.pruneBGShellOverCapLocked(sessionID, notices)
+	c.arb.pruneOverCap(sessionID, notices)
 }
 
-// bgShellCapDeferred decides a release, tick or turn-start re-check (a launch
-// that spends no slot) of sessionID's debt when every slot is spent: deferred
-// only when the ENTIRE debt is bg-shell notices and every one of them is an
-// over-cap completion (its row id was recorded when it arrived with no slot
-// left). A row whose slot was spent but whose launch was paced, refused, held
-// or deferred, or whose pull keeps failing while newer rows are reacted, is not
-// in the set, so it is retried (and closed at K=3) like any other debt; a
-// slot Drain's own pulled-but-unreacted row is one of them, so a Drain is never
-// refused for the slot it holds. The gate is held across the debt read and the
-// set read: a completion is either fully visible to them or not at all. The
-// read also prunes ids that left the debt. An unreadable input is an error
-// (drainPolicy fails closed).
-func (c *coordinator) bgShellCapDeferred(ctx context.Context, sessionID string) (bool, error) {
-	if c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes {
-		return false, nil
-	}
-	if err := c.bgArrival.lock(ctx); err != nil {
-		return false, err
-	}
-	defer c.bgArrival.unlock()
-	if c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes {
-		return false, nil // a human message re-armed the cap meanwhile
-	}
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return false, nil
-	}
-	hasJobDebt, notices, _, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	c.pruneBGShellOverCapLocked(sessionID, notices)
-	if hasJobDebt || len(notices) == 0 {
-		return false, nil
-	}
-	over := c.bgShellOverCap[sessionID]
-	for _, n := range notices {
-		if n.Kind != session.NoticeKindBGShellDone {
-			return false, nil
-		}
-		if _, ok := over[n.ID]; !ok {
-			return false, nil
-		}
-	}
-	return true, nil
+// bgShellOverCapCount returns how many over-cap completion rows sessionID
+// currently remembers (since its last human message).
+func (c *coordinator) bgShellOverCapCount(sessionID string) int {
+	return c.arb.overCapCount(sessionID)
 }

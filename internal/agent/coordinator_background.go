@@ -154,7 +154,7 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 	if claimed || driven {
 		// Autonomous idle-resume: start (or, if busy, queue) a Drain call
 		// over the just-persisted notice. The bound was spent by
-		// claimAutoResume (reset by any human message); a driven child spends
+		// claimAutoResumeSlot (reset by any human message); a driven child spends
 		// no slot.
 		slog.Info("Phase 4: resuming session on background job completion",
 			"session_id", sessionID, "shell_id", sh.ID, "delegated_child", driven,

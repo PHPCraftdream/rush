@@ -38,7 +38,7 @@ const (
 // counted, unreacted attempts is closed by failure (other rows keep theirs).
 const drainFailureSettleThreshold = 3
 
-// drainDormantStreak is the length of either dormancy streak (drainGate):
+// drainDormantStreak is the length of either dormancy streak (the arbiter gate):
 // consecutive no-turn Drains over a failing pull (a newer fact reopens the
 // gate) or consecutive paid attempts whose close kept failing (only a human
 // message or a restart reopens it).
@@ -219,7 +219,13 @@ func drainFailureTerminal(err error, turnCtxDone bool) bool {
 	return classifyProviderError(err) == classTerminal
 }
 
-// accountDrainAttempt is THE accounting function of a Drain leg.
+// accountDrainAttempt is THE accounting function of a Drain leg. The
+// DECISION is decideAccount (the accounting rows A1-A7 of the arbiter
+// table); this function gathers the attempt's facts, asks the arbiter, and
+// executes the verdict -- the gate/streak/chain writes themselves are the
+// arbiter state's writers (R-ARB-2). The DB failure paths (a failed count, a
+// failed snapshot read, a failed settle) keep today's behavior: pace the
+// gate like an unreacted paid attempt and stay in the recheck set.
 func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt, turnErr error) {
 	l := c.asyncJobs
 	if l == nil || att == nil || att.sessionID == "" {
@@ -228,24 +234,19 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	sid := att.sessionID
 	turnErr = att.failure(turnErr)
 	turnCtxDone := att.turnCtxDone.Load()
+	facts := TurnFacts{Now: time.Now(), Site: siteAccount}
+	facts.Session.ExternallyDrivenSelf = l.isExternalDriver(sid)
 	switch att.outcome {
 	case drainNotAttempted:
 		if turnErr == nil || operatorStop(turnErr, turnCtxDone) {
 			return // a cancelled preamble: nothing was refused, nothing was tried
 		}
-		c.noteDrainRefused(sid, turnErr)
+		facts.Attempt = AttemptFacts{NotAttempted: true, Refused: true}
+		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), 0)
 		return
 	case drainNoTurn:
-		switch {
-		case att.pendingLeft:
-			c.paceUnreacted(sid, att.hintAt, true, paceFreeNoTurn)
-		case att.snapshot.Empty():
-			l.resetDrainGate(sid)
-		default:
-			if att.commitNo.recheck {
-				c.addToRecheckSet(sid)
-			}
-		}
+		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: !att.snapshot.Empty()}
+		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), 0)
 		return
 	}
 	if drainAttemptExempt(att, turnErr) || l.store == nil {
@@ -255,9 +256,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		// Reaction chain guard (#1113): account the leg's link BEFORE the
 		// debt's post-attempt state is read -- a successful reaction (rows.
 		// open == 0 below) must not reset the count.
-		c.autoResumeMu.Lock()
-		c.reactionChainLinkLocked(sid, att, att.snapshot)
-		c.autoResumeMu.Unlock()
+		c.arb.chainLink(sid, att, att.snapshot)
 	}
 	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {
@@ -271,33 +270,61 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		pace()
 		return
 	}
-	if rows.open == 0 {
-		l.resetDrainGate(sid) // every visible row reacted
-		return
+	facts.Attempt = AttemptFacts{
+		MaxWakeAttempts: rows.max,
+		OpenRows:        rows.open,
+		AtK:             rows.atK,
+		Terminal:        c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone),
 	}
-	// Only a row whose OWN counter reached K is closed: a notice that arrived
-	// while earlier ones were failing keeps its own clock (a one-minute
-	// outage never closes it). A terminal provider classification closes
-	// every row the failed attempt saw.
-	closing, closed := rows.atK, rows.atKCount
-	if c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone) {
-		closing, closed = att.snapshot, rows.open
-	}
-	if closing.Empty() {
-		pace()
-		return
-	}
-	cause := "the assistant responded, but its reaction to this event was not recorded"
-	if turnErr != nil {
-		cause = redactNetworkURLs(turnErr.Error())
-	}
-	if err := c.settleDrainDebtTail(ctx, sid, closing, cause, settleTailFor(turnErr)); err != nil {
-		pace()
-		return
-	}
-	l.resetDrainGate(sid)
-	if closed < rows.open {
-		pace() // rows with fewer attempts remain: they keep the retry pace
+	facts.Snapshot = att.snapshot
+	c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), rows.open)
+}
+
+// executeAccountVerdict executes decideAccount's verdict on the real state:
+// pacing, resets and the settle-by-failure. openRows is the post-attempt
+// count of still-open snapshot rows (the VClose executor keeps the retry
+// pace for the rows it did not close).
+func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att *drainAttempt, turnErr error, v Verdict, openRows int) {
+	l := c.asyncJobs
+	pacePaid := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
+	switch {
+	case v.Kind == VDefer && v.Reason == "launch refused":
+		// A1: the admission refusal handler paces uncounted and rechecks.
+		c.noteDrainRefused(sid, turnErr)
+	case v.Kind == VDefer && v.Reason == "pending debt left behind":
+		// A2: a no-turn Drain over a pull that keeps failing (free streak).
+		c.paceUnreacted(sid, att.hintAt, true, paceFreeNoTurn)
+	case v.Kind == VClose:
+		// A6: settle exactly the named rows by failure, with the visible
+		// marker; rows with fewer attempts keep the retry pace.
+		cause := "the assistant responded, but its reaction to this event was not recorded"
+		if turnErr != nil {
+			cause = redactNetworkURLs(turnErr.Error())
+		}
+		if err := c.settleDrainDebtTail(ctx, sid, v.Rows, cause, settleTailFor(turnErr)); err != nil {
+			pacePaid()
+			return
+		}
+		l.resetGate(sid)
+		closed := len(v.Rows.Jobs) + len(v.Rows.Notices)
+		if closed < openRows {
+			pacePaid()
+		}
+	case v.Kind == VDefer:
+		// A7: a counted, unreacted attempt: the gate paces at R and a newer
+		// fact does not open it early (R3B-4).
+		pacePaid()
+	case v.Reason == "commit refused: gate untouched":
+		// A3': the launch verdict refused the commit while visible debt
+		// stays; the gate is the launch side's state, not this attempt's
+		// evidence -- it is neither opened nor closed. Only the recheck
+		// question survives (the old default branch).
+		if att.commitNo.recheck {
+			c.addToRecheckSet(sid)
+		}
+	case v.Reason == "no debt: gate reset" || v.Reason == "all rows reacted: gate reset":
+		// A3/A5: nothing owed (or every visible row reacted): the gate opens.
+		l.resetGate(sid)
 	}
 }
 
@@ -326,6 +353,9 @@ func (c *coordinator) drainAttemptTerminal(ctx context.Context, att *drainAttemp
 type snapshotAttempts struct {
 	// open: rows still debt (still the row the snapshot saw).
 	open int
+	// max: the highest per-row attempt counter read (0 iff open == 0); the
+	// arbiter's A5 input (every visible row reacted).
+	max int
 	// atK: the rows whose own counter reached drainFailureSettleThreshold.
 	atK      session.DebtSnapshot
 	atKCount int
@@ -346,6 +376,7 @@ func (c *coordinator) snapshotAttempts(ctx context.Context, sessionID string, sn
 			continue // no longer debt
 		}
 		out.open++
+		out.max = max(out.max, n)
 		if n >= drainFailureSettleThreshold {
 			out.atK.Jobs = append(out.atK.Jobs, ref)
 			out.atKCount++
@@ -360,6 +391,7 @@ func (c *coordinator) snapshotAttempts(ctx context.Context, sessionID string, sn
 			continue
 		}
 		out.open++
+		out.max = max(out.max, n)
 		if n >= drainFailureSettleThreshold {
 			out.atK.Notices = append(out.atK.Notices, ref)
 			out.atKCount++
@@ -384,7 +416,7 @@ func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
 	if external {
 		wait = drainRefusalPauseLoop()
 	}
-	l.paceDrainGate(sessionID, l.hintSeqOf(sessionID), wait, true, paceUncounted)
+	l.arbPace(sessionID, l.hintSeqOf(sessionID), wait, true, paceUncounted)
 	if !external {
 		c.addToRecheckSet(sessionID)
 	}
@@ -398,7 +430,7 @@ func (c *coordinator) noteTurnFailed(sessionID string) {
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
-	c.asyncJobs.paceDrainGate(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
+	c.asyncJobs.arbPace(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
 }
 
 // settleDrainDebt closes the snapshot's debt by failure and writes the
@@ -497,7 +529,7 @@ func providerTurnFailed(err error, turnCtxDone bool) bool {
 // human message; paid attempts whose close kept failing only by a human
 // message or a restart.
 func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool, kind drainPace) {
-	if c.asyncJobs.paceDrainGate(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, kind) {
+	if c.asyncJobs.arbPace(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, kind) {
 		if kind == paceFreeNoTurn {
 			slog.Warn("drain launches for this session are paused: the notice pull keeps failing; a new event or a human message resumes them",
 				"session_id", sessionID)

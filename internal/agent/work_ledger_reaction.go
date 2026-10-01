@@ -128,29 +128,25 @@ func (l *workLedger) captureDebtSnapshot(ctx context.Context, owner string) (ses
 	return l.store.CaptureDebtSnapshot(ctx, owner)
 }
 
-// drainGate is one session's Drain launch gate (in memory, per process: the
-// durable bound is K=3 attempts per row). It is shut for retryAt after an
-// unreacted attempt or a refusal; a newer fact hint may open it early unless
-// the last outcome was a paid failure.
-type drainGate struct {
-	retryAt time.Time
-	hintAt  uint64
-	// hintOpens: may a hint newer than hintAt open the gate before retryAt?
-	// False after a paid failure (a fact must not restart the retry clock).
-	hintOpens bool
-	// freeStreak counts consecutive no-turn Drains that left pending debt (the
-	// pull keeps failing): free, and a newer fact hint reopens a gate that
-	// reached drainDormantStreak.
-	freeStreak int
-	// paidStreak counts consecutive paid attempts that left the debt
-	// unreacted. The per-row counter (K) closes the debt long before this
-	// reaches drainDormantStreak; it gets there only when the close (or the
-	// counting) itself keeps failing, and then ONLY a human message (or a
-	// restart) reopens the gate -- a newer fact does not.
-	paidStreak int
+// arbPace paces the session's launch gate in the arbiter state (R-ARB-2: the
+// gate no longer lives on the ledger). A nil-coordinator ledger (isolated
+// tests) paces nothing.
+func (l *workLedger) arbPace(owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) bool {
+	if l.coord == nil {
+		return false
+	}
+	return l.coord.arb.pace(owner, hintAt, wait, hintOpens, kind)
 }
 
-// drainPace says what a pacing counts toward the dormancy streaks.
+// resetGate opens the session's launch gate in the arbiter state.
+func (l *workLedger) resetGate(owner string) {
+	if l.coord != nil {
+		l.coord.arb.resetGate(owner)
+	}
+}
+
+// drainPace says what a pacing counts toward the dormancy streaks (the
+// arbiter's gate keeps the same accounting the old ledger gate had).
 type drainPace uint8
 
 const (
@@ -161,59 +157,3 @@ const (
 	// pacePaidUnreacted: a paid attempt left the debt unreacted.
 	pacePaidUnreacted
 )
-
-// drainGateOpen reports whether a Drain may be launched for owner now:
-// open = never paced || (hintOpens && a newer hint arrived && not paid-dormant)
-// || (not dormant && retryAt passed). dormant reports a shut gate that only a
-// newer fact (free dormancy) or a human message (paid dormancy) can reopen.
-func (l *workLedger) drainGateOpen(owner string, now time.Time) (open, dormant bool, retryAt time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil || s.drain.retryAt.IsZero() {
-		return true, false, time.Time{}
-	}
-	g := s.drain
-	paidDormant := g.paidStreak >= drainDormantStreak
-	if g.hintOpens && !paidDormant && s.hintSeq != g.hintAt {
-		return true, false, g.retryAt
-	}
-	if !paidDormant && g.freeStreak < drainDormantStreak {
-		return !now.Before(g.retryAt), false, g.retryAt
-	}
-	return false, true, g.retryAt
-}
-
-// paceDrainGate shuts owner's gate for wait; it reports the moment a streak
-// reached dormancy. kind says which streak the outcome counts toward: a paid
-// attempt proves the pull works again, so it clears the free streak.
-func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) (becameDormant bool) {
-	if owner == "" {
-		return false
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	g := &l.sessionLocked(owner).drain
-	g.retryAt = time.Now().Add(wait)
-	g.hintAt = hintAt
-	g.hintOpens = hintOpens
-	switch kind {
-	case paceFreeNoTurn:
-		g.freeStreak++
-		return g.freeStreak == drainDormantStreak
-	case pacePaidUnreacted:
-		g.freeStreak = 0
-		g.paidStreak++
-		return g.paidStreak == drainDormantStreak
-	}
-	return false
-}
-
-// resetDrainGate opens owner's gate and clears its streaks.
-func (l *workLedger) resetDrainGate(owner string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if s := l.bySession[owner]; s != nil {
-		s.drain = drainGate{}
-	}
-}

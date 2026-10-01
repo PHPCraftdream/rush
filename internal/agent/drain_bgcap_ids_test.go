@@ -154,7 +154,7 @@ func TestBGShellCap_FailedInsertIsNotOverCap(t *testing.T) {
 	f.exec(ctx, `ALTER TABLE fx_session_notices RENAME TO session_notices`)
 
 	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a failed insert counts nothing")
-	deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
+	deferred, err := capDeferred(ctx, f.coord, f.sessID)
 	require.NoError(t, err)
 	require.False(t, deferred, "the slot row is still owed; the lost completion has no row to defer")
 }
@@ -186,13 +186,14 @@ func TestBGShellCap_SlotRowWhosePullFailedIsRetriedBehindAReactedOverCapRow(t *t
 	require.False(t, f.hasDebt(ctx))
 }
 
-// Over-cap ids that left the debt (reacted or closed) are dropped by the next
-// check, so the set follows the durable debt instead of growing with every
-// completion; an id still owed stays.
+// Over-cap ids that left the debt never hide a slot row or defer a debt-free
+// session: the cap rule counts only ids STILL OWED, so a reacted id is inert
+// even before anything trims the set (the set itself is trimmed at the next
+// completion's arrival -- the test below; the read-side prune is gone, P1-3).
 //
-// Revert-check: dropping the prune from bgShellCapDeferred leaves both ids in
-// the set and turns the count assertions red.
-func TestBGShellCapDeferred_PrunesOverCapIDsThatLeftTheDebt(t *testing.T) {
+// Revert-check: a bare-count rule (sizes, no ids) defers the first case here
+// and turns it red.
+func TestBGShellCapDeferred_FollowsTheDurableDebt(t *testing.T) {
 	ctx := context.Background()
 	f, _ := newBGShellCapFixture(t, "cap-prune", attemptFixtureOpts{})
 	for range maxConsecutiveAutoResumes {
@@ -208,16 +209,14 @@ func TestBGShellCapDeferred_PrunesOverCapIDsThatLeftTheDebt(t *testing.T) {
 	f.settleNotice(ctx, notices[0].ID)
 	f.settleNotice(ctx, notices[1].ID)
 
-	deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
+	deferred, err := capDeferred(ctx, f.coord, f.sessID)
 	require.NoError(t, err)
 	require.True(t, deferred, "the remaining row is over-cap")
-	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "reacted ids are pruned")
 
 	f.settleNotice(ctx, notices[2].ID)
-	deferred, err = f.coord.bgShellCapDeferred(ctx, f.sessID)
+	deferred, err = capDeferred(ctx, f.coord, f.sessID)
 	require.NoError(t, err)
 	require.False(t, deferred, "no debt: nothing to defer")
-	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID))
 }
 
 // A completion's arrival prunes the ids that left the debt too, so a session

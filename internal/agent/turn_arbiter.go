@@ -67,7 +67,7 @@ type SessionFacts struct {
 // bg-shell completion rows that arrived with every auto-resume slot spent;
 // BGShellNotices counts the debt's notice rows in total, so "OverCapRows
 // covers the whole bg-shell debt" is BGShellOnly && OverCapRows ==
-// BGShellNotices (the same predicate bgShellCapDeferred answers).
+// BGShellNotices (the same predicate the arbiter cap rule answers).
 type DebtFacts struct {
 	Visible        session.DebtSnapshot
 	PendingIncl    bool
@@ -97,8 +97,13 @@ type AttemptFacts struct {
 	Refused      bool
 	// NoTurn: admitted but the commit decision said no. PendingLeft says
 	// pending-inclusive debt remains after it (the pull keeps failing).
-	NoTurn      bool
-	PendingLeft bool
+	// CommitRefused says the commit was refused while visible debt stays
+	// (a paced/stuck gate, a hold, a suspension, the chain guard, the cap,
+	// a foreign driver, an unreadable input): the launch gate is the launch
+	// side's own state, so the accounting leaves it alone (A3').
+	NoTurn        bool
+	PendingLeft   bool
+	CommitRefused bool
 	// Exempt: the leg ended for a reason that is not evidence about the
 	// debt (operator stop).
 	Exempt bool
@@ -142,7 +147,11 @@ const (
 
 // Verdict is one launch or accounting decision (design sec.2.2).
 type Verdict struct {
-	Kind    VerdictKind
+	Kind VerdictKind
+	// Counted is descriptive: it repeats which site the verdict came from
+	// (rule 13 -- only siteFact). The bg-shell slot itself is spent at the
+	// completion's arrival (claimAutoResumeSlot), never by executing a
+	// VRun; no executor reads this field.
 	Counted bool
 	Reason  string
 	// RecheckAt is zero for a defer the tick or a release retries (a hold),
@@ -276,8 +285,14 @@ func decideAccount(f TurnFacts) Verdict {
 		}
 		return Verdict{Kind: VNone, Reason: "cancelled preamble"}
 	}
-	// A2/A3: a no-turn Drain.
+	// A2/A3/A3': a no-turn Drain.
 	if f.Attempt.NoTurn {
+		if f.Attempt.CommitRefused {
+			// A3': the launch verdict already decided the gate; the attempt
+			// is no evidence about it. The executor only carries the
+			// recheck question (the old default branch).
+			return Verdict{Kind: VNone, Reason: "commit refused: gate untouched"}
+		}
 		if f.Attempt.PendingLeft {
 			return Verdict{Kind: VDefer, Reason: "pending debt left behind", RecheckAt: f.Now.Add(turnRetryAfterFailure()), ReopenOnHint: true}
 		}
@@ -291,9 +306,14 @@ func decideAccount(f TurnFacts) Verdict {
 	if f.Attempt.MaxWakeAttempts == 0 {
 		return Verdict{Kind: VNone, Reason: "all rows reacted: gate reset"}
 	}
-	// A6: a row whose own counter reached K -- or every row at once on a
-	// terminal failure -- is closed by failure; the accounting settles
+	// A6: a terminal provider failure closes every row the attempt saw at
+	// once; otherwise a row whose OWN counter reached K is closed by failure
+	// (a notice that arrived while earlier ones were failing keeps its own
+	// clock -- a one-minute outage never closes it). The accounting settles
 	// exactly the named rows.
+	if f.Attempt.Terminal {
+		return Verdict{Kind: VClose, Rows: f.Snapshot, Reason: "terminal provider failure"}
+	}
 	if len(f.Attempt.AtK.Jobs)+len(f.Attempt.AtK.Notices) > 0 {
 		return Verdict{Kind: VClose, Rows: f.Attempt.AtK, Reason: "row reached its attempt limit"}
 	}
@@ -302,36 +322,20 @@ func decideAccount(f TurnFacts) Verdict {
 	return Verdict{Kind: VDefer, Reason: "unreacted attempt", RecheckAt: f.Now.Add(turnRetryAfterFailure())}
 }
 
-// turnGateFacts copies owner's launch gate and hint counter as a value under
-// ONE l.mu capture, together with the external-driver marker (the same
-// mutex owns both). The second return is Gate.Paced's source: a session with
-// no gate record at all is an open, unpaced gate.
-func (l *workLedger) turnGateFacts(owner string) GateFacts {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := l.bySession[owner]
-	if s == nil {
-		return GateFacts{HintNow: 0}
-	}
-	return GateFacts{
-		Paced:      !s.drain.retryAt.IsZero(),
-		RetryAt:    s.drain.retryAt,
-		HintOpens:  s.drain.hintOpens,
-		HintSeen:   s.drain.hintAt,
-		HintNow:    s.hintSeq,
-		FreeStreak: s.drain.freeStreak,
-		PaidStreak: s.drain.paidStreak,
-	}
-}
-
 // readTurnFacts collects the ONE snapshot the arbiter decides on (design
 // sec.2.1). Order is law (ASYNC-02/09 anchor): the DB half FIRST, then the
 // in-process half -- a fact committed between the reads is already durable
 // when the memory half is captured, so it is seen; the inverted order could
-// lose it. No DB I/O happens under autoResumeMu or l.mu: each is captured
-// once and copied to a value. The bgArrival seam mutex spans the debt-rows
-// read and the over-cap set read (exactly bgShellCapDeferred's span), so a
-// completing background shell is either fully visible to both or to neither.
+// lose it. No DB I/O happens under the arbiter's or the ledger's mutex: each
+// is captured once and copied to a value. The bgArrival mutex is taken
+// BEFORE the debt-rows read and spans the in-process half -- exactly the
+// completion arrival's own span (insert + slot decision under the same
+// gate) -- so the debt rows and the over-cap set are ONE consistent pair:
+// a completing background shell is either fully visible to both or to
+// neither. The read never writes the set; pruning happens only at a
+// completion's arrival (pruneBGShellOverCap, under bgArrival). The rows are
+// the ONE PendingInclusiveDebtRows read: the debt's existence, summary,
+// kinds, over-cap matching and the chain guard's claims all come from it.
 // An unreadable input is an error: the caller fails closed.
 func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite) (TurnFacts, error) {
 	f := TurnFacts{Now: time.Now(), Site: site, Snapshot: session.DebtSnapshot{}}
@@ -339,41 +343,41 @@ func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site 
 	if l == nil || l.store == nil {
 		return f, nil
 	}
-	// ---- DB half ----
-	pending, err := l.store.ReactionDebtExists(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: debt: %w", err)
-	}
-	f.Debt.PendingIncl = pending
-	if !pending {
-		// No debt: nothing else is consulted (rule 1 short-circuits too).
-		if c.cfg != nil {
-			f.Session.AutonomyEnabled = c.autonomyEnabled()
-		}
-		f.Gate = l.turnGateFacts(sessionID)
-		f.Session.ExternallyDrivenSelf = l.isExternalDriver(sessionID)
-		return f, nil
-	}
+	// ---- DB half (the debt picture itself is the ONE rows read under
+	// bgArrival, below; only the visible snapshot and the session-side
+	// markers are read outside the gate) ----
+	// NOTE: no short-circuit on no-debt. The facts are ONE snapshot (the
+	// ASYNC-02/09 anchor): a caller that re-asks the arbiter without rule
+	// 1's short-circuit (drainPolicy preserves the old policy's debt-free
+	// refusal) still needs the complete session half -- a foreign driver or
+	// a suspension refuses a debt-free session too.
 	snap, err := l.store.CaptureDebtSnapshot(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: debt snapshot: %w", err)
 	}
 	f.Debt.Visible = snap
-	hasJobDebt, noticeKinds, err := l.store.PendingInclusiveDebtSummary(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: debt summary: %w", err)
+	if seam := readTurnFactsGateSeam.Load(); seam != nil {
+		(*seam)()
 	}
-	f.Debt.BGShellOnly = !hasJobDebt && len(noticeKinds) > 0
-	for _, k := range noticeKinds {
-		if k != session.NoticeKindBGShellDone {
-			f.Debt.BGShellOnly = false
-		}
+	if err := c.bgArrival.lock(ctx); err != nil {
+		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
 	}
-	f.Debt.BGShellNotices = len(noticeKinds)
-	_, notices, jobClaims, err := l.store.PendingInclusiveDebtRows(ctx, sessionID)
+	defer c.bgArrival.unlock()
+	hasJobDebt, notices, jobClaims, err := l.store.PendingInclusiveDebtRows(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: debt rows: %w", err)
 	}
+	f.Debt.BGShellOnly = !hasJobDebt && len(notices) > 0
+	for _, n := range notices {
+		if n.Kind != session.NoticeKindBGShellDone {
+			f.Debt.BGShellOnly = false
+		}
+	}
+	f.Debt.BGShellNotices = len(notices)
+	// Pending-inclusive debt, from the SAME rows read (same predicate as
+	// ReactionDebtExists): a debt that appeared after the earlier reads is
+	// still this decision's debt.
+	f.Debt.PendingIncl = hasJobDebt || len(notices) > 0
 	f.Session.ForeignDriverLive, err = l.foreignLiveDriver(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: driver marker: %w", err)
@@ -391,45 +395,41 @@ func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site 
 	if c.cfg != nil {
 		f.Session.AutonomyEnabled = c.autonomyEnabled()
 	}
-	// ---- in-process half (bgArrival spans the over-cap read like
-	// bgShellCapDeferred's own span) ----
-	if err := c.bgArrival.lock(ctx); err != nil {
-		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
-	}
-	defer c.bgArrival.unlock()
-	c.autoResumeMu.Lock()
+	// ---- in-process half (bgArrival already spans the rows read above) ----
+	s := c.arb.snapshot(sessionID)
 	owed := make(map[int64]struct{}, len(notices))
 	for _, n := range notices {
 		owed[n.ID] = struct{}{}
 	}
-	for id := range c.bgShellOverCap[sessionID] {
-		if _, ok := owed[id]; ok {
-			f.Debt.OverCapRows++
+	if s.AutoResumes >= turnAutoResumeCap { // over-cap rows only count with every slot spent
+		for id := range s.OverCap {
+			if _, ok := owed[id]; ok {
+				f.Debt.OverCapRows++
+			}
 		}
 	}
-	f.Session.AutoResumes = c.consecutiveAutoResumes[sessionID]
-	f.Session.Held = c.turnHolds[sessionID] > 0
-	_, f.Session.Suspended = c.autoTurnsSuspended[sessionID]
-	f.Session.ChainLinks = c.consecutiveDrainLinks[sessionID]
-	_, f.Session.ChainNoticed = c.reactionChainNoticed[sessionID]
-	// The chain guard's second half (chainGuardDeferred): the ENTIRE
-	// pending-inclusive debt must be completions of the chain's own idle
-	// launches -- no notice row at all and every job claim inside the chain's
-	// set.
+	f.Session.AutoResumes = s.AutoResumes
+	f.Session.Held = s.Held
+	f.Session.Suspended = s.Suspended
+	f.Session.ChainLinks = s.ChainLinks
+	f.Session.ChainNoticed = s.ChainNoticed
+	// The chain guard's second half: the ENTIRE pending-inclusive debt must
+	// be completions of the chain's own idle launches -- no notice row at
+	// all and every job claim inside the chain's set.
 	if f.Session.ChainLinks >= turnReactionChainLimit && len(notices) == 0 && len(jobClaims) > 0 {
 		owns := true
-		claims := c.reactionChainClaims[sessionID]
 		for _, claim := range jobClaims {
-			if _, ok := claims[claim]; !ok {
+			if _, ok := s.ChainClaims[claim]; !ok {
 				owns = false
 				break
 			}
 		}
 		f.Session.ChainOwnsAllDebt = owns
 	}
-	c.autoResumeMu.Unlock()
-	// ---- workLedger half (l.mu): gate + hint counter + external driver ----
-	f.Gate = l.turnGateFacts(sessionID)
+	// ---- ledger half (l.mu): hint counter + external driver; the gate
+	// itself lives in the arbiter state ----
+	f.Gate = s.Gate
+	f.Gate.HintNow = l.hintSeqOf(sessionID)
 	f.Session.ExternallyDrivenSelf = l.isExternalDriver(sessionID)
 	return f, nil
 }

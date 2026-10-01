@@ -129,16 +129,22 @@ func (f *attemptFixture) setHandler(h http.HandlerFunc) {
 // the row is delivery='done' (visible debt).
 func (f *attemptFixture) seedDebt(ctx context.Context, toolCallID string, pulled bool) {
 	f.t.Helper()
-	_, existing, err := f.ledger.Start(f.sessID, toolCallID, toolCallID, "bash", "", false, false, nil, func() {})
+	f.seedDebtFor(ctx, f.sessID, toolCallID, pulled)
+}
+
+// seedDebtFor is seedDebt for an arbitrary session id (a delegated child).
+func (f *attemptFixture) seedDebtFor(ctx context.Context, sessionID, toolCallID string, pulled bool) {
+	f.t.Helper()
+	_, existing, err := f.ledger.Start(sessionID, toolCallID, toolCallID, "bash", "", false, false, nil, func() {})
 	require.NoError(f.t, err)
 	require.False(f.t, existing)
-	require.NoError(f.t, f.store.MarkAnnounced(ctx, f.sessID, toolCallID))
+	require.NoError(f.t, f.store.MarkAnnounced(ctx, sessionID, toolCallID))
 	_, err = f.store.Transition(ctx, session.TransitionParams{
-		Owner: f.sessID, ToolCallID: toolCallID, State: "completed", ResultSummary: "output", Wake: true,
+		Owner: sessionID, ToolCallID: toolCallID, State: "completed", ResultSummary: "output", Wake: true,
 	})
 	require.NoError(f.t, err)
 	if pulled {
-		_, err = f.store.PullJobNotices(ctx, f.env.messages, f.sessID, buildJobNoticeMessageParams)
+		_, err = f.store.PullJobNotices(ctx, f.env.messages, sessionID, buildJobNoticeMessageParams)
 		require.NoError(f.t, err)
 	}
 }

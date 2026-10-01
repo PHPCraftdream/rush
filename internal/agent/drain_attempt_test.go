@@ -273,3 +273,49 @@ func TestSettleDrainDebt_MarkerNamesSnapshotToolCallIDs(t *testing.T) {
 	require.Contains(t, text, "call-2")
 	require.Contains(t, text, "boom")
 }
+
+// A3' (P1-1 of the R-ARB-2 review): a no-turn Drain whose commit was refused
+// over visible debt (paced/stuck gate, hold, suspension, chain, cap, foreign
+// driver, unreadable input) is no evidence about the gate: the pacing and
+// both streaks survive untouched, and the session re-enters the recheck set
+// exactly when the refusing verdict was worth a tick (the old default
+// branch).
+//
+// Revert-check: mapping a refused commit with a non-empty snapshot onto
+// "no debt: gate reset" (the pre-P1-1 translation) opens the gate, zeroes
+// the streaks and drops the recheck entry -- every assertion goes red.
+func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "attempt-commit-refused", attemptFixtureOpts{noIdle: true})
+	f.seedDebt(ctx, "call-1", true) // visible debt: the commit was refused over it
+	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
+	require.NoError(t, err)
+	require.False(t, snap.Empty())
+
+	require.False(t, f.ledger.paceDrainGate(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
+
+	att := &drainAttempt{
+		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		commitNo: drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
+	}
+	f.coord.accountDrainAttempt(ctx, att, nil)
+
+	g := f.coord.arb.snapshot(f.sessID).Gate
+	require.True(t, g.Paced, "the gate stays shut")
+	require.True(t, g.RetryAt.After(time.Now()), "the pause is not lifted")
+	require.Equal(t, 1, g.PaidStreak, "the streak is not reset")
+	require.True(t, f.inRecheckSet(), "recheck per commitNo.recheck")
+
+	// A refusal that is not worth a tick adds no recheck entry.
+	f.coord.recheckMu.Lock()
+	delete(f.coord.recheckSet, f.sessID)
+	f.coord.recheckMu.Unlock()
+	att = &drainAttempt{
+		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		commitNo: drainVerdict{kind: drainDeferred, reason: "automatic turns suspended"},
+	}
+	f.coord.accountDrainAttempt(ctx, att, nil)
+	require.False(t, f.inRecheckSet())
+	g = f.coord.arb.snapshot(f.sessID).Gate
+	require.True(t, g.Paced, "the gate is still untouched")
+}

@@ -291,6 +291,16 @@ func TestDecideAccount_RowsA1toA7(t *testing.T) {
 	require.Equal(t, now.Add(turnRetryAfterFailure()), v.RecheckAt)
 	// A3: a no-turn Drain with no debt left: the gate resets.
 	require.Equal(t, VNone, decide(at(AttemptFacts{NoTurn: true})).Kind)
+	// A3' (P1-1): a commit refused over visible debt (paced gate, hold,
+	// suspension, chain, cap, foreign driver, unreadable input) is NO
+	// evidence about the gate: the verdict leaves it alone (the executor
+	// carries only the recheck question).
+	v = decide(at(AttemptFacts{NoTurn: true, CommitRefused: true}))
+	require.Equal(t, VNone, v.Kind)
+	require.Equal(t, "commit refused: gate untouched", v.Reason)
+	// A2 still wins when the pull failed behind an empty snapshot.
+	v = decide(at(AttemptFacts{NoTurn: true, PendingLeft: true, CommitRefused: false}))
+	require.Equal(t, VDefer, v.Kind)
 	// A4: an operator stop is no evidence.
 	require.Equal(t, VNone, decide(at(AttemptFacts{Exempt: true})).Kind)
 	// A5: every visible row reacted.

@@ -1,5 +1,5 @@
 // The web bg-shell auto-resume cap (R3B-6, R4B-1): maxConsecutiveAutoResumes
-// slots per human message, spent once at admission (claimAutoResume) by the
+// slots per human message, spent once at admission (claimAutoResumeSlot) by the
 // completion's own launch. A release or tick re-check compares the cap WITHOUT
 // spending a slot and defers the debt only when none of its rows holds a slot,
 // i.e. every row is a completion that arrived over the cap. A row whose slot
@@ -54,9 +54,9 @@ func (f *attemptFixture) complete() {
 
 // expireDrainPause ends the session's launch pause without waiting for it.
 func (f *attemptFixture) expireDrainPause() {
-	f.ledger.mu.Lock()
-	defer f.ledger.mu.Unlock()
-	f.ledger.sessionLocked(f.sessID).drain.retryAt = time.Now().Add(-time.Second)
+	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
+		s.gate.RetryAt = time.Now().Add(-time.Second)
+	})
 }
 
 // maxNoticeAttempts is the highest wake_attempts among the visible debt rows.
@@ -82,7 +82,7 @@ func (f *attemptFixture) hasDebt(ctx context.Context) bool {
 // re-check nor a direct wake launches it either (its row is only an over-cap
 // row); a human message re-arms.
 //
-// Revert-check: making bgShellCapDeferred never defer (or dropping the cap
+// Revert-check: making the arbiter cap rule never defer (or dropping the cap
 // comparison from drainPolicy) lets the re-check launch a sixth Drain and turns
 // the run count red; refusing the fifth completion at the fact path (a "<" after
 // the bump) leaves four Drains and turns the first assertion red.
@@ -126,7 +126,7 @@ func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
 // rows 2-5 (which joined later) at theirs, one marker per close.
 //
 // Revert-check: deferring every bg-shell-only debt at the cap for a re-check
-// (bgShellCapDeferred returning the bgOnly answer alone) launches nothing at
+// (the arbiter cap rule returning the bgOnly answer alone) launches nothing at
 // the tick and turns the run count red at the first pass.
 func TestBGShellCap_SpentSlotsBehindAPauseAreRetriedAndClosed(t *testing.T) {
 	ctx := context.Background()
@@ -163,7 +163,7 @@ func TestBGShellCap_SpentSlotsBehindAPauseAreRetriedAndClosed(t *testing.T) {
 	require.False(t, f.hasDebt(ctx), "nothing is left owed")
 }
 
-// bgShellCapDeferred defers exactly when every slot is spent and the ENTIRE
+// the arbiter cap rule defers exactly when every slot is spent and the ENTIRE
 // debt is bg-shell rows every one of which is an over-cap completion (its id is
 // in the set).
 //
@@ -194,7 +194,7 @@ func TestBGShellCapDeferred_OnlyWhenEveryDebtRowIsOverCap(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			f := newAttemptFixture(t, "cap-deferred", attemptFixtureOpts{noIdle: true})
+			f, _ := newBGShellCapFixture(t, "cap-deferred", attemptFixtureOpts{noIdle: true})
 			for range tc.slots {
 				f.coord.bumpConsecutiveResume(f.sessID)
 			}
@@ -204,46 +204,110 @@ func TestBGShellCapDeferred_OnlyWhenEveryDebtRowIsOverCap(t *testing.T) {
 				require.NoError(t, err)
 				ids = append(ids, id)
 			}
-			f.coord.autoResumeMu.Lock()
-			f.coord.bgShellOverCap = map[string]map[int64]struct{}{f.sessID: {}}
-			for _, i := range tc.overIdx {
-				f.coord.bgShellOverCap[f.sessID][ids[i]] = struct{}{}
-			}
-			for i := range tc.gone {
-				f.coord.bgShellOverCap[f.sessID][int64(9000+i)] = struct{}{}
-			}
-			f.coord.autoResumeMu.Unlock()
+			f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
+				s.overCap = make(map[int64]struct{})
+				for _, i := range tc.overIdx {
+					s.overCap[ids[i]] = struct{}{}
+				}
+				for i := range tc.gone {
+					s.overCap[int64(9000+i)] = struct{}{}
+				}
+			})
 			if tc.jobDebt {
 				f.seedDebt(ctx, "call-1", false)
 			}
 
-			deferred, err := f.coord.bgShellCapDeferred(ctx, f.sessID)
+			deferred, err := capDeferred(ctx, f.coord, f.sessID)
 			require.NoError(t, err)
 			require.Equal(t, tc.wantDeferred, deferred)
 		})
 	}
 }
 
-// A check that cannot take the arrival gate (a completion is mid-step, or the
-// caller gave up) fails closed as an error, never as "not deferred": drainPolicy
-// maps it to a deferred-with-recheck verdict. The ledger has no store here, so
-// the debt read cannot fail on the cancelled context by itself: only the gate can.
+// A check that cannot take the arrival gate (a completion is mid-step) fails
+// closed as an error, never as "not deferred": readTurnFacts takes bgArrival
+// BEFORE the debt-rows read, so a blocked check reads nothing. Proven
+// deterministically: the check signals the seam right before the gate, and
+// only then the notices table is made unreadable -- the error must name the
+// gate-ordered read, not an earlier one.
 //
-// Revert-check: dropping the gate from bgShellCapDeferred answers (false, nil)
-// here and turns the assertion red.
+// Revert-check: removing bgArrival from readTurnFacts (the read answers from
+// reads that no longer wait for the arrival) lets the check return without
+// the error and turns this red.
 func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
+	ctx := context.Background()
 	f := newAttemptFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
-	f.ledger.store = nil
 	for range maxConsecutiveAutoResumes {
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
-	require.NoError(t, f.coord.bgArrival.lock(context.Background())) // an arrival mid-step
-	defer f.coord.bgArrival.unlock()
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
+	require.NoError(t, f.coord.bgArrival.lock(ctx)) // an arrival mid-step
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			f.coord.bgArrival.unlock()
+		}
+	}()
 
-	_, err := f.coord.bgShellCapDeferred(cancelled, f.sessID)
-	require.ErrorIs(t, err, context.Canceled)
+	entered := make(chan struct{})
+	seam := func() { close(entered) }
+	readTurnFactsGateSeam.Store(&seam)
+	t.Cleanup(func() { readTurnFactsGateSeam.Store(nil) })
+
+	type answer struct {
+		deferred bool
+		err      error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		d, err := capDeferred(ctx, f.coord, f.sessID)
+		done <- answer{d, err}
+	}()
+	<-entered // the check is waiting at the arrival gate, reads not started
+	f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
+	f.coord.bgArrival.unlock()
+	unlocked = true
+	res := <-done
+	f.exec(ctx, `ALTER TABLE fx_session_notices RENAME TO session_notices`)
+
+	require.Error(t, res.err, "a check that cannot pass the gate must fail closed")
+	require.Contains(t, res.err.Error(), "debt rows")
+	require.False(t, res.deferred)
+}
+
+// P1-3 of the R-ARB-2 review: an over-cap completion landing in the seam
+// between the DB half and the arrival gate must be seen by the same decision
+// -- the debt rows are read UNDER bgArrival, so the completion's row is in
+// them and its over-cap mark is kept; the decision defers, it does not run.
+//
+// Revert-check: reading the rows before the gate (the pre-P1-3 order) misses
+// the row: the debt does not read bg-shell-only, the decision runs (VRun),
+// and the stale owed-set prune erases the over-cap mark -- every assertion
+// goes red.
+func TestBGShellCap_OverCapCompletionInTheSeamIsKeptAndDefers(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newBGShellCapFixture(t, "cap-seam", attemptFixtureOpts{noIdle: true})
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+
+	seam := func() {
+		// An over-cap completion lands exactly between the DB half and the
+		// gate: durable row + the refused slot recorded by its id -- what
+		// persistBGShellCompletion does under bgArrival.
+		id, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
+		require.NoError(t, err)
+		require.False(t, f.coord.arb.claimAutoResumeSlot(f.sessID, id, true), "no slot left: over the cap")
+	}
+	readTurnFactsGateSeam.Store(&seam)
+	t.Cleanup(func() { readTurnFactsGateSeam.Store(nil) })
+
+	deferred, err := capDeferred(ctx, f.coord, f.sessID)
+	require.NoError(t, err)
+	require.True(t, deferred, "the debt is entirely over-cap completions: defer, not VRun")
+	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "the completion's mark is not pruned by the stale read")
+	v := f.coord.drainPermitted(ctx, f.sessID, false)
+	require.Equal(t, drainDeferred, v.kind)
+	require.Contains(t, v.reason, "cap reached")
 }
 
 // The completion's row insert and its slot decision are ONE step for the cap
@@ -276,7 +340,7 @@ func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T
 	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
 }
 
-// claimAutoResume spends a slot only while slots remain, and counts as over-cap
+// claimAutoResumeSlot spends a slot only while slots remain, and counts as over-cap
 // (by row id) exactly the completions refused because every slot is spent (whatever else
 // would have refused them); a refusal with slots left (Stop, auto-resume off)
 // is not counted.
@@ -288,29 +352,29 @@ func TestClaimAutoResume_CountsOnlyRefusalsForLackOfASlot(t *testing.T) {
 	sid := f.sessID
 
 	f.coord.suspendAutoResume(sid)
-	require.False(t, f.coord.claimAutoResume(sid, 1), "Stop suspended automatic turns")
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 1, true), "Stop suspended automatic turns")
 	require.Zero(t, f.coord.bgShellOverCapCount(sid), "a refusal with slots left is not over-cap")
 	f.coord.resetConsecutiveResume(sid)
 
 	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(false)
-	require.False(t, f.coord.claimAutoResume(sid, 2), "auto-resume is off")
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 2, false), "auto-resume is off")
 	require.Zero(t, f.coord.bgShellOverCapCount(sid))
 	f.coord.cfg.Config().Options.AutoResumeOnJobDone = boolPtr(true)
 
 	for i := range maxConsecutiveAutoResumes {
-		require.True(t, f.coord.claimAutoResume(sid, int64(10+i)))
+		require.True(t, f.coord.claimAutoResumeSlot(sid, int64(10+i), true))
 	}
-	require.False(t, f.coord.claimAutoResume(sid, 20))
-	require.False(t, f.coord.claimAutoResume(sid, 21))
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 20, true))
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 21, true))
 	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid))
-	require.False(t, f.coord.claimAutoResume(sid, 21), "the same row is one id")
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 21, true), "the same row is one id")
 	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid))
-	require.False(t, f.coord.claimAutoResume(sid, 0), "a completion with no row (insert failed) is refused")
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 0, true), "a completion with no row (insert failed) is refused")
 	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(sid), "and records nothing: there is no row to defer")
 	require.Equal(t, maxConsecutiveAutoResumes, f.coord.consecutiveResume(sid), "the slot count stops at the cap")
 
 	f.coord.suspendAutoResume(sid)
-	require.False(t, f.coord.claimAutoResume(sid, 22))
+	require.False(t, f.coord.claimAutoResumeSlot(sid, 22, true))
 	require.EqualValues(t, 3, f.coord.bgShellOverCapCount(sid), "a suspended completion after the cap is still over it")
 }
 
@@ -319,7 +383,7 @@ func TestClaimAutoResume_CountsOnlyRefusalsForLackOfASlot(t *testing.T) {
 // variant of the error is pinned by
 // TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed).
 //
-// Revert-check: ignoring the bgShellCapDeferred error in drainPolicy allows the
+// Revert-check: ignoring the arbiter read error in drainPolicy allows the
 // launch and turns this red.
 func TestDrainPolicy_CapStateUnreadableFailsClosed(t *testing.T) {
 	ctx := context.Background()
@@ -335,5 +399,5 @@ func TestDrainPolicy_CapStateUnreadableFailsClosed(t *testing.T) {
 	require.Equal(t, drainDeferred, v.kind, "an unreadable cap state must never allow a Drain")
 	require.True(t, v.recheck)
 	require.Error(t, v.err)
-	require.Equal(t, "bg-shell cap state unreadable", v.reason)
+	require.Equal(t, "launch decision input unreadable", v.reason)
 }

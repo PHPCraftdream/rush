@@ -19,7 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// policyAllowed reports the policy half of the launch predicate.
+// policyAllowed reports the policy half of the launch predicate. The policy
+// refuses (or allows) a session regardless of debt -- only the LAUNCHERS
+// pre-check the debt -- so nothing is seeded here.
 func policyAllowed(c *coordinator, ctx context.Context, sessionID string) (bool, error) {
 	v := c.drainPolicy(ctx, sessionID, false)
 	return v.kind == drainAllow, v.err
@@ -127,7 +129,7 @@ func TestDrainAttempt_AskQuestionReactsAndSuspends(t *testing.T) {
 // A6: the reaction write AND the settle both fail: three counted attempts,
 // then the gate is dormant -- no further paid attempt however many passes run.
 //
-// Revert-check: removing the dormant streak from drainGateOpen lets every
+// Revert-check: removing the dormant streak from the arbiter gate rows lets every
 // pass launch again (6 more requests) and this test goes red.
 func TestDrainAttempt_ReactionAndSettleFail_DormantAfterThree(t *testing.T) {
 	ctx := context.Background()
@@ -268,20 +270,24 @@ func (s failingGetSessions) Get(ctx context.Context, id string) (session.Session
 // case red.
 func TestDrainPolicy_ReadErrorFailsClosed(t *testing.T) {
 	ctx := context.Background()
+	// R-ARB-2: the facts are ONE snapshot, so an unreadable input no longer
+	// names the single read that failed (the old per-input labels); the
+	// verdict still fails CLOSED for every input, and each case still fails
+	// exactly one read.
 	cases := []struct {
 		name, reason string
 		fail         func(f *attemptFixture)
 	}{
-		{"driver marker", "driver marker unreadable", func(f *attemptFixture) {
+		{"driver marker", "launch decision input unreadable", func(f *attemptFixture) {
 			f.exec(ctx, `ALTER TABLE session_drivers RENAME TO fx_session_drivers`)
 		}},
-		{"delegation state", "delegation state unreadable", func(f *attemptFixture) {
+		{"delegation state", "launch decision input unreadable", func(f *attemptFixture) {
 			f.exec(ctx, `ALTER TABLE async_jobs RENAME TO fx_async_jobs`)
 		}},
-		{"delegation identity", "delegation identity unreadable", func(f *attemptFixture) {
+		{"delegation identity", "launch decision input unreadable", func(f *attemptFixture) {
 			f.coord.sessions = failingGetSessions{Service: f.env.sessions, failID: f.sessID}
 		}},
-		{"debt kinds", "debt kinds unreadable", func(f *attemptFixture) {
+		{"debt kinds", "launch decision input unreadable", func(f *attemptFixture) {
 			f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
 		}},
 	}

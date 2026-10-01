@@ -328,34 +328,15 @@ type coordinator struct {
 	// bool would be a silent trap for the next caller who adds a second
 	// SetPersistentMode call path — atomic.Bool costs nothing and keeps
 	// this field consistent with its neighbors under `go test -race`.
-	persistentMode         atomic.Bool
-	autoResumeMu           sync.Mutex     // guards consecutiveAutoResumes, bgShellOverCap and autoTurnsSuspended.
-	consecutiveAutoResumes map[string]int // sessionID -> consecutive bg-shell auto-resumes since last human message.
-	// bgShellOverCap holds, per session, the notice row ids of the bg-shell
-	// completions that arrived with every slot already spent (since the last
-	// human message): those rows stay deferred (bgshell_cap.go). A completion
-	// whose insert failed has no row and is not recorded.
-	bgShellOverCap map[string]map[int64]struct{}
+	persistentMode atomic.Bool
+	// arb is the turn arbiter's ONE mutable state (R-ARB-2, design sec.2.3):
+	// holds, suspension, the bg-shell cap and its over-cap set, the reaction
+	// chain, and the per-session launch gate -- one struct per session under
+	// one mutex. See turn_arbiter_state.go.
+	arb arbiter
 	// bgArrival makes a completion's "insert the notice row + claim/refuse a
 	// slot" one step relative to the cap check that reads both.
 	bgArrival ctxMutex
-	// autoTurnsSuspended is Stop's own per-session "automatic turns paused
-	// until the next human message" state, deliberately separate from the
-	// bg-shell cap counter above: filling that cap must not pause async-job/
-	// delegation/supervision wakes, and Stop must pause every kind.
-	autoTurnsSuspended map[string]struct{}
-	// turnHolds counts the reruns currently holding a session's automatic turns
-	// (HoldAutomaticTurns), guarded by autoResumeMu.
-	turnHolds map[string]int
-	// Reaction chain guard (#1113) state, guarded by autoResumeMu:
-	// consecutiveDrainLinks counts the consecutive Drain legs that only ran
-	// wait commands (sleep/echo) with no progress; reactionChainClaims holds
-	// the claim ids of every idle launch of the current chain, and
-	// reactionChainNoticed records the sessions the guard already warned
-	// about (one stderr line / one marker notice per episode).
-	consecutiveDrainLinks map[string]int
-	reactionChainClaims   map[string]map[string]struct{}
-	reactionChainNoticed  map[string]struct{}
 
 	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (the
 	// web process, and `rush run` through ClaimExternalDriver's ticker): a
@@ -453,22 +434,21 @@ func NewCoordinator(
 	}
 
 	c := &coordinator{
-		cfg:                    cfg,
-		sessions:               sessions,
-		messages:               messages,
-		permissions:            permissions,
-		history:                history,
-		filetracker:            filetracker,
-		prompt:                 p,
-		notify:                 notify,
-		background:             background,
-		mcpOwner:               mcpOwner,
-		agents:                 make(map[string]SessionAgent),
-		allSkills:              allSkills,
-		activeSkills:           activeSkills,
-		skillTracker:           skillTracker,
-		consecutiveAutoResumes: make(map[string]int),
-		modelCache:             newBoundedModelPairCache(modelCacheMaxEntries),
+		cfg:          cfg,
+		sessions:     sessions,
+		messages:     messages,
+		permissions:  permissions,
+		history:      history,
+		filetracker:  filetracker,
+		prompt:       p,
+		notify:       notify,
+		background:   background,
+		mcpOwner:     mcpOwner,
+		agents:       make(map[string]SessionAgent),
+		allSkills:    allSkills,
+		activeSkills: activeSkills,
+		skillTracker: skillTracker,
+		modelCache:   newBoundedModelPairCache(modelCacheMaxEntries),
 	}
 	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
 	// before.
@@ -583,36 +563,14 @@ func (c *coordinator) autonomyEnabled() bool {
 // for sessionID since the last human message (the cap counter only; Stop's
 // suspension is autoResumeSuspended).
 func (c *coordinator) consecutiveResume(sessionID string) int {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	return c.consecutiveAutoResumes[sessionID]
+	return c.arb.autoResumesOf(sessionID)
 }
 
-// bumpConsecutiveResume increments the auto-resume counter for sessionID.
-func (c *coordinator) bumpConsecutiveResume(sessionID string) {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	if c.consecutiveAutoResumes == nil {
-		c.consecutiveAutoResumes = make(map[string]int)
-	}
-	c.consecutiveAutoResumes[sessionID]++
-}
-
-// resetConsecutiveResume clears both the bg-shell cap counter and Stop's
-// suspension for sessionID. Called from the human send path so a human
-// re-entering the loop re-arms autonomy.
+// resetConsecutiveResume clears, in the arbiter's one state, everything a
+// human message re-arms: the bg-shell cap counter and its over-cap set, Stop's
+// suspension, the reaction chain, and the launch gate.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
-	c.autoResumeMu.Lock()
-	delete(c.consecutiveAutoResumes, sessionID)
-	delete(c.bgShellOverCap, sessionID)
-	delete(c.autoTurnsSuspended, sessionID)
-	c.resetReactionChainLocked(sessionID)
-	c.autoResumeMu.Unlock()
-	// A human message also reopens the Drain launch gate: the one thing that
-	// reopens EVERY dormant gate (a newer fact reopens only a failing pull's).
-	if c.asyncJobs != nil {
-		c.asyncJobs.resetDrainGate(sessionID)
-	}
+	c.arb.resetForHumanMessage(sessionID)
 }
 
 // ResetAutoResumeCounter is the exported wrapper around resetConsecutiveResume
@@ -623,26 +581,18 @@ func (c *coordinator) ResetAutoResumeCounter(sessionID string) {
 
 // suspendAutoResume implements doc sec.3.4's "after Stop, automatic turns
 // are suspended until the next human message": marks sessionID suspended so
-// both autoResumeEligible and drainPolicy refuse EVERY kind of
+// both autoResumeEligible and the arbiter (rule 4) refuse EVERY kind of
 // automatic turn until a human message (ResetAutoResumeCounter) clears it.
 // Kept apart from the bg-shell cap counter: that counter bounds only the SDK
 // background-shell auto-resume and must not pause other wakes when full.
 func (c *coordinator) suspendAutoResume(sessionID string) {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	if c.autoTurnsSuspended == nil {
-		c.autoTurnsSuspended = make(map[string]struct{})
-	}
-	c.autoTurnsSuspended[sessionID] = struct{}{}
+	c.arb.suspend(sessionID)
 }
 
 // autoResumeSuspended reports whether Stop suspended automatic turns for
 // sessionID and no human message has lifted it yet.
 func (c *coordinator) autoResumeSuspended(sessionID string) bool {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	_, ok := c.autoTurnsSuspended[sessionID]
-	return ok
+	return c.arb.suspended(sessionID)
 }
 
 // autoResumeEligible reports whether a finished background job should
@@ -658,44 +608,15 @@ func (c *coordinator) autoResumeEligible(sessionID string) bool {
 		c.consecutiveResume(sessionID) < maxConsecutiveAutoResumes
 }
 
-// claimAutoResume is autoResumeEligible plus the counter bump as ONE atomic
-// step: it reports whether a finished background shell may autonomously
-// resume the session and, if so, spends one of the maxConsecutiveAutoResumes
-// slots allowed per human message. The slot is spent at admission, before the
-// launch decision, so a paced or refused launch still spends it and its row
-// keeps being retried (bgShellCapDeferred tells it from an over-cap row). A
-// completion refused because every slot is spent is recorded by its notice
-// row id (bgShellOverCap), whatever else would have refused it; rowID 0 (the
-// insert failed: no row exists) records nothing. Nothing downstream re-checks
-// the cap for the completion's own launch, so at most that many completions
-// per human message launch a turn of their own (R2B-16). Called under
-// bgArrival (persistBGShellCompletion).
-func (c *coordinator) claimAutoResume(sessionID string, rowID int64) bool {
-	c.autoResumeMu.Lock()
-	defer c.autoResumeMu.Unlock()
-	if c.consecutiveAutoResumes[sessionID] >= maxConsecutiveAutoResumes {
-		if rowID != 0 {
-			if c.bgShellOverCap == nil {
-				c.bgShellOverCap = make(map[string]map[int64]struct{})
-			}
-			if c.bgShellOverCap[sessionID] == nil {
-				c.bgShellOverCap[sessionID] = make(map[int64]struct{})
-			}
-			c.bgShellOverCap[sessionID][rowID] = struct{}{}
-		}
-		return false
-	}
-	if !c.persistentMode.Load() || !c.autonomyEnabled() {
-		return false
-	}
-	if _, suspended := c.autoTurnsSuspended[sessionID]; suspended {
-		return false
-	}
-	if c.consecutiveAutoResumes == nil {
-		c.consecutiveAutoResumes = make(map[string]int)
-	}
-	c.consecutiveAutoResumes[sessionID]++
-	return true
+// claimAutoResumeSlot spends one of maxConsecutiveAutoResumes bg-shell
+// auto-resume slots for sessionID: the arbiter's ONE writer of the cap
+// (R2B-16). A completion refused for a spent cap is recorded by its notice
+// row id (rowID 0: the insert failed, nothing exists to defer); a
+// Stop-suspended session spends nothing. Called under bgArrival
+// (persistBGShellCompletion); eligible is the coordinator's own policy answer
+// (persistent web coordinator with AutoResumeOnJobDone on).
+func (c *coordinator) claimAutoResumeSlot(sessionID string, rowID int64, eligible bool) bool {
+	return c.arb.claimAutoResumeSlot(sessionID, rowID, eligible)
 }
 
 // SetAgentTimeoutOptions delegates to the current agent's SetTimeoutOptions.

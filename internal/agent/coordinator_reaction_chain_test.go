@@ -2,7 +2,7 @@
 // entire debt is their own idle launches' completions defer the session's
 // automatic turns. Counting happens in accountDrainAttempt (the ONE
 // accounting point of a leg), the verdict in drainPolicy/chainGuardDeferred,
-// and the counter lives in the coordinator -- NOT in drainGate/sessionJobs,
+// and the counter lives in the coordinator -- NOT in the launch gate,
 // which a successful reaction (rows.open == 0) resets with exactly the event
 // that masks the chain (the observed bug).
 package agent
@@ -77,7 +77,7 @@ func TestReactionChain_ThreeLinksDefer(t *testing.T) {
 
 // A successful reaction (rows.open == 0 -- the snapshot's rows are gone) does
 // NOT reset the count: closing the chain's own completions is the event that
-// masks it. Revert-check: moving the counter into resetDrainGate (or
+// masks it. Revert-check: moving the counter into the gate reset (or
 // resetting it on rows.open == 0) turns this red.
 func TestReactionChain_SuccessfulReactionDoesNotReset(t *testing.T) {
 	ctx := context.Background()
@@ -138,15 +138,15 @@ func TestReactionChain_SurvivesIdleSweep(t *testing.T) {
 	f.chainLink(ctx, "chain3", []string{c1, c2}, true, false)
 	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
 
-	// Make the ledger entry idle (no jobs, expired pause, zero streaks) and
-	// run the 60s pass's sweep two minutes ahead.
-	f.ledger.mu.Lock()
-	g := &f.ledger.sessionLocked(f.sessID).drain
-	g.retryAt = time.Now().Add(-time.Second)
-	g.freeStreak = 0
-	g.paidStreak = 0
-	f.ledger.mu.Unlock()
-	f.ledger.sweepIdleSessionsAt(time.Now().Add(2 * time.Minute))
+	// Give the session an expired pause (an otherwise idle arbiter entry)
+	// and run the 60s pass's sweeps. The guard's state (chainLinks) must
+	// keep the entry alive: an idle sweep frees only idle entries.
+	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
+		s.gate.RetryAt = time.Now().Add(-time.Second)
+	})
+	f.ledger.sweepIdleSessions()
+	f.coord.sweepArbiterEntries()
+	require.Equal(t, 3, f.coord.reactionChainCount(f.sessID), "the sweep must not free the guard's state")
 	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
 }
 
@@ -173,11 +173,9 @@ func TestReactionChain_WebWakeStopsAfterThree(t *testing.T) {
 	}
 	require.Equal(t, 1, markers, "exactly one marker notice")
 
-	// A human message re-arms: the debt gets its turn.
+	// A human message re-arms (gate cleared with everything else): the debt
+	// gets its turn.
 	f.coord.ResetAutoResumeCounter(f.sessID)
-	f.ledger.mu.Lock()
-	f.ledger.sessionLocked(f.sessID).drain.retryAt = time.Now().Add(-time.Second)
-	f.ledger.mu.Unlock()
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, false))
 	require.Eventually(t, func() bool { return runs.runs.Load() == 1 }, 10*time.Second, 5*time.Millisecond)
 }

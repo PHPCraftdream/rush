@@ -82,7 +82,8 @@ func (c *coordinator) stopTree(sessionID string) {
 		}
 		// Doc sec.3.4's web session policy: after a Stop, automatic turns
 		// are suspended until the next human message. The suspension is a
-		// per-session state of its own (autoTurnsSuspended), separate from
+		// per-session state of its own (the arbiter state's suspended
+		// flag), separate from
 		// the bg-shell cap counter; the human-message reset path
 		// (ResetAutoResumeCounter) clears both.
 		c.suspendAutoResume(id)

@@ -41,7 +41,7 @@ func cutOffDrainWithHandover(t *testing.T, title string, handover func(f *attemp
 	require.EqualValues(t, 2, f.requests.Load(), "the human message reached the provider")
 	row := f.row(ctx, "call-1")
 	require.EqualValues(t, 0, row.WakeAttempts, "a Drain cut off for a human message is not a paid attempt")
-	open, _, _ := f.ledger.drainGateOpen(f.sessID, time.Now())
+	open, _, _ := gateOpen(f.coord, f.sessID, time.Now())
 	require.True(t, open, "the gate the human message reopened stays open")
 	require.Zero(t, f.markers(ctx))
 }

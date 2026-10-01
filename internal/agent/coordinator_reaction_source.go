@@ -259,15 +259,16 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if !debt {
 		return state, nil
 	}
-	v := c.drainPermitted(ctx, sessionID, false)
-	if v.err != nil {
-		// An unreadable policy input is a read error the loop retries with a
+	v, _, err := c.arbiterVerdict(ctx, sessionID, siteCLI)
+	if err != nil {
+		// An unreadable launch input is a read error the loop retries with a
 		// pause, never a silent exit.
-		return CLIScopeState{}, v.err
+		return CLIScopeState{}, err
 	}
-	state.RetryAt, state.Reason = v.retryAt, v.reason
-	state.ChainGuard = v.kind == drainDeferred && v.reason == reactionChainReason
-	switch v.kind {
+	dv := drainVerdictOf(v)
+	state.RetryAt, state.Reason = dv.retryAt, dv.reason
+	state.ChainGuard = dv.kind == drainDeferred && dv.reason == reactionChainReason
+	switch dv.kind {
 	case drainAllow:
 		state.Drain = DrainOwed
 	case drainPaced:

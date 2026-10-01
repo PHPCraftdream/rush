@@ -41,3 +41,45 @@ func TestRerunHold_DefersAutomaticTurnsUntilRelease(t *testing.T) {
 	require.EqualValues(t, 1, f.row(ctx, "call-1").Reacted)
 	require.False(t, f.coord.automaticTurnsHeld(f.sessID))
 }
+
+// P1-2 of the R-ARB-2 review: a human message (ResetAutoResumeCounter) must
+// not erase a rerun's hold -- the hold is the rerun's own, taken on cancel and
+// idle-poll, and Send/Inject/InterruptAndSend/resume race it. With a hold
+// alive, a launch decision over debt still reads paced "rerun in progress".
+//
+// Revert-check: restoring `*s = arbiterState{}` in resetForHumanMessage (the
+// pre-P1-2 reset) drops the hold and this verdict turns into allow -- red.
+func TestRerunHold_SurvivesTheHumanMessageReset(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "rerun-hold-reset", attemptFixtureOpts{})
+	f.seedDebt(ctx, "call-1", false)
+
+	release := f.coord.HoldAutomaticTurns(f.sessID)
+	defer release()
+	f.coord.ResetAutoResumeCounter(f.sessID)
+
+	v := f.coord.drainPermitted(ctx, f.sessID, false)
+	require.Equal(t, drainPaced, v.kind, "the hold survives the reset")
+	require.Equal(t, "rerun in progress", v.reason)
+	require.True(t, f.coord.automaticTurnsHeld(f.sessID))
+}
+
+// Nested holds: a reset between two holds keeps BOTH; releasing A does not
+// release B; the entry dies with the last release.
+//
+// Revert-check: the pre-P1-2 reset (or a release that ignores nesting) turns
+// one of the three held-assertions red.
+func TestRerunHold_NestedHoldsSurviveTheHumanMessageReset(t *testing.T) {
+	f := newAttemptFixture(t, "rerun-hold-nested-reset", attemptFixtureOpts{})
+
+	releaseA := f.coord.HoldAutomaticTurns(f.sessID)
+	f.coord.ResetAutoResumeCounter(f.sessID)
+	releaseB := f.coord.HoldAutomaticTurns(f.sessID)
+	require.True(t, f.coord.automaticTurnsHeld(f.sessID))
+
+	releaseA()
+	require.True(t, f.coord.automaticTurnsHeld(f.sessID), "release A must not drop B")
+
+	releaseB()
+	require.False(t, f.coord.automaticTurnsHeld(f.sessID))
+}

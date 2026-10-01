@@ -86,18 +86,19 @@ func TestRunInternal_DrainIsOneAttempt(t *testing.T) {
 func TestDrainRefused_TypedAndPacesOnlyDrainCalls(t *testing.T) {
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(nil)
+	coord.asyncJobs.coord = coord // the gate lives in the coordinator's arbiter
 	cause := errModelProviderNotConfigured
 
 	err := coord.drainRefused(t.Context(), "s-ordinary", cause)
 	require.ErrorIs(t, err, cause)
 	require.False(t, IsDrainNotAttempted(err))
-	open, _, _ := coord.asyncJobs.drainGateOpen("s-ordinary", time.Now())
+	open, _, _ := gateOpen(coord, "s-ordinary", time.Now())
 	require.True(t, open, "an ordinary call leaves the gate alone")
 
 	err = coord.drainRefused(WithDrainCall(t.Context()), "s-drain", cause)
 	require.ErrorIs(t, err, cause, "the refusal stays reachable")
 	require.True(t, IsDrainNotAttempted(err))
-	open, _, _ = coord.asyncJobs.drainGateOpen("s-drain", time.Now())
+	open, _, _ = gateOpen(coord, "s-drain", time.Now())
 	require.False(t, open, "a refused Drain paces the gate")
 
 	require.NoError(t, coord.drainRefused(WithDrainCall(t.Context()), "s-drain", nil))

@@ -239,7 +239,7 @@ map в одну структуру, не двигая владельца.
 | 10 | `Gate.FreeStreak >= D` | как 8, но `ReopenOnHint: true` | R3B-4 |
 | 11 | `Site ∈ {siteTick, siteRelease, siteCommit, siteCLI}` (не тратит слот) и `AutonomyEnabled` и `Debt.OverCapRows > 0 && OverCapRows покрывает весь bg-shell долг` | `VDefer{"bg-shell cap"}` | R3B-6, (aa) |
 | 12 | `!AutonomyEnabled && Debt.BGShellOnly` | `VDefer{"auto-resume off"}` | §3.4 таблица |
-| 13 | иначе | `VRun{Counted: Site == siteFact}` | §3.4 |
+| 13 | иначе | `VRun` (`Counted` — описательное поле: повторяет сайт; слот тратится в точке прихода, не исполнением `VRun`) | §3.4 |
 
 Правила стороны учёта (`Site == siteAccount` — вызывает `accountDrainAttempt`
 после конца ноги, снимок и ошибка хода в фактах):
@@ -249,6 +249,7 @@ map в одну структуру, не двигая владельца.
 | A1 | попытка не дошла до провайдера (отказ в допуске) | `VDefer{refused, R (CLI root — 0.5s в бюджете 30s), ReopenOnHint: true}`; не считается | 
 | A2 | нет хода, `PendingIncl` остался (перенос падает) | пауза R, `ReopenOnHint: true`, recheck; `FreeStreak++` |
 | A3 | нет хода, долга нет вовсе | сброс гейта |
+| A3' | нет хода, коммит отказан при видимом долге (paced/stuck-гейт, hold, суспензия, цепочка, капа, чужой ведущий, нечитаемый вход) | гейт НЕ трогается (P1-1 ревью R-ARB-2); recheck по `commitNo.recheck`, как старая ветка `default` |
 | A4 | ход, исключение (Ctrl-C/Stop/дедлайн контекста хода/лимит сработки caps) | ничего (не считается) | 
 | A5 | ход, `max wake_attempts(sнимка) == 0` (все отреагировали) | сброс гейта, `ChainLinks = 0` |
 | A6 | ход, строка достигла K своими попытками или терминальный класс | `VClose{Rows: строки с K или все при терминальном}`; после закрытия — если долг остался, пауза R (`ReopenOnHint: false`) |
@@ -260,9 +261,13 @@ map в одну структуру, не двигая владельца.
   (`coordinator.go:673`) решает «тратить ли слот», `bgShellCapDeferred`
   («отложен ли долг поверх капы») — та же капа второй раз, с другим
   ответом (deferred). В таблице это одна строка (11): сравнение капы —
-  часть вердикта, трата слота — единственный побочный эффект `VRun` с
-  `Counted`. Трата фиксируется писателем арбитра при выдаче `VRun`, а не
-  отдельной функцией на пути запуска.
+  часть вердикта. Трата слота остаётся в точке прихода завершения
+  (`persistBGShellCompletion` → `claimAutoResumeSlot`, под `bgArrival` —
+  утверждено ревью R-ARB-2): перенос её на исполнение `VRun{Counted}`
+  сломал бы ASYNC-09 — завершение, пришедшее при закрытом гейте, не
+  тратило бы слот, и правило 11 потеряло бы over-cap множество, которым
+  оно измеряется. Поле `Verdict.Counted` — описательное (повторяет сайт),
+  исполнители его не читают.
 - **Дубликат: paced без часов vs deferred+recheck.** Удержание Rerun
   (R3C-5) принудительно делают `drainPaced`, потому что `deferred` читается
   потребителями как «долг можно бросить». В вердикте это одно значение
@@ -350,8 +355,9 @@ cancel}), human message, process restart}; инварианты после ка�
 2. Читатели: `drainPolicy`/`drainPermitted`/`drainDecision`/`decideDrainTurn`/
    `CLIScope` сводятся к `readTurnFacts` + `decide` (+ перевод вердикта в
    локальные перечисления, где тип уже публичный — `CLIScopeState`).
-3. `claimAutoResume`/`bgShellCapDeferred` удаляются; трата слота — побочный
-   эффект `VRun{Counted: true}` (одна точка).
+3. `claimAutoResume`/`bgShellCapDeferred` удаляются; трата слота остаётся в
+   точке прихода завершения (`claimAutoResumeSlot` под `bgArrival`,
+   утверждено); `VRun.Counted` — описательное поле, не побочный эффект.
 4. `chainGuardDeferred` остаётся только как исполнитель маркера (вставка
    уведомления — I/O, арбитр её не делает); условие — строка 5 таблицы.
 5. Сборка/ветер/тесты затронутых пакетов, затем полный прогон
@@ -393,7 +399,8 @@ cancel}), human message, process restart}; инварианты после ка�
 - «Вердикт без запускателя / запускатель без вердикта» (R6B-1 P1, R2B-17):
   свойство §4 проверяется моделью, а не перечислением путей.
 - «Капа посчитана дважды / не посчитана» (R2B-16, R3B-6, (aa)): у капы один
-  читатель (строка 11) и один писатель (побочный эффект `VRun`).
+  читатель (строка 11) и один писатель — точка прихода завершения
+  (`claimAutoResumeSlot` под `bgArrival`).
 - «Hint, скормленный не-фактом, открыл гейт» (R2B-1…): `HintNow` — часть
   фактов, bump — только у `siteFact`, правило 9 — явное.
 - «Состояние забыто или утекло» (R3B-8): один владелец, одна уборка.
@@ -475,3 +482,119 @@ cancel}), human message, process restart}; инварианты после ка�
 4. **Вопросы 1–4:** принять рекомендации документа (суспензия/удержание в
    памяти; три «3» не унифицировать; `VClose` решает арбитр, исполняет учёт;
    правило 5 выше 6).
+
+## Итог R-ARB-2 (2026-10-01, ветка `rarb2`)
+
+Перевод выполнен; поведение не менялось (оракул — код, решение §9.2).
+
+**Состояние.** Все семь map координатора (`consecutiveAutoResumes`,
+`bgShellOverCap`, `autoTurnsSuspended`, `turnHolds`, `consecutiveDrainLinks`,
+`reactionChainClaims`, `reactionChainNoticed`) и гейт `drainGate` в
+`workLedger` удалены; всё живёт в `arbiterState` под одним мьютексом
+(`internal/agent/turn_arbiter_state.go`), одна запись на сессию. Уборка
+R3B-8 одна: `sweepArbiterEntries(At)` в `RecheckPass` (идл-записи) плюс
+удаление целиком для удалённых сессий (`sweepDeletedSessionState`).
+`recheckMu/recheckSet` — не состояние решения, остаются.
+
+**Читатели.** `drainPolicy`/`drainPermitted`/`drainDecision`/`decideDrainTurn`/
+`CLIScope` — тонкие адаптеры над `readTurnFacts` + `decide` с отображением
+вердикта в прежние перечисления (`drainVerdictOf`: held/пауза гейта → paced,
+dormant → stuck, чужой ведущий → deferred+recheck, остальное → deferred без
+тика; `VNone`/`VRun` → allow). `claimAutoResume`/`bgShellCapDeferred`/
+`drainGateOpen`/`drainPolicy`-ветки удалены; предохранитель цепочки —
+правило 5, `chainGuardDeferred` остался только исполнителем маркера
+(`chainGuardMarker`).
+
+**Трата слота.** Оставлена точкой прихода завершения
+(`persistBGShellCompletion` → `claimAutoResumeSlot`, логика прежнего
+`claimAutoResume` внутри арбитра) — УТВЕРЖДЕНО ревью от 2026-10-01
+(`docs/reviews/2026-10-01-r-arb-2-review.md`): перенос траты на исполнение
+`VRun{Counted}` сломал бы связь ASYNC-09 — завершение, пришедшее при
+закрытом гейте, не тратило бы слот, и правило 11 потеряло бы over-cap
+множество, которым оно измеряется. Поле `Verdict.Counted` объявлено
+описательным (комментарий: повторяет сайт, исполнители не читают) — не
+удалено, его читают тест правила 13 и тень. Писатель капы один
+(`claimAutoResumeSlot`); после P1-3 (устранена подрезка из `readTurnFacts`)
+писатель и множества over-cap тоже один — утверждение теперь верно.
+
+**Расхождения тени (шаг 0):** две ветки делегации не были покрыты
+(`TestShadow_RunningDelegationChild`, `TestShadow_ReleasedDelegationChild`);
+расхождений нет (все прогоны зелёные). Одно уточнение фактов:
+`DurableChild` читается и при идущей делегации (условие в `readTurnFacts`
+смотрит только на `ExternallyDrivenSelf`, который в БД-половине ещё
+нулевой) — на вердикт не влияет (правило 7 требует `!RunningDelegation`),
+оставлено как есть.
+
+**Тесты.** Тесты, трогавшие удалённые поля, переведены на наблюдаемое через
+единственный конструктор (`internal/agent/turn_arbiter_testhelpers_test.go`:
+`seedArbiterState`, `setOverCap`, `setReactionChain`, `gateOpen`,
+`capDeferred`); утверждения на поведение (вердикт, число запросов, строки
+БД, счётчики) не ослаблены. Тень стала тавтологией (переведённый путь сам
+считает `decide`) и оставлена как регрессионный тест пути: сравнение
+`decide(facts)` с `drainPermitted` сохранено, обязательные утверждения — на
+слова вердикта пути.
+
+**Известные микро-расхождения окна гонки** (два чтения раньше, одно сейчас):
+`drainDecision` без долга больше не консультирует гейт (раньше мог ответить
+paced на исчезнувший долг) — допустимо (решение ревью: `drainPolicy`
+повторно вызывает `decide` с `PendingIncl=true`; остаток — узкое безвредное
+окно). Второе («`PendingLeft=false` и непустой снимок») оказалось дефектом
+P1-1 и исправлено ниже.
+
+**Исправленные P1 ревью от 2026-10-01**
+(`docs/reviews/2026-10-01-r-arb-2-review.md`):
+
+- **P1-1. No-turn при видимом долге сбрасывал гейт.** Теперь отказ коммита
+  при непустом снимке — отдельный исход `AttemptFacts.CommitRefused`
+  (строка A3' таблицы §3): `decideAccount` отвечает `VNone "commit refused:
+  gate untouched"`, исполнитель гейт не трогает и возвращает сессию в
+  recheck-набор по `commitNo.recheck` (как старая ветка `default`). Тесты:
+  `TestDecideAccount_RowsA1toA7` (случай A3'),
+  `TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks` (-paced-гейт
+  переживает учёт, серия цела, sid в recheckSet; отказ без recheck не
+  добавляет запись).
+- **P1-2. Сообщение человека стирало удержание rerun.**
+  `resetForHumanMessage` сохраняет `holds`; запись удаляется только при
+  holds==0. Тесты: `TestRerunHold_SurvivesTheHumanMessageReset`
+  (`HoldAutomaticTurns` → `ResetAutoResumeCounter` → `drainPermitted` при
+  долге остаётся paced «rerun in progress»),
+  `TestRerunHold_NestedHoldsSurviveTheHumanMessageReset` (hold A → reset →
+  hold B → release A не снимает B).
+- **P1-3. Over-cap множество подрезалось по устаревшему чтению.**
+  `readTurnFacts` теперь берёт `bgArrival` ДО чтения строк долга: и
+  `BGShellNotices`, и `OverCapRows` — из ОДНОГО `PendingInclusiveDebtRows`
+  (Kind там есть, `PendingInclusiveDebtSummary` из чтения фактов удалён);
+  подрезка `retainOverCap` из чтения убрана (достаточно подрезки в точке
+  прихода под `bgArrival`), функция удалена. Комментарий чтения и строка
+  ASYNC-09 поправлены. Тесты: `TestBGShellCap_OverCapCompletionInTheSeamIsKeptAndDefers`
+  (детерминированный шов `readTurnFactsGateSeam` между БД-половиной и
+  гейтом: завершение сверх капы в шве сохраняет пометку, решение — defer,
+  не VRun); `TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed`
+  оракул возвращён (гейт держится тестом, проверка блокируется ДО чтений —
+  раньше тест проходил из-за отменённого ctx на первом DB-чтении);
+  `TestBGShellCapDeferred_PrunesOverCapIDsThatLeftTheDebt` переписан на
+  наблюдаемый вердикт (`TestBGShellCapDeferred_FollowsTheDurableDebt`) —
+  он проверял удалённую читающую подрезку.
+
+**P2/P3 ревью** — перенесены в бэклог дизайна арбитра (ниже), в этом цикле
+не чинились (Review Stop Rule).
+
+### Бэклог дизайна арбитра (P2/P3 ревью R-ARB-2, не чинить без нового P0/P1)
+
+- P2: уборка ledger больше не держит запись при живом гейте
+  (`coordinator_session_state_sweep.go`), HintSeen живёт в арбитре — после
+  уборки hintSeq обнуляется, free-dormant гейт может проигнорировать первый
+  факт или открыться без факта; комментарий «harmless» неверен.
+- P2: гейт (8–10) теперь раньше 11/12: прежний deferred становится
+  paced/stuck; в CLI вместо Deferred-выхода — ожидание до RetryAt или
+  Stuck-выход с ошибкой. Буква §9.1, но противоречит §9.2/§7.
+- P2: тень тавтологична — учёт и переходы состояния (reset, sweep, hold) со
+  старым кодом не сравнивались; «расхождений нет» по §9.3 не обосновано.
+- P3: CLIScope и decideDrainTurn не ставят маркер цепочки.
+- P3: `readTurnFacts` читает всё безусловно — новые fail-closed поверхности
+  для CLI-корня.
+- P3: глобальный `bgArrival` на каждом решении — конкуренция между сессиями.
+- P3: ветвление по строкам Reason хрупкое; причины нечитаемого входа слиты в
+  одну строку.
+- P3: тестовый `bumpConsecutiveResume` отказывает при суспензии и на капе.
+- P3: `chainLink` плодит пустые записи арбитра.
