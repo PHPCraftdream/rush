@@ -1,0 +1,1 @@
+Schedule a one-shot wake-up after a delay. Rush will deliver "message" as a new session event once delay_seconds has elapsed, and resume you. Use wake_list to see active schedules, wake_cancel to cancel one. Do not poll — the wake arrives on its own.

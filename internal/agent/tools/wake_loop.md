@@ -1,0 +1,1 @@
+Schedule a recurring wake-up every every_seconds. Each occurrence delivers "message" as a new session event. Optional max_runs and/or until stop it automatically; wake_cancel stops it manually at any time. Minimum interval is 5 minutes. Missed occurrences during downtime are skipped, not replayed — you get exactly one catch-up wake, not one per missed interval.

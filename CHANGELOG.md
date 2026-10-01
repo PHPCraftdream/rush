@@ -22,6 +22,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Wake tools (stage 4c)**: `wakein`, `wakeon`, `loop`, `wake_list` and
+  `wake_cancel` (wake-tools contract §1). The coder (and the root session)
+  can schedule one-shot delays, absolute RFC3339 wake-ups (explicit zone
+  required, past is a validation error) and recurring loops (minimum 5
+  minutes, optional `max_runs`/`until`); list only its own active
+  schedules; and cancel by `schedule_id` (a repeat or a foreign id returns
+  the same "not found" error, never a disguised success). Limit: 20 active
+  schedules per session. Every successful create/cancel recomputes the
+  stage-4b worker's timer; in sessions without the worker the tools answer
+  with an honest "scheduler unavailable" error. Fired occurrences carry the
+  §5.1 texts (`Wake ... fired (scheduled for ...)`, loop occurrences with
+  their `of <max_runs>` bound) as `wake_fired` notices — system events, not
+  human messages. Task agents get none of the five. New invariant SCHED-09
+  in `docs/async-invariants.md`.
+
 - **Wake-schedule worker (stage 4b)**: a single per-process timer
   (`internal/agent/wake_scheduler.go`) over the `wake_schedules` store:
   sleeps until the nearest due schedule, recovers expired leases on start,

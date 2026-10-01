@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -141,8 +142,14 @@ func insertWakeFiredNotice(ctx context.Context, q *db.Queries, row db.WakeSchedu
 		if next != nil {
 			nextPart = next.Format(time.RFC3339)
 		}
-		text = fmt.Sprintf("Loop %s occurrence %d fired: %s\n\nNext occurrence: %s.",
-			row.ID, fireNo, row.Message, nextPart)
+		// §5.1's "of {max_runs_or_infinity}": the bound the loop counts
+		// toward, so the model can tell how far along the loop is.
+		maxPart := "infinity"
+		if row.MaxRuns.Valid {
+			maxPart = strconv.FormatInt(row.MaxRuns.Int64, 10)
+		}
+		text = fmt.Sprintf("Loop %s occurrence %d of %s fired: %s\n\nNext occurrence: %s.",
+			row.ID, fireNo, maxPart, row.Message, nextPart)
 	}
 	if _, err := q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
 		Owner: row.OwnerSessionID, Kind: NoticeKindWakeFired, Text: text,

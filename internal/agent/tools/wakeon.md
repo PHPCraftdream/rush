@@ -1,0 +1,1 @@
+Schedule a one-shot wake-up at a specific RFC3339 timestamp (offset or Z required). Same delivery as wakein, just an absolute time instead of a delay. A past timestamp is a validation error, not an immediate fire.
