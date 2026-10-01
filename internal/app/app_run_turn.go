@@ -61,7 +61,7 @@ func runAgentTurnRecovered(
 	result, err := runFn(ctx, sessionID, prompt)
 	if err != nil {
 		done <- agentTurnResponse{
-			err: fmt.Errorf("failed to start agent processing stream: %w", err),
+			err: fmt.Errorf("failed to start agent processing stream: %w", agent.LocalizeResetError(err)),
 		}
 		return
 	}
@@ -143,7 +143,7 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 			slog.Error("run: DrainSessionNow reported a partial/failed drain with a nil error -- contract violation, treating as failure", "session_id", sessID, "result", result.String())
 			return fmt.Errorf("%w (session=%s)", session.ErrDrainFailureUnspecified, sessID)
 		}
-		return drainErr
+		return agent.LocalizeResetError(drainErr)
 	case session.DrainNoWork:
 		// Nothing ran here. This case covers BOTH the shapes task
 		// #624/F-5 distinguishes: a call that never observed a same-pump

@@ -226,9 +226,13 @@ func (ts *turnStream) handleStreamFailure(
 			// line, don't hide the underlying text" pattern. ok=false
 			// (not a quota wall, or no parseable reset hint) leaves the
 			// message exactly as before -- graceful degradation, no panic.
-			details := providerErr.Message
-			if guidance, ok := QuotaLimitGuidance(err); ok {
-				details = fmt.Sprintf("%s\n\n%s", providerErr.Message, guidance)
+			// An inline stamp is rewritten in place (one reset, one time);
+			// the extra line is only for resets that came from headers.
+			details := LocalizeResetHint(providerErr.Message, time.Now())
+			if details == providerErr.Message {
+				if guidance, ok := QuotaLimitGuidance(err); ok {
+					details = fmt.Sprintf("%s\n\n%s", providerErr.Message, guidance)
+				}
 			}
 			ts.currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), details)
 		}
@@ -254,7 +258,7 @@ func (ts *turnStream) handleStreamFailure(
 		// R2-5: this generic finish is the diagnostic path that persists
 		// raw error text into the transcript's finish details; redact
 		// URL secrets (userinfo/query) before it lands on disk.
-		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, redactNetworkURLs(err.Error()))
+		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, redactNetworkURLs(LocalizeResetHint(err.Error(), time.Now())))
 	}
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()

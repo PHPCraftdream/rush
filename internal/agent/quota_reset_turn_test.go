@@ -108,10 +108,9 @@ func TestRun_QuotaLimitFinishShowsLocalTime(t *testing.T) {
 	finish := assistant.FinishPart()
 	require.NotNil(t, finish)
 	assert.Equal(t, message.FinishReasonError, finish.Reason)
-	// The raw provider message is kept for diagnostic value...
-	assert.Contains(t, finish.Details, "Your limit will reset at 2026-06-17 14:49:28")
-	// ...with an ADDED local-time line, not a replacement.
-	assert.Contains(t, finish.Details, "Limit resets:")
+	// The reset stamp is rewritten in place to local time (no raw remote
+	// stamp, no second "Limit resets:" line).
+	assert.Contains(t, finish.Details, "Your limit will reset at")
 	// The z.ai stamp has no offset marker -- parsed as fixed CST (UTC+8),
 	// then converted to local, exactly like QuotaLimitGuidance's own
 	// production code path. Computed independently here (not sliced out

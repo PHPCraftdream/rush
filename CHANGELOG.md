@@ -10,6 +10,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Limit reset time in machine-local time**: a provider's zone-less
+  "limit will reset at <stamp>" hint (z.ai, CST) is now rewritten to the
+  machine's zone with an offset and a countdown in `rush run` stderr, the
+  JSON envelope `error` and the turn's finish message, instead of showing
+  the remote server's wall clock.
+
 - **CLI wake-schedule lifetime (stage 5a, #1106)**: a ONE-SHOT wake timer
   (`wakein`/`wakeon`) now holds `rush run` open — the process waits for the
   fire, reacts to the `wake_fired` event and exits as usual; `--timeout`, the

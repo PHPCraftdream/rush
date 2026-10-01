@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -106,4 +108,34 @@ func TestRunAgentTurnRecovered_Success(t *testing.T) {
 	resp := <-done
 	require.NoError(t, resp.err)
 	assert.Same(t, want, resp.result)
+}
+
+// TestRunAgentTurnRecovered_LocalizesResetHint: the stream-start error that
+// feeds stderr and the envelope `error` shows the provider's reset hint in
+// machine-local time, while errors.As still reaches the provider error.
+func TestRunAgentTurnRecovered_LocalizesResetHint(t *testing.T) {
+	old := time.Local
+	time.Local = time.FixedZone("TEST", 2*3600)
+	t.Cleanup(func() { time.Local = old })
+
+	pe := &fantasy.ProviderError{StatusCode: 429, Message: "Usage limit reached for 5 hour. Your limit will reset at 2026-10-01 20:34:01"}
+	failing := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
+		return nil, fmt.Errorf("retry error: too many requests: %w", pe)
+	}
+	done := make(chan agentTurnResponse, 1)
+	runAgentTurnRecovered(t.Context(), "sess-4", "prompt", failing, done)
+	resp := <-done
+	require.Error(t, resp.err)
+
+	assert.NotContains(t, resp.err.Error(), "20:34:01")
+	assert.Contains(t, resp.err.Error(), "2026-10-01 14:34:01 +02:00")
+	var back *fantasy.ProviderError
+	assert.True(t, errors.As(resp.err, &back))
+
+	// The envelope path: buildRunResult renders the run error as .error.
+	res := buildRunResult("s1", "", "", "", resp.err, false, nil, 0, 0, time.Second, "", "", 0, "", "", nil, "")
+	assert.Contains(t, res.Error, "2026-10-01 14:34:01 +02:00")
+	assert.NotContains(t, res.Error, "20:34:01")
+	inc := &runIncompleteError{reason: "error", detail: res.Error, cause: resp.err}
+	assert.NotContains(t, inc.Error(), "20:34:01", "stderr text")
 }

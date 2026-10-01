@@ -126,21 +126,95 @@ func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
 // without a zone — by convention CST (UTC+8).
 var zaiResetRe = regexp.MustCompile(`limit will reset at\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})`)
 
-func parseZAIResetHint(text string) (time.Time, bool) {
-	m := zaiResetRe.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return time.Time{}, false
+// resetOffsetRe matches an explicit zone marker right after a stamp, i.e. a
+// stamp that is already localized (or otherwise zone-qualified).
+var resetOffsetRe = regexp.MustCompile(`^ ?(?:[+-]\d{2}:?\d{2}|Z)`)
+
+const (
+	zaiResetLayout   = "2006-01-02 15:04:05"
+	localResetLayout = zaiResetLayout + " -07:00"
+)
+
+// zaiResetStamp finds the hint in text: the stamp's byte span (including an
+// offset marker when present), the parsed time, and whether the stamp
+// already carried an offset. The single owner of the no-marker zone
+// convention (CST, UTC+8).
+func zaiResetStamp(text string) (start, end int, t time.Time, qualified, ok bool) {
+	m := zaiResetRe.FindStringSubmatchIndex(text)
+	if m == nil {
+		return 0, 0, time.Time{}, false, false
 	}
-	stamp := strings.ReplaceAll(m[1], "T", " ")
+	start, end = m[2], m[3]
+	stamp := strings.ReplaceAll(text[start:end], "T", " ")
+	if raw := resetOffsetRe.FindString(text[end:]); raw != "" {
+		off := strings.TrimSpace(raw)
+		switch {
+		case off == "Z":
+			off = "+00:00"
+		case !strings.Contains(off, ":"):
+			off = off[:3] + ":" + off[3:]
+		}
+		pt, err := time.Parse(localResetLayout, stamp+" "+off)
+		if err != nil {
+			return 0, 0, time.Time{}, false, false
+		}
+		return start, end + len(raw), pt, true, true
+	}
 	// Fixed CST zone — z.ai's API surface is anchored there. Using a fixed
 	// offset (no historical DST table) is exactly right for a wall-clock
 	// stamp like this one.
 	cst := time.FixedZone("CST", 8*3600)
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", stamp, cst)
+	pt, err := time.ParseInLocation(zaiResetLayout, stamp, cst)
 	if err != nil {
-		return time.Time{}, false
+		return 0, 0, time.Time{}, false, false
 	}
-	return t, true
+	return start, end, pt, false, true
+}
+
+func parseZAIResetHint(text string) (time.Time, bool) {
+	_, _, t, _, ok := zaiResetStamp(text)
+	return t, ok
+}
+
+// LocalizeResetHint rewrites a provider's zone-less "limit will reset at
+// <stamp>" hint (z.ai: CST) in text to machine-local time with an explicit
+// offset, plus a countdown while the reset is still ahead of now. Text
+// without a hint, or whose stamp already carries an offset, is returned
+// unchanged, so applying it twice is a no-op.
+func LocalizeResetHint(text string, now time.Time) string {
+	start, end, t, qualified, ok := zaiResetStamp(text)
+	if !ok || qualified {
+		return text
+	}
+	local := t.Local()
+	out := local.Format(localResetLayout)
+	if d := local.Sub(now); d > 0 {
+		out += " (in " + FormatResetDuration(d) + ")"
+	}
+	return text[:start] + out + text[end:]
+}
+
+// localizedResetError carries err with its reset hint already rewritten to
+// local time; errors.Is/As still reach err.
+type localizedResetError struct {
+	err  error
+	text string
+}
+
+func (e *localizedResetError) Error() string { return e.text }
+func (e *localizedResetError) Unwrap() error { return e.err }
+
+// LocalizeResetError returns err whose text shows the reset hint in local
+// time (see LocalizeResetHint); err itself when there is nothing to rewrite.
+func LocalizeResetError(err error) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	if loc := LocalizeResetHint(text, time.Now()); loc != text {
+		return &localizedResetError{err: err, text: loc}
+	}
+	return err
 }
 
 // FormatResetDuration humanises a positive countdown — "4h12m07s" reads
