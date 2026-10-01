@@ -29,8 +29,12 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 	if err != nil {
 		slog.Warn("notice pull: listing pending async job notices failed", "session_id", sessionID, "err", err)
 	}
+	// claims[i] is the async_jobs claim id of pulled[i] ("" for a
+	// session_notices row): the reaction chain guard's key (#1113).
+	claims := make([]string, 0, len(jobPulled))
 	for _, p := range jobPulled {
 		pulled = append(pulled, p.Message)
+		claims = append(claims, p.ClaimID)
 	}
 
 	noticePulled, err := store.PullSessionNotices(ctx, a.messages, sessionID, buildSessionNoticeMessageParams)
@@ -39,15 +43,24 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 	}
 	for _, p := range noticePulled {
 		pulled = append(pulled, p.Message)
+		claims = append(claims, "")
 	}
 	// Doc sec.3.4: moving a notice into history is progress for the
 	// supervision countdown -- except a supervision check-in itself, which
-	// must not reset the backoff it just grew.
-	for _, m := range pulled {
-		if m.NoticeKind != noticeKindSupervision {
-			a.asyncJobs.recordProgress(sessionID)
-			break
+	// must not reset the backoff it just grew, and a completion of the
+	// reaction chain guard's own idle launches (#1113): a supervision tick
+	// that drains such a completion must not reset the backoff either, or
+	// the no-progress pause after 6 ticks never arrives.
+	coord := a.asyncJobs.coord
+	for i, m := range pulled {
+		if m.NoticeKind == noticeKindSupervision {
+			continue
 		}
+		if coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {
+			continue
+		}
+		a.asyncJobs.recordProgress(sessionID)
+		break
 	}
 	return pulled
 }

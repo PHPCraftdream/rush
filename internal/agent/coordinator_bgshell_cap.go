@@ -120,7 +120,7 @@ func (c *coordinator) pruneBGShellOverCap(sessionID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recheckDebtCheckBudget)
 	defer cancel()
-	_, notices, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
+	_, notices, _, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
 	if err != nil {
 		return
 	}
@@ -155,7 +155,7 @@ func (c *coordinator) bgShellCapDeferred(ctx context.Context, sessionID string) 
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false, nil
 	}
-	hasJobDebt, notices, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
+	hasJobDebt, notices, _, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
 	if err != nil {
 		return false, err
 	}

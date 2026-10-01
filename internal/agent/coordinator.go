@@ -347,6 +347,15 @@ type coordinator struct {
 	// turnHolds counts the reruns currently holding a session's automatic turns
 	// (HoldAutomaticTurns), guarded by autoResumeMu.
 	turnHolds map[string]int
+	// Reaction chain guard (#1113) state, guarded by autoResumeMu:
+	// consecutiveDrainLinks counts the consecutive Drain legs that only ran
+	// wait commands (sleep/echo) with no progress; reactionChainClaims holds
+	// the claim ids of every idle launch of the current chain, and
+	// reactionChainNoticed records the sessions the guard already warned
+	// about (one stderr line / one marker notice per episode).
+	consecutiveDrainLinks map[string]int
+	reactionChainClaims   map[string]map[string]struct{}
+	reactionChainNoticed  map[string]struct{}
 
 	// recheckMu/recheckSet back doc sec.3.4 rule (b)/sec.3.5's 60s pass (the
 	// web process, and `rush run` through ClaimExternalDriver's ticker): a
@@ -597,6 +606,7 @@ func (c *coordinator) resetConsecutiveResume(sessionID string) {
 	delete(c.consecutiveAutoResumes, sessionID)
 	delete(c.bgShellOverCap, sessionID)
 	delete(c.autoTurnsSuspended, sessionID)
+	c.resetReactionChainLocked(sessionID)
 	c.autoResumeMu.Unlock()
 	// A human message also reopens the Drain launch gate: the one thing that
 	// reopens EVERY dormant gate (a newer fact reopens only a failing pull's).

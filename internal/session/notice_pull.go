@@ -53,6 +53,11 @@ const (
 	// invariant); callers building the notice message must map this kind to
 	// "" themselves.
 	NoticeKindBGShellDone = "bg_shell_done"
+	// NoticeKindReactionChain is the marker persisted once when the reaction
+	// chain guard (#1113) stops a session's automatic turns: like
+	// wake_failed it describes an outcome, so Rerun voids it instead of
+	// re-pending it.
+	NoticeKindReactionChain = "reaction_chain"
 )
 
 // JobNoticeRow is what a pulled async_jobs row hands its caller's build
@@ -60,8 +65,11 @@ const (
 // row itself (tool_name/timeout_seconds, step 3) rather than recomputed
 // elsewhere.
 type JobNoticeRow struct {
-	ToolCallID     string
-	ToolName       string
+	ToolCallID string
+	ToolName   string
+	// ClaimID is the row's claim_id (the key the reaction chain guard tracks
+	// idle launches by; empty on legacy rows that never had one).
+	ClaimID        string
 	NoticeKind     string
 	TimeoutSeconds int
 	State          string
@@ -83,6 +91,9 @@ type SessionNoticeRow struct {
 type PulledNotice struct {
 	Message message.Message
 	Wake    bool
+	// ClaimID is the async_jobs row's claim_id (empty for session_notices
+	// rows): the reaction chain guard's key for its idle launches.
+	ClaimID string
 }
 
 // PullJobNotices pulls every pending, announced async_jobs notice row for
@@ -129,7 +140,7 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 
 	params := build(JobNoticeRow{
 		ToolCallID: displayToolCallID(pulledRow.ToolCallID), ToolName: pulledRow.ToolName,
-		NoticeKind: pulledRow.NoticeKind, TimeoutSeconds: int(pulledRow.TimeoutSeconds),
+		ClaimID: pulledRow.ClaimID, NoticeKind: pulledRow.NoticeKind, TimeoutSeconds: int(pulledRow.TimeoutSeconds),
 		State: pulledRow.State, ResultContent: pulledRow.ResultSummary.String,
 		ResultIsError: pulledRow.ResultIsError.Int64 != 0, OriginCLI: pulledRow.OriginCli != 0,
 	})
@@ -150,7 +161,7 @@ func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.S
 	// Create's own Publish call -- a subscriber must never see an event for
 	// a row that could still roll back.
 	messages.PublishCreated(msg)
-	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
+	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0, ClaimID: pulledRow.ClaimID}, true, nil
 }
 
 // PullSessionNotices pulls every pending session_notices row for owner

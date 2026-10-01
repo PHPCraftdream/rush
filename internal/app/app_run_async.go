@@ -105,6 +105,9 @@ type loopTotals struct {
 	// sub-sessions, so concatenating turns would repeat them (R3C-7).
 	subAgentOutputs []SubAgentOutput
 	subAgentIndex   map[string]int
+	// extraWarnings carries run-level diagnostics that belong to no turn
+	// (the reaction chain guard, #1113).
+	extraWarnings []string
 }
 
 // loopTurn is one real turn's warnings, split so the ones that describe its
@@ -149,6 +152,7 @@ func (t *loopTotals) add(r *RunResult) {
 // warnings about a turn's final_text only for the turn that is the answer.
 func (t *loopTotals) warningsFor(final *RunResult) []string {
 	var out []string
+	out = append(out, t.extraWarnings...)
 	for _, turn := range t.turns {
 		for _, w := range turn.warnings {
 			if turn.result != final && slices.Contains(turn.textWarnings, w) {
@@ -226,7 +230,10 @@ type cliLoop struct {
 	// lastOpenScopeNotice paces the wait heartbeat across the WHOLE run, not
 	// per nextStep call (which restarts after every Drain).
 	lastOpenScopeNotice time.Time
-	stderr              io.Writer
+	// chainNoticePrinted: the reaction chain guard's (#1113) one stderr line
+	// and one envelope warning were already emitted for this run.
+	chainNoticePrinted bool
+	stderr             io.Writer
 }
 
 // cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
@@ -664,6 +671,15 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			continue
 		}
 		dbErrorRetryStart = time.Time{}
+		// The guard's line and warning belong to the MOMENT it fires (#1113):
+		// even while the loop goes on waiting for open work, the operator must
+		// see why the chain stopped. Printed once per run.
+		if state.ChainGuard && !l.chainNoticePrinted {
+			l.chainNoticePrinted = true
+			chainText := fmt.Sprintf("reaction chain stopped: %d automatic turns only ran sleep/echo; their results stay for the next turn", agent.ReactionChainLimit)
+			fmt.Fprintf(l.errOut(), "rush run: %s\n", chainText)
+			l.tot.extraWarnings = append(l.tot.extraWarnings, chainText)
+		}
 		switch {
 		case state.Drain == agent.DrainOwed:
 			return stepDrain, "", nil

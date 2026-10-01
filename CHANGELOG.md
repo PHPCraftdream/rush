@@ -8,6 +8,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Reaction chain guard (#1113)**: a session that waits on async commands by
+  re-launching pure wait commands (`sleep 90`, `echo tick`, ...) no longer
+  chains unbounded empty automatic turns. A Drain leg that only launches
+  wait commands (`sleep`/`echo`/`printf`/`true`/`:` via bash; `sleep`/
+  `timeout` via run_command) with no real action is a "link"; after 3
+  consecutive links whose entire reaction debt is their own completions,
+  automatic turns for the session are deferred (`reaction chain without
+  progress`): the CLI loop prints one stderr line, adds an envelope warning
+  and exits leaving the results for the next turn; a web-driven session gets
+  one advisory `reaction_chain` marker notice (never debt; voided by Rerun
+  like `wake_failed`). Real work (edit/write/view/grep, a bash command with
+  substance, a delegation, `job_kill`) or a human message resets the guard.
+
 ### Fixed
 
 - **#1101: a refused first turn no longer touches the session's state.** The

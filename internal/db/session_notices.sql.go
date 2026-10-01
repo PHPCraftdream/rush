@@ -347,7 +347,7 @@ func (q *Queries) PurgeSessionNoticesOlderThan(ctx context.Context, updatedAt in
 
 const rependSessionNoticesByMessageIDs = `-- name: RependSessionNoticesByMessageIDs :execrows
 UPDATE session_notices SET delivery = 'pending', reacted = 0, reacted_failed = 0, wake_attempts = 0, updated_at = ?
-WHERE owner = ? AND delivery = 'done' AND kind <> 'wake_failed' AND notice_message_id IN (/*SLICE:message_ids*/?)
+WHERE owner = ? AND delivery = 'done' AND kind NOT IN ('wake_failed', 'reaction_chain') AND notice_message_id IN (/*SLICE:message_ids*/?)
 `
 
 type RependSessionNoticesByMessageIDsParams struct {
@@ -363,8 +363,9 @@ type RependSessionNoticesByMessageIDsParams struct {
 // `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
 // mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
 // query's doc.
-// wake_failed markers are excluded: they describe an outcome of the deleted
-// branch, so they are voided instead (VoidWakeFailedNoticesByMessageIDs).
+// wake_failed and reaction_chain markers are excluded: they describe an
+// outcome of the deleted branch, so they are voided instead
+// (VoidWakeFailedNoticesByMessageIDs).
 func (q *Queries) RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error) {
 	query := rependSessionNoticesByMessageIDs
 	var queryParams []interface{}
@@ -535,7 +536,7 @@ func (q *Queries) VoidUndeliveredSessionNoticesForOwner(ctx context.Context, arg
 
 const voidWakeFailedNoticesByMessageIDs = `-- name: VoidWakeFailedNoticesByMessageIDs :execrows
 UPDATE session_notices SET delivery = 'void', updated_at = ?
-WHERE owner = ? AND kind = 'wake_failed' AND delivery = 'done' AND notice_message_id IN (/*SLICE:message_ids*/?)
+WHERE owner = ? AND kind IN ('wake_failed', 'reaction_chain') AND delivery = 'done' AND notice_message_id IN (/*SLICE:message_ids*/?)
 `
 
 type VoidWakeFailedNoticesByMessageIDsParams struct {
@@ -544,9 +545,10 @@ type VoidWakeFailedNoticesByMessageIDsParams struct {
 	MessageIds []sql.NullString `json:"message_ids"`
 }
 
-// Rerun truncation: a delivered wake_failed marker whose message is in the
-// deleted tail is dropped, not re-pended -- it reports that the deleted
-// branch's wake-up failed, which says nothing about the new branch.
+// Rerun truncation: a delivered wake_failed or reaction_chain marker whose
+// message is in the deleted tail is dropped, not re-pended -- it reports that
+// the deleted branch's wake-up failed (or was stopped by the guard), which
+// says nothing about the new branch.
 func (q *Queries) VoidWakeFailedNoticesByMessageIDs(ctx context.Context, arg VoidWakeFailedNoticesByMessageIDsParams) (int64, error) {
 	query := voidWakeFailedNoticesByMessageIDs
 	var queryParams []interface{}

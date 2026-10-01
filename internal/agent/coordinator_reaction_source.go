@@ -53,6 +53,11 @@ type CLIScopeState struct {
 	RetryAt time.Time
 	// Reason names why the debt is Deferred/Stuck/Paced.
 	Reason string
+	// ChainGuard: the Deferred reason is the reaction chain guard (#1113) --
+	// N consecutive no-progress links -- not the auto-resume policy. The CLI
+	// loop reads this typed flag (never the Reason string) for its one
+	// stderr line and envelope warning.
+	ChainGuard bool
 }
 
 // ReactionDebtSource is implemented by *coordinator; internal/app type-
@@ -236,6 +241,7 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 		return CLIScopeState{}, v.err
 	}
 	state.RetryAt, state.Reason = v.retryAt, v.reason
+	state.ChainGuard = v.kind == drainDeferred && v.reason == reactionChainReason
 	switch v.kind {
 	case drainAllow:
 		state.Drain = DrainOwed

@@ -95,6 +95,18 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent b
 	if c.autoResumeSuspended(sessionID) {
 		return deferred("automatic turns suspended", false)
 	}
+	// Reaction chain guard (#1113): N consecutive no-progress links whose
+	// entire debt is their own idle launches' completions get no further
+	// automatic turn. Deliberately BEFORE the running-delegation shortcut
+	// below: R6B-1 frees a child from the auto-resume policy, not from this
+	// guard. externallyDriven names a session this process's own `rush run`
+	// loop drives: its loop reports the guard itself (CLIScopeState.
+	// ChainGuard), so no marker notice is inserted for it.
+	if chain, err := c.chainGuardDeferred(ctx, sessionID, own); err != nil {
+		return unreadable("reaction chain state", err)
+	} else if chain {
+		return deferred(reactionChainReason, false)
+	}
 	running, err := l.hasRunningDelegationFor(ctx, sessionID)
 	if err != nil {
 		return unreadable("delegation state", err)

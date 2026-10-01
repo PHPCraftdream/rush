@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // prepareStep, onStepFinish and stopConditions are runTurn's remaining
@@ -273,6 +275,78 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 func (ts *turnStream) recordStepHistory(stepResult fantasy.StepResult) {
 	ts.stepHistory = append(ts.stepHistory, stepResult)
 	ts.loopDetected, ts.loopDetail = hasRepeatedToolCalls(ts.stepHistory, loopDetectionWindowSize, loopDetectionMaxRepeats)
+	ts.recordChainEvidence(stepResult)
+}
+
+// chainNeutralTools are tool calls that neither advance the session's work
+// nor launch anything: reading a background job's buffered output and
+// managing the todo list. Every other tool (edit/write/view/grep and
+// friends, a bash/run_command call with substance, a delegation, job_kill)
+// is progress for the reaction chain guard (#1113).
+var chainNeutralTools = map[string]struct{}{
+	tools.JobOutputToolName: {},
+	tools.TodosToolName:     {},
+}
+
+// recordChainEvidence feeds the reaction chain guard (#1113) from this
+// step's tool activity: every async launch that is a pure wait command
+// (bash sleep/echo, run_command sleep/timeout) has its claim_id (from the
+// started response's ClientMetadata -- the same tag the ack gate reads)
+// recorded on the leg, any real action marks the leg as progress. A text-
+// only or neutral-only step is neither.
+func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
+	if ts.att == nil || ts.att.closed {
+		return
+	}
+	calls := make(map[string]fantasy.ToolCallContent, len(stepResult.Content))
+	for _, call := range stepResult.Content.ToolCalls() {
+		calls[call.ToolCallID] = call
+	}
+	for _, result := range stepResult.Content.ToolResults() {
+		call, ok := calls[result.ToolCallID]
+		if !ok {
+			continue
+		}
+		if _, neutral := chainNeutralTools[call.ToolName]; neutral {
+			continue
+		}
+		var meta asyncToolMetadata
+		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
+		if claim, idle := chainIdleClaim(call, meta); idle {
+			ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, claim)
+			continue
+		}
+		ts.att.chainProgress = true
+	}
+}
+
+// chainIdleClaim reports whether call is an async launch of a pure wait
+// command, and returns its claim id when it is.
+func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (string, bool) {
+	if !meta.Async || meta.ClaimID == "" {
+		return "", false
+	}
+	switch call.ToolName {
+	case tools.BashToolName:
+		var params struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		return meta.ClaimID, shell.IsNoOpCommand(params.Command)
+	case tools.RunCommandToolName:
+		var params struct {
+			Program string `json:"program"`
+		}
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		idle := params.Program == "sleep" || params.Program == "timeout"
+		return meta.ClaimID, idle
+	default:
+		return "", false
+	}
 }
 
 // stopStepTicker stops the checkpoint ticker BEFORE the final write below so

@@ -131,7 +131,15 @@ type drainAttempt struct {
 	// read by the 401 handling of the accounting.
 	provider     string
 	credentialed bool
-	closed       bool
+	// chainIdleClaims holds the claim ids of the pure wait commands (bash
+	// sleep/echo, run_command sleep/timeout) THIS leg launched async; each
+	// completion becomes a debt row keyed by its claim. chainProgress says
+	// the leg also did a real action (edit, a bash command with substance,
+	// a delegation, ...). Written by recordStepHistory, read by the reaction
+	// chain guard's accounting (#1113).
+	chainIdleClaims []string
+	chainProgress   bool
+	closed          bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -242,6 +250,14 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	}
 	if drainAttemptExempt(att, turnErr) || l.store == nil {
 		return
+	}
+	if turnErr == nil {
+		// Reaction chain guard (#1113): account the leg's link BEFORE the
+		// debt's post-attempt state is read -- a successful reaction (rows.
+		// open == 0 below) must not reset the count.
+		c.autoResumeMu.Lock()
+		c.reactionChainLinkLocked(sid, att, att.snapshot)
+		c.autoResumeMu.Unlock()
 	}
 	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {

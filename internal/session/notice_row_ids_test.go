@@ -58,7 +58,7 @@ func TestPendingInclusiveDebtRows_NamesTheDebtNoticeRows(t *testing.T) {
 	_, err = store.sqlDB.ExecContext(ctx, `UPDATE session_notices SET delivery='void' WHERE id=?`, voided)
 	require.NoError(t, err)
 
-	hasJobDebt, rows, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
+	hasJobDebt, rows, _, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
 	require.NoError(t, err)
 	require.False(t, hasJobDebt)
 	require.Equal(t, []PendingNoticeDebt{{ID: owed, Kind: NoticeKindBGShellDone}, {ID: last, Kind: NoticeKindSupervision}}, rows)
@@ -68,9 +68,11 @@ func TestPendingInclusiveDebtRows_NamesTheDebtNoticeRows(t *testing.T) {
 	require.NoError(t, store.MarkAnnounced(ctx, "owner-1", "call-1"))
 	_, err = store.Transition(ctx, TransitionParams{Owner: "owner-1", ToolCallID: "call-1", State: "completed", Wake: true})
 	require.NoError(t, err)
-	hasJobDebt, _, err = store.PendingInclusiveDebtRows(ctx, "owner-1")
+	hasJobDebt, _, claims, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
 	require.NoError(t, err)
 	require.True(t, hasJobDebt, "an announced, unreacted wake=1 job row is job debt")
+	require.Len(t, claims, 1, "the debt job row's claim id is named")
+	require.NotEmpty(t, claims[0])
 }
 
 // Job debt is announced, wake=1, unreacted and not void; a job row failing any
@@ -112,7 +114,7 @@ func TestPendingInclusiveDebtRows_JobDebtExclusions(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			hasJobDebt, notices, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
+			hasJobDebt, notices, _, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
 			require.NoError(t, err)
 			require.Equal(t, tc.wantDebts, hasJobDebt)
 			require.Empty(t, notices, "no notice row was inserted")
@@ -136,7 +138,7 @@ func TestPendingInclusiveDebtRows_IncludesDoneUnreactedNotice(t *testing.T) {
 	_, err = store.sqlDB.ExecContext(ctx, `UPDATE session_notices SET delivery='done' WHERE id=?`, done)
 	require.NoError(t, err)
 
-	hasJobDebt, rows, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
+	hasJobDebt, rows, _, err := store.PendingInclusiveDebtRows(ctx, "owner-1")
 	require.NoError(t, err)
 	require.False(t, hasJobDebt)
 	require.Equal(t, []PendingNoticeDebt{{ID: pending, Kind: NoticeKindBGShellDone}, {ID: done, Kind: NoticeKindBGShellDone}}, rows)

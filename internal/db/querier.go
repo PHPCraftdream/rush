@@ -738,8 +738,9 @@ type Querier interface {
 	// `delivery = 'done'` guard and the wake_attempts/reacted_failed reset
 	// mirror RependAsyncJobsByNoticeMessageIDs's own A4/A1 fixes -- see that
 	// query's doc.
-	// wake_failed markers are excluded: they describe an outcome of the deleted
-	// branch, so they are voided instead (VoidWakeFailedNoticesByMessageIDs).
+	// wake_failed and reaction_chain markers are excluded: they describe an
+	// outcome of the deleted branch, so they are voided instead
+	// (VoidWakeFailedNoticesByMessageIDs).
 	RependSessionNoticesByMessageIDs(ctx context.Context, arg RependSessionNoticesByMessageIDsParams) (int64, error)
 	// R2A-4: session_notices.job_tool_call_id names its async_jobs row by
 	// tool_call_id text (the wake_only pull-time void reads that row). When the
@@ -1025,9 +1026,10 @@ type Querier interface {
 	// session_notices half of VoidUndeliveredAsyncJobsForOwner (`sessions reset`,
 	// R8A-3): every pending or delivered notice of the owner becomes void.
 	VoidUndeliveredSessionNoticesForOwner(ctx context.Context, arg VoidUndeliveredSessionNoticesForOwnerParams) (int64, error)
-	// Rerun truncation: a delivered wake_failed marker whose message is in the
-	// deleted tail is dropped, not re-pended -- it reports that the deleted
-	// branch's wake-up failed, which says nothing about the new branch.
+	// Rerun truncation: a delivered wake_failed or reaction_chain marker whose
+	// message is in the deleted tail is dropped, not re-pended -- it reports that
+	// the deleted branch's wake-up failed (or was stopped by the guard), which
+	// says nothing about the new branch.
 	VoidWakeFailedNoticesByMessageIDs(ctx context.Context, arg VoidWakeFailedNoticesByMessageIDsParams) (int64, error)
 	// Task #340's original claim/mark-done/mark-failed/release-for-retry model
 	// (ClaimOrphanOutboxEntry, MarkOrphanOutboxEntryDone, MarkOrphanOutboxEntryFailed,

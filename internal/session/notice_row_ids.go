@@ -43,28 +43,31 @@ func (s *AsyncJobStore) InsertSessionNoticeReturningID(ctx context.Context, owne
 	return row.ID, nil
 }
 
-// PendingInclusiveDebtRows is PendingInclusiveDebtSummary with the notice rows
-// named by id, oldest first: whether owner has ANY job-id debt row, and every
-// notice-debt row (wake=1/reacted=0/delivery<>'void') with its Kind.
-func (s *AsyncJobStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (hasJobDebt bool, notices []PendingNoticeDebt, err error) {
+// PendingInclusiveDebtRows is PendingInclusiveDebtSummary with the debt rows
+// named: whether owner has ANY job-id debt row, every notice-debt row
+// (wake=1/reacted=0/delivery<>'void') with its Kind, and the claim ids of
+// every job-debt row (empty claim ids are skipped; they cannot be tracked).
+func (s *AsyncJobStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (hasJobDebt bool, notices []PendingNoticeDebt, jobClaims []string, err error) {
 	jobs, err := s.q.ListAsyncJobsForOwner(ctx, owner)
 	if err != nil {
-		return false, nil, fmt.Errorf("async job store: pending-inclusive debt rows: async_jobs: %w", err)
+		return false, nil, nil, fmt.Errorf("async job store: pending-inclusive debt rows: async_jobs: %w", err)
 	}
 	for _, j := range jobs {
 		if j.Wake != 0 && j.Reacted == 0 && j.Delivery != "void" && j.Announced != 0 {
 			hasJobDebt = true
-			break
+			if j.ClaimID != "" {
+				jobClaims = append(jobClaims, j.ClaimID)
+			}
 		}
 	}
 	rows, err := s.q.ListSessionNoticesForOwner(ctx, owner)
 	if err != nil {
-		return false, nil, fmt.Errorf("async job store: pending-inclusive debt rows: session_notices: %w", err)
+		return false, nil, nil, fmt.Errorf("async job store: pending-inclusive debt rows: session_notices: %w", err)
 	}
 	for _, n := range rows {
 		if n.Wake != 0 && n.Reacted == 0 && n.Delivery != "void" {
 			notices = append(notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 		}
 	}
-	return hasJobDebt, notices, nil
+	return hasJobDebt, notices, jobClaims, nil
 }

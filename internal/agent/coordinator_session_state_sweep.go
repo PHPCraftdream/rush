@@ -48,7 +48,7 @@ func (c *coordinator) sweepDeletedSessionState(ctx context.Context) {
 		return
 	}
 	c.autoResumeMu.Lock()
-	ids := make(map[string]struct{}, len(c.consecutiveAutoResumes)+len(c.bgShellOverCap)+len(c.autoTurnsSuspended))
+	ids := make(map[string]struct{}, len(c.consecutiveAutoResumes)+len(c.bgShellOverCap)+len(c.autoTurnsSuspended)+len(c.consecutiveDrainLinks))
 	for id := range c.consecutiveAutoResumes {
 		ids[id] = struct{}{}
 	}
@@ -56,6 +56,9 @@ func (c *coordinator) sweepDeletedSessionState(ctx context.Context) {
 		ids[id] = struct{}{}
 	}
 	for id := range c.autoTurnsSuspended {
+		ids[id] = struct{}{}
+	}
+	for id := range c.consecutiveDrainLinks {
 		ids[id] = struct{}{}
 	}
 	c.autoResumeMu.Unlock()
@@ -72,6 +75,7 @@ func (c *coordinator) sweepDeletedSessionState(ctx context.Context) {
 		delete(c.consecutiveAutoResumes, id)
 		delete(c.bgShellOverCap, id)
 		delete(c.autoTurnsSuspended, id)
+		c.resetReactionChainLocked(id)
 		c.autoResumeMu.Unlock()
 	}
 }
