@@ -191,8 +191,12 @@ func tailSessionFinished(ctx context.Context, a *app.App, sessionID string) (boo
 	if f := lastMsg.FinishPart(); f == nil || f.Partial {
 		return false, ""
 	}
-	if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
-		return false, w.describe()
+	act, actErr := a.SessionActivity(ctx, sessionID)
+	if actErr != nil {
+		return false, ""
+	}
+	if kindIsLive(act.Verdict.Kind) {
+		return false, act.Verdict.Description
 	}
 	return true, ""
 }

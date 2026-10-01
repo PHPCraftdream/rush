@@ -13,7 +13,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +63,7 @@ func isolatedListEnvWithConfiguredDataDir(t *testing.T) (a *app.App, workDir, da
 }
 
 // TestSessionsListCmdRun_StatusHonorsConfiguredDataDir is the regression test
-// for task #233 finding 1: computeSessionStatuses (backing `sessions list`'s
+// for task #233 finding 1: the status computation (backing `sessions list`'s
 // STATUS column) used to compute locksDir as
 // filepath.Join(ResolveCwd(cmd), ".rush", "locks"), completely ignoring
 // --data-dir / a configured data_directory, even though sessionsListCmd's
@@ -126,23 +125,17 @@ func TestSessionsListCmdRun_StatusHonorsConfiguredDataDir(t *testing.T) {
 	require.True(t, found, "expected to find the seeded session's row in the table output")
 }
 
-// TestComputeSessionStatuses_PidReuseBeyondMaxFallbackAgeIsNotRunning is the
-// regression test for task #241: computeSessionStatuses trusted a
-// CONFIRMED-alive recorded PID unconditionally, with no bound on how old the
-// lock file itself could be. A `rush run` killed with SIGKILL leaves its
-// PID in the lock file without releasing; hours later the OS can recycle
-// that exact PID number for a completely unrelated, currently-running
-// process. Before this fix, `sessions list` would report that session's
-// STATUS as "running" forever — the crash never self-heals to "crashed"/
-// "done" the way task #235 already fixed for session.InspectSessionLock.
-//
-// A real second process (spawnKillTestLockHolder, the same cross-process
-// harness sessions_kill_test.go uses) stands in for "the OS reused this
-// exact PID number" — it is genuinely alive throughout, so this proves the
-// AGE bound, not merely a dead-PID false negative. The lock file's mtime is
-// back-dated past session.MaxPidFallbackAge to simulate a lock abandoned
-// long enough ago that its recorded PID can no longer be trusted.
-func TestComputeSessionStatuses_PidReuseBeyondMaxFallbackAgeIsNotRunning(t *testing.T) {
+// NOTE (R-ACT-2): the two TestComputeSessionStatuses_* tests were rewritten
+// onto the LockFact enum -- the mtime/PID-fallback machinery they exercised
+// is gone (D10: ONE lock reader). CONSCIOUSLY CHANGED EXPECTATION: the
+// #241 MaxPidFallbackAge bound no longer exists. A lock whose recorded PID
+// is alive reads held ("running") whatever the lock's age; the bound
+// protected against OS PID reuse pinning a killed run's lock as "running"
+// forever, and that risk is now accepted by the architect's enum decision
+// (release wipes the PID, so a recorded PID means "never reached release").
+// The dead-PID half of the old behavior is pinned by
+// TestSessionLockFact_DeadPIDIsDead (sessions_inject_test.go).
+func TestSessionLockFact_AgedLockWithLivePIDIsHeld(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
@@ -152,59 +145,16 @@ func TestComputeSessionStatuses_PidReuseBeyondMaxFallbackAgeIsNotRunning(t *test
 	sess, err := a.Sessions.CreateWithID(ctx, "list-status-pid-reuse", "regression title")
 	require.NoError(t, err)
 
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop()
 	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
-	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
-		"back-dating mtime past MaxPidFallbackAge to simulate a lock abandoned long enough ago that its recorded PID can no longer be trusted, even though it currently resolves to a live process")
+	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime))
 
-	statuses := computeSessionStatuses(a)
-	require.NotNil(t, statuses)
-	assert.Equal(t, "crashed", statuses[sess.ID],
-		"a lock older than MaxPidFallbackAge must not be reported running just because its recorded PID currently belongs to a live (but unrelated) process — this is the core #241 fix")
-}
-
-// TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning is the
-// non-regression companion: a live PID within MaxPidFallbackAge of the
-// lock's mtime must still be reported "running", exactly like before this
-// fix — the bound must only kick in once the lock is genuinely old.
-func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real child process; skipped in -short")
-	}
-	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
-
-	ctx := context.Background()
-	sess, err := a.Sessions.CreateWithID(ctx, "list-status-pid-fresh", "regression title")
-	require.NoError(t, err)
-
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
-	defer holder.stop()
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
-
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	justUnder := time.Now().Add(-(session.MaxPidFallbackAge - 2*time.Minute))
-	require.NoError(t, os.Chtimes(lockPath, justUnder, justUnder))
-
-	statuses := computeSessionStatuses(a)
-	require.NotNil(t, statuses)
-	assert.Equal(t, "running", statuses[sess.ID],
-		"a live PID just under MaxPidFallbackAge must still be trusted as running")
+	require.Equal(t, session.LockHeld, session.InspectSessionLockFact(dataDir, sess.ID).Kind,
+		"an alive recorded PID is held regardless of the lock's age (D10)")
 }
 
 // TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone is the regression
@@ -217,7 +167,7 @@ func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing
 // The fixture mirrors that sequence exactly:
 //   - a parent session whose lock file is stale (names a dead PID, aged
 //     past LockStaleDuration) and whose last assistant message finished
-//     with end_turn — the shape reclassifyCrashedAsDone turns into "done";
+//     with end_turn — the shape the pre-classifier reclassification turned into "done";
 //   - a REAL running async_jobs delegation row (owner=parent,
 //     child_session_id=child), claimed via the seed App's own
 //     AsyncJobStore -- step 7 replaced the session-lock-based descendant
@@ -225,7 +175,7 @@ func TestComputeSessionStatuses_PidAliveWithinMaxFallbackAgeIsRunning(t *testing
 //     parent_session_id).
 //
 // Pre-fix the parent's STATUS column read "done". With the cross-process
-// descendant walk (markDelegatingLiveDescendants →
+// descendant walk (the pre-classifier descendant walk →
 // session.AsyncJobStore.LiveDescendantJobs) it must read "delegating"
 // instead — and fall back to "done" once the delegation row is terminal.
 func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
@@ -238,7 +188,7 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	require.NoError(t, err)
 
 	// The parent's per-turn lock: stale (dead PID, aged heartbeat) with a
-	// clean end_turn finish — the reclassifyCrashedAsDone "done" shape.
+	// clean end_turn finish — the pre-classifier "done" shape.
 	lockDir := filepath.Join(dataDir, "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	parentLock := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(parent.ID)+".lock")
@@ -336,8 +286,12 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	t.Logf("sessions list (delegation row terminal):\n%s", phase2)
 	parentRow = statusRowFor(phase2, parent.ID[:8])
 	require.NotEmpty(t, parentRow)
-	require.Contains(t, parentRow, "done",
-		"with no live descendant the clean-exit reclassification must apply again")
+	// CHANGED VERDICT (R-ACT-2, D3): with the delegation terminal the parent
+	// has a recorded dead lock PID and no live work -- a crash, whatever the
+	// end_turn finish of a previous turn. The old expectation ("done", via
+	// the finish-based reclassification) is gone.
+	require.Contains(t, parentRow, "crashed",
+		"with no live descendant the recorded dead PID is the parent's own crash")
 	require.NotContains(t, parentRow, "delegating",
 		"delegating must be driven by a LIVE row, not by the mere existence of a past delegation")
 }

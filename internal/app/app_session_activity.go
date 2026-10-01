@@ -5,8 +5,8 @@
 // wake schedules, ended reasons), never N, every predicate living in ONE
 // sqlc query (architect decision 13: no second SQL formulation). This is
 // the single place readers (internal/cmd, internal/server) will go through
-// in step 2; the layers they layer today (inspectSessionLiveWork/promote*/
-// mark*/reclassify*) are replaced by it.
+// in step 2 (internal/cmd now does); the per-command layers it replaced are
+// deleted.
 //
 // The single-session reader is the batch reader with one id, so the two can
 // never disagree. A failed read of a LIVE-WORK fact is recorded in
@@ -72,13 +72,19 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 		out.LockStems[stem] = append(out.LockStems[stem], id)
 	}
 
-	// Fact kind 1: driver markers, ALL rows, host liveness decided once per
-	// distinct host. Unlike LiveSessionDrivers the dead hosts' rows are
-	// kept: they are the crashed fact of decision 5 (the marker outlives
-	// its host until the purge sweep).
+	// An App without a database handle (a configless/read-only test App) has
+	// no durable facts at all: that is "no facts", not "unreadable facts" --
+	// the same answer the removed per-command live-work reader gave a nil
+	// store. A real query error stays fail-open (decision 8).
 	store := app.AsyncJobStore()
-	liveDrivers, deadDrivers, driversErr := app.sessionDriverFacts(ctx, ids, store)
-	driversFailed := driversErr != nil
+	liveDrivers := map[string]session.SessionDriver{}
+	deadDrivers := map[string]bool{}
+	driversFailed := false
+	if app.activityConn() != nil {
+		var driversErr error
+		liveDrivers, deadDrivers, driversErr = app.sessionDriverFacts(ctx, ids, store)
+		driversFailed = driversErr != nil
+	}
 
 	// Fact kind 2: reaction debt, one statement (same predicates as the
 	// single-owner query, decision 13).
@@ -110,8 +116,14 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 
 	// Fact kind 6: ended reasons, one statement over the requested ids --
 	// top-level AND child sessions, which the session list does not carry
-	// (decision 7). A missing row is not an error and not an end fact.
-	ends, endErr := app.sessionEndReasons(ctx, ids)
+	// (decision 7). A missing row is not an error and not an end fact. No
+	// database handle at all: no end facts, no unreadable flag (the
+	// configless-App rule above).
+	var ends map[string]string
+	var endErr error
+	if app.activityConn() != nil {
+		ends, endErr = app.sessionEndReasons(ctx, ids)
+	}
 
 	for _, id := range ids {
 		f := session.ActivityFacts{SessionID: id}
@@ -138,8 +150,6 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 					f.Unreadable = append(f.Unreadable, "the session's delegations")
 				}
 			}
-		} else {
-			f.Unreadable = append(f.Unreadable, "the session's async jobs")
 		}
 		f.DeadHostRunningJobs = deadRows[id]
 		if deadRowsErr != nil {

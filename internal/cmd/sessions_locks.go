@@ -5,6 +5,7 @@ package cmd
 // lockHolderProvablyDead OS-level probe.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -249,12 +251,30 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		DriverPID    int  `json:"driver_pid,omitempty"`
 	}
 
-	// Sessions a live `rush run` loop drives (ONE read; nil on error: without
-	// the marker a released lock reads as before), by lock-file stem: the file
-	// name is the sanitised id, the marker is keyed by the real one (R7C-2).
-	liveDrivers, _ := a.LiveSessionDrivers(cmd.Context())
-	drivers := driversByLockName(liveDrivers)
-	stemIDs := lockStemIDs(cmd.Context(), a, liveDrivers)
+	// One classifier pass over every known session (top-level list + any
+	// id carrying a driver marker): the lock-file stem -> real ids map comes
+	// straight from the batch result (D11), and the per-stem verdict decides
+	// "between turns" and the prune guard -- no local lock-name aggregation.
+	allIDs := stemIDsForLocks(cmd.Context(), a)
+	acts, actErr := a.SessionActivityBatch(cmd.Context(), allIDs)
+	stemIDs := map[string][]string{}
+	if acts.LockStems != nil {
+		stemIDs = acts.LockStems
+	}
+	liveVerdict := func(stem string) (session.ActivityVerdict, bool) {
+		if actErr != nil {
+			return session.ActivityVerdict{}, false
+		}
+		var live session.ActivityVerdict
+		found := false
+		for _, id := range stemIDs[stem] {
+			v := acts.ByID[id].Verdict
+			if kindIsLive(v.Kind) && (!found || v.PID > live.PID) {
+				live, found = v, true
+			}
+		}
+		return live, found
+	}
 
 	var locks []lockItem
 	now := time.Now()
@@ -301,7 +321,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// A session a live `rush run` loop drives (between turns) is never
 		// pruned: the death probe would take the lock the loop is about to
 		// take for its next turn.
-		if driven := len(drivers[sessionID]) > 0; prune && age > autoDeleteAfter && !driven {
+		if _, driven := liveVerdict(sessionID); prune && age > autoDeleteAfter && !driven {
 			if lockHolderProvablyDead(dataDir, sessionID) {
 				if preAutoDeleteRemoveHook != nil {
 					preAutoDeleteRemoveHook(lockPath)
@@ -340,8 +360,8 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 					// the file already being gone, which is handled above),
 					// the file is left behind with a wiped PID AND a fresh
 					// mtime — which every PID-fallback/mtime-based liveness
-					// consumer below (and in isSessionLockAlive /
-					// InspectSessionLock / computeSessionStatuses) would read
+					// consumer below (the session-activity classifier reads
+					// the same lock fact) would read
 					// as LIVE for the next heartbeat-stale window, even though
 					// this probe JUST proved the holder dead. Silently
 					// `continue`-ing also made the entry vanish from this
@@ -406,15 +426,17 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// fallback (internal/session/lock.go) and task #231.
 		pid := session.ReadLockPID(lockPath)
 
-		// Between turns (R6C-1): the lock is held only during a turn and its
-		// file is truncated on release, so a loop waiting on a job leaves an
-		// aging PID-less file that reads "offline". A live driver marker for
-		// the session says the loop is alive: not stale, not offline.
+		// Between turns (R6C-1): the lock is held only during a turn and
+		// its file is truncated on release, so a loop waiting on a job
+		// leaves an aging PID-less file that reads "offline". A live
+		// verdict for the session (driver between turns, or a live
+		// delegation) says the scope is open: not stale, not offline.
 		var driverPID int
 		betweenTurns := false
 		if pulse == "offline" {
-			if d, ok := lockDriver(drivers[sessionID], pid); ok {
-				betweenTurns, driverPID = true, int(d.PID)
+			if v, ok := liveVerdict(sessionID); ok {
+				betweenTurns = true
+				driverPID = int(v.PID)
 				pulse, stale = "between-turns", false
 			}
 		}
@@ -483,8 +505,12 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		}
 		pidCell, pulseCell := lock.PID, lock.Pulse
 		if lock.BetweenTurns {
-			pidCell = lock.DriverPID
-			pulseCell = fmt.Sprintf("between turns (rush run PID %d)", lock.DriverPID)
+			if lock.DriverPID > 0 {
+				pidCell = lock.DriverPID
+				pulseCell = fmt.Sprintf("between turns (rush run PID %d)", lock.DriverPID)
+			} else {
+				pulseCell = "between turns (delegating)"
+			}
 		}
 		fmt.Fprintf(
 			tw, "%s\t%d\t%s\t%ds ago\t%s\t%s\t%s\n",
@@ -498,4 +524,72 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		)
 	}
 	return tw.Flush()
+}
+
+// kindIsLive reports whether a verdict Kind means the session's scope is
+// open -- the one liveness question the locks/reap/prune paths ask.
+func kindIsLive(k session.ActivityKind) bool {
+	switch k {
+	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
+		return true
+	}
+	return false
+}
+
+// stemIDsForLocks is the id universe the locks view classifies: every
+// top-level session plus every id carrying a driver marker (a deleted
+// session's marker can outlive its row until the purge sweep).
+func stemIDsForLocks(ctx context.Context, a *app.App) []string {
+	seen := map[string]struct{}{}
+	if sessions, err := a.Sessions.List(ctx); err == nil {
+		for _, s := range sessions {
+			seen[s.ID] = struct{}{}
+		}
+	}
+	if drivers, err := a.LiveSessionDrivers(ctx); err == nil {
+		for id := range drivers {
+			seen[id] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
+}
+
+// resolveLocksFilterStem turns the `sessions locks <id>` argument (a session
+// id or hash prefix) into the lock-file stem to match. An argument that
+// names no session is taken as a literal id or stem, so a lock whose
+// session was deleted can still be inspected; an ambiguous prefix is an
+// error.
+func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string, error) {
+	sess, err := resolveSessionID(ctx, a.Sessions, arg)
+	switch {
+	case err == nil:
+		return session.SessionLockStem(sess.ID), nil
+	case strings.HasPrefix(err.Error(), "session not found"):
+		return session.SessionLockStem(arg), nil
+	default:
+		return "", err
+	}
+}
+
+// lockCallTreeActivity is callTreeActivityFresherThan over a lock-file
+// stem's real session ids (several when ids collide on one stem, D11): the
+// freshest candidate wins. Without a known id the stem itself is tried (a
+// plain id is its own stem) -- R8C-8: the stem is never used as a session
+// id for the lookup.
+func lockCallTreeActivity(ctx context.Context, a *app.App, ids []string, stem string, baselineUnix int64) (callTreeActivity, bool) {
+	if len(ids) == 0 {
+		ids = []string{stem}
+	}
+	var best callTreeActivity
+	found := false
+	for _, id := range ids {
+		if act, fresher := callTreeActivityFresherThan(ctx, a, id, baselineUnix); fresher && (!found || act.LatestUnix > best.LatestUnix) {
+			best, found = act, true
+		}
+	}
+	return best, found
 }

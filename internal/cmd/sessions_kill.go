@@ -759,7 +759,7 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 	if !kr.ConfirmedDead {
 		return nil, kr, fmt.Errorf("could not confirm the lock holder (PID %d) is dead; session left untouched", livePID)
 	}
-	lk, err = session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err = reacquireAfterKill(dataDir, sessionID, wait)
 	if err != nil {
 		if errors.As(err, &busyErr) {
 			return nil, kr, fmt.Errorf("session %s is still locked after killing PID %d; another process may have acquired it", sessionID, livePID)
@@ -782,6 +782,23 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 	sweepChildGroupsWithHeldLock(&sweepReport, dataDir, sessionID, victimGeneration, lk)
 	kr.Report += sweepReport.String()
 	return lk, kr, nil
+}
+
+// reacquireAfterKill retries the acquire while the lock reads busy, for up to
+// wait. The OS releases a killed holder's flock/LockFileEx asynchronously
+// (LockFileEx: the delay "depends upon available system resources"), so the
+// first attempt right after confirmed death can still lose under load. A
+// genuinely new owner just fails the same way, later.
+func reacquireAfterKill(dataDir, sessionID string, wait time.Duration) (*session.SessionLock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		var busyErr *session.SessionLockBusyError
+		if err == nil || !errors.As(err, &busyErr) || !time.Now().Before(deadline) {
+			return lk, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // removeLockWithRetry tries to delete the lock file until it succeeds or

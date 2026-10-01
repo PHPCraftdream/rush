@@ -79,3 +79,12 @@ func TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork(t *testing.T) {
 	require.Contains(t, stderr, "cancellation requested for session "+idle)
 	require.True(t, flagged(idle))
 }
+
+// boolFlag renders a bool for Flags().Set, the shape the deleted
+// sessions_livework_test.go used to provide.
+func boolFlag(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}

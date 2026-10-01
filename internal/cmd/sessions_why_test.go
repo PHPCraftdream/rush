@@ -101,17 +101,18 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
-	require.Contains(t, out, "died mid-turn")
+	// CHANGED STRING (R-ACT-2): the classifier's dead-PID phrasing replaced
+	// the old "died mid-turn" prose.
+	require.Contains(t, out, "no longer alive")
 	require.Contains(t, out, "canceled")
 }
 
 // TestExplainSessionStatus_StaleLockCleanFinish: lock file exists, holder
-// PID is dead, BUT the last assistant message finished with end_turn. The raw
-// lock signal says "crashed" but the message store contradicts it → the FIRST
-// LINE verdict must be "done (stale lock)" — matching what `sessions list`
-// shows after reclassifyCrashedAsDone, so orchestrators parsing the first line
-// get the same verdict from both commands. The reason must mention the clean
-// finish + stale lock, and the NOTE must still say "Treat as done".
+// PID is dead, AND the last assistant message finished with end_turn.
+// CHANGED VERDICT (R-ACT-2, D3/D4): a recorded dead PID means the holder
+// never reached release; the end_turn finish of a previous turn is not an
+// end signal (only ended_reason is). The verdict is therefore "crashed" --
+// the old "done (stale lock)" reclassification by finish reason is gone.
 func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 	t.Parallel()
 
@@ -143,16 +144,11 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
 
 	out := buf.String()
-	// First-line verdict must say done (matching sessions list), NOT crashed.
 	firstLine := strings.SplitN(out, "\n", 2)[0]
-	require.Equal(t, "status: done (stale lock)", firstLine,
-		"first line must say done (stale lock), not crashed — must match sessions list verdict")
-	// Must NOT say crashed anywhere in the output now.
-	require.NotContains(t, out, "status: crashed")
-	// The explanation must still call out the clean finish + stale lock.
-	require.Contains(t, out, "finished cleanly (end_turn)")
-	require.Contains(t, out, "stale lock")
-	require.Contains(t, out, "Treat as done")
+	require.Equal(t, "status: crashed", firstLine,
+		"a dead recorded PID with no live work is crashed; an end_turn finish is not an end signal")
+	require.NotContains(t, out, "done (stale lock)")
+	require.Contains(t, out, "no longer alive")
 }
 
 // TestExplainSessionStatus_AtRest_NoAssistantMessage: no lock file and no
@@ -179,7 +175,9 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 
 	out := buf.String()
 	require.Contains(t, out, "status: at rest")
-	require.Contains(t, out, "no assistant message recorded yet")
+	// CHANGED STRING (R-ACT-2): the finish context is the "Last assistant
+	// message" section now; the verdict line no longer carries the note.
+	require.Contains(t, out, "(none)")
 }
 
 // TestExplainSessionStatus_Running: lock file exists and holder PID is alive
@@ -212,7 +210,9 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 
 	out := buf.String()
 	require.Contains(t, out, "status: running")
-	require.Contains(t, out, "heartbeat")
+	// CHANGED STRING (R-ACT-2): the reason names the holder PID; the
+	// heartbeat age is gone (D10 -- no mtime in the enum).
+	require.Contains(t, out, "held by PID")
 	require.Contains(t, out, "tool_use")
 }
 
@@ -240,22 +240,22 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
 
 	out := buf.String()
-	require.Contains(t, out, "status: running")
+	// CHANGED VERDICT (R-ACT-2, D10): a readable record with no PID is a
+	// RELEASE whatever the mtime -- pid=0 no longer falls back to heartbeat
+	// freshness, so this shape now reads at rest, not running.
+	require.Contains(t, out, "status: at rest")
 	require.NotContains(t, out, "status: crashed")
 }
 
-// TestExplainSessionStatus_Crashed_PIDUnreadableStaleHeartbeat: pid=0 AND a
-// stale heartbeat (old mtime) must still report "crashed" — the heartbeat
-// fallback only rescues genuinely fresh locks, not abandoned ones.
+// TestExplainSessionStatus_PIDlessRecordIsReleased: a readable record with
+// no PID is a release whatever the mtime (D10; the #258 "never invent a
+// fictional PID 0 holder" property survives trivially -- no mtime, no
+// heartbeat wording, no PID named).
 //
-// Task #258: pid=0 means the PID sidecar was never readable in the first
-// place (normal on Windows while a holder is alive — but here the
-// heartbeat is ALSO stale, so no live holder is claiming it). The old
-// reason text said `holder PID 0 is not alive`, which falsely implies PID 0
-// was ever a real holder. The real evidence is the stale heartbeat, so the
-// output must reference that instead and must not name a fictional "PID 0"
-// holder.
-func TestExplainSessionStatus_Crashed_PIDUnreadableStaleHeartbeat(t *testing.T) {
+// CHANGED VERDICT (R-ACT-2): the pre-rework shape reported "crashed" via
+// the stale-heartbeat fallback; a PID-less record now reads released, and
+// with no live work and no ended_reason the verdict is at rest.
+func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
@@ -275,11 +275,11 @@ func TestExplainSessionStatus_Crashed_PIDUnreadableStaleHeartbeat(t *testing.T) 
 	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
 
 	out := buf.String()
-	require.Contains(t, out, "status: crashed")
+	require.Contains(t, out, "status: at rest")
 	require.NotContains(t, out, "PID 0",
-		"pid=0 means the PID was never readable, not that a real holder named PID 0 was confirmed dead — the reason text must not invent a fictional PID 0 holder (task #258)")
-	require.Contains(t, out, "heartbeat is stale",
-		"the real evidence for this branch is the stale heartbeat, not a PID read — the reason text must say so explicitly (task #258)")
+		"no fictional PID 0 holder is ever named (task #258's property)")
+	require.NotContains(t, out, "heartbeat",
+		"the mtime/heartbeat wording is gone entirely (D10)")
 }
 
 // TestExplainSessionStatus_ErrorFinishSurfacesErrorText: when the last
@@ -311,32 +311,25 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
-	require.Contains(t, out, "died mid-turn")
+	require.Contains(t, out, "no longer alive")
 	require.Contains(t, out, "error")
 	require.Contains(t, out, "upstream 502: bad gateway")
 }
 
-// TestExplainSessionStatus_PidReuseBeyondMaxFallbackAgeIsNotRunning is the
-// regression test for task #250: explainSessionStatus (backing
-// `rush sessions why`) was the FOURTH independent copy of the "trust a
-// confirmed-alive PID unconditionally, with no bound on lock age" check that
-// tasks #235/#241 had already bounded in the other three copies
-// (InspectSessionLock, sessions_watch.go, sessions.go). A `rush run` killed
-// with SIGKILL/taskkill /F leaves its PID in the lock file without
-// releasing; hours later the OS can recycle that exact PID number for a
-// completely unrelated, currently-running process. Before this fix,
-// `sessions list` (already bounded) would correctly show crashed/done, but
-// `rush sessions why` — the command whose ONLY job is to explain that very
-// verdict — would say "running / lock held by live PID N", directly
-// contradicting `sessions list` for the same session.
+// The MaxPidFallbackAge PID-reuse bound (tasks #250/#256/#257) is GONE under
+// the R-ACT-2 lock enum (D10): a readable record naming an alive PID is
+// held, whatever the lock's age, and there is no second, age-based
+// formulation. CHANGED VERDICT: an aged lock whose recorded PID is alive
+// (the OS-reuse scenario #250 guarded) now reads running, not crashed -- the
+// reuse-pinning risk is accepted by the architect's decision (release wipes
+// the PID, so a recorded PID means "never reached release"). The dead-PID
+// phrasing keeps its #257 property: it never claims a factually-alive PID
+// "is not alive", because that branch only fires on IsProcessAlive=false.
 //
-// A real second process (spawnKillTestLockHolder, the same cross-process
-// harness sessions_kill_test.go uses) stands in for "the OS reused this
-// exact PID number" — it is genuinely alive throughout, so this proves the
-// AGE bound, not merely a dead-PID false negative. The lock file's mtime is
-// back-dated past session.MaxPidFallbackAge to simulate a lock abandoned
-// long enough ago that its recorded PID can no longer be trusted.
-func TestExplainSessionStatus_PidReuseBeyondMaxFallbackAgeIsNotRunning(t *testing.T) {
+// Revert-check: re-adding an mtime-based bound anywhere in the lock reader
+// breaks TestInspectSessionLockFact (mtime is never consulted) and this
+// test's running expectation.
+func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
@@ -349,54 +342,31 @@ func TestExplainSessionStatus_PidReuseBeyondMaxFallbackAgeIsNotRunning(t *testin
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop()
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
+	require.True(t, session.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
-		"back-dating mtime past MaxPidFallbackAge to simulate a lock abandoned long enough ago that its recorded PID can no longer be trusted, even though it currently resolves to a live process")
+		"back-dating mtime: the enum must not depend on it")
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
-	require.NotContains(t, out, "status: running",
-		"a lock older than MaxPidFallbackAge must not be reported running just because its recorded PID currently belongs to a live (but unrelated) process — this is the core #250 fix; sessions why must agree with sessions list")
-	require.Contains(t, out, "status: crashed",
-		"with no clean assistant finish, the bound-forced dead verdict must surface as crashed, matching what sessions list shows for the same session")
-	require.Contains(t, out, "no longer trustworthy",
-		"the bound-triggered reason must explain the recorded PID is untrusted due to age/PID reuse — not claim it is dead")
+	require.Contains(t, out, "status: running",
+		"an alive recorded PID is held, whatever the lock's age (D10)")
+	require.Contains(t, out, "held by PID")
 	require.NotContains(t, out, "is not alive",
-		"the recorded PID is factually alive in this scenario (OS reuse, via spawnKillTestLockHolder) — claiming 'is not alive' would be the same factual lie task #250's verdict fix was meant to remove, relocated to the reason text (#256)")
-	require.Contains(t, out, formatDurationShort(session.MaxPidFallbackAge),
-		"the reuse reason must still show the bound threshold")
-	require.Contains(t, out, "lock is",
-		"the reuse reason must ALSO show the lock's actual age, not just the bound threshold, so the operator can see both numbers (task #257 review nit)")
+		"the recorded PID is factually alive in this scenario -- the dead phrasing must never fire here")
 }
 
-// TestExplainSessionStatus_PidBoundExceededGenuinelyDeadIsNotAlive is the
-// regression test for task #257: the age-bound branch (pidBoundExceeded)
-// used to ALWAYS print the "likely OS PID reuse" wording, even though it
-// never actually checked whether the recorded PID was still alive. That
-// made the reuse phrasing print for the dominant real-world case too — a
-// session that crashed hours ago, whose PID is genuinely dead, not reused.
-// This test uses a PID number that is guaranteed not to belong to any
-// process (same convention as TestExplainSessionStatus_Crashed_NoCleanFinish),
-// combined with a lock mtime old enough to exceed MaxPidFallbackAge, and
-// asserts the output uses the plain "is not alive" phrasing, NOT the
-// PID-reuse phrasing — the mirror image of
-// TestExplainSessionStatus_PidReuseBeyondMaxFallbackAgeIsNotRunning above,
-// which covers the genuinely-alive-but-reused case.
-func TestExplainSessionStatus_PidBoundExceededGenuinelyDeadIsNotAlive(t *testing.T) {
+// A genuinely dead recorded PID (any age) is crashed, and the reason uses
+// the plain dead-PID phrasing (the #257 property survives the rework: the
+// classifier only says "no longer alive" after IsProcessAlive said so).
+func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
@@ -408,10 +378,6 @@ func TestExplainSessionStatus_PidBoundExceededGenuinelyDeadIsNotAlive(t *testing
 
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	dataDir := writeLockFile(t, sess.ID, 999999)
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
-	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
-		"back-dating mtime past MaxPidFallbackAge so this hits the same pidBoundExceeded branch as the reuse test, but with a genuinely dead PID this time")
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
@@ -419,67 +385,22 @@ func TestExplainSessionStatus_PidBoundExceededGenuinelyDeadIsNotAlive(t *testing
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
-	require.Contains(t, out, "is not alive",
-		"the recorded PID is genuinely dead here (999999, not a real process) — the reason text must use the plain dead-PID phrasing, not speculate about OS PID reuse (task #257)")
-	require.NotContains(t, out, "no longer trustworthy",
-		"a genuinely dead PID is not a reuse scenario — the age-bound branch must not claim it might be a different live process just because the lock is old (task #257)")
+	require.Contains(t, out, "no longer alive",
+		"the recorded PID is genuinely dead here -- the reason must say so plainly")
 	require.NotContains(t, out, "OS PID reuse",
-		"same as above: the PID-reuse wording must be reserved for the case where IsProcessAlive actually confirms the recorded PID is currently alive (task #257)")
+		"the PID-reuse wording no longer exists at all (D10)")
 }
 
-// TestExplainSessionStatus_PidAliveWithinMaxFallbackAgeIsRunning is the
-// non-regression companion: a live PID within MaxPidFallbackAge of the
-// lock's mtime must still be reported "running", exactly like before this
-// fix — the bound must only kick in once the lock is genuinely old. Uses a
-// real second process (not the test's own PID) so it guards the same
-// cross-process path the regression test does.
-func TestExplainSessionStatus_PidAliveWithinMaxFallbackAgeIsRunning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real child process; skipped in -short")
-	}
-
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	m := message.NewService(q)
-
-	sess, err := s.Create(context.Background(), "why-status-pid-fresh")
-	require.NoError(t, err)
-
-	dataDir := t.TempDir()
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
-	defer holder.stop()
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
-
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	justUnder := time.Now().Add(-(session.MaxPidFallbackAge - 2*time.Minute))
-	require.NoError(t, os.Chtimes(lockPath, justUnder, justUnder))
-
-	a := &app.App{Messages: m, Sessions: s}
-	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
-
-	out := buf.String()
-	require.Contains(t, out, "status: running",
-		"a live PID just under MaxPidFallbackAge must still be trusted as running")
-	require.NotContains(t, out, "no longer trustworthy",
-		"a fresh live PID within the bound must not trigger the PID-reuse/untrusted wording")
-	require.NotContains(t, out, "is not alive",
-		"a running session must not show any dead-case phrasing")
-}
-
-// TestExplainSessionStatus_StatFailureSaysCouldNotVerify proves that when the
-// lock file cannot be inspected due to a stat error other than ENOENT (e.g.
-// permission denied, I/O error, or an ENOTDIR because "locks" is a file),
-// explainSessionStatus reports "status: unknown (could not verify)" instead of
-// "status: at rest". This distinction matters for diagnostics: "could not
-// check" and "verifiably absent" are different answers.
-func TestExplainSessionStatus_StatFailureSaysCouldNotVerify(t *testing.T) {
+// A lock whose state cannot be read at all is fail-open: the classifier
+// answers in turn ("assuming live") -- ASYNC-02's convention. CHANGED OUTPUT
+// (R-ACT-2): the old wording was "status: unknown (could not verify)"; the
+// verdict vocabulary now has no unknown Kind, so the same distinction
+// ("could not check" is not "verifiably absent") is carried by the
+// fail-open in-turn verdict plus an explicit "could not be read" reason.
+//
+// Revert-check: making an unreadable lock classify as released/idle flips
+// the first assertion to "status: at rest".
+func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
@@ -497,46 +418,30 @@ func TestExplainSessionStatus_StatFailureSaysCouldNotVerify(t *testing.T) {
 
 	// Forge a real non-ENOENT stat failure with a NUL byte in dataDir: Go's
 	// os package rejects NUL bytes in a path before any syscall, on every
-	// platform, so this can never be misclassified as "not found". A
-	// file-as-directory path component was tried first and rejected: on
-	// Windows it produces ERROR_PATH_NOT_FOUND, which os.IsNotExist treats
-	// as true — indistinguishable from genuine absence on this platform,
-	// which defeated the whole point of this test. Verified empirically
-	// before switching techniques.
+	// platform, so this can never be misclassified as "not found".
 	dataDir := t.TempDir() + string([]byte{0}) + "bad"
-
-	// Verify the forgery: stat of the expected lock path must fail with a
-	// non-ENOENT error.
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	_, err = os.Stat(lockPath)
 	require.Error(t, err, "stat of a NUL-containing path must fail")
 	require.False(t, os.IsNotExist(err),
-		"this failure must NOT be ENOENT — we need a different stat error class for this test")
-	t.Logf("Forged stat error: %v", err)
+		"this failure must NOT be ENOENT -- we need a different stat error class for this test")
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
-	require.Contains(t, out, "status: unknown (could not verify)",
-		"stat failure must report unknown status, not 'at rest'")
+	require.Contains(t, out, "status: running",
+		"an unreadable lock is possibly live (fail-open, ASYNC-02)")
+	require.Contains(t, out, "could not be read",
+		"the reason must say the lock state could not be read")
 	require.NotContains(t, out, "status: at rest",
-		"stat failure must NOT say 'at rest' — that's for verifiable absence only")
-	require.Contains(t, out, "could not inspect lock file",
-		"output must explain the stat failure reason")
-	require.Contains(t, out, lockPath,
-		"output must include the lock path that failed to stat")
+		"fail-open must not collapse to 'at rest'")
 
-	// Control: a genuinely absent lock file (no stat error at all, just ENOENT)
-	// must still print "status: at rest".
-	a2 := &app.App{Messages: m, Sessions: s}
+	// Control: a genuinely absent lock file (ENOENT) must still print
+	// "status: at rest".
 	var buf2 bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a2, t.TempDir(), sess.ID, &buf2))
-
-	out2 := buf2.String()
-	require.Contains(t, out2, "status: at rest",
-		"verifiable absence (ENOENT) must still say 'at rest'")
-	require.NotContains(t, out2, "status: unknown (could not verify)",
-		"genuine absence must not say 'could not verify'")
+	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sess.ID, &buf2))
+	require.Contains(t, buf2.String(), "status: at rest",
+		"verifiable absence (ENOENT) must say 'at rest'")
 }

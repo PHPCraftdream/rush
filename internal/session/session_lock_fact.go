@@ -3,9 +3,9 @@
 // independent flags. Release truncates the lock file and removes the .pid
 // sidecar (clearHolderMetadata), so "reads back empty" IS a released lock
 // whatever the mtime -- the previous flag pair classified a fresh empty file
-// as in turn for the 20s heartbeat window after every release. computeSessionStatuses
-// and InspectSessionLock's Live field are reduced to this in step 2; until
-// then this is the single source the R-ACT readers use.
+// as in turn for the 20s heartbeat window after every release.
+// InspectSessionLock's Live field remains for the server/recovery readers;
+// the cmd readers use this fact through the classifier.
 
 package session
 

@@ -103,7 +103,7 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
-		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID)
+		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID, force)
 		if err != nil {
 			return err
 		}
@@ -139,7 +139,7 @@ rush sessions reset pr-42 --force
 // processes this command cannot stop safely: voiding a running job would
 // leave its process editing the workspace with its result silently dropped,
 // and a loop between turns would run its next Drain on the wiped history.
-func resetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.ResetOutcome, error) {
+func resetSessionHistory(ctx context.Context, a *app.App, sessionID string, force bool) (session.ResetOutcome, error) {
 	store := a.AsyncJobStore()
 	if store == nil {
 		// No async data can exist without a store: the plain wipe is all there is.
@@ -151,8 +151,22 @@ func resetSessionHistory(ctx context.Context, a *app.App, sessionID string) (ses
 	// Dead-host rows (a force-killed run) become 'interrupted' first: only
 	// rows on a live host still count as running.
 	store.RecoverOwnerScope(ctx, sessionID, a.Messages)
-	if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, w.describe())
+	// The classifier decides "still being worked on". --force skips only the
+	// LOCK half of it: the caller has just killed/proven the lock holder and
+	// holds the real OS lock across the wipe -- but a live driver, running
+	// job or delegation is work --force cannot safely drop, and still refuses
+	// (conscious R-ACT-2 change: a plain reset now refuses mid-turn too,
+	// where it used to be lock-blind and wipe under a live holder).
+	act, actErr := a.SessionActivity(ctx, sessionID)
+	if actErr != nil {
+		return session.ResetOutcome{}, resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
+	}
+	if f := act.Facts; force {
+		if f.Driver != nil || f.OwnRunningJobs > 0 || f.LiveDelegations > 0 || len(f.OpenSchedules) > 0 || len(f.Unreadable) > 0 {
+			return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
+		}
+	} else if kindIsLive(act.Verdict.Kind) {
+		return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
 	}
 	outcome, err := store.ResetOwnerHistory(ctx, a.Messages, sessionID)
 	if errors.Is(err, session.ErrResetJobsRunning) {

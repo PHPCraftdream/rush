@@ -392,27 +392,15 @@ func TestFormatWatchSummary_NoTitle(t *testing.T) {
 	assert.Contains(t, out, "id:       s1")
 }
 
-// TestIsSessionFinished_PidReuseBeyondMaxFallbackAgeReportsNotAlive is the
-// regression test for task #241: isSessionFinished used to hand-roll its
-// own "mtime stale -> fall back to a PID-liveness probe" check
-// (mtimeFresh/pidAlive/combinedLockLiveness) with no bound on the PID
-// fallback. A `rush run` killed with SIGKILL leaves its PID in the lock
-// file without releasing; hours later the OS can recycle that exact PID
-// number for a completely unrelated, currently-running process. Before this
-// fix, isSessionFinished would report lockAlive: true forever for that
-// session, so isSessionFinishedFromState would never see a false lockAlive
-// and `sessions watch <id>` would hang indefinitely on a session that
-// actually ended long ago.
+// The MaxPidFallbackAge PID-reuse bound (task #241) is GONE under the
+// R-ACT-2 lock enum (D10): a readable record naming an alive PID is held
+// whatever the lock's age. CHANGED EXPECTATION: the reuse scenario #241
+// guarded now reports lockAlive=true; the risk (an OS-recycled PID pinning a
+// killed run's lock as alive) is accepted by the architect's decision.
 //
-// The fix migrates isSessionFinished to call session.InspectSessionLock
-// directly, which already carries the task #235 bound
-// (session.MaxPidFallbackAge). This test drives isSessionFinished itself
-// (not the pure isSessionFinishedFromState) against a REAL second process
-// (spawnKillTestLockHolder) standing in for "the OS reused this exact PID
-// number" — it is genuinely alive throughout, proving the AGE bound, not
-// merely a dead-PID false negative — with the lock file's mtime back-dated
-// past session.MaxPidFallbackAge.
-func TestIsSessionFinished_PidReuseBeyondMaxFallbackAgeReportsNotAlive(t *testing.T) {
+// Revert-check: re-adding an mtime bound to the lock reader breaks
+// TestInspectSessionLockFact and this test.
+func TestIsSessionFinished_AgedLockWithLivePIDIsAlive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
@@ -422,60 +410,17 @@ func TestIsSessionFinished_PidReuseBeyondMaxFallbackAgeReportsNotAlive(t *testin
 	sess, err := a.Sessions.CreateWithID(ctx, "watch-pid-reuse", "regression title")
 	require.NoError(t, err)
 
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop()
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
+	require.True(t, session.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
-		"back-dating mtime past MaxPidFallbackAge to simulate a lock abandoned long enough ago that its recorded PID can no longer be trusted, even though it currently resolves to a live process")
+		"back-dating mtime: the enum must not depend on it")
 
 	st, _ := isSessionFinished(ctx, a, sess.ID, dataDir)
-	assert.False(t, st.lockAlive,
-		"a lock older than MaxPidFallbackAge must not be reported alive just because its recorded PID currently belongs to a live (but unrelated) process — this is the core #241 fix")
-}
-
-// TestIsSessionFinished_PidAliveWithinMaxFallbackAgeReportsAlive is the
-// non-regression companion: a live PID within MaxPidFallbackAge of the
-// lock's mtime must still be reported alive, exactly like before this fix —
-// the bound must only kick in once the lock is genuinely old. Uses a
-// stale-but-within-bound mtime (past liveLockMaxAge, so the fast mtime-fresh
-// path is deliberately not what's under test) to exercise the same
-// PID-fallback branch as the regression test above, just on the "still
-// trusted" side of the boundary.
-func TestIsSessionFinished_PidAliveWithinMaxFallbackAgeReportsAlive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real child process; skipped in -short")
-	}
-	a, dataDir := isolatedWatchEnvForTest(t)
-
-	ctx := context.Background()
-	sess, err := a.Sessions.CreateWithID(ctx, "watch-pid-fresh", "regression title")
-	require.NoError(t, err)
-
-	// reapInBackground=false: this test never kills the holder (it stays
-	// alive throughout as a live-PID fixture and is only stopped in the
-	// deferred cleanup), so there is no forceKillHolder/probeThenKillHolder
-	// poll racing a zombie window here. See spawnKillTestLockHolder's doc
-	// comment in sessions_kill_test.go for the cases that actually depend
-	// on one mode or the other.
-	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
-	defer holder.stop()
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
-
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	justUnder := time.Now().Add(-(session.MaxPidFallbackAge - 2*time.Minute))
-	require.NoError(t, os.Chtimes(lockPath, justUnder, justUnder))
-
-	st, _ := isSessionFinished(ctx, a, sess.ID, dataDir)
-	assert.True(t, st.lockAlive, "a live PID just under MaxPidFallbackAge must still be trusted as alive")
+	assert.True(t, st.lockAlive, "an alive recorded PID is held, whatever the lock's age (D10)")
 }
 
 // isolatedWatchEnvForTest stands up a real *app.App against a data

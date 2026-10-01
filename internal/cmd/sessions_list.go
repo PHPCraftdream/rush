@@ -1,26 +1,17 @@
 package cmd
 
 // The `sessions list` subcommand: table / NDJSON listing of top-level
-// sessions, plus the STATUS-column machinery that classifies each session
-// as running / crashed / done / delegating from the locks directory, the
-// shared call-tree activity signal, and the cross-process durable-state
-// walk over live async_jobs delegation rows (session.AsyncJobStore.
-// LiveDescendantJobs), the session's own running plain jobs (LiveOwnJobs) and
-// the durable driver marker of a live `rush run` loop (LiveSessionDrivers).
+// sessions. The STATUS column is the one session-activity classifier's
+// verdict (App.SessionActivityBatch), the same verdicts `sessions why`
+// prints -- there is no second status machinery here.
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -62,66 +53,23 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		}
 		sessions = visible
 
-		// Fork patch (orchestrator UX, round 2 #1): compute STATUS by
-		// reading the locks directory once. running = lock exists and
-		// holder PID is alive; crashed = lock exists but PID is dead
-		// (will be auto-reclaimed on next acquire); blank = no lock,
-		// session is at rest. The lock dir read is one syscall + N
-		// directory entries; the PID liveness check is the same cheap
-		// per-PID probe `sessions reap` uses.
-		statusByID := computeSessionStatuses(a)
-
-		// A dead-PID lock can mean two things: a genuine mid-turn crash,
-		// or a `rush run` that finished cleanly (last assistant turn
-		// ended with end_turn) and exited within the ~60s heartbeat
-		// sweep window — its lock file is still on disk but the PID is
-		// gone. Reclassify those to "done" so a clean exit isn't shown
-		// as "crashed". Cheap: only the handful of sessions with a stale
-		// lock actually hit the message store.
-		statusByID = reclassifyCrashedAsDone(cmd.Context(), a, sessions, statusByID)
-
-		// A "crashed" verdict for an empty (PID-less) or driver-owned lock is
-		// a clean release, not a crash, while the session has live work: a
-		// failed reaction turn's paced retry (error finish, empty back-dated
-		// lock, live driver marker) is running (R6C-2).
-		statusByID = promoteCleanReleaseCrashes(cmd.Context(), a, a.Config().Options.DataDirectory, sessions, statusByID)
-
-		// Sub-agent awareness: a "running" session that is currently blocked
-		// inside an `agent` delegation gets promoted to "delegating" so the
-		// STATUS column distinguishes "top-level agent is working" from "top-
-		// level agent is waiting on a sub-agent". The freshness signal comes
-		// from the shared call-tree walk (sessions_activity.go), NOT from the
-		// lock mtime, so it reflects the sub-agent actually making progress.
-		statusByID = markDelegatingSessions(cmd.Context(), a, sessions, statusByID)
-
-		// Sub-agent awareness, at-rest half: a session with no lock (blank
-		// status above) that still owns an unreleased delegation is
-		// mid-workflow, not done. Sourced from the coordinator's
-		// parked-delegation registry, and a no-op for every session with
-		// nothing parked.
-		if reporter, ok := a.AgentCoordinator.(agent.ParkedSubAgentWorkReporter); ok {
-			statusByID = markParkedDelegationSessions(sessions, statusByID, reporter.ParkedSubAgentParents())
+		// One classifier for the whole list (R-ACT): every STATUS comes from
+		// App.SessionActivityBatch -- the same verdicts `sessions why` prints --
+		// with no per-session promotion layers. The Kind -> STATUS mapping:
+		// in turn / between turns -> "running" (live work), delegating ->
+		// "delegating", crashed -> "crashed", ended -> "done", idle -> blank
+		// (at rest). In-process knowledge (the coordinator's parked-delegation
+		// registry) is deliberately not consulted: a parked delegation keeps
+		// its own async_jobs row live, so another process sees the same
+		// verdict (decision 9).
+		activities, err := a.SessionActivityBatch(cmd.Context(), idsOf(sessions))
+		if err != nil {
+			return fmt.Errorf("failed to classify sessions: %w", err)
 		}
-
-		// Sub-agent awareness, cross-process half: the durable-state layer
-		// beneath markParkedDelegationSessions. The coordinator registry
-		// above only this process can see; here the session's own lock is
-		// gone (or stale) but a live async_jobs delegation row, on a host
-		// that is not provably dead, points at a DESCENDANT session -- any
-		// process can read that from the DB.
-		statusByID = markDelegatingLiveDescendants(cmd.Context(), a, sessions, statusByID)
-
-		// Own-job half: a root with no lock of its own that is waiting on
-		// its OWN running background job is working, not done.
-		statusByID = markRunningOwnJobs(cmd.Context(), a, sessions, statusByID)
-
-		// Driver half: a session a live `rush run` loop drives between turns
-		// (no lock, no running row) is working too.
-		statusByID = markLiveRunDrivers(cmd.Context(), a, sessions, statusByID)
-
-		// Wake-schedule half (stage 5a): a session whose `rush run` is held
-		// open by an ACTIVE once (wakein/wakeon) schedule is working, not done.
-		statusByID = markOpenWakeSchedules(cmd.Context(), a, sessions, statusByID)
+		statusByID := make(map[string]string, len(sessions))
+		for id, act := range activities.ByID {
+			statusByID[id] = listStatus(act.Verdict)
+		}
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -156,375 +104,31 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 	},
 }
 
-// computeSessionStatuses returns sessionID → status ("running" | "crashed").
-// Sessions not in the map are at rest (no lock). Cheap: one directory read +
-// one PID probe per lock file.
-//
-// A session counts as "running" if EITHER the PID it recorded is alive OR
-// its heartbeat (lock file mtime) is still fresh. The PID check alone is
-// not reliable on Windows: tryLockFile takes a mandatory, whole-file
-// LockFileEx lock for the holder's entire lifetime, so a plain read of the
-// PID from another process fails for as long as the session is alive (see
-// the Windows note on session.readLockFile) — without the heartbeat
-// fallback, every live session on Windows would misreport as "crashed".
-//
-// Takes the already-booted *app.App (rather than re-deriving the data
-// directory from --cwd) so it honors --data-dir / a configured
-// data_directory the same way `sessions locks` does — see task #233,
-// the same cwd-hardcoding bug class as task #219/#224/#231.
-//
-// Deliberately does NOT delegate to session.InspectSessionLock (unlike
-// sessions_watch.go's isSessionFinished, task #241): InspectSessionLock's
-// shape is "mtime fresh is the fast path; only when mtime already looks
-// stale, fall back to probing the PID". This function's shape is the
-// opposite — a CONFIRMED pid > 0 is trusted unconditionally, mtime is only
-// the fallback for an unreadable/ambiguous PID (pid <= 0, the Windows norm
-// for a live session) — so the two are not interchangeable without
-// changing behavior here. The pid > 0 branch below is bounded by
-// session.MaxPidFallbackAge for the same reason InspectSessionLock is
-// (task #235/#241): without a bound, a lock abandoned by a killed/crashed
-// `rush run` whose recorded PID the OS later recycles for an unrelated,
-// currently-running process would report "running" forever, with
-// `sessions list`'s STATUS column never self-healing to "crashed"/"done".
-func computeSessionStatuses(a *app.App) map[string]string {
-	if a == nil {
-		return nil
-	}
-	locksDir := filepath.Join(a.Config().Options.DataDirectory, "locks")
-	entries, err := os.ReadDir(locksDir)
-	if err != nil {
-		return nil
-	}
-	out := map[string]string{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "session-") || !strings.HasSuffix(name, ".lock") {
-			continue
-		}
-		sessionID := strings.TrimSuffix(strings.TrimPrefix(name, "session-"), ".lock")
-		path := filepath.Join(locksDir, name)
-		pid := session.ReadLockPID(path)
-		info, statErr := entry.Info()
-		// A CONFIRMED-dead PID (pid > 0 but not alive) is trustworthy on
-		// its own. pid <= 0 is ambiguous — "unreadable", not necessarily
-		// dead (see the Windows note on session.readLockFile) — so only
-		// then do we fall back to heartbeat freshness. A CONFIRMED-alive
-		// PID is trusted only within session.MaxPidFallbackAge of the
-		// lock's mtime — past that, the lock is old enough that no
-		// genuinely healthy holder could still be running it, so a
-		// currently-alive PID is far more likely to be an OS PID-reuse
-		// coincidence than the original holder (task #241).
-		var alive bool
-		switch {
-		case pid > 0 && statErr == nil && time.Since(info.ModTime()) >= session.MaxPidFallbackAge:
-			alive = false
-		case pid > 0:
-			alive = session.IsProcessAlive(pid)
-		case statErr == nil:
-			alive = time.Since(info.ModTime()) <= session.LockStaleDuration
-		}
-		if alive {
-			out[sessionID] = "running"
-		} else {
-			out[sessionID] = "crashed"
-		}
-	}
-	return out
-}
-
-// reclassifyCrashedAsDone promotes a "crashed" status to "done" when the
-// session's last ASSISTANT message finished cleanly (FinishReasonEndTurn).
-// A dead-PID lock without such a clean finish stays "crashed" — that's the
-// genuine mid-turn-crash case. Mutates and returns statusByID in place so
-// both the JSON and table render paths share the same corrected map.
-//
-// Only sessions currently flagged "crashed" hit the message store, so the
-// cost is proportional to the number of stale locks (usually zero or one).
-func reclassifyCrashedAsDone(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if statusByID == nil || a == nil {
-		return statusByID
-	}
-	for _, s := range sessions {
-		if statusByID[s.ID] != "crashed" {
-			continue
-		}
-		msgs, err := a.Messages.List(ctx, s.ID)
-		if err != nil {
-			continue
-		}
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role != message.Assistant {
-				continue
-			}
-			if msgs[i].FinishReason() == message.FinishReasonEndTurn {
-				statusByID[s.ID] = "done"
-			}
-			break
-		}
-	}
-	return statusByID
-}
-
-// markDelegatingSessions promotes a "running" status to "delegating" when
-// the session's freshest activity is coming from an in-flight sub-agent
-// delegation rather than the top-level agent itself. This is the STATUS-
-// column consumer of the shared call-tree activity signal: it lets an
-// operator scanning `sessions list` see at a glance which running sessions
-// are currently blocked on (and being kept alive by) a sub-agent.
-//
-// Only sessions already flagged "running" are probed — at-rest / crashed /
-// done sessions are left untouched. All of them are checked in ONE batched
-// SQL query (computeCallTreeActivityBatch) instead of one call-tree query
-// per running session, so `sessions list` stays O(1) queries for this step
-// regardless of how many sessions happen to be running concurrently.
-func markDelegatingSessions(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if statusByID == nil || a == nil {
-		return statusByID
-	}
-
-	running := make([]session.Session, 0, len(sessions))
-	for _, s := range sessions {
-		if statusByID[s.ID] == "running" {
-			running = append(running, s)
-		}
-	}
-	if len(running) == 0 {
-		return statusByID
-	}
-
-	ids := make([]string, len(running))
-	for i, s := range running {
+// idsOf projects the session list to the id slice the batched
+// classifier takes.
+func idsOf(sessions []session.Session) []string {
+	ids := make([]string, len(sessions))
+	for i, s := range sessions {
 		ids[i] = s.ID
 	}
-	activity := computeCallTreeActivityBatch(ctx, a, ids)
-
-	for _, s := range running {
-		act, ok := activity[s.ID]
-		if !ok {
-			continue
-		}
-		// Baseline = the session's own updated_at. A descendant sub-agent
-		// message newer than that means the live edge of work is inside a
-		// delegation. (The session row's updated_at is NOT bumped by child
-		// message inserts — see the DB triggers — so this comparison is
-		// meaningful.)
-		if act.LatestUnix > s.UpdatedAt && act.SubAgentActive {
-			statusByID[s.ID] = "delegating"
-		}
-	}
-	return statusByID
+	return ids
 }
 
-// markParkedDelegationSessions promotes AT-REST sessions that still own an
-// unreleased sub-agent delegation to "delegating".
-//
-// This is the second half of the "delegating" classification, and it exists
-// because an async (`agent` / `agentic_fetch`) delegation outlives the
-// parent's turn: the parent's mailbox and OS lock are released the moment
-// the parent yields, so computeSessionStatuses leaves it blank ("at rest")
-// for the entire duration of the delegation — which, now that a delegation
-// is only released once the child's own async work is terminal, can be
-// minutes. markDelegatingSessions cannot cover this case because it only
-// probes sessions already flagged "running", and the activity comparison it
-// does (a descendant message newer than the session's own updated_at) is
-// false for a parent whose only output was the tool call.
-//
-// The signal is authoritative rather than heuristic: it comes straight from
-// the coordinator's parked-delegation registry, so "delegating" here means
-// precisely "a delegated sub-agent outcome is still parked for this
-// session" — not "some descendant touched a file recently". A session with
-// nothing parked is left exactly as computeSessionStatuses classified it.
-//
-// A session already classified "running" (a live lock) or "crashed" (a dead
-// holder that never finished cleanly) keeps that stronger, independent
-// signal: "delegating" is a refinement of "running" and must never mask a
-// genuine crash. "done" is deliberately NOT protected — a session promoted
-// to "done" by reclassifyCrashedAsDone is precisely the shape this step
-// corrects, since its last end_turn turn can be nothing more than the
-// parent's own yield before the delegation.
-func markParkedDelegationSessions(
-	sessions []session.Session,
-	statusByID map[string]string,
-	parkedParents []string,
-) map[string]string {
-	if len(parkedParents) == 0 {
-		return statusByID
+// listStatus maps the classifier's verdict to the STATUS-column vocabulary
+// ("running" / "delegating" / "crashed" / "done"; "" = at rest). One mapping
+// for every cmd consumer, so the commands cannot drift apart.
+func listStatus(v session.ActivityVerdict) string {
+	switch v.Kind {
+	case session.ActivityInTurn, session.ActivityBetweenTurns:
+		return "running"
+	case session.ActivityDelegating:
+		return "delegating"
+	case session.ActivityCrashed:
+		return "crashed"
+	case session.ActivityEnded:
+		return "done"
 	}
-	if statusByID == nil {
-		// computeSessionStatuses returns nil when the locks directory
-		// cannot be read at all — the common case on a machine where no
-		// session has ever held a lock, and every session then reads as at
-		// rest. That is exactly the shape this promotion exists to correct,
-		// so allocate rather than bail out.
-		statusByID = make(map[string]string, len(sessions))
-	}
-	parked := make(map[string]struct{}, len(parkedParents))
-	for _, id := range parkedParents {
-		parked[id] = struct{}{}
-	}
-	for _, s := range sessions {
-		if _, ok := parked[s.ID]; !ok {
-			continue
-		}
-		// Never downgrade a stronger signal: a session that is genuinely
-		// running (lock held, holder alive) or crashed keeps that status.
-		if st := statusByID[s.ID]; st == "running" || st == "crashed" {
-			continue
-		}
-		statusByID[s.ID] = "delegating"
-	}
-	return statusByID
-}
-
-// markDelegatingLiveDescendants is the cross-process layer beneath
-// markParkedDelegationSessions: it promotes a session that would otherwise
-// read as finished ("done", via reclassifyCrashedAsDone) or at rest (blank
-// — no lock of its own) to "delegating" when at least one DESCENDANT
-// session still has live work.
-//
-// Why a second layer: markParkedDelegationSessions reads the coordinator's
-// in-process parked-delegation registry, which only the process that OWNS
-// the delegation can see. `sessions list` runs in whatever process the
-// operator typed it in — usually a different one — so the registry is empty
-// there and the parked-delegation shape reads as done/at rest. The durable
-// state is visible everywhere though: live async_jobs delegation rows
-// (child_session_id), each checked against its owning host's liveness
-// (doc sec.3.6/3.8). AsyncJobStore.LiveDescendantJobs walks exactly that,
-// so a parent waiting on a sub-agent that lives in another process still
-// shows "delegating" here.
-//
-// Only terminal / at-rest verdicts are promoted. A session that is
-// genuinely "running" (its own live lock), "crashed" (dead holder, no
-// clean finish) or already "delegating" keeps that stronger, independent
-// signal — the same never-downgrade rule markParkedDelegationSessions
-// follows. Stale-lock and crashed therefore stay distinct from done: a
-// crashed parent is reported crashed, not done, and never as done merely
-// because a descendant is live.
-func markDelegatingLiveDescendants(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if a == nil {
-		return statusByID
-	}
-	store := a.AsyncJobStore()
-	if store == nil {
-		return statusByID
-	}
-	for _, s := range sessions {
-		switch statusByID[s.ID] {
-		case "done", "":
-			// Terminal or at rest — a candidate for promotion.
-		default:
-			// running / crashed / delegating keep their own signal.
-			continue
-		}
-		live, _ := store.LiveDescendantJobs(ctx, s.ID)
-		if len(live) == 0 {
-			continue
-		}
-		if statusByID == nil {
-			// computeSessionStatuses returns nil when the locks directory
-			// cannot be read at all, leaving every session blank — exactly
-			// the shape this promotion corrects.
-			statusByID = make(map[string]string, len(sessions))
-		}
-		statusByID[s.ID] = "delegating"
-	}
-	return statusByID
-}
-
-// markRunningOwnJobs promotes a session that would otherwise read as
-// finished ("done") or at rest (blank) to "running" when it OWNS a running
-// plain background job (bash/run_command) on a host not provably dead --
-// the own-job counterpart of markDelegatingLiveDescendants, which only sees
-// delegation rows. A `rush run` waiting on such a job holds no session lock
-// between turns, so without this the root headlined "done" while the loop
-// was still going to react to the job. It runs AFTER the delegating layers
-// and never downgrades: running / crashed / delegating keep their own
-// signal, a crashed root stays crashed. The vocabulary is the existing one
-// ("running": the session has live work); `sessions why` gives the same
-// verdict with the job named.
-func markRunningOwnJobs(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if a == nil {
-		return statusByID
-	}
-	store := a.AsyncJobStore()
-	if store == nil {
-		return statusByID
-	}
-	for _, s := range sessions {
-		switch statusByID[s.ID] {
-		case "done", "":
-			// Terminal or at rest — a candidate for promotion.
-		default:
-			continue
-		}
-		live, _ := store.LiveOwnJobs(ctx, s.ID)
-		if len(live) == 0 {
-			continue
-		}
-		if statusByID == nil {
-			statusByID = make(map[string]string, len(sessions))
-		}
-		statusByID[s.ID] = "running"
-	}
-	return statusByID
-}
-
-// markOpenWakeSchedules is the wake-schedule half of the list promotions
-// (stage 5a): a session whose ACTIVE once (wakein/wakeon) schedule holds its
-// `rush run` open (CLIScope answers WorkOpen for it) would otherwise read as
-// done/at rest once the lock released and the last turn finished. Same
-// never-downgrade rule as the other layers; `sessions why` names the
-// schedule with the same describeOpenWakeSchedules clause.
-func markOpenWakeSchedules(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if a == nil {
-		return statusByID
-	}
-	wake := a.WakeScheduleStore()
-	if wake == nil {
-		return statusByID
-	}
-	for _, s := range sessions {
-		switch statusByID[s.ID] {
-		case "done", "":
-			// Terminal or at rest — a candidate for promotion.
-		default:
-			continue
-		}
-		open, err := session.OpenOnceWakeSchedules(ctx, wake, s.ID)
-		if err != nil || len(open) == 0 {
-			continue
-		}
-		if statusByID == nil {
-			statusByID = make(map[string]string, len(sessions))
-		}
-		statusByID[s.ID] = "running"
-	}
-	return statusByID
+	return ""
 }
 
 func statusOrDash(s string) string {
@@ -551,11 +155,11 @@ type sessionListItem struct {
 	// EndedReason is how the session's last run ended (its exit_reason);
 	// empty while a run is in progress or when none ever ended.
 	EndedReason string `json:"ended_reason,omitempty"`
-	// Status is "running" (lock exists, holder PID alive), "crashed"
-	// (lock exists but PID dead — will be auto-reclaimed) or "" (at rest).
-	// Computed live from the locks directory at list time. omitempty so
-	// the field is absent for at-rest sessions, keeping the wire shape
-	// minimal for the common case.
+	// Status is "running" (live work: in a turn or between turns),
+	// "delegating" (a live sub-agent delegation), "crashed" (a crash fact,
+	// no live work), "done" (a recorded ended_reason) or absent (at rest).
+	// Classified by the one session-activity classifier; omitempty keeps
+	// the wire shape minimal for at-rest sessions.
 	Status string `json:"status,omitempty"`
 }
 
@@ -574,44 +178,4 @@ func makeSessionListItem(s session.Session) sessionListItem {
 		YoloEnabled:  s.YoloEnabled,
 		EndedReason:  s.EndedReason,
 	}
-}
-
-// markLiveRunDrivers promotes a session that would otherwise read as finished
-// ("done") or at rest (blank) to "running" when a live `rush run` loop drives it
-// (the durable driver marker on a host not provably dead; App.LiveSessionDrivers,
-// ONE read for the whole list). Between turns -- a paced retry after a failed
-// Drain, debt pending -- such a loop holds no session lock and has no running
-// row, so without this the session headlined "done" while the loop was still
-// going to react (ASYNC-02: the scope is open). Runs last and never downgrades:
-// running / crashed / delegating keep their own signal (a crash whose lock is
-// only a clean release is rescued earlier, by promoteCleanReleaseCrashes).
-func markLiveRunDrivers(
-	ctx context.Context,
-	a *app.App,
-	sessions []session.Session,
-	statusByID map[string]string,
-) map[string]string {
-	if a == nil {
-		return statusByID
-	}
-	drivers, err := a.LiveSessionDrivers(ctx)
-	if err != nil || len(drivers) == 0 {
-		return statusByID
-	}
-	for _, s := range sessions {
-		switch statusByID[s.ID] {
-		case "done", "":
-			// Terminal or at rest — a candidate for promotion.
-		default:
-			continue
-		}
-		if _, driven := drivers[s.ID]; !driven {
-			continue
-		}
-		if statusByID == nil {
-			statusByID = make(map[string]string, len(sessions))
-		}
-		statusByID[s.ID] = "running"
-	}
-	return statusByID
 }

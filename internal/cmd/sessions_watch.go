@@ -77,7 +77,7 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 	// cwd-based guess — same fix as `sessions locks` (task #231). See
 	// task #233. Threaded through as dataDir (not a pre-joined locksDir)
 	// so isSessionFinished can hand it straight to
-	// session.InspectSessionLock, which derives its own locks/session-*.lock
+	// the classifier, which derives its own locks/session-*.lock
 	// path — see isSessionFinished's doc comment.
 	dataDir := a.Config().Options.DataDirectory
 	ctx := cmd.Context()
@@ -442,37 +442,31 @@ func combinedLockLiveness(mtimeFresh, pidAlive bool) bool {
 // isSessionFinishedFromState so it is unit-testable without an app /
 // filesystem.
 //
-// Lock liveness is delegated entirely to session.InspectSessionLock (task
-// #241) rather than re-implementing the "mtime fresh, else fall back to a
-// bounded PID-liveness probe" check locally. This file used to hand-roll
-// that exact check (mtimeFresh/pidAlive/combinedLockLiveness below) without
-// ever bounding the PID fallback, so a lock abandoned by a killed/crashed
-// `rush run` whose recorded PID the OS later recycled for an unrelated
-// process would report lockAlive: true forever — isSessionFinishedFromState
-// would then never see a false lockAlive, and `sessions watch` would hang
-// on a session that in fact ended hours earlier. InspectSessionLock already
-// carries the fix for that (maxPidFallbackAge, task #235); calling it here
-// closes the same gap without a second, independently-maintained copy of
-// the bound. combinedLockLiveness itself is left in place (still exercised
-// by its own unit tests) as it remains an accurate description of the OR
-// semantics InspectSessionLock's Live field encodes internally.
+// Liveness comes from the one session-activity classifier (App.SessionActivity):
+// the lock fact answers lockAlive and the verdict keeps the scope open while
+// live work remains. combinedLockLiveness is left in place (still exercised
+// by its own unit tests).
 func isSessionFinished(ctx context.Context, a *app.App, sessionID, dataDir string) (watchState, string) {
 	sess, sessErr := a.Sessions.Get(ctx, sessionID)
 	msgs, msgsErr := a.Messages.List(ctx, sessionID)
 
-	lockAlive := session.InspectSessionLock(dataDir, sessionID, liveLockMaxAge).Live
+	// One classifier verdict per tick (R-ACT): the lock half answers "is a
+	// holder alive" and the whole verdict answers "is the scope open" --
+	// there is no second liveness formulation here. An unreadable lock
+	// counts as held (the classifier's fail-open).
+	act, actErr := a.SessionActivity(ctx, sessionID)
+	lockAlive := actErr == nil &&
+		(act.Facts.Lock.Kind == session.LockHeld || act.Facts.Lock.Kind == session.LockUnknown)
 
 	done, reason := isSessionFinishedFromState(sess, sessErr, msgs, msgsErr, lockAlive)
 
 	// The lock is held only during a turn (its file is truncated on release),
 	// so a finished-looking state proves nothing while a `rush run` loop
-	// waits between turns: the driver marker, a running own job or a live
-	// delegation keep the session open (R6C-1, ASYNC-02).
+	// waits between turns: the verdict keeps the session open and names what
+	// it waits on (R6C-1, ASYNC-02).
 	var liveWork string
-	if done {
-		if w := inspectSessionLiveWork(ctx, a, sessionID); w.active() {
-			done, reason, liveWork = false, "", w.describe()
-		}
+	if done && actErr == nil && kindIsLive(act.Verdict.Kind) {
+		done, reason, liveWork = false, "", act.Verdict.Description
 	}
 
 	// Freshest activity anywhere we can see it, used to tell "this session

@@ -108,7 +108,7 @@ type Session struct {
 	// delegation row (running, host not provably dead), so this session is
 	// NOT finished even though its own lock is gone — cross-process
 	// "delegating", the same derivation `sessions list` applies through
-	// markDelegatingLiveDescendants (AsyncJobStore.LiveDescendantJobs).
+	// the session-activity classifier (AsyncJobStore.LiveDescendantJobs).
 	// Wire-only, filled by the web server's session list. Complements
 	// OwnedExternal: that one is about THIS session's lock, this one about
 	// work happening below it.

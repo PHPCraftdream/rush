@@ -8,6 +8,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- `sessions` (`sessions list/why/watch/tail/locks/reap/inject/cancel/reset`):
+  the "is this session alive, and on what" verdict now comes from ONE
+  classifier (`sessions why` prints the same verdict `sessions list` shows).
+  Behavior changes by design: live work (a live `rush run` driver, a running
+  job, a live delegation, an open once schedule) outranks a dead recorded
+  lock PID (shown as a "stale lock" annotation, not a crash); "done" is only
+  ever derived from a run's `ended_reason` -- a clean `end_turn` finish
+  without one reads at rest; a dead-PID lock with no live work is "crashed"
+  even when the last turn finished cleanly; debt (a pending reaction) keeps a
+  session open only while a live driver exists; a driver marker or running
+  job on a provably dead host is reported as "crashed"; a freshly released
+  (empty) lock file is no longer "running" for the 20s heartbeat window.
+  `sessions locks` / `--prune` map lock files to real session ids through the
+  shared stem map, so slug ids get the between-turns label and the prune
+  guard.
+
 ### Added
 
 - **Limit reset time in machine-local time**: a provider's zone-less

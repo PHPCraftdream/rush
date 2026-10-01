@@ -73,3 +73,10 @@ func (app *App) WakeScheduleStore() *session.WakeScheduleStore {
 func (app *App) SetWakeScheduleStoreForTest(s *session.WakeScheduleStore) {
 	app.wakeScheduleStore = s
 }
+
+// SetDataDirForTest points the session-activity reader's lock inspection at
+// a data directory chosen by the test (the &App{...} literal pattern; the
+// reader derives the lock path itself, decision 10).
+func (app *App) SetDataDirForTest(dir string) {
+	app.dataDir = dir
+}

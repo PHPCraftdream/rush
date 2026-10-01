@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -103,19 +102,19 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// A session is running while a process holds its lock (a turn), a live
-	// `rush run` loop drives it between turns (lock released, driver marker
-	// live: R7C-3), or it waits on its own running job / a live delegation --
-	// the web case, which claims no marker (R8C-4).
-	running := isSessionLockAlive(a.Config().Options.DataDirectory, sess.ID)
-	var loop *session.SessionDriver
+	// One classifier verdict decides "running" (R7C-3/R8C-4): in turn, or
+	// live work between turns -- a live `rush run` loop, the session's own
+	// running job, a live delegation, an open once schedule.
+	act, actErr := a.SessionActivity(cmd.Context(), sess.ID)
+	if actErr != nil {
+		return actErr
+	}
+	v := act.Verdict
+	running := kindIsLive(v.Kind)
+	loop := act.Facts.Driver
 	var waitingOn string
-	if !running {
-		live := inspectSessionLiveWork(cmd.Context(), a, sess.ID)
-		loop = live.driver
-		if live.active() {
-			running, waitingOn = true, live.describe()
-		}
+	if running && loop == nil && v.Kind != session.ActivityInTurn {
+		waitingOn = v.Description
 	}
 
 	status := "injected"
@@ -233,31 +232,4 @@ func doInject(
 		return session.Session{}, message.Message{}, fmt.Errorf("failed to queue pending inject: %w", err)
 	}
 	return sess, msg, nil
-}
-
-// isSessionLockAliveThreshold mirrors lockPulseStatus's (sessions.go) "offline"
-// cutoff of 20s, and internal/server/handlers.go's externalOwnerLiveThreshold —
-// so the mtime-fresh fast path below behaves identically to before this was
-// rewritten to delegate to session.InspectSessionLock.
-const isSessionLockAliveThreshold = 20 * time.Second
-
-// isSessionLockAlive reports whether a live process currently holds this
-// session's lock. It delegates to session.InspectSessionLock, which checks
-// the heartbeat mtime as a fast path and, only when that mtime already looks
-// stale, falls back to a real session.IsProcessAlive(pid) probe before
-// concluding the holder is dead (task #228: the heartbeat's mtime touch is
-// gated on real activity, and the stream watchdog tick that supplies that
-// activity during a long tool call can lag past this threshold even for a
-// perfectly healthy session).
-//
-// On Windows, the exclusive lock prevents reading the PID while the holder
-// is alive, so a fresh lock with PID 0 is unaffected by the PID fallback —
-// InspectSessionLock only attempts the PID probe once mtime is already
-// stale, so a fresh lock with an unreadable PID still reports Live: true via
-// the mtime fast path alone.
-func isSessionLockAlive(dataDir, sessionID string) bool {
-	if dataDir == "" || sessionID == "" {
-		return false
-	}
-	return session.InspectSessionLock(dataDir, sessionID, isSessionLockAliveThreshold).Live
 }

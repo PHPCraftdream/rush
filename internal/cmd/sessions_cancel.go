@@ -115,11 +115,17 @@ func cancelWakeSchedules(ctx context.Context, a *app.App, sessionID string) int6
 	return n
 }
 
-// sessionHasLiveWork reports whether something is running or waiting for the
-// session: a live lock (a turn), a driver marker, a running own job or a live
-// delegation. An unreadable read counts as live (the codebase's convention).
+// sessionHasLiveWork reports whether the classifier keeps the session open:
+// in turn, or live work between turns (a driver, a running own job, a live
+// delegation, an open once schedule). An unreadable live-work fact counts as
+// live (the codebase's convention, encoded in the classifier). dataDir is
+// kept for signature stability; the classifier derives the lock path itself.
 func sessionHasLiveWork(ctx context.Context, a *app.App, dataDir, sessionID string) bool {
-	return isSessionLockAlive(dataDir, sessionID) || inspectSessionLiveWork(ctx, a, sessionID).active()
+	act, err := a.SessionActivity(ctx, sessionID)
+	if err != nil {
+		return true
+	}
+	return kindIsLive(act.Verdict.Kind)
 }
 
 func init() {

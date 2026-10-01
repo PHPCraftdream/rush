@@ -10,7 +10,7 @@ package cmd
 // whose owning host is not provably dead must NOT be reported done.
 // explainSessionStatus consults session.AsyncJobStore.LiveDescendantJobs
 // (the same cross-process derivation `sessions list` applies through
-// markDelegatingLiveDescendants) and reports a distinct, non-terminal
+// the old per-command layer) and reports a distinct, non-terminal
 // "delegating" verdict that names the live descendant. Stale-lock and
 // crashed stay distinct from done — and from each other.
 //
@@ -95,6 +95,7 @@ func newWhyDescendantTestApp(t *testing.T) (a *app.App, s session.Service, m mes
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	a = &app.App{Messages: m, Sessions: s}
 	a.SetAsyncJobStoreForTest(store)
+	a.SetDataDirForTest(dataDir)
 	return a, s, m, store, dataDir
 }
 
@@ -142,19 +143,15 @@ func TestExplainSessionStatus_StaleLockLiveChildIsDelegating(t *testing.T) {
 	firstLine := strings.SplitN(out, "\n", 2)[0]
 	require.Equal(t, "status: delegating (stale lock)", firstLine,
 		"first line must report the distinct non-terminal verdict — never done while a descendant has live work")
-	require.Contains(t, out, "has live work",
-		"the reason must state WHY: a descendant session has a live async_jobs row")
-	require.Contains(t, out, short(session.HashID(child.ID)),
-		"the reason must name the live descendant session")
-	require.Contains(t, out, "NOT done",
-		"the reason must make the non-terminal verdict explicit")
-	require.Contains(t, out, "yield before the delegation",
-		"the end_turn must be explained as the parent's own yield, not completion")
-	require.NotContains(t, out, "Treat as done",
-		"the stale-lock reclassification must be suppressed while descendant work is live")
+	// CHANGED STRINGS (R-ACT-2): the reason is the classifier's Description
+	// -- it names the count of live delegations and the annotated dead PID.
+	require.Contains(t, out, "live sub-agent delegation",
+		"the reason must state WHY: a descendant delegation is live")
+	require.Contains(t, out, "dead PID 999999",
+		"the recorded dead PID rides along as an annotation (D1)")
 	require.NotContains(t, out, "status: done")
 	require.NotContains(t, out, "status: crashed",
-		"a stale lock with a clean finish must not collapse into crashed either")
+		"live work outranks the dead PID (D1)")
 }
 
 // TestExplainSessionStatus_AtRestLiveChildIsDelegating covers the other
@@ -181,9 +178,10 @@ func TestExplainSessionStatus_AtRestLiveChildIsDelegating(t *testing.T) {
 	firstLine := strings.SplitN(out, "\n", 2)[0]
 	require.Equal(t, "status: delegating", firstLine,
 		"an at-rest parent with live descendant work must not read as at rest / idle")
-	require.Contains(t, out, "no lock file present for this session")
-	require.Contains(t, out, short(session.HashID(child.ID)))
-	require.Contains(t, out, "NOT done")
+	// CHANGED STRINGS (R-ACT-2): classifier description; the Async jobs
+	// section still names the delegation's tool call.
+	require.Contains(t, out, "live sub-agent delegation")
+	require.Contains(t, out, "delegate-1")
 	require.NotContains(t, out, "session is idle")
 	require.NotContains(t, out, "status: at rest")
 }
@@ -218,9 +216,11 @@ func TestExplainSessionStatus_ChildReleasedReturnsToDone(t *testing.T) {
 
 	out := buf.String()
 	firstLine := strings.SplitN(out, "\n", 2)[0]
-	require.Equal(t, "status: done (stale lock)", firstLine,
-		"with no live descendant the clean-exit reclassification must apply again")
-	require.Contains(t, out, "Treat as done")
+	// CHANGED VERDICT (R-ACT-2, D3/D4): dead recorded PID, no live work, and
+	// end_turn is not an end signal -> crashed (was "done (stale lock)").
+	require.Equal(t, "status: crashed", firstLine,
+		"a dead PID without live work is crashed even after end_turn and a completed delegation")
+	require.Contains(t, out, "no longer alive")
 	require.NotContains(t, out, "delegating")
 }
 
@@ -257,19 +257,18 @@ func TestExplainSessionStatus_GrandchildLiveIsDelegating(t *testing.T) {
 	firstLine := strings.SplitN(out, "\n", 2)[0]
 	require.Equal(t, "status: delegating (stale lock)", firstLine,
 		"a live GRANDCHILD delegation must hold the root non-terminal — the walk is transitive")
-	require.Contains(t, out, short(session.HashID(child.ID)),
-		"the reason names the immediate child the root's own delegation row points at")
+	require.Contains(t, out, "live sub-agent delegation",
+		"the reason names the live delegations (transitive walk)")
 	require.NotContains(t, out, "Treat as done")
 }
 
-// TestExplainSessionStatus_CrashedStaysCrashedWithLiveChild proves the
-// statuses stay distinct: a parent whose holder is genuinely dead and
-// whose last turn did NOT finish cleanly remains "crashed" — a live
-// delegation must neither promote it to done nor be used to explain it
-// away as crashed. The child, asked about ITS OWN status (via its own real
-// session lock, unrelated to the delegation-row mechanism), reports
-// "running": two distinct truthful verdicts for two distinct sessions.
-func TestExplainSessionStatus_CrashedStaysCrashedWithLiveChild(t *testing.T) {
+// TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating: a
+// parent whose holder is genuinely dead but which has a live delegation is
+// "delegating (stale lock)" under the R-ACT-2 classifier -- live work
+// outranks a dead PID, which is demoted to an annotation. The child, asked
+// about ITS OWN status (via its own real session lock), reports "running":
+// two distinct truthful verdicts for two distinct sessions.
+func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) {
 	t.Parallel()
 	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
 
@@ -296,10 +295,11 @@ func TestExplainSessionStatus_CrashedStaysCrashedWithLiveChild(t *testing.T) {
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, parent.ID, &parentBuf))
 	parentOut := parentBuf.String()
 	firstLine := strings.SplitN(parentOut, "\n", 2)[0]
-	require.Equal(t, "status: crashed", firstLine,
-		"a parent with a dead holder and no clean finish stays crashed — distinct from done and from the child's state")
-	require.Contains(t, parentOut, "died mid-turn")
-	require.NotContains(t, parentOut, "delegating")
+	// CHANGED VERDICT (R-ACT-2, D1/D2): live work (the delegation) outranks
+	// the dead recorded PID, which becomes the stale-lock annotation (was
+	// "crashed" via never-downgrade).
+	require.Equal(t, "status: delegating (stale lock)", firstLine,
+		"a live delegation outranks a dead PID -- distinct from done and from the child's state")
 	require.NotContains(t, parentOut, "status: done")
 
 	var childBuf bytes.Buffer

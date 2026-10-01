@@ -596,3 +596,38 @@ func TestSessionsKillAndReset_RelativeDataDirResolveConsistently(t *testing.T) {
 	require.Equal(t, wantDataDir, built.Config().Options.DataDirectory,
 		"sessions kill and sessions reset --force must resolve the same relative --data-dir to the same absolute path")
 }
+
+// TestReacquireAfterKill_WaitsOutLingeringOSLock: the OS may release a killed
+// holder's lock after the PID already reads dead (LockFileEx under load). A
+// second in-process handle reproduces "busy for a while, then free"; the
+// reset re-acquire must ride that out within its wait budget.
+func TestReacquireAfterKill_WaitsOutLingeringOSLock(t *testing.T) {
+	dataDir := t.TempDir()
+	held, err := session.TryAcquireSessionLock(dataDir, "lingering")
+	require.NoError(t, err)
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = held.Release()
+		close(released)
+	}()
+	t.Cleanup(func() { <-released })
+
+	lk, err := reacquireAfterKill(dataDir, "lingering", 5*time.Second)
+	require.NoError(t, err)
+	_ = lk.Release()
+}
+
+// TestReacquireAfterKill_GivesUpAfterWait: a lock still held when the budget
+// runs out is reported busy, never acquired.
+func TestReacquireAfterKill_GivesUpAfterWait(t *testing.T) {
+	dataDir := t.TempDir()
+	held, err := session.TryAcquireSessionLock(dataDir, "still-held")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Release() })
+
+	lk, err := reacquireAfterKill(dataDir, "still-held", 200*time.Millisecond)
+	var busy *session.SessionLockBusyError
+	require.ErrorAs(t, err, &busy)
+	require.Nil(t, lk)
+}

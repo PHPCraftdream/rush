@@ -7,7 +7,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -177,92 +176,11 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 	return sqlDB, db.New(sqlDB)
 }
 
-// TestReclassifyCrashedAsDone_EndTurn verifies that a session holding a
-// stale (dead-PID) lock but whose last assistant message finished cleanly
-// (end_turn) is reclassified from "crashed" to "done". This is the
-// clean-exit-but-lock-not-yet-swept case that was previously misreported.
-func TestReclassifyCrashedAsDone_EndTurn(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	m := message.NewService(q)
-
-	sess, err := s.Create(context.Background(), "clean exit")
-	require.NoError(t, err)
-
-	_, err = m.Create(context.Background(), sess.ID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
-	})
-	require.NoError(t, err)
-
-	// Final assistant message that finished cleanly with end_turn.
-	assistant, err := m.Create(context.Background(), sess.ID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "done"}},
-	})
-	require.NoError(t, err)
-	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
-	require.NoError(t, m.Update(context.Background(), assistant))
-
-	a := &app.App{Messages: m, Sessions: s}
-	statusByID := map[string]string{sess.ID: "crashed"}
-
-	got := reclassifyCrashedAsDone(context.Background(), a, []session.Session{sess}, statusByID)
-	require.Equal(t, "done", got[sess.ID])
-}
-
-// TestReclassifyCrashedAsDone_Canceled confirms that a dead-PID lock whose
-// last assistant message did NOT finish cleanly (here: canceled) stays
-// "crashed" — the genuine mid-turn-crash / interrupted case.
-func TestReclassifyCrashedAsDone_Canceled(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	m := message.NewService(q)
-
-	sess, err := s.Create(context.Background(), "interrupted")
-	require.NoError(t, err)
-
-	assistant, err := m.Create(context.Background(), sess.ID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "partial"}},
-	})
-	require.NoError(t, err)
-	assistant.AddFinish(message.FinishReasonCanceled, "", "")
-	require.NoError(t, m.Update(context.Background(), assistant))
-
-	a := &app.App{Messages: m, Sessions: s}
-	statusByID := map[string]string{sess.ID: "crashed"}
-
-	got := reclassifyCrashedAsDone(context.Background(), a, []session.Session{sess}, statusByID)
-	require.Equal(t, "crashed", got[sess.ID])
-}
-
-// TestReclassifyCrashedAsDone_NoAssistantMessage confirms that a session
-// with no assistant message at all stays "crashed" (no clean finish to
-// promote on).
-func TestReclassifyCrashedAsDone_NoAssistantMessage(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	m := message.NewService(q)
-
-	sess, err := s.Create(context.Background(), "no assistant")
-	require.NoError(t, err)
-
-	_, err = m.Create(context.Background(), sess.ID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: "hello"}},
-	})
-	require.NoError(t, err)
-
-	a := &app.App{Messages: m, Sessions: s}
-	statusByID := map[string]string{sess.ID: "crashed"}
-
-	got := reclassifyCrashedAsDone(context.Background(), a, []session.Session{sess}, statusByID)
-	require.Equal(t, "crashed", got[sess.ID])
-}
+// NOTE (R-ACT-2): the three TestReclassifyCrashedAsDone_* tests were deleted
+// with the function they exercised. The rules they pinned moved into the one
+// classifier and CHANGED by architect decision: ended_reason is the only end
+// signal (a clean end_turn finish without it reads idle, not done -- D4), and
+// a recorded dead PID stays crashed whatever the last finish (D3). The
+// replacement rows are TestClassifySessionActivity/"D3 dead PID with
+// end_turn finish stays crashed" and /"D4 end_turn without ended_reason is
+// idle" (internal/session/session_activity_test.go).

@@ -121,7 +121,7 @@ func resetSeeded(t *testing.T, s session.Service, m message.Service, store *sess
 // The wipe refuses while the session is still worked on and changes nothing
 // (messages and notice rows intact).
 //
-// Revert-check: dropping the inspectSessionLiveWork gate from
+// Revert-check: dropping the classifier gate from
 // resetSessionHistory (and, for the running-job row, the store's running-rows
 // guard) wipes the history of a live session; every case fails.
 func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
@@ -136,7 +136,7 @@ func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
 		}, "`rush run`"},
 		{"running own job", func(t *testing.T, _ session.Service, store *session.AsyncJobStore, id string) {
 			claimOwnJob(t, store, id, "bash-live")
-		}, "bash-live"},
+		}, "1 running job"},
 		{"running delegation", func(t *testing.T, s session.Service, store *session.AsyncJobStore, id string) {
 			child, err := s.CreateTaskSession(context.Background(), "reset-child-"+id, id, "sub-agent")
 			require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
 			sess := resetSeeded(t, s, m, store, "live "+tc.name)
 			tc.hold(t, s, store, sess.ID)
 
-			_, err := resetSessionHistory(context.Background(), a, sess.ID)
+			_, err := resetSessionHistory(context.Background(), a, sess.ID, false)
 			require.ErrorContains(t, err, "still being worked on")
 			require.ErrorContains(t, err, tc.note)
 			require.ErrorContains(t, err, "nothing was reset")
@@ -181,7 +181,7 @@ func TestResetSessionHistory_DeadHostRowsAreRecoveredAndVoided(t *testing.T) {
 	require.NoError(t, dead.ClaimSessionDriver(ctx, sess.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
-	out, err := resetSessionHistory(ctx, a, sess.ID)
+	out, err := resetSessionHistory(ctx, a, sess.ID, false)
 	require.NoError(t, err)
 	require.Positive(t, out.JobsVoided)
 

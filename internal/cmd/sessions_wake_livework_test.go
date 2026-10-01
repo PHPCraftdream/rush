@@ -1,6 +1,6 @@
 // Stage 5a: the `sessions` readers' wake-schedule awareness. `why` names an
 // open once schedule and refuses done/at-rest; `list`'s promotion and the
-// shared inspectSessionLiveWork report the session as live; `cancel` takes
+// shared classifier report the session as live; `cancel` takes
 // the schedules down so the waiting run is not orphaned on its timer.
 package cmd
 
@@ -119,29 +119,21 @@ func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	require.Contains(t, buf.String(), "status: at rest")
 }
 
-// inspectSessionLiveWork sees the once schedule (watch/cancel --all/reset's
-// refusal all read .active() through it).
-func TestInspectSessionLiveWork_OpenOnceScheduleIsActive(t *testing.T) {
+// The classifier sees the once schedule: the session is between turns and
+// waits on it (watch keeps following; cancel --all flags; reset refuses) --
+// the classifier shared
+// fact, now read once.
+func TestSessionActivity_OpenOnceScheduleIsBetweenTurns(t *testing.T) {
 	a, _, sessionID, scheduleID := wakeWhyFixture(t, time.Hour)
 
-	w := inspectSessionLiveWork(context.Background(), a, sessionID)
-	require.True(t, w.active())
-	require.Len(t, w.wakeSchedules, 1)
-	require.Equal(t, scheduleID, w.wakeSchedules[0].ID)
-	require.Contains(t, w.describe(), "waiting on wake schedule "+scheduleID)
-}
-
-// markOpenWakeSchedules promotes done/at-rest to running for the list view.
-func TestMarkOpenWakeSchedules_PromotesHeldSessions(t *testing.T) {
-	a, _, sessionID, _ := wakeWhyFixture(t, time.Hour)
-	sess, err := a.Sessions.Get(context.Background(), sessionID)
+	act, err := a.SessionActivity(context.Background(), sessionID)
 	require.NoError(t, err)
-
-	got := markOpenWakeSchedules(context.Background(), a, []session.Session{sess}, map[string]string{sessionID: "done"})
-	require.Equal(t, "running", got[sessionID])
-	// Never downgrades a stronger verdict.
-	got = markOpenWakeSchedules(context.Background(), a, []session.Session{sess}, map[string]string{sessionID: "crashed"})
-	require.Equal(t, "crashed", got[sessionID])
+	require.Empty(t, act.Facts.Unreadable)
+	require.Equal(t, session.ActivityBetweenTurns, act.Verdict.Kind)
+	require.Contains(t, act.Verdict.WaitingOn, session.WaitSchedule)
+	require.Contains(t, act.Verdict.Description, "wake schedule "+scheduleID)
+	require.Equal(t, "running", listStatus(act.Verdict))
+	require.True(t, sessionHasLiveWork(context.Background(), a, "", sessionID))
 }
 
 // cancelWakeSchedules takes every ACTIVE schedule down (once and loop), so

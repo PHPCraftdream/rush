@@ -86,7 +86,7 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 // delegation (no driver marker: only CLI loops claim one) is running, not
 // "persisted-offline".
 //
-// Revert-check: reading only `.driver` from inspectSessionLiveWork makes the
+// Revert-check: reading only the driver fact from the classifier makes the
 // job and delegation rows report persisted-offline.
 func TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning(t *testing.T) {
 	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
@@ -124,7 +124,7 @@ func TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning(t *testing
 
 	_, stderr := runInject(t, dataDir, jobID, false, false)
 	require.NotContains(t, stderr, "no process is currently running")
-	require.Contains(t, stderr, "bash-1", "the message names what keeps the session open")
+	require.Contains(t, stderr, "waiting on 1 running job(s)", "the message names what keeps the session open")
 
 	out, _ := runInject(t, dataDir, loneID, false, true)
 	res := decode(out)

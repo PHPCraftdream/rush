@@ -38,6 +38,7 @@ func newRunDriverTestApp(t *testing.T) (a *app.App, s session.Service, m message
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	a = &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetAsyncJobStoreForTest(store)
+	a.SetDataDirForTest(dataDir)
 	return a, s, m, store, dataDir
 }
 
@@ -103,19 +104,29 @@ func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(ctx, a, dataDir, stale.ID, &buf))
-	require.Equal(t, "status: running (stale lock)", verdictLine(buf.String()))
+	// CHANGED VERDICT (R-ACT-2, D1): a released lock (no recorded PID) under a live
+	// driver is plainly running; the old "(stale lock)" suffix came from the
+	// finish-reason reclassification layer that no longer exists.
+	require.Equal(t, "status: running", verdictLine(buf.String()))
 	require.NotContains(t, buf.String(), "Treat as done")
 
 	buf.Reset()
+	// CHANGED VERDICT (R-ACT-2, D1): the live driver outranks the recorded
+	// dead PID, which becomes the stale-lock annotation. The old expectation
+	// was "crashed" (never-downgrade).
 	require.NoError(t, explainSessionStatus(ctx, a, dataDir, crashed.ID, &buf))
-	require.Equal(t, "status: crashed", verdictLine(buf.String()), "a dead lock holder without a clean finish is the session's own crash")
+	require.Equal(t, "status: running (stale lock)", verdictLine(buf.String()))
+	require.Contains(t, buf.String(), "dead PID 999999")
 }
 
 // A marker naming a dead host (a crashed `rush run` that never released it)
-// keeps nothing open.
+// is a crash fact (D5), not a live driver.
+//
+// CHANGED VERDICT (R-ACT-2, D5): the pre-rework verdict was "at rest"; the
+// classifier now reports the unreachable-marker shape as crashed.
 //
 // Revert-check: treating every marker as live makes the verdict "running".
-func TestExplainSessionStatus_DeadHostRunDriverIsAtRest(t *testing.T) {
+func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
 	t.Parallel()
 	a, s, m, _, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
@@ -131,16 +142,18 @@ func TestExplainSessionStatus_DeadHostRunDriverIsAtRest(t *testing.T) {
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(ctx, a, dataDir, sess.ID, &buf))
-	require.Equal(t, "status: at rest", verdictLine(buf.String()))
+	require.Equal(t, "status: crashed", verdictLine(buf.String()))
 }
 
-// TestMarkLiveRunDrivers pins the list-side promotion: done/at-rest sessions
-// with a live driver become running; crashed, delegating and running keep
-// their own signal; a dead host's marker does not promote.
+// TestListStatus_DriverShapes pins the list STATUS column across driver
+// shapes through the one classifier (the deleted per-command layer's
+// replacement). CHANGED VERDICTS vs the deleted layer's table: a dead-PID
+// lock plus a live driver is running (D1, was "never downgrade a crash");
+// a dead host's marker with nothing live is crashed (D5, was done);
+// delegating + driver stays delegating (D2).
 //
-// Revert-check: making markLiveRunDrivers return statusByID untouched fails
-// the promotion rows.
-func TestMarkLiveRunDrivers(t *testing.T) {
+// Revert-check: any local re-ranking breaks its row while the others pass.
+func TestListStatus_DriverShapes(t *testing.T) {
 	t.Parallel()
 	a, s, _, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
@@ -149,10 +162,16 @@ func TestMarkLiveRunDrivers(t *testing.T) {
 		require.NoError(t, err)
 		return sess
 	}
-	done, blank, crashed, delegating, running, deadHost, undriven := mk("done"), mk("blank"), mk("crashed"), mk("delegating"), mk("running"), mk("dead-host"), mk("undriven")
-	for _, sess := range []session.Session{done, blank, crashed, delegating, running} {
+	done, blank, deadPID, delegating, deadHost, undriven := mk("done"), mk("blank"), mk("dead-pid"), mk("delegating"), mk("dead-host"), mk("undriven")
+	for _, sess := range []session.Session{done, blank, deadPID, delegating} {
 		require.NoError(t, store.ClaimSessionDriver(ctx, sess.ID))
 	}
+	// The dead-PID shape: a recorded PID that is not alive (D1's annotation
+	// input). The delegating shape needs a live delegation row.
+	backDateLock(t, writeLockFileAt(t, dataDir, deadPID.ID, 999999))
+	other := mk("other")
+	claimDelegation(t, store, delegating.ID, "agent-1", other.ID)
+
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
@@ -160,28 +179,27 @@ func TestMarkLiveRunDrivers(t *testing.T) {
 	require.NoError(t, dead.ClaimSessionDriver(ctx, deadHost.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
-	sessions := []session.Session{done, blank, crashed, delegating, running, deadHost, undriven}
-	got := markLiveRunDrivers(ctx, a, sessions, map[string]string{
-		done.ID: "done", crashed.ID: "crashed", delegating.ID: "delegating", running.ID: "running", deadHost.ID: "done",
-	})
+	ids := []string{done.ID, blank.ID, deadPID.ID, delegating.ID, deadHost.ID, undriven.ID}
+	acts, actErr := a.SessionActivityBatch(ctx, ids)
+	require.NoError(t, actErr)
+	got := map[string]string{}
+	for id, act := range acts.ByID {
+		require.Empty(t, act.Facts.Unreadable, id)
+		got[id] = listStatus(act.Verdict)
+	}
 	require.Equal(t, "running", got[done.ID])
 	require.Equal(t, "running", got[blank.ID])
-	require.Equal(t, "crashed", got[crashed.ID], "never downgrade a crash")
-	require.Equal(t, "delegating", got[delegating.ID])
-	require.Equal(t, "running", got[running.ID])
-	require.Equal(t, "done", got[deadHost.ID], "a dead host's marker keeps nothing open")
+	require.Equal(t, "running", got[deadPID.ID], "D1: the live driver outranks the dead recorded PID")
+	require.Equal(t, "delegating", got[delegating.ID], "D2: the delegation is the Kind, the driver a fact")
+	require.Equal(t, "crashed", got[deadHost.ID], "D5: a dead host's marker with nothing live is a crash")
 	require.Empty(t, got[undriven.ID])
-
-	require.Nil(t, markLiveRunDrivers(ctx, nil, sessions, nil), "nil app is a no-op")
-	fromNil := markLiveRunDrivers(ctx, a, sessions, nil)
-	require.Equal(t, "running", fromNil[blank.ID], "a nil status map (unreadable locks dir) is created on promotion")
 }
 
 // The real `sessions list`: a session with a stale lock and a clean end_turn
 // (the "done" shape) driven by a live loop reads running, and done again once
 // the loop released its marker.
 //
-// Revert-check: dropping the markLiveRunDrivers call from the list command
+// Revert-check: dropping the driver fact from the classifier
 // fails phase 1 (the row reads "done").
 func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
@@ -236,6 +254,9 @@ func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	_, err = freshConn.ExecContext(ctx, `DELETE FROM session_drivers WHERE session_id = ?`, parent.ID)
 	require.NoError(t, err)
 	phase2 := rowFor(runList())
-	require.Contains(t, phase2, "done", "the loop released its marker: the clean-exit reclassification applies again")
+	// CHANGED VERDICT (R-ACT-2, D4): with the marker gone there is no live
+	// work and no recorded ended_reason (the finish is not an end signal),
+	// so the row reads at rest (blank), not "done".
 	require.NotContains(t, phase2, "running")
+	require.NotContains(t, phase2, "done")
 }
