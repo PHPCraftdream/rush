@@ -46,6 +46,13 @@ type Querier interface {
 	// Transition call (which targets the OLD text) and, worse, risk that CAS
 	// colliding with an unrelated NEW row later claimed under the freed text.
 	ArchiveAsyncJobToolCallID(ctx context.Context, arg ArchiveAsyncJobToolCallIDParams) (int64, error)
+	// The async_jobs half of the batched reaction-debt read (architect decision
+	// 13): the same predicates as AsyncReactionDebtExists' first branch, one
+	// statement for a whole session list. sqlc.slice expands only its first
+	// occurrence in a statement, so the two tables get one query each; the
+	// store unions them (ReactionDebtOwners). Binding test vs the single-owner
+	// query: TestReactionDebtOwners_MatchesSingleOwnerQuery.
+	AsyncJobDebtOwners(ctx context.Context, ownerIds []string) ([]string, error)
 	// Doc sec.3.4: one indexed EXISTS, backed by the partial indexes
 	// idx_async_jobs_debt and idx_session_notices_debt "(owner) WHERE wake=1
 	// AND reacted=0 AND delivery<>'void'" on both tables. The async_jobs branch
@@ -552,6 +559,11 @@ type Querier interface {
 	// at-or-before that boundary, immune to head insertions by construction).
 	ListMessagesBySessionPaginated(ctx context.Context, arg ListMessagesBySessionPaginatedParams) ([]Message, error)
 	ListNewFiles(ctx context.Context) ([]File, error)
+	// Batched form of OpenOnceWakeSchedules (kind='once', state='active'),
+	// soonest first; one statement for a whole session list. Keep the
+	// predicates in sync with OpenOnceWakeSchedules' Go-side filter
+	// (TestOpenOnceWakeSchedulesForOwners_MatchesSingleOwnerRead).
+	ListOpenOnceWakeSchedulesForOwners(ctx context.Context, ownerIds []string) ([]WakeSchedule, error)
 	// Candidates for the drain's pull (doc sec.3.3): announced=1 is required --
 	// an unannounced job never produces a notice (DUR-7).
 	ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
@@ -584,6 +596,14 @@ type Querier interface {
 	// Candidate set for the dead-driver purge; liveness itself is decided by the
 	// host lock module, not by this query.
 	ListSessionDriverHostIDs(ctx context.Context) ([]string, error)
+	// Every marker row, liveness undecided: the activity reader decides it once
+	// per distinct host (host lock module), keeping dead-host markers visible
+	// for the crashed verdict where LiveSessionDrivers drops them.
+	ListSessionDrivers(ctx context.Context) ([]SessionDriver, error)
+	// Batched ended_reason read for arbitrary ids (top-level AND child
+	// sessions, which the session list does not carry). A missing row is not an
+	// error: a deleted session simply has no end fact.
+	ListSessionEndReasonsForIDs(ctx context.Context, sessionIds []string) ([]ListSessionEndReasonsForIDsRow, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
 	ListSessionPermissions(ctx context.Context, sessionID string) ([]SessionPermission, error)
@@ -750,6 +770,9 @@ type Querier interface {
 	// one. Runs in the archive's own transaction, before the fresh claim
 	// inserts, so every notice matching the old text belongs to the old row.
 	RepointSessionNoticesJobToolCallID(ctx context.Context, arg RepointSessionNoticesJobToolCallIDParams) (int64, error)
+	// The session_notices half (AsyncReactionDebtExists' second branch; the
+	// table has no announced concept, doc sec.3.2).
+	SessionNoticeDebtOwners(ctx context.Context, ownerIds []string) ([]string, error)
 	// Second half of the ack gate's fused transaction (AnnounceStarted): records
 	// the "started" tool-result message that announced this row, so a Rerun can
 	// void the row by the message it actually deleted instead of by

@@ -116,6 +116,41 @@ func (q *Queries) ListSessionDriverHostIDs(ctx context.Context) ([]string, error
 	return items, nil
 }
 
+const listSessionDrivers = `-- name: ListSessionDrivers :many
+SELECT session_id, host_id, pid, claimed_at FROM session_drivers
+`
+
+// Every marker row, liveness undecided: the activity reader decides it once
+// per distinct host (host lock module), keeping dead-host markers visible
+// for the crashed verdict where LiveSessionDrivers drops them.
+func (q *Queries) ListSessionDrivers(ctx context.Context) ([]SessionDriver, error) {
+	rows, err := q.query(ctx, q.listSessionDriversStmt, listSessionDrivers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionDriver{}
+	for rows.Next() {
+		var i SessionDriver
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.HostID,
+			&i.Pid,
+			&i.ClaimedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const takeOverSessionDriver = `-- name: TakeOverSessionDriver :execrows
 UPDATE session_drivers SET host_id = ?1, pid = ?2, claimed_at = ?3
 WHERE session_id = ?4 AND host_id = ?5

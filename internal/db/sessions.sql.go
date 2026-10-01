@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const createSession = `-- name: CreateSession :one
@@ -400,6 +401,51 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]Session, error) {
 			&i.ReviewerModelReasoningEffort,
 			&i.Origin,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionEndReasonsForIDs = `-- name: ListSessionEndReasonsForIDs :many
+SELECT id, ended_reason FROM sessions WHERE id IN (/*SLICE:session_ids*/?)
+`
+
+type ListSessionEndReasonsForIDsRow struct {
+	ID          string `json:"id"`
+	EndedReason string `json:"ended_reason"`
+}
+
+// Batched ended_reason read for arbitrary ids (top-level AND child
+// sessions, which the session list does not carry). A missing row is not an
+// error: a deleted session simply has no end fact.
+func (q *Queries) ListSessionEndReasonsForIDs(ctx context.Context, sessionIds []string) ([]ListSessionEndReasonsForIDsRow, error) {
+	query := listSessionEndReasonsForIDs
+	var queryParams []interface{}
+	if len(sessionIds) > 0 {
+		for _, v := range sessionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", strings.Repeat(",?", len(sessionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionEndReasonsForIDsRow{}
+	for rows.Next() {
+		var i ListSessionEndReasonsForIDsRow
+		if err := rows.Scan(&i.ID, &i.EndedReason); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

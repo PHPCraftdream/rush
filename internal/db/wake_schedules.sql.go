@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const advanceLoopWakeOccurrence = `-- name: AdvanceLoopWakeOccurrence :execrows
@@ -275,6 +276,65 @@ type ListDueWakeSchedulesParams struct {
 // lock from BEGIN, so nothing can lease them out before the CAS below.
 func (q *Queries) ListDueWakeSchedules(ctx context.Context, arg ListDueWakeSchedulesParams) ([]WakeSchedule, error) {
 	rows, err := q.query(ctx, q.listDueWakeSchedulesStmt, listDueWakeSchedules, arg.NextRunAt, arg.LeaseExpiresAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WakeSchedule{}
+	for rows.Next() {
+		var i WakeSchedule
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerSessionID,
+			&i.Kind,
+			&i.Message,
+			&i.NextRunAt,
+			&i.EveryMs,
+			&i.MaxRuns,
+			&i.UntilAt,
+			&i.State,
+			&i.Occurrence,
+			&i.LeaseOwner,
+			&i.LeaseExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenOnceWakeSchedulesForOwners = `-- name: ListOpenOnceWakeSchedulesForOwners :many
+SELECT id, owner_session_id, kind, message, next_run_at, every_ms, max_runs, until_at, state, occurrence, lease_owner, lease_expires_at, created_at, updated_at FROM wake_schedules
+WHERE kind = 'once' AND state = 'active'
+  AND owner_session_id IN (/*SLICE:owner_ids*/?)
+ORDER BY next_run_at ASC, id ASC
+`
+
+// Batched form of OpenOnceWakeSchedules (kind='once', state='active'),
+// soonest first; one statement for a whole session list. Keep the
+// predicates in sync with OpenOnceWakeSchedules' Go-side filter
+// (TestOpenOnceWakeSchedulesForOwners_MatchesSingleOwnerRead).
+func (q *Queries) ListOpenOnceWakeSchedulesForOwners(ctx context.Context, ownerIds []string) ([]WakeSchedule, error) {
+	query := listOpenOnceWakeSchedulesForOwners
+	var queryParams []interface{}
+	if len(ownerIds) > 0 {
+		for _, v := range ownerIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", strings.Repeat(",?", len(ownerIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}

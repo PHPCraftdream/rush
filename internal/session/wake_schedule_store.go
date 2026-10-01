@@ -330,3 +330,23 @@ func OpenOnceWakeSchedules(ctx context.Context, s *WakeScheduleStore, owner stri
 	sort.Slice(open, func(i, j int) bool { return open[i].NextRunAt.Before(open[j].NextRunAt) })
 	return open, nil
 }
+
+// OpenOnceWakeSchedulesForOwners is the batched OpenOnceWakeSchedules
+// (architect decision 13): the same kind='once'/state='active' predicates in
+// one statement (ListOpenOnceWakeSchedulesForOwners), soonest first within
+// each owner. Test-binding vs the single-owner read:
+// TestOpenOnceWakeSchedulesForOwners_MatchesSingleOwnerRead.
+func OpenOnceWakeSchedulesForOwners(ctx context.Context, s *WakeScheduleStore, owners []string) (map[string][]OpenWakeSchedule, error) {
+	rows, err := s.q.ListOpenOnceWakeSchedulesForOwners(ctx, owners)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]OpenWakeSchedule, len(owners))
+	for _, row := range rows {
+		out[row.OwnerSessionID] = append(out[row.OwnerSessionID], OpenWakeSchedule{
+			ID: row.ID, Message: row.Message,
+			NextRunAt: time.Unix(row.NextRunAt, 0).UTC(),
+		})
+	}
+	return out, nil
+}

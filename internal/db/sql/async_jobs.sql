@@ -526,3 +526,21 @@ WHERE owner_session_id = @owner_session_id AND tool_call_id = @old_tool_call_id
 -- exists (their process is not the wiper's to stop).
 UPDATE async_jobs SET delivery = 'void', reacted_failed = 0, updated_at = ?
 WHERE owner_session_id = ? AND state != 'running' AND delivery IN ('pending', 'done');
+
+-- name: AsyncJobDebtOwners :many
+-- The async_jobs half of the batched reaction-debt read (architect decision
+-- 13): the same predicates as AsyncReactionDebtExists' first branch, one
+-- statement for a whole session list. sqlc.slice expands only its first
+-- occurrence in a statement, so the two tables get one query each; the
+-- store unions them (ReactionDebtOwners). Binding test vs the single-owner
+-- query: TestReactionDebtOwners_MatchesSingleOwnerQuery.
+SELECT DISTINCT owner_session_id AS owner FROM async_jobs
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void' AND announced = 1
+  AND owner_session_id IN (sqlc.slice('owner_ids'));
+
+-- name: SessionNoticeDebtOwners :many
+-- The session_notices half (AsyncReactionDebtExists' second branch; the
+-- table has no announced concept, doc sec.3.2).
+SELECT DISTINCT owner FROM session_notices
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void'
+  AND owner IN (sqlc.slice('owner_ids'));

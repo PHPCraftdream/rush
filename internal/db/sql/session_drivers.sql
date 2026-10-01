@@ -30,3 +30,9 @@ DELETE FROM session_drivers WHERE host_id = ?;
 -- Candidate set for the dead-driver purge; liveness itself is decided by the
 -- host lock module, not by this query.
 SELECT DISTINCT host_id FROM session_drivers;
+
+-- name: ListSessionDrivers :many
+-- Every marker row, liveness undecided: the activity reader decides it once
+-- per distinct host (host lock module), keeping dead-host markers visible
+-- for the crashed verdict where LiveSessionDrivers drops them.
+SELECT * FROM session_drivers;

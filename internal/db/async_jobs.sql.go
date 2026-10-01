@@ -60,6 +60,51 @@ func (q *Queries) ArchiveAsyncJobToolCallID(ctx context.Context, arg ArchiveAsyn
 	return result.RowsAffected()
 }
 
+const asyncJobDebtOwners = `-- name: AsyncJobDebtOwners :many
+SELECT DISTINCT owner_session_id AS owner FROM async_jobs
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void' AND announced = 1
+  AND owner_session_id IN (/*SLICE:owner_ids*/?)
+`
+
+// The async_jobs half of the batched reaction-debt read (architect decision
+// 13): the same predicates as AsyncReactionDebtExists' first branch, one
+// statement for a whole session list. sqlc.slice expands only its first
+// occurrence in a statement, so the two tables get one query each; the
+// store unions them (ReactionDebtOwners). Binding test vs the single-owner
+// query: TestReactionDebtOwners_MatchesSingleOwnerQuery.
+func (q *Queries) AsyncJobDebtOwners(ctx context.Context, ownerIds []string) ([]string, error) {
+	query := asyncJobDebtOwners
+	var queryParams []interface{}
+	if len(ownerIds) > 0 {
+		for _, v := range ownerIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", strings.Repeat(",?", len(ownerIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var owner string
+		if err := rows.Scan(&owner); err != nil {
+			return nil, err
+		}
+		items = append(items, owner)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const asyncReactionDebtExists = `-- name: AsyncReactionDebtExists :one
 SELECT
     EXISTS (
@@ -1204,6 +1249,47 @@ func (q *Queries) RependJobKillRowsWithoutNoticeForHost(ctx context.Context, arg
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const sessionNoticeDebtOwners = `-- name: SessionNoticeDebtOwners :many
+SELECT DISTINCT owner FROM session_notices
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void'
+  AND owner IN (/*SLICE:owner_ids*/?)
+`
+
+// The session_notices half (AsyncReactionDebtExists' second branch; the
+// table has no announced concept, doc sec.3.2).
+func (q *Queries) SessionNoticeDebtOwners(ctx context.Context, ownerIds []string) ([]string, error) {
+	query := sessionNoticeDebtOwners
+	var queryParams []interface{}
+	if len(ownerIds) > 0 {
+		for _, v := range ownerIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", strings.Repeat(",?", len(ownerIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var owner string
+		if err := rows.Scan(&owner); err != nil {
+			return nil, err
+		}
+		items = append(items, owner)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setAsyncJobAnnounceMessageID = `-- name: SetAsyncJobAnnounceMessageID :execrows

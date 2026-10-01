@@ -87,3 +87,13 @@ WHERE state = 'active' AND lease_owner IS NOT NULL AND lease_expires_at < ?;
 -- name: NextDueWakeScheduleAt :one
 -- Earliest next_run_at among active rows, for the scheduler's timer.
 SELECT MIN(next_run_at) AS next_due_at FROM wake_schedules WHERE state = 'active';
+
+-- name: ListOpenOnceWakeSchedulesForOwners :many
+-- Batched form of OpenOnceWakeSchedules (kind='once', state='active'),
+-- soonest first; one statement for a whole session list. Keep the
+-- predicates in sync with OpenOnceWakeSchedules' Go-side filter
+-- (TestOpenOnceWakeSchedulesForOwners_MatchesSingleOwnerRead).
+SELECT * FROM wake_schedules
+WHERE kind = 'once' AND state = 'active'
+  AND owner_session_id IN (sqlc.slice('owner_ids'))
+ORDER BY next_run_at ASC, id ASC;

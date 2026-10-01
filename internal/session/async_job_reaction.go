@@ -507,3 +507,28 @@ func (s *AsyncJobStore) hostNotDeadFor(ownHostID, hostID string) bool {
 	}
 	return s.HostLiveness(hostID) != HostStatusDead
 }
+
+// ReactionDebtOwners is the batched ReactionDebtExists (architect decision
+// 13): the same predicates, one statement per table (sqlc.slice expands only
+// its first occurrence in a statement), unioned here -- no second SQL
+// formulation in the readers. Binding test vs the single-owner query:
+// TestReactionDebtOwners_MatchesSingleOwnerQuery.
+func (s *AsyncJobStore) ReactionDebtOwners(ctx context.Context, owners []string) (map[string]bool, error) {
+	q := s.readQuerier()
+	jobOwners, err := q.AsyncJobDebtOwners(ctx, owners)
+	if err != nil {
+		return nil, fmt.Errorf("async job store: reaction debt owners: %w", err)
+	}
+	noticeOwners, err := q.SessionNoticeDebtOwners(ctx, owners)
+	if err != nil {
+		return nil, fmt.Errorf("async job store: reaction debt owners: %w", err)
+	}
+	out := make(map[string]bool, len(jobOwners)+len(noticeOwners))
+	for _, owner := range jobOwners {
+		out[owner] = true
+	}
+	for _, owner := range noticeOwners {
+		out[owner] = true
+	}
+	return out, nil
+}

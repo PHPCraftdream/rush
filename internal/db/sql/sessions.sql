@@ -192,3 +192,9 @@ SET
     parent_cost_accounted = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
+
+-- name: ListSessionEndReasonsForIDs :many
+-- Batched ended_reason read for arbitrary ids (top-level AND child
+-- sessions, which the session list does not carry). A missing row is not an
+-- error: a deleted session simply has no end fact.
+SELECT id, ended_reason FROM sessions WHERE id IN (sqlc.slice('session_ids'));
