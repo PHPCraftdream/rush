@@ -286,6 +286,10 @@ func (m *mockSessionService) HasOutstandingRunQueueEntriesForSession(context.Con
 	return false, nil
 }
 
+func (m *mockSessionService) PurgeQueuedWorkForSession(context.Context, string) (session.PurgedQueuedWork, error) {
+	return session.PurgedQueuedWork{}, nil
+}
+
 func (m *mockSessionService) CleanupExpiredLeases(context.Context, int64) error {
 	return nil
 }
