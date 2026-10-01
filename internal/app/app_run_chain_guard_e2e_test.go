@@ -120,9 +120,15 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 		// milliseconds, while W's 30s poll makes an earlier completion
 		// practically impossible -- the race the guard's outcome depends on
 		// must not be left to chance.
+		// tick4's own job must be terminal too: under load its `echo` can
+		// finish after W, and W's Drain then pulls W alone, leaving tick4 to
+		// the guard after the run's answer.
 		go func() {
 			for i := 0; i < 3000; i++ {
-				if row, err := application.asyncJobStore.Get(ctx, sessionID, "call-tick3"); err == nil && row.Reacted >= 1 && row.Delivery == "done" {
+				tick3, err3 := application.asyncJobStore.Get(ctx, sessionID, "call-tick3")
+				tick4, err4 := application.asyncJobStore.Get(ctx, sessionID, "call-tick4")
+				if err3 == nil && tick3.Reacted >= 1 && tick3.Delivery == "done" &&
+					err4 == nil && tick4.State != "running" {
 					releaseW()
 					return
 				}
