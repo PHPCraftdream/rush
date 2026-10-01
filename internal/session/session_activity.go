@@ -114,6 +114,11 @@ type ActivityFacts struct {
 	// LiveDelegations: live descendant delegation rows. Any positive count
 	// makes the verdict Delegating (decision 2).
 	LiveDelegations int
+	// LiveDescendantSessionIDs lists the DISTINCT child sessions named by
+	// those live delegation rows (the web list's LiveDescendantIDs wire
+	// field), in walk order. Display data: the liveness decision is
+	// LiveDelegations alone.
+	LiveDescendantSessionIDs []string
 	// OpenSchedules: the session's open once wake schedules.
 	OpenSchedules []OpenWakeSchedule
 	// DeadHostDriver: a session_drivers row names a provably dead host (a

@@ -35,10 +35,14 @@ func (c countingReadDBTX) QueryRowContext(ctx context.Context, query string, arg
 	return c.DBTX.QueryRowContext(ctx, query, args...)
 }
 
-// Revert-check performed: annotateLiveWork reimplemented as the previous
-// per-session loop over LiveDescendantJobs/LiveOwnJobs -- the annotation
-// assertions still passed but the query-count assertion FAILED (20 reader
-// queries for 9 listed sessions instead of at most 4).
+// Revert-check performed: annotateSessionActivity reimplemented as the
+// previous per-session loop over LiveDescendantJobs/LiveOwnJobs -- the
+// annotation assertions still passed but the query-count assertion FAILED
+// (20 reader queries for 9 listed sessions instead of at most 4). A second
+// mutant -- mapping the web flags from the verdict Kind instead of the
+// facts -- fails the equality loop against App.SessionActivity below: a
+// driven-between-turns session is between_turns, not running, and a
+// delegating session's HasLiveOwnWork would flip.
 func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
@@ -93,6 +97,12 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	// driven: a live `rush run` loop between turns -- no lock, no running
+	// row; the driver marker is the only live fact.
+	driven, err := a.Sessions.Create(ctx, "driven between turns")
+	require.NoError(t, err)
+	require.NoError(t, store.ClaimSessionDriver(ctx, driven.ID))
+
 	addIdle := func(n int) {
 		for i := 0; i < n; i++ {
 			_, err := a.Sessions.Create(ctx, fmt.Sprintf("idle %d", i))
@@ -119,7 +129,7 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	}
 
 	rows, smallQueries := list()
-	require.Len(t, rows, 9, "3 roots with work + 6 idle top-level sessions")
+	require.Len(t, rows, 10, "4 roots with work + 6 idle top-level sessions")
 
 	a1 := findSessionRow(t, rows, rootA.ID)
 	require.True(t, a1.HasLiveDescendantWork)
@@ -132,20 +142,46 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	dead := findSessionRow(t, rows, rootDead.ID)
 	require.False(t, dead.HasLiveDescendantWork, "a delegation on a dead host is not live work")
 	require.False(t, dead.HasLiveOwnWork, "a plain job on a dead host is not live work")
+	drv := findSessionRow(t, rows, driven.ID)
+	require.True(t, drv.HasLiveOwnWork, "a live driver marker between turns is live own work")
+	require.False(t, drv.HasLiveDescendantWork)
+	require.Empty(t, drv.LiveDescendantIDs)
 
-	// The annotation is exactly what the single-root readers say for each row.
+	// The annotation is exactly what the single-root readers say for each
+	// row, with the one by-design divergence R-ACT settles in favor of the
+	// classifier: a live driver between turns flags HasLiveOwnWork but has
+	// no row for LiveOwnJobs (the old web-only model missed it entirely --
+	// the cmd side always counted the driver).
+	drivers, _ := a.LiveSessionDrivers(ctx)
 	for _, s := range rows {
 		wantDesc, _ := store.LiveDescendantJobs(ctx, s.ID)
 		wantOwn, _ := store.LiveOwnJobs(ctx, s.ID)
+		_, drivenBy := drivers[s.ID]
 		require.Equalf(t, len(wantDesc) > 0, s.HasLiveDescendantWork, "descendant flag of %s", s.ID)
-		require.Equalf(t, len(wantOwn) > 0, s.HasLiveOwnWork, "own flag of %s", s.ID)
+		require.Equalf(t, len(wantOwn) > 0 || drivenBy, s.HasLiveOwnWork, "own flag of %s", s.ID)
 	}
 
-	// Depth of the tree is 3 (root-a -> mid-a -> leaf-a): one query per level.
-	require.LessOrEqual(t, smallQueries, int64(4), "reader queries must depend on the tree depth")
+	// R-ACT step 3: every row's annotation is the single classifier reader's
+	// facts-based mapping, on every form the table covers (live driver
+	// between turns, own running job, live delegation tree, dead host, at
+	// rest) -- one decision, no second place deciding liveness.
+	for _, s := range rows {
+		act, err := a.SessionActivity(ctx, s.ID)
+		require.NoErrorf(t, err, "single reader of %s", s.ID)
+		f := act.Facts
+		require.Equalf(t, f.Driver != nil || f.OwnRunningJobs > 0, s.HasLiveOwnWork, "own flag vs classifier facts of %s", s.ID)
+		require.Equalf(t, f.LiveDelegations > 0, s.HasLiveDescendantWork, "descendant flag vs classifier facts of %s", s.ID)
+		require.Equalf(t, f.LiveDescendantSessionIDs, s.LiveDescendantIDs, "descendant ids vs classifier facts of %s", s.ID)
+	}
+
+	// The batch reader's fixed set per poll: one LiveWorkForRoots query per
+	// tree level (depth 3) plus one each for reaction debt and dead-host
+	// running rows -- a constant per fact KIND, not per session; the
+	// small-vs-large equality below is the property that matters.
+	require.LessOrEqual(t, smallQueries, int64(7), "reader queries must depend on the tree depth")
 
 	addIdle(60)
 	rows, largeQueries := list()
-	require.Len(t, rows, 69)
+	require.Len(t, rows, 70)
 	require.Equal(t, smallQueries, largeQueries, "ten times the sessions must cost the same number of reader queries")
 }

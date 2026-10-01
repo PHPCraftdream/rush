@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Revert-check: dropping the LiveSessionDrivers consultation from
-// annotateLiveWork fails the "driven" assertion (HasLiveOwnWork stays false).
+// Revert-check: dropping the driver FACT (Facts.Driver) from
+// annotateSessionActivity's HasLiveOwnWork mapping fails the "driven"
+// assertion (HasLiveOwnWork stays false).
 func TestHandleListSessions_LiveRunDriverAnnotation(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())

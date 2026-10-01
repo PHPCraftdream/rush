@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,14 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+// explainWhy points a hand-built App's lock reader at dataDir (the seam
+// explainSessionStatus stopped setting itself out of production code) and
+// renders the verdict into out.
+func explainWhy(a *app.App, dataDir, sessionID string, out io.Writer) error {
+	a.SetDataDirForTest(dataDir)
+	return explainSessionStatus(context.Background(), a, dataDir, sessionID, out)
+}
 
 // writeLockFile creates a session lock file under tmpDir/locks/ holding
 // the given PID (second line = optional timeout seconds), and returns the
@@ -63,7 +72,7 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
 	// t.TempDir() with no locks dir created → no lock file → "at rest".
-	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sess.ID, &buf))
+	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: at rest")
@@ -97,7 +106,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
@@ -141,7 +150,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	firstLine := strings.SplitN(out, "\n", 2)[0]
@@ -171,7 +180,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sess.ID, &buf))
+	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: at rest")
@@ -206,7 +215,7 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: running")
@@ -237,7 +246,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	// CHANGED VERDICT (R-ACT-2, D10): a readable record with no PID is a
@@ -272,7 +281,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: at rest")
@@ -307,7 +316,7 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, cwd, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
@@ -353,7 +362,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: running",
@@ -381,7 +390,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: crashed")
@@ -428,7 +437,7 @@ func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 
 	a := &app.App{Messages: m, Sessions: s}
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
+	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: running",
@@ -441,7 +450,7 @@ func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	// Control: a genuinely absent lock file (ENOENT) must still print
 	// "status: at rest".
 	var buf2 bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sess.ID, &buf2))
+	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf2))
 	require.Contains(t, buf2.String(), "status: at rest",
 		"verifiable absence (ENOENT) must say 'at rest'")
 }

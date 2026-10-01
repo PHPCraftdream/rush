@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -160,67 +159,9 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 	c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: deletedIDs, FailedIDs: failedIDs}, "")
 }
 
-// externalOwnerLiveThreshold mirrors the heartbeat expiry used by the lock
-// acquisition path: a lock whose mtime is fresher than this is treated as a
-// live external owner by the mtime fast path. The lock-renewer touches the
-// file every ~10s, so 20s gives one missed tick of slack without flipping
-// foreign-owned sessions in and out of read-only mode.
-//
-// This is no longer the whole story (task #228): InspectSessionLock (which
-// both annotator functions below call) falls back to a real PID liveness
-// probe when mtime looks stale past this threshold, so a session blocked on
-// one long tool call — whose heartbeat mtime can lag past 20s, since it's
-// gated on activity ticks from the stream watchdog which fire roughly every
-// 30s (task #222) — is still correctly reported as live rather than
-// flickering to "not externally owned" and back.
-const externalOwnerLiveThreshold = 20 * time.Second
-
-// annotateExternalOwnership fills OwnedExternal/OwnedByPID for every session
-// in the slice. Only flags sessions whose live lock holder (mtime freshness,
-// falling back to real PID liveness when mtime looks stale — see
-// InspectSessionLock) is a DIFFERENT process — sessions held by us are
-// owned-but-not-external (the UI keeps full controls). Sessions with no
-// lock, or a lock that is both mtime-stale and PID-dead, are left clean.
-func annotateExternalOwnership(a *appPkg.App, sessions []session.Session) {
-	dataDir := externalOwnershipDataDir(a)
-	if dataDir == "" {
-		return
-	}
-	self := os.Getpid()
-	for i := range sessions {
-		st := session.InspectSessionLock(dataDir, sessions[i].ID, externalOwnerLiveThreshold)
-		if !st.Live || st.PID == 0 || st.PID == self {
-			continue
-		}
-		sessions[i].OwnedExternal = true
-		sessions[i].OwnedByPID = st.PID
-	}
-}
-
-// AnnotateSessionExternalOwnership is the single-session variant used by the
-// session pubsub bridge in events.go and by every handler that broadcasts a
-// fresh Session payload over WS. Exported so events.go can reach it without
-// duplicating the lock-inspection logic. See annotateExternalOwnership's doc
-// comment for the mtime-plus-PID-fallback liveness semantics (task #228).
-func AnnotateSessionExternalOwnership(a *appPkg.App, s *session.Session) {
-	if s == nil {
-		return
-	}
-	dataDir := externalOwnershipDataDir(a)
-	if dataDir == "" {
-		return
-	}
-	self := os.Getpid()
-	st := session.InspectSessionLock(dataDir, s.ID, externalOwnerLiveThreshold)
-	if !st.Live || st.PID == 0 || st.PID == self {
-		s.OwnedExternal = false
-		s.OwnedByPID = 0
-		return
-	}
-	s.OwnedExternal = true
-	s.OwnedByPID = st.PID
-}
-
+// externalOwnershipDataDir resolves the configured data directory (also
+// used by attachmentsDataDir in handlers_agent.go for its nil-config
+// fallback chain).
 func externalOwnershipDataDir(a *appPkg.App) string {
 	cfg := a.Config()
 	if cfg == nil || cfg.Options == nil {
@@ -229,74 +170,85 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 	return cfg.Options.DataDirectory
 }
 
-// annotateLiveWork fills HasLiveDescendantWork / LiveDescendantIDs and
-// HasLiveOwnWork for every session in the slice from ONE batched reader call
-// (session.AsyncJobStore.LiveWorkForRoots, R2C-13): the cross-process,
-// durable-state companion of the coordinator's in-process parked-delegation
-// registry (which this process cannot see for sessions owned by other
-// processes). A top-level session whose own lock is gone while a sub-agent
-// session below it still holds a live delegation row is NOT finished, and the
-// UI must be able to tell that apart from idle — otherwise a tab shows a
-// session as done while `rush run` is still waiting on its delegation. Same
-// for a session whose scope is open only because of its OWN running plain job
-// (no descendant, no lock between turns): the web half of `sessions list`'s
-// "running" promotion. A session a live `rush run` loop drives between turns
-// (durable driver marker, App.LiveSessionDrivers) is flagged HasLiveOwnWork too.
+// annotateSessionActivity fills every liveness/ownership wire annotation of
+// the session list from ONE App.SessionActivityBatch call per poll (R-ACT
+// step 3, ASYNC-10): the flags come from the FACTS, not from a second
+// liveness decision -- HasLiveOwnWork = Facts.Driver != nil ||
+// Facts.OwnRunningJobs > 0, HasLiveDescendantWork = Facts.LiveDelegations > 0
+// (decision 12 in the reader's doc), LiveDescendantIDs from the facts' own
+// distinct child list. OwnedExternal/OwnedByPID read the SAME batch's lock
+// fact: a lock HELD by a live PID that is not this process. Previously the
+// ownership half ran its own per-session InspectSessionLock (mtime + PID
+// fallback) and the work half its own LiveWorkForRoots + LiveSessionDrivers
+// reads -- two parallel liveness models that could disagree with `sessions
+// list`/`why`; now every reader answers from the one classifier's facts.
 //
-// Deliberately unconditional (not gated on the session otherwise looking
-// idle): this layer has no status map to gate on — re-deriving one here
-// would fork `sessions list`'s classifier — so it reports the raw durable
-// signal ("a descendant/the session has a live async_jobs row") and lets the
-// client compose it with the agent_busy / ownership state it already has. An
-// incomplete walk (RootLiveWork.*Incomplete) only ever means "possibly more",
-// never "less", so the flags are not consulted here.
+// The lock fact has no mtime fast path: "held" is a recorded, provably live
+// PID (InspectSessionLockFact), which is strictly the decision the
+// ownership flag needs (it always required a readable, non-self PID).
 //
-// Cost is one reader query per delegation-tree level over ALL listed sessions
-// plus one liveness probe per distinct host — not per session — and one read
-// of the driver markers, paid only on the sessions_list reply and its periodic re-poll, never on the per-event
-// broadcast path.
-func annotateLiveWork(ctx context.Context, a *appPkg.App, sessions []session.Session) {
-	store := a.AsyncJobStore()
-	if store == nil || len(sessions) == 0 {
+// Cost is the batch reader's fixed query set per poll (one per fact kind,
+// independent of the session count), paid only on the sessions_list reply
+// and its periodic re-poll, never on the per-event broadcast path.
+func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []session.Session) {
+	if len(sessions) == 0 {
 		return
 	}
 	ids := make([]string, len(sessions))
 	for i := range sessions {
 		ids[i] = sessions[i].ID
 	}
-	work := store.LiveWorkForRoots(ctx, ids)
-	// A live `rush run` loop between turns (a paced Drain retry, debt pending)
-	// holds no lock and has no running row: the durable driver marker is the
-	// only fact that its scope is open (ASYNC-02, R5C-5). One read for the whole
-	// list; the session counts as having live own work.
-	drivers, driverErr := a.LiveSessionDrivers(ctx)
-	if driverErr != nil {
-		slog.Warn("sessions_list: could not read the session driver markers", "err", driverErr)
+	batch, err := a.SessionActivityBatch(ctx, ids)
+	if err != nil {
+		slog.Warn("sessions_list: could not read the session activity facts", "err", err)
+		return
 	}
+	self := os.Getpid()
 	for i := range sessions {
-		w := work[sessions[i].ID]
-		if len(w.Own) > 0 {
-			sessions[i].HasLiveOwnWork = true
-		}
-		if _, driven := drivers[sessions[i].ID]; driven {
-			sessions[i].HasLiveOwnWork = true
-		}
-		if len(w.Descendants) == 0 {
+		act, ok := batch.ByID[sessions[i].ID]
+		if !ok {
 			continue
 		}
-		sessions[i].HasLiveDescendantWork = true
-		seen := make(map[string]struct{}, len(w.Descendants))
-		childIDs := make([]string, 0, len(w.Descendants))
-		for _, j := range w.Descendants {
-			if _, dup := seen[j.ChildSessionID]; dup {
-				continue
-			}
-			seen[j.ChildSessionID] = struct{}{}
-			childIDs = append(childIDs, j.ChildSessionID)
+		f := act.Facts
+		sessions[i].HasLiveOwnWork = f.Driver != nil || f.OwnRunningJobs > 0
+		sessions[i].HasLiveDescendantWork = f.LiveDelegations > 0
+		sessions[i].LiveDescendantIDs = f.LiveDescendantSessionIDs
+		if f.Lock.Kind == session.LockHeld && f.Lock.PID != 0 && f.Lock.PID != self {
+			sessions[i].OwnedExternal = true
+			sessions[i].OwnedByPID = f.Lock.PID
 		}
-		sessions[i].LiveDescendantIDs = childIDs
 	}
 }
+
+// AnnotateSessionExternalOwnership is the single-session variant used by the
+// session pubsub bridge in events.go and by every handler that broadcasts a
+// fresh Session payload over WS. Exported so events.go can reach it without
+// duplicating the ownership rule. It reads only the lock fact -- the same
+// single lock reader the classifier uses (session.InspectSessionLockFact) --
+// because it runs on every broadcast session event, where the classifier's
+// DB fact queries are not paid. Rule: HELD by a live PID that is not ours.
+func AnnotateSessionExternalOwnership(a *appPkg.App, s *session.Session) {
+	if s == nil {
+		return
+	}
+	s.OwnedExternal = false
+	s.OwnedByPID = 0
+	dataDir := externalOwnershipDataDir(a)
+	if dataDir == "" {
+		return
+	}
+	lock := session.InspectSessionLockFact(dataDir, s.ID)
+	if lock.Kind != session.LockHeld || lock.PID == 0 || lock.PID == os.Getpid() {
+		return
+	}
+	s.OwnedExternal = true
+	s.OwnedByPID = lock.PID
+}
+
+// annotateLiveWork's former responsibilities (live work, driver markers,
+// descendant ids) and annotateExternalOwnership's (external lock holder)
+// both live in annotateSessionActivity now; the two functions and the
+// parallel liveness models behind them are gone.
 
 func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	sessions, err := a.Sessions.List(ctx)
@@ -307,8 +259,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if sessions == nil {
 		sessions = []session.Session{}
 	}
-	annotateExternalOwnership(a, sessions)
-	annotateLiveWork(ctx, a, sessions)
+	annotateSessionActivity(ctx, a, sessions)
 	c.reply(msg.ID, EventSessionsList, sessions, "")
 
 	// Correct any stale agent_busy and summarize_queued state in the replay

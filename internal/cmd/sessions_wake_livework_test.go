@@ -83,7 +83,7 @@ func TestExplainSessionStatus_OpenWakeScheduleHoldsSessionOpen(t *testing.T) {
 	a, _, sessionID, scheduleID := wakeWhyFixture(t, time.Hour)
 
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sessionID, &buf))
+	require.NoError(t, explainWhy(a, t.TempDir(), sessionID, &buf))
 	out := buf.String()
 	require.Contains(t, out, "status: running")
 	require.Contains(t, out, "wake schedule "+scheduleID)
@@ -115,7 +115,7 @@ func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	a := &app.App{Messages: m, Sessions: s}
 	a.SetWakeScheduleStoreForTest(wake)
 	var buf bytes.Buffer
-	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), sess.ID, &buf))
+	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
 	require.Contains(t, buf.String(), "status: at rest")
 }
 

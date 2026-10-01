@@ -116,15 +116,18 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // reads (one decision, no per-command layers); this function renders it,
 // including the "at rest" case. The session's own plain background jobs are
 // reported by describeAsyncJobsAndDebt.
+//
+// The reader takes the lock facts from the App's own data dir, which for a
+// real App is the same directory this dataDir parameter carries (the
+// resolved --data-dir). A hand-built test App must point itself at its
+// fixture directory itself (SetDataDirForTest in the test or a test
+// helper): this function used to call it here, mutating the App from
+// production code.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	// One classifier verdict is the whole decision (R-ACT): the facts and
 	// their reduction live in internal/session + internal/app; this command
 	// only renders them. Status words follow the command's established
 	// vocabulary; the classifier's Description names the evidence.
-	// The reader derives the lock path from the App's data dir; keep it in
-	// sync with this command's resolved --data-dir (a no-op for a real App,
-	// the parameter for a lightweight test App).
-	a.SetDataDirForTest(dataDir)
 	act, actErr := a.SessionActivity(ctx, sessionID)
 	if actErr != nil {
 		return fmt.Errorf("failed to classify session %s: %w", sessionID, actErr)

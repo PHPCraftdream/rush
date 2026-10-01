@@ -685,8 +685,8 @@ func TestWaitHubDrained_ReturnsOnlyWhenDrained(t *testing.T) {
 // other parallel tests that call waitHubDrained.
 //
 // Revert-check: delete the deadline check inside waitHubDrained's loop and
-// this test hangs (the whole package times out) instead of failing — which
-// is exactly the oversight it exists to catch.
+// this test fails after its 10s wait — which is exactly the oversight it
+// exists to catch.
 func TestWaitHubDrained_FailsFastWhenRunNeverDrains(t *testing.T) {
 	h := newHub()
 	// Queue real work but never start h.Run: the drain condition stays
@@ -701,23 +701,32 @@ func TestWaitHubDrained_FailsFastWhenRunNeverDrains(t *testing.T) {
 
 	// Create a separate test to capture the failure without affecting
 	// this test's status.
+	// Wait for the goroutine to actually exit (the deferred close runs on
+	// Goexit too) instead of a fixed sleep: under load the 50ms bound can be
+	// observed well after any short fixed window.
 	captureT := &captureT{T: t}
-	done := make(chan struct{})
+	exited := make(chan struct{})
+	returned := make(chan struct{})
 	go func() {
+		defer close(exited)
 		waitHubDrained(captureT, h)
-		close(done)
+		close(returned)
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("waitHubDrained returned normally instead of calling t.Fatalf — the defensive deadline check is missing")
-	case <-time.After(200 * time.Millisecond):
-		// Success: waitHubDrained called t.Fatalf and exited via Goexit.
-		require.True(t, captureT.failed.Load(), "waitHubDrained must have called t.Fatalf")
-		msg, _ := captureT.msg.Load().(string)
-		require.Contains(t, msg, "hub drain never completed")
-		require.Contains(t, msg, "drain regression")
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("waitHubDrained neither failed nor returned within 10s — the defensive deadline check is missing")
 	}
+	select {
+	case <-returned:
+		t.Fatal("waitHubDrained returned normally instead of calling t.Fatalf — the defensive deadline check is missing")
+	default:
+	}
+	require.True(t, captureT.failed.Load(), "waitHubDrained must have called t.Fatalf")
+	msg, _ := captureT.msg.Load().(string)
+	require.Contains(t, msg, "hub drain never completed")
+	require.Contains(t, msg, "drain regression")
 }
 
 // captureT is a minimal testing.TB implementation that records Fatalf calls

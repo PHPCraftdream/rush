@@ -8,6 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Web session list: the sidebar's liveness and external-ownership
+  annotations now come from the same session-activity classifier the
+  `sessions` commands use (one batched read per poll, previously a second,
+  independent lock-inspection model per session). Visible differences: a
+  session whose lock holder is dead no longer flips "externally owned"
+  while its heartbeat mtime is still fresh; the ownership check no longer
+  trusts mtime alone. The read-only badge can therefore clear slightly
+  earlier for a crashed holder, together with the `sessions list` verdict.
+
 - `sessions` (`sessions list/why/watch/tail/locks/reap/inject/cancel/reset`):
   the "is this session alive, and on what" verdict now comes from ONE
   classifier (`sessions why` prints the same verdict `sessions list` shows).

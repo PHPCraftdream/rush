@@ -16,9 +16,9 @@
 //
 // Step 3 note (decision 12): the web flags are derived from the FACTS, not
 // from the verdict -- Facts.Driver != nil || Facts.OwnRunningJobs > 0 -->
-// HasLiveOwnWork, Facts.LiveDelegations > 0 --> HasLiveDescendantWork.
-// SessionActivity carries the Facts for exactly that; do not switch the
-// flags over to Kind.
+// HasLiveOwnWork, Facts.LiveDelegations > 0 --> HasLiveDescendantWork (the
+// server annotator, internal/server's annotateSessionActivity). SessionActivity
+// carries the Facts for exactly that; do not switch the flags over to Kind.
 
 package app
 
@@ -143,6 +143,14 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 			if rw, ok := work[id]; ok {
 				f.OwnRunningJobs = len(rw.Own)
 				f.LiveDelegations = len(rw.Descendants)
+				seen := make(map[string]struct{}, len(rw.Descendants))
+				for _, j := range rw.Descendants {
+					if _, dup := seen[j.ChildSessionID]; dup {
+						continue
+					}
+					seen[j.ChildSessionID] = struct{}{}
+					f.LiveDescendantSessionIDs = append(f.LiveDescendantSessionIDs, j.ChildSessionID)
+				}
 				if rw.OwnIncomplete {
 					f.Unreadable = append(f.Unreadable, "the session's own jobs")
 				}
