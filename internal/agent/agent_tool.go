@@ -27,7 +27,7 @@ type AgentParams struct {
 	ResumeSessionID string `json:"resume_session_id,omitempty" description:"Optional: the child session id of a paused sub-agent to resume (from a prior \"SUB-AGENT QUESTION (session ...)\" result), instead of starting a new sub-agent. The sub-agent's context is preserved."`
 	// Timeout is an optional explicit deadline for this delegation (#1037).
 	// See tools.TimeoutParams's doc for the shape.
-	Timeout *tools.TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the delegated work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline."`
+	Timeout *tools.TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the delegated work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. A bare number of seconds is also accepted and means {\"seconds\": N, \"kind\": \"wake_only\"}."`
 }
 
 const (

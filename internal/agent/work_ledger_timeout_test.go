@@ -395,6 +395,11 @@ func TestParseTimeoutParam_ValidationTable(t *testing.T) {
 		{name: "both set is an error", toolName: tools.RunCommandToolName, input: `{"timeout":{"seconds":10,"kind":"wake_only"},"timeout_seconds":90}`, wantErr: "at most one"},
 		{name: "agentic_fetch ignored", toolName: tools.AgenticFetchToolName, input: `{"timeout":{"seconds":10,"kind":"wake_only"}}`, wantNil: true},
 		{name: "agent tool respects timeout", toolName: AgentToolName, input: `{"timeout":{"seconds":600,"kind":"terminate_and_wake"}}`, wantKind: timeoutTerminateAndWake, wantSeconds: 600},
+		{name: "bare number is wake_only", toolName: tools.BashToolName, input: `{"timeout":300}`, wantKind: timeoutWakeOnly, wantSeconds: 300},
+		{name: "bare number on agent tool", toolName: AgentToolName, input: `{"timeout":600}`, wantKind: timeoutWakeOnly, wantSeconds: 600},
+		{name: "timeout string refused", toolName: tools.BashToolName, input: `{"timeout":"600"}`, wantErr: "must be an object"},
+		{name: "timeout null ignored", toolName: tools.BashToolName, input: `{"timeout":null}`, wantNil: true},
+		{name: "bare number plus legacy is an error", toolName: tools.RunCommandToolName, input: `{"timeout":300,"timeout_seconds":90}`, wantErr: "at most one"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

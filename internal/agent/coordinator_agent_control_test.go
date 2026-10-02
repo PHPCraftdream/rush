@@ -403,3 +403,58 @@ func TestInjectAgent_InterruptErrorSurfaced(t *testing.T) {
 	_, err := coord.InjectAgent(ctx, parent, child, "x", true)
 	require.Error(t, err)
 }
+
+func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "list")
+	otherParent, otherChild := controlChild(t, env, "list-other")
+	// A SECOND child of the same parent: controlChild makes one (parent,
+	// child) pair, so the second child is created by the same pattern.
+	second, err := env.sessions.CreateTaskSession(t.Context(), parent+"$$c-list2b", parent, "child list2b")
+	require.NoError(t, err)
+	secondChild := second.ID
+	ctx := t.Context()
+
+	// A plain async job (bash, no child session) owned by the same caller:
+	// NOT a delegation. It must never appear in ListDelegations' output or
+	// its count -- only childSession-carrying (agent/agentic_fetch) jobs are
+	// delegations. Revert-check: dropping the childSession filter (M7) in
+	// ListDelegations makes the assertions below fail on this job.
+	_, _, err = coord.asyncJobs.Start(parent, "bash-call-list", "{}", "bash", "", true, false, nil, func() {})
+	require.NoError(t, err)
+
+	got, err := coord.ListDelegations(ctx, parent)
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	// Two live delegations for parent (second child of the same caller) and
+	// one for the sibling caller, each armed on a BUSY driver (or Start's
+	// own recheck would deliver and gc it immediately), then left idle.
+	for _, tc := range []struct{ owner, driver string }{{parent, child}, {parent, secondChild}, {otherParent, otherChild}} {
+		stub := &controlStubAgent{}
+		stub.setBusy(true)
+		coord.subAgentDrivers.register(tc.driver, subAgentDriver{agent: stub, parentSessionID: tc.owner})
+		armDelegation(t, coord, tc.owner, tc.driver)
+		stub.setBusy(false)
+	}
+
+	// AgeSeconds is a whole-second truncation of time.Since(startedAt), so
+	// the listing right after arming would legitimately read 0 -- wait out a
+	// second before re-reading it as a live teenager.
+	time.Sleep(time.Second + 100*time.Millisecond)
+
+	got, err = coord.ListDelegations(ctx, parent)
+	require.NoError(t, err)
+	require.Len(t, got, 2, "only the caller's own live delegations, not the sibling's")
+	require.Equal(t, child, got[0].ChildSessionID)
+	require.Equal(t, secondChild, got[1].ChildSessionID)
+	require.Equal(t, "agent", got[0].ToolName)
+	require.NotEmpty(t, got[0].StartedAt)
+	require.Positive(t, got[0].AgeSeconds)
+
+	for _, s := range got {
+		require.NotEmpty(t, s.ChildSessionID, "a plain async job is not a delegation and must not be listed")
+		require.Equal(t, "agent", s.ToolName)
+	}
+}

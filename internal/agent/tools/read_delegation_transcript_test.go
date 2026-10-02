@@ -58,6 +58,9 @@ func newTranscriptTestDB(t *testing.T) (session.Service, message.Service) {
 			budget_max_tokens INTEGER NOT NULL DEFAULT 0,
 			budget_timeout_sec INTEGER NOT NULL DEFAULT 0,
 			parent_cost_accounted REAL NOT NULL DEFAULT 0,
+			cost_self REAL NOT NULL DEFAULT 0,
+			cost_base REAL NOT NULL DEFAULT 0,
+			cost_parent_id TEXT NOT NULL DEFAULT '',
 			origin TEXT DEFAULT '' NOT NULL
 		);
 		CREATE TABLE messages (

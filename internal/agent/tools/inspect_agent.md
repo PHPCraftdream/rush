@@ -1,1 +1,2 @@
 Check a delegated sub-agent's status without waiting for its own completion notice: running, awaiting_answer (it asked a question — see agent's resume_session_id), idle, or a terminal outcome (finished, failed, cancelled, timed_out). Read-only; does not affect the sub-agent.
+Called without child_session_id it lists this session's live sub-agent delegations (child_session_id, tool, status, age, last activity); with exactly one delegation it returns that child's full summary directly.

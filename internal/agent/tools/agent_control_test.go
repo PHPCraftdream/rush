@@ -21,12 +21,19 @@ type fakeAgentControl struct {
 	answer        string
 	err           error
 	calls         int
+	delegations   []AgentDelegationSummary
 }
 
 func (f *fakeAgentControl) InspectAgent(_ context.Context, caller, child string) (AgentInspection, error) {
 	f.calls++
 	f.caller, f.child = caller, child
 	return f.inspection, f.err
+}
+
+func (f *fakeAgentControl) ListDelegations(_ context.Context, caller string) ([]AgentDelegationSummary, error) {
+	f.calls++
+	f.caller = caller
+	return f.delegations, f.err
 }
 
 func (f *fakeAgentControl) InjectAgent(_ context.Context, caller, child, msg string, interrupt bool) (string, error) {
@@ -67,19 +74,42 @@ func TestInspectAgentTool_RoutesThroughControl(t *testing.T) {
 	require.Contains(t, resp.Content, `"queued_messages":2`)
 }
 
-func TestInspectAgentTool_MissingSessionIDAndChildIDRefused(t *testing.T) {
+func TestInspectAgentTool_MissingSessionIDRefused(t *testing.T) {
 	ctrl := &fakeAgentControl{}
 	resp := runToolTool(t, NewInspectAgentTool(ctrl), context.Background(),
 		InspectAgentParams{childSessionIDParam{"child-1"}})
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "session ID is required")
 	require.Zero(t, ctrl.calls)
+}
 
-	resp = runToolTool(t, NewInspectAgentTool(ctrl), agentControlContext("parent-1"),
-		InspectAgentParams{})
-	require.True(t, resp.IsError)
-	require.Contains(t, resp.Content, "child_session_id is required")
-	require.Zero(t, ctrl.calls)
+func TestInspectAgentTool_NoChildListsDelegations(t *testing.T) {
+	// Zero delegations: an answer, not an error.
+	ctrl := &fakeAgentControl{}
+	resp := runToolTool(t, NewInspectAgentTool(ctrl), agentControlContext("parent-1"), InspectAgentParams{})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, "No live sub-agent delegations")
+
+	// Exactly one: the single child's full summary, no round-trip needed.
+	ctrl = &fakeAgentControl{
+		delegations: []AgentDelegationSummary{{ChildSessionID: "child-1", Status: "running"}},
+		inspection:  AgentInspection{ChildSessionID: "child-1", Status: "running", QueuedMessages: 1},
+	}
+	resp = runToolTool(t, NewInspectAgentTool(ctrl), agentControlContext("parent-1"), InspectAgentParams{})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, `"status":"running"`)
+	require.Equal(t, "child-1", ctrl.child, "the single delegation must be inspected directly")
+
+	// Several: the listing with a pointer back at child_session_id.
+	ctrl = &fakeAgentControl{delegations: []AgentDelegationSummary{
+		{ChildSessionID: "child-a", Status: "running"},
+		{ChildSessionID: "child-b", Status: "idle"},
+	}}
+	resp = runToolTool(t, NewInspectAgentTool(ctrl), agentControlContext("parent-1"), InspectAgentParams{})
+	require.False(t, resp.IsError)
+	require.Contains(t, resp.Content, `"child_session_id":"child-a"`)
+	require.Contains(t, resp.Content, `"child_session_id":"child-b"`)
+	require.Contains(t, resp.Content, "child_session_id from this list")
 }
 
 func TestInjectAgentTool_PassesInterruptAndMessage(t *testing.T) {

@@ -29,6 +29,32 @@ func NewInspectAgentTool(control AgentControl) fantasy.AgentTool {
 			if sessionID == "" {
 				return fantasy.NewTextErrorResponse("session ID is required to inspect a sub-agent"), nil
 			}
+			if params.ChildSessionID == "" {
+				delegations, err := control.ListDelegations(ctx, sessionID)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				switch len(delegations) {
+				case 0:
+					return fantasy.NewTextResponse("No live sub-agent delegations for this session. Nothing to inspect; start one with the agent tool."), nil
+				case 1:
+					insp, err := control.InspectAgent(ctx, sessionID, delegations[0].ChildSessionID)
+					if err != nil {
+						return fantasy.NewTextErrorResponse(err.Error()), nil
+					}
+					data, err := json.Marshal(insp)
+					if err != nil {
+						return fantasy.ToolResponse{}, fmt.Errorf("marshal inspect_agent output: %w", err)
+					}
+					return fantasy.NewTextResponse(string(data)), nil
+				default:
+					data, err := json.Marshal(delegations)
+					if err != nil {
+						return fantasy.ToolResponse{}, fmt.Errorf("marshal inspect_agent listing: %w", err)
+					}
+					return fantasy.NewTextResponse("Multiple live sub-agent delegations; call again with child_session_id from this list:\n" + string(data)), nil
+				}
+			}
 			childSessionID, err := childSessionFromParams(params.childSessionIDParam)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil

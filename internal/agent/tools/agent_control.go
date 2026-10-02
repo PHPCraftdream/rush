@@ -18,6 +18,10 @@ import (
 type AgentControl interface {
 	// InspectAgent reports a delegated child's status (§4.1).
 	InspectAgent(ctx context.Context, callerSessionID, childSessionID string) (AgentInspection, error)
+	// ListDelegations lists the caller session's live delegations (§4.1's
+	// no-argument inspect_agent listing). A delivered delegation is gone
+	// from the ledger by design and is not listed.
+	ListDelegations(ctx context.Context, callerSessionID string) ([]AgentDelegationSummary, error)
 	// InjectAgent delivers msg into the child's session (§4.2) and returns
 	// the tool's own answer text.
 	InjectAgent(ctx context.Context, callerSessionID, childSessionID, msg string, interrupt bool) (string, error)
@@ -33,6 +37,16 @@ type AgentInspection struct {
 	QueuedMessages      int    `json:"queued_messages"`
 	LastActivityAt      string `json:"last_activity_at,omitempty"`
 	LastActivitySummary string `json:"last_activity_summary,omitempty"`
+}
+
+// AgentDelegationSummary is one live delegation in ListDelegations' output.
+type AgentDelegationSummary struct {
+	ChildSessionID string `json:"child_session_id"`
+	ToolName       string `json:"tool_name"`
+	Status         string `json:"status"`
+	StartedAt      string `json:"started_at,omitempty"`
+	AgeSeconds     int    `json:"age_seconds,omitempty"`
+	LastActivityAt string `json:"last_activity_at,omitempty"`
 }
 
 // childSessionIDParam is the shared ownership-checked parameter.

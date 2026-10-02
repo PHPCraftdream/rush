@@ -9,6 +9,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -136,6 +137,58 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 		insp.LastActivitySummary = tools.TruncateOutput(last.FullText())
 	}
 	return insp, nil
+}
+
+// ListDelegations implements tools.AgentControl: the no-argument
+// inspect_agent listing. Live means the caller still owns the delegation in
+// the work ledger (bySession[caller].jobs with a non-empty childSession);
+// a delivered delegation is gone from the ledger by design and is not
+// listed. Ordered oldest-first by start time.
+func (c *coordinator) ListDelegations(ctx context.Context, callerSessionID string) ([]tools.AgentDelegationSummary, error) {
+	if c.asyncJobs == nil {
+		return nil, nil
+	}
+	type liveEntry struct {
+		childID   string
+		toolName  string
+		startedAt time.Time
+	}
+	c.asyncJobs.mu.Lock()
+	var entries []liveEntry
+	if s := c.asyncJobs.bySession[callerSessionID]; s != nil {
+		for _, job := range s.jobs {
+			if job.childSession != "" {
+				entries = append(entries, liveEntry{childID: job.childSession, toolName: job.toolName, startedAt: job.startedAt})
+			}
+		}
+	}
+	c.asyncJobs.mu.Unlock()
+	// Oldest first, with the child id breaking ties: two delegations armed
+	// inside the same clock tick read an equal startedAt (the process clock
+	// is far coarser than the gap between two Start calls), and an unstable
+	// sort would then list them in random map order.
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].startedAt.Equal(entries[j].startedAt) {
+			return entries[i].startedAt.Before(entries[j].startedAt)
+		}
+		return entries[i].childID < entries[j].childID
+	})
+	summaries := make([]tools.AgentDelegationSummary, 0, len(entries))
+	for _, e := range entries {
+		insp, err := c.InspectAgent(ctx, callerSessionID, e.childID)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, tools.AgentDelegationSummary{
+			ChildSessionID: e.childID,
+			ToolName:       e.toolName,
+			Status:         insp.Status,
+			StartedAt:      e.startedAt.UTC().Format(time.RFC3339),
+			AgeSeconds:     int(time.Since(e.startedAt).Seconds()),
+			LastActivityAt: insp.LastActivityAt,
+		})
+	}
+	return summaries, nil
 }
 
 func terminalStatusFor(state jobPhase) string {

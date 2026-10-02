@@ -46,7 +46,7 @@ type RunCommandParams struct {
 	// see parseTimeoutParam's doc for the exact relationship (TimeoutSeconds
 	// alone is treated as an alias for Timeout{Kind: "terminate_and_wake"};
 	// setting both is a validation error).
-	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. Mutually exclusive with the legacy timeout_seconds above."`
+	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. Mutually exclusive with the legacy timeout_seconds above. A bare number of seconds is also accepted and means {\"seconds\": N, \"kind\": \"wake_only\"}."`
 }
 
 type RunCommandPermissionsParams struct {

@@ -31,7 +31,7 @@ type BashParams struct {
 	// TimeoutParams's doc for the shape; parsed generically by
 	// internal/agent's parseTimeoutParam, not read from this struct at
 	// runtime.
-	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline."`
+	Timeout *TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. A bare number of seconds is also accepted and means {\"seconds\": N, \"kind\": \"wake_only\"}."`
 }
 
 type BashPermissionsParams struct {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -402,10 +403,9 @@ const (
 // reads from raw call.Input -- the same pattern childSessionID already uses
 // for AgentParams and t.run uses for run_in_background.
 type timeoutParamInput struct {
-	Timeout *struct {
-		Seconds int    `json:"seconds"`
-		Kind    string `json:"kind"`
-	} `json:"timeout,omitempty"`
+	// Raw so a bare-number timeout (accepted since #1159) survives this
+	// generic re-parse instead of being silently dropped here.
+	Timeout json.RawMessage `json:"timeout,omitempty"`
 	// TimeoutSeconds mirrors run_command.RunCommandParams.TimeoutSeconds --
 	// read generically here (like Timeout above) rather than importing the
 	// typed struct, so this function stays tool-agnostic. Zero for
@@ -418,7 +418,8 @@ type timeoutParamInput struct {
 // parseTimeoutParam extracts and validates the optional explicit timeout for
 // bash/run_command/agent (NOT agentic_fetch -- its own HTTP client already
 // carries a fixed timeout, and it does not describe this field in its JSON
-// schema). Both new timeout{} and legacy run_command.timeout_seconds set on
+// schema). A bare JSON number is accepted as {"seconds": N, "kind": "wake_only"}.
+// Both new timeout{} and legacy run_command.timeout_seconds set on
 // the SAME call is a validation error (wake-tools-contract.md §3): the
 // legacy field is a "terminate_and_wake" ALIAS, not an independent axis, so
 // both present is an unresolvable ambiguity, not a silent precedence rule.
@@ -430,10 +431,12 @@ func parseTimeoutParam(toolName, input string) (*TimeoutSpec, error) {
 	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
 		return nil, nil
 	}
-	if parsed.Timeout != nil && parsed.TimeoutSeconds != 0 {
+	raw := bytes.TrimSpace(parsed.Timeout)
+	timeoutSet := len(raw) > 0 && string(raw) != "null"
+	if timeoutSet && parsed.TimeoutSeconds != 0 {
 		return nil, fmt.Errorf("provide at most one of timeout or the legacy timeout_seconds, not both")
 	}
-	if parsed.Timeout == nil {
+	if !timeoutSet {
 		if parsed.TimeoutSeconds == 0 {
 			return nil, nil
 		}
@@ -450,23 +453,43 @@ func parseTimeoutParam(toolName, input string) (*TimeoutSpec, error) {
 			Seconds:  parsed.TimeoutSeconds,
 		}, nil
 	}
-	t := parsed.Timeout
-	if t.Seconds < timeoutSecondsFloor || t.Seconds > timeoutSecondsCeil {
-		return nil, fmt.Errorf("timeout.seconds must be between %d and %d (7 days), got %d", timeoutSecondsFloor, timeoutSecondsCeil, t.Seconds)
+	const shape = `timeout must be an object {"seconds": N, "kind": "wake_only"|"terminate_and_wake"} or a bare number of seconds`
+	var (
+		seconds int
+		kind    string
+	)
+	if raw[0] == '{' {
+		var obj struct {
+			Seconds int    `json:"seconds"`
+			Kind    string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return nil, fmt.Errorf("%s: %s", shape, err)
+		}
+		seconds, kind = obj.Seconds, obj.Kind
+	} else {
+		if err := json.Unmarshal(raw, &seconds); err != nil {
+			return nil, fmt.Errorf("%s, got %s", shape, raw)
+		}
+		// Bare number: the safe kind -- the deadline never kills the work.
+		kind = "wake_only"
 	}
-	var kind timeoutKind
-	switch t.Kind {
+	if seconds < timeoutSecondsFloor || seconds > timeoutSecondsCeil {
+		return nil, fmt.Errorf("timeout.seconds must be between %d and %d (7 days), got %d", timeoutSecondsFloor, timeoutSecondsCeil, seconds)
+	}
+	var tk timeoutKind
+	switch kind {
 	case "wake_only":
-		kind = timeoutWakeOnly
+		tk = timeoutWakeOnly
 	case "terminate_and_wake":
-		kind = timeoutTerminateAndWake
+		tk = timeoutTerminateAndWake
 	default:
-		return nil, fmt.Errorf("timeout.kind must be %q or %q, got %q", "wake_only", "terminate_and_wake", t.Kind)
+		return nil, fmt.Errorf("timeout.kind must be %q or %q, got %q", "wake_only", "terminate_and_wake", kind)
 	}
 	return &TimeoutSpec{
-		Deadline: time.Now().Add(time.Duration(t.Seconds) * time.Second),
-		Kind:     kind,
-		Seconds:  t.Seconds,
+		Deadline: time.Now().Add(time.Duration(seconds) * time.Second),
+		Kind:     tk,
+		Seconds:  seconds,
 	}, nil
 }
 
