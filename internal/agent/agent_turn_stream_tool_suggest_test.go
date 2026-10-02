@@ -81,7 +81,7 @@ func TestOnToolResult_AugmentsUnknownToolError(t *testing.T) {
 			Result: fantasy.ToolResultOutputContentError{Error: errors.New("tool not found: gash")},
 		})
 		require.True(t, saved.IsError, "the error flag is kept")
-		require.Contains(t, saved.Content, `unknown tool "gash"`)
+		require.Contains(t, saved.Content, `tool not found: "gash"`)
 		require.Contains(t, saved.Content, `did you mean "bash"?`)
 	})
 
@@ -93,7 +93,7 @@ func TestOnToolResult_AugmentsUnknownToolError(t *testing.T) {
 			Result: fantasy.ToolResultOutputContentError{Error: errors.New("tool not found: totally_bogus_tool")},
 		})
 		require.True(t, saved.IsError)
-		require.Contains(t, saved.Content, `unknown tool "totally_bogus_tool"`)
+		require.Contains(t, saved.Content, `tool not found: "totally_bogus_tool"`)
 		require.Contains(t, saved.Content, "Available tools: bash, grep, view")
 	})
 

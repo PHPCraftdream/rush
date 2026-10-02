@@ -56,13 +56,13 @@ func (a *sessionAgent) augmentUnknownToolResult(result message.ToolResult) messa
 	}
 	if suggestion := toolNameSuggestion(missing, available); suggestion != "" {
 		result.Content = fmt.Sprintf(
-			"unknown tool %q — did you mean %q? (no tool with that name exists in this session)",
+			"tool not found: %q — did you mean %q? (no tool with that name exists in this session)",
 			missing, suggestion,
 		)
 		return result
 	}
 	result.Content = fmt.Sprintf(
-		"unknown tool %q — no close match exists. Available tools: %s",
+		"tool not found: %q — no close match exists. Available tools: %s",
 		missing, strings.Join(available, ", "),
 	)
 	return result
