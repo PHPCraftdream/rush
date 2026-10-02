@@ -11,7 +11,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // prepareStep, onStepFinish and stopConditions are runTurn's remaining
@@ -118,6 +117,10 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	prepared.Messages = spliceCarried(prepared.Messages, ts.carriedSplices, stepSplices)
 	if len(stepSplices) > 0 {
 		ts.carriedSplices = append(ts.carriedSplices, carriedSplice{pos: len(options.Messages), msgs: stepSplices})
+		// A step boundary that injected anything may have been the reason a
+		// file changed (a worker finished, a notice landed), so every window
+		// read earlier this turn may be stale by now (§1.2).
+		ts.progress.seen.clear()
 	}
 
 	// Sliding-window context management: when the context is nearly
@@ -138,6 +141,11 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 				targetTokens := int64(float64(cw) * contextSlideRatio)
 				prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
 
+				// Trimmed away content is no longer in the prompt, so what was
+				// read from it is no longer "already in your context" either
+				// (§1.2).
+				ts.progress.seen.clear()
+
 				// Record that a silent compact is needed — it runs
 				// synchronously AFTER the turn completes (under the
 				// turn's mailbox ownership), not as a concurrent
@@ -150,6 +158,17 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	}
 
 	prepared.Messages = ts.a.workaroundProviderMediaLimitations(prepared.Messages, ts.smartModel)
+
+	// In-turn progress guard (§2.2 of the in-turn plan). This runs AFTER both
+	// coverage resets above — the snapshot must reflect the coverage the
+	// model will actually see in this step's prompt — and AFTER
+	// withProviderOptionsOnLast, whose per-step cache-control wrapper the
+	// guard wrapper sits around (it delegates ProviderOptions, so the marker
+	// still reaches the provider). The snapshot is taken BEFORE the assistant
+	// message is created so the refusal decision belongs to the step it was
+	// computed for, never to the next one. The pinned slice itself is only
+	// read, never mutated (R3-1); the wrapper slice is per-step.
+	ts.armProgressGuard(callContext, pinnedStepTools, &prepared.Tools)
 
 	lastSystemRoleInx := 0
 	systemMessageUpdated := false
@@ -213,17 +232,19 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	return callContext, prepared, err
 }
 
-// onStepFinish is fantasy's per-step callback, split into 8 named phases
+// onStepFinish is fantasy's per-step callback, split into 9 named phases
 // (task #940) after the mechanical move in task #939 kept it as one
 // ~230-line body. Each phase is verified by a targeted revert-check (break
 // the invariant, confirm the specific existing test fails with the specific
 // expected symptom, restore) rather than a diff — a behavioral split has no
-// diff oracle. The phase order below IS the invariant in three places:
+// diff oracle. The phase order below IS the invariant in four places:
 // stopStepTicker must run before recordStepFinish touches currentAssistant
 // (else the checkpoint ticker races the final write); recordStepHistory
 // must run before recordStepFinish reads loopDetected (fantasy calls
 // OnStepFinish before StopWhen for the same step, so a stale flag here
-// never gets fixed by a later step); and enforceRunawayCaps/recheckPeakHours
+// never gets fixed by a later step) — and, for the same reason, before it
+// reads the in-turn progress guard's stopped flag, which recordStepHistory
+// sets for this very step; and enforceRunawayCaps/recheckPeakHours
 // must call activeRequests' cancelFn(), not just return an error, because
 // returning an error from OnStepFinish alone does not break fantasy's loop
 // (BUG-4, pinned by TestActiveRequests_HoldsLiveCancelDuringTurn).
@@ -276,6 +297,90 @@ func (ts *turnStream) recordStepHistory(stepResult fantasy.StepResult) {
 	ts.stepHistory = append(ts.stepHistory, stepResult)
 	ts.loopDetected, ts.loopDetail = hasRepeatedToolCalls(ts.stepHistory, loopDetectionWindowSize, loopDetectionMaxRepeats)
 	ts.recordChainEvidence(stepResult)
+	ts.recordStepProgress(stepResult)
+}
+
+// armProgressGuard snapshots the guard state for the step being prepared and,
+// when that step could refuse anything, replaces tools with a wrapper around
+// each entry (§2.2). pinned is the call's pinned (or copied shared) slice, read
+// only; out points at prepared.Tools, which is a fresh per-step slice already
+// carrying the cache-control wrapper.
+func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fantasy.AgentTool, out *[]fantasy.AgentTool) {
+	async := func() bool {
+		origin := CallOriginFrom(callContext)
+		return origin == message.OriginCLI || origin == message.OriginWeb
+	}()
+	ownWork := async && ts.a.asyncJobs != nil && ts.a.asyncJobs.running(ts.call.SessionID)
+
+	guard := stepGuardFor(&ts.progress, ownWork, async)
+	guard.canEdit, guard.canDelegate = stepToolCapabilities(pinned)
+	ts.progress.guard = guard
+
+	if refuseWait(guard.streak, guard.ownWork, guard.async) || guard.streak >= inTurnRefuseAfter {
+		*out = wrapProgressGuard(*out, guard)
+	}
+}
+
+// stepToolCapabilities reports what this step's tool set allows: editing files
+// and delegating to a sub-agent. Read from the set's own names, since a stale
+// session prompt cannot make a tool appear (§4 of the in-turn plan).
+func stepToolCapabilities(set []fantasy.AgentTool) (canEdit, canDelegate bool) {
+	for _, tool := range set {
+		switch tool.Info().Name {
+		case tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName,
+			tools.FSWriteToolName, tools.FSReplaceToolName, tools.FSWriteLinesToolName,
+			tools.FSDeleteToolName:
+			canEdit = true
+		case AgentToolName:
+			canDelegate = true
+		}
+	}
+	return canEdit, canDelegate
+}
+
+// recordStepProgress folds this step's calls into the in-turn guard's state
+// (§1.2): each call is classified against the coverage captured at the STEP'S
+// START (the guard snapshot), never against the live map, and the step's own
+// windows are added only afterwards. Called from recordStepHistory, where
+// every result of the step is already on hand and before recordStepFinish
+// reads stopped for this same step.
+func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
+	calls := make(map[string]fantasy.ToolCallContent, len(stepResult.Content))
+	for _, call := range stepResult.Content.ToolCalls() {
+		calls[call.ToolCallID] = call
+	}
+	var (
+		classes []stepCallClass
+		spans   [][]namedSpan
+	)
+	for _, result := range stepResult.Content.ToolResults() {
+		call, ok := calls[result.ToolCallID]
+		if !ok {
+			continue
+		}
+		classes = append(classes, classifyStepCall(call, result, stepClassifyCtx{seen: ts.progress.guard.seen}))
+		spans = append(spans, readSpans(call))
+	}
+
+	wasStopped := ts.progress.stopped
+	refused := ts.progress.applyStep(classes, spans)
+	if refused > 0 {
+		// The wrapper is external, so loggedTool never sees a refusal: the
+		// guard reports it itself (§2.2).
+		slog.Warn("agent: in-turn progress guard refused tool calls",
+			"session_id", ts.call.SessionID,
+			"refused", refused,
+			"streak", ts.progress.streak,
+			"waits", ts.progress.waits,
+			"rereads", ts.progress.rereads)
+	}
+	if !wasStopped && ts.progress.stopped {
+		slog.Warn("agent: in-turn progress guard stopping the turn",
+			"session_id", ts.call.SessionID,
+			"streak", ts.progress.streak,
+			"waits", ts.progress.waits,
+			"rereads", ts.progress.rereads)
+	}
 }
 
 // chainNeutralTools are tool calls that neither advance the session's work
@@ -289,11 +394,13 @@ var chainNeutralTools = map[string]struct{}{
 }
 
 // recordChainEvidence feeds the reaction chain guard (#1113) from this
-// step's tool activity: every async launch that is a pure wait command
-// (bash sleep/echo, run_command sleep/timeout) has its claim_id (from the
-// started response's ClientMetadata -- the same tag the ack gate reads)
-// recorded on the leg, any real action marks the leg as progress. A text-
-// only or neutral-only step is neither.
+// step's tool activity, classified by classifyStepCall: every async launch
+// that is a pure wait command (bash sleep/echo, run_command sleep/timeout) has
+// its claim_id (from the started response's ClientMetadata -- the same tag the
+// ack gate reads) recorded on the leg, any real action (act, read, reread)
+// marks the leg as progress. A guard refusal is neither -- the tool never
+// ran, so it started nothing -- and a text-only or neutral-only step is
+// neither.
 func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 	if ts.att == nil || ts.att.closed {
 		return
@@ -307,16 +414,19 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		if !ok {
 			continue
 		}
-		if _, neutral := chainNeutralTools[call.ToolName]; neutral {
-			continue
+		class := classifyStepCall(call, result, stepClassifyCtx{})
+		switch class {
+		case stepCallWait:
+			var meta asyncToolMetadata
+			_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
+			if meta.Async && meta.ClaimID != "" {
+				ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
+			}
+		case stepCallRefused, stepCallNeutral:
+			// a guard refusal is neither progress nor a claim: it started nothing
+		default: // act, read, reread: progress, as #1113 counts reread as progress
+			ts.att.chainProgress = true
 		}
-		var meta asyncToolMetadata
-		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
-		if claim, idle := chainIdleClaim(call, meta); idle {
-			ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, claim)
-			continue
-		}
-		ts.att.chainProgress = true
 	}
 }
 
@@ -332,31 +442,14 @@ func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (strin
 	if !isAsyncLaunch && !isInlineResult {
 		return "", false
 	}
+	if !isWaitOnlyCall(call) {
+		return "", false
+	}
 	claim := meta.ClaimID
 	if isInlineResult {
 		claim = "" // inline results carry no outstanding launch to exclude
 	}
-	switch call.ToolName {
-	case tools.BashToolName:
-		var params struct {
-			Command string `json:"command"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		return claim, shell.IsNoOpCommand(params.Command)
-	case tools.RunCommandToolName:
-		var params struct {
-			Program string `json:"program"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		idle := params.Program == "sleep" || params.Program == "timeout"
-		return claim, idle
-	default:
-		return "", false
-	}
+	return claim, true
 }
 
 // stopStepTicker stops the checkpoint ticker BEFORE the final write below so
@@ -436,6 +529,15 @@ func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
 		// from "we truncated a likely loop (possibly a legitimate poll)".
 		loopMsg, loopDetails := loopDetectedFinishText(ts.loopDetail)
 		ts.currentAssistant.AddFinish(finishReason, loopMsg, loopDetails)
+	} else if ts.progress.stopped {
+		// In-turn progress guard (§2.3): the model made no progress for
+		// inTurnStopAfter consecutive steps. The reason stays
+		// FinishReasonEndTurn for the same reason loopDetected above
+		// does — reclassifyCrashedAsDone / sessions-why must keep
+		// treating a guard stop as "done", while the non-empty
+		// message/details let an operator tell it apart from a
+		// voluntary end.
+		ts.currentAssistant.AddFinish(message.FinishReasonEndTurn, InTurnGuardStopTitle, guardStopDetails(ts.progress))
 	} else {
 		ts.currentAssistant.AddFinish(finishReason, "", "")
 	}
@@ -688,6 +790,13 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 			// finish text and re-introduce the stale-flag bug).
 			detected, _ := hasRepeatedToolCalls(steps, loopDetectionWindowSize, loopDetectionMaxRepeats)
 			return detected
+		},
+		func(_ []fantasy.StepResult) bool {
+			// In-turn progress guard (turn_progress_guard.go). Same ordering
+			// as loopDetected above: recordStepHistory — not StopWhen — owns
+			// stopped, so this only reads the flag for the step just
+			// finished, never writes it.
+			return ts.progress.stopped
 		},
 	}
 }

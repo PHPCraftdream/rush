@@ -92,8 +92,7 @@ Drain-gate (`work_ledger_reaction.go`, `freeStreak`/`paidStreak`) считает
 `sleep 90; gh run view` содержит реальную команду и не считается. Проверка после
 ожидания сбрасывает счёт. `sleep 5` + `go test` в одной ноге — прогресс. По
 замыслу режутся только ≥3 подряд чистых ожидания без проверки.
-Вне объёма (P2, backlog): цепочка внутри одной ноги (предикат между ходами её не
-видит — задача `loop_detection`); короткий `wakein` после этапа 4b.
+Вне объёма (P2, backlog): цепочка внутри одной ноги — задача `loop_detection`, а классификация шага переехала в `docs/plans/2026-10-01-in-turn-progress-guard.md`; короткий `wakein` после этапа 4b.
 
 ## Тесты (revert-check в скобках)
 1. `internal/shell`, таблица `IsNoOpCommand`. true: `sleep 90`, `echo tick2`,

@@ -268,3 +268,23 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 	require.Empty(t, ts.att.chainIdleClaims)
 	require.False(t, ts.att.chainProgress)
 }
+
+// T2 (plan step 1): a step whose result carries the in-turn guard's refusal
+// metadata gives #1113 neither a claim nor progress -- the tool never ran, so
+// it started nothing. Without the refused case in classifyStepCall the guard's
+// own refusals would read as progress and reset the chain.
+//
+// Revert-check: dropping the refused case (or setting chainProgress there)
+// turns this red.
+func TestRecordChainEvidence_RefusedIsNeutral(t *testing.T) {
+	ts := &turnStream{att: &drainAttempt{}}
+	startedTag := `{"async":true,"job_id":"j","status":"running","claim_id":"claim-X","progress_guard":{"refused":"wait"}}`
+	content := fantasy.ResponseContent{
+		fantasy.ToolCallContent{ToolCallID: "c1", ToolName: "bash", Input: `{"command":"echo x"}`},
+		fantasy.ToolResultContent{ToolCallID: "c1", ClientMetadata: startedTag},
+	}
+	ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: content}})
+
+	require.Empty(t, ts.att.chainIdleClaims, "a refused wait launched nothing")
+	require.False(t, ts.att.chainProgress, "a refusal is not progress: it started nothing")
+}

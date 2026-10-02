@@ -144,6 +144,16 @@ type turnStream struct {
 	silentCompactNeeded bool
 	currentSession      session.Session
 
+	// progress is the in-turn progress guard's state (turn_progress_guard.go).
+	// Scoped to ONE turn — a new turn starts from zero, cross-turn chains are
+	// #1113's business. Written only by prepareStep (coverage resets, the
+	// guard snapshot) and by onStepFinish's recordStepHistory (the step's class,
+	// the streak, stopped), read by StopWhen: the same sequential callback
+	// sequence as stepHistory/loopDetected above, so it needs no lock either.
+	// The guard snapshot itself (progress.guard) is a plain value handed to the
+	// step's tool wrappers, which may run concurrently for parallel tools.
+	progress turnProgress
+
 	// carriedSplices is every mid-turn insertion (notice pulls AND mailbox
 	// injects) this turn's PrepareStep has spliced into a step's prompt,
 	// each with the position it landed at (phase-4 step 3, doc sec.3.4's
