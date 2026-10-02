@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Async-лимит сессии (A27, #1155): лимит 50 теперь считает только
+  незавершённые задачи — завершённая, но ещё недоставленная задача слот
+  больше не занимает, поэтому потерянное подтверждение не блокирует новые
+  bash-задачи навсегда. Отказ при полном лимите теперь объясняет, что
+  ничего не стоит в очереди, перечисляет до 10 бегущих задач (таймеры
+  первыми) с метаданными `async_cap` и предписывает освободить слоты
+  `job_kill` или закончить ход без вызова инструмента (не повторять вызов
+  и не задавать вопрос через ask_question). Тот же совет теперь в
+  сообщении лимита фоновых процессов shell (`maximum number of background
+  jobs`).
+
 - `rush sessions kill` / `cancel` / `reset --force` (A26): they now also remove
   the session's queued runs, pending injects and orphan-call outbox rows. Before,
   a session killed with a queued `sessions inject` was resurrected by the next

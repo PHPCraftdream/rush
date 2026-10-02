@@ -268,9 +268,12 @@ func (l *workLedger) Start(owner, toolCallID, input, toolName, childSession stri
 		}
 		return existing, true, nil
 	}
-	if len(s.jobs) >= maxAsyncJobsPerSession {
+	if running := runningJobsLocked(s); running >= maxAsyncJobsPerSession {
+		// ASYNC-12: only non-terminal jobs hold a slot, and the refusal
+		// snapshot is built under the same lock hold (work_ledger_cap.go).
+		snap := l.capSnapshotLocked(s)
 		l.mu.Unlock()
-		return nil, false, fmt.Errorf("maximum number of async jobs (%d) reached", maxAsyncJobsPerSession)
+		return nil, false, newAsyncCapError(running, maxAsyncJobsPerSession, snap)
 	}
 	store := l.store
 	l.mu.Unlock()

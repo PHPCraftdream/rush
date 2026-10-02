@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -96,6 +98,22 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 	job, existing, err := t.coordinator.asyncJobs.Start(sessionID, call.ID, call.Input, t.name, childSessionID, origin == message.OriginCLI, sync, timeoutSpec, cancel)
 	if err != nil {
 		cancel()
+		var capErr *asyncCapError
+		if errors.As(err, &capErr) {
+			// ASYNC-12: the refusal names what to do (free slots or end the
+			// turn) and is tagged so the step guard (#1149) can later count
+			// it as a no-progress step. No claim_id: the refusal never
+			// reached store.Claim, so there is no row and no ack.
+			slog.Warn("async job cap reached",
+				"session", sessionID, "tool", t.name,
+				"running", capErr.Running, "limit", capErr.Limit,
+				"wait_timers", capErr.Timers)
+			var meta asyncCapMetadata
+			meta.AsyncCap.Running = capErr.Running
+			meta.AsyncCap.Limit = capErr.Limit
+			meta.AsyncCap.WaitTimers = capErr.Timers
+			return fantasy.WithResponseMetadata(fantasy.NewTextErrorResponse(capErr.Error()), meta), nil
+		}
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
 	if existing {

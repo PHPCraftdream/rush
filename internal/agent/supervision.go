@@ -127,7 +127,7 @@ type supervisionState struct {
 // clearSupervisionIfPresent the instant the scope drains, or by cancelSession
 // below) -- there is no per-process cap to enforce because the set can never
 // grow past "sessions with open async work right now", already bounded by
-// maxAsyncJobsPerSession-style limits elsewhere.
+// the cap on non-terminal async jobs elsewhere (work_ledger_cap.go, ASYNC-12).
 type supervisionRegistry struct {
 	mu      sync.Mutex
 	byRoot  map[string]*supervisionState

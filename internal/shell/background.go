@@ -410,7 +410,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 	}
 	active := m.activeJobs.Load()
 	if active >= int64(limit) {
-		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Please terminate or wait for some jobs to complete", limit)
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: job_kill the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
 	}
 	// Warn on the approach, not only at the wall. Hitting the cap kills the
 	// run with one line and no warning; this gives the operator the count
