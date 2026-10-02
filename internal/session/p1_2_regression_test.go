@@ -39,101 +39,87 @@ import (
 //  2. Run: go test ./internal/session -run TestP1_2_ReleaseUnlocksBeforeMetadataCleanup_Hang -v
 //  3. The test will FAIL because second TryAcquireSessionLock fails while clearHolderMetadata is blocked
 //  4. Restore the fix (unlockFile first, then close, then clearHolderMetadataFn) and the test will PASS.
+//
+// Task #1154: rewritten to use channel latches instead of wall-clock caps (the old 100ms Release-return
+// budget left zero headroom over Release's own documented 50ms+50ms internal waits, and the 10ms
+// busy-poll loops depended on real-time scheduling).
 func TestP1_2_ReleaseUnlocksBeforeMetadataCleanup_Hang(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p1-2-hang"
 
-	// Prepare blocking channels and flags for test coordination.
-	var releaseStarted atomic.Bool
-	var releaseCompleted atomic.Bool
+	// Latches, not wall-clock polling: the injected cleanup signals entry
+	// and completion on channels so ordering assertions are event-based
+	// regardless of scheduler load (task #1154 flake).
+	cleanupEntered := make(chan struct{})
+	cleanupFinished := make(chan struct{})
 	releaseBlocker := make(chan struct{})
 
-	// Acquire the first lock with a blocking cleanup function.
 	lk1, err := TryAcquireSessionLockWithOptions(tmpDir, sessionID, WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
-		releaseStarted.Store(true)
-		// Block until the test signals to proceed.
+		close(cleanupEntered)
 		<-releaseBlocker
-		// Call the original implementation.
 		clearHolderMetadata(path, expectedGeneration)
-		releaseCompleted.Store(true)
+		close(cleanupFinished)
 	}))
 	require.NoError(t, err, "first TryAcquireSessionLock should succeed")
 	require.NotNil(t, lk1)
 
-	// Start Release() in a goroutine. It should acquire the OS lock, call
-	// unlockFile/close, then BLOCK on our injected clearHolderMetadataFn.
+	// Release() must return while the injected cleanup is still blocked on
+	// releaseBlocker. The invariant "unlock/close happened before cleanup"
+	// is proven below by the second acquire succeeding, not by a wall-clock
+	// cap: Release's own documented worst case already fills a 100ms budget
+	// (heartbeatHandoffBound + releaseMetadataCleanupBound), leaving no
+	// headroom under load.
 	releaseDone := make(chan struct{})
 	go func() {
 		_ = lk1.Release()
 		close(releaseDone)
 	}()
 
-	// Wait for Release() to return (P0 fix: it returns immediately, before cleanup).
-	releaseReturned := make(chan struct{})
+	// Wait for cleanup to start (proves the background goroutine was
+	// spawned) without busy-polling. Generous bound: only a broken spawn
+	// order should ever hit it.
+	select {
+	case <-cleanupEntered:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "cleanup goroutine did not start")
+	}
+
+	// Release must have returned BEFORE we unblock cleanup: select with
+	// releaseBlocker still open. Release returning while cleanup is blocked
+	// is the P0 property; the unlock-before-cleanup ordering is proven by
+	// the second acquire below.
+	select {
+	case <-releaseDone:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "Release() did not return while cleanup was blocked")
+	}
+
+	// Critical invariant: unlockFile/Close happened BEFORE the cleanup block.
+	// Prove by acquiring from a second goroutine while cleanup is still
+	// blocked; generous bound covers the heartbeat-handoff path plus
+	// scheduler jitter under a loaded test binary.
+	acquireResult := make(chan *SessionLock, 1)
 	go func() {
-		<-releaseDone
-		close(releaseReturned)
+		lk2, _ := TryAcquireSessionLock(tmpDir, sessionID)
+		acquireResult <- lk2
 	}()
 
-	select {
-	case <-releaseReturned:
-		// Expected: Release returns quickly even though cleanup is blocked.
-	case <-time.After(100 * time.Millisecond):
-		require.Fail(t, "Release() should return within 100ms even with blocked cleanup")
-	}
-
-	// Wait for cleanup to start (proves goroutine was spawned).
-	deadline := time.After(2 * time.Second)
-	for !releaseStarted.Load() {
-		select {
-		case <-deadline:
-			require.Fail(t, "cleanup goroutine did not start within 2 seconds")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-
-	// At this point, Release() has called unlockFile and Close, but the cleanup
-	// goroutine is BLOCKED in clearHolderMetadataFn. The critical invariant is that
-	// unlockFile/Close happened BEFORE the block. We prove this by trying to acquire
-	// the lock from a second goroutine - if unlockFile already happened, this should succeed.
-	acquireSuccess := make(chan struct{})
 	var lk2 *SessionLock
-
-	go func() {
-		lk2, _ = TryAcquireSessionLock(tmpDir, sessionID)
-		if lk2 != nil {
-			close(acquireSuccess)
-		}
-	}()
-
-	// The second acquire should succeed (proving unlock happened BEFORE the block).
 	select {
-	case <-acquireSuccess:
-		// Expected: unlockFile already ran, so lock is available.
+	case lk2 = <-acquireResult:
 		require.NotNil(t, lk2, "second lock should not be nil")
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		require.Fail(t, "second TryAcquireSessionLock should succeed while clearHolderMetadataFn is blocked")
 	}
 
-	// Now unblock clearHolderMetadataFn so Release() can complete.
+	// Unblock cleanup and wait for its completion via latch.
 	close(releaseBlocker)
-
-	// Wait for cleanup to complete.
-	deadline = time.After(2 * time.Second)
-	for !releaseCompleted.Load() {
-		select {
-		case <-deadline:
-			require.Fail(t, "cleanup should complete within 2 seconds after unblocking")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-cleanupFinished:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "cleanup did not complete after unblocking")
 	}
 
-	// Clean up lk2 to avoid Windows file handle conflicts.
-	if lk2 != nil {
-		_ = lk2.Release()
-	}
-
-	// Clean up.
 	if lk2 != nil {
 		_ = lk2.Release()
 	}
