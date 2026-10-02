@@ -171,7 +171,7 @@ func TestProbeThenKillHolder_LiveHolderStillKilled(t *testing.T) {
 	// a concurrent reaper so the victim never sits as an unreaped zombie
 	// (see spawnKillTestLockHolder's doc comment).
 	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-id", true)
-	defer holder.stop()
+	defer holder.stop(t)
 
 	require.True(t, session.IsProcessAlive(holder.pid))
 
@@ -385,7 +385,20 @@ func spawnKillTestLockHolder(t *testing.T, dataDir, sessionID string, reapInBack
 	return &killTestLockHolder{cmd: c, pid: c.Process.Pid, stdinW: stdinW, waitErr: waitErr}
 }
 
-func (h *killTestLockHolder) stop() {
+// reapedFromWaitErr adapts the background reaper's error channel to the
+// struct{}-close shape waitOrDump expects. The background goroutine in
+// spawnKillTestLockHolder does `waitErr <- c.Wait()`, so draining it (as the
+// old bare `<-h.waitErr` did) is what signals the child has been reaped.
+func reapedFromWaitErr(waitErr <-chan error) <-chan struct{} {
+	reaped := make(chan struct{})
+	go func() {
+		<-waitErr
+		close(reaped)
+	}()
+	return reaped
+}
+
+func (h *killTestLockHolder) stop(t *testing.T) {
 	if h.stdinW != nil {
 		_ = h.stdinW.Close()
 	}
@@ -399,7 +412,9 @@ func (h *killTestLockHolder) stop() {
 		// until that goroutine has actually reaped the child instead, so
 		// stop() keeps its original promise that the process is gone by the
 		// time it returns.
-		<-h.waitErr
+		if err := waitOrDump(t, reapedFromWaitErr(h.waitErr), 30*time.Second, "background reaper goroutine of lock-holder process"); err != nil {
+			t.Error(err)
+		}
 		return
 	}
 	// No background reaper (reapInBackground=false, or this holder was
@@ -407,7 +422,11 @@ func (h *killTestLockHolder) stop() {
 	// never sets waitErr at all): nobody has called Wait() on this cmd yet,
 	// so stop() is the first and only caller — reap it directly, exactly as
 	// before this file introduced the opt-in background reaper.
-	_ = h.cmd.Wait()
+	waited := make(chan struct{})
+	go func() { _ = h.cmd.Wait(); close(waited) }()
+	if err := waitOrDump(t, waited, 30*time.Second, "Wait() on killed lock-holder process"); err != nil {
+		t.Error(err)
+	}
 }
 
 // TestSessionsKillCmdRun_HonorsConfiguredDataDir is the regression test for

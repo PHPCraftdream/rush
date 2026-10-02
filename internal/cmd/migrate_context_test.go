@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/spf13/cobra"
@@ -504,10 +505,33 @@ func TestMigrateCLITallyReflectsRewriteFailure(t *testing.T) {
 		errCh <- migrateCmd.RunE(migrateCmd, []string{tmpDir})
 	}()
 
-	lockedFile := <-lockedCh
-	t.Cleanup(func() { lockedFile.Close() })
+	// Bounded waits (task #1148): a rename-pause-seam handover that never
+	// fires, or a RunE that never returns, must produce a fast red test with
+	// a goroutine dump instead of a package-level -timeout with a lost
+	// stack. The helper goroutines close a struct{} channel once the value
+	// has been captured, so waitOrDump's deadline bounds the wait.
+	var lockedFile *os.File
+	lockedSeen := make(chan struct{})
+	go func() {
+		lockedFile = <-lockedCh
+		close(lockedSeen)
+	}()
+	require.NoError(t, waitOrDump(t, lockedSeen, 30*time.Second, "migrateFile rename pause seam to hand over the locked rush.json"))
+	t.Cleanup(func() {
+		if lockedFile != nil {
+			lockedFile.Close()
+		}
+	})
 	close(proceed)
-	err := <-errCh
+
+	var runErr error
+	errSeen := make(chan struct{})
+	go func() {
+		runErr = <-errCh
+		close(errSeen)
+	}()
+	require.NoError(t, waitOrDump(t, errSeen, 30*time.Second, "migrateCmd.RunE to report back on errCh"))
+	err := runErr
 
 	output := b.String()
 	t.Logf("Output:\n%s", output)

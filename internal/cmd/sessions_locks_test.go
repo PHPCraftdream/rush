@@ -126,7 +126,7 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 	// sessions_kill_test.go for the cases that actually depend on one mode
 	// or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-stale-mtime", false)
-	defer holder.stop()
+	defer holder.stop(t)
 
 	require.True(t, session.IsProcessAlive(holder.pid))
 

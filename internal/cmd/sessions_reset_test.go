@@ -300,7 +300,7 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	// reaped concurrently so the poll can observe death within its wait
 	// budget (see spawnKillTestLockHolder's doc comment).
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, true)
-	defer holder.stop()
+	defer holder.stop(t)
 
 	require.True(t, session.IsProcessAlive(holder.pid))
 

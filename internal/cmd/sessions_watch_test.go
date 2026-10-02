@@ -411,7 +411,7 @@ func TestIsSessionFinished_AgedLockWithLivePIDIsAlive(t *testing.T) {
 	require.NoError(t, err)
 
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
-	defer holder.stop()
+	defer holder.stop(t)
 	require.True(t, session.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")

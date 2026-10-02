@@ -311,7 +311,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	// A brand-new owner, spinning to acquire the session the instant the
 	// holder's death releases the OS lock.
 	newOwner := spawnSweepTestNewOwner(t, dataDir, sessionID)
-	defer newOwner.stop()
+	defer newOwner.stop(t)
 
 	type result struct {
 		kr killResult
@@ -334,7 +334,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 		"the new owner should acquire the session and stamp its own generation while the killed holder is still an unreaped zombie")
 
 	// NOW let forceKillHolder observe the victim's death by reaping it.
-	holder.stop()
+	holder.stop(t)
 
 	var kr killResult
 	select {
@@ -399,7 +399,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, oldGeneration)
 
 	newOwner := spawnSweepTestNewOwner(t, dataDir, sessionID)
-	defer newOwner.stop()
+	defer newOwner.stop(t)
 
 	type result struct {
 		lk  *session.SessionLock
@@ -423,7 +423,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 
 	// Reap the holder so forceKillHolder can confirm death; the
 	// re-acquire that follows must then hit the new owner's live lock.
-	holder.stop()
+	holder.stop(t)
 
 	var res result
 	select {
@@ -510,7 +510,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	// death — either way), then let any background metadata cleanup
 	// settle so the sweep's own acquire below cannot spuriously hit
 	// contention against it (see waitForLockMetadataSettled).
-	holder.stop()
+	holder.stop(t)
 	require.Eventually(t, func() bool {
 		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
 		if err != nil {

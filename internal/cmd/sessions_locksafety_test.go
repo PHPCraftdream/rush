@@ -136,7 +136,7 @@ func TestSessionsReap_LiveOSLockStaleRecordedPID_NotRemoved(t *testing.T) {
 	// sessions_kill_test.go for the cases that actually depend on one mode
 	// or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
-	defer holder.stop()
+	defer holder.stop(t)
 	require.True(t, session.IsProcessAlive(holder.pid))
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sessionID+".lock")
@@ -205,7 +205,11 @@ func TestProbeThenKillHolder_UnknownProbeError_FailsClosed(t *testing.T) {
 		if child.Process != nil {
 			_ = child.Process.Kill()
 		}
-		_, _ = child.Process.Wait()
+		waited := make(chan struct{})
+		go func() { _, _ = child.Process.Wait(); close(waited) }()
+		if err := waitOrDump(t, waited, 30*time.Second, "Wait() on killed ping/sleep child"); err != nil {
+			t.Error(err)
+		}
 	})
 	require.True(t, session.IsProcessAlive(child.Process.Pid), "precondition: child must start alive")
 

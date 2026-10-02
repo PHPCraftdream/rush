@@ -139,7 +139,7 @@ func TestSessionLockFact_LivePIDIsHeld(t *testing.T) {
 
 	dataDir := t.TempDir()
 	holder := spawnKillTestLockHolder(t, dataDir, "inject-stale-live", false)
-	defer holder.stop()
+	defer holder.stop(t)
 
 	lockPath := filepath.Join(dataDir, "locks", "session-inject-stale-live.lock")
 	staleTime := time.Now().Add(-time.Hour)
