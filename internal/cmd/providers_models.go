@@ -10,11 +10,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/discover"
 )
 
 // fetchModels fetches the model list for a provider based on its type.
@@ -38,6 +40,25 @@ func fetchModels(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []string
 	}
 
 	switch p.Type {
+	case "openai-codex":
+		if p.OAuthToken == nil {
+			return nil, warnings, fmt.Errorf("openai-codex requires `rush login openai-codex`")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		token := p.OAuthToken
+		if token.IsExpired() {
+			if err := a.Store().RefreshOAuthToken(ctx, config.ScopeGlobal, p.ID); err != nil {
+				return nil, warnings, fmt.Errorf("refresh OpenAI Codex token: %w", err)
+			}
+			latest, ok := a.Store().Config().Providers.Get(p.ID)
+			if !ok || latest.OAuthToken == nil {
+				return nil, warnings, fmt.Errorf("OpenAI Codex token is unavailable after refresh")
+			}
+			token = latest.OAuthToken
+		}
+		models, err := discover.DiscoverCodexModels(ctx, token.AccessToken, token.AccountID)
+		return models, warnings, err
 	case "cli":
 		models := fetchModelsCLI()
 		return models, warnings, nil

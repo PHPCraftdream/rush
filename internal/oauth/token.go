@@ -30,6 +30,7 @@ type Token struct {
 	RefreshToken string       `json:"refresh_token,omitempty"`
 	ExpiresIn    int          `json:"expires_in"`
 	ExpiresAt    int64        `json:"expires_at"`
+	AccountID    string       `json:"account_id,omitempty"` // Provider account bound to this token, when available.
 	Client       *OAuthClient `json:"client,omitempty"`
 }
 
@@ -71,16 +72,18 @@ func (t *Token) SetExpiresIn() {
 	t.ExpiresIn = int(time.Until(time.Unix(t.ExpiresAt, 0)).Seconds())
 }
 
-// TokenExchangeError represents a failed OAuth token exchange. It carries
-// the HTTP status code and response body so callers can distinguish between
-// recoverable failures (e.g. temporary server error) and terminal ones
-// (e.g. revoked refresh token).
+// TokenExchangeError carries an OAuth HTTP status and a provider error code.
+// Diagnostics, when set, contains only explicitly allowlisted metadata.
 type TokenExchangeError struct {
-	StatusCode int
-	Body       string
+	StatusCode  int
+	Body        string
+	Diagnostics string
 }
 
 func (e *TokenExchangeError) Error() string {
+	if e.Diagnostics != "" {
+		return fmt.Sprintf("token exchange failed: status %d %s", e.StatusCode, e.Diagnostics)
+	}
 	return fmt.Sprintf("token exchange failed: status %d body %q", e.StatusCode, e.Body)
 }
 

@@ -540,6 +540,50 @@ out to a local binary). A malformed proxy/DoH value fails the provider
 build loudly. Documented in README under "Provider Network";
 `schema.json` regenerated.
 
+### 4.M — ChatGPT Codex subscription OAuth
+
+Rush registers `openai-codex` as its own provider type, including in the
+generated config schema, separate from the existing `openai` API-key provider
+and `local-cli` Codex CLI integration. `rush login openai-codex` uses Rush's
+browser PKCE OAuth flow; `--device` selects the device-code flow. Rush stores
+and refreshes its own OAuth token and account ID. Inference goes directly to
+`https://chatgpt.com/backend-api/codex/responses` through the Rush transport;
+no Codex CLI is required and no Codex CLI credential store is read or shared.
+
+Browser login leaves the URL unopened until the operator presses the physical
+`O` key; the physical `C` key copies it. Windows console input uses scan codes
+instead of layout-dependent characters, while enhanced terminals report base
+keys; `F2`/`F3` remain layout-independent alternatives on other terminals.
+Shortcuts appear below the URL, and device login uses the same link controls.
+The logger creates a missing `logs/` directory before writing the process-start
+record, rather than emitting that JSON record to the terminal.
+
+The Codex token endpoint reports sanitized failure diagnostics in the CLI and
+log: response kind, content type, byte count, allowlisted OAuth error code,
+and strictly validated request identifiers. Raw OAuth responses, codes,
+verifiers, and tokens are not logged. A 403 can now be distinguished as a
+structured OAuth rejection, an HTML gateway block, or a truly empty response.
+
+The provider model catalog is fetched for the authenticated ChatGPT account
+from `/codex/models?client_version=0.159.0` (with `/models` as a route
+fallback), using that account's bearer token and `chatgpt-account-id` header.
+The catalog provides model names, context limits, image support, and reasoning
+effort metadata used by `rush models use` and the normal smart/fast/worker/
+reviewer roles. Account access failures or transient catalog outages keep the
+OAuth provider and config load intact; Rush does not invent a default model,
+so discovery can be retried after account access or connectivity is restored.
+
+Authenticated Codex, StepFun, and Z.AI model rosters are cached globally for
+seven days. `rush models cache clear [openai-codex|stepfun|zai|all]` removes
+the selected cache; a running WebUI server must restart to reload models.
+StepFun's provider roster replaces stale bundled entries; Z.AI's incomplete
+roster supplements its bundled catalog. Codex and StepFun expose per-model
+efforts from their API responses; for Z.AI, Rush also caches explicit
+model/effort statements from the official thinking documentation. No model
+name is used to invent a level, and unknown ladders hide the effort picker.
+
+This behavior is documented in the README under "ChatGPT Codex subscription".
+
 ## 5. In-code markers
 
 Whenever we patch an **upstream** file in a non-obvious way we leave a

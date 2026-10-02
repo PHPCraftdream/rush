@@ -212,6 +212,43 @@ func TestGetProviderOptionsZAI53ReasoningLevels(t *testing.T) {
 	})
 }
 
+func TestGetProviderOptionsUsesDiscoveredZAILevels(t *testing.T) {
+	const id = "glm-provider-new"
+	provider := config.ProviderConfig{
+		ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name,
+		LiveEfforts: map[string]config.ModelEffortInfo{
+			id: {Levels: []string{"none", "low", "high", "max"}},
+		},
+	}
+	for _, tc := range []struct {
+		effort       string
+		wantThinking string
+		wantEffort   string
+	}{
+		{"", "enabled", ""},
+		{"low", "enabled", "low"},
+		{"none", "disabled", ""},
+	} {
+		t.Run("effort="+tc.effort, func(t *testing.T) {
+			model := Model{
+				CatwalkCfg: catwalk.Model{ID: id, CanReason: true, ReasoningLevels: provider.LiveEfforts[id].Levels},
+				ModelCfg:   config.SelectedModel{Provider: "zai", Model: id, ReasoningEffort: tc.effort},
+			}
+			raw := getProviderOptions("test-session", model, provider)[openaicompat.Name]
+			parsed, ok := raw.(*openaicompat.ProviderOptions)
+			require.True(t, ok)
+			thinking, ok := parsed.ExtraBody["thinking"].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tc.wantThinking, thinking["type"])
+			if tc.wantEffort == "" {
+				require.NotContains(t, parsed.ExtraBody, "reasoning_effort")
+			} else {
+				require.Equal(t, tc.wantEffort, parsed.ExtraBody["reasoning_effort"])
+			}
+		})
+	}
+}
+
 // DeepSeek must keep the fork's ORIGINAL default: an unset ReasoningEffort
 // leaves thinking OFF. The ZAI-only "unset → thinking on at high" default
 // (added in 28ec4145) deliberately does not apply to DeepSeek — this test

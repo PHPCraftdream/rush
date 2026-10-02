@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -213,7 +214,7 @@ func TestWorkspaceRootAndBranch(t *testing.T) {
 	if err != nil {
 		t.Skip("git not on PATH")
 	}
-	out, err := exec.CommandContext(t.Context(), git, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := platform.Command(t.Context(), git, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		t.Skip("cannot resolve current branch (detached or no repo)")
 	}

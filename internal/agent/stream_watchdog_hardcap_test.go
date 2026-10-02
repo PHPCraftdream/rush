@@ -284,50 +284,52 @@ func TestStreamWatchdog_HardCapRespectedWithToolInFlight(t *testing.T) {
 // to the caller; this is the direct regression test for that gap.
 func TestStreamWatchdog_HardCapWhileToolInFlightDistinctFromIdleStall(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	const tick = 10 * time.Millisecond
+		const tick = 10 * time.Millisecond
 
-	// Case 1: hard cap fires while a tool is in flight.
-	hardCapCtx, hardCapCancel := context.WithCancel(t.Context())
-	defer hardCapCancel()
-	const hardCap = 150 * time.Millisecond
-	const toolMaxDuration = 5 * time.Second // generous — never-freeze backstop must not preempt hardCap
-	var hardCapCause atomic.Int32
-	hardCapWd := startStreamWatchdog(hardCapCtx, hardCapCancel, 5*time.Second, tick,
-		func(_ time.Duration, cause watchdogCause) {
-			hardCapCause.Store(int32(cause))
-		}, false, hardCap, toolMaxDuration, 0, nil)
-	hardCapWd.toolStarted()
+		// Case 1: hard cap fires while a tool is in flight.
+		hardCapCtx, hardCapCancel := context.WithCancel(t.Context())
+		defer hardCapCancel()
+		const hardCap = 150 * time.Millisecond
+		const toolMaxDuration = 5 * time.Second // generous — never-freeze backstop must not preempt hardCap
+		var hardCapCause atomic.Int32
+		hardCapWd := startStreamWatchdog(hardCapCtx, hardCapCancel, 5*time.Second, tick,
+			func(_ time.Duration, cause watchdogCause) {
+				hardCapCause.Store(int32(cause))
+			}, false, hardCap, toolMaxDuration, 0, nil)
+		hardCapWd.toolStarted()
 
-	// Case 2: genuine idle stall, no tool ever in flight, no hard cap
-	// configured.
-	idleCtx, idleCancel := context.WithCancel(t.Context())
-	defer idleCancel()
-	const idleTimeout = 60 * time.Millisecond
-	var idleCause atomic.Int32
-	idleWd := startStreamWatchdog(idleCtx, idleCancel, idleTimeout, tick,
-		func(_ time.Duration, cause watchdogCause) {
-			idleCause.Store(int32(cause))
-		}, false, 0, 0, 0, nil)
+		// Case 2: genuine idle stall, no tool ever in flight, no hard cap
+		// configured.
+		idleCtx, idleCancel := context.WithCancel(t.Context())
+		defer idleCancel()
+		const idleTimeout = 60 * time.Millisecond
+		var idleCause atomic.Int32
+		idleWd := startStreamWatchdog(idleCtx, idleCancel, idleTimeout, tick,
+			func(_ time.Duration, cause watchdogCause) {
+				idleCause.Store(int32(cause))
+			}, false, 0, 0, 0, nil)
 
-	select {
-	case <-hardCapWd.done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("hard-cap watchdog never fired")
-	}
-	select {
-	case <-idleWd.done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("idle watchdog never fired")
-	}
+		select {
+		case <-hardCapWd.done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("hard-cap watchdog never fired")
+		}
+		select {
+		case <-idleWd.done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("idle watchdog never fired")
+		}
 
-	gotHardCap := watchdogCause(hardCapCause.Load())
-	gotIdle := watchdogCause(idleCause.Load())
+		gotHardCap := watchdogCause(hardCapCause.Load())
+		gotIdle := watchdogCause(idleCause.Load())
 
-	assert.Equal(t, causeHardCap, gotHardCap, "hard-cap-with-tool-in-flight must report causeHardCap")
-	assert.Equal(t, causeIdleStall, gotIdle, "genuine provider idle-stall must report causeIdleStall")
-	assert.NotEqual(t, gotHardCap, gotIdle,
-		"a hard-cap fire while a tool is in flight and a genuine idle-stall must be distinguishable, not collapse to the same cause")
+		assert.Equal(t, causeHardCap, gotHardCap, "hard-cap-with-tool-in-flight must report causeHardCap")
+		assert.Equal(t, causeIdleStall, gotIdle, "genuine provider idle-stall must report causeIdleStall")
+		assert.NotEqual(t, gotHardCap, gotIdle,
+			"a hard-cap fire while a tool is in flight and a genuine idle-stall must be distinguishable, not collapse to the same cause")
+	})
 }
 
 // TestStreamWatchdog_ExtendsOnProgress_ZeroHardCapKeepsExtending is the

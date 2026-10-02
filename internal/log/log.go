@@ -41,7 +41,9 @@ func NewLogger(logFile string, debug bool, ws ...io.Writer) *slog.Logger {
 	// `rush logs prune`, whose truncate is safe for O_APPEND writers.
 	fileWriter := io.Discard
 	if logFile != "" {
-		if afw, err := openAppend(logFile); err == nil {
+		if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+			fileWriter = os.Stderr
+		} else if afw, err := openAppend(logFile); err == nil {
 			// The handle intentionally lives for the whole process.
 			fileWriter = afw
 		} else {

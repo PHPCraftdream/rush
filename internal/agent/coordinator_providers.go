@@ -29,6 +29,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -141,6 +142,10 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 	shouldSetEffort := model.CatwalkCfg.CanReason &&
 		reasoningEffort != "" &&
 		slices.Contains(model.CatwalkCfg.ReasoningLevels, reasoningEffort)
+	if verified, ok := providerCfg.LiveEfforts[model.ModelCfg.Model]; ok &&
+		model.ModelCfg.ReasoningEffort == "" && verified.Default == "" {
+		shouldSetEffort = false
+	}
 
 	switch providerCfg.Type {
 	case openai.Name, azure.Name:
@@ -289,6 +294,19 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 		case string(catwalk.InferenceProviderZAI):
 			effort := strings.ToLower(model.ModelCfg.ReasoningEffort)
 			modelID := strings.ToLower(model.ModelCfg.Model)
+			if verified, ok := providerCfg.LiveEfforts[model.ModelCfg.Model]; ok {
+				extraBody["thinking"] = map[string]any{"type": "enabled"}
+				if effort == "" || !slices.Contains(verified.Levels, effort) {
+					break
+				}
+				if effort == "none" || effort == "minimal" {
+					extraBody["thinking"] = map[string]any{"type": "disabled"}
+					delete(mergedOptions, "reasoning_effort")
+				} else {
+					extraBody["reasoning_effort"] = effort
+				}
+				break
+			}
 			if zai53ModelIDs[modelID] {
 				// GLM-5.3/5.3-Flash can't disable reasoning at all (unlike
 				// every model in the branch below) and take low/high/max
@@ -730,6 +748,9 @@ func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 // providerCfg from; that SAME snapshot supplies the global network
 // defaults resolveProviderHTTPClient composes the HTTP client from.
 func (c *coordinator) buildProvider(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	if providerCfg.ID == "openai-codex" {
+		return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, "", "")
+	}
 	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
 	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
 	return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, apiKey, baseURL)
@@ -771,6 +792,9 @@ func (c *coordinator) buildProviderWithValues(cfg *config.Config, providerCfg co
 			baseURL = strings.TrimSuffix(baseURL, "/v1")
 			return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID, httpClient)
 		}
+	}
+	if providerCfg.ID == "openai-codex" {
+		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}
 
 	switch providerCfg.Type {

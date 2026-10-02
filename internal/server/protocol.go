@@ -583,9 +583,11 @@ type ProviderWire struct {
 
 // ModelInfoWire is a single available model from a provider.
 type ModelInfoWire struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ContextWindow int64  `json:"contextWindow,omitempty"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	ContextWindow          int64    `json:"contextWindow,omitempty"`
+	ReasoningLevels        []string `json:"reasoningLevels,omitempty"`
+	DefaultReasoningEffort string   `json:"defaultReasoningEffort,omitempty"`
 }
 
 type GetSystemPromptPayload struct {

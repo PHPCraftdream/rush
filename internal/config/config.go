@@ -172,6 +172,9 @@ type ProviderConfig struct {
 
 	// The provider models
 	Models []catwalk.Model `json:"models,omitempty" jsonschema:"description=List of models available from this provider"`
+	// LiveEfforts contains only levels reported by this account's model endpoint.
+	// It is runtime-only; static catalog guesses must not appear as live data.
+	LiveEfforts map[string]ModelEffortInfo `json:"-"`
 
 	// PeakHours, when non-nil, refuses all requests to this provider
 	// during the given local-time window. Useful for keeping a metered
@@ -184,6 +187,11 @@ type ProviderConfig struct {
 	// custom DNS/DoH) for this provider. Overrides are PER FIELD: an
 	// empty field inherits the global options.network value.
 	Network *NetworkConfig `json:"network,omitempty" jsonschema:"description=Outbound network settings (proxy\\, custom DNS/DoH) for this provider; overrides options.network per field"`
+}
+
+type ModelEffortInfo struct {
+	Levels  []string
+	Default string
 }
 
 // ToProvider converts the [ProviderConfig] to a [catwalk.Provider].

@@ -819,6 +819,63 @@ Rush:
 - [Kimi Code](https://www.kimi.com/membership/pricing)
 - [MiniMax Coding Plan](https://platform.minimax.io/subscribe/coding-plan)
 
+### ChatGPT Codex subscription
+
+Rush can use a ChatGPT subscription directly through OpenAI's Codex Responses
+backend. Run `rush login openai-codex` for the browser OAuth (PKCE) flow, or
+`rush login openai-codex --device` when a local browser is unavailable. Rush
+stores and refreshes its own OAuth credential; it does not require the Codex
+CLI, import Codex CLI credentials, or use `OPENAI_API_KEY` for this provider.
+The separate `openai` provider and its API-key authentication are unchanged.
+
+The login prints the URL without opening a browser. In an interactive terminal,
+press the physical `O` key to open it or `C` to copy the full link, regardless
+of the active Windows keyboard layout. `F2`/`F3` do the same on terminals
+that do not report physical keys. The shortcuts appear below the URL.
+
+If the token exchange is rejected, the CLI and `.rush/logs/rush.log` report
+the HTTP status, response kind (`json`, `html`, `empty`, or `other`), content
+type, response byte count, an allowlisted OAuth error code, and any recognized
+request IDs. Authorization codes, tokens, and raw response bodies are never
+logged. These fields distinguish OAuth errors from gateway blocks; they do
+not identify the cause of an earlier failure before diagnostics were enabled.
+
+After login, the model list is fetched for the authenticated ChatGPT account:
+
+```bash
+rush models list
+rush models use --smart openai-codex/<listed-model>@high
+rush ping --role smart
+```
+
+Use an effort supported by the listed model. Codex access is account-dependent;
+an account without access returns no catalog. The OAuth login remains saved if
+discovery is unavailable; retry `rush models list` or `rush providers
+fetch-models openai-codex` after access or connectivity is restored. Rush does
+not invent a default model while the account catalog is unavailable.
+
+### Live model catalogs
+
+Rush reads authenticated model lists from the ChatGPT Codex, StepFun, and
+Z.AI model endpoints. A successful StepFun roster replaces bundled models;
+Z.AI's roster is merged with known models because its endpoint can omit live
+models. Codex and StepFun report per-model effort levels in their model
+catalogs. When Z.AI's catalog omits levels, Rush reads explicit model/level
+statements from Z.AI's published thinking documentation instead. Unknown
+models receive no guessed effort control.
+
+Authenticated catalogs are cached globally for seven days per provider and
+credential identity; Z.AI's public documentation has its own seven-day cache.
+To fetch fresh data on the next process start:
+
+```bash
+rush models cache clear                  # all three providers
+rush models cache clear stepfun          # one provider
+```
+
+Restart an already-running WebUI server after clearing the cache. Run
+`rush models cache clear --help` for all accepted provider names.
+
 ### By the Way
 
 Is there a provider you’d like to see in Rush? Is there an existing model that needs an update?

@@ -39,7 +39,11 @@ Any slot can pin a reasoning-effort level (low/medium/high/xhigh/max, though
 what a level actually does — and whether it does anything at all — is
 provider-specific). See ` + "`rush models efforts --help`" + ` for the two syntaxes
 that set it, the per-provider semantics (e.g. Z.AI collapses low/medium/high
-into one wire value), and per-model command examples.`,
+into one wire value), and per-model command examples.
+
+Authenticated model catalogs are cached globally for seven days. Run
+` + "`rush models cache clear [openai-codex|stepfun|zai|all]`" + ` to clear them
+and restart the WebUI to refresh a running server's in-memory list.`,
 	Example: `# List all available models
 rush models
 
