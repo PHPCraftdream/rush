@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/google/uuid"
 )
 
@@ -193,7 +194,7 @@ func ProbeHostLock(lockPath string) (HostLockStatus, *FileLock, error) {
 		}
 		return HostStatusUnknown, nil, fmt.Errorf("host lock probe: lock %s: %w", lockPath, err)
 	}
-	return HostStatusDead, &FileLock{Path: lockPath, f: f}, nil
+	return HostStatusDead, filelock.WrapLockedFile(f, lockPath), nil
 }
 
 // ProbeHost is ProbeHostLock scoped to dataDir/hostID, with the doc sec.3.6
@@ -324,7 +325,7 @@ func acquireFreshHostLock(lockPath string) (*FileLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	held, statErr := lock.f.Stat()
+	held, statErr := lock.File().Stat()
 	pathInfo, pathErr := os.Stat(lockPath)
 	if statErr != nil || pathErr != nil || !os.SameFile(held, pathInfo) {
 		_ = lock.Release()
@@ -455,7 +456,7 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 	if held == nil {
 		return fmt.Errorf("host lock: RemoveDeadHostFile: nil lock")
 	}
-	heldInfo, statErr := held.f.Stat()
+	heldInfo, statErr := held.File().Stat()
 	if statErr != nil {
 		_ = held.Release()
 		return fmt.Errorf("host lock: stat held fd: %w", statErr)

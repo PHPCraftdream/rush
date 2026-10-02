@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -265,7 +265,7 @@ func TestConfigWriteSymlinkAliasesSharePhysicalSidecarLock(t *testing.T) {
 	if err := os.Symlink(target, alias); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	lock, err := session.TryAcquireFileLock(normalizeReloadPath(target) + ".lock")
+	lock, err := filelock.TryAcquireFileLock(normalizeReloadPath(target) + ".lock")
 	require.NoError(t, err)
 	defer lock.Release()
 	store := newTestConfigStore(testStoreOpts{globalDataPath: alias})

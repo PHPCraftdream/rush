@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -33,7 +33,7 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 		cancel()
 		return ctx, cancel
 	}
-	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		acquireCalls++
 		_, hasDeadline := ctx.Deadline()
 		require.True(t, hasDeadline, "lock acquisition must receive a deadline")
@@ -69,7 +69,7 @@ func TestRemoveConfigFieldBestEffort_PreservesContentWhenExternalLockHeld(t *tes
 	const key = "providers.anthropic.oauth"
 	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"anthropic":{"oauth":{"access_token":"secret"}}}}`), 0o600))
 
-	externalLock, err := session.TryAcquireFileLock(configPath + ".lock")
+	externalLock, err := filelock.TryAcquireFileLock(configPath + ".lock")
 	require.NoError(t, err, "test setup: must be able to take the sidecar lock before the call under test runs")
 	t.Cleanup(func() { _ = externalLock.Release() })
 
@@ -112,16 +112,16 @@ func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
 	configTestHooks.Lock()
 	previousAcquire := configTestHooks.acquireConfigLock
 	previousRelease := configTestHooks.releaseConfigLock
-	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		attempts++
 		entered <- path
-		lock, err := session.TryAcquireFileLock(path)
+		lock, err := filelock.TryAcquireFileLock(path)
 		if err == nil {
 			acquired <- path
 		}
 		return lock, err
 	}
-	configTestHooks.releaseConfigLock = func(path string, lock *session.FileLock) error {
+	configTestHooks.releaseConfigLock = func(path string, lock *filelock.FileLock) error {
 		err := lock.Release()
 		if err == nil {
 			released <- path

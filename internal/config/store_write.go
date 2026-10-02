@@ -122,7 +122,7 @@ func (s *ConfigStore) withConfigWriteLock(path string, fn func(configWriteTarget
 // internalConfigWriteLockTimeout for why a short budget is safe there.
 //
 // diskWriteMu serialises concurrent goroutines inside THIS process; the OS
-// lock (flock on POSIX, LockFileEx on Windows, via session.FileLock)
+// lock (flock on POSIX, LockFileEx on Windows, via filelock.FileLock)
 // serialises SEPARATE rush processes that share the same config file — two
 // parallel `rush run` sessions on one machine each own a private
 // diskWriteMu, so without the OS lock each could read the same pre-write
@@ -313,7 +313,7 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // The read-modify-write cycle is protected at two levels: an in-process
 // diskWriteMu (serialises concurrent goroutines within this ConfigStore) and
 // an inter-process OS-level file lock on a path+".lock" sidecar, acquired via
-// withConfigWriteLock (backed by session.FileLock — flock on POSIX,
+// withConfigWriteLock (backed by filelock.FileLock — flock on POSIX,
 // LockFileEx on Windows). The in-process mutex alone cannot prevent two
 // separate `rush` processes sharing the same rush.json from each reading
 // the pre-write file, applying only their own keys, and the second
@@ -409,7 +409,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 // scope (e.g. removing a stored provider API key). Like SetConfigFields, the
 // on-disk read-modify-write is protected at two levels: the in-process
 // diskWriteMu and an inter-process OS-level file lock on a path+".lock"
-// sidecar acquired via withConfigWriteLock (backed by session.FileLock —
+// sidecar acquired via withConfigWriteLock (backed by filelock.FileLock —
 // flock on POSIX, LockFileEx on Windows), so two separate `rush` processes
 // racing to edit the same rush.json cannot silently clobber each other's
 // change. After a successful write, it automatically reloads config to keep

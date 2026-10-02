@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -66,7 +67,7 @@ func TestRunNonInteractive_WaitHeartbeatNamesJobAndHost(t *testing.T) {
 	})
 	ctx := context.Background()
 	// A live foreign host: a lock this test holds, plus its display row.
-	foreign, err := session.TryAcquireFileLock(session.HostLockPath(h.dataDir, "peer-host"))
+	foreign, err := filelock.TryAcquireFileLock(session.HostLockPath(h.dataDir, "peer-host"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreign.Release() })
 	q := db.New(h.app.DB())

@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 )
 
 type mcpLockedFiles struct {
@@ -289,7 +289,7 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 
 	s.diskWriteMu.Lock()
 	defer s.diskWriteMu.Unlock()
-	locks := make([]*session.FileLock, 0, len(groups))
+	locks := make([]*filelock.FileLock, 0, len(groups))
 	defer func() {
 		for i := len(locks) - 1; i >= 0; i-- {
 			_ = locks[i].Release()

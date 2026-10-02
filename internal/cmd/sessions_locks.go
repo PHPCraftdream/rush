@@ -147,7 +147,7 @@ func lockPulseStatus(ageSec int64) string {
 //     os.Remove itself (return the still-held *session.SessionLock to the
 //     caller instead of releasing here, remove the path while holding it,
 //     then release). That was deliberately NOT done: this package's sibling
-//     session.FileLock.Release doc comment already documents why removing a
+//     filelock.FileLock.Release doc comment already documents why removing a
 //     path while a lock on it is held is cross-platform-fragile — POSIX
 //     unlink of a locked-but-open file is harmless (flock is keyed off the
 //     inode), but the lock files here are opened without FILE_SHARE_DELETE

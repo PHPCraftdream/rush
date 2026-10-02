@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -28,12 +28,12 @@ import (
 const mcpConfigLockTimeout = 30 * time.Second
 
 // acquireMCPConfigLock is a thin wrapper around
-// session.AcquireFileLockContext that enforces mcpConfigLockTimeout.
+// filelock.AcquireFileLockContext that enforces mcpConfigLockTimeout.
 // All MCP id/settings critical sections in this file use it.
-func acquireMCPConfigLock(lockPath string) (*session.FileLock, error) {
+func acquireMCPConfigLock(lockPath string) (*filelock.FileLock, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), mcpConfigLockTimeout)
 	defer cancel()
-	return session.AcquireFileLockContext(ctx, lockPath)
+	return filelock.AcquireFileLockContext(ctx, lockPath)
 }
 
 // ── qwen MCP registration ─────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ func acquireMCPConfigLock(lockPath string) (*session.FileLock, error) {
 // in directories that don't already have a rush project.
 //
 // Fork patch (concurrency): wrap the read-then-write of the id file with
-// a flock (session.AcquireFileLock) so two parallel `rush run` processes
+// a flock (filelock.AcquireFileLock) so two parallel `rush run` processes
 // in the same workingDir cannot both miss the file, both generate a UUID,
 // and end up with a split-brain MCP server name. See CHANGELOG.fork.md.
 func qwenMCPID(workingDir string) (string, error) {

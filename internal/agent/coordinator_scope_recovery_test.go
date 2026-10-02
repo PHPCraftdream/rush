@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,7 @@ func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
 	q := db.New(conn)
 
-	seed, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "dead-host-x"))
+	seed, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "dead-host-x"))
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -80,7 +81,7 @@ func TestCLIScope_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
 	q := db.New(conn)
 
-	holder, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "live-host-x"))
+	holder, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "live-host-x"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 

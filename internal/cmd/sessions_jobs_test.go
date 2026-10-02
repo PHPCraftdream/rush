@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -108,7 +109,7 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 	// controls (via the generic FileLock primitive, which does NOT mark
 	// ownership), plus a display-only async_hosts row naming its PID.
 	q := db.New(a.DB())
-	foreignLock, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "foreign-live-host"))
+	foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "foreign-live-host"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 	_, err = q.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: "foreign-live-host", Pid: 4242, Label: "other-rush", StartedAt: 1700000000})
@@ -116,7 +117,7 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 	require.NoError(t, claimForeignRunning(ctx, q, sess.ID, "foreign-call-1", "foreign-live-host"))
 
 	// Foreign DEAD host: lock file exists on disk but nobody holds it.
-	deadSeed, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "foreign-dead-host"))
+	deadSeed, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "foreign-dead-host"))
 	require.NoError(t, err)
 	require.NoError(t, deadSeed.Release())
 	require.NoError(t, claimForeignRunning(ctx, q, sess.ID, "foreign-call-2", "foreign-dead-host"))
@@ -185,7 +186,7 @@ func TestSessionsJobsCmdRun_JSON(t *testing.T) {
 	require.NoError(t, err)
 
 	q := db.New(a.DB())
-	foreignLock, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "json-live-host"))
+	foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "json-live-host"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 	_, err = q.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: "json-live-host", Pid: 9911, Label: "peer", StartedAt: 1700000000})

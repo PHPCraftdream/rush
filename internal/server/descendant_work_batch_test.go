@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -79,7 +80,7 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	require.NoError(t, err)
 	deadChild, err := a.Sessions.CreateTaskSession(ctx, "batch-dead-child", rootDead.ID, "dead child")
 	require.NoError(t, err)
-	deadSeed, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "batch-dead-host"))
+	deadSeed, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "batch-dead-host"))
 	require.NoError(t, err)
 	require.NoError(t, deadSeed.Release())
 	q := db.New(a.DB())

@@ -1,4 +1,4 @@
-package session
+package filelock
 
 import (
 	"context"

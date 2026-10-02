@@ -5,13 +5,9 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"sync"
-	"testing"
-
-	"github.com/pressly/goose/v3"
 )
 
 var pragmas = map[string]string{
@@ -191,8 +187,12 @@ func endPoolReset() {
 // consistency with a subsequent write in the same call) should additionally
 // call [ConnectRead] with the same dataDir — it shares this entry's
 // refCount, so one [ReleaseConn] is needed for each returned handle.
-func Connect(ctx context.Context, dataDir string) (*sql.DB, error) {
-	entry, err := connect(ctx, dataDir)
+//
+// Migration policy can be narrowed per call with [WithMayMigrate] (a dev
+// build pointed at a shared data directory passes false); the default is to
+// migrate.
+func Connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*sql.DB, error) {
+	entry, err := connect(ctx, dataDir, migrationOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -211,8 +211,8 @@ func Connect(ctx context.Context, dataDir string) (*sql.DB, error) {
 // and ConnectRead for the same dataDir must call [ReleaseConn] with the
 // returned handles the same number of times it called either one (once per
 // Connect/ConnectRead pair, not once per function).
-func ConnectRead(ctx context.Context, dataDir string) (*sql.DB, error) {
-	entry, err := connect(ctx, dataDir)
+func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*sql.DB, error) {
+	entry, err := connect(ctx, dataDir, migrationOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +225,7 @@ func ConnectRead(ctx context.Context, dataDir string) (*sql.DB, error) {
 // want BOTH a writer and a reader handle for the same dataDir must call
 // [ReleaseConn] twice (once per Connect/ConnectRead call they made), matching
 // the existing "one Connect, one Release" contract extended to ConnectRead.
-func connect(ctx context.Context, dataDir string) (*connEntry, error) {
+func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*connEntry, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("data.dir is not set")
 	}
@@ -286,7 +286,21 @@ func connect(ctx context.Context, dataDir string) (*connEntry, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := Migrate(ctx, conn); err != nil {
+	// The migration decision is a cross-process critical section: every
+	// process that starts against this data directory reads the same
+	// version table, and without mutual exclusion two of them racing a
+	// deploy both see the same pending ALTER and the second applies it
+	// twice ("duplicate column name"). The lock is taken even when no
+	// migration is needed, because the version read that produces that
+	// decision is part of the sequence being protected.
+	migrateFS, err := migrationFS()
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to locate embedded migrations: %w", err)
+	}
+	migrateOpts := newMigrateOptions(migrationOpts, dbPath)
+	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
+	if err := migrateLocked(ctx, conn, dbPath, migrateFS, migrateOpts); err != nil {
 		conn.Close()
 		slog.Error("Failed to apply migrations", "error", err)
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
@@ -547,26 +561,19 @@ func ResetPool() {
 
 // Migrate applies the embedded schema migrations to conn.
 //
+// It is the un-pooled, un-locked entry point for callers that hand us a
+// connection they already own and serialize (the SDK's in-memory database).
+// Paths that own a data directory go through Connect, which wraps the whole
+// read-versions/decide/apply sequence in a cross-process lock.
+//
 // Goose's legacy package-level API stores the selected dialect in a mutable
 // global. That API is not safe when independent clients initialize databases
 // concurrently. A Provider owns its dialect, filesystem, and migration
 // operations, so each database gets an isolated migration boundary.
 func Migrate(ctx context.Context, conn *sql.DB) error {
-	options := make([]goose.ProviderOption, 0, 1)
-	if testing.Testing() {
-		options = append(options, goose.WithLogger(goose.NopLogger()))
-	}
-	migrationFS, err := fs.Sub(FS, "migrations")
+	fsys, err := migrationFS()
 	if err != nil {
-		return fmt.Errorf("failed to locate embedded migrations: %w", err)
+		return err
 	}
-
-	provider, err := goose.NewProvider(goose.DialectSQLite3, conn, migrationFS, options...)
-	if err != nil {
-		return fmt.Errorf("failed to initialize goose provider: %w", err)
-	}
-	if _, err := provider.Up(ctx); err != nil {
-		return fmt.Errorf("failed to apply migrations: %w", err)
-	}
-	return nil
+	return migrate(ctx, conn, "", fsys, MigrateOptions{MayMigrate: true})
 }

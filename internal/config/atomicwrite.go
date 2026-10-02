@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 )
 
 var errConfigCommitVerification = errors.New("config destination could not be verified immediately before commit")
@@ -97,8 +97,8 @@ var configTestHooks struct {
 	beforeMCPTargetBindingVerification func(*configWriteTarget)
 	beforeCommitRename                 func()
 	beforeMCPReconcile                 func(string, []byte)
-	acquireConfigLock                  func(context.Context, string) (*session.FileLock, error)
-	releaseConfigLock                  func(string, *session.FileLock) error
+	acquireConfigLock                  func(context.Context, string) (*filelock.FileLock, error)
+	releaseConfigLock                  func(string, *filelock.FileLock) error
 	withConfigTimeout                  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	forceLinkNoReplace                 bool
 	renameNoReplace                    func(int, string, int, string) error
@@ -208,17 +208,17 @@ func runConfigBeforeMCPReconcileHook(path string, data []byte) {
 	}
 }
 
-func acquireConfigFileLock(ctx context.Context, path string) (*session.FileLock, error) {
+func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
 	configTestHooks.Lock()
 	hook := configTestHooks.acquireConfigLock
 	configTestHooks.Unlock()
 	if hook != nil {
 		return hook(ctx, path)
 	}
-	return session.AcquireFileLockContext(ctx, path)
+	return filelock.AcquireFileLockContext(ctx, path)
 }
 
-func releaseConfigFileLock(path string, lock *session.FileLock) error {
+func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
 	configTestHooks.Lock()
 	hook := configTestHooks.releaseConfigLock
 	configTestHooks.Unlock()

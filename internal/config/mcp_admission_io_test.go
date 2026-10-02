@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,7 @@ func TestMCPAdmissionCanceledSidecarAcquisitionUsesCallerContext(t *testing.T) {
 	called := make(chan struct{})
 	configTestHooks.Lock()
 	previous := configTestHooks.acquireConfigLock
-	configTestHooks.acquireConfigLock = func(ctx context.Context, _ string) (*session.FileLock, error) {
+	configTestHooks.acquireConfigLock = func(ctx context.Context, _ string) (*filelock.FileLock, error) {
 		close(called)
 		<-ctx.Done()
 		return nil, ctx.Err()

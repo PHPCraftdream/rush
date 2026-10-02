@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const projectsFileName = "projects.json"
@@ -20,7 +20,7 @@ const projectsFileName = "projects.json"
 // registerLockTimeout caps how long Register waits for the inter-process
 // sidecar lock on projects.json before failing. Mirrors configWriteLockTimeout
 // in internal/config/store.go (30s), which uses the same
-// session.AcquireFileLockContext primitive for the same class of
+// filelock.AcquireFileLockContext primitive for the same class of
 // cross-process read-modify-write: a wedged sibling `rush run` process
 // (debugger attached, suspended shell, frozen network mount) must not
 // indefinitely freeze every other parallel `rush` invocation's startup.
@@ -42,7 +42,7 @@ type ProjectList struct {
 // ConfigStore.diskWriteMu). It does NOT by itself protect against two
 // separate `rush` processes racing to read-modify-write projects.json —
 // that cross-process gap is closed by the OS-level file lock acquired in
-// Register (see session.AcquireFileLockContext and
+// Register (see filelock.AcquireFileLockContext and
 // ConfigStore.withConfigWriteLockCtx's doc comment for the same pattern).
 var mu sync.Mutex
 
@@ -113,7 +113,7 @@ func saveLocked(list *ProjectList) error {
 // The whole load -> mutate -> save cycle runs under both the in-process mu
 // (serialising goroutines within this process) and an inter-process OS-level
 // file lock on a ".lock" sidecar next to projects.json (serialising separate
-// `rush` processes, acquired via session.AcquireFileLockContext — the same
+// `rush` processes, acquired via filelock.AcquireFileLockContext — the same
 // primitive ConfigStore.withConfigWriteLockCtx uses for rush.json). Register
 // runs on the startup path of every `rush` process, so N parallel `rush
 // run` invocations racing to register their own project is the normal case,
@@ -140,7 +140,7 @@ func Register(workingDir, dataDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), registerLockTimeout)
 	defer cancel()
 
-	lock, err := session.AcquireFileLockContext(ctx, path+".lock")
+	lock, err := filelock.AcquireFileLockContext(ctx, path+".lock")
 	if err != nil {
 		return fmt.Errorf("failed to lock projects file %q: %w", path, err)
 	}

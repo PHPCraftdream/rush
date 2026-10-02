@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 )
 
 // DeployLockTimeout caps how long AcquireDeployLock waits for a
@@ -98,8 +98,8 @@ func DeployLockPath() string {
 // projects.Register: removing it would race a concurrent process that
 // has already reopened/relocked the same path (harmless on POSIX,
 // unsafe on Windows without FILE_SHARE_DELETE).
-func AcquireDeployLock(ctx context.Context, lockPath string) (*session.FileLock, error) {
-	lock, err := session.AcquireFileLockContext(ctx, lockPath)
+func AcquireDeployLock(ctx context.Context, lockPath string) (*filelock.FileLock, error) {
+	lock, err := filelock.AcquireFileLockContext(ctx, lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire deploy lock %q (another `go run deploy.go` may be in progress): %w", lockPath, err)
 	}

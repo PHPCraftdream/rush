@@ -18,6 +18,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   и не задавать вопрос через ask_question). Тот же совет теперь в
   сообщении лимита фоновых процессов shell (`maximum number of background
   jobs`).
+- Миграции БД стали безопасными для общей БД из нескольких процессов
+  (подготовка шага B дизайна shared-data-dir): вся последовательность
+  «прочитать версии → решить → применить» теперь выполняется под
+  межпроцессным файловым локом `<dataDir>/migrate.lock`; до этого
+  параллельный старт двух rush после деплоя приводил к
+  `duplicate column name` у второго. Добавлена проверка множеств версий
+  (применённые vs встроенные): при расхождении истории схемы
+  (`unknown` + `pending`) процесс не стартует с `ErrSchemaDiverged` вместо
+  молчаливой миграции; при только `unknown` БД открывается без миграций с
+  одним WARN. Появилась опция `WithMayMigrate(false)`
+  (`ErrSchemaMigrationNotAllowed` при pending) — пока ни один путь её не
+  выставляет, поведение по умолчанию не изменилось. `FileLock` перенесён
+  из `internal/session` в листовой пакет `internal/filelock` без изменения
+  поведения (в session оставлены алиасы-обёртки).
 
 - `rush sessions kill` / `cancel` / `reset --force` (A26): they now also remove
   the session's queued runs, pending injects and orphan-call outbox rows. Before,

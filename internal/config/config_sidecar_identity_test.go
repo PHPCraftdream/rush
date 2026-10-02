@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -401,9 +401,9 @@ func TestMCPAdmissionDeduplicatesCaseSpellingsWhenFilesystemDoes(t *testing.T) {
 	acquisitions := 0
 	configTestHooks.Lock()
 	previous := configTestHooks.acquireConfigLock
-	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		acquisitions++
-		return session.AcquireFileLockContext(ctx, path)
+		return filelock.AcquireFileLockContext(ctx, path)
 	}
 	configTestHooks.Unlock()
 	t.Cleanup(func() {
@@ -451,9 +451,9 @@ func TestMCPAdmissionUsesInjectedCaseDecisionForMissingAliases(t *testing.T) {
 			acquisitions := 0
 			configTestHooks.Lock()
 			previous := configTestHooks.acquireConfigLock
-			configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+			configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
 				acquisitions++
-				return session.AcquireFileLockContext(ctx, filepath.Join(root, fmt.Sprintf("injected-lock-%d", acquisitions)))
+				return filelock.AcquireFileLockContext(ctx, filepath.Join(root, fmt.Sprintf("injected-lock-%d", acquisitions)))
 			}
 			configTestHooks.Unlock()
 			t.Cleanup(func() {

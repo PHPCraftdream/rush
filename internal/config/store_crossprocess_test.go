@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -18,8 +18,8 @@ import (
 // parallel rush processes writing DIFFERENT keys to the SAME config file at
 // the same time. Each ConfigStore owns a private diskWriteMu (just as two
 // separate OS processes would), so in-process serialisation cannot help —
-// only the inter-process sidecar lock (path+".lock", via session.FileLock)
-// can prevent the lost update. session.FileLock is backed by flock/LockFileEx,
+// only the inter-process sidecar lock (path+".lock", via filelock.FileLock)
+// can prevent the lost update. filelock.FileLock is backed by flock/LockFileEx,
 // which are per-open-file-description, so two opens inside one test process
 // contend on the lock exactly as two real processes would.
 //
@@ -51,26 +51,26 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 			<-releaseFirst
 		}
 	}
-	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*session.FileLock, error) {
+	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		id := int(acquireCalls.Add(1))
 		acquireEntered <- id
 		if id == 2 {
 			close(secondAcquireReady)
 			<-allowSecondProbe
-			probe, probeErr := session.TryAcquireFileLock(path)
+			probe, probeErr := filelock.TryAcquireFileLock(path)
 			secondProbeResult <- probeErr
 			if probeErr == nil {
 				acquireAcquired <- id
 				return probe, nil
 			}
 			<-releaseFirst
-			lock, err := session.AcquireFileLockContext(ctx, path)
+			lock, err := filelock.AcquireFileLockContext(ctx, path)
 			if err == nil {
 				acquireAcquired <- id
 			}
 			return lock, err
 		}
-		lock, err := session.AcquireFileLockContext(ctx, path)
+		lock, err := filelock.AcquireFileLockContext(ctx, path)
 		if err == nil {
 			acquireAcquired <- id
 		}
@@ -125,12 +125,12 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 		<-firstCommit
 		<-secondAcquireReady
 
-		probe, probeErr := session.TryAcquireFileLock(configPath + ".lock")
+		probe, probeErr := filelock.TryAcquireFileLock(configPath + ".lock")
 		if probeErr == nil {
 			_ = probe.Release()
 			require.FailNow(t, "the first writer must hold the sidecar lock while its commit is paused")
 		}
-		var contended *session.ErrLockContended
+		var contended *filelock.ErrLockContended
 		require.ErrorAs(t, probeErr, &contended)
 
 		allowSecondProbeOnce.Do(func() { close(allowSecondProbe) })
