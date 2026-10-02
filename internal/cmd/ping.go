@@ -20,6 +20,7 @@ import (
 	"charm.land/fantasy/providers/vercel"
 	rushagent "github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -461,6 +462,23 @@ func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerC
 	apiKey, _ := store.Resolve(providerCfg.APIKey)
 	baseURL, _ := store.Resolve(providerCfg.BaseURL)
 
+	if providerCfg.ID == "openai-codex" {
+		token := providerCfg.OAuthToken
+		if token == nil {
+			return nil, fmt.Errorf("OpenAI Codex requires `rush login openai-codex`")
+		}
+		if token.IsExpired() {
+			if err := store.RefreshOAuthToken(ctx, config.ScopeGlobal, providerCfg.ID); err != nil {
+				return nil, fmt.Errorf("refresh OpenAI Codex token: %w", err)
+			}
+			latest, ok := store.Config().Providers.Get(providerCfg.ID)
+			if !ok || latest.OAuthToken == nil {
+				return nil, fmt.Errorf("OpenAI Codex token is unavailable after refresh")
+			}
+			token = latest.OAuthToken
+		}
+		return codexprovider.New(nil, token)
+	}
 	switch providerCfg.Type {
 	case openai.Name:
 		opts := []openai.Option{

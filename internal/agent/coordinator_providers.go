@@ -29,6 +29,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -730,6 +731,9 @@ func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
 // providerCfg from; that SAME snapshot supplies the global network
 // defaults resolveProviderHTTPClient composes the HTTP client from.
 func (c *coordinator) buildProvider(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	if providerCfg.ID == "openai-codex" {
+		return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, "", "")
+	}
 	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
 	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
 	return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, apiKey, baseURL)
@@ -771,6 +775,9 @@ func (c *coordinator) buildProviderWithValues(cfg *config.Config, providerCfg co
 			baseURL = strings.TrimSuffix(baseURL, "/v1")
 			return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID, httpClient)
 		}
+	}
+	if providerCfg.ID == "openai-codex" {
+		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}
 
 	switch providerCfg.Type {

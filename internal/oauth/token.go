@@ -30,6 +30,7 @@ type Token struct {
 	RefreshToken string       `json:"refresh_token,omitempty"`
 	ExpiresIn    int          `json:"expires_in"`
 	ExpiresAt    int64        `json:"expires_at"`
+	AccountID    string       `json:"account_id,omitempty"` // Provider account bound to this token, when available.
 	Client       *OAuthClient `json:"client,omitempty"`
 }
 

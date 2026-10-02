@@ -20,6 +20,7 @@ import (
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/oauth/codex"
 	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/oauth/hyper"
 	"github.com/tidwall/gjson"
@@ -190,19 +191,15 @@ func (s *ConfigStore) SetProviderRuntimeAPIKeyIfTemplate(providerID, template, e
 	return true
 }
 
-// copilotRefreshTokenFn and hyperExchangeTokenFn indirect the two external
-// OAuth refresh calls used by RefreshOAuthTokenWithClient below. They default
-// to the real network-calling implementations; tests override them
-// (package-private, restored via t.Cleanup) to simulate a slow refresh call —
-// e.g. one that blocks until a concurrent ReloadFromDisk has published a new
-// generation — without making a real network call or depending on
-// hyper.BaseURL()'s process-wide sync.OnceValue memoization (see the caveat
-// on TestProviders_ConcurrentErrorCollection_NotLost in provider_test.go for
-// why that value cannot be safely redirected per-test). R5-2: both take the
-// *http.Client resolved from the provider's network policy (nil = default
-// route).
+// copilotRefreshTokenFn, codexRefreshTokenFn, and hyperExchangeTokenFn
+// indirect the OAuth refresh calls used by RefreshOAuthTokenWithClient.
+// They default to the real network-calling implementations; tests may
+// override them (package-private, restored via t.Cleanup) to coordinate
+// refresh races without making a real network call. The HTTP client carries
+// the provider's network policy (nil = default route).
 var (
 	copilotRefreshTokenFn = copilot.RefreshTokenWithClient
+	codexRefreshTokenFn   = codex.Refresh
 	hyperExchangeTokenFn  = hyper.ExchangeTokenWithClient
 )
 
@@ -261,7 +258,9 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	newToken, err := s.loadTokenFromDisk(scope, providerID)
 	if err != nil {
 		slog.Warn("Failed to read token from config file, proceeding with refresh", "provider", providerID, "error", err)
-	} else if newToken != nil && !newToken.IsExpired() && newToken.AccessToken != providerConfig.OAuthToken.AccessToken {
+	} else if newToken != nil && !newToken.IsExpired() &&
+		(newToken.AccessToken != expectedToken.AccessToken ||
+			providerID == "openai-codex" && !reflect.DeepEqual(newToken, expectedToken)) {
 		slog.Info("Using token refreshed by another session", "provider", providerID)
 		return s.applyToken(providerConfig, newToken, providerID)
 	}
@@ -271,6 +270,8 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	switch providerID {
 	case string(catwalk.InferenceProviderCopilot):
 		refreshedToken, refreshErr = copilotRefreshTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
+	case "openai-codex":
+		refreshedToken, refreshErr = codexRefreshTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
 	case hyperp.Name:
 		refreshedToken, refreshErr = hyperExchangeTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
 	default:
@@ -283,7 +284,8 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 		if diskToken, diskErr := s.loadTokenFromDisk(scope, providerID); diskErr == nil &&
 			diskToken != nil &&
 			!diskToken.IsExpired() &&
-			diskToken.AccessToken != providerConfig.OAuthToken.AccessToken {
+			(diskToken.AccessToken != expectedToken.AccessToken ||
+				providerID == "openai-codex" && !reflect.DeepEqual(diskToken, expectedToken)) {
 			slog.Info("Using token refreshed by another session after exchange failure", "provider", providerID)
 			return s.applyToken(providerConfig, diskToken, providerID)
 		}
@@ -292,12 +294,23 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	if refreshedToken == nil {
 		return fmt.Errorf("OAuth refresh for provider %s returned no token", providerID)
 	}
+	if providerID == "openai-codex" && refreshedToken.AccountID == "" {
+		refreshedTokenCopy := *refreshedToken
+		refreshedTokenCopy.AccountID = expectedToken.AccountID
+		refreshedToken = &refreshedTokenCopy
+	}
 
 	slog.Info("Successfully refreshed OAuth token", "provider", providerID)
 	committed, err := s.setOAuthTokenIfCurrent(scope, providerID, expectedToken, refreshedToken)
 	if !committed {
 		if err != nil {
 			return fmt.Errorf("failed to persist refreshed token: %w", err)
+		}
+		if providerID == "openai-codex" {
+			if diskToken, diskErr := s.loadTokenFromDisk(scope, providerID); diskErr == nil &&
+				diskToken != nil && !diskToken.IsExpired() && !reflect.DeepEqual(diskToken, expectedToken) {
+				return s.applyOAuthToken(providerID, expectedToken, diskToken)
+			}
 		}
 		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
 	}
@@ -340,7 +353,11 @@ func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, exp
 	if err != nil {
 		return false, err
 	}
-	keys := []string{fmt.Sprintf("providers.%s.api_key", providerID), fmt.Sprintf("providers.%s.oauth", providerID)}
+	isCodex := providerID == "openai-codex"
+	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
+	if !isCodex {
+		keys = append(keys, fmt.Sprintf("providers.%s.api_key", providerID))
+	}
 	slices.Sort(keys)
 	var committedErr error
 	err = s.withConfigWriteLock(path, func(target configWriteTarget) error {
@@ -349,7 +366,7 @@ func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, exp
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
 		var current oauth.Token
-		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(data), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || gjson.Get(string(data), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken {
+		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(data), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || (!isCodex && gjson.Get(string(data), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken) {
 			return errOAuthCredentialCAS
 		}
 		newValue := string(data)
@@ -361,6 +378,12 @@ func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, exp
 			newValue, err = sjson.Set(newValue, key, value)
 			if err != nil {
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
+			}
+		}
+		if isCodex {
+			newValue, err = sjson.Delete(newValue, fmt.Sprintf("providers.%s.api_key", providerID))
+			if err != nil {
+				return fmt.Errorf("failed to delete stale provider API key: %w", err)
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
@@ -404,14 +427,26 @@ func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, 
 		return fmt.Errorf("provider %s disappeared during OAuth refresh", providerID)
 	}
 	providerConfig, exists := cur.config.Providers.Get(providerID)
-	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && providerConfig.APIKey == token.AccessToken {
+	apiKeyMatches := providerConfig.APIKey == token.AccessToken
+	if providerID == "openai-codex" {
+		apiKeyMatches = true
+	}
+	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && apiKeyMatches {
 		return nil
 	}
-	if !exists || providerConfig.OAuthToken == nil || expected == nil || providerConfig.APIKey != expected.AccessToken || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
+	expectedAPIKeyMatches := expected != nil && providerConfig.APIKey == expected.AccessToken
+	if providerID == "openai-codex" {
+		expectedAPIKeyMatches = true
+	}
+	if !exists || providerConfig.OAuthToken == nil || expected == nil || !expectedAPIKeyMatches || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
 		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
 	}
 	providerConfig.OAuthToken = token
-	providerConfig.APIKey = token.AccessToken
+	if providerID == "openai-codex" {
+		providerConfig.APIKey = ""
+	} else {
+		providerConfig.APIKey = token.AccessToken
+	}
 	if providerID == string(catwalk.InferenceProviderCopilot) {
 		providerConfig.SetupGitHubCopilot()
 	}

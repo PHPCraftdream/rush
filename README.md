@@ -819,6 +819,32 @@ Rush:
 - [Kimi Code](https://www.kimi.com/membership/pricing)
 - [MiniMax Coding Plan](https://platform.minimax.io/subscribe/coding-plan)
 
+### ChatGPT Codex subscription
+
+Rush can use a ChatGPT subscription directly through OpenAI's Codex Responses
+backend. Run `rush login openai-codex` for the browser OAuth (PKCE) flow, or
+`rush login openai-codex --device` when a local browser is unavailable. Rush
+stores and refreshes its own OAuth credential; it does not require the Codex
+CLI, import Codex CLI credentials, or use `OPENAI_API_KEY` for this provider.
+The separate `openai` provider and its API-key authentication are unchanged.
+
+The login prints the URL without opening a browser. In an interactive terminal,
+press `o` to open the link or `c` to copy it; the shortcuts appear below the URL.
+
+After login, the model list is fetched for the authenticated ChatGPT account:
+
+```bash
+rush models list
+rush models use --smart openai-codex/<listed-model>@high
+rush ping --role smart
+```
+
+Use an effort supported by the listed model. Codex access is account-dependent;
+an account without access returns no catalog. The OAuth login remains saved if
+discovery is unavailable; retry `rush models list` or `rush providers
+fetch-models openai-codex` after access or connectivity is restored. Rush does
+not invent a default model while the account catalog is unavailable.
+
 ### By the Way
 
 Is there a provider you’d like to see in Rush? Is there an existing model that needs an update?

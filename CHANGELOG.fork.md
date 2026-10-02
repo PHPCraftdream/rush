@@ -540,6 +540,32 @@ out to a local binary). A malformed proxy/DoH value fails the provider
 build loudly. Documented in README under "Provider Network";
 `schema.json` regenerated.
 
+### 4.M — ChatGPT Codex subscription OAuth
+
+Rush registers `openai-codex` as its own provider type, including in the
+generated config schema, separate from the existing `openai` API-key provider
+and `local-cli` Codex CLI integration. `rush login openai-codex` uses Rush's
+browser PKCE OAuth flow; `--device` selects the device-code flow. Rush stores
+and refreshes its own OAuth token and account ID. Inference goes directly to
+`https://chatgpt.com/backend-api/codex/responses` through the Rush transport;
+no Codex CLI is required and no Codex CLI credential store is read or shared.
+
+Browser login leaves the URL unopened until the operator presses `o`; `c`
+copies it. Shortcuts appear below the URL, and device login uses the same link
+controls. The logger creates a missing `logs/` directory before writing the
+process-start record, rather than emitting that JSON record to the terminal.
+
+The provider model catalog is fetched for the authenticated ChatGPT account
+from `/codex/models?client_version=0.159.0` (with `/models` as a route
+fallback), using that account's bearer token and `chatgpt-account-id` header.
+The catalog provides model names, context limits, image support, and reasoning
+effort metadata used by `rush models use` and the normal smart/fast/worker/
+reviewer roles. Account access failures or transient catalog outages keep the
+OAuth provider and config load intact; Rush does not invent a default model,
+so discovery can be retried after account access or connectivity is restored.
+
+This behavior is documented in the README under "ChatGPT Codex subscription".
+
 ## 5. In-code markers
 
 Whenever we patch an **upstream** file in a non-obvious way we leave a

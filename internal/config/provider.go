@@ -19,6 +19,7 @@ import (
 	"charm.land/catwalk/pkg/embedded"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/home"
 	"github.com/charmbracelet/x/etag"
 )
@@ -234,9 +235,33 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 		} else {
 			providerList = slices.Collect(providers.Seq())
 		}
+		// Fork patch: Keep ChatGPT subscription auth distinct from API-key OpenAI.
+		// See CHANGELOG.fork.md (Section 4.M).
+		if !customProvidersOnly {
+			providerList = withCodexProvider(providerList)
+		}
 		providerErr = errors.Join(catwalkErr, hyperErr)
 	})
 	return providerList, providerErr
+}
+
+func codexProvider() catwalk.Provider {
+	return catwalk.Provider{
+		Name:        "OpenAI Codex",
+		ID:          catwalk.InferenceProvider("openai-codex"),
+		Type:        catwalk.Type("openai-codex"),
+		APIEndpoint: discover.CodexBaseURL,
+	}
+}
+func withCodexProvider(providers []catwalk.Provider) []catwalk.Provider {
+	codex := codexProvider()
+	for i := range providers {
+		if providers[i].ID == codex.ID {
+			providers[i] = codex
+			return providers
+		}
+	}
+	return append(providers, codex)
 }
 
 type cache[T any] struct {

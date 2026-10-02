@@ -5,7 +5,7 @@ package cmd
 // socket. This fork has no Go client — the web UI manages credentials
 // directly — so the import is replaced with the local `internal/agent/hyper`
 // catalog and the daemon-sync calls are dropped. See CHANGELOG.fork.md
-// section 2 ("internal/cmd/login.go") before merging.
+// section 2 ("internal/cmd/login.go") and Section 4.M before merging.
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/oauth"
+	codexauth "github.com/PHPCraftdream/rush/internal/oauth/codex"
 	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/oauth/hyper"
 	"github.com/atotto/clipboard"
@@ -30,6 +31,7 @@ func init() {
 	// reports the existing token instead of starting a new device-auth dance.
 	// Useful UX, kept verbatim.
 	loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
+	loginCmd.Flags().Bool("device", false, "Use device-code authentication instead of browser login")
 }
 
 var loginCmd = &cobra.Command{
@@ -38,7 +40,7 @@ var loginCmd = &cobra.Command{
 	Short:   "Login Rush to a platform",
 	Long: `Login Rush to a specified platform.
 The platform should be provided as an argument.
-Available platforms are: hyper, copilot.`,
+Available platforms are: hyper, copilot, openai-codex. OpenAI Codex uses ChatGPT OAuth; use --device for device-code login.`,
 	Example: `
 # Authenticate with Charm Hyper
 rush login
@@ -48,12 +50,19 @@ rush login copilot
 
 # Force re-authentication even if already logged in
 rush login -f copilot
+
+# Authenticate with a ChatGPT subscription (browser OAuth)
+rush login openai-codex
+
+# Use the device-code flow when a local browser is unavailable
+rush login openai-codex --device
   `,
 	ValidArgs: []cobra.Completion{
 		"hyper",
 		"copilot",
 		"github",
 		"github-copilot",
+		"openai-codex",
 	},
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -68,15 +77,24 @@ rush login -f copilot
 			provider = args[0]
 		}
 		force, _ := cmd.Flags().GetBool("force")
+		device, _ := cmd.Flags().GetBool("device")
 		// Fork merge note: upstream's signature here is (c *client.Client,
 		// wsID string, force bool) because login talks to the daemon over
 		// the Unix socket. Our binary IS the daemon, so we hand the local
 		// ConfigStore directly and only forward `force`.
 		switch provider {
 		case "hyper":
+			if device {
+				return fmt.Errorf("--device is only supported with openai-codex")
+			}
 			return loginHyper(app.Store(), force)
 		case "copilot", "github", "github-copilot":
+			if device {
+				return fmt.Errorf("--device is only supported with openai-codex")
+			}
 			return loginCopilot(app.Store(), force)
+		case "openai-codex":
+			return loginOpenAICodex(app.Store(), force, device)
 		default:
 			return fmt.Errorf("unknown platform: %s", args[0])
 		}
@@ -216,6 +234,58 @@ func loginCopilot(cfg *config.ConfigStore, force bool) error {
 
 	fmt.Println()
 	fmt.Println("You're now authenticated with GitHub Copilot!")
+	return nil
+}
+
+func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
+	const providerID = "openai-codex"
+	if !force && cfg.HasConfigField(config.ScopeGlobal, "providers."+providerID+".oauth") {
+		fmt.Println("You are already logged in to OpenAI Codex.")
+		fmt.Println("Use --force to re-authenticate.")
+		return nil
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	var (
+		token            *oauth.Token
+		err              error
+		stopLinkControls func()
+	)
+	if device {
+		token, err = codexauth.LoginDevice(ctx, func(verificationURL, userCode string) error {
+			if clipboard.WriteAll(userCode) == nil {
+				fmt.Println("The device code was copied to the clipboard:")
+			} else {
+				fmt.Println("Enter this device code:")
+			}
+			fmt.Println()
+			fmt.Println(lipgloss.NewStyle().Bold(true).Render(userCode))
+			fmt.Println()
+			stopLinkControls = startOAuthLinkControls(ctx, verificationURL)
+			return nil
+		})
+	} else {
+		token, err = codexauth.LoginBrowser(ctx, func(authorizationURL string) error {
+			stopLinkControls = startOAuthLinkControls(ctx, authorizationURL)
+			return nil
+		})
+	}
+	if stopLinkControls != nil {
+		stopLinkControls()
+	}
+	if err != nil {
+		return fmt.Errorf("OpenAI Codex login failed: %w", err)
+	}
+	if token == nil || token.AccessToken == "" {
+		return fmt.Errorf("OpenAI Codex login returned no access token")
+	}
+	if err := cfg.SetConfigField(config.ScopeGlobal, "providers."+providerID+".oauth", token); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("You're now authenticated with OpenAI Codex.")
 	return nil
 }
 

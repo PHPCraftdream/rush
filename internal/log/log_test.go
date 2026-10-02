@@ -66,3 +66,21 @@ func TestNewLogger_WritesToFileWithPID(t *testing.T) {
 	assert.Contains(t, line, strconv.Quote("level")+":",
 		"the JSON handler shape from Setup must be preserved")
 }
+
+func TestNewLoggerCreatesMissingLogDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir, err := os.MkdirTemp("", "rush-log-missing-dir")
+	require.NoError(t, err)
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	logPath := filepath.Join(dir, "logs", "rush.log")
+	logger := NewLogger(logPath, false)
+	logger.Info("process start")
+
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	var record map[string]any
+	require.NoError(t, json.Unmarshal(data, &record))
+	require.Equal(t, "process start", record["msg"])
+}

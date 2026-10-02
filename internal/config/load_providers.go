@@ -43,12 +43,14 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		}
 	}
 
-	// When disable_default_providers is enabled, skip all default/embedded
-	// providers entirely. Users must fully specify any providers they want.
-	// We skip to the custom provider validation loop which handles all
-	// user-configured providers uniformly.
+	// With default providers disabled, omit catalog entries. An explicitly
+	// authenticated ChatGPT Codex provider remains registered; other user
+	// providers continue through custom-provider validation.
 	if c.Options.DisableDefaultProviders {
 		knownProviders = nil
+		if provider, ok := c.Providers.Get("openai-codex"); ok && provider.OAuthToken != nil {
+			knownProviders = append(knownProviders, codexProvider())
+		}
 	}
 
 	for _, p := range knownProviders {
@@ -155,6 +157,30 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 		switch p.ID {
 		// Handle specific providers that require additional configuration
+		// Fork patch: Codex uses account OAuth and an account-scoped model catalog.
+		// See CHANGELOG.fork.md (Section 4.M).
+		case catwalk.InferenceProvider("openai-codex"):
+			if config.OAuthToken == nil {
+				if configExists {
+					slog.Warn("Skipping OpenAI Codex provider because no OAuth login is configured")
+					c.Providers.Del(string(p.ID))
+				}
+				continue
+			}
+			prepared.BaseURL = discover.CodexBaseURL
+			if !prepared.Disable {
+				discoverCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				models, err := discover.DiscoverCodexModels(discoverCtx, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
+				cancel()
+				if err != nil {
+					slog.Warn("OpenAI Codex model discovery failed", "provider", p.ID, "error", err)
+				} else {
+					prepared.Models = mergeCodexModels(prepared.Models, models)
+				}
+			}
+			c.Providers.Set(string(p.ID), prepared)
+			continue
+
 		case catwalk.InferenceProviderVertexAI:
 			var (
 				project  = env.Get("VERTEXAI_PROJECT")
@@ -493,6 +519,25 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 	return nil
 }
+func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
+	models := make([]catwalk.Model, 0, len(configured)+len(discovered))
+	seen := make(map[string]struct{}, len(configured)+len(discovered))
+	for _, model := range configured {
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		models = append(models, model)
+	}
+	for _, model := range discovered {
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		models = append(models, model)
+	}
+	return models
+}
 
 func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
 	if len(knownProviders) == 0 && c.Providers.Len() == 0 {
@@ -507,10 +552,15 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 		if !ok || providerConfig.Disable {
 			continue
 		}
+		if len(providerConfig.Models) == 0 && p.ID == catwalk.InferenceProvider("openai-codex") && providerConfig.OAuthToken != nil {
+			continue
+		}
 		defaultSmartModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
 		if defaultSmartModel == nil {
-			slog.Warn("Default smart model not found for provider, falling back to first available",
-				"model", p.DefaultLargeModelID, "provider", p.ID)
+			if p.ID != catwalk.InferenceProvider("openai-codex") {
+				slog.Warn("Default smart model not found for provider, falling back to first available",
+					"model", p.DefaultLargeModelID, "provider", p.ID)
+			}
 			if len(providerConfig.Models) == 0 {
 				return smartModel, fastModel, fmt.Errorf("default smart model %s not found for provider %s", p.DefaultLargeModelID, p.ID)
 			}
@@ -525,8 +575,10 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 
 		defaultFastModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
 		if defaultFastModel == nil {
-			slog.Warn("Default fast model not found for provider, falling back to first available",
-				"model", p.DefaultSmallModelID, "provider", p.ID)
+			if p.ID != catwalk.InferenceProvider("openai-codex") {
+				slog.Warn("Default fast model not found for provider, falling back to first available",
+					"model", p.DefaultSmallModelID, "provider", p.ID)
+			}
 			if len(providerConfig.Models) == 0 {
 				return smartModel, fastModel, fmt.Errorf("default fast model %s not found for provider %s", p.DefaultSmallModelID, p.ID)
 			}
@@ -552,7 +604,20 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 	}
 
 	providerConfig := enabledProviders[0]
+	for _, candidate := range enabledProviders {
+		if len(candidate.Models) > 0 {
+			providerConfig = candidate
+			break
+		}
+	}
+	// Do not invent a default model when an authenticated account's catalog
+	// is unavailable; keep the provider configurable for a later retry.
 	if len(providerConfig.Models) == 0 {
+		for _, candidate := range enabledProviders {
+			if candidate.ID == "openai-codex" && candidate.OAuthToken != nil {
+				return smartModel, fastModel, nil
+			}
+		}
 		err = fmt.Errorf("provider %s has no models configured", providerConfig.ID)
 		return smartModel, fastModel, err
 	}
@@ -734,11 +799,11 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		}
 	}
 
-	// When small isn't explicitly configured and the provider isn't a
-	// known built-in, use the smart model as the fast model. This
-	// prevents two different models from being requested concurrently
-	// for local/openai-compat providers.
-	if !fastModelConfigured {
+	// When no fast default exists, reuse smart. Unknown providers also keep
+	// the existing single-model fallback to avoid concurrent disparate models.
+	if !fastModelConfigured && fast.Provider == "" {
+		fast = smart
+	} else if !fastModelConfigured {
 		isKnownProvider := false
 		for _, kp := range knownProviders {
 			if string(kp.ID) == fast.Provider {
