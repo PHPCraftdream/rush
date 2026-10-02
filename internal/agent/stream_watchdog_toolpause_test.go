@@ -93,36 +93,38 @@ func TestStreamWatchdog_PauseCountsParallelTools(t *testing.T) {
 // site.
 func TestStreamWatchdog_ToolPauseBoundedByCap(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	const idle = 5 * time.Second // large — idle path must NOT fire
-	const tick = 10 * time.Millisecond
-	const toolMaxDuration = 60 * time.Millisecond
+		const idle = 5 * time.Second // large — idle path must NOT fire
+		const tick = 10 * time.Millisecond
+		const toolMaxDuration = 60 * time.Millisecond
 
-	var fired atomic.Int32
-	var firedCause atomic.Int32
-	var firedElapsed atomic.Int64
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdogCause) {
-		fired.Add(1)
-		firedCause.Store(int32(cause))
-		firedElapsed.Store(int64(elapsed))
-	}, false, 0, toolMaxDuration, 0, nil)
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		var firedElapsed atomic.Int64
+		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdogCause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+			firedElapsed.Store(int64(elapsed))
+		}, false, 0, toolMaxDuration, 0, nil)
 
-	// A tool starts and runs past toolMaxDuration with zero provider
-	// activity. The watchdog must fire with cause=causeToolTimeout.
-	wd.toolStarted()
-	select {
-	case <-wd.done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("watchdog never fired after toolMaxDuration")
-	}
+		// A tool starts and runs past toolMaxDuration with zero provider
+		// activity. The watchdog must fire with cause=causeToolTimeout.
+		wd.toolStarted()
+		select {
+		case <-wd.done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("watchdog never fired after toolMaxDuration")
+		}
 
-	assert.Equal(t, int32(1), fired.Load(), "onFire should fire exactly once")
-	assert.Equal(t, causeToolTimeout, watchdogCause(firedCause.Load()), "cause must be causeToolTimeout when the cap is exceeded")
-	assert.True(t, wd.stalled.Load(), "stalled flag must be true after fire")
-	assert.Error(t, ctx.Err(), "ctx must be cancelled by the watchdog")
-	assert.GreaterOrEqual(t, time.Duration(firedElapsed.Load()), toolMaxDuration,
-		"elapsed passed to onFire must be >= toolMaxDuration")
+		assert.Equal(t, int32(1), fired.Load(), "onFire should fire exactly once")
+		assert.Equal(t, causeToolTimeout, watchdogCause(firedCause.Load()), "cause must be causeToolTimeout when the cap is exceeded")
+		assert.True(t, wd.stalled.Load(), "stalled flag must be true after fire")
+		assert.Error(t, ctx.Err(), "ctx must be cancelled by the watchdog")
+		assert.GreaterOrEqual(t, time.Duration(firedElapsed.Load()), toolMaxDuration,
+			"elapsed passed to onFire must be >= toolMaxDuration")
+	})
 }
 
 // TestStreamWatchdog_ToolPauseUnderCapDoesNotFire verifies that a tool
