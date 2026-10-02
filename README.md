@@ -829,7 +829,9 @@ CLI, import Codex CLI credentials, or use `OPENAI_API_KEY` for this provider.
 The separate `openai` provider and its API-key authentication are unchanged.
 
 The login prints the URL without opening a browser. In an interactive terminal,
-press `o` to open the link or `c` to copy it; the shortcuts appear below the URL.
+press the physical `O` key to open it or `C` to copy the full link, regardless
+of the active Windows keyboard layout. `F2`/`F3` do the same on terminals
+that do not report physical keys. The shortcuts appear below the URL.
 
 After login, the model list is fetched for the authenticated ChatGPT account:
 

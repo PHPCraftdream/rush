@@ -550,10 +550,13 @@ and refreshes its own OAuth token and account ID. Inference goes directly to
 `https://chatgpt.com/backend-api/codex/responses` through the Rush transport;
 no Codex CLI is required and no Codex CLI credential store is read or shared.
 
-Browser login leaves the URL unopened until the operator presses `o`; `c`
-copies it. Shortcuts appear below the URL, and device login uses the same link
-controls. The logger creates a missing `logs/` directory before writing the
-process-start record, rather than emitting that JSON record to the terminal.
+Browser login leaves the URL unopened until the operator presses the physical
+`O` key; the physical `C` key copies it. Windows console input uses scan codes
+instead of layout-dependent characters, while enhanced terminals report base
+keys; `F2`/`F3` remain layout-independent alternatives on other terminals.
+Shortcuts appear below the URL, and device login uses the same link controls.
+The logger creates a missing `logs/` directory before writing the process-start
+record, rather than emitting that JSON record to the terminal.
 
 The provider model catalog is fetched for the authenticated ChatGPT account
 from `/codex/models?client_version=0.159.0` (with `/models` as a route

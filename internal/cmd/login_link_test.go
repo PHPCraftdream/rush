@@ -25,8 +25,8 @@ func TestOAuthLinkControlsRequireExplicitKeyPress(t *testing.T) {
 	}
 
 	view := model.View().Content
-	require.Less(t, strings.Index(view, url), strings.Index(view, "[o] Open link"))
-	require.Contains(t, view, "[c] Copy full link")
+	require.Less(t, strings.Index(view, url), strings.Index(view, "[o/F2] Open link"))
+	require.Contains(t, view, "[c/F3] Copy full link")
 	require.Empty(t, opened)
 	require.Empty(t, copied)
 
@@ -38,6 +38,21 @@ func TestOAuthLinkControlsRequireExplicitKeyPress(t *testing.T) {
 	require.Empty(t, opened)
 	model.Update(tea.KeyPressMsg{Code: 'o'})
 	require.Equal(t, []string{url}, opened)
+}
+
+func TestOAuthLinkControlsUsePhysicalKeysAcrossLayouts(t *testing.T) {
+	var actions []string
+	model := &oauthLinkModel{
+		url:  "https://example.com/authorize",
+		open: func(string) error { actions = append(actions, "open"); return nil },
+		copy: func(string) error { actions = append(actions, "copy"); return nil },
+	}
+	model.Update(tea.KeyPressMsg{Code: 'щ', BaseCode: 'o'})
+	model.Update(tea.KeyPressMsg{Code: 'с', BaseCode: 'c'})
+	model.Update(tea.KeyPressMsg{Code: 'o', BaseCode: 'z'})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	model.Update(tea.KeyPressMsg{Code: tea.KeyF3})
+	require.Equal(t, []string{"open", "copy", "open", "copy"}, actions)
 }
 
 func TestOAuthLinkViewDoesNotTruncateLongURL(t *testing.T) {
@@ -56,7 +71,7 @@ func TestOAuthLinkViewDoesNotTruncateLongURL(t *testing.T) {
 		renderedURL.WriteString(line)
 	}
 	require.Equal(t, url, renderedURL.String())
-	require.Greater(t, strings.Index(view, "\n\n[o] Open link"), strings.Index(view, "https://"))
+	require.Greater(t, strings.Index(view, "\n\n[o/F2] Open link"), strings.Index(view, "https://"))
 }
 
 func TestOAuthLinkControlsShowActionFailures(t *testing.T) {

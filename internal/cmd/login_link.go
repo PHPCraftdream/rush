@@ -31,14 +31,18 @@ func (m *oauthLinkModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	switch key.Code {
-	case 'o', 'O':
+	code := key.BaseCode
+	if code == 0 {
+		code = key.Code
+	}
+	switch {
+	case key.Code == tea.KeyF2 || code == 'o' || code == 'O':
 		if err := m.open(m.url); err != nil {
 			m.status = "Could not open browser: " + err.Error()
 		} else {
 			m.status = "Opened link in browser."
 		}
-	case 'c', 'C':
+	case key.Code == tea.KeyF3 || code == 'c' || code == 'C':
 		if err := m.copy(m.url); err != nil {
 			m.status = "Could not copy link: " + err.Error()
 		} else {
@@ -62,19 +66,25 @@ func (m *oauthLinkModel) View() tea.View {
 		text.WriteByte('\n')
 		remaining = remaining[part:]
 	}
-	text.WriteString("\n[o] Open link in browser   [c] Copy full link\n")
+	text.WriteString("\n[o/F2] Open link   [c/F3] Copy full link\n")
 	if m.status != "" {
 		text.WriteString(m.status)
 		text.WriteByte('\n')
 	}
-	return tea.NewView(text.String())
+	view := tea.NewView(text.String())
+	view.KeyboardEnhancements.ReportAlternateKeys = true
+	view.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
+	return view
 }
 
 func startOAuthLinkControls(ctx context.Context, url string) func() {
 	model := &oauthLinkModel{url: url, open: browser.OpenURL, copy: clipboard.WriteAll}
 	if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
-		fmt.Printf("Open this URL to authenticate with your ChatGPT account:\n%s\n\n[o] Open link in browser   [c] Copy full link (interactive terminal only)\n", url)
+		fmt.Printf("Open this URL to authenticate with your ChatGPT account:\n%s\n\n[o/F2] Open link   [c/F3] Copy full link (interactive terminal only)\n", url)
 		return func() {}
+	}
+	if stop, ok := startPhysicalOAuthLinkControls(ctx, model); ok {
+		return stop
 	}
 	programCtx, cancel := context.WithCancel(ctx)
 	program := tea.NewProgram(model, tea.WithContext(programCtx))
