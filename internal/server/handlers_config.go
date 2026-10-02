@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -28,6 +29,21 @@ func providerScopeWire(store *config.ConfigStore, id string) string {
 		return "local"
 	}
 	return "global"
+}
+
+func modelInfoWire(model *catwalk.Model, provider string, live map[string]config.ModelEffortInfo) ModelInfoWire {
+	info := ModelInfoWire{ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow}
+	switch provider {
+	case "openai-codex", "stepfun", "zai":
+		if effort, ok := live[model.ID]; ok {
+			info.ReasoningLevels = effort.Levels
+			info.DefaultReasoningEffort = effort.Default
+		}
+	default:
+		info.ReasoningLevels = model.ReasoningLevels
+		info.DefaultReasoningEffort = model.DefaultReasoningEffort
+	}
+	return info
 }
 
 func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
@@ -56,14 +72,14 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 		id := string(p.ID)
 		if ep, ok := enabledIDs[id]; ok {
 			pw := ProviderWire{Name: p.Name, Enabled: true, Type: string(p.Type), APIKeySet: ep.APIKey != "", Scope: providerScopeWire(store, id), PeakHours: peakHoursToWire(ep.PeakHours), Models: make([]ModelInfoWire, len(ep.Models))}
-			for i, m := range ep.Models {
-				pw.Models[i] = ModelInfoWire{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow}
+			for i := range ep.Models {
+				pw.Models[i] = modelInfoWire(&ep.Models[i], id, ep.LiveEfforts)
 			}
 			wire.Providers[id] = pw
 		} else {
 			pw := ProviderWire{Name: p.Name, Enabled: false, Type: string(p.Type), Scope: providerScopeWire(store, id), Models: make([]ModelInfoWire, len(p.Models))}
-			for i, m := range p.Models {
-				pw.Models[i] = ModelInfoWire{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow}
+			for i := range p.Models {
+				pw.Models[i] = modelInfoWire(&p.Models[i], id, nil)
 			}
 			wire.Providers[id] = pw
 		}
@@ -86,8 +102,8 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 				PeakHours: peakHoursToWire(ep.PeakHours),
 				Models:    make([]ModelInfoWire, len(ep.Models)),
 			}
-			for i, m := range ep.Models {
-				pw.Models[i] = ModelInfoWire{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow}
+			for i := range ep.Models {
+				pw.Models[i] = modelInfoWire(&ep.Models[i], ep.ID, ep.LiveEfforts)
 			}
 			wire.Providers[ep.ID] = pw
 		}

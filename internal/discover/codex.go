@@ -149,11 +149,8 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 	}
 
 	defaultEffort := strings.ToLower(codexString(fields["default_reasoning_level"]))
-	if defaultEffort == "none" {
-		defaultEffort = ""
-	}
 	reasoningLevels := codexReasoningLevels(fields["supported_reasoning_levels"])
-	canReason := defaultEffort != "" || len(reasoningLevels) > 0
+	canReason := defaultEffort != "" && defaultEffort != "none" || len(reasoningLevels) > 0
 
 	supportsImages := true
 	if rawModalities, ok := fields["input_modalities"]; ok {
@@ -245,7 +242,7 @@ func codexReasoningLevels(raw json.RawMessage) []string {
 			effort = item.Effort
 		}
 		effort = strings.ToLower(strings.TrimSpace(effort))
-		if effort == "" || effort == "none" {
+		if effort == "" {
 			continue
 		}
 		if _, ok := seen[effort]; ok {

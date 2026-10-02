@@ -5,7 +5,7 @@ import { $config, clearSessionModelSlot } from "../store";
 import { ws } from "../ws";
 import { buildModelList, type ModelItem } from "./ModelSelector";
 import type { Session, WSMessage } from "../types";
-import { effortLevelsFor, clampEffort } from "../effort";
+import { effortLevelsFor, clampEffort, defaultEffortFor } from "../effort";
 
 // ── Wire types (mirror internal/server/protocol.go) ─────────────────────────
 
@@ -88,38 +88,29 @@ function ModelPicker({
   );
 }
 
-// ── Reasoning-effort picker ──────────────────────────────────────────────────
-
-// Renders nothing at all when the model has no effort knob. That is a
-// correctness requirement, not a cosmetic one: gemini and qwen abort with
-// "Unknown argument: effort" and codex with "unexpected argument '--effort'",
-// so an effort stored against such a model is a broken run waiting to happen.
-// Worse here than in the per-session selector - a bad value written at SYSTEM
-// scope is inherited by every future session in every workspace.
-//
-// Capability rules come from ../effort, shared with ModelSelector, so the two
-// surfaces cannot disagree about which models take an effort.
+// Both scope and session pickers consume the same provider-reported ladder.
+// A missing ladder hides the picker instead of guessing model capabilities.
 function EffortPicker({
   provider,
   model,
+  capabilities,
   value,
   onChange,
   disabled,
 }: {
   provider: string;
   model: string;
+  capabilities?: ModelItem;
   value: string;
   onChange: (effort: string) => void;
   disabled?: boolean;
 }) {
-  const levels = effortLevelsFor(provider, model);
+  const levels = effortLevelsFor(provider, model, capabilities);
   if (levels === null) return null;
 
-  // Show the level that would actually be used, not a stale one this model
-  // cannot accept (e.g. "medium" carried over from Claude onto a GLM-5 slot
-  // — most GLM-5.x expose only high/max, but GLM-5.3/5.3-Flash expose
-  // low/high/max; see effort.ts's EFFORT_LEVELS_ZAI vs EFFORT_LEVELS_ZAI53).
-  const current = clampEffort(provider, model, value) ?? levels[0];
+  const current = value
+    ? clampEffort(provider, model, value, capabilities) ?? ""
+    : defaultEffortFor(provider, model, capabilities);
 
   return (
     <select
@@ -131,6 +122,7 @@ function EffortPicker({
       data-test-id="scoped-effort-picker"
       className="shrink-0 text-[11px] bg-canvas border border-surface rounded-lg px-1.5 py-1.5 outline-none focus:border-accent/50 text-text-subtle disabled:opacity-40 disabled:cursor-not-allowed"
     >
+      {current === "" && <option value="">Provider default</option>}
       {levels.map((l) => (
         <option key={l} value={l}>{l}</option>
       ))}
@@ -143,6 +135,7 @@ function EffortPicker({
 function ScopedSlotRow({
   label,
   models,
+  modelByKey,
   slotWire,
   scopeKey, // "global" | "workspace"
   onSet,
@@ -151,6 +144,7 @@ function ScopedSlotRow({
 }: {
   label: string;
   models: ModelItem[];
+  modelByKey: ReadonlyMap<string, ModelItem>;
   slotWire: ScopedModelSlotWire | undefined;
   scopeKey: "global" | "workspace";
   onSet: (provider: string, model: string, effort: string) => void;
@@ -170,12 +164,11 @@ function ScopedSlotRow({
             models={models}
             value={explicit ? `${explicit.provider}:::${explicit.model}` : ""}
             onChange={(p, m) => {
-              // Clamp on model change and persist the clamp, so a level the
-              // NEW model cannot accept is never left behind. ModelSelector's
-              // equivalent effect bails out when its picker is hidden, which
-              // is how stale efforts survived a model switch; do not repeat
-              // that here.
-              onSet(p, m, clampEffort(p, m, explicit?.reasoning_effort ?? "") ?? "");
+              const capabilities = modelByKey.get(`${p}:::${m}`);
+              const stored = explicit?.reasoning_effort ?? "";
+              onSet(p, m, stored
+                ? clampEffort(p, m, stored, capabilities) ?? ""
+                : defaultEffortFor(p, m, capabilities));
             }}
             disabled={disabled}
           />
@@ -183,6 +176,7 @@ function ScopedSlotRow({
             <EffortPicker
               provider={explicit.provider}
               model={explicit.model}
+              capabilities={modelByKey.get(`${explicit.provider}:::${explicit.model}`)}
               value={explicit.reasoning_effort ?? ""}
               onChange={(eff) => onSet(explicit.provider, explicit.model, eff)}
               disabled={disabled}
@@ -217,12 +211,14 @@ function SessionSlotRow({
   label,
   slot,
   models,
+  modelByKey,
   session,
   scopedModels,
 }: {
   label: string;
   slot: Slot;
   models: ModelItem[];
+  modelByKey: ReadonlyMap<string, ModelItem>;
   session: Session;
   scopedModels: ScopedModelsWire | null;
 }) {
@@ -245,14 +241,18 @@ function SessionSlotRow({
           <ModelPicker
             models={models}
             value={hasOverride ? `${provider}:::${modelID}` : ""}
-            onChange={(p, m) =>
-              setSessionModelSlot(session.ID, slot, p, m, clampEffort(p, m, storedEffort) ?? "")
-            }
+            onChange={(p, m) => {
+              const capabilities = modelByKey.get(`${p}:::${m}`);
+              setSessionModelSlot(session.ID, slot, p, m, storedEffort
+                ? clampEffort(p, m, storedEffort, capabilities) ?? ""
+                : defaultEffortFor(p, m, capabilities));
+            }}
           />
           {hasOverride && (
             <EffortPicker
               provider={provider}
               model={modelID}
+              capabilities={modelByKey.get(`${provider}:::${modelID}`)}
               value={storedEffort}
               onChange={(eff) => setSessionModelSlot(session.ID, slot, provider, modelID, eff)}
             />
@@ -297,6 +297,11 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
   const [scopedModels, setScopedModels] = useState<ScopedModelsWire | null>(null);
 
   const allModels = useMemo(() => buildModelList(config), [config]);
+  const modelByKey = useMemo(() => {
+    const entries = new Map<string, ModelItem>();
+    for (const model of allModels) entries.set(model.key, model);
+    return entries;
+  }, [allModels]);
 
   const refresh = useCallback(() => {
     ws.send("get_scoped_models", {});
@@ -361,6 +366,7 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
                   key={key}
                   label={label}
                   models={allModels}
+                  modelByKey={modelByKey}
                   slotWire={scopedModels?.[key]}
                   scopeKey="global"
                   onSet={(p, m, eff) => setScoped("global", key, p, m, eff)}
@@ -383,6 +389,7 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
                   key={key}
                   label={label}
                   models={allModels}
+                  modelByKey={modelByKey}
                   slotWire={scopedModels?.[key]}
                   scopeKey="workspace"
                   onSet={(p, m, eff) => setScoped("workspace", key, p, m, eff)}
@@ -406,6 +413,7 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
                       label={label}
                       slot={key}
                       models={allModels}
+                      modelByKey={modelByKey}
                       session={activeSession}
                       scopedModels={scopedModels}
                     />

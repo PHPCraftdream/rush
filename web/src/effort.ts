@@ -21,34 +21,13 @@
 // Claude CLI: `claude --help` documents low|medium|high|xhigh|max.
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-// z.ai GLM-5.x (pre-5.3) only exposes High / Max natively (see docs.z.ai/
-// devpack/latest-model and the MarkTechPost launch coverage). The chevron
-// selector cycles through just these two; the backend mirrors them onto the
-// provider's reasoning_effort field.
-export const EFFORT_LEVELS_ZAI = ["high", "max"] as const;
+const EFFORT_LABELS: Record<string, string> = {
+  none: "OFF", minimal: "MIN", low: "L", medium: "M",
+  high: "H", xhigh: "X", max: "XX", ultra: "U",
+};
 
-// GLM-5.3 and GLM-5.3-Flash broke that pattern — reasoning can't be disabled
-// at all and the model instead exposes low/high/max. See the verification
-// and doc quotes on zai53ReasoningLevels in internal/cmd/models_atoms.go
-// (the backend counterpart this must stay in sync with).
-export const EFFORT_LEVELS_ZAI53 = ["low", "high", "max"] as const;
-
-// Returns true for GLM-5.3 / GLM-5.3-Flash specifically (not other GLM-5.x),
-// regardless of which provider key the model lives under. Matches the exact
-// id and the "[1m]"-suffixed context-window variant.
-export function isZAI53Model(_provider: string, model: string): boolean {
-  return /^glm-5\.3(-flash)?(\[|$)/i.test(model);
-}
-
-// Returns true for any OTHER GLM-5.x model regardless of which provider key
-// it lives under — users sometimes wire z.ai via a custom OpenAI-compat
-// provider (id "z-ai" / "zhipu" / etc.), so matching the model id is the
-// robust signal. The "[1m]" suffix variant (glm-5.2[1m]) is also covered.
-// Older GLM-4.x families fall through to the binary thinking on/off in the
-// coordinator and don't get the selector. Excludes GLM-5.3/5.3-Flash, which
-// have their own, larger vocabulary — see isZAI53Model above.
-export function isZAIReasoningModel(_provider: string, model: string): boolean {
-  return !isZAI53Model(_provider, model) && /^glm-5(\.|-|\[|$)/i.test(model);
+export function effortLabel(effort: string): string {
+  return EFFORT_LABELS[effort] ?? effort.toUpperCase();
 }
 
 // Returns true if the model is a CLI Claude model (supports reasoning_effort).
@@ -63,32 +42,33 @@ export function isCLIClaudeModel(provider: string, model: string): boolean {
 // control entirely rather than render an empty dropdown, and must not persist
 // an effort for such a model.
 //
-// Codex is NOT listed yet even though its CLI does accept an effort
-// (`-c model_reasoning_effort=`), because its levels are per-model — codex's
-// own registry stops gpt-5.5 at "xhigh" while gpt-5.6-sol accepts "ultra" —
-// and the frontend has no source for that table. Hardcoding a third copy of
-// per-model levels here is what this module exists to prevent; wire it through
-// from the backend spec when codex effort is exposed.
-export function effortLevelsFor(provider: string, model: string): readonly string[] | null {
-  if (isZAI53Model(provider, model)) return EFFORT_LEVELS_ZAI53;
-  if (isZAIReasoningModel(provider, model)) return EFFORT_LEVELS_ZAI;
+// Provider-reported levels are the source of truth. Missing metadata means no
+// picker; never infer a ladder from a model name.
+export interface EffortCapabilities {
+  reasoningLevels?: readonly string[];
+  defaultReasoningEffort?: string;
+}
+
+export function effortLevelsFor(provider: string, model: string, capabilities?: EffortCapabilities): readonly string[] | null {
+  if (capabilities?.reasoningLevels?.length) return capabilities.reasoningLevels;
   if (isCLIClaudeModel(provider, model)) return EFFORT_LEVELS;
   return null;
 }
 
 // supportsEffort is the boolean form, for callers that only need to decide
 // whether to render a control.
-export function supportsEffort(provider: string, model: string): boolean {
-  return effortLevelsFor(provider, model) !== null;
+export function supportsEffort(provider: string, model: string, capabilities?: EffortCapabilities): boolean {
+  return effortLevelsFor(provider, model, capabilities) !== null;
 }
 
-// defaultEffortFor is the level to show when the session has none stored.
-// Claude CLI keeps the legacy "medium"; every z.ai GLM-5.x model (including
-// the 5.3-tier's low/high/max vocabulary) defaults to "high" — the fork's
-// existing convention, not z.ai's own doc default of "max" for the 5.3 tier
-// (Max stays opt-in for heavy work).
-export function defaultEffortFor(provider: string, model: string): string {
-  return isZAI53Model(provider, model) || isZAIReasoningModel(provider, model) ? "high" : "medium";
+// defaultEffortFor shows a provider-advertised default only when it belongs to
+// that model's advertised ladder. Claude CLI retains its existing default.
+export function defaultEffortFor(provider: string, model: string, capabilities?: EffortCapabilities): string {
+  if (capabilities?.reasoningLevels?.length) {
+    const proposed = capabilities.defaultReasoningEffort ?? "";
+    return capabilities.reasoningLevels.includes(proposed) ? proposed : "";
+  }
+  return isCLIClaudeModel(provider, model) ? "medium" : "";
 }
 
 // clampEffort maps a stored effort onto something this model accepts.
@@ -97,10 +77,10 @@ export function defaultEffortFor(provider: string, model: string): string {
 // as "clear the stored value", not "keep it": a session that moves from Claude
 // to gemini leaves behind an effort the new model cannot use, and that stale
 // value is what used to kill the run outright.
-export function clampEffort(provider: string, model: string, stored: string): string | null {
-  const levels = effortLevelsFor(provider, model);
+export function clampEffort(provider: string, model: string, stored: string, capabilities?: EffortCapabilities): string | null {
+  const levels = effortLevelsFor(provider, model, capabilities);
   if (levels === null) return null;
   if (stored && levels.includes(stored)) return stored;
-  const fallback = defaultEffortFor(provider, model);
+  const fallback = defaultEffortFor(provider, model, capabilities);
   return levels.includes(fallback) ? fallback : levels[0];
 }

@@ -191,7 +191,7 @@ export interface ProviderInfo {
   name?: string;
   enabled?: boolean;
   type?: string;
-  models?: { id: string; name: string; contextWindow?: number }[];
+  models?: { id: string; name: string; contextWindow?: number; reasoningLevels?: string[]; defaultReasoningEffort?: string }[];
   baseUrl?: string;
   isCustom?: boolean;
   apiKeySet?: boolean;

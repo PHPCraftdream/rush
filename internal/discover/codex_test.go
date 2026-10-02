@@ -50,9 +50,20 @@ func TestDiscoverCodexModelsUsesAccountAndNormalizesMetadata(t *testing.T) {
 	require.Equal(t, int64(96000), model.ContextWindow)
 	require.Equal(t, int64(96000), model.DefaultMaxTokens)
 	require.True(t, model.CanReason)
-	require.Equal(t, []string{"low", "high"}, model.ReasoningLevels)
+	require.Equal(t, []string{"low", "high", "none"}, model.ReasoningLevels)
 	require.Equal(t, "high", model.DefaultReasoningEffort)
 	require.False(t, model.SupportsImages)
+}
+
+func TestCodexModelCatalogKeepsProviderDefinedEffortDefaults(t *testing.T) {
+	model, ok := parseCodexModel(json.RawMessage(`{
+		"slug":"account-specific-model",
+		"default_reasoning_level":"none",
+		"supported_reasoning_levels":[{"effort":"none"},{"effort":"minimal"},{"effort":"ultra"}]
+	}`))
+	require.True(t, ok)
+	require.Equal(t, "none", model.DefaultReasoningEffort)
+	require.Equal(t, []string{"none", "minimal", "ultra"}, model.ReasoningLevels)
 }
 func TestCodexModelCatalogAppliesContextFallbacks(t *testing.T) {
 	tests := []struct {

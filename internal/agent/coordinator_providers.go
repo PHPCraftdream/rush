@@ -142,6 +142,10 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 	shouldSetEffort := model.CatwalkCfg.CanReason &&
 		reasoningEffort != "" &&
 		slices.Contains(model.CatwalkCfg.ReasoningLevels, reasoningEffort)
+	if verified, ok := providerCfg.LiveEfforts[model.ModelCfg.Model]; ok &&
+		model.ModelCfg.ReasoningEffort == "" && verified.Default == "" {
+		shouldSetEffort = false
+	}
 
 	switch providerCfg.Type {
 	case openai.Name, azure.Name:
@@ -290,6 +294,19 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 		case string(catwalk.InferenceProviderZAI):
 			effort := strings.ToLower(model.ModelCfg.ReasoningEffort)
 			modelID := strings.ToLower(model.ModelCfg.Model)
+			if verified, ok := providerCfg.LiveEfforts[model.ModelCfg.Model]; ok {
+				extraBody["thinking"] = map[string]any{"type": "enabled"}
+				if effort == "" || !slices.Contains(verified.Levels, effort) {
+					break
+				}
+				if effort == "none" || effort == "minimal" {
+					extraBody["thinking"] = map[string]any{"type": "disabled"}
+					delete(mergedOptions, "reasoning_effort")
+				} else {
+					extraBody["reasoning_effort"] = effort
+				}
+				break
+			}
 			if zai53ModelIDs[modelID] {
 				// GLM-5.3/5.3-Flash can't disable reasoning at all (unlike
 				// every model in the branch below) and take low/high/max

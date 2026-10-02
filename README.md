@@ -833,6 +833,13 @@ press the physical `O` key to open it or `C` to copy the full link, regardless
 of the active Windows keyboard layout. `F2`/`F3` do the same on terminals
 that do not report physical keys. The shortcuts appear below the URL.
 
+If the token exchange is rejected, the CLI and `.rush/logs/rush.log` report
+the HTTP status, response kind (`json`, `html`, `empty`, or `other`), content
+type, response byte count, an allowlisted OAuth error code, and any recognized
+request IDs. Authorization codes, tokens, and raw response bodies are never
+logged. These fields distinguish OAuth errors from gateway blocks; they do
+not identify the cause of an earlier failure before diagnostics were enabled.
+
 After login, the model list is fetched for the authenticated ChatGPT account:
 
 ```bash
@@ -846,6 +853,28 @@ an account without access returns no catalog. The OAuth login remains saved if
 discovery is unavailable; retry `rush models list` or `rush providers
 fetch-models openai-codex` after access or connectivity is restored. Rush does
 not invent a default model while the account catalog is unavailable.
+
+### Live model catalogs
+
+Rush reads authenticated model lists from the ChatGPT Codex, StepFun, and
+Z.AI model endpoints. A successful StepFun roster replaces bundled models;
+Z.AI's roster is merged with known models because its endpoint can omit live
+models. Codex and StepFun report per-model effort levels in their model
+catalogs. When Z.AI's catalog omits levels, Rush reads explicit model/level
+statements from Z.AI's published thinking documentation instead. Unknown
+models receive no guessed effort control.
+
+Authenticated catalogs are cached globally for seven days per provider and
+credential identity; Z.AI's public documentation has its own seven-day cache.
+To fetch fresh data on the next process start:
+
+```bash
+rush models cache clear                  # all three providers
+rush models cache clear stepfun          # one provider
+```
+
+Restart an already-running WebUI server after clearing the cache. Run
+`rush models cache clear --help` for all accepted provider names.
 
 ### By the Way
 

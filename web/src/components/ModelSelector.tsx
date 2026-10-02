@@ -16,7 +16,7 @@ import {
   type ModelRole,
 } from "../store";
 import type { ConfigPayload, Session } from "../types";
-import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort } from "../effort";
+import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort, effortLabel } from "../effort";
 
 // Per-role icon and toolbar title, keyed the same way as every other
 // role-indexed table in this component (task #1061 generalized this
@@ -40,19 +40,6 @@ const ROLE_RECENT_STORE: Record<ModelRole, typeof $recentSmartModels> = {
   reviewer: $recentReviewerModels,
 };
 
-// Effort levels in cycle order: left arrow decrements, right arrow increments
-// Effort tiers and the model-capability rules now live in ../effort so the
-// Default-models modal cannot drift from this selector. Labels mirror our
-// short-code convention: oh / ox / oxx -> high / xhigh / max.
-const EFFORT_LABELS: Record<string, string> = {
-  low: "L",
-  medium: "M",
-  high: "H",
-  xhigh: "X",
-  max: "XX",
-};
-
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ModelItem {
@@ -63,7 +50,9 @@ export interface ModelItem {
   modelID: string;
   name: string;
   contextWindow: number;
-  enabled: boolean; // provider has an API key configured
+  reasoningLevels?: string[];
+  defaultReasoningEffort?: string;
+  enabled: boolean; // provider has usable credentials or is a local CLI
 }
 
 export interface ProviderGroup {
@@ -89,12 +78,10 @@ export function buildProviderGroups(config: ConfigPayload | null): ProviderGroup
       const key = `${providerID}:::${m.id}`;
       if (!seen.has(key)) {
         seen.add(key);
-        models.push({ key, providerID, providerName, providerType, modelID: m.id, name: m.name || m.id, contextWindow: m.contextWindow ?? 0, enabled });
+        models.push({ key, providerID, providerName, providerType, modelID: m.id, name: m.name || m.id, contextWindow: m.contextWindow ?? 0, enabled, reasoningLevels: m.reasoningLevels, defaultReasoningEffort: m.defaultReasoningEffort });
       }
     }
-    // Providers without an API key can't run a model yet — keep them out of
-    // model selection entirely (CLI providers don't need a key, so they're
-    // exempt). Configuring a key is done in the Providers settings modal.
+    // Hide providers without usable credentials; local CLI models are exempt.
     if (models.length > 0 && (enabled || providerType === "cli")) {
       groups.push({ id: providerID, name: providerName, type: providerType, enabled, models });
     }
@@ -174,43 +161,15 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   const currentEntry = allModels.find(m => m.key === currentKey);
   const displayName = currentEntry?.name ?? currentKey.split(":::")[1] ?? "No model";
 
-  // Get current reasoning effort — model-dependent default (see
-  // defaultEffortFor below): "medium" for Claude CLI, "high" for every
-  // Z.AI GLM-5.x including the 5.3 tier.
   const currentProvider = currentEntry?.providerID ?? "";
   const currentModelID = currentEntry?.modelID ?? "";
-  // Delegates to ../effort so this selector can't drift from the
-  // Default-models modal's model-capability rules (see that module's header
-  // comment on why a second hand-written copy of these rules is a bug
-  // magnet — GLM-5.3/5.3-Flash's low/high/max vocabulary vs. other GLM-5.x's
-  // high/max-only would otherwise need to be kept in sync by hand here too).
-  const effortLevels: readonly string[] = effortLevelsFor(currentProvider, currentModelID) ?? [];
-  let storedEffort = defaultEffortFor(currentProvider, currentModelID);
-  if (session) {
-    const effort = session[effortField] as string | undefined;
-    if (effort) storedEffort = effort;
-  }
-  const showEffortPicker = supportsEffort(currentProvider, currentModelID);
-  // Clamp the displayed effort to what THIS model actually supports, via the
-  // same clampEffort ScopedModelsModal.tsx uses — NOT effortLevels[0], which
-  // used to disagree with clampEffort's "fall back to defaultEffortFor"
-  // semantics whenever a level array's first entry differs from the model's
-  // default (exposed by GLM-5.3/5.3-Flash: levels[0] is "low", but the
-  // default is "high"). Without this, switching Claude→GLM on a session that
-  // stored "medium" leaves the badge showing M (which GLM does not
-  // understand) until the user clicks an arrow. The useEffect below persists
-  // the clamp back to the session so the backend never sees an unsupported
-  // value either.
-  //
-  // Side effect of this unification, intentional: an invalid stored effort
-  // on a Claude CLI slot (e.g. a legacy value) now also clamps to
-  // defaultEffortFor's "medium" instead of the old effortLevels[0] ("low") —
-  // Claude's levels[0] happened to differ from its own default too, just
-  // less visibly than GLM-5.3's. Both model classes now behave identically
-  // to ScopedModelsModal.tsx, which is the point.
-  const clampedEffort = clampEffort(currentProvider, currentModelID, storedEffort);
-  const effortValid = clampedEffort === storedEffort;
-  const currentEffort = clampedEffort ?? storedEffort;
+  const effortLevels = effortLevelsFor(currentProvider, currentModelID, currentEntry) ?? [];
+  const explicitEffort = session?.[effortField] as string | undefined;
+  const storedEffort = explicitEffort || defaultEffortFor(currentProvider, currentModelID, currentEntry);
+  const showEffortPicker = supportsEffort(currentProvider, currentModelID, currentEntry);
+  const clampedEffort = clampEffort(currentProvider, currentModelID, storedEffort, currentEntry);
+  const effortValid = !explicitEffort || clampedEffort === explicitEffort;
+  const currentEffort = storedEffort ? (clampedEffort ?? storedEffort) : "";
 
   useEffect(() => {
     if (!session || !showEffortPicker) return;
@@ -221,8 +180,9 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
   function cycleEffort(direction: 1 | -1) {
     if (!session || !showEffortPicker) return;
     const idx = effortLevels.indexOf(currentEffort);
-    const safeIdx = idx === -1 ? 0 : idx;
-    const newIdx = (safeIdx + direction + effortLevels.length) % effortLevels.length;
+    const newIdx = idx < 0
+      ? (direction === 1 ? 0 : effortLevels.length - 1)
+      : (idx + direction + effortLevels.length) % effortLevels.length;
     const newEffort = effortLevels[newIdx];
     setSessionRoleEffort(session.ID, modelType, newEffort);
   }
@@ -329,7 +289,7 @@ export function ModelSelector({ session, modelType }: { session: Session | null;
               title={`Reasoning effort: ${currentEffort}`}
               data-test-id={`reasoning-effort-${modelType}-label`}
             >
-              {EFFORT_LABELS[currentEffort] ?? "?"}
+              {currentEffort ? effortLabel(currentEffort) : "AUTO"}
             </span>
             <button
               onClick={() => cycleEffort(1)}

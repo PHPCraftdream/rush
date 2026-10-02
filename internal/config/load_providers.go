@@ -22,6 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/env"
 )
 
+var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
+
 func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
 	knownProviderNames := make(map[string]bool)
 
@@ -169,13 +171,18 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			}
 			prepared.BaseURL = discover.CodexBaseURL
 			if !prepared.Disable {
-				discoverCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				models, err := discover.DiscoverCodexModels(discoverCtx, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
+				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				models, err := cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
+					cmp.Or(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
+					func(ctx context.Context) ([]catwalk.Model, error) {
+						return discover.DiscoverCodexModels(ctx, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
+					})
 				cancel()
 				if err != nil {
 					slog.Warn("OpenAI Codex model discovery failed", "provider", p.ID, "error", err)
 				} else {
 					prepared.Models = mergeCodexModels(prepared.Models, models)
+					prepared.LiveEfforts = liveEffortsFromModels(models)
 				}
 			}
 			c.Providers.Set(string(p.ID), prepared)
@@ -334,6 +341,62 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 					c.Providers.Del(string(p.ID))
 				}
 				continue
+			}
+		}
+		if (p.ID == catwalk.InferenceProvider("stepfun") || p.ID == catwalk.InferenceProviderZAI) &&
+			!prepared.Disable && (config.AutoDiscoverModels == nil || *config.AutoDiscoverModels) {
+			key, keyErr := resolver.ResolveValue(prepared.APIKey)
+			endpoint, endpointErr := resolver.ResolveValue(prepared.BaseURL)
+			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
+				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				live, discoverErr := cachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
+					func(ctx context.Context) ([]catwalk.Model, error) {
+						return discover.DiscoverProviderCatalog(ctx, discover.Config{
+							ID: prepared.ID, BaseURL: endpoint, APIKey: key, ExtraHeaders: prepared.ExtraHeaders,
+						}, resolver)
+					})
+				cancel()
+				if discoverErr != nil {
+					slog.Warn("Provider model discovery failed; retaining configured catalog",
+						"provider", prepared.ID, "error", discoverErr)
+				} else {
+					prepared.LiveEfforts = liveEffortsFromModels(live)
+					if p.ID == catwalk.InferenceProvider("stepfun") && len(config.Models) == 0 {
+						prepared.Models = live
+					} else {
+						prepared.Models = mergeProviderModels(prepared.Models, live)
+					}
+				}
+			}
+		}
+		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" {
+			documentCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			documented, docsErr := cachedProviderModels(documentCtx, "zai-docs",
+				discover.ZAIEffortDocsURL, "public", discoverZAIEffortDocs)
+			cancel()
+			if docsErr != nil {
+				slog.Warn("Z.AI effort documentation unavailable; omitting unverified effort controls",
+					"error", docsErr)
+			} else {
+				byID := make(map[string]*catwalk.Model, len(documented))
+				for i := range documented {
+					byID[documented[i].ID] = &documented[i]
+				}
+				for i := range prepared.Models {
+					id := prepared.Models[i].ID
+					if _, live := prepared.LiveEfforts[id]; live {
+						continue
+					}
+					if model := byID[id]; model != nil {
+						if prepared.LiveEfforts == nil {
+							prepared.LiveEfforts = make(map[string]ModelEffortInfo)
+						}
+						prepared.LiveEfforts[id] = ModelEffortInfo{Levels: model.ReasoningLevels}
+						prepared.Models[i].ReasoningLevels = model.ReasoningLevels
+						prepared.Models[i].DefaultReasoningEffort = ""
+						prepared.Models[i].CanReason = true
+					}
+				}
 			}
 		}
 		c.Providers.Set(string(p.ID), prepared)
@@ -537,6 +600,51 @@ func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
 		models = append(models, model)
 	}
 	return models
+}
+
+func liveEffortsFromModels(models []catwalk.Model) map[string]ModelEffortInfo {
+	var efforts map[string]ModelEffortInfo
+	for i := range models {
+		if len(models[i].ReasoningLevels) == 0 {
+			continue
+		}
+		if efforts == nil {
+			efforts = make(map[string]ModelEffortInfo)
+		}
+		efforts[models[i].ID] = ModelEffortInfo{
+			Levels: models[i].ReasoningLevels, Default: models[i].DefaultReasoningEffort,
+		}
+	}
+	return efforts
+}
+
+func mergeProviderModels(configured, live []catwalk.Model) []catwalk.Model {
+	result := make([]catwalk.Model, len(configured), len(configured)+len(live))
+	copy(result, configured)
+	indices := make(map[string]int, len(configured)+len(live))
+	for i := range result {
+		indices[result[i].ID] = i
+	}
+	for i := range live {
+		model := &live[i]
+		if index, exists := indices[model.ID]; exists {
+			if model.ContextWindow > 0 {
+				result[index].ContextWindow = model.ContextWindow
+			}
+			if model.Name != model.ID {
+				result[index].Name = model.Name
+			}
+			if len(model.ReasoningLevels) > 0 {
+				result[index].CanReason = true
+				result[index].ReasoningLevels = model.ReasoningLevels
+				result[index].DefaultReasoningEffort = model.DefaultReasoningEffort
+			}
+			continue
+		}
+		indices[model.ID] = len(result)
+		result = append(result, *model)
+	}
+	return result
 }
 
 func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
