@@ -41,18 +41,15 @@ var reviewerReadOnlyToolNames = []string{
     tools.GitReadToolName, tools.ReadDelegationTranscriptToolName,
     tools.FSReadToolName, tools.FSListToolName, tools.FSFindToolName, tools.FSGrepToolName,
 }
-const reviewerToolCallBudget = 12
 
 func applyCallReviewerReadOnly(ctx context.Context, agent config.Agent, isSubAgent bool) config.Agent
 // Intersects agent.AllowedTools with reviewerReadOnlyToolNames, AllowedMCP = map[string][]string{} (no MCP).
 // No-op unless callOptionsFrom(ctx).ModelRole == config.SelectedModelTypeReviewer && !isSubAgent.
-
-func withReviewerToolBudget(ctx context.Context, list []fantasy.AgentTool) []fantasy.AgentTool
-// Same gate; wraps each tool in budgetedTool sharing one *atomic.Int32; call N > reviewerToolCallBudget returns
-// fantasy.NewTextErrorResponse("review tool budget exhausted (12 calls): write your verdict now") without running.
 ```
 
-`coordinator_tools.go`, `buildTools`: (1) после `applyCallFolderScope` (:571), до floor (:597): `agent = applyCallReviewerReadOnly(ctx, agent, isSubAgent)` — именно после FolderScope, иначе fs_write вернётся через grants; (2) сразу после `wrapAsyncTools` (:801): `filteredTools = withReviewerToolBudget(ctx, filteredTools)`.
+Числа вызовов инструментов у ревьюера НЕ ограничиваем (решение оператора: ревьюер проверяет столько, сколько считает нужным).
+
+`coordinator_tools.go`, `buildTools`: после `applyCallFolderScope` (:571), до floor (:597): `agent = applyCallReviewerReadOnly(ctx, agent, isSubAgent)` — именно после FolderScope, иначе fs_write вернётся через grants; (бюджета вызовов нет).
 
 Без bash и run_command: надёжной read-only обёртки нет (`coordinator_tools.go:202-207`), `go test` пишет кэши и два параллельных запуска дают errno 1455. Коды выхода тестов ревьюер получает из блока улик (§4). `ask_question` исчезает из набора — ревьюер не может уйти в `awaiting_answer` механически. Переписать doc-комментарий `app_run_reviewer.go:865-869`.
 
@@ -87,9 +84,10 @@ not do in this turn.
 
 YOUR TOOLS are read-only: view, grep, glob, ls, git_read (status, diff, log,
 show, blame) and read_delegation_transcript. You cannot edit files, run shell
-commands or tests, or ask questions - do not try. You have a budget of about
-12 tool calls: issue independent reads in parallel in one step, and use
-offset/limit and path filters instead of reading whole large files.
+commands or tests, or ask questions - do not try. There is no limit on tool
+calls: check as much as you need to be confident in the verdict. Issue
+independent reads in parallel in one step, and use offset/limit and path
+filters instead of reading whole large files (the context is already large).
 
 EVIDENCE. The <review_evidence> block at the end of this message was computed
 by rush itself from the git working tree and the session database, not by the
@@ -227,8 +225,8 @@ func turnSmartReasoningEffort(ctx context.Context, sess session.Session) string 
 
 ## 7. Стоимость и время
 
-- Вход 89k–197k на шаг; бюджет 12 вызовов + параллельные чтения → ~4–7 шагов (×4–7 от сегодняшнего входа без учёта кэша). При ~197k возможна авто-суммаризация (`agent_turn_step.go:760-783`) — смягчает бюджет и заранее собранные улики.
-- Таймаут: ревью под ctx прогона (`--timeout`, 6 ч); наследуются `IdleTimeout`, `MaxCost`, `MaxTokens`, `TimeoutHardCap` (`app_run_reviewer.go:921-929`). Свой потолок `reviewerPassTimeout = 15 * time.Minute` ВНУТРИ замыкания `reviewRunFn` (`app_run_reviewer.go:907-909`): `ctx, cancel := context.WithTimeout(ctx, reviewerPassTimeout); defer cancel()`.
+- Вход 89k–197k на шаг; число шагов не ограничено (решение оператора); каждый шаг с инструментом повторяет весь контекст (кэш смягчает). При ~197k возможна авто-суммаризация (`agent_turn_step.go:760-783`) — смягчают параллельные чтения, offset/limit и заранее собранные улики. От зацикливания защищают существующие `loop_detection` и страж «нет прогресса» (#1149), `MaxCost`/`MaxTokens`/`IdleTimeout` прогона.
+- Таймаут: ревью под ctx прогона (`--timeout`, 6 ч); наследуются `IdleTimeout`, `MaxCost`, `MaxTokens`, `TimeoutHardCap` (`app_run_reviewer.go:921-929`). Страховка ТОЛЬКО от зависания (не лимит работы): `reviewerPassTimeout = 60 * time.Minute` ВНУТРИ замыкания `reviewRunFn` (`app_run_reviewer.go:907-909`): `ctx, cancel := context.WithTimeout(ctx, reviewerPassTimeout); defer cancel()`.
 - `reviewerPassBlocked` не меняется.
 - Ошибка ревьюера не роняет прогон: сейчас упавший ревью заменяет результат (`app_run.go:625-627`, `app_run_async.go:469-471`). Новое: если `reviewFailureKeepsPrimary(runCtx, err)`, остаётся основной результат, `ReviewVerdict="error"`, warning `reviewer pass failed: <err>`, строка stderr, exit по основному ходу. `reviewFailureKeepsPrimary` = `err != nil && runCtx.Err() == nil && !errors.Is(err, ErrRunQueued) && !errors.Is(err, agent.ErrSessionBusy) && !turnRefusedByOwner(err)`. Отмена прогона (Ctrl-C/`--timeout`) и R2-3 fail-fast (`TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim`) — как есть. В `app_run.go` до `resetForReviewerPass` сохранить `primaryFinalText := loop.finalText` и при сохранении основного результата вернуть, иначе terse-режим напечатает текст ревьюера.
 
@@ -237,12 +235,12 @@ func turnSmartReasoningEffort(ctx context.Context, sess session.Session) string 
 Размеры (wc -l): `app_run_reviewer.go` 939 (запас 61), `app_run_async.go` 966 (запас 34), `coordinator_models.go` 957, `agent_turn.go` 877, `agent_turn_step.go` 836, `coordinator_tools.go` 823, `app_run.go` 648. Нельзя раздувать: `app_run_async.go` — не более +8 строк, всё новое в отдельные файлы; `app_run_reviewer.go` — только перенос промпта (−13) и правка doc; `coordinator_models.go` не трогать.
 
 Шаги:
-1. **agent: read-only + бюджет.** `coordinator_tools_reviewer.go` (~90 строк) + две строки в `buildTools` (§2).
+1. **agent: read-only.** `coordinator_tools_reviewer.go` (~50 строк) + одна строка в `buildTools` (§2).
 2. **agent: effort.** `turn_effort.go` (~20 строк); замена `agent_turn_step.go:215`, `agent_turn.go:504` (опц. compaction).
 3. **app: промпт.** `app_run_reviewer_prompt.go`: `reviewerPassMarker` + `reviewerPassPrompt` (§3); удалить константу из `app_run_reviewer.go:31-43`; переписать doc :865-869.
 4. **app: улики.** `app_run_reviewer_evidence.go` (~300 строк, §4). В `RunRequest` (`app_run_request.go`) поле `reviewBasis *reviewBasis`. В `app_run.go` перед `loop := &executeRunLoop{` (≈:513): `basis := req.reviewBasis; if basis == nil && !req.reviewerTurn && !req.drainTurn && !req.deferReviewer { basis = app.captureReviewBasis(ctx, overrides.ModelRole, prompt, runStart) }`; :551 и :617: `loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)`. `app_run_async.go`: поле `reviewBasis` в `cliLoop` (:196), инициализация в конструкторе (:303-307) `app.captureReviewBasis(ctx, overrides.ModelRole, prompt, started)`, передача `reviewBasis: l.reviewBasis` в `runReviewerTurn` (:399-408).
 5. **app: вердикт и ошибки.** `app_run_reviewer_outcome.go` (~120 строк) + поле `ReviewVerdict`. `app_run.go:621-627`: успех → `app.attachReview(...)`; ошибка с `reviewFailureKeepsPrimary` → основной результат + `ReviewVerdict="error"` + warning. `app_run_async.go:463-465` и ветка ошибки в `default:` (:469) — через тот же helper (≤ +6 строк).
-6. **app: таймаут ревью** в `reviewRunFn` (§7).
+6. **app: страховочный таймаут ревью 60 мин** в `reviewRunFn` (§7).
 7. **Документация:** `cmd/run.go:65-76`, `:128-134` — read-only инструменты, `review_verdict` и значения, «ошибка ревьюера не меняет итог прогона»; CHANGELOG.md (строки по-русски, вставкой); правило README задач про help и тесты help.
 8. **Существующие тесты, сценарий которых станет недостижим** (ревьюер больше не запускает async bash): `app_run_loop_round4_test.go`: `TestRunNonInteractive_ReviewerAsyncBashIsWaitedOnAndAnswered` (:153), `…TerseAnswerIsTheReaction` (:176), `…CtrlCWhileWaitingOnReviewerJob_KeepsReviewerAnswer` (:213), `TestCLILoop_ReviewerLeftStuckOrDeferredDebt` (:273); `app_run_loop_round5_test.go`: `TestRunLoop_ReviewerJobHonorsNoSupervision` (:158), `…SupervisionInterval` (:186), `TestCLILoop_RefusalStreakDoesNotOutliveClosedScope` (:225); `app_run_deadline_wait_test.go:31`. Решение оператора: удалить и заменить T4/T5 (код цикла `evCloseAgain`, Drain на настройках ревьюера оставить как защитный). Тесты на «упавший ревью заменяет результат» — найти grep'ом `Review`/`review` в `app_run_reviewer_pass_test.go` и обновить под новое правило. `TestReviewerCallOptionsCarryEveryPrimaryField` не меняется.
 
@@ -252,7 +250,6 @@ func turnSmartReasoningEffort(ctx context.Context, sess session.Session) string 
 |---|---|---|---|
 | T1 | `TestBuildTools_ReviewerRoleIsReadOnly` (agent/coordinator_tools_reviewer_test.go, настоящий `c.buildTools`) | В наборе view, grep, glob, ls, git_read; нет bash, run_command, edit, multiedit, write, download, fetch, todos, ask_question, agent, job_kill, MCP; с FolderScope, разрешающим create: fs_read есть, fs_write нет | убрать вызов `applyCallReviewerReadOnly` |
 | T2 | `TestBuildTools_SmartRoleKeepsBash` | контроль: при роли smart bash в наборе | сделать фильтр безусловным |
-| T3 | `TestReviewerToolBudget_RefusesAfterLimit` (настоящий `tools.NewViewTool` на temp-каталоге) | вызовы 1..N отдают файл, N+1 — «budget exhausted» | убрать проверку счётчика |
 | T4 | `TestReviewerPass_WireOffersOnlyReadTools` (app/app_run_reviewer_readonly_test.go, harness `wireModelAndTools`) | tools в запросе ревьюера без bash/write/edit, git_read и view есть; в запросе смарта bash есть | убрать фильтр |
 | T5 | `TestReviewerPass_ReadToolRunsWriteDoesNot` | ревьюер вызывает `view` на файл с маркером, затем `write`, затем «VERDICT: PASS»: маркер в tool_result в БД, файл write не создан, `review_verdict=="pass"` | убрать фильтр → файл создан |
 | T6 | `TestReviewerPass_PromptCarriesEvidence` (skip без git) | temp git-репо; первый ход меняет файл; в последнем user ревьюера: маркер, `<review_evidence`, исходный prompt, путь в changed_during_run; грязный до прогона файл — в dirty_before_run | `captureReviewBasis` вернёт nil |
@@ -275,4 +272,4 @@ func turnSmartReasoningEffort(ctx context.Context, sess session.Session) string 
 
 ## 10. Решения (приняты по рекомендациям @om)
 
-1. Read-only и для явного `--role reviewer` — да. 2. Восемь тестов «ревьюер запускает async bash» удалить, заменить T4/T5. 3. Exit code при FAIL не менять (только `review_verdict`, warning, stderr). 4. Не повторять ревью при отсутствии проверок — `unverified`. 5. Ошибка ревьюера сохраняет основной результат (кроме отмены/busy/queued). 6. Бюджет 12 вызовов, таймаут ревью 15 мин, блок улик 6000 символов — пересмотреть после 2–3 реальных прогонов. 7. `run_command` с allowlist ревьюеру не даём в этой итерации.
+1. Read-only и для явного `--role reviewer` — да. 2. Восемь тестов «ревьюер запускает async bash» удалить, заменить T4/T5. 3. Exit code при FAIL не менять (только `review_verdict`, warning, stderr). 4. Не повторять ревью при отсутствии проверок — `unverified`. 5. Ошибка ревьюера сохраняет основной результат (кроме отмены/busy/queued). 6. Бюджета вызовов у ревьюера НЕТ (решение оператора 2026-10-02); страховка от зависания 60 мин; блок улик 6000 символов — пересмотреть после 2–3 реальных прогонов. 7. `run_command` с allowlist ревьюеру не даём в этой итерации.
