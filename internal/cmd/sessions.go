@@ -20,7 +20,8 @@ Core:        list (with STATUS column), show (with purpose + budget), delete, re
 Observe:     last (with timestamps), tail --follow, locks (heartbeat + budget),
              watch (live dashboard), pick (interactive TUI),
              why <id> (the evidence behind a status), jobs <id> (durable async
-             jobs of a session and its delegation tree)
+             jobs of a session and its delegation tree),
+             audit (anomaly scan — strictly read-only)
 Search:      grep <pattern> (message text), diff <id> (files touched),
              cost [--by model|day|session] (spend breakdown),
              cache [id] (prompt-cache effectiveness)
@@ -58,7 +59,7 @@ func init() {
 	sessionsCacheCmd.Flags().String("since", "", "Only count messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days. Aggregates across all sessions; omit the session argument.")
 	sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
 
-	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd)
+	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd)
 	rootCmd.AddCommand(sessionsCmd)
 }
 
