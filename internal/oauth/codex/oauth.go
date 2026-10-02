@@ -11,9 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -479,7 +482,15 @@ func exchangeForm(ctx context.Context, client *http.Client, endpoint string, val
 		return nil, fmt.Errorf("could not read Codex token response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &oauth.TokenExchangeError{StatusCode: resp.StatusCode, Body: safeTokenError(body)}
+		tokenError := &oauth.TokenExchangeError{
+			StatusCode:  resp.StatusCode,
+			Body:        safeTokenError(body),
+			Diagnostics: tokenFailureDiagnostics(resp, body, values),
+		}
+		slog.Warn("OpenAI Codex OAuth token exchange rejected",
+			"grant_type", values.Get("grant_type"), "status", resp.StatusCode,
+			"details", tokenError.Diagnostics)
+		return nil, tokenError
 	}
 	var response struct {
 		AccessToken  string `json:"access_token"`
@@ -569,17 +580,84 @@ func readBounded(r io.Reader) ([]byte, error) {
 
 func safeTokenError(body []byte) string {
 	var response struct {
-		Error string `json:"error"`
+		Error json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(body, &response) != nil {
 		return ""
 	}
-	switch response.Error {
+	var code string
+	if json.Unmarshal(response.Error, &code) != nil {
+		var nested struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(response.Error, &nested) != nil {
+			return ""
+		}
+		code = nested.Code
+	}
+	switch code {
 	case "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client", "access_denied", "revoked", "server_error", "temporarily_unavailable", "authorization_pending", "slow_down", "expired_token":
-		return response.Error
+		return code
 	default:
 		return ""
 	}
+}
+
+var (
+	codexRayIDPattern     = regexp.MustCompile(`(?i)^[0-9a-f]{16,32}(?:-[a-z]{3})?$`)
+	codexRequestIDPattern = regexp.MustCompile(`^req_[A-Za-z0-9_-]{8,64}$`)
+)
+
+func tokenFailureDiagnostics(resp *http.Response, body []byte, values url.Values) string {
+	contentType := "missing"
+	if raw := resp.Header.Get("Content-Type"); raw != "" {
+		contentType = "other"
+		if mediaType, _, err := mime.ParseMediaType(raw); err == nil {
+			switch mediaType {
+			case "application/json", "application/problem+json", "text/html", "text/plain":
+				contentType = mediaType
+			}
+		}
+	}
+	trimmed := bytes.TrimSpace(body)
+	kind := "other"
+	switch {
+	case len(trimmed) == 0:
+		kind = "empty"
+	case json.Valid(trimmed):
+		kind = "json"
+	case contentType == "text/html" || bytes.HasPrefix(bytes.ToLower(trimmed), []byte("<!doctype html")) || bytes.HasPrefix(bytes.ToLower(trimmed), []byte("<html")):
+		kind = "html"
+	}
+	var result strings.Builder
+	fmt.Fprintf(&result, "kind=%s content_type=%s bytes=%d", kind, contentType, len(body))
+	if code := safeTokenError(body); code != "" {
+		fmt.Fprintf(&result, " oauth_error=%s", code)
+	}
+	if ray := resp.Header.Get("Cf-Ray"); safeCorrelationID(ray, codexRayIDPattern, values) {
+		fmt.Fprintf(&result, " cf_ray=%s", ray)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = resp.Header.Get("X-Openai-Request-Id")
+	}
+	if safeCorrelationID(requestID, codexRequestIDPattern, values) {
+		fmt.Fprintf(&result, " request_id=%s", requestID)
+	}
+	return result.String()
+}
+
+func safeCorrelationID(value string, pattern *regexp.Regexp, values url.Values) bool {
+	if !pattern.MatchString(value) {
+		return false
+	}
+	for _, key := range [...]string{"code", "code_verifier", "refresh_token"} {
+		secret := values.Get(key)
+		if secret != "" && (strings.Contains(secret, value) || strings.Contains(value, secret)) {
+			return false
+		}
+	}
+	return true
 }
 
 func randomURLSafe(size int) (string, error) {
