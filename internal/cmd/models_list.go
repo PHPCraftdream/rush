@@ -19,6 +19,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/spf13/cobra"
 )
 
@@ -132,6 +133,9 @@ func emitModelsListJSON(cfg *config.Config) error {
 	var raw []rawModelJSON
 	for _, p := range cfg.EnabledProviders() {
 		for _, m := range p.Models {
+			if !discover.ModelVisible(p.ID, m.ID) {
+				continue
+			}
 			raw = append(raw, rawModelJSON{
 				Provider:  p.ID,
 				Model:     m.ID,
@@ -177,6 +181,9 @@ func renderOtherModelsBlock(cfg *config.Config) string {
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 		for _, m := range models {
+			if !discover.ModelVisible(pid, m.ID) {
+				continue
+			}
 			ctx := "?"
 			if m.ContextWindow > 0 {
 				ctx = humanCtx(m.ContextWindow)

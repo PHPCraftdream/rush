@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/discover"
 )
 
 const modelCatalogTTL = 7 * 24 * time.Hour
@@ -33,6 +34,19 @@ func modelCatalogFingerprint(provider, endpoint, identity string) string {
 	return hex.EncodeToString(value[:])
 }
 
+// visibleCatalogModels drops the superseded model families (see
+// discover.ModelVisible) from a provider catalog, including one served from
+// a cache written before the filter existed.
+func visibleCatalogModels(provider string, models []catwalk.Model) []catwalk.Model {
+	filtered := make([]catwalk.Model, 0, len(models))
+	for _, model := range models {
+		if discover.ModelVisible(provider, model.ID) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
 func readModelCatalog(path, fingerprint string) (cachedModelCatalog, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -51,9 +65,12 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 	entry, exists := readModelCatalog(path, fingerprint)
 	age := time.Since(entry.FetchedAt)
 	if exists && age >= 0 && age < modelCatalogTTL {
-		return entry.Models, nil
+		return visibleCatalogModels(provider, entry.Models), nil
 	}
 	models, err := fetch(ctx)
+	if err == nil {
+		models = visibleCatalogModels(provider, models)
+	}
 	if err == nil && len(models) == 0 {
 		err = fmt.Errorf("model catalog for %s returned no models", provider)
 	}

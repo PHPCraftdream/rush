@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/skills"
 	"github.com/PHPCraftdream/rush/internal/version"
 )
@@ -46,6 +47,20 @@ func modelInfoWire(model *catwalk.Model, provider string, live map[string]config
 	return info
 }
 
+// visibleModelInfos copies a provider's models into the wire, dropping the
+// superseded families (see discover.ModelVisible) so the web picker offers
+// the same ids the CLI listings do.
+func visibleModelInfos(provider string, models []catwalk.Model, live map[string]config.ModelEffortInfo) []ModelInfoWire {
+	infos := make([]ModelInfoWire, 0, len(models))
+	for i := range models {
+		if !discover.ModelVisible(provider, models[i].ID) {
+			continue
+		}
+		infos = append(infos, modelInfoWire(&models[i], provider, live))
+	}
+	return infos
+}
+
 func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	store := a.Store()
 	cfg := store.Config()
@@ -71,16 +86,10 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	for _, p := range store.KnownProviders() {
 		id := string(p.ID)
 		if ep, ok := enabledIDs[id]; ok {
-			pw := ProviderWire{Name: p.Name, Enabled: true, Type: string(p.Type), APIKeySet: ep.APIKey != "", Scope: providerScopeWire(store, id), PeakHours: peakHoursToWire(ep.PeakHours), Models: make([]ModelInfoWire, len(ep.Models))}
-			for i := range ep.Models {
-				pw.Models[i] = modelInfoWire(&ep.Models[i], id, ep.LiveEfforts)
-			}
+			pw := ProviderWire{Name: p.Name, Enabled: true, Type: string(p.Type), APIKeySet: ep.APIKey != "", Scope: providerScopeWire(store, id), PeakHours: peakHoursToWire(ep.PeakHours), Models: visibleModelInfos(id, ep.Models, ep.LiveEfforts)}
 			wire.Providers[id] = pw
 		} else {
-			pw := ProviderWire{Name: p.Name, Enabled: false, Type: string(p.Type), Scope: providerScopeWire(store, id), Models: make([]ModelInfoWire, len(p.Models))}
-			for i := range p.Models {
-				pw.Models[i] = modelInfoWire(&p.Models[i], id, nil)
-			}
+			pw := ProviderWire{Name: p.Name, Enabled: false, Type: string(p.Type), Scope: providerScopeWire(store, id), Models: visibleModelInfos(id, p.Models, nil)}
 			wire.Providers[id] = pw
 		}
 	}
@@ -100,10 +109,7 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 				APIKeySet: ep.APIKey != "",
 				Scope:     providerScopeWire(store, ep.ID),
 				PeakHours: peakHoursToWire(ep.PeakHours),
-				Models:    make([]ModelInfoWire, len(ep.Models)),
-			}
-			for i := range ep.Models {
-				pw.Models[i] = modelInfoWire(&ep.Models[i], ep.ID, ep.LiveEfforts)
+				Models:    visibleModelInfos(ep.ID, ep.Models, ep.LiveEfforts),
 			}
 			wire.Providers[ep.ID] = pw
 		}

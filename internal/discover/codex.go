@@ -72,7 +72,7 @@ func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, acce
 			continue
 		}
 		if len(body) == codexMaxResponseBytes {
-			lastErr = fmt.Errorf("Codex model catalog exceeds %d bytes", codexMaxResponseBytes)
+			lastErr = fmt.Errorf("codex model catalog exceeds %d bytes", codexMaxResponseBytes)
 			continue
 		}
 		if closeErr != nil {
@@ -80,10 +80,10 @@ func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, acce
 			continue
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("Codex model catalog rejected the account (HTTP %d); check that this ChatGPT account has Codex access", resp.StatusCode)
+			return nil, fmt.Errorf("codex model catalog rejected the account (HTTP %d); check that this ChatGPT account has Codex access", resp.StatusCode)
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			lastErr = fmt.Errorf("Codex model catalog returned HTTP %d", resp.StatusCode)
+			lastErr = fmt.Errorf("codex model catalog returned HTTP %d", resp.StatusCode)
 			continue
 		}
 
@@ -95,10 +95,10 @@ func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, acce
 		if valid {
 			return models, nil
 		}
-		lastErr = fmt.Errorf("Codex model catalog response has no models or data array")
+		lastErr = fmt.Errorf("codex model catalog response has no models or data array")
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("Codex model catalog is unavailable")
+		lastErr = fmt.Errorf("codex model catalog is unavailable")
 	}
 	return nil, lastErr
 }
@@ -139,6 +139,12 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 		id = codexString(fields["id"])
 	}
 	if id == "" {
+		return catwalk.Model{}, false
+	}
+	// Superseded families (pre-6 GPT, o3, codex-mini) never enter the
+	// account catalog; explicitly configured selections keep working
+	// without it.
+	if !ModelVisible("openai-codex", id) {
 		return catwalk.Model{}, false
 	}
 	visibility := strings.ToLower(codexString(fields["visibility"]))
@@ -185,6 +191,7 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 		SupportsImages:         supportsImages,
 	}, true
 }
+
 func codexContextWindow(id string, reported int64) int64 {
 	canonicalID := strings.TrimSuffix(id, "-wm")
 	switch canonicalID {

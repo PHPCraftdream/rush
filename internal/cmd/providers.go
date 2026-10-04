@@ -738,7 +738,11 @@ openai-compat, GET /v1/models for anthropic) using the resolved API
 key and print whatever the server actually returns. Unlike
 'rush providers update', this does NOT write anything to rush.json —
 use it to discover newly-released models before deciding whether to
-update the local cache.`,
+update the local cache.
+
+Superseded model families are hidden from the printed list, the same
+filter the other model listings use: openai-codex shows gpt-6 and
+newer, and glm models below 5.3 are hidden for every provider.`,
 	Example: `
 # Inspect z.ai's live model list (looks for newly-released GLM versions)
 rush providers fetch-models zai

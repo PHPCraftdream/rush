@@ -19,9 +19,25 @@ import (
 	"github.com/PHPCraftdream/rush/internal/discover"
 )
 
-// fetchModels fetches the model list for a provider based on its type.
-// Returns the updated model list and any warning messages.
+// fetchModels fetches the model list for a provider based on its type and
+// hides the superseded model families (discover.ModelVisible). Returns the
+// updated model list and any warning messages.
 func fetchModels(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []string, error) {
+	models, warnings, err := fetchModelsByType(a, p)
+	if err != nil {
+		return models, warnings, err
+	}
+	filtered := make([]catwalk.Model, 0, len(models))
+	for _, model := range models {
+		if discover.ModelVisible(p.ID, model.ID) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered, warnings, nil
+}
+
+// fetchModelsByType is fetchModels without the visibility filter.
+func fetchModelsByType(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []string, error) {
 	var warnings []string
 
 	// Resolve env-template API keys (e.g. "$ZAI_API_KEY") before HTTP calls —

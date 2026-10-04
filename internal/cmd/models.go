@@ -7,8 +7,10 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +43,12 @@ provider-specific). See ` + "`rush models efforts --help`" + ` for the two synta
 that set it, the per-provider semantics (e.g. Z.AI collapses low/medium/high
 into one wire value), and per-model command examples.
 
+Superseded model families are hidden from this list and the WebUI picker:
+openai-codex shows gpt-6 and newer (gpt-5.x, o3 and codex-mini are hidden),
+and glm models below 5.3 are hidden for every provider (glm-5.3 and newer
+are shown). Unknown or unparseable model ids are never hidden, and a model
+explicitly configured in rush.json keeps working even while hidden.
+
 Authenticated model catalogs are cached globally for seven days. Run
 ` + "`rush models cache clear [openai-codex|stepfun|zai|all]`" + ` to clear them
 and restart the WebUI to refresh a running server's in-memory list.`,
@@ -65,75 +73,7 @@ rush models gpt5`,
 		}
 
 		term := strings.ToLower(strings.Join(args, " "))
-
-		type providerEntry struct {
-			name       string
-			models     []string
-			configured bool
-		}
-
-		entries := make(map[string]*providerEntry)
-
-		// Add configured providers first.
-		for providerID, provider := range cfg.Config().Providers.Seq2() {
-			if provider.Disable {
-				continue
-			}
-			entry := &providerEntry{
-				name:       provider.Name,
-				configured: true,
-			}
-			for _, model := range provider.Models {
-				if term != "" {
-					matched := false
-					for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
-						if strings.Contains(strings.ToLower(s), term) {
-							matched = true
-							break
-						}
-					}
-					if !matched {
-						continue
-					}
-				}
-				entry.models = append(entry.models, model.ID)
-			}
-			if len(entry.models) > 0 {
-				slices.Sort(entry.models)
-				entries[providerID] = entry
-			}
-		}
-
-		// Add known but unconfigured providers from catwalk.
-		for _, kp := range cfg.KnownProviders() {
-			providerID := string(kp.ID)
-			if _, exists := entries[providerID]; exists {
-				continue
-			}
-			entry := &providerEntry{
-				name:       kp.Name,
-				configured: false,
-			}
-			for _, model := range kp.Models {
-				if term != "" {
-					matched := false
-					for _, s := range []string{providerID, kp.Name, model.ID, model.Name} {
-						if strings.Contains(strings.ToLower(s), term) {
-							matched = true
-							break
-						}
-					}
-					if !matched {
-						continue
-					}
-				}
-				entry.models = append(entry.models, model.ID)
-			}
-			if len(entry.models) > 0 {
-				slices.Sort(entry.models)
-				entries[providerID] = entry
-			}
-		}
+		entries := collectListModelEntries(cfg.Config(), cfg.KnownProviders(), term)
 
 		var providerIDs []string
 		for id := range entries {
@@ -175,6 +115,89 @@ rush models gpt5`,
 		cmd.Println(t)
 		return nil
 	},
+}
+
+// modelsProviderEntry is one provider's row in the `rush models` output.
+type modelsProviderEntry struct {
+	name       string
+	models     []string
+	configured bool
+}
+
+// collectListModelEntries builds the provider-to-model-ids listing for
+// `rush models`: configured providers first, then catwalk-known ones, with
+// the superseded model families (discover.ModelVisible) hidden from both.
+func collectListModelEntries(cfg *config.Config, knownProviders []catwalk.Provider, term string) map[string]*modelsProviderEntry {
+	entries := make(map[string]*modelsProviderEntry)
+
+	// Add configured providers first.
+	for providerID, provider := range cfg.Providers.Seq2() {
+		if provider.Disable {
+			continue
+		}
+		entry := &modelsProviderEntry{
+			name:       provider.Name,
+			configured: true,
+		}
+		for _, model := range provider.Models {
+			if !discover.ModelVisible(providerID, model.ID) {
+				continue
+			}
+			if term != "" {
+				matched := false
+				for _, s := range []string{provider.ID, provider.Name, model.ID, model.Name} {
+					if strings.Contains(strings.ToLower(s), term) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			entry.models = append(entry.models, model.ID)
+		}
+		if len(entry.models) > 0 {
+			slices.Sort(entry.models)
+			entries[providerID] = entry
+		}
+	}
+
+	// Add known but unconfigured providers from catwalk.
+	for _, kp := range knownProviders {
+		providerID := string(kp.ID)
+		if _, exists := entries[providerID]; exists {
+			continue
+		}
+		entry := &modelsProviderEntry{
+			name:       kp.Name,
+			configured: false,
+		}
+		for _, model := range kp.Models {
+			if !discover.ModelVisible(providerID, model.ID) {
+				continue
+			}
+			if term != "" {
+				matched := false
+				for _, s := range []string{providerID, kp.Name, model.ID, model.Name} {
+					if strings.Contains(strings.ToLower(s), term) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			entry.models = append(entry.models, model.ID)
+		}
+		if len(entry.models) > 0 {
+			slices.Sort(entry.models)
+			entries[providerID] = entry
+		}
+	}
+
+	return entries
 }
 
 func init() {
