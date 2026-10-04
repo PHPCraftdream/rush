@@ -253,6 +253,7 @@ func codexProvider() catwalk.Provider {
 		APIEndpoint: discover.CodexBaseURL,
 	}
 }
+
 func withCodexProvider(providers []catwalk.Provider) []catwalk.Provider {
 	codex := codexProvider()
 	for i := range providers {

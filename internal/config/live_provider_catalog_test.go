@@ -23,8 +23,10 @@ func TestStepFunLiveRosterReplacesRetiredSeedAndCachesEfforts(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog := []catwalk.Provider{{ID: "stepfun", Name: "StepFun", Type: catwalk.TypeOpenAICompat,
-		APIEndpoint: server.URL + "/v1", APIKey: "key", Models: []catwalk.Model{{ID: "retired-step"}}}}
+	catalog := []catwalk.Provider{{
+		ID: "stepfun", Name: "StepFun", Type: catwalk.TypeOpenAICompat,
+		APIEndpoint: server.URL + "/v1", APIKey: "key", Models: []catwalk.Model{{ID: "retired-step"}},
+	}}
 	load := func() ProviderConfig {
 		cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
 		cfg.setDefaults(t.TempDir(), "")

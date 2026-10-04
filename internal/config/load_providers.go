@@ -593,6 +593,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 	return nil
 }
+
 func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
 	models := make([]catwalk.Model, 0, len(configured)+len(discovered))
 	seen := make(map[string]struct{}, len(configured)+len(discovered))
