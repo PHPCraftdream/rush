@@ -507,6 +507,17 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			c.Providers.Del(id)
 			continue
 		}
+		// A ChatGPT Codex account authenticated by an OAuth token is a built-in
+		// provider, not a custom one: it has no API key and its endpoint is fixed
+		// in code, so "missing API key/endpoint" says nothing about it. It only
+		// reaches this loop when the known-provider list was not built (the
+		// custom-providers-only load); the entry is dropped here as before, just
+		// without the misleading warnings.
+		if id == "openai-codex" && providerConfig.OAuthToken != nil {
+			slog.Debug("Skipping OAuth-authenticated Codex provider in custom-provider validation", "provider", id)
+			c.Providers.Del(id)
+			continue
+		}
 		if providerConfig.APIKey == "" {
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}
