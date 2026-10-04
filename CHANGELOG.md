@@ -66,6 +66,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   печатает ложные WARN «Provider is missing API key» и «Skipping custom provider
   due to missing API endpoint» — у такого аккаунта нет API-ключа, а адрес задан в
   коде. Запись без токена по-прежнему предупреждает об обоих.
+- Флейк `TestHeartbeatTouchesFile` (#1168): `Release` возвращал управление до
+  того, как heartbeat-горутина закрыла файл замка, и очистка `t.TempDir` на
+  Windows падала с «file in use»; heartbeat-тесты теперь ждут закрытия файла.
 - Новая подкоманда `rush logs summary` (#1164): сводка по одному или
   нескольким лог-файлам `rush` — сколько WARN и ERROR каждого текста
   (счётчики по `msg`, с примером полей одной строки группы), какие процессы

@@ -300,6 +300,11 @@ func TestTryAcquireSessionLock_FreshLockIsRespected(t *testing.T) {
 // cutting each test's real wait from ~12s to ~4s.
 const testHeartbeatInterval = 1 * time.Second
 
+// The heartbeat-exit/release helpers used by the tests below (and their
+// revert-check notes) live in lock_test_helpers_test.go, same package: this
+// file sits at the 1000-line review ceiling and the helpers belong with the
+// flake fix they were extracted from.
+
 // The three heartbeat tests below each block for one full
 // testHeartbeatInterval plus slack, because SessionLock exposes no test
 // seam for "was a tick observed" other than the mtime side effect — only
@@ -315,6 +320,7 @@ func TestHeartbeatTouchesFile(t *testing.T) {
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
+	releaseLockFully(t, lk)
 
 	info1, err := os.Stat(lk.Path)
 	require.NoError(t, err)
@@ -335,6 +341,7 @@ func TestHeartbeatTouchesFile(t *testing.T) {
 	assert.True(t, info2.ModTime().After(before), "heartbeat must have touched the file when activity was recorded")
 
 	require.NoError(t, lk.Release())
+	awaitHeartbeatExit(t, lk)
 }
 
 // TestHeartbeat_NoActivity_DoesNotTouchMtime is the core regression test
@@ -350,7 +357,7 @@ func TestHeartbeat_NoActivity_DoesNotTouchMtime(t *testing.T) {
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
-	defer lk.Release()
+	releaseLockFully(t, lk)
 
 	info1, err := os.Stat(lk.Path)
 	require.NoError(t, err)
@@ -378,7 +385,7 @@ func TestHeartbeat_RecordActivity_TouchesMtimeOnNextTick(t *testing.T) {
 	dir := t.TempDir()
 	lk, err := TryAcquireSessionLockWithOptions(dir, "audit-A", WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
-	defer lk.Release()
+	releaseLockFully(t, lk)
 
 	info1, err := os.Stat(lk.Path)
 	require.NoError(t, err)
