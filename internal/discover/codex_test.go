@@ -82,6 +82,31 @@ func TestCodexModelCatalogAppliesContextFallbacks(t *testing.T) {
 			contextWindow: codexGPT56OneMContextWindow,
 		},
 		{
+			name:          "GPT-6 Luna floors a stale catalog value to the documented window",
+			payload:       `{"slug":"gpt-6-luna","context_window":272000}`,
+			contextWindow: codexGPT6ContextWindow,
+		},
+		{
+			name:          "GPT-6 Sol floors a stale catalog value to the documented window",
+			payload:       `{"slug":"gpt-6-sol","context_window":372000}`,
+			contextWindow: codexGPT6ContextWindow,
+		},
+		{
+			name:          "GPT-6 Astra omitted context uses the documented window",
+			payload:       `{"slug":"gpt-6-astra"}`,
+			contextWindow: codexGPT6ContextWindow,
+		},
+		{
+			name:          "GPT-6 model with a larger catalog value keeps it",
+			payload:       `{"slug":"gpt-6-luna","context_window":2000000}`,
+			contextWindow: 2_000_000,
+		},
+		{
+			name:          "later GPT-6 family member omitted context uses the documented window",
+			payload:       `{"slug":"gpt-6-orion"}`,
+			contextWindow: codexGPT6ContextWindow,
+		},
+		{
 			name:          "other models use general default",
 			payload:       `{"slug":"codex-model"}`,
 			contextWindow: codexDefaultContextWindow,

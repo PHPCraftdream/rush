@@ -21,8 +21,12 @@ const (
 	codexDefaultContextWindow   int64 = 272_000
 	codexGPT56ContextWindow     int64 = 372_000
 	codexGPT56OneMContextWindow int64 = 1_000_000
-	codexDefaultMaxTokens       int64 = 128_000
-	codexMaxResponseBytes             = 10 << 20
+	// codexGPT6ContextWindow is the documented window of the GPT-6 family
+	// (Astra, Sol, Luna: 1,050,000 context, 922,000 max input, 128,000 max
+	// output -- developers.openai.com/api/docs/models/gpt-6-*).
+	codexGPT6ContextWindow int64 = 1_050_000
+	codexDefaultMaxTokens  int64 = 128_000
+	codexMaxResponseBytes        = 10 << 20
 )
 
 // DiscoverCodexModels reads the authenticated account's ChatGPT Codex model
@@ -184,6 +188,12 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 func codexContextWindow(id string, reported int64) int64 {
 	canonicalID := strings.TrimSuffix(id, "-wm")
 	switch canonicalID {
+	case "gpt-6-astra", "gpt-6-sol", "gpt-6-luna":
+		// A stale or account-reduced catalog value never lowers the
+		// documented window of these models.
+		if reported < codexGPT6ContextWindow {
+			return codexGPT6ContextWindow
+		}
 	case "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra":
 		if reported < codexGPT56OneMContextWindow {
 			return codexGPT56OneMContextWindow
@@ -193,6 +203,9 @@ func codexContextWindow(id string, reported int64) int64 {
 			return codexGPT56ContextWindow
 		}
 	default:
+		if reported == 0 && strings.HasPrefix(canonicalID, "gpt-6") {
+			return codexGPT6ContextWindow
+		}
 		if reported == 0 && strings.HasPrefix(canonicalID, "gpt-5.6-") {
 			return codexGPT56ContextWindow
 		}
