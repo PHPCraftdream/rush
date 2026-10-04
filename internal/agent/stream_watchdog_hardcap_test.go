@@ -285,7 +285,6 @@ func TestStreamWatchdog_HardCapRespectedWithToolInFlight(t *testing.T) {
 func TestStreamWatchdog_HardCapWhileToolInFlightDistinctFromIdleStall(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-
 		const tick = 10 * time.Millisecond
 
 		// Case 1: hard cap fires while a tool is in flight.

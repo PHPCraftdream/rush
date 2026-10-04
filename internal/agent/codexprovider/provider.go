@@ -739,7 +739,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 	return nil
 }
 
-var errStreamStopped = errors.New("Codex stream consumer stopped")
+var errStreamStopped = errors.New("codex stream consumer stopped")
 
 func (s *streamState) getTool(itemID, outputIndex string) *toolCall {
 	key := itemID
@@ -783,10 +783,10 @@ func (s *streamState) finishTool(call *toolCall, yield func(fantasy.StreamPart) 
 		return nil
 	}
 	if call.id == "" {
-		return errors.New("Codex function call is missing a call ID")
+		return errors.New("codex function call is missing a call ID")
 	}
 	if call.name == "" {
-		return errors.New("Codex function call is missing a name")
+		return errors.New("codex function call is missing a name")
 	}
 	if !call.started {
 		call.started = true
@@ -933,5 +933,7 @@ func parseOutputIndex(raw json.RawMessage) string {
 	return strconv.Itoa(value)
 }
 
-var _ fantasy.Provider = (*provider)(nil)
-var _ fantasy.LanguageModel = (*languageModel)(nil)
+var (
+	_ fantasy.Provider      = (*provider)(nil)
+	_ fantasy.LanguageModel = (*languageModel)(nil)
+)
