@@ -210,6 +210,75 @@ func TestTurnProgressOracleTable(t *testing.T) {
 	}
 }
 
+// TestTurnProgressOracleAsyncCapSeries is the scenario of the async-cap plan
+// (docs/plans/2026-10-02-async-job-cap.md §4 step 3): the session's 50 async
+// slots are full, so the real `go test ./...` the model repeats is refused by
+// the TOOL itself -- an async_cap error result, no job started, no claim. The
+// guard is not in the picture at all (oracleRefuses stays false on every step,
+// even when it is armed), yet each such step is a refused step, so the
+// no-progress streak grows from the FIRST one and the fifth step reaches
+// inTurnStopAfter and stops the turn. The sixth refused `go test` is therefore
+// never served: the provider gets five requests, not six.
+//
+// Revert-check: without the async_cap branch in classifyStepCall each of these
+// calls is an act -- a real command with an error in its result, which is how
+// an ordinary failed command reads -- the streak stays 0 past all six steps
+// and this test is red on the very first step.
+func TestTurnProgressOracleAsyncCapSeries(t *testing.T) {
+	t.Parallel()
+
+	const capSteps = 6 // the model keeps repeating `go test` while the cap holds
+	ts := &turnStream{call: SessionAgentCall{SessionID: "oracle-async-cap"}}
+
+	var (
+		gotClass    []string
+		gotStreak   []int
+		gotRefused  []bool
+		gotArmed    []bool
+		served      int
+		capStepSeen int
+	)
+	for range capSteps {
+		if ts.progress.stopped {
+			break // the turn already ended: this request is never served
+		}
+		served++
+		// The session holds 50 running jobs, so ownWork is true and the entry
+		// channel is async -- the guard is armed on EVERY step, and still not
+		// the one refusing this call.
+		guard := stepGuardFor(&ts.progress, true, true)
+		guard.canEdit, guard.canDelegate = true, true
+		ts.progress.guard = guard
+		gotArmed = append(gotArmed, guard.refuseWaitCall())
+
+		call := oracleCall{kind: callCap}
+		content, result := oracleCallContent(call, true, "")
+		gotClass = append(gotClass,
+			classifyStepCall(content, result, stepClassifyCtx{seen: ts.progress.guard.seen}).String())
+		ts.recordStepProgress(makeStep(
+			[]fantasy.ToolCallContent{content}, []fantasy.ToolResultContent{result}))
+		gotStreak = append(gotStreak, ts.progress.streak)
+		gotRefused = append(gotRefused, oracleRefuses(ts.progress.seen, guard, call))
+		if asyncCapRefused(result) {
+			capStepSeen++
+		}
+	}
+
+	require.Equal(t, []string{"refused", "refused", "refused", "refused", "refused"}, gotClass,
+		"every capped call is the did-not-run class, not an act")
+	require.Equal(t, []int{1, 2, 3, 4, 5}, gotStreak,
+		"the streak grows from the first capped step: no work was ever done")
+	require.Equal(t, []bool{false, false, false, false, false}, gotRefused,
+		"the guard refused nothing: the tool answered every call itself")
+	require.Equal(t, []bool{true, true, true, true, true}, gotArmed,
+		"the guard would refuse a wait on every step (own work running), yet a `go test` is not a wait")
+	require.True(t, ts.progress.stopped, "the fifth no-progress step stops the turn")
+	require.Equal(t, 5, served, "the sixth capped `go test` is never served: the turn is over")
+	require.Equal(t, capSteps-1, capStepSeen, "one capped call per served step")
+	require.Zero(t, ts.progress.waits, "a capped call is not a wait launch")
+	require.Zero(t, ts.progress.rereads, "a capped call is not a re-read")
+}
+
 // oracleCall is one modelled tool call of one step.
 type oracleCall struct {
 	kind  byte
@@ -218,7 +287,8 @@ type oracleCall struct {
 
 // oracleCallKind letters the §1.4 vocabulary: W wait launch, V windowed read
 // (the classifier decides read vs. re-read from the turn's coverage), A act,
-// N neutral, U call of a tool absent from the set, X a guard refusal.
+// N neutral, U call of a tool absent from the set, X a guard refusal, C a
+// call the TOOL itself refused with the async-cap tag (no guard involved).
 const (
 	callWait    = 'W'
 	callWindow  = 'V'
@@ -226,6 +296,7 @@ const (
 	callNeutral = 'N'
 	callUnknown = 'U'
 	callRefused = 'X'
+	callCap     = 'C'
 )
 
 var (
@@ -280,7 +351,9 @@ type oracleRow struct {
 
 // oracleRefuses is the guard's own verdict, exactly as the wrapper applies it:
 // a wait launch is refused by refuseWait, a windowed read by refuseReread, and
-// a modelled refusal needs no decision.
+// a modelled refusal needs no decision. A cap refusal (C) is NOT one of them:
+// the tool answered it itself, so the guard is never in the picture and the
+// step's refusal verdict stays false however armed the guard is.
 func oracleRefuses(cov readCoverage, guard stepGuard, call oracleCall) bool {
 	switch call.kind {
 	case callWait:
@@ -338,6 +411,17 @@ func oracleCallContent(call oracleCall, async bool, asyncTag string) (fantasy.To
 			ToolCallID: "c",
 			ToolName:   "edit",
 			Result:     fantasy.ToolResultOutputContentText{Text: "edited"},
+		}
+	case callCap:
+		// The session's cap refused the Start: an error result carrying the
+		// async_cap tag and nothing else -- no async tag, no claim. The
+		// async/asyncTag arguments describe a wait launch, which this is not.
+		content = fantasy.ToolCallContent{ToolCallID: "c", ToolName: tools.BashToolName, Input: `{"command":"go test ./..."}`}
+		result = fantasy.ToolResultContent{
+			ToolCallID:     "c",
+			ToolName:       tools.BashToolName,
+			Result:         fantasy.ToolResultOutputContentError{Error: errors.New("Refused: this job was not started — this session already has 50 running async jobs (limit 50).")},
+			ClientMetadata: asyncCapTag,
 		}
 	case callNeutral:
 		content = fantasy.ToolCallContent{ToolCallID: "c", ToolName: "todos", Input: `{"todos":[]}`}

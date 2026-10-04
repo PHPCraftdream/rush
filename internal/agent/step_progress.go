@@ -274,6 +274,17 @@ func guardRefused(result fantasy.ToolResultContent) bool {
 	return guard.ProgressGuard.Refused != ""
 }
 
+// asyncCapRefused reports whether result carries the async-cap tag of
+// async_tool.go's cap branch: workLedger.Start refused the job, so the tool
+// never ran and took no claim -- the tool's own refusal, not the guard's.
+func asyncCapRefused(result fantasy.ToolResultContent) bool {
+	var meta asyncCapMetadata
+	if json.Unmarshal([]byte(result.ClientMetadata), &meta) != nil {
+		return false
+	}
+	return meta.AsyncCap.Running > 0 || meta.AsyncCap.Limit > 0
+}
+
 // unknownToolResultPrefix is fantasy's bare answer to a call whose tool name
 // is not in the step's set: nothing executed, so the call is neutral.
 const unknownToolResultPrefix = "tool not found:"
@@ -299,12 +310,17 @@ type stepClassifyCtx struct {
 }
 
 // classifyStepCall is the ONE place that decides what a call was. The order
-// matters: a guard refusal outranks everything (the tool never ran), then the
+// matters: a refusal outranks everything (the tool never ran) -- the guard's
+// own tag first, then the async-cap tag, which is a different seam of the same
+// "nothing executed" verdict and is never masked by the guard's -- then the
 // always-neutral tools, then the unknown-tool error, then the wait-only
 // launch gated on async metadata, then the windowed reads against coverage,
 // then the restricted-action table, and everything else is act.
 func classifyStepCall(call fantasy.ToolCallContent, result fantasy.ToolResultContent, cx stepClassifyCtx) stepCallClass {
 	if guardRefused(result) {
+		return stepCallRefused
+	}
+	if asyncCapRefused(result) {
 		return stepCallRefused
 	}
 	if _, neutral := chainNeutralTools[call.ToolName]; neutral {

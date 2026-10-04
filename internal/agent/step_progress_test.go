@@ -13,12 +13,19 @@ import (
 // maxIntEnd is the "to the end of the file" end of a readSpan.
 const maxInt = math.MaxInt
 
+// asyncCapTag is the ClientMetadata async_tool.go stamps on a workLedger.Start
+// the session's cap refused: the job never started, so nothing ran and no
+// claim was taken (work_ledger_cap.go).
+const asyncCapTag = `{"async_cap":{"running":50,"limit":50,"wait_timers":30}}`
+
 // The classifier of docs/plans/2026-10-01-in-turn-progress-guard.md §5.1 (T1):
 // one table, the cases the in-turn guard and #1113 both depend on.
 //
 // Revert-check: dropping the "wait needs async metadata" gate below turns the
 // SDK `echo x` line red (a sync sleep blocks, and #1113 always counted it
-// act); dropping read coverage turns the covered `view` line red.
+// act); dropping read coverage turns the covered `view` line red; without the
+// async_cap branch a cap-refused start is an act -- progress on a step where
+// the tool never ran -- and the three async-cap lines below are red.
 func TestClassifyStepCall(t *testing.T) {
 	t.Parallel()
 
@@ -50,6 +57,15 @@ func TestClassifyStepCall(t *testing.T) {
 			ToolCallID:     "c1",
 			Result:         fantasy.ToolResultOutputContentText{Text: "refused"},
 			ClientMetadata: `{"async":true,"progress_guard":{"refused":"wait"}}`,
+		}
+	}
+	capRefusal := func() fantasy.ToolResultContent {
+		return fantasy.ToolResultContent{
+			ToolCallID: "c1",
+			Result: fantasy.ToolResultOutputContentError{
+				Error: errors.New("Refused: this job was not started — this session already has 50 running async jobs (limit 50)."),
+			},
+			ClientMetadata: asyncCapTag,
 		}
 	}
 
@@ -96,6 +112,9 @@ func TestClassifyStepCall(t *testing.T) {
 		{"tool not found -> neutral", call("mcp_foo", `{}`), unknownTool(), nil, stepCallNeutral},
 		{"guard refusal -> refused", call("view", viewInput), guardRefusedResult(), full, stepCallRefused},
 		{"refusal outranks neutral tool", call("job_output", `{}`), guardRefusedResult(), nil, stepCallRefused},
+		{"async cap refusal -> refused", call("bash", `{"command":"go build ./..."}`), capRefusal(), nil, stepCallRefused},
+		{"async cap refusal of a wait command -> refused", call("bash", `{"command":"cd /tmp && sleep 600; echo w1"}`), capRefusal(), nil, stepCallRefused},
+		{"async cap refusal alongside a read -> refused (not read)", call("view", viewInput), capRefusal(), full, stepCallRefused},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
