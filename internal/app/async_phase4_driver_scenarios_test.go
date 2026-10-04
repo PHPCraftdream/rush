@@ -32,8 +32,12 @@ import (
 
 // driverScenarioHandlers builds W's provider (tool call, yield, and a counted
 // reaction) and C's provider (plain continuation, or the reaction when the
-// job notice is in the last user message).
-func driverScenarioHandlers(requestsW, requestsC *atomic.Int32) (w, c http.HandlerFunc) {
+// job notice is in the last user message). The returned release path
+// unblocks the job's sentinel-blocked command (recoveryJobCommand) at the
+// point in each scenario where the job is meant to finish; tests that never
+// start the job ignore it.
+func driverScenarioHandlers(t *testing.T, requestsW, requestsC *atomic.Int32) (w, c http.HandlerFunc, jobRelease string) {
+	blockedCommand, jobRelease := recoveryJobCommand(t)
 	w = func(rw http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
@@ -46,7 +50,7 @@ func driverScenarioHandlers(requestsW, requestsC *atomic.Int32) (w, c http.Handl
 		default:
 			admissionWriteSSE(rw, []string{
 				admissionSSEToolCall("start", "call-1", "bash",
-					`{"command":`+jsonString(recoveryBuildCommand())+`,"description":"long job"}`),
+					`{"command":`+jsonString(blockedCommand)+`,"description":"long job"}`),
 				admissionSSEStop("start", "tool_calls"),
 			})
 		}
@@ -61,7 +65,7 @@ func driverScenarioHandlers(requestsW, requestsC *atomic.Int32) (w, c http.Handl
 		}
 		admissionWriteSSE(rw, []string{admissionSSEText("cont", "continuing"), admissionSSEStop("cont", "stop")})
 	}
-	return w, c
+	return w, c, jobRelease
 }
 
 // startWebJob runs W's first turn: an async bash that outlives it.
@@ -97,14 +101,24 @@ func driverSource(t *testing.T, app *App) agent.ReactionDebtSource {
 // W submits a Drain and reacts (W's provider gets a third request).
 func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
-	handlerW, handlerC := driverScenarioHandlers(&requestsW, &requestsC)
+	handlerW, handlerC, jobRelease := driverScenarioHandlers(t, &requestsW, &requestsC)
 	appW, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
+	// Release the sentinel before the harness's own deferred Shutdowns run
+	// (t.Cleanup is LIFO): the job either exits on its own or is killed
+	// outright, never left blocking past the TempDir removal.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		appW.Shutdown()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	startWebJob(t, ctx, appW, sessionID)
 	require.EqualValues(t, 2, requestsW.Load(), "W's own turn: tool call + yield")
 	require.Equal(t, "running", jobRow(t, appW, sessionID).State, "the job must outlive W's turn")
+	// Let the sentinel-blocked job finish now; the completion is one poll
+	// iteration away instead of a wall-clock estimate.
+	releaseRecoveryJob(t, jobRelease)
 
 	resC, err := appC.RunNonInteractiveWithResult(ctx, io.Discard, "continue please", RunOverrides{
 		Origin: message.OriginCLI,
@@ -132,14 +146,22 @@ func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 // AND drop purgeDeadSessionDrivers from PurgeExpired -- W never reacts.
 func TestTwoAppScenarioF_DriverCrash_WebTakesOver(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
-	handlerW, handlerC := driverScenarioHandlers(&requestsW, &requestsC)
+	handlerW, handlerC, jobRelease := driverScenarioHandlers(t, &requestsW, &requestsC)
 	appW, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
+	// Release the sentinel before the harness's own deferred Shutdowns run
+	// (t.Cleanup is LIFO): the job either exits on its own or is killed
+	// outright, never left blocking past the TempDir removal.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		appW.Shutdown()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	startWebJob(t, ctx, appW, sessionID)
 	// C claims the session as its driver (the loop's first step) ...
 	require.NoError(t, driverSource(t, appC).ClaimExternalDriver(ctx, sessionID))
+	releaseRecoveryJob(t, jobRelease)
 
 	// ... the job finishes while C drives: W parks the wake instead of reacting.
 	require.Eventually(t, func() bool { return jobRow(t, appW, sessionID).State == "completed" },
@@ -168,8 +190,15 @@ func TestTwoAppScenarioF_DriverCrash_WebTakesOver(t *testing.T) {
 // liveness probe) -- W parks the wake and never reacts on the hint.
 func TestTwoAppScenarioF2_DriverCrashBeforeCompletion_WebReactsOnHint(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
-	handlerW, handlerC := driverScenarioHandlers(&requestsW, &requestsC)
+	handlerW, handlerC, jobRelease := driverScenarioHandlers(t, &requestsW, &requestsC)
 	appW, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
+	// Release the sentinel before the harness's own deferred Shutdowns run
+	// (t.Cleanup is LIFO): the job either exits on its own or is killed
+	// outright, never left blocking past the TempDir removal.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		appW.Shutdown()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -178,6 +207,7 @@ func TestTwoAppScenarioF2_DriverCrashBeforeCompletion_WebReactsOnHint(t *testing
 	require.Equal(t, "running", jobRow(t, appW, sessionID).State)
 
 	require.NoError(t, appC.asyncJobStore.SimulateCrashForTest())
+	releaseRecoveryJob(t, jobRelease)
 
 	require.Eventually(t, func() bool { return jobRow(t, appW, sessionID).Reacted == 1 },
 		30*time.Second, 50*time.Millisecond, "W must react on the completion hint: the driver is dead")
@@ -192,8 +222,15 @@ func TestTwoAppScenarioF2_DriverCrashBeforeCompletion_WebReactsOnHint(t *testing
 // Revert-check: ignore the claim error in the loop's onSessionResolved.
 func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
-	handlerW, handlerC := driverScenarioHandlers(&requestsW, &requestsC)
+	handlerW, handlerC, jobRelease := driverScenarioHandlers(t, &requestsW, &requestsC)
 	appDriver, appLate, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
+	// Release the sentinel before the harness's own deferred Shutdowns run
+	// (t.Cleanup is LIFO): the job either exits on its own or is killed
+	// outright, never left blocking past the TempDir removal.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		appDriver.Shutdown()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -231,7 +268,7 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 // Revert-check: put the durable release behind the persistentMode guard.
 func TestRunLoop_DurableDriverReleasedInNonPersistentMode(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
-	handlerW, handlerC := driverScenarioHandlers(&requestsW, &requestsC)
+	handlerW, handlerC, _ := driverScenarioHandlers(t, &requestsW, &requestsC)
 	_, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

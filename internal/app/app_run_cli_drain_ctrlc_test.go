@@ -22,8 +22,9 @@ import (
 )
 
 // TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason drives a
-// real single-App `rush run` loop: turn 1 starts a real (~3s) async bash job
-// and yields; once the job finishes, the loop's own empty-prompt Drain turn
+// real single-App `rush run` loop: turn 1 starts a sentinel-blocked async
+// bash job and yields; once the job is released and finishes, the loop's own
+// empty-prompt Drain turn
 // fires automatically (doc sec.3.4) and this test cancels the run's ctx
 // while THAT specific request is in flight (never during turn 1).
 //
@@ -34,6 +35,7 @@ import (
 func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testing.T) {
 	drainReqReached := make(chan struct{})
 	var drainOnce sync.Once
+	jobCommand, jobRelease := recoveryJobCommand(t)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, _, lastTool := lastTurnParts(body)
@@ -54,13 +56,20 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		default:
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(recoveryBuildCommand())+`,"description":"job 1"}`),
+				admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(jobCommand)+`,"description":"job 1"}`),
 				admissionSSEStop("start", "tool_calls"),
 			})
 		}
 	}
 
 	app, sessionID := newAdmissionRaceApp(t, handler)
+	// Release the sentinel before the harness's own deferred Shutdown runs
+	// (t.Cleanup is LIFO): the job either exits on its own or is killed
+	// outright, never left blocking past the TempDir removal.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		app.Shutdown()
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
@@ -72,6 +81,15 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 			Origin: message.OriginCLI,
 		}, true, RunModeJSON, sessionID, false)
 	}()
+
+	// The Drain turn only fires once the job finishes, so release the
+	// sentinel as soon as the job has been claimed: the completion is then
+	// deterministic (one poll iteration), not a wall-clock race.
+	require.Eventually(t, func() bool {
+		row, err := app.asyncJobStore.Get(context.Background(), sessionID, "call-1")
+		return err == nil && row.State == "running"
+	}, 10*time.Second, 20*time.Millisecond, "the job must be claimed and running before it is released")
+	releaseRecoveryJob(t, jobRelease)
 
 	select {
 	case <-drainReqReached:

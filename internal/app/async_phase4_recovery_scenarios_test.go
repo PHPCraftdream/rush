@@ -132,14 +132,33 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	return appA, appB, sessionID
 }
 
-// recoveryBuildCommand is shortBuildCommand's own cross-platform technique
-// (app_run_subagent_async_result_test.go): outlives the brief window between
-// the tool call resolving and this test's own crash-simulation call.
-func recoveryBuildCommand() string {
+// recoveryJobCommand returns a bash-tool command that stays "running" until
+// the test creates the file at the returned release path, plus that path.
+// The previous wall-clock command (ping -n 4 / sleep 3, ~3s) raced every
+// assertion about the job's state: under load the provider round-trips took
+// long enough that the row was already "completed" by the time the test
+// looked at it. The sentinel-blocked loop makes the state deterministic in
+// both directions: "running" until released, finished within one poll
+// iteration after release, so no orphan process can outlive the test and
+// hold its working directory open on Windows through the TempDir cleanup.
+// ping is the poll delay on Windows because the interpreter's Go coreutils
+// middleware provides no sleep there; the other CI operating systems poll
+// with sleep 0.1.
+func recoveryJobCommand(t *testing.T) (command, release string) {
+	t.Helper()
+	release = filepath.ToSlash(filepath.Join(t.TempDir(), "recovery-job-release"))
+	poll := "sleep 0.1"
 	if runtime.GOOS == "windows" {
-		return "ping -n 4 127.0.0.1"
+		poll = "ping -n 2 127.0.0.1"
 	}
-	return "sleep 3"
+	return `while [ ! -f "` + release + `" ]; do ` + poll + `; done`, release
+}
+
+// releaseRecoveryJob unblocks a recoveryJobCommand loop so the job finishes
+// deterministically instead of at a wall-clock estimate.
+func releaseRecoveryJob(t *testing.T, release string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(release, nil, 0o644))
 }
 
 // countBackgroundNotices returns how many of sessionID's persisted messages
@@ -169,6 +188,7 @@ func countBackgroundNotices(t *testing.T, app *App, sessionID, noticeKind string
 // 'interrupted' and deliver it in its OWN FIRST turn, then finish cleanly.
 func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
 	var requestsA, requestsB atomic.Int32
+	jobCommand, jobRelease := recoveryJobCommand(t)
 	handlerA := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, _, lastTool := lastTurnParts(body)
@@ -176,7 +196,7 @@ func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
 		case 1:
 			admissionWriteSSE(w, []string{
 				admissionSSEToolCall("start", "call-1", "bash",
-					`{"command":`+jsonString(recoveryBuildCommand())+`,"description":"long job"}`),
+					`{"command":`+jsonString(jobCommand)+`,"description":"long job"}`),
 				admissionSSEStop("start", "tool_calls"),
 			})
 		case 2:
@@ -204,6 +224,15 @@ func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
 	}
 
 	appA, appB, sessionID := newRecoveryTwoAppHarness(t, handlerA, handlerB)
+	// Registered AFTER the harness's own cleanups, so it runs BEFORE them
+	// (and before the TempDir removals): the release lets the blocked loop
+	// exit on its own, and the idempotent Shutdown kills it outright if the
+	// release somehow does not take effect -- either way the interpreter and
+	// its poll child are gone before their working directory is removed.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, jobRelease)
+		appA.Shutdown()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -309,6 +338,16 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 // 'running'; B's restart delivers exactly one "interrupted" per task.
 func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	var requestsA, requestsB atomic.Int32
+	job1, release1 := recoveryJobCommand(t)
+	job2, release2 := recoveryJobCommand(t)
+	// The body's own appA.Shutdown() below is what kills both blocked
+	// loops (CancelAll cancels each job's executor context and the
+	// interpreter kill is synchronous); releasing the sentinels here as
+	// well is belt and braces for any failure path that skips Shutdown.
+	t.Cleanup(func() {
+		releaseRecoveryJob(t, release1)
+		releaseRecoveryJob(t, release2)
+	})
 	bothStarted := make(chan struct{})
 	handlerA := func(w http.ResponseWriter, r *http.Request) {
 		// Two tool calls are dispatched across two sequential steps of the
@@ -321,13 +360,13 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 		switch requestsA.Add(1) {
 		case 1:
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("start1", "call-1", "bash", `{"command":`+jsonString(recoveryBuildCommand())+`,"description":"job 1"}`),
+				admissionSSEToolCall("start1", "call-1", "bash", `{"command":`+jsonString(job1)+`,"description":"job 1"}`),
 				admissionSSEStop("start1", "tool_calls"),
 			})
 		case 2:
 			require.Contains(t, lastTool, "Async bash job call-1 started")
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("start2", "call-2", "bash", `{"command":`+jsonString(recoveryBuildCommand())+`,"description":"job 2"}`),
+				admissionSSEToolCall("start2", "call-2", "bash", `{"command":`+jsonString(job2)+`,"description":"job 2"}`),
 				admissionSSEStop("start2", "tool_calls"),
 			})
 		case 3:
@@ -410,16 +449,13 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "running", row2.State)
 
-	// The Never window must OUTLAST the jobs' own real duration
-	// (recoveryBuildCommand's ~3s sleep/ping): the original 300ms window
-	// could never distinguish "CancelAll genuinely killed the subprocess"
-	// from "the job simply hasn't finished naturally yet" -- only a window
-	// past the job's natural completion proves the KILL, not the clock, is
-	// what keeps A silent (and that the rows above stayed 'running' because
-	// the executor was actually cancelled, not because we didn't wait long
-	// enough to see it finish and transition on its own).
+	// The sentinel-blocked jobs would keep the rows "running" forever if
+	// only the clock passed; any request reaching A's provider in this
+	// window would therefore have to come from a botched cancellation, not
+	// from a job finishing on its own -- the clock can no longer explain A
+	// staying silent.
 	require.Never(t, func() bool { return requestsA.Load() > requestsAtCancel }, 5*time.Second, 50*time.Millisecond,
-		"no request may reach A's provider after a real CancelAll, even once the killed job's own natural duration has fully elapsed")
+		"no request may reach A's provider after a real CancelAll")
 
 	ctxB, cancelB := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelB()
@@ -457,6 +493,7 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 // result").
 func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *testing.T) {
 	var requestsA, requestsB atomic.Int32
+	jobCommand, jobRelease := recoveryJobCommand(t)
 	toolStarted := make(chan struct{})
 	var toolStartedOnce sync.Once
 	handlerA := func(w http.ResponseWriter, r *http.Request) {
@@ -482,7 +519,7 @@ func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *te
 			toolStartedOnce.Do(func() { close(toolStarted) })
 		default:
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(recoveryBuildCommand())+`,"description":"job 1"}`),
+				admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(jobCommand)+`,"description":"job 1"}`),
 				admissionSSEStop("start", "tool_calls"),
 			})
 		}
@@ -494,12 +531,13 @@ func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *te
 
 	appA, appB, sessionID := newRecoveryTwoAppHarness(t, handlerA, handlerB)
 
-	// Ctrl-C A's OWN loop before the (real, ~3s) async job finishes -- the
-	// job's executor is NOT tied to ctxA (doc sec.3.4/3.7: async work
-	// survives the turn/loop that started it) and keeps running for real in
-	// the background, unattended, exactly like scenario C's own technique.
-	// This is what opens a genuine race window: nobody (not even A) reacts
-	// to the job's own eventual completion until this test says so.
+	// Ctrl-C A's OWN loop while the (sentinel-blocked) async job is still
+	// running -- the job's executor is NOT tied to ctxA (doc sec.3.4/3.7:
+	// async work survives the turn/loop that started it) and keeps running
+	// for real in the background, unattended, exactly like scenario C's own
+	// technique. This is what opens a genuine race window: nobody (not even
+	// A) reacts to the job's own eventual completion until this test says
+	// so.
 	ctxA, cancelA := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	var runErr error
@@ -528,9 +566,11 @@ func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *te
 	}
 	require.Error(t, runErr)
 
-	// Wait for the job to finish NATURALLY (a real subprocess, unattended --
-	// A's own loop already exited) -- open, unreacted debt nobody is
-	// watching yet.
+	// Finish the job on purpose (release the sentinel-blocked loop; the
+	// executor is unattended -- A's own loop already exited) -- open,
+	// unreacted debt nobody is watching yet. The completion itself is then
+	// deterministic: one poll iteration after the release at most.
+	releaseRecoveryJob(t, jobRelease)
 	require.Eventually(t, func() bool {
 		row, getErr := appA.asyncJobStore.Get(context.Background(), sessionID, "call-1")
 		return getErr == nil && row.State == "completed" && row.Wake != 0 && row.Reacted == 0
