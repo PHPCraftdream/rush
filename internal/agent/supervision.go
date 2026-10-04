@@ -314,7 +314,21 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	// pushDeadlineOnTurnEnd (called from afterTurn) reschedules once that turn ends,
 	// using the SAME (unchanged) interval -- this fire is simply skipped,
 	// not counted as a no-progress tick.
-	if l.coord.agentFor(rootSessionID).IsSessionBusy(rootSessionID) {
+	//
+	// agentFor can be nil without any race: it falls back to the
+	// coordinator's currentAgent, and a coordinator built as a bare struct
+	// literal (every ledger-level fixture, anything that arms a deadline
+	// before an agent is wired) has none. IsSessionBusy on a nil interface
+	// panics, and this callback runs on the timeout service's goroutine --
+	// a panic here kills the whole process (observed: the full internal/
+	// agent run died here from a fire armed by an earlier test). Nobody can
+	// answer the busy question, so this fire is a no-op exactly like a
+	// stale generation: the countdown stops until something re-arms it.
+	agent := l.coord.agentFor(rootSessionID)
+	if agent == nil {
+		return
+	}
+	if agent.IsSessionBusy(rootSessionID) {
 		return
 	}
 

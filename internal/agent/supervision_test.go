@@ -160,6 +160,45 @@ func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
 	require.Zero(t, st.tickCount, "a busy skip must not count as a no-progress tick")
 }
 
+// TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic: handleSupervisionDeadline
+// runs on the timeout service's goroutine, so a nil dereference there kills the
+// whole process — and the full internal/agent run died exactly this way
+// (supervision.go's agentFor call, a fire armed by an earlier test whose
+// coordinator was a bare struct literal). agentFor falls back to the
+// coordinator's currentAgent, and a fixture coordinator has none: the fire
+// must be a no-op — no tick, no check-in notice, state untouched — never a
+// dereference.
+//
+// Revert-check performed: removed the agent==nil guard — this test CRASHED the
+// test binary with a nil pointer dereference at the agentFor call. Restored
+// the guard; re-ran, passed.
+func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
+	l, coord := newSupervisionTestLedger(t)
+	require.Nil(t, coord.currentAgent,
+		"precondition: the fixture coordinator has no agent — exactly the crash shape")
+
+	startOpenJob(t, l, "agentless-root", "sup-no-agent")
+	l.noteWorkStarted(context.Background(), "agentless-root")
+	l.supervision.mu.Lock()
+	st, armed := l.supervision.byRoot["agentless-root"]
+	var gen uint64
+	if st != nil {
+		gen = st.generation
+	}
+	l.supervision.mu.Unlock()
+	require.True(t, armed, "precondition: the root was armed for supervision")
+
+	l.handleSupervisionDeadline("agentless-root", gen)
+
+	l.supervision.mu.Lock()
+	_, stillArmed := l.supervision.byRoot["agentless-root"]
+	l.supervision.mu.Unlock()
+	require.True(t, stillArmed, "a fire with no agent to ask must not mutate the state")
+	notices, err := l.store.ListSessionNotices(t.Context(), "agentless-root")
+	require.NoError(t, err)
+	require.Empty(t, notices, "no check-in notice may be persisted without an agent")
+}
+
 // TestSupervision_TicksAfterSilenceWithOpenWork: the real timer goroutine,
 // armed with a short deadline, wakes the root through coordinator.wakeSession
 // with NoticeKind "supervision" and a summary naming the open job.
