@@ -15,6 +15,16 @@ import (
 	"time"
 )
 
+// ErrForeignWorkspace is the WS-1 refusal (#1142 step C,
+// docs/plans/2026-10-01-shared-data-dir.md sec.1): the session a caller wants
+// to drive belongs to a different workspace, so this process must not run it.
+// The run-queue pump translates it into a nack WITHOUT an attempt penalty
+// (the row is not broken, it is simply not ours), and the run/session guard
+// turns it into an operator-facing refusal instead of an "already in use".
+// Exported here (rather than in the agent package that adds the guard) so the
+// storage layer can classify the same condition without an import cycle.
+var ErrForeignWorkspace = errors.New("session belongs to a different workspace")
+
 // cancelCause identifies which of the two independent mechanisms inside
 // executeEntrySync cancelled execCtx and set leaseLost: the deadline-based
 // watchdog goroutine, or the renewal loop's own `!ok` branch (a
@@ -710,6 +720,25 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 		}
 		slog.Warn("run_queue_pump: entry terminal failed (already attempted)", "id", leased.ID, "session_id", leased.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, err
+	}
+
+	// ErrForeignWorkspace (#1142 step C, WS-1): the row's session belongs to a
+	// DIFFERENT workspace, so this process must not drive it (the guard in
+	// agent.runOwned, or the coordinator's own refusal, returned it here).
+	// The row is not broken and its owner process will pick it up as soon as
+	// that process ticks, so it must never count toward
+	// RunQueueMaxAttempts — an ordinary nack would grow attempts every tick
+	// and eventually dead-letter accepted work that was never ours to run,
+	// and a terminal fail would delete it outright. Same no-penalty release
+	// as SessionLockBusyError below, for the same "this is somebody else's
+	// normal state, not this call's failure" reason.
+	if errors.Is(err, ErrForeignWorkspace) {
+		if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(dbCtx, leased.ID, p.cfg.PumpInstanceID, err.Error()); nackErr != nil {
+			slog.Error("run_queue_pump: no-penalty nack failed", "id", leased.ID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
+		}
+		slog.Debug("run_queue_pump: entry belongs to a foreign workspace, released without attempt penalty for its owner", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		ids, terminalID := resultIdentity()
 		return ids, terminalID, err
 	}

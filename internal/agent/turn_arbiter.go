@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,20 +48,35 @@ const (
 // attempt.
 func turnRetryAfterFailure() time.Duration { return drainRetryAfterFailure() }
 
+// foreignWorkspaceReason is the arbiter's WS-1 verdict text (#1142 step C,
+// docs/plans/2026-10-01-shared-data-dir.md §1 "drain/reaction"). It is
+// deliberately NOT one of the paced reasons and NOT "another process drives
+// the session": a session this process has no claim on is not worth a
+// recheck, because the process that OWNS it reacts to that debt in its own
+// checkout -- drainVerdictOf must therefore leave it deferred without one.
+const foreignWorkspaceReason = "session belongs to another workspace"
+
 // SessionFacts is the in-process (coordinator + workLedger) half of the
 // snapshot.
 type SessionFacts struct {
 	ExternallyDrivenSelf bool
-	ForeignDriverLive    bool
-	Held                 bool
-	Suspended            bool
-	ChainLinks           int
-	ChainOwnsAllDebt     bool
-	ChainNoticed         bool
-	RunningDelegation    bool
-	DurableChild         bool
-	AutonomyEnabled      bool
-	AutoResumes          int
+	// ForeignWorkspace is the WS-1 refusal (#1142 step C): the session this
+	// decision is about belongs to a DIFFERENT workspace, so this process may
+	// not drive it at all -- neither the launch side may start a turn for it,
+	// nor the accounting side may count, pace or settle anything on it.
+	// Stamped from the run/turn error that carried the refusal; see
+	// readTurnFacts and foreignWorkspaceReason.
+	ForeignWorkspace  bool
+	ForeignDriverLive bool
+	Held              bool
+	Suspended         bool
+	ChainLinks        int
+	ChainOwnsAllDebt  bool
+	ChainNoticed      bool
+	RunningDelegation bool
+	DurableChild      bool
+	AutonomyEnabled   bool
+	AutoResumes       int
 }
 
 // DebtFacts is the DB half of the snapshot. OverCapRows counts the debt's
@@ -195,14 +211,24 @@ func gateShut(f TurnFacts) (v Verdict, ok bool) {
 }
 
 // decide is THE pure launch decision (design sec.3, with the orchestrator's
-// corrected order, sec.9.1): rules 1-5 and 7, then the gate (8-10) for every
-// session including a child under a running delegation, then 11-12, which a
-// running delegation skips, then 13. No clocks (Now is input), no I/O, no
-// global state. The rule order is contract: swapping 5/6 or 6/8 must turn
+// corrected order, sec.9.1): WS-1, then rules 1-5 and 7, then the gate (8-10)
+// for every session including a child under a running delegation, then 11-12,
+// which a running delegation skips, then 13. No clocks (Now is input), no I/O,
+// no global state. The rule order is contract: swapping 5/6 or 6/8 must turn
 // the table test red.
 func decide(f TurnFacts) Verdict {
 	if f.Site == siteAccount {
 		return decideAccount(f)
+	}
+	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+	// "drain/reaction"): the session belongs to another workspace, so its
+	// debt is not this process's to react to -- the owning checkout runs the
+	// reaction there. Checked before every other rule: ownership is the
+	// precondition for having an opinion about the debt at all. No pacing (the
+	// gate is ours, the session is not) and no recheck (the reason is not
+	// transient), which is what distinguishes it from rule 2.
+	if f.Session.ForeignWorkspace {
+		return Verdict{Kind: VDefer, Reason: foreignWorkspaceReason}
 	}
 	// 1: no pending-inclusive debt -- nothing to launch for.
 	if !f.Debt.PendingIncl {
@@ -271,6 +297,13 @@ func noSlotSite(s LaunchSite) bool {
 // streak and gate writes themselves stay with the accounting (they are the
 // state, not the decision).
 func decideAccount(f TurnFacts) Verdict {
+	// WS-1 (#1142 step C): a leg that was refused because the session belongs
+	// to another workspace is not evidence about the debt -- the debt is
+	// answered in its owner's checkout. It is also not a "launch refusal"
+	// worth pacing our gate for, so it never reaches A1.
+	if f.Session.ForeignWorkspace {
+		return Verdict{Kind: VDefer, Reason: foreignWorkspaceReason}
+	}
 	// A1: the attempt never reached the provider. A cancelled preamble is
 	// nothing at all; a refusal paces the launch (not counted, the debt
 	// stays) -- for a session this process's own rush run loop drives, at
@@ -337,8 +370,20 @@ func decideAccount(f TurnFacts) Verdict {
 // the ONE PendingInclusiveDebtRows read: the debt's existence, summary,
 // kinds, over-cap matching and the chain guard's claims all come from it.
 // An unreadable input is an error: the caller fails closed.
-func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite) (TurnFacts, error) {
+//
+// runErrs is optional and carries the caller's knowledge of this session's
+// run/turn leg, which the DB half below cannot see: when a leg was refused
+// because the session belongs to another workspace (WS-1, #1142 step C), the
+// ForeignWorkspace fact is stamped into the snapshot. Callers with no leg
+// error in hand (every launch site, every existing test) pass none and get
+// exactly the pre-#1142 snapshot.
+func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
 	f := TurnFacts{Now: time.Now(), Site: site, Snapshot: session.DebtSnapshot{}}
+	for _, err := range runErrs {
+		if errors.Is(err, session.ErrForeignWorkspace) {
+			f.Session.ForeignWorkspace = true
+		}
+	}
 	l := c.asyncJobs
 	if l == nil || l.store == nil {
 		return f, nil

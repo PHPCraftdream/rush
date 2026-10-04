@@ -1,8 +1,9 @@
 // Hand-written run-cost queries (#1130). sqlc's query editor cannot compile
 // a two-column recursive CTE (the ancestor must be carried through the
-// recursive member), so these four read queries — subtree-activity ordering
-// and the subtree-budget stats aggregates — live here, against the same
-// schema the migrations define. Everything else stays sqlc-generated.
+// recursive member), so these four read queries — GetLastSession
+// (`--continue`, WS-1 filtered, #1142 step C), subtree-activity ordering and
+// the subtree-budget stats aggregates — live here, against the same schema
+// the migrations define. Everything else stays sqlc-generated.
 
 package db
 
@@ -20,26 +21,25 @@ func (q *Queries) dbtx() DBTX {
 	return q.db
 }
 
-const getLastSessionSubtree = `
-WITH RECURSIVE sub(node, anc) AS (
-    SELECT s.id, s.id FROM sessions s WHERE s.parent_session_id IS NULL
-    UNION
-    SELECT c.id, anc FROM sessions c JOIN sub ON c.cost_parent_id = sub.node
-),
-activity(anc, active) AS (
-    SELECT sub.anc, MAX(n.updated_at) FROM sub JOIN sessions n ON n.id = sub.node GROUP BY sub.anc
-)
-SELECT s.id, s.parent_session_id, s.title, s.message_count, s.prompt_tokens, s.completion_tokens, s.cost, s.updated_at, s.created_at, s.summary_message_id, s.todos, s.smart_model_provider, s.smart_model_id, s.fast_model_provider, s.fast_model_id, s.system_prompt, s.yolo_enabled, s.smart_model_reasoning_effort, s.fast_model_reasoning_effort, s.cancel_requested, s.ended_reason, s.budget_max_cost, s.budget_max_tokens, s.budget_timeout_sec, s.deleted_todos, s.parent_cost_accounted, s.worker_model_provider, s.worker_model_id, s.worker_model_reasoning_effort, s.reviewer_model_provider, s.reviewer_model_id, s.reviewer_model_reasoning_effort, s.origin, s.cost_self, s.cost_base, s.cost_parent_id
-FROM sessions s JOIN activity a ON a.anc = s.id
-ORDER BY a.active DESC
-LIMIT 1`
-
 // GetLastSession returns the most recently ACTIVE top-level session
 // (`rush run --continue`): activity is max(updated_at) over the root's
 // delegation subtree, so a busy child keeps its root the continuation
 // target without ever writing the parent's updated_at.
-func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
-	row := q.dbtx().QueryRowContext(ctx, getLastSessionSubtree)
+//
+// WS-1 ownership (#1142 step C): a candidate root is only visible to this
+// process when its workspace_root equals the caller's workspace, or when it
+// is a legacy unbound row (”) and the caller is a home process (home = 1) --
+// the same predicate as session.Owns in Go; keep the two in sync. The filter
+// is applied where the roots are enumerated; the recursive member then only
+// ever descends inside an already-owned root's delegation subtree (children
+// are created by the process that owns the root).
+//
+// Hand-written rather than sqlc: sqlc's SQLite parser cannot compile the
+// two-column recursive CTE that carries the root ancestor through the
+// recursive member ("column reference anc not found"), which is the whole
+// reason this query lives here instead of in sql/sessions.sql.
+func (q *Queries) GetLastSession(ctx context.Context, workspaceRoot string, home int64) (Session, error) {
+	row := q.dbtx().QueryRowContext(ctx, getLastSessionSubtree, workspaceRoot, home)
 	var i Session
 	err := row.Scan(
 		&i.ID,
@@ -78,9 +78,27 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 		&i.CostSelf,
 		&i.CostBase,
 		&i.CostParentID,
+		&i.WorkspaceRoot,
+		&i.GitBranch,
 	)
 	return i, err
 }
+
+const getLastSessionSubtree = `
+WITH RECURSIVE sub(node, anc) AS (
+    SELECT s.id, s.id FROM sessions s
+    WHERE s.parent_session_id IS NULL
+      AND (s.workspace_root = ? OR (s.workspace_root = '' AND ? = 1))
+    UNION
+    SELECT c.id, anc FROM sessions c JOIN sub ON c.cost_parent_id = sub.node
+),
+activity(anc, active) AS (
+    SELECT sub.anc, MAX(n.updated_at) FROM sub JOIN sessions n ON n.id = sub.node GROUP BY sub.anc
+)
+SELECT s.id, s.parent_session_id, s.title, s.message_count, s.prompt_tokens, s.completion_tokens, s.cost, s.updated_at, s.created_at, s.summary_message_id, s.todos, s.smart_model_provider, s.smart_model_id, s.fast_model_provider, s.fast_model_id, s.system_prompt, s.yolo_enabled, s.smart_model_reasoning_effort, s.fast_model_reasoning_effort, s.cancel_requested, s.ended_reason, s.budget_max_cost, s.budget_max_tokens, s.budget_timeout_sec, s.deleted_todos, s.parent_cost_accounted, s.worker_model_provider, s.worker_model_id, s.worker_model_reasoning_effort, s.reviewer_model_provider, s.reviewer_model_id, s.reviewer_model_reasoning_effort, s.origin, s.cost_self, s.cost_base, s.cost_parent_id, s.workspace_root, s.git_branch
+FROM sessions s JOIN activity a ON a.anc = s.id
+ORDER BY a.active DESC
+LIMIT 1`
 
 // The subtree-budget CTE shared by the stats aggregates: per ROOT, the
 // budget = max(subtree spent - cost_base, 0); the UNION terminates a

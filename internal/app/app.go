@@ -130,6 +130,27 @@ type App struct {
 	// shutdown policy and diagnostics.
 	dataDir string
 
+	// workspaceRoot is this process's workspace (#1142 step C, WS-1): the
+	// canonical checkout root of the ConfigStore's working directory, or ""
+	// when the working directory is outside any git working tree. It is the
+	// one immutable input to every WS-1 decision this package makes: the
+	// workspace the session service binds new sessions to, and the workspace
+	// whose sessions resolveSession and the run paths may drive. Read-only
+	// once New has filled it in. It says NOTHING about home/not-home: that
+	// is the separate home field below.
+	workspaceRoot string
+
+	// home is the explicit "this process owns its own data directory" flag
+	// (WS-1, #1142 step C) -- the one input that decides whether legacy
+	// unbound ('') rows are drivable here. It comes from the single source
+	// config.WorkspaceHome() (true until SD-D #1143), NEVER from the
+	// workspace root: a git checkout has a non-empty root and is still a
+	// home process today, so deriving home from the root would refuse every
+	// pre-existing legacy session to --continue, the pump and the wake
+	// scheduler. Read-only once New has filled it in; ProcessHome exposes it
+	// to the server package.
+	home bool
+
 	// dbConns are generation-safe release tokens for pooled connections
 	// acquired during startup. Production-created Apps use these tokens.
 	dbConns []*sql.DB
@@ -258,6 +279,21 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// open for any reason, we degrade to today's single-connection
 	// behavior (qRead/readDB alias the writer) rather than failing
 	// startup over a purely load-shedding optimization.
+	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1): this
+	// process's workspace is the canonical checkout root of the ConfigStore's
+	// working directory -- deliberately ConfigStore.WorkingDir() and not
+	// os.Getwd(), which differ for an SDK host that built its config against
+	// another directory. Home/not-home is a SEPARATE flag from the same
+	// single source, config.WorkspaceHome() (true until SD-D #1143 -- every
+	// process owns its data directory, so every pre-existing legacy row
+	// stays drivable); it is handed alongside the root to the session
+	// service and the wake-schedule store, and the agent guard and the
+	// server read the same source, so no WS-1 decision in this process is
+	// taken against a different notion of either value.
+	workingDir := store.WorkingDir()
+	workspaceRoot := config.WorkspaceRoot(workingDir)
+	home := config.WorkspaceHome()
+
 	var qRead *db.Queries
 	var readConn *sql.DB
 	dataDir := cfg.Options.DataDirectory
@@ -271,7 +307,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		}
 	}
 
-	sessions := session.NewServiceWithReader(q, conn, qRead, readConn)
+	sessions := session.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
 	messages := message.NewServiceWithReader(q, qRead)
 	files := history.NewService(q, conn)
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
@@ -291,6 +327,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		DB:      func() *sql.DB { return conn },
 		readDB:  readConn,
 		dataDir: dataDir,
+
+		workspaceRoot: workspaceRoot,
+		home:          home,
 
 		globalCtx: ctx,
 
@@ -318,7 +357,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		// pool. Construction does no I/O; the worker is started by
 		// InitCoderAgent's SetWakeScheduleStore (a config-only App never
 		// needs the timer).
-		app.wakeScheduleStore = session.NewWakeScheduleStore(conn)
+		app.wakeScheduleStore = session.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
 		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
 		// SAME read-only pool session/message already share above, so
 		// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/

@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -322,6 +323,82 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	return a.runOwned(ctx, runCtx, call, epoch, runCancel)
 }
 
+// processWorkspace is this process's WS-1 workspace pair (#1142 step C): the
+// canonical checkout root of the agent's working directory, derived exactly
+// as app.New derives the workspace of the session service this coordinator
+// shares with it, and the SEPARATE home flag from the single source
+// config.WorkspaceHome() -- never derived from the root. A checkout inside
+// git has a non-empty root and is still a home process today (every process
+// owns its data directory until SD-D #1143), so it must keep driving the
+// legacy unbound (”) rows; deriving home from the root would refuse the
+// whole pre-WS-1 history. An agent with no config (bare test fixtures) or
+// with an undetermined working directory keeps the empty root; wsHomeOverride
+// lets a test model the shared-from-linked future (home=false) explicitly.
+func (a *sessionAgent) processWorkspace() (workspaceRoot string, home bool) {
+	if a == nil {
+		return "", config.WorkspaceHome()
+	}
+	home = config.WorkspaceHome()
+	if a.wsHomeOverride != nil {
+		home = *a.wsHomeOverride
+	}
+	if a.config == nil || a.config.WorkingDir() == "" {
+		// An explicitly empty working directory must NOT fall through to the
+		// process's cwd: under `go test` that is the package directory inside
+		// the rush checkout, which would silently give every fixture a linked
+		// worktree's workspace rather than the empty one it has always had.
+		return "", home
+	}
+	return config.WorkspaceRoot(a.config.WorkingDir()), home
+}
+
+// refuseForeignSession applies the WS-1 ownership check to one session id
+// (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+// "любой ход (страховка)"): nil when this process may drive it, otherwise the
+// typed refusal agent.ForeignWorkspaceError builds.
+//
+// A session that cannot be READ is deliberately not a refusal: a deleted or
+// unreadable row is not a workspace question, and the preamble fails on it on
+// its own exactly as it did before WS-1 existed. The same applies to a read
+// that expired -- the guard steps aside and lets the preamble's own (bounded)
+// Get surface the failure.
+//
+// ctx is bounded by the SAME budget the preamble's own sessions.Get uses, so
+// this guard's read can never be the unbounded DB call a wedged single-writer
+// connection hangs on (task #193): no stream watchdog exists yet at this point
+// in Run(), and adding a second, unbounded read in front of the bounded one
+// reintroduced that hang verbatim.
+func (a *sessionAgent) refuseForeignSession(ctx context.Context, sessionID string) error {
+	if a.sessions == nil || sessionID == "" {
+		return nil
+	}
+	// Bounded by the same budget the preamble's own Get uses -- but ONLY when
+	// one was configured for this agent (a.sessionPreambleMaxDuration > 0,
+	// e.g. the wedge regression test). Two tests classify a Get as "the turn
+	// preamble's" exactly by the presence of a ctx deadline
+	// (run_cancel_between_turns_test.go, run_preamble_interrupt_test.go), so
+	// an unconfigured agent's guard read must stay deadline-free or those
+	// fakes block on the guard instead of the preamble. An unreadable,
+	// cancelled or expired read is all the same to the guard: not a refusal,
+	// and the preamble surfaces the failure under its own budget.
+	if a.sessionPreambleMaxDuration > 0 {
+		var guardCancel context.CancelFunc
+		ctx, guardCancel = context.WithTimeout(ctx, a.sessionPreambleMaxDuration)
+		defer guardCancel()
+	}
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		// Unreadable, cancelled or timed out: not a workspace question. The
+		// preamble below re-reads the row under its own budget and reports.
+		return nil
+	}
+	root, home := a.processWorkspace()
+	if session.Owns(sess.WorkspaceRoot, root, home) {
+		return nil
+	}
+	return ForeignWorkspaceError(sess)
+}
+
 // runOwned is Run's body once ownership (epoch) and the dispatcher cancel
 // (runCancel) are already established — shared by Run (which claims them
 // itself via tryReserveSession) and RunWithReservedOwnership (which reuses
@@ -438,6 +515,41 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				lk.Release()
 			}
 		}()
+	}
+
+	// WS-1 backstop (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+	// "любой ход (страховка)"): the session must belong to THIS process's
+	// workspace. resolveSession already applies this check on the CLI path,
+	// but a turn can also be reached by the run-queue pump (a durable row
+	// another process enqueued), a drain, a wake, a web inject or an
+	// interrupt-and-send -- and none of those go through resolveSession.
+	//
+	// Deliberately AFTER the inter-process lock, not before it: the ordering
+	// tests are stronger than the plan's wording ("guard before
+	// TryAcquireSessionLockWithOptions") and pin Run's observable shape -- the
+	// lock first, then the very next DB call being the preamble's own
+	// a.sessions.Get (run_lock_test.go:197), and that same Get bounded by
+	// sessionPreambleMaxDuration (run_preamble_timeout_test.go:74). A guard
+	// that read the row earlier would break both at once, so its own read sits
+	// here and is bounded by the very same budget.
+	//
+	// Nothing is given up by sitting here: the refusal still lands before the
+	// admission-time setup below, before any assistant message and before any
+	// session write, and it takes the lock down the very same path a turn does
+	// (lk.Release, then the deferred abandonOwnershipWithHandoff) -- so no lock
+	// file survives the refusal for the real owner to trip over, only the
+	// milliseconds Run needed to read one row.
+	if err := a.refuseForeignSession(ctx, call.SessionID); err != nil {
+		slog.Warn(
+			"agent.Run: rejected — session belongs to another workspace",
+			"session_id", call.SessionID,
+			"err", err,
+		)
+		// The refusal is noted like the lock-busy one above, so the gate does
+		// not immediately relaunch a drain the process has no claim on; the
+		// arbiter then classifies it as VDefer without a recheck.
+		a.noteRefusal(call.SessionID, err)
+		return nil, notAttempted(call, err)
 	}
 
 	// Admission-time session setup (#1101): the caller's preparatory writes

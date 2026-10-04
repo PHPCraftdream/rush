@@ -29,7 +29,9 @@ INSERT INTO sessions (
     fast_model_id,
     yolo_enabled,
     origin,
-    cost_parent_id
+    cost_parent_id,
+    workspace_root,
+    git_branch
 ) VALUES (
     ?,
     ?,
@@ -47,8 +49,10 @@ INSERT INTO sessions (
     ?,
     0,
     ?,
+    ?,
+    ?,
     ?
-) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 `
 
 type CreateSessionParams struct {
@@ -65,8 +69,14 @@ type CreateSessionParams struct {
 	FastModelID        sql.NullString `json:"fast_model_id"`
 	Origin             string         `json:"origin"`
 	CostParentID       string         `json:"cost_parent_id"`
+	WorkspaceRoot      string         `json:"workspace_root"`
+	GitBranch          string         `json:"git_branch"`
 }
 
+// The workspace_root/git_branch values are supplied by the session service
+// (createWithOrigin, #1142 step C): the Go layer is the single fill point, so
+// every creation path (Create*, task, title, fork) binds the row to the
+// workspace of the process that created it.
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.createSessionStmt, createSession,
 		arg.ID,
@@ -82,6 +92,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.FastModelID,
 		arg.Origin,
 		arg.CostParentID,
+		arg.WorkspaceRoot,
+		arg.GitBranch,
 	)
 	var i Session
 	err := row.Scan(
@@ -121,6 +133,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CostSelf,
 		&i.CostBase,
 		&i.CostParentID,
+		&i.WorkspaceRoot,
+		&i.GitBranch,
 	)
 	return i, err
 }
@@ -136,7 +150,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -181,6 +195,8 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.CostSelf,
 		&i.CostBase,
 		&i.CostParentID,
+		&i.WorkspaceRoot,
+		&i.GitBranch,
 	)
 	return i, err
 }
@@ -263,7 +279,7 @@ SET
     cost_self = cost_self + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 `
 
 type IncrementSessionCostParams struct {
@@ -317,6 +333,8 @@ func (q *Queries) IncrementSessionCost(ctx context.Context, arg IncrementSession
 		&i.CostSelf,
 		&i.CostBase,
 		&i.CostParentID,
+		&i.WorkspaceRoot,
+		&i.GitBranch,
 	)
 	return i, err
 }
@@ -366,7 +384,7 @@ func (q *Queries) IncrementSessionCostIfUnderMax(ctx context.Context, arg Increm
 }
 
 const listAllSessions = `-- name: ListAllSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 FROM sessions
 ORDER BY updated_at DESC
 `
@@ -419,6 +437,8 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]Session, error) {
 			&i.CostSelf,
 			&i.CostBase,
 			&i.CostParentID,
+			&i.WorkspaceRoot,
+			&i.GitBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -479,7 +499,7 @@ func (q *Queries) ListSessionEndReasonsForIDs(ctx context.Context, sessionIds []
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 FROM sessions
 WHERE parent_session_id is NULL
 ORDER BY updated_at DESC
@@ -531,6 +551,8 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.CostSelf,
 			&i.CostBase,
 			&i.CostParentID,
+			&i.WorkspaceRoot,
+			&i.GitBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -546,7 +568,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 const listSubSessions = `-- name: ListSubSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, smart_model_provider, smart_model_id, fast_model_provider, fast_model_id, system_prompt, yolo_enabled, smart_model_reasoning_effort, fast_model_reasoning_effort, cancel_requested, ended_reason, budget_max_cost, budget_max_tokens, budget_timeout_sec, deleted_todos, parent_cost_accounted, worker_model_provider, worker_model_id, worker_model_reasoning_effort, reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort, origin, cost_self, cost_base, cost_parent_id, workspace_root, git_branch
 FROM sessions
 WHERE parent_session_id = ?
 ORDER BY created_at ASC
@@ -601,6 +623,8 @@ func (q *Queries) ListSubSessions(ctx context.Context, parentSessionID sql.NullS
 			&i.CostSelf,
 			&i.CostBase,
 			&i.CostParentID,
+			&i.WorkspaceRoot,
+			&i.GitBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -651,6 +675,7 @@ func (q *Queries) SetParentCostAccounted(ctx context.Context, arg SetParentCostA
 }
 
 const updateSessionModels = `-- name: UpdateSessionModels :exec
+
 UPDATE sessions
 SET
     smart_model_provider = COALESCE(?1, smart_model_provider),
@@ -669,6 +694,9 @@ type UpdateSessionModelsParams struct {
 	ID                 string         `json:"id"`
 }
 
+// GetLastSession lives in run_cost_queries.go (hand-written): sqlc's SQLite
+// parser cannot compile the two-column recursive CTE that carries the root
+// ancestor through the recursive member.
 // Partial update: a NULL arg for a slot's provider/id pair leaves that slot
 // untouched (COALESCE falls back to the current column value); a non-NULL
 // arg (including an explicit empty string) overwrites it. This lets callers

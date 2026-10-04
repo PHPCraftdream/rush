@@ -47,6 +47,22 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	slog.Info("ws: handleRerunMessage", "sessionID", sessionID, "messageID", p.MessageID,
 		"contentPreview", text[:min(len(text), 80)])
 
+	// WS-1 ownership refusal (#1142 step C, §1 "web: rerun"): a session this
+	// process does not own must not be rerun — not partially, not "just the
+	// cancel". The check lands here, before the CancelTurn / reservation /
+	// external-silence probe / truncation below, so a rerun of a foreign (or,
+	// from a linked worktree, a legacy) session leaves the target, the tail,
+	// the async-job rows and the session row byte-for-byte intact — the same
+	// refusal resolveSession gives `rush run --session <id>`, before it too
+	// would write anything. When the row cannot be read back (a concurrent
+	// delete), fall through: the existing "target not found" path handles it.
+	if sess, getErr := a.Sessions.Get(ctx, sessionID); getErr == nil && !appOwnsSession(a, sess) {
+		slog.Warn("ws: rerun: refusing a foreign-workspace session",
+			"sessionID", sessionID, "messageID", p.MessageID, "owner", sess.WorkspaceRoot)
+		c.reply(msg.ID, EventError, nil, foreignSessionRefusal(sess).Error())
+		return
+	}
+
 	if a.AgentCoordinator == nil {
 		c.reply(msg.ID, EventError, nil, "agent not configured")
 		return

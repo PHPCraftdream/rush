@@ -1,4 +1,8 @@
 -- name: CreateSession :one
+-- The workspace_root/git_branch values are supplied by the session service
+-- (createWithOrigin, #1142 step C): the Go layer is the single fill point, so
+-- every creation path (Create*, task, title, fork) binds the row to the
+-- workspace of the process that created it.
 INSERT INTO sessions (
     id,
     parent_session_id,
@@ -16,7 +20,9 @@ INSERT INTO sessions (
     fast_model_id,
     yolo_enabled,
     origin,
-    cost_parent_id
+    cost_parent_id,
+    workspace_root,
+    git_branch
 ) VALUES (
     ?,
     ?,
@@ -34,8 +40,14 @@ INSERT INTO sessions (
     ?,
     0,
     ?,
+    ?,
+    ?,
     ?
 ) RETURNING *;
+
+-- GetLastSession lives in run_cost_queries.go (hand-written): sqlc's SQLite
+-- parser cannot compile the two-column recursive CTE that carries the root
+-- ancestor through the recursive member.
 
 -- name: UpdateSessionModels :exec
 -- Partial update: a NULL arg for a slot's provider/id pair leaves that slot

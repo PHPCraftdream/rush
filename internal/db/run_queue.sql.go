@@ -255,14 +255,34 @@ func (q *Queries) LeaseRunQueueEntryByID(ctx context.Context, arg LeaseRunQueueE
 }
 
 const listPendingRunQueueEntries = `-- name: ListPendingRunQueueEntries :many
-SELECT id, session_id, call_data, status, leased_by, leased_at, lease_expires_at, attempts, last_error, terminal_failure, created_at, updated_at FROM session_run_queue
-WHERE status = 'pending'
-ORDER BY created_at ASC, rowid ASC
+SELECT q.id, q.session_id, q.call_data, q.status, q.leased_by, q.leased_at, q.lease_expires_at, q.attempts, q.last_error, q.terminal_failure, q.created_at, q.updated_at FROM session_run_queue q
+LEFT JOIN sessions s ON s.id = q.session_id
+WHERE q.status = 'pending'
+  AND (COALESCE(s.workspace_root,'') = ?1
+       OR (COALESCE(s.workspace_root,'') = '' AND ?2 = 1))
+ORDER BY q.created_at ASC, q.rowid ASC
 `
 
+type ListPendingRunQueueEntriesParams struct {
+	WorkspaceRoot string      `json:"workspace_root"`
+	Home          interface{} `json:"home"`
+}
+
 // Get all pending entries (for pump scanning across all sessions).
-func (q *Queries) ListPendingRunQueueEntries(ctx context.Context) ([]SessionRunQueue, error) {
-	rows, err := q.query(ctx, q.listPendingRunQueueEntriesStmt, listPendingRunQueueEntries)
+// WS-1 ownership (#1142 step C): a row is only visible to this process when
+// its session's workspace_root equals the caller's workspace, or when it is a
+// legacy unbound row (”) and the caller is a home process (home = 1) -- the
+// same predicate as session.Owns in Go. A row filtered out here stays
+// 'pending' untouched (attempts never grows): its owner process claims it.
+//
+// The session join is a LEFT JOIN on purpose (#1142 SD-C): a durable row
+// whose session row is gone (history wiped, or written while foreign keys
+// were off) must neither be executed by whoever cannot fire it nor become a
+// permanently invisible orphan -- pre-WS-1 readers could see it. COALESCE
+// maps the missing session to an unbound row, which only a home process
+// (home = 1) matches; a linked-worktree process keeps ignoring it.
+func (q *Queries) ListPendingRunQueueEntries(ctx context.Context, arg ListPendingRunQueueEntriesParams) ([]SessionRunQueue, error) {
+	rows, err := q.query(ctx, q.listPendingRunQueueEntriesStmt, listPendingRunQueueEntries, arg.WorkspaceRoot, arg.Home)
 	if err != nil {
 		return nil, err
 	}

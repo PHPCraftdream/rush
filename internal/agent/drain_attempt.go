@@ -236,6 +236,12 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	turnCtxDone := att.turnCtxDone.Load()
 	facts := TurnFacts{Now: time.Now(), Site: siteAccount}
 	facts.Session.ExternallyDrivenSelf = l.isExternalDriver(sid)
+	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+	// "drain/reaction"): the leg's error is the ONLY place the run-queue/
+	// runOwned ownership refusal is visible from here -- the DB half of the
+	// facts holds no workspace column. Stamping it here is what makes
+	// decideAccount defer that leg without pacing or settling anything.
+	facts.Session.ForeignWorkspace = errors.Is(turnErr, session.ErrForeignWorkspace)
 	switch att.outcome {
 	case drainNotAttempted:
 		if turnErr == nil || operatorStop(turnErr, turnCtxDone) {
@@ -310,6 +316,15 @@ func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att
 		if closed < openRows {
 			pacePaid()
 		}
+	case v.Kind == VDefer && v.Reason == foreignWorkspaceReason:
+		// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+		// "drain/reaction"): the leg was refused because the session belongs
+		// to another workspace, so NOTHING here is this process's to write.
+		// The gate keeps its state (a refusal that says nothing about our own
+		// launch cadence must not pace it), nothing is settled (the debt is
+		// the owner's to answer), and no recheck is queued (the reason is
+		// permanent, not transient). Falling through to A7's generic VDefer
+		// would shut our gate over a session we have no claim on.
 	case v.Kind == VDefer:
 		// A7: a counted, unreacted attempt: the gate paces at R and a newer
 		// fact does not open it early (R3B-4).

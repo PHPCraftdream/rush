@@ -99,13 +99,17 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 		forkID = uuid.New().String()
 	}
 
-	createParams := db.CreateSessionParams{
+	// The fork belongs to THIS process's workspace, not to the source's: a
+	// fork is the one supported way to continue a session's history in a
+	// different checkout (#1142 step C). Binding it to the source's workspace
+	// would produce a row no process here may drive.
+	createParams := s.bindWorkspace(db.CreateSessionParams{
 		ID:     forkID,
 		Title:  resolvedTitle,
 		Origin: src.Origin,
 		// No CostParentID: a fork is its OWN cost root (#1130), even when it
 		// points at a parent for history.
-	}
+	})
 	if o.ParentID != "" {
 		createParams.ParentSessionID = sql.NullString{String: o.ParentID, Valid: true}
 	}

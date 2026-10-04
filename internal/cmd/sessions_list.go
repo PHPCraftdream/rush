@@ -158,6 +158,12 @@ type sessionListItem struct {
 	Tokens       int64   `json:"tokens"`
 	CostUSD      float64 `json:"cost_usd"`
 	YoloEnabled  bool    `json:"yolo_enabled"`
+	// WorkspaceRoot/GitBranch are the WS-1 audit fields (#1142 step C): the
+	// canonical checkout root the session is bound to and the branch that
+	// checkout was on at creation. Empty for legacy (pre-binding) rows.
+	// Additive to the JSON shape.
+	WorkspaceRoot string `json:"workspace_root"`
+	GitBranch     string `json:"git_branch"`
 	// EndedReason is how the session's last run ended (its exit_reason);
 	// empty while a run is in progress or when none ever ended.
 	EndedReason string `json:"ended_reason,omitempty"`
@@ -185,5 +191,8 @@ func makeSessionListItem(s session.Session, costUSD float64) sessionListItem {
 		CostUSD:     costUSD,
 		YoloEnabled: s.YoloEnabled,
 		EndedReason: s.EndedReason,
+		// WS-1 audit fields (#1142 step C).
+		WorkspaceRoot: s.WorkspaceRoot,
+		GitBranch:     s.GitBranch,
 	}
 }

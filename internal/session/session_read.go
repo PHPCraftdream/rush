@@ -22,7 +22,11 @@ func (s *service) Get(ctx context.Context, id string) (Session, error) {
 }
 
 func (s *service) GetLast(ctx context.Context) (Session, error) {
-	dbSession, err := s.qRead.GetLastSession(ctx)
+	// WS-1 (#1142 step C): only sessions this process owns are candidates for
+	// `--continue`, so a shared data directory never hands a linked worktree
+	// (or the main checkout) another workspace's recent history.
+	workspaceRoot, home := s.ownsArgs()
+	dbSession, err := s.qRead.GetLastSession(ctx, workspaceRoot, home)
 	if err != nil {
 		return Session{}, err
 	}

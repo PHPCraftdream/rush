@@ -9,6 +9,44 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// ProcessHome reports whether this process owns its own data directory
+// (WS-1, #1142 step C) -- the flag that decides whether legacy unbound (”)
+// rows are drivable here. It is app.New's copy of the single source
+// config.WorkspaceHome() (true until SD-D #1143), NOT a derivation from the
+// workspace root: a git checkout has a non-empty root and is still a home
+// process today. A nil App (test literals) reads as home, the pre-WS-1 world.
+func (app *App) ProcessHome() bool {
+	if app == nil {
+		return true
+	}
+	return app.home
+}
+
+// refuseForeign reports the WS-1 refusal for a session this process does not
+// own (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1 table).
+//
+// resolveSession consults this after every successful Get -- before any write,
+// and well before the OS-level session lock, so a foreign `--session <id>`
+// produces this refusal rather than an "already in use" raised by another
+// checkout's running agent.
+//
+// The wording (owning root, branch, and the two ways forward) and the typed
+// session.ErrForeignWorkspace wrapper live in agent.ForeignWorkspaceError:
+// runOwned's guard refuses with the same sentence for every non-CLI entry
+// point, and one builder keeps those two unable to drift.
+func (app *App) refuseForeign(sess session.Session) error {
+	return agent.ForeignWorkspaceError(sess)
+}
+
+// owns reports whether this process may drive sess (WS-1, #1142 step C).
+// Legacy unbound (”) rows are drivable exactly when the App is a home
+// process -- the explicit home flag from config.WorkspaceHome(), never a
+// derivation from the workspace root (which is non-empty for every git
+// checkout and would otherwise refuse the whole pre-WS-1 history).
+func (app *App) owns(sess session.Session) bool {
+	return session.Owns(sess.WorkspaceRoot, app.workspaceRoot, app.ProcessHome())
+}
+
 // resolveSession resolves which session to use for a non-interactive run
 // If continueSessionID is set, it looks up that session by ID
 // If useLast is set, it returns the most recently updated top-level session
@@ -24,6 +62,12 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		if err == nil {
 			if sess.ParentSessionID != "" {
 				return session.Session{}, fmt.Errorf("cannot continue a child session: %s", continueSessionID)
+			}
+			// WS-1 (#1142 step C): the row exists, so its workspace is now
+			// known -- refuse before anything below can mutate the session or
+			// acquire its lock.
+			if !app.owns(sess) {
+				return session.Session{}, app.refuseForeign(sess)
 			}
 			return sess, nil
 		}
@@ -81,6 +125,13 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 			if sess, getErr := app.Sessions.Get(ctx, continueSessionID); getErr == nil {
 				if sess.ParentSessionID != "" {
 					return session.Session{}, fmt.Errorf("cannot continue a child session: %s", continueSessionID)
+				}
+				// WS-1 (#1142 step C): the same ownership check the first Get
+				// above runs -- the winner of the create race may have bound
+				// the row to its own workspace, and attaching to it would
+				// silently drive another checkout's session.
+				if !app.owns(sess) {
+					return session.Session{}, app.refuseForeign(sess)
 				}
 				slog.Info("Session creation raced another process; attached to the winner's row",
 					"session_id", continueSessionID)

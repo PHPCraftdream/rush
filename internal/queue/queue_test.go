@@ -30,7 +30,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		exit_reason TEXT,
 		created_at INTEGER NOT NULL,
 		started_at INTEGER,
-		finished_at INTEGER
+		finished_at INTEGER,
+		workspace_root TEXT NOT NULL DEFAULT ''
 	)`)
 	require.NoError(t, err)
 	return db

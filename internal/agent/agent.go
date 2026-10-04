@@ -594,6 +594,14 @@ type sessionAgent struct {
 	asyncJobs          *workLedger
 	config             *config.ConfigStore
 
+	// wsHomeOverride is the WS-1 test seam (#1142 step C): when non-nil it
+	// replaces config.WorkspaceHome() in processWorkspace, so a test can
+	// model a shared-from-linked process (non-empty workspace, home=false)
+	// without a config store that would produce one. Production wiring never
+	// sets it; home in production comes from the single source
+	// config.WorkspaceHome() (true until SD-D #1143).
+	wsHomeOverride *bool
+
 	// onSessionIdle, when non-nil, fires with a session id every time THIS
 	// agent's mailbox genuinely releases that session -- called from
 	// abandonOwnershipWithHandoff (agent_ownership.go), the one function

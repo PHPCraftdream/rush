@@ -153,6 +153,10 @@ type Querier interface {
 	// them yet - session.go's raw-SQL path remains the actual implementation.
 	// Keep both in sync if pending_injects' schema changes.
 	CreatePendingInject(ctx context.Context, arg CreatePendingInjectParams) error
+	// The workspace_root/git_branch values are supplied by the session service
+	// (createWithOrigin, #1142 step C): the Go layer is the single fill point, so
+	// every creation path (Create*, task, title, fork) binds the row to the
+	// workspace of the process that created it.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	// ON CONFLICT DO NOTHING relies on idx_session_permissions_uniq from
 	// migration 20260517000001. Without it a repeated Always-Allow click
@@ -523,6 +527,22 @@ type Querier interface {
 	// The due, claimable rows, soonest first, bounded by the caller's limit.
 	// Read INSIDE the claim transaction: the writer connection holds the write
 	// lock from BEGIN, so nothing can lease them out before the CAS below.
+	//
+	// WS-1 ownership (#1142 step C): a schedule is only claimable by the process
+	// that owns its owner session -- workspace_root = the caller's workspace, or a
+	// legacy unbound row ('') and a home caller (home = 1). The identical
+	// predicate MUST also be applied by NextDueWakeScheduleAt below, otherwise
+	// the scheduler's timer would wake on a due moment this claim can never
+	// deliver (empty claim in a loop). Same predicate as session.Owns in Go.
+	//
+	// The session join is a LEFT JOIN on purpose (#1142 SD-C): a schedule whose
+	// owner session row is gone (history wiped, or written while foreign keys
+	// were off) is an orphan and must not become invisible -- pre-WS-1 readers
+	// could see it, and a row nobody can see is a row nobody can ever resolve.
+	// It stays fail-closed for everyone but the home process: COALESCE turns the
+	// missing session into an unbound row, and only a home caller (home = 1)
+	// matches that, so a linked-worktree process never claims a schedule it has
+	// no session to fire.
 	ListDueWakeSchedules(ctx context.Context, arg ListDueWakeSchedulesParams) ([]WakeSchedule, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
@@ -589,7 +609,19 @@ type Querier interface {
 	// Get all pending outbox entries for recovery (scanned by pump).
 	ListPendingOrphanOutboxEntries(ctx context.Context) ([]OrphanCallOutbox, error)
 	// Get all pending entries (for pump scanning across all sessions).
-	ListPendingRunQueueEntries(ctx context.Context) ([]SessionRunQueue, error)
+	// WS-1 ownership (#1142 step C): a row is only visible to this process when
+	// its session's workspace_root equals the caller's workspace, or when it is a
+	// legacy unbound row ('') and the caller is a home process (home = 1) -- the
+	// same predicate as session.Owns in Go. A row filtered out here stays
+	// 'pending' untouched (attempts never grows): its owner process claims it.
+	//
+	// The session join is a LEFT JOIN on purpose (#1142 SD-C): a durable row
+	// whose session row is gone (history wiped, or written while foreign keys
+	// were off) must neither be executed by whoever cannot fire it nor become a
+	// permanently invisible orphan -- pre-WS-1 readers could see it. COALESCE
+	// maps the missing session to an unbound row, which only a home process
+	// (home = 1) matches; a linked-worktree process keeps ignoring it.
+	ListPendingRunQueueEntries(ctx context.Context, arg ListPendingRunQueueEntriesParams) ([]SessionRunQueue, error)
 	// Drain candidates (doc sec.3.3), oldest first so history order matches
 	// occurrence order.
 	ListPendingSessionNoticesForOwner(ctx context.Context, owner string) ([]SessionNotice, error)
@@ -676,7 +708,13 @@ type Querier interface {
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, arg NackRunQueueEntryNoAttemptPenaltyParams) (SessionRunQueue, error)
 	// Earliest next_run_at among active rows, for the scheduler's timer.
-	NextDueWakeScheduleAt(ctx context.Context) (interface{}, error)
+	// WS-1 ownership (#1142 step C): identical predicate to ListDueWakeSchedules,
+	// so the timer never sleeps until a moment this process cannot claim (which
+	// would spin: claim empty, due moment in the past, repeat). LEFT JOIN plus
+	// COALESCE for the same reason as there (SD-C): an orphaned owner session
+	// must not make an active schedule vanish from the timer, and must not send
+	// a linked process to a due moment it can never claim either.
+	NextDueWakeScheduleAt(ctx context.Context, arg NextDueWakeScheduleAtParams) (interface{}, error)
 	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
 	// caller does this, then INSERTs the history message, then stores
 	// notice_message_id via SetAsyncJobNoticeMessageID, all in the SAME tx. 0
@@ -994,6 +1032,9 @@ type Querier interface {
 	// explicit index already used, which silently shifts positional binding.
 	UpdateMessageUsage(ctx context.Context, arg UpdateMessageUsageParams) error
 	UpdatePermissionEnabled(ctx context.Context, arg UpdatePermissionEnabledParams) error
+	// GetLastSession lives in run_cost_queries.go (hand-written): sqlc's SQLite
+	// parser cannot compile the two-column recursive CTE that carries the root
+	// ancestor through the recursive member.
 	// Partial update: a NULL arg for a slot's provider/id pair leaves that slot
 	// untouched (COALESCE falls back to the current column value); a non-NULL
 	// arg (including an explicit empty string) overwrites it. This lets callers

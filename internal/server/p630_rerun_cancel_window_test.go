@@ -103,8 +103,16 @@ const rerunCallID = "call-rerun"
 
 func newRerunHandlerFx(t *testing.T, title string) *rerunHandlerFx {
 	t.Helper()
+	return newRerunHandlerFxIn(t, t.TempDir(), title)
+}
+
+// newRerunHandlerFxIn is newRerunHandlerFx over an app whose working
+// directory the caller picks, so a test can run the rerun handler inside a
+// real git checkout (a non-empty workspace root; #1142 step C).
+func newRerunHandlerFxIn(t *testing.T, workingDir, title string) *rerunHandlerFx {
+	t.Helper()
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	a := newAttachmentsTestApp(t, workingDir, t.TempDir())
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, title)
 	require.NoError(t, err)

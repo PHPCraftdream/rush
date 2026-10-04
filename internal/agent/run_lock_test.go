@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,8 +118,8 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 // (agent.go ~510-543): its Get closes entered (once, on first call) before
 // blocking until the test signals it to proceed via unblock. entered is
 // the deterministic synchronization signal proving Run has ALREADY
-// acquired the session lock (Get is the very next thing Run calls after
-// the lock section, agent.go:546-586) — it is intentionally NOT a race
+// acquired the session lock (Get -- the WS-1 guard's read -- is the very next
+// thing Run calls after the lock section) — it is intentionally NOT a race
 // against Run's own lock acquisition the way an external polling loop
 // would be (an earlier version of this test polled
 // session.TryAcquireSessionLock in a loop from a second goroutine, which
@@ -127,14 +128,21 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 // flaky false "Run was rejected"). Every other session.Service method is
 // unreachable from Run before Get, so embedding the nil interface for the
 // rest is safe: they're never called.
+//
+// The close is behind a sync.Once because Run now reads the row TWICE: the
+// WS-1 guard's read (the first, the one this test pins) and the turn
+// preamble's own read, which follows once the guard lets the call through.
+// Both block on unblock and both fail with the same error, so the second read
+// costs the test nothing but must not double-close `entered`.
 type blockingGetSessionService struct {
 	session.Service
-	entered chan struct{}
-	unblock chan struct{}
+	entered     chan struct{}
+	enteredOnce sync.Once
+	unblock     chan struct{}
 }
 
 func (b *blockingGetSessionService) Get(ctx context.Context, id string) (session.Session, error) {
-	close(b.entered)
+	b.enteredOnce.Do(func() { close(b.entered) })
 	<-b.unblock
 	return session.Session{}, errors.New("blockingGetSessionService: Get intentionally fails after unblocking")
 }
@@ -145,7 +153,8 @@ func (b *blockingGetSessionService) Get(ctx context.Context, id string) (session
 // full turn (fantasy.Agent + provider) from a bare sessionAgent isn't
 // practical here, so this proves the negative directly: Run does not
 // return the lock-busy error, and — while Run is blocked deterministically
-// inside a.sessions.Get (i.e. demonstrably past the lock section) — a
+// inside a.sessions.Get (i.e. demonstrably past the lock section, which is
+// exactly where the WS-1 guard's read now sits) — a
 // fresh attempt to acquire the very same session lock from outside now
 // correctly fails as busy, proving Run itself took (and is still holding)
 // the lock for the sub-agent session rather than the lock check being
@@ -172,8 +181,8 @@ func TestRun_SubAgentChildSession_ProceedsPastLockWhenFree(t *testing.T) {
 		runErrCh <- err
 	}()
 
-	// Wait for Run to reach a.sessions.Get — the very next call after the
-	// lock section succeeds (agent.go:546-586) — which deterministically
+	// Wait for Run to reach a.sessions.Get — the WS-1 guard's read, the
+	// very next call after the lock section succeeds — which deterministically
 	// proves Run's own lock acquisition already succeeded (no
 	// "already in use" rejection) without racing Run for the lock
 	// ourselves.

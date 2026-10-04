@@ -55,14 +55,47 @@ var ErrWakeScheduleNotOwned = errors.New("wake schedule does not belong to this 
 // WakeScheduleStore reads and writes wake_schedules through the shared
 // connection pool. It holds no host lock: schedules are claimed by lease
 // columns, not OS locks.
+//
+// WS-1 (#1142 step C): the store also carries the workspace of the process
+// it was created in, and scopes BOTH of its scheduler-facing reads
+// (ClaimDue's ListDueWakeSchedules and NextDueWakeScheduleAt) by the same
+// ownership predicate as session.Owns. Filtering only the claim would spin
+// the scheduler forever: NextDue would keep returning a due moment that can
+// never be claimed.
 type WakeScheduleStore struct {
 	sqlDB *sql.DB
 	q     *db.Queries
+
+	// workspaceRoot is the process's canonical checkout root, and workDir
+	// the directory its branch would be read from. home is the SEPARATE
+	// "owns its own data directory" flag (config.WorkspaceHome() in
+	// production) -- never derived from the root. None are mutated after
+	// construction.
+	workspaceRoot string
+	workDir       string
+	home          bool
 }
 
 // NewWakeScheduleStore wires the store onto an already-migrated DB handle.
+// The legacy (pre-WS-1) shape: workspace "" and home=true -- a home process,
+// which owns the unbound rows.
 func NewWakeScheduleStore(conn *sql.DB) *WakeScheduleStore {
-	return &WakeScheduleStore{sqlDB: conn, q: db.New(conn)}
+	return NewWakeScheduleStoreWithWorkspace(conn, "", "", true)
+}
+
+// NewWakeScheduleStoreWithWorkspace is NewWakeScheduleStore bound to a
+// workspace (#1142 step C). home is the explicit "owns its own data
+// directory" flag, not a function of workspaceRoot.
+func NewWakeScheduleStoreWithWorkspace(conn *sql.DB, workspaceRoot string, workDir string, home bool) *WakeScheduleStore {
+	return &WakeScheduleStore{sqlDB: conn, q: db.New(conn), workspaceRoot: workspaceRoot, workDir: workDir, home: home}
+}
+
+// ownsArgs are the store's (workspace_root, home) SQL parameters -- the same
+// predicate the session service passes, so both services of one process agree
+// on which schedules are theirs. The home flag is the constructor value, not
+// a re-derivation from the root.
+func (s *WakeScheduleStore) ownsArgs() (workspaceRoot string, home int64) {
+	return s.workspaceRoot, homeFlag(s.home)
 }
 
 // CreateWakeScheduleParams is CreateSchedule's input. RunAt is the first
@@ -232,9 +265,12 @@ func (s *WakeScheduleStore) ClaimDue(ctx context.Context, leaseOwner string, now
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 	q := s.q.WithTx(tx)
 
+	workspaceRoot, home := s.ownsArgs()
 	due, err := q.ListDueWakeSchedules(ctx, db.ListDueWakeSchedulesParams{
 		NextRunAt:      now.Unix(),
 		LeaseExpiresAt: sql.NullInt64{Int64: now.Unix(), Valid: true},
+		WorkspaceRoot:  workspaceRoot,
+		Home:           home,
 		Limit:          int64(limit),
 	})
 	if err != nil {
@@ -282,10 +318,17 @@ func (s *WakeScheduleStore) RecoverExpiredLeases(ctx context.Context, now time.T
 	return n, nil
 }
 
-// NextDue returns the earliest next_run_at among active schedules, or nil
-// when none are left -- the scheduler timer's sleep target.
+// NextDue returns the earliest next_run_at among the ACTIVE schedules this
+// process owns, or nil when none are left -- the scheduler timer's sleep
+// target. WS-1 (#1142 step C): the read carries the same ownership filter as
+// ClaimDue, so a foreign workspace's due schedule can never move this
+// process's timer (that would wake it to an empty claim, forever).
 func (s *WakeScheduleStore) NextDue(ctx context.Context) (*time.Time, error) {
-	v, err := s.q.NextDueWakeScheduleAt(ctx)
+	workspaceRoot, home := s.ownsArgs()
+	v, err := s.q.NextDueWakeScheduleAt(ctx, db.NextDueWakeScheduleAtParams{
+		WorkspaceRoot: workspaceRoot,
+		Home:          home,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("wake schedule: next due: %w", err)
 	}

@@ -128,7 +128,9 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			origin TEXT DEFAULT '' NOT NULL,
 			cost_self REAL NOT NULL DEFAULT 0,
 			cost_base REAL NOT NULL DEFAULT 0,
-			cost_parent_id TEXT NOT NULL DEFAULT ''
+			cost_parent_id TEXT NOT NULL DEFAULT '',
+			workspace_root TEXT NOT NULL DEFAULT '',
+			git_branch TEXT NOT NULL DEFAULT ''
 		);
 
 		CREATE TABLE messages (

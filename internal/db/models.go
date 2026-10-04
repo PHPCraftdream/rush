@@ -108,20 +108,21 @@ type PendingInject struct {
 }
 
 type QueueTask struct {
-	ID         string          `json:"id"`
-	SessionID  sql.NullString  `json:"session_id"`
-	Prompt     string          `json:"prompt"`
-	Role       sql.NullString  `json:"role"`
-	MaxCost    sql.NullFloat64 `json:"max_cost"`
-	MaxTokens  sql.NullInt64   `json:"max_tokens"`
-	TimeoutSec sql.NullInt64   `json:"timeout_sec"`
-	Status     string          `json:"status"`
-	Cost       sql.NullFloat64 `json:"cost"`
-	Tokens     sql.NullInt64   `json:"tokens"`
-	ExitReason sql.NullString  `json:"exit_reason"`
-	CreatedAt  int64           `json:"created_at"`
-	StartedAt  sql.NullInt64   `json:"started_at"`
-	FinishedAt sql.NullInt64   `json:"finished_at"`
+	ID            string          `json:"id"`
+	SessionID     sql.NullString  `json:"session_id"`
+	Prompt        string          `json:"prompt"`
+	Role          sql.NullString  `json:"role"`
+	MaxCost       sql.NullFloat64 `json:"max_cost"`
+	MaxTokens     sql.NullInt64   `json:"max_tokens"`
+	TimeoutSec    sql.NullInt64   `json:"timeout_sec"`
+	Status        string          `json:"status"`
+	Cost          sql.NullFloat64 `json:"cost"`
+	Tokens        sql.NullInt64   `json:"tokens"`
+	ExitReason    sql.NullString  `json:"exit_reason"`
+	CreatedAt     int64           `json:"created_at"`
+	StartedAt     sql.NullInt64   `json:"started_at"`
+	FinishedAt    sql.NullInt64   `json:"finished_at"`
+	WorkspaceRoot string          `json:"workspace_root"`
 }
 
 type ReadFile struct {
@@ -167,6 +168,8 @@ type Session struct {
 	CostSelf                     float64        `json:"cost_self"`
 	CostBase                     float64        `json:"cost_base"`
 	CostParentID                 string         `json:"cost_parent_id"`
+	WorkspaceRoot                string         `json:"workspace_root"`
+	GitBranch                    string         `json:"git_branch"`
 }
 
 type SessionDriver struct {

@@ -7,13 +7,61 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+// appWorkspaceRoot is this process's canonical checkout root (WS-1, #1142 step
+// C), recomputed from the app's config store because the server package cannot
+// read the unexported App.workspaceRoot. app.New derives that field from the
+// same store.WorkingDir() via config.WorkspaceRoot (cached), so this returns
+// the identical value. A nil app or store (only ever a test literal) reads as a
+// home process ("" — see appOwnsSession).
+func appWorkspaceRoot(a *appPkg.App) string {
+	if a == nil || a.Store() == nil {
+		return ""
+	}
+	return config.WorkspaceRoot(a.Store().WorkingDir())
+}
+
+// appOwnsSession reports whether THIS process may drive sess: the same
+// predicate app.owns runs on the run path (session.Owns), fed the process's
+// workspace here so a destructive web action (rerun, delete-other) never
+// touches another checkout's session in a shared data directory. A session is
+// owned when its workspace_root equals this process's root, or when it is a
+// legacy unbound row (”) and this process is a home process -- the explicit
+// App.ProcessHome() flag (config.WorkspaceHome(), true until SD-D #1143),
+// never a derivation from the root: a git checkout has a non-empty root and
+// still owns its legacy rows today.
+func appOwnsSession(a *appPkg.App, sess session.Session) bool {
+	return session.Owns(sess.WorkspaceRoot, appWorkspaceRoot(a), a.ProcessHome())
+}
+
+// foreignSessionRefusal builds the WS-1 refusal error for a session this
+// process does not own. It mirrors agent.ForeignWorkspaceError (which the
+// server package does not import): it wraps session.ErrForeignWorkspace so the
+// condition stays classifiable in logs, names the owning root and the branch
+// that checkout was on, says so when that checkout has since been removed, and
+// offers `rush sessions fork <id>` as the one sanctioned way to continue the
+// history here.
+func foreignSessionRefusal(sess session.Session) error {
+	msg := fmt.Sprintf(
+		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
+		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,
+	)
+	if sess.WorkspaceRoot != "" {
+		if _, err := os.Stat(sess.WorkspaceRoot); err != nil {
+			msg += " (workspace no longer exists)"
+		}
+	}
+	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
+}
 
 func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p CreateSessionPayload
@@ -110,11 +158,14 @@ func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-// handleDeleteOtherSessions deletes every top-level session except the one
-// identified by KeepID. Sub-sessions are not deleted directly — they are
-// cleaned up by a.Sessions.Delete when their parent is removed, mirroring
-// handleDeleteSession. Each deletion publishes a DeletedEvent that the
-// events.go pubsub bridge broadcasts as session_deleted, so every connected
+// handleDeleteOtherSessions deletes every top-level session this process OWNS
+// except the one identified by KeepID (WS-1, #1142 step C). Owned means this
+// workspace's own sessions, plus legacy ” rows when this is a home process; a
+// row bound to another checkout — visible here only because the data directory
+// is shared — is skipped, never deleted. Sub-sessions are not deleted directly
+// — they are cleaned up by a.Sessions.Delete when their parent is removed,
+// mirroring handleDeleteSession. Each deletion publishes a DeletedEvent that
+// the events.go pubsub bridge broadcasts as session_deleted, so every connected
 // client updates.
 //
 // The reply always carries deletedIDs/failedIDs (task #684) rather than a
@@ -147,6 +198,18 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 		// Skip the kept session and any sub-session (those go when their
 		// parent is deleted, matching handleDeleteSession's behaviour).
 		if s.ID == p.KeepID || s.ParentSessionID != "" {
+			continue
+		}
+		// WS-1 (#1142 step C, §1 "web: delete other sessions"): delete only
+		// this workspace's own rows (its own sessions, plus legacy '' rows when
+		// this is a home process). A row bound to ANOTHER checkout — visible in
+		// a shared data directory — is left untouched: one worktree's "delete
+		// others" must never wipe another's history. Skipped silently from the
+		// client's perspective (logged here); the client only drops the IDs it
+		// gets back in deletedIDs.
+		if !appOwnsSession(a, s) {
+			slog.Info("delete_other_sessions: skipping a foreign-workspace session",
+				"id", s.ID, "owner", s.WorkspaceRoot)
 			continue
 		}
 		if err := a.Sessions.Delete(ctx, s.ID); err != nil {

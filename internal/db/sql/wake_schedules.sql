@@ -39,11 +39,30 @@ WHERE owner_session_id = ? AND state = 'active';
 -- The due, claimable rows, soonest first, bounded by the caller's limit.
 -- Read INSIDE the claim transaction: the writer connection holds the write
 -- lock from BEGIN, so nothing can lease them out before the CAS below.
-SELECT * FROM wake_schedules
-WHERE state = 'active' AND next_run_at <= ?
-  AND (lease_owner IS NULL OR lease_expires_at <= ?)
-ORDER BY next_run_at ASC, id ASC
-LIMIT ?;
+--
+-- WS-1 ownership (#1142 step C): a schedule is only claimable by the process
+-- that owns its owner session -- workspace_root = the caller's workspace, or a
+-- legacy unbound row ('') and a home caller (home = 1). The identical
+-- predicate MUST also be applied by NextDueWakeScheduleAt below, otherwise
+-- the scheduler's timer would wake on a due moment this claim can never
+-- deliver (empty claim in a loop). Same predicate as session.Owns in Go.
+--
+-- The session join is a LEFT JOIN on purpose (#1142 SD-C): a schedule whose
+-- owner session row is gone (history wiped, or written while foreign keys
+-- were off) is an orphan and must not become invisible -- pre-WS-1 readers
+-- could see it, and a row nobody can see is a row nobody can ever resolve.
+-- It stays fail-closed for everyone but the home process: COALESCE turns the
+-- missing session into an unbound row, and only a home caller (home = 1)
+-- matches that, so a linked-worktree process never claims a schedule it has
+-- no session to fire.
+SELECT w.* FROM wake_schedules w
+LEFT JOIN sessions s ON s.id = w.owner_session_id
+WHERE w.state = 'active' AND w.next_run_at <= sqlc.arg(next_run_at)
+  AND (w.lease_owner IS NULL OR w.lease_expires_at <= sqlc.arg(lease_expires_at))
+  AND (COALESCE(s.workspace_root,'') = sqlc.arg(workspace_root)
+       OR (COALESCE(s.workspace_root,'') = '' AND sqlc.arg(home) = 1))
+ORDER BY w.next_run_at ASC, w.id ASC
+LIMIT sqlc.arg(limit);
 
 -- name: ClaimWakeScheduleLease :execrows
 -- Per-row CAS half of the atomic claim: 0 rows means another leader won
@@ -86,7 +105,17 @@ WHERE state = 'active' AND lease_owner IS NOT NULL AND lease_expires_at < ?;
 
 -- name: NextDueWakeScheduleAt :one
 -- Earliest next_run_at among active rows, for the scheduler's timer.
-SELECT MIN(next_run_at) AS next_due_at FROM wake_schedules WHERE state = 'active';
+-- WS-1 ownership (#1142 step C): identical predicate to ListDueWakeSchedules,
+-- so the timer never sleeps until a moment this process cannot claim (which
+-- would spin: claim empty, due moment in the past, repeat). LEFT JOIN plus
+-- COALESCE for the same reason as there (SD-C): an orphaned owner session
+-- must not make an active schedule vanish from the timer, and must not send
+-- a linked process to a due moment it can never claim either.
+SELECT MIN(w.next_run_at) AS next_due_at FROM wake_schedules w
+LEFT JOIN sessions s ON s.id = w.owner_session_id
+WHERE w.state = 'active'
+  AND (COALESCE(s.workspace_root,'') = sqlc.arg(workspace_root)
+       OR (COALESCE(s.workspace_root,'') = '' AND sqlc.arg(home) = 1));
 
 -- name: ListOpenOnceWakeSchedulesForOwners :many
 -- Batched form of OpenOnceWakeSchedules (kind='once', state='active'),

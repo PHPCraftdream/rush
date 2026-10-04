@@ -506,10 +506,20 @@ func (s *service) TerminalFailRunQueueEntry(ctx context.Context, id, leasedBy st
 	return err
 }
 
-// ListPendingRunQueueEntries returns all pending entries across all sessions.
-// Used by the pump to scan for work.
+// ListPendingRunQueueEntries returns the pending entries across all sessions
+// this process owns -- the pump's work list. Used by the pump to scan for
+// work.
+//
+// WS-1 (#1142 step C): the scan is filtered by ownership (the SQL joins
+// sessions and applies the same predicate as Owns), so a foreign session's
+// durable row is never leased here, its attempts never grow, and its owner
+// process picks it up instead.
 func (s *service) ListPendingRunQueueEntries(ctx context.Context) ([]RunQueueEntry, error) {
-	rows, err := s.q.ListPendingRunQueueEntries(ctx)
+	workspaceRoot, home := s.ownsArgs()
+	rows, err := s.q.ListPendingRunQueueEntries(ctx, db.ListPendingRunQueueEntriesParams{
+		WorkspaceRoot: workspaceRoot,
+		Home:          home,
+	})
 	if err != nil {
 		return nil, err
 	}

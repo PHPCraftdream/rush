@@ -71,6 +71,32 @@ func worktreeRoot(dir string) string {
 	return abs
 }
 
+// WorkspaceRoot is the exported form of worktreeRoot (#1142 step C): the app
+// and agent layers bind their session service and their turn guard to the
+// canonical checkout root of their working directory. An empty result means
+// "outside any working tree"; ownership's home/not-home question is a
+// SEPARATE flag -- see WorkspaceHome -- and must never be inferred from this
+// value being empty or not. One shared implementation keeps the callers from
+// drifting into different notions of "the workspace".
+func WorkspaceRoot(dir string) string {
+	return worktreeRoot(dir)
+}
+
+// WorkspaceHome reports whether this process owns ITS OWN data directory
+// rather than a shared directory handed out to linked worktrees (#1142 step
+// C, WS-1: a legacy unbound session row -- workspace_root ” -- is owned by
+// home processes only). This is deliberately NOT derived from the workspace
+// root: a checkout inside git has a non-empty root and is still a home
+// process today. Until the shared-data-directory switch ships (SD-D, #1143)
+// every process owns its own data directory, so this is constant true; SD-D
+// will derive the real answer from the data-dir source it introduces. This
+// function is the SINGLE source of the flag: app wiring passes its value into
+// the session/wake/queue services, and the agent guard and the server read it
+// directly, so no call site recomputes it from the workspace root.
+func WorkspaceHome() bool {
+	return true
+}
+
 // projectBoundary returns the directory at which an upward configuration
 // search rooted at dir should stop. It is the git working tree root when
 // one can be detected, otherwise dir itself. Returning dir as a

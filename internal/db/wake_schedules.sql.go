@@ -258,24 +258,51 @@ func (q *Queries) InsertWakeSchedule(ctx context.Context, arg InsertWakeSchedule
 }
 
 const listDueWakeSchedules = `-- name: ListDueWakeSchedules :many
-SELECT id, owner_session_id, kind, message, next_run_at, every_ms, max_runs, until_at, state, occurrence, lease_owner, lease_expires_at, created_at, updated_at FROM wake_schedules
-WHERE state = 'active' AND next_run_at <= ?
-  AND (lease_owner IS NULL OR lease_expires_at <= ?)
-ORDER BY next_run_at ASC, id ASC
-LIMIT ?
+SELECT w.id, w.owner_session_id, w.kind, w.message, w.next_run_at, w.every_ms, w.max_runs, w.until_at, w.state, w.occurrence, w.lease_owner, w.lease_expires_at, w.created_at, w.updated_at FROM wake_schedules w
+LEFT JOIN sessions s ON s.id = w.owner_session_id
+WHERE w.state = 'active' AND w.next_run_at <= ?1
+  AND (w.lease_owner IS NULL OR w.lease_expires_at <= ?2)
+  AND (COALESCE(s.workspace_root,'') = ?3
+       OR (COALESCE(s.workspace_root,'') = '' AND ?4 = 1))
+ORDER BY w.next_run_at ASC, w.id ASC
+LIMIT ?5
 `
 
 type ListDueWakeSchedulesParams struct {
 	NextRunAt      int64         `json:"next_run_at"`
 	LeaseExpiresAt sql.NullInt64 `json:"lease_expires_at"`
+	WorkspaceRoot  string        `json:"workspace_root"`
+	Home           interface{}   `json:"home"`
 	Limit          int64         `json:"limit"`
 }
 
 // The due, claimable rows, soonest first, bounded by the caller's limit.
 // Read INSIDE the claim transaction: the writer connection holds the write
 // lock from BEGIN, so nothing can lease them out before the CAS below.
+//
+// WS-1 ownership (#1142 step C): a schedule is only claimable by the process
+// that owns its owner session -- workspace_root = the caller's workspace, or a
+// legacy unbound row (”) and a home caller (home = 1). The identical
+// predicate MUST also be applied by NextDueWakeScheduleAt below, otherwise
+// the scheduler's timer would wake on a due moment this claim can never
+// deliver (empty claim in a loop). Same predicate as session.Owns in Go.
+//
+// The session join is a LEFT JOIN on purpose (#1142 SD-C): a schedule whose
+// owner session row is gone (history wiped, or written while foreign keys
+// were off) is an orphan and must not become invisible -- pre-WS-1 readers
+// could see it, and a row nobody can see is a row nobody can ever resolve.
+// It stays fail-closed for everyone but the home process: COALESCE turns the
+// missing session into an unbound row, and only a home caller (home = 1)
+// matches that, so a linked-worktree process never claims a schedule it has
+// no session to fire.
 func (q *Queries) ListDueWakeSchedules(ctx context.Context, arg ListDueWakeSchedulesParams) ([]WakeSchedule, error) {
-	rows, err := q.query(ctx, q.listDueWakeSchedulesStmt, listDueWakeSchedules, arg.NextRunAt, arg.LeaseExpiresAt, arg.Limit)
+	rows, err := q.query(ctx, q.listDueWakeSchedulesStmt, listDueWakeSchedules,
+		arg.NextRunAt,
+		arg.LeaseExpiresAt,
+		arg.WorkspaceRoot,
+		arg.Home,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -414,12 +441,27 @@ func (q *Queries) ListWakeSchedulesForOwner(ctx context.Context, ownerSessionID 
 }
 
 const nextDueWakeScheduleAt = `-- name: NextDueWakeScheduleAt :one
-SELECT MIN(next_run_at) AS next_due_at FROM wake_schedules WHERE state = 'active'
+SELECT MIN(w.next_run_at) AS next_due_at FROM wake_schedules w
+LEFT JOIN sessions s ON s.id = w.owner_session_id
+WHERE w.state = 'active'
+  AND (COALESCE(s.workspace_root,'') = ?1
+       OR (COALESCE(s.workspace_root,'') = '' AND ?2 = 1))
 `
 
+type NextDueWakeScheduleAtParams struct {
+	WorkspaceRoot string      `json:"workspace_root"`
+	Home          interface{} `json:"home"`
+}
+
 // Earliest next_run_at among active rows, for the scheduler's timer.
-func (q *Queries) NextDueWakeScheduleAt(ctx context.Context) (interface{}, error) {
-	row := q.queryRow(ctx, q.nextDueWakeScheduleAtStmt, nextDueWakeScheduleAt)
+// WS-1 ownership (#1142 step C): identical predicate to ListDueWakeSchedules,
+// so the timer never sleeps until a moment this process cannot claim (which
+// would spin: claim empty, due moment in the past, repeat). LEFT JOIN plus
+// COALESCE for the same reason as there (SD-C): an orphaned owner session
+// must not make an active schedule vanish from the timer, and must not send
+// a linked process to a due moment it can never claim either.
+func (q *Queries) NextDueWakeScheduleAt(ctx context.Context, arg NextDueWakeScheduleAtParams) (interface{}, error) {
+	row := q.queryRow(ctx, q.nextDueWakeScheduleAtStmt, nextDueWakeScheduleAt, arg.WorkspaceRoot, arg.Home)
 	var next_due_at interface{}
 	err := row.Scan(&next_due_at)
 	return next_due_at, err

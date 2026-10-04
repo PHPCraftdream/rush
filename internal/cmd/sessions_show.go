@@ -113,6 +113,12 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		CompletionTokens int64   `json:"completion_tokens"`
 		CostUSD          float64 `json:"cost_usd"`
 		OwnCostUSD       float64 `json:"own_cost_usd"`
+		// WorkspaceRoot/GitBranch are the WS-1 audit fields (#1142 step C): the
+		// canonical checkout root this session is bound to and the branch it was
+		// on at creation. Empty for legacy (pre-binding) rows. Additive to the
+		// JSON shape.
+		WorkspaceRoot    string  `json:"workspace_root"`
+		GitBranch        string  `json:"git_branch"`
 		EndedReason      string  `json:"ended_reason,omitempty"`
 		BudgetMaxCost    float64 `json:"budget_max_cost,omitempty"`
 		BudgetMaxTokens  int64   `json:"budget_max_tokens,omitempty"`
@@ -175,8 +181,11 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		PromptTokens:     sess.PromptTokens,
 		CompletionTokens: sess.CompletionTokens,
 		// #1130: cost_usd = subtree budget; OwnCostUSD = the node's own ledger.
-		CostUSD:          sessionBudget(cmd.Context(), a.Sessions, sess),
-		OwnCostUSD:       sess.OwnCost,
+		CostUSD:    sessionBudget(cmd.Context(), a.Sessions, sess),
+		OwnCostUSD: sess.OwnCost,
+		// WS-1 audit fields (#1142 step C).
+		WorkspaceRoot:    sess.WorkspaceRoot,
+		GitBranch:        sess.GitBranch,
 		EndedReason:      sess.EndedReason,
 		BudgetMaxCost:    sess.BudgetMaxCost,
 		BudgetMaxTokens:  sess.BudgetMaxTokens,

@@ -101,6 +101,19 @@ type Session struct {
 	BudgetMaxTokens  int64   // --max-tokens value, 0 if unlimited
 	BudgetTimeoutSec int64   // --timeout in seconds, 0 if unlimited
 
+	// WorkspaceRoot is the canonical root of the checkout this session was
+	// created in (WS-1, #1142 step C). Only the process whose workspace matches
+	// may run the session; '' is a legacy row created before the binding
+	// existed, owned by home processes only. Exposed on the web session payload
+	// as workspace_root (snake_case matches internal/db) for UI audit; ownership
+	// itself is decided in the agent/app/queue layers, never by the client.
+	WorkspaceRoot string `json:"workspace_root"`
+	// GitBranch is the branch HEAD pointed at when the row was created, read
+	// from <git-dir>/HEAD without spawning git (detached HEAD, no git, or a
+	// read failure all give ''). Audit only: it never participates in
+	// ownership. Exposed on the web session payload as git_branch.
+	GitBranch string `json:"git_branch"`
+
 	// Wire-only fields filled by the web server when sending Session over WS;
 	// NOT persisted to SQLite. Together they answer "is this session being
 	// driven by another live process right now?" so the web UI can render
@@ -402,6 +415,23 @@ type service struct {
 	db *sql.DB
 	q  *db.Queries
 
+	// workspaceRoot is the canonical checkout root of the process this
+	// service belongs to (WS-1, #1142 step C): every session it creates is
+	// bound to it, and every ownership-filtered read (GetLast, run-queue
+	// scan, wake claim/next-due) resolves through Owns against it. It may be
+	// empty (a working directory outside any git tree) without changing what
+	// the process is: home/not-home is the SEPARATE home flag below.
+	workspaceRoot string
+	// workDir is the directory the git branch stamped on created sessions is
+	// read from (<git-dir>/HEAD, no git subprocess). Empty means "no branch
+	// information".
+	workDir string
+	// home is the explicit "this process owns its own data directory" flag
+	// (config.WorkspaceHome() in production, true until SD-D #1143): it —
+	// not the workspace root — decides whether the legacy unbound ('') rows
+	// are this process's to drive.
+	home bool
+
 	// readDB/qRead back the standalone, read-only hot paths (List, ListAll,
 	// ListSubSessions, Get, GetLast, GetCallTreeActivity(Batch)) that don't
 	// need read-your-own-write consistency with a subsequent write in the
@@ -483,6 +513,9 @@ func (s service) fromDBItem(item db.Session) Session {
 		BudgetMaxCost:    item.BudgetMaxCost,
 		BudgetMaxTokens:  item.BudgetMaxTokens,
 		BudgetTimeoutSec: item.BudgetTimeoutSec,
+
+		WorkspaceRoot: item.WorkspaceRoot,
+		GitBranch:     item.GitBranch,
 	}
 }
 
@@ -531,14 +564,34 @@ func unmarshalDeletedTodos(data string) ([]string, error) {
 }
 
 func NewService(q *db.Queries, conn *sql.DB) Service {
+	return NewServiceWithWorkspace(q, conn, nil, nil, "", "", true)
+}
+
+// NewServiceWithWorkspace is NewService bound to a workspace (#1142 step C,
+// invariant WS-1): workspaceRoot is the process's canonical checkout root and
+// workDir the directory the branch of every created session is read from
+// ("" = no branch information). home is the SEPARATE "owns its own data
+// directory" flag (config.WorkspaceHome() in production): it, not the
+// workspace root, decides whether legacy unbound (”) rows are drivable here.
+// Every session the service creates is filled with workspaceRoot/workDir in
+// createWithOrigin, and every ownership-filtered read is scoped by Owns.
+func NewServiceWithWorkspace(q *db.Queries, conn *sql.DB, qRead *db.Queries, readConn *sql.DB, workspaceRoot string, workDir string, home bool) Service {
 	broker := pubsub.NewBroker[Session]()
-	return &service{
-		Broker: broker,
-		db:     conn,
-		q:      q,
-		readDB: conn,
-		qRead:  q,
+	svc := &service{
+		Broker:        broker,
+		db:            conn,
+		q:             q,
+		readDB:        conn,
+		qRead:         q,
+		workspaceRoot: workspaceRoot,
+		workDir:       workDir,
+		home:          home,
 	}
+	if qRead != nil && readConn != nil {
+		svc.qRead = qRead
+		svc.readDB = readConn
+	}
+	return svc
 }
 
 // NewServiceWithReader is NewService plus a separate read-only connection

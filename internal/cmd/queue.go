@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,10 +15,29 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/queue"
 	"github.com/spf13/cobra"
 )
+
+// queueLockName returns the per-workspace queue lock file name (WS-1, #1142
+// step C, P1 of docs/plans/2026-10-01-shared-data-dir.md): one queue.lock per
+// checkout, so two linked worktrees sharing one data directory no longer block
+// each other's `queue run` behind a single process-wide lock. A home process
+// (workspaceRoot "") keeps the historical "queue.lock" name, so an existing
+// installation's behaviour is byte-for-byte unchanged. The root is hashed to a
+// short, fixed-length token because a raw checkout path has separators and
+// other characters awkward in a file name; sha256 keeps the name deterministic
+// (the same checkout gets the same lock on every run) and collision-resistant
+// across the handful of checkouts a project realistically has.
+func queueLockName(workspaceRoot string) string {
+	if workspaceRoot == "" {
+		return "queue.lock"
+	}
+	sum := sha256.Sum256([]byte(workspaceRoot))
+	return fmt.Sprintf("queue-%s.lock", hex.EncodeToString(sum[:])[:16])
+}
 
 var queueCmd = &cobra.Command{
 	Use:   "queue",
@@ -68,7 +89,11 @@ var queueAddCmd = &cobra.Command{
 		}
 		defer a.Shutdown()
 
-		q := queue.NewService(a.DB())
+		// WS-1 (#1142 step C): stamp the row with THIS checkout's workspace so
+		// its own `queue run` claims it and another checkout's runner does not.
+		// home is the single-source flag (config.WorkspaceHome(), true until
+		// SD-D #1143), never a function of the root.
+		q := queue.NewServiceWithWorkspace(a.DB(), config.WorkspaceRoot(a.Store().WorkingDir()), config.WorkspaceHome())
 		var timeoutSec int64
 		if timeout > 0 {
 			timeoutSec = int64(timeout.Seconds())
@@ -192,6 +217,13 @@ reason) are written back to the queue.`,
 			return err
 		}
 
+		// WS-1 (#1142 step C): this runner owns only its own workspace's queue
+		// rows (queue.NewServiceWithWorkspace scopes ClaimPending/ReclaimRunning
+		// by ownership) and takes a queue lock scoped to that same workspace, so
+		// a linked worktree never contends on a home process's lock (and vice
+		// versa) while both share one data directory.
+		ws := config.WorkspaceRoot(cwd)
+
 		// Use the already-resolved data directory from setupApp (honors
 		// --data-dir AND any configured data_directory), not a re-read of
 		// the raw --data-dir flag with a cwd-based fallback — the same
@@ -201,8 +233,11 @@ reason) are written back to the queue.`,
 		// itself resolved. See task #233.
 		dataDir := a.Config().Options.DataDirectory
 
-		// Acquire the queue lock.
-		lockPath := filepath.Join(dataDir, "queue.lock")
+		// Acquire the queue lock. The name is per-workspace (queueLockName): a
+		// home process keeps "queue.lock"; a linked worktree gets its own
+		// "queue-<hash>.lock", so two checkouts' runners do not exclude each
+		// other over a shared data directory.
+		lockPath := filepath.Join(dataDir, queueLockName(ws))
 		if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 			return err
 		}
@@ -212,7 +247,7 @@ reason) are written back to the queue.`,
 		}
 		defer release()
 
-		q := queue.NewService(a.DB())
+		q := queue.NewServiceWithWorkspace(a.DB(), ws, config.WorkspaceHome())
 		ctx := cmd.Context()
 
 		// Reclaim tasks orphaned in 'running' by a previous runner that

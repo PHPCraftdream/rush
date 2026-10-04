@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,15 +15,22 @@ import (
 // blockingForeverSessionService.Get never returns on its own — it only
 // unblocks when its ctx is cancelled. This stands in for a wedged single-
 // writer DB connection (internal/db/connect.go's SetMaxOpenConns(1)):
-// a.sessions.Get is the very first DB call in Run()'s preamble, before the
-// stream watchdog exists.
+// Run reads the session row with a bounded ctx (first the WS-1 guard's read,
+// then the turn preamble's own), before the stream watchdog exists.
+//
+// The close of `entered` is behind a sync.Once because that bounded read
+// legitimately happens more than once now: the guard's read expires first, the
+// guard steps aside ("not a refusal"), and the preamble's own read expires
+// right after it and surfaces the error the test asserts on. What must hold is
+// that BOTH are bounded — that is task #193.
 type blockingForeverSessionService struct {
 	session.Service
-	entered chan struct{}
+	entered     chan struct{}
+	enteredOnce sync.Once
 }
 
 func (b *blockingForeverSessionService) Get(ctx context.Context, id string) (session.Session, error) {
-	close(b.entered)
+	b.enteredOnce.Do(func() { close(b.entered) })
 	<-ctx.Done()
 	return session.Session{}, ctx.Err()
 }

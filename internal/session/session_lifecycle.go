@@ -18,12 +18,24 @@ import (
 	sqlitedriver "modernc.org/sqlite"
 )
 
+// bindWorkspace is the ONE place a new session row is bound to the process
+// that creates it (#1142 step C, invariant WS-1): workspace_root is the
+// service's own workspace, git_branch is read from <git-dir>/HEAD at creation
+// time. Every creation path (createWithOrigin, the task/title rows, and the
+// fork in session_fork.go) fills its CreateSessionParams through here, so a
+// session can never end up bound to some other process's workspace.
+func (s *service) bindWorkspace(p db.CreateSessionParams) db.CreateSessionParams {
+	p.WorkspaceRoot = s.workspaceRoot
+	p.GitBranch = gitBranchFromWorkDir(s.workDir)
+	return p
+}
+
 func (s *service) createWithOrigin(ctx context.Context, id string, title string, origin message.Origin) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
+	dbSession, err := s.q.CreateSession(ctx, s.bindWorkspace(db.CreateSessionParams{
 		ID:     id,
 		Title:  title,
 		Origin: string(origin),
-	})
+	}))
 	if err != nil {
 		return Session{}, err
 	}
@@ -50,14 +62,14 @@ func (s *service) CreateWithID(ctx context.Context, id, title string) (Session, 
 // that already exists under a DIFFERENT parent stays an error -- id reuse
 // across unrelated parents is never silently accepted.
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
+	dbSession, err := s.q.CreateSession(ctx, s.bindWorkspace(db.CreateSessionParams{
 		ID:              toolCallID,
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
 		Title:           title,
 		// The delegation edge IS the cost-tree edge (#1130): set once at
 		// creation, never re-pointed.
 		CostParentID: parentSessionID,
-	})
+	}))
 	if err != nil {
 		if isSessionsIDUniqueConstraintError(err) {
 			existing, getErr := s.q.GetSessionByID(ctx, toolCallID)
@@ -100,11 +112,11 @@ func isSessionsIDUniqueConstraintError(err error) bool {
 }
 
 func (s *service) CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
+	dbSession, err := s.q.CreateSession(ctx, s.bindWorkspace(db.CreateSessionParams{
 		ID:              "title-" + parentSessionID,
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
 		Title:           "Generate a title",
-	})
+	}))
 	if err != nil {
 		return Session{}, err
 	}
