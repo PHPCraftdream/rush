@@ -379,6 +379,13 @@ func (s *executeRunLoop) handleMessageEvent(event pubsub.Event[message.Message])
 				s.finalReason = string(f.Reason)
 				s.finalErrTitle = f.Message
 				s.finalErrDetails = f.Details
+				if agent.IsInTurnGuardStop(f.Message) {
+					// The guard's stop is neither an error nor a cancellation,
+					// so nothing else would say it on stderr: one line per
+					// finished message (#1149, step 3). The details stay in the
+					// finish message itself and in the envelope warning.
+					fmt.Fprintf(s.stderr, "rush run: in-turn progress guard stopped this turn (%s)\n", f.Message)
+				}
 				break
 			}
 		}

@@ -35,6 +35,14 @@ type resolvedOverrides struct {
 	fast         Model
 	promptPrefix string
 	systemPrompt string
+	// orchestrator is the worker/orchestrator mode this snapshot's systemPrompt
+	// AND tools were built in — the very bool workerSubAgentActiveForCall
+	// returned for this same cfg. sessionPromptForCall
+	// (coordinator_session_prompt.go) compares it against the rule 7 marker in
+	// the session's stored prompt, so a session inherited from before a worker
+	// was configured gets its prompt rebuilt instead of running a prompt that
+	// contradicts its tool set (A24).
+	orchestrator bool
 	// providerCfg is the smart model's provider config, resolved from the
 	// SAME Snapshot()/Config() call that built `smart` above. Callers that
 	// need provider options/credentials for this same model later in one
@@ -251,6 +259,7 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 			slog.Error("resolveSessionModels: failed to rebuild system prompt", "err", err)
 		} else {
 			resolved.systemPrompt = newSystemPrompt
+			resolved.orchestrator = c.workerSubAgentActiveForCall(ctx, cfg)
 		}
 	}
 
@@ -412,6 +421,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 			slog.Error("applyModelOverrides: failed to rebuild system prompt", "err", err)
 		} else {
 			resolved.systemPrompt = newSystemPrompt
+			resolved.orchestrator = c.workerSubAgentActiveForCall(ctx, cfg)
 		}
 	}
 	// R3-1: pin the per-call coder toolset exactly like

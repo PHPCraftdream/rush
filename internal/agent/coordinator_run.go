@@ -100,7 +100,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	}
 
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
-	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
+	sessionSystemPrompt := c.sessionPromptForCall(ctx, sessionID, pinned)
 
 	pinnedSmart := model
 	// R1-1: carry whatever per-call options the arming context holds so a
@@ -273,7 +273,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		}
 	}
 
-	sessionSystemPrompt := c.resolveSessionSystemPrompt(ctx, sessionID)
+	sessionSystemPrompt := c.sessionPromptForCall(ctx, sessionID, pinned)
 
 	// Fork patch: batch 30 — per-run limits, pass through to the agent.
 	// R1-1: with a per-call CallOptions the caps are this call's own and

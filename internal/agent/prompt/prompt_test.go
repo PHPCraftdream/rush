@@ -406,3 +406,22 @@ func TestBuild_DefaultSkillsDirs_ExcludeClaudeSkills(t *testing.T) {
 	require.Contains(t, got, "rush://skills/jq/SKILL.md",
 		"builtin skills must still be advertised by default")
 }
+
+// TestOrchestratorRuleMarker_TracksWorkerAvailable is T10: the marker
+// coordinator.sessionPromptForCall looks for in a session's stored prompt
+// appears exactly when the coder template rendered the orchestrator block.
+//
+// Revert-check: renaming rule 7's heading in coder.md.tpl without updating
+// prompt.OrchestratorRuleMarker turns this red.
+func TestOrchestratorRuleMarker_TracksWorkerAvailable(t *testing.T) {
+	store := testConfigStore(t)
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), true)
+	require.NoError(t, err)
+	require.Contains(t, got, OrchestratorRuleMarker, "a prompt built with a worker carries the rule 7 marker")
+
+	plain, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
+	require.NoError(t, err)
+	require.NotContains(t, plain, OrchestratorRuleMarker, "no worker: no rule 7, no marker")
+}

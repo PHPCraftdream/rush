@@ -22,6 +22,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
+// OrchestratorRuleMarker is the literal heading of rule 7, the block
+// coder.md.tpl renders only when WorkerAvailable is true.
+// coordinator.sessionPromptForCall (internal/agent/coordinator_session_prompt.go)
+// reads a session's STORED system prompt for exactly this substring to tell
+// which mode that prompt was built in, so the two must never drift apart: if
+// the heading is renamed in the template without this constant following, a
+// stored prompt stops advertising its mode and the A24 prompt/tool-set
+// reconciliation silently stops working. prompt_test.go pins the pair.
+const OrchestratorRuleMarker = "**7. Orchestrator mode.**"
+
 // Prompt represents a template-based prompt generator.
 type Prompt struct {
 	name       string

@@ -280,6 +280,15 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 			textWarnings = append(textWarnings, warnings[len(warnings)-1])
 		}
 	}
+	// The in-turn progress guard (#1149) ends a turn that made no progress:
+	// the operator must see it even when exit_reason looks happy ("end_turn",
+	// no error). This is NOT a finalTextWarnings entry on purpose -- loopTotals
+	// keeps a turn's plain warnings even after another turn supersedes its
+	// answer, so a Drain that replaces the stopped turn still reports why it
+	// stopped. Same precedent as the reduction-loss warning below.
+	if agent.IsInTurnGuardStop(finalErrTitle) {
+		warnings = append(warnings, "turn stopped by the in-turn progress guard: "+finalErrDetails)
+	}
 	errMsg := ""
 	switch {
 	case isAwaitingAnswer:
