@@ -70,25 +70,37 @@ func TestJQ_CtxCancel_DuringFilter(t *testing.T) {
 	}
 }
 
-// slowReader serves bytes in small chunks with a fixed delay between
-// Read calls. It never blocks indefinitely — each Read returns after
-// chunkDelay — so cancellation must be observed via ctxReader's ctx
-// check, not by the underlying reader itself. That isolates the
-// behavior we want to test: the wrapper polling ctx between chunks.
-type slowReader struct {
+// countingReader serves its bytes in chunk-sized reads, counting them. The
+// signalAt-th read closes readN, so the test cancels at a KNOWN mid-stream
+// point — after exactly that many chunks — instead of racing a wall-clock
+// timer against the scheduler (a 50ms timer fired before the first Read on
+// a loaded machine, turning the old test into the fast-fail path it was not
+// meant to exercise). Every read sleeps chunkDelay, so draining the whole
+// source takes orders of magnitude longer than the safety deadlines below:
+// a ctxReader that stopped polling ctx fails this test on a deadline, never
+// on a timing assertion.
+type countingReader struct {
 	remaining  []byte
 	chunk      int
 	chunkDelay time.Duration
+	served     int
+	signalAt   int
+	readN      chan struct{}
 }
 
-func (s *slowReader) Read(p []byte) (int, error) {
-	if len(s.remaining) == 0 {
+func (r *countingReader) Read(p []byte) (int, error) {
+	if len(r.remaining) == 0 {
 		return 0, io.EOF
 	}
-	time.Sleep(s.chunkDelay)
-	n := min(len(p), min(s.chunk, len(s.remaining)))
-	copy(p, s.remaining[:n])
-	s.remaining = s.remaining[n:]
+	time.Sleep(r.chunkDelay)
+	n := min(len(p), min(r.chunk, len(r.remaining)))
+	copy(p, r.remaining[:n])
+	r.remaining = r.remaining[n:]
+	r.served++
+	if r.served == r.signalAt && r.readN != nil {
+		close(r.readN)
+		r.readN = nil
+	}
 	return n, nil
 }
 
@@ -98,60 +110,71 @@ func (s *slowReader) Read(p []byte) (int, error) {
 // whole source. This is the guarantee the hook runner relies on when
 // it feeds a large bytes.Reader payload.
 //
-// The reader serves bytes in 512-byte chunks with a 5ms gap between
-// reads. ctx is cancelled after ~50ms, so several chunks have already
-// been read when ctxReader first observes the cancellation. The test
-// asserts that (a) we got a context.Canceled error and (b) the call
-// returned well before the reader would have been fully drained.
+// The reader itself signals when the third chunk has been consumed; the
+// test cancels on that signal and then asserts the CONTRACT — a
+// context.Canceled error and a source left undrained — with no clock
+// comparison among the assertions. The two 10s deadlines are hang guards
+// only: a regression that stops ctxReader from polling would drain the
+// source in ~40s of chunk sleeps and die on the second deadline instead.
 func TestJQ_CtxCancel_MidReadAll(t *testing.T) {
 	t.Parallel()
 
 	const (
-		size       = 64 * 1024 * 1024 // 64 MiB
+		size       = 4 * 1024 * 1024 // a few MiB; fully draining it is ~40s of chunk sleeps
 		chunk      = 512
 		chunkDelay = 5 * time.Millisecond
+		signalAt   = 3 // unambiguously mid-stream
 	)
-	// At 512 bytes / 5ms, draining 64 MiB would take ~11 minutes. Any
-	// return within a second proves cancel was observed mid-stream, not
-	// after EOF.
-	reader := &slowReader{
+	reader := &countingReader{
 		remaining:  bytes.Repeat([]byte("a"), size),
 		chunk:      chunk,
 		chunkDelay: chunkDelay,
+		signalAt:   signalAt,
+		readN:      make(chan struct{}),
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	// Cancel after enough time that several Read calls have completed
-	// and io.ReadAll is actively consuming the source.
+	// handleJQ is the only consumer: it must already be reading when the
+	// mid-stream point is awaited, or the signal below could never fire.
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		done <- handleJQ(ctx, []string{"jq", "-R", "."}, reader, io.Discard, io.Discard)
 	}()
 
-	start := time.Now()
-	err := handleJQ(ctx, []string{"jq", "-R", "."}, reader, io.Discard, io.Discard)
-	elapsed := time.Since(start)
+	// Cancel at the known mid-stream point.
+	select {
+	case <-reader.readN:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reader never served its third chunk; the test harness is stuck")
+	}
+	cancel()
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleJQ did not return within 10s of cancel; ctxReader is not polling between chunks")
 	}
-	// Generous slack for slow CI; the invariant is orders-of-magnitude
-	// faster than draining the full source.
-	if elapsed > time.Second {
-		t.Fatalf("mid-ReadAll cancel took %v; ctxReader is not polling between chunks", elapsed)
+
+	// Mid-stream, both ways, in READ CALLS — io.ReadAll offers buffers of
+	// varying sizes, so bytes consumed are not a fixed function of the call
+	// count: at least the signalled calls really happened (this is not the
+	// pre-read fast-fail path), and the source was NOT drained (a full
+	// drain needs at least size/chunk calls, however small the offered
+	// buffers are — cancel was observed while reads were still pending).
+	if reader.served < signalAt {
+		t.Fatalf("reader was never really read from: %d read calls", reader.served)
 	}
-	// Sanity check: we should have been cancelled mid-stream, not
-	// before any reads happened. If remaining == size, cancel fired so
-	// early nothing was consumed — that's a fast-fail path, not the
-	// mid-read guarantee we want to verify.
+	if reader.served >= size/chunk {
+		t.Fatalf("reader was fully drained (%d read calls); cancel was not observed mid-read", reader.served)
+	}
 	consumed := size - len(reader.remaining)
-	if consumed == 0 {
-		t.Fatal("reader was never read from; test did not exercise mid-ReadAll cancel")
-	}
-	if consumed >= size {
-		t.Fatal("reader was fully drained; cancel was not observed mid-read")
+	if consumed <= 0 || consumed >= size {
+		t.Fatalf("consumed %d of %d bytes: cancel was not observed mid-read", consumed, size)
 	}
 }
 
