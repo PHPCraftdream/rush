@@ -8,6 +8,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Метка `reasoning_effort` в строках сообщений теперь пишет effort ЭТОГО
+  вызова, а не строки сессии: у ревью-хода в колонке оказывается effort слота
+  reviewer (например `max`), а не унаследованный от смарта (#1166).
 - Ревью-проход стал проверяющим (#1165): ход ревьюера получает read-only набор
   инструментов (`view`, `grep`, `glob`, `ls`, `git_read`,
   `read_delegation_transcript`, `fs_read`/`fs_list`/`fs_find`/`fs_grep`) —

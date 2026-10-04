@@ -501,7 +501,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
-	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, currentSession.SmartModelReasoningEffort)
+	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(ctx, currentSession))
 	// Compose this turn's activity-notify callback with any ancestor's (see
 	// withActivityNotify) BEFORE deriving genCtx, so every fantasy stream
 	// callback below — via bumpActivity -> notifyActivity(genCtx) — records

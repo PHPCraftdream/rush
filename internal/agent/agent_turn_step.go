@@ -212,7 +212,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		Parts:           []message.ContentPart{},
 		Model:           ts.smartModel.Model.Model(),
 		Provider:        ts.smartModel.Model.Provider(),
-		ReasoningEffort: ts.currentSession.SmartModelReasoningEffort,
+		ReasoningEffort: turnSmartReasoningEffort(callContext, ts.currentSession),
 	})
 	if err != nil {
 		return callContext, prepared, err
