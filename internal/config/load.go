@@ -63,7 +63,19 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
 
-	cfg.setDefaults(workingDir, dataDir)
+	// Data-directory selection (SD-D #1143, WS-3): the ordered resolution
+	// below runs exactly once here, never in setDefaults and never again
+	// on reload (reloadFromDiskLocked seeds the previous DataDirectory, so
+	// setDefaults keeps it). dataDirFromConfig is only meaningful when the
+	// merged config FILES named a directory -- the pre-merge cfg value is
+	// exactly that (setDefaults has not run yet).
+	configuredDataDir := ""
+	if cfg.Options != nil {
+		configuredDataDir = cfg.Options.DataDirectory
+	}
+	dataDirResolved, dataDirSource := resolveDataDirectory(workingDir, dataDir, configuredDataDir)
+	cfg.setDefaults(workingDir, dataDirResolved)
+	workspaceHomeFlag.Store(dataDirSource != DataDirSourceShared)
 
 	globalDataPath := normalizeReloadPath(GlobalConfigData())
 	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
@@ -82,6 +94,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	store := &ConfigStore{
 		workingDir:     workingDir,
 		globalDataPath: globalDataPath,
+		dataDirSource:  dataDirSource,
 	}
 	// Load workspace config last so it has highest priority.
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
@@ -312,8 +325,14 @@ func ResolveDataDirectory(workingDir, dataDir string) (string, error) {
 		return "", fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
 
-	cfg.setDefaults(workingDir, dataDir)
-	return cfg.Options.DataDirectory, nil
+	// Same ordered resolution Load performs (SD-D #1143 WS-3 parity), so
+	// rescue commands always land on the data directory Load would pick.
+	configuredDataDir := ""
+	if cfg.Options != nil {
+		configuredDataDir = cfg.Options.DataDirectory
+	}
+	dataDirResolved, _ := resolveDataDirectory(workingDir, dataDir, configuredDataDir)
+	return dataDirResolved, nil
 }
 
 // mustMarshalConfig marshals the config to JSON bytes, returning empty JSON on

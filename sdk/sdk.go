@@ -465,7 +465,19 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 		slog.Warn("sdk: failed to register project", "error", err)
 	}
 
-	conn, err := db.Connect(ctx, cfg.Options.DataDirectory)
+	// Shared data directory (SD-D #1143): when the SDK host resolved the
+	// linked worktree's shared <main>/.rush, pin the marker exactly like
+	// the CLI's setupApp, and bar a dev build from migrating the shared DB.
+	if store.DataDirSource() == config.DataDirSourceShared {
+		if err := config.MarkSharedWorkspace(cfg.Options.DataDirectory, config.WorkspaceRoot(workDir)); err != nil {
+			slog.Warn("sdk: failed to mark shared workspace", "error", err)
+		}
+	}
+	migrateOpts := []db.MigrateOption{}
+	if !store.MayMigrateData() {
+		migrateOpts = append(migrateOpts, db.WithMayMigrate(false))
+	}
+	conn, err := db.Connect(ctx, cfg.Options.DataDirectory, migrateOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: failed to connect database in %q: %w", cfg.Options.DataDirectory, err)
 	}

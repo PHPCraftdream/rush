@@ -10,6 +10,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	_ "embed"
 	"fmt"
 	"io"
@@ -38,7 +39,14 @@ import (
 
 func init() {
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
-	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Override the .rush/ data directory (sessions DB, logs, attachments). Defaults to <cwd>/.rush.")
+	rootCmd.PersistentFlags().StringP("data-dir", "D", "",
+		"Override the .rush/ data directory (sessions DB, logs, attachments). "+
+			"Selection order: this flag; options.data_directory from the config; an existing "+
+			"worktree-local .rush with a rush.db (legacy, kept as-is); inside a linked git "+
+			"worktree the main checkout's <main>/.rush (shared -- sessions and logs live with "+
+			"the project and survive `git worktree remove`); dev builds (go run / go build -o "+
+			"in a checkout or temp) isolate to <wt>/.rush/dev so branch builds never touch the "+
+			"shared DB; otherwise <cwd>/.rush.")
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().StringP("host", "H", "localhost", "Host to bind the web UI to")
@@ -342,6 +350,27 @@ func cmdFlagString(cmd *cobra.Command, name string) string {
 	return v
 }
 
+// connectAppDB opens the process database with the migration policy the
+// data-directory source dictates (SD-D #1143): a dev build running against
+// the shared <main>/.rush of a linked worktree must never migrate (or
+// otherwise write schema into) the shared DB; every other combination
+// migrates as before. When the process resolved source=shared it also pins
+// its worktree to the shared directory with the marker file, so a later
+// legacy pre-feature binary cannot silently flip the worktree to
+// legacy-local.
+func connectAppDB(ctx context.Context, store *config.ConfigStore, cfg *config.Config) (*sql.DB, error) {
+	if store.DataDirSource() == config.DataDirSourceShared {
+		if err := config.MarkSharedWorkspace(cfg.Options.DataDirectory, config.WorkspaceRoot(store.WorkingDir())); err != nil {
+			slog.Warn("Failed to mark shared workspace", "error", err)
+		}
+	}
+	opts := []db.MigrateOption{}
+	if !store.MayMigrateData() {
+		opts = append(opts, db.WithMayMigrate(false))
+	}
+	return db.Connect(ctx, cfg.Options.DataDirectory, opts...)
+}
+
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
 func setupApp(cmd *cobra.Command) (*app.App, error) {
@@ -381,7 +410,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	}
 
 	// Connect to DB; this will also run migrations.
-	conn, err := db.Connect(ctx, cfg.Options.DataDirectory)
+	conn, err := connectAppDB(ctx, store, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +476,7 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 		slog.Warn("Failed to register project", "error", err)
 	}
 
-	conn, err := db.Connect(ctx, cfg.Options.DataDirectory)
+	conn, err := connectAppDB(ctx, store, cfg)
 	if err != nil {
 		return nil, err
 	}

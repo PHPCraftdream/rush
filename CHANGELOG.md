@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Связанный git-worktree теперь работает на общем каталоге данных проекта
+  `<main>/.rush` (#1143 SD-D): сессии, логи и `async_jobs` пишутся туда и
+  переживают `git worktree remove`; порядок выбора каталога: `--data-dir` →
+  `options.data_directory` → существующий локальный `.rush` с `rush.db`
+  (legacy, сохраняется; без маркера общего режима остаётся локальным, при
+  маркере игнорируется с WARN «stray local DB ignored») → общая `<main>/.rush`
+  для linked worktree → `<wt>/.rush/dev` для dev-сборок (`go run`, `go build -o`),
+  чтобы сборка ветки не трогала общую БД (она её и не мигрирует) → `<cwd>/.rush`.
+  Источник выбора виден в `ConfigStore.DataDirSource()`; `ResolveDataDirectory`
+  (rescue-команды) даёт тот же результат; reload каталог и источник не меняет.
 - Метка `reasoning_effort` в строках сообщений теперь пишет effort ЭТОГО
   вызова, а не строки сессии: у ревью-хода в колонке оказывается effort слота
   reviewer (например `max`), а не унаследованный от смарта (#1166).

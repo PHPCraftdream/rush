@@ -84,17 +84,17 @@ func WorkspaceRoot(dir string) string {
 
 // WorkspaceHome reports whether this process owns ITS OWN data directory
 // rather than a shared directory handed out to linked worktrees (#1142 step
-// C, WS-1: a legacy unbound session row -- workspace_root ” -- is owned by
-// home processes only). This is deliberately NOT derived from the workspace
-// root: a checkout inside git has a non-empty root and is still a home
-// process today. Until the shared-data-directory switch ships (SD-D, #1143)
-// every process owns its own data directory, so this is constant true; SD-D
-// will derive the real answer from the data-dir source it introduces. This
-// function is the SINGLE source of the flag: app wiring passes its value into
-// the session/wake/queue services, and the agent guard and the server read it
-// directly, so no call site recomputes it from the workspace root.
+// C, WS-1: a legacy unbound session row -- workspace_root empty -- is owned
+// by home processes only). This is deliberately NOT derived from the
+// workspace root: it comes from the data-directory SOURCE Load resolved
+// (SD-D #1143, datadir.go): source shared (a linked worktree running
+// against <main>/.rush) is not home; every other source is. Load stores the
+// flag exactly once per process and reload never changes it (WS-3). This
+// function is the SINGLE source of the flag: app wiring passes its value
+// into the session/wake/queue services, and the agent guard and the server
+// read it directly, so no call site recomputes it from the workspace root.
 func WorkspaceHome() bool {
-	return true
+	return workspaceHomeFlag.Load()
 }
 
 // projectBoundary returns the directory at which an upward configuration

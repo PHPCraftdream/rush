@@ -90,7 +90,11 @@ type ConfigStore struct {
 	// workingDir and globalDataPath are set once at construction time
 	// (Load / NewTestStore) and never mutated afterwards, so they are
 	// safe to read without synchronization.
-	workingDir          string
+	workingDir string
+	// dataDirSource records why Load picked the data directory (WS-3:
+	// computed once, never changed by reload). The empty value behaves
+	// as DataDirSourceDefault -- see DataDirSource().
+	dataDirSource       DataDirSource
 	globalDataPath      string // ~/.local/share/rush/rush.json
 	workingDirOwnerOnce sync.Once
 	workingDirOwner     int
@@ -303,6 +307,33 @@ func (s *ConfigStore) SnapshotWithResolverAndMCPRevisions() (*Config, VariableRe
 // WorkingDir returns the current working directory.
 func (s *ConfigStore) WorkingDir() string {
 	return s.workingDir
+}
+
+// DataDirSource returns why Load picked Options.DataDirectory (SD-D
+// #1143): flag, config, legacy-local, shared, dev-isolated, or default.
+// Reload never changes it (WS-3).
+func (s *ConfigStore) DataDirSource() DataDirSource {
+	if s.dataDirSource == "" {
+		return DataDirSourceDefault
+	}
+	return s.dataDirSource
+}
+
+// WorkspaceHome is the store-scoped form of config.WorkspaceHome: the
+// process owns its own data directory unless Load resolved a shared
+// directory for a linked worktree.
+func (s *ConfigStore) WorkspaceHome() bool {
+	return s.DataDirSource() != DataDirSourceShared
+}
+
+// MayMigrateData reports whether this process may apply pending schema
+// migrations to the data directory's database (SD-D #1143 section 2):
+// only a DEV build running against the SHARED directory of a linked
+// worktree is barred -- branch builds must never migrate the shared DB,
+// while deployed binaries migrate from anywhere and dev builds on their
+// own (dev-isolated / home) directories migrate as always.
+func (s *ConfigStore) MayMigrateData() bool {
+	return s.DataDirSource() != DataDirSourceShared || !isDevBuild()
 }
 
 // Resolver returns the variable resolver.
