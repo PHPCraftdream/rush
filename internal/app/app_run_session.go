@@ -12,7 +12,7 @@ import (
 // ProcessHome reports whether this process owns its own data directory
 // (WS-1, #1142 step C) -- the flag that decides whether legacy unbound (”)
 // rows are drivable here. It is app.New's copy of the single source
-// config.WorkspaceHome() (true until SD-D #1143), NOT a derivation from the
+// config.WorkspaceHome() (false only for a linked worktree on the shared data directory, SD-D #1143), NOT a derivation from the
 // workspace root: a git checkout has a non-empty root and is still a home
 // process today. A nil App (test literals) reads as home, the pre-WS-1 world.
 func (app *App) ProcessHome() bool {

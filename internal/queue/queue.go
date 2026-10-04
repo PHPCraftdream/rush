@@ -60,7 +60,7 @@ type Service struct {
 	// tasks to another checkout's runner.
 	workspaceRoot string
 	// home is the explicit "owns its own data directory" flag
-	// (config.WorkspaceHome() in production, true until SD-D #1143) -- it,
+	// (config.WorkspaceHome() in production; false only for a linked worktree on the shared data directory, SD-D #1143) -- it,
 	// not the workspace root, decides whether legacy '' rows are claimable
 	// here.
 	home bool

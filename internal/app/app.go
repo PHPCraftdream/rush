@@ -143,7 +143,8 @@ type App struct {
 	// home is the explicit "this process owns its own data directory" flag
 	// (WS-1, #1142 step C) -- the one input that decides whether legacy
 	// unbound ('') rows are drivable here. It comes from the single source
-	// config.WorkspaceHome() (true until SD-D #1143), NEVER from the
+	// config.WorkspaceHome() (false only for a linked worktree on the shared data
+	// directory, SD-D #1143), NEVER from the
 	// workspace root: a git checkout has a non-empty root and is still a
 	// home process today, so deriving home from the root would refuse every
 	// pre-existing legacy session to --continue, the pump and the wake
@@ -284,9 +285,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// working directory -- deliberately ConfigStore.WorkingDir() and not
 	// os.Getwd(), which differ for an SDK host that built its config against
 	// another directory. Home/not-home is a SEPARATE flag from the same
-	// single source, config.WorkspaceHome() (true until SD-D #1143 -- every
-	// process owns its data directory, so every pre-existing legacy row
-	// stays drivable); it is handed alongside the root to the session
+	// single source, config.WorkspaceHome() (false only for a linked
+	// worktree on the shared data directory -- every other process owns its
+	// data directory, so every pre-existing legacy row stays drivable); it is handed alongside the root to the session
 	// service and the wake-schedule store, and the agent guard and the
 	// server read the same source, so no WS-1 decision in this process is
 	// taken against a different notion of either value.

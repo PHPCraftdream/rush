@@ -427,7 +427,7 @@ type service struct {
 	// information".
 	workDir string
 	// home is the explicit "this process owns its own data directory" flag
-	// (config.WorkspaceHome() in production, true until SD-D #1143): it —
+	// (config.WorkspaceHome() in production; false only for a linked worktree on the shared data directory, SD-D #1143): it —
 	// not the workspace root — decides whether the legacy unbound ('') rows
 	// are this process's to drive.
 	home bool

@@ -599,7 +599,7 @@ type sessionAgent struct {
 	// model a shared-from-linked process (non-empty workspace, home=false)
 	// without a config store that would produce one. Production wiring never
 	// sets it; home in production comes from the single source
-	// config.WorkspaceHome() (true until SD-D #1143).
+	// config.WorkspaceHome() (false only for a linked worktree on the shared data directory, SD-D #1143).
 	wsHomeOverride *bool
 
 	// onSessionIdle, when non-nil, fires with a session id every time THIS

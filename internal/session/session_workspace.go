@@ -18,13 +18,13 @@ import (
 // its workspace_root equals the process's workspace, or when it is a legacy
 // unbound row (”) and the process is a home process -- the owner of its own
 // data directory. A checkout inside git has a non-empty workspace root and is
-// still a home process today: until SD-D (#1143) introduces the shared data
-// directory, home is NOT derivable from the root, and every production caller
-// passes config.WorkspaceHome() (constant true).
+// still a home process: home is NOT derivable from the root (it is false only
+// for a linked worktree on the shared data directory, SD-D #1143), and every
+// production caller passes config.WorkspaceHome().
 //
 // procHome is therefore an explicit flag from the app layer, never a
-// re-derivation: the pre-SD-D world (every process home) must keep driving
-// every pre-existing legacy row, or "--continue", the pump and the wake
+// re-derivation: a home process (every process but a shared-from-linked one)
+// must keep driving every pre-existing legacy row, or "--continue", the pump and the wake
 // scheduler would all refuse the history they already own.
 func Owns(sessWorkspaceRoot, procWorkspaceRoot string, procHome bool) bool {
 	if sessWorkspaceRoot == procWorkspaceRoot {

@@ -91,8 +91,9 @@ var queueAddCmd = &cobra.Command{
 
 		// WS-1 (#1142 step C): stamp the row with THIS checkout's workspace so
 		// its own `queue run` claims it and another checkout's runner does not.
-		// home is the single-source flag (config.WorkspaceHome(), true until
-		// SD-D #1143), never a function of the root.
+		// home is the single-source flag (config.WorkspaceHome(); false only for a
+		// linked worktree on the shared data directory, SD-D #1143), never a
+		// function of the root.
 		q := queue.NewServiceWithWorkspace(a.DB(), config.WorkspaceRoot(a.Store().WorkingDir()), config.WorkspaceHome())
 		var timeoutSec int64
 		if timeout > 0 {

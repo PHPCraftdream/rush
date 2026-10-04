@@ -328,8 +328,8 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 // as app.New derives the workspace of the session service this coordinator
 // shares with it, and the SEPARATE home flag from the single source
 // config.WorkspaceHome() -- never derived from the root. A checkout inside
-// git has a non-empty root and is still a home process today (every process
-// owns its data directory until SD-D #1143), so it must keep driving the
+// git has a non-empty root and is still a home process (a process owns its data
+// directory unless it is a linked worktree on the shared one, SD-D #1143), so it must keep driving the
 // legacy unbound (”) rows; deriving home from the root would refuse the
 // whole pre-WS-1 history. An agent with no config (bare test fixtures) or
 // with an undetermined working directory keeps the empty root; wsHomeOverride

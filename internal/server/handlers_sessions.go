@@ -36,7 +36,7 @@ func appWorkspaceRoot(a *appPkg.App) string {
 // touches another checkout's session in a shared data directory. A session is
 // owned when its workspace_root equals this process's root, or when it is a
 // legacy unbound row (”) and this process is a home process -- the explicit
-// App.ProcessHome() flag (config.WorkspaceHome(), true until SD-D #1143),
+// App.ProcessHome() flag (config.WorkspaceHome(); false only for a linked worktree on the shared data directory, SD-D #1143),
 // never a derivation from the root: a git checkout has a non-empty root and
 // still owns its legacy rows today.
 func appOwnsSession(a *appPkg.App, sess session.Session) bool {
