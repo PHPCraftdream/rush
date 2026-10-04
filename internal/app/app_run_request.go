@@ -231,6 +231,13 @@ type RunRequest struct {
 	// model (buildReviewerPassTurn): set for the loop's Drains after its reviewer
 	// turn, which react to the async work that turn started.
 	reviewerConfig bool
+	// reviewBasis is the deterministic evidence the reviewer pass needs: the
+	// run's start time, prompt, working dir and a git snapshot taken before the
+	// first turn. Captured once by the first turn and threaded to the loop's
+	// reviewer turn, because ExecuteRun's mutation-free follow-up calls
+	// (reviewerTurn/Drain) do not re-run the first turn's setup. Nil for every
+	// call that is not a `rush run` loop's first turn.
+	reviewBasis *reviewBasis
 	// onTurnSubmitted runs right before the turn is launched: every setup step
 	// that can fail has passed. It lets the loop tell a first turn that never
 	// reached the model from one that ran and failed.

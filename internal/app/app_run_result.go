@@ -35,6 +35,13 @@ type RunResult struct {
 	// after the executor's turn; final_text stays the executor's own last
 	// completed answer. Empty when no reviewer pass ran (the default).
 	Review string `json:"review,omitempty"`
+	// ReviewVerdict is the reviewer pass's parsed verdict: "pass",
+	// "pass_with_notes", "fail", "unverified" (the reviewer passed the run
+	// without a single read-tool call of its own), "unparsed" (no verdict
+	// line) or "error" (the review turn itself failed while the run's own
+	// answer was kept). Empty when no reviewer pass ran. It is an opinion
+	// of a second model and never changes the exit code.
+	ReviewVerdict string `json:"review_verdict,omitempty"`
 	// Fork patch (orchestrator UX): when --json or --format json
 	// triggered the fence/preamble stripper and the model HAD wrapped
 	// its answer in prose or a markdown fence, the unstripped original

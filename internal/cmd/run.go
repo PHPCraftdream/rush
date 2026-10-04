@@ -70,11 +70,25 @@ Four roles exist:
                       stays the run's output ("final_text" in --json); the
                       reviewer's conclusion is carried additively in the
                       "review" field of the --json envelope (empty when no
-                      reviewer ran). Runs that failed, were canceled,
-                      timed out, or queued are returned unchanged, and an
-                      explicit --role reviewer invocation is never
-                      extended. Unconfigure the reviewer to disable the
-                      pass.
+                      reviewer ran). "review_verdict" carries the parsed
+                      first line: pass, pass_with_notes, fail, unverified
+                      (the reviewer passed the run without a single
+                      read-tool call of its own), unparsed (no verdict
+                      line) or error (the review turn failed). The verdict
+                      is an opinion of a second model and the exit code is
+                      not changed by it. The reviewer turn's toolset is
+                      read-only (view/grep/glob/ls/git_read/
+                      read_delegation_transcript and the fs_* read tools; no
+                      write, no shell, no sub-agents, no network, no
+                      questions), so a reviewer pass can never mutate the
+                      workspace it audits, and it is bounded by a 60-minute
+                      hang-guard on top of the run's own --timeout. An error
+                      in the review turn does not change the run's outcome:
+                      the executor's answer and its exit code are kept. Runs
+                      that failed, were canceled, timed out, or queued are
+                      returned unchanged, and an explicit --role reviewer
+                      invocation is never extended. Unconfigure the reviewer
+                      to disable the pass.
 worker/reviewer are configured with "rush models use <smart> <fast>
 --worker <model> --reviewer <model>" (or the web UI / rush.json's
 models.worker / models.reviewer directly). The actual model id behind
@@ -128,10 +142,13 @@ Output modes (mutually exclusive --stream / --json):
   - --stream:        every assistant token streamed live to stdout.
   - --json:          a single JSON object on stdout when the run ends —
                      {session_id, exit_reason, final_text, review,
-                      assistant_notes, tool_calls, usage, duration_ms,
-                      error}. "review" carries the auto reviewer pass's
-                     verdict (empty when none ran); final_text stays the
-                     executor's answer. Tool-call
+                     review_verdict, assistant_notes, tool_calls, usage,
+                     duration_ms, error}. "review" carries the auto
+                     reviewer pass's verdict (empty when none ran) and
+                     "review_verdict" its parsed first line —
+                     pass/pass_with_notes/fail/unverified/unparsed/error;
+                     final_text stays the executor's answer and the exit
+                     code stays the executor's. Tool-call
                      heartbeat still goes to stderr so wrappers can show
                      progress.
 

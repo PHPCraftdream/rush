@@ -28,20 +28,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// reviewerPassPrompt is the fixed user prompt of the automatic reviewer
-// pass. It must always steer the reviewer toward ending with a conclusion
-// and never toward asking a question or proposing more work: an
-// ask_question tool call here would force-finish the turn with
-// awaiting_answer, which nothing is watching to answer.
-const reviewerPassPrompt = `You are now acting as the independent reviewer for this session.
-Review everything that happened above: what was asked, what was delegated,
-what was actually done (tool calls, diffs, test results), and the
-orchestrator's own final answer. Then give your own concluding assessment
-as the final message of this session: what was actually accomplished, any
-gaps, risks, or concerns you found, and your overall verdict. This is the
-session's final message — do not ask questions and do not propose further
-work; conclude.`
-
 // turnRunFunc is the shape of the per-turn runner the phase loop hands to
 // its turn goroutine: the coordinator Run/RunWithOverrides/
 // RunWithCredentials dispatch for the primary turn, or the reviewer pass's
@@ -869,11 +855,13 @@ func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 // stays nil: RunWithOverrides inherits the session's recorded fast slot
 // by itself.
 //
-// No further toolset restriction: ModelRole=reviewer does not trigger the
-// orchestrator's edit/multiedit/write stripping (that fires only for
-// ModelRole=smart with a worker configured, see workerSubAgentActiveForCall
-// in coordinator_tools.go), so the review turn gets exactly the same
-// read+write+bash toolset a manual --role reviewer invocation gets.
+// The review turn's toolset is read-only: with ModelRole=reviewer on the
+// CallOptions, buildTools applies applyCallReviewerReadOnly
+// (coordinator_tools_reviewer.go) and the review turn may only read files
+// (view, grep, glob, ls, git_read, the fs_* read tools and
+// read_delegation_transcript). It cannot write, run a shell command, spawn a
+// sub-agent, reach the network or ask a question, so a reviewer pass can
+// never mutate the workspace it is auditing.
 //
 // The returned context is the run ctx with the review CallOptions
 // attached (shadowing the primary call's), and with two inherited values
@@ -912,7 +900,12 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 	reviewCtx = agent.WithSessionModelPersistence(reviewCtx, nil, nil)
 	reviewCtx = agent.ClearReservedOwnership(reviewCtx)
 	reviewRunFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
-		return app.AgentCoordinator.RunWithOverrides(ctx, sessionID, prompt, reviewerOverride, nil)
+		// A hang-guard, not a work limit: the review turn runs under the
+		// run's own context (--timeout, the 6h cap), which alone would let a
+		// reviewer that reads forever hold the process open indefinitely.
+		reviewCtx, cancel := context.WithTimeout(ctx, reviewerPassTimeout)
+		defer cancel()
+		return app.AgentCoordinator.RunWithOverrides(reviewCtx, sessionID, prompt, reviewerOverride, nil)
 	}
 	return reviewRunFn, reviewCtx
 }

@@ -70,6 +70,8 @@ func (h *reviewerPassApp) requestedToolSets() [][]string {
 type reviewerPassAppOpts struct {
 	withReviewer bool
 	withWorker   bool
+	// reviewerEffort, when set, is the reviewer slot's reasoning effort.
+	reviewerEffort string
 }
 
 func newReviewerPassApp(t *testing.T, withReviewer bool) *reviewerPassApp {
@@ -166,7 +168,7 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "smart-default"})
 	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "fast-default"})
 	if opts.withReviewer {
-		store.SetSelectedModelRuntime(config.SelectedModelTypeReviewer, config.SelectedModel{Provider: "openaicompat", Model: reviewerPassReviewerModel})
+		store.SetSelectedModelRuntime(config.SelectedModelTypeReviewer, config.SelectedModel{Provider: "openaicompat", Model: reviewerPassReviewerModel, ReasoningEffort: opts.reviewerEffort})
 	}
 	if opts.withWorker {
 		store.SetSelectedModelRuntime(config.SelectedModelTypeWorker, config.SelectedModel{Provider: "openaicompat", Model: "reviewer-pass-worker"})
@@ -313,12 +315,25 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 	assert.NotContains(t, sets[0], "multiedit")
 	assert.NotContains(t, sets[0], "write")
 
-	// Review turn: must run as a plain reviewer call — edit tools back,
-	// sub-agent tools gone. Before the F1 fix the review turn executed
-	// under the primary's CallOptions and this assertion failed.
-	assert.Contains(t, sets[1], "edit", "the review turn must not run in orchestrator mode")
+	// Review turn: must run as a plain reviewer call with a READ-ONLY
+	// toolset — view/grep/glob/ls/git_read/read_delegation_transcript are
+	// present, and every write, shell, delegation, network and question tool
+	// is absent. That narrowing is exactly what
+	// agent.applyCallReviewerReadOnly enforces for a reviewer-role top-level
+	// call; the read-only set is reviewerReadOnlyToolNames.
 	assert.NotContains(t, sets[1], "agent", "the review turn must not carry the worker-delegation tool")
 	assert.NotContains(t, sets[1], "agentic_fetch")
+	assert.NotContains(t, sets[1], "edit")
+	assert.NotContains(t, sets[1], "multiedit")
+	assert.NotContains(t, sets[1], "write")
+	assert.NotContains(t, sets[1], "bash")
+	assert.NotContains(t, sets[1], "run_command")
+	assert.NotContains(t, sets[1], "todos")
+	assert.NotContains(t, sets[1], "ask_question")
+	assert.NotContains(t, sets[1], "download")
+	assert.NotContains(t, sets[1], "fetch")
+	assert.Contains(t, sets[1], "view", "the reviewer toolset is read-only, not orchestrator mode")
+	assert.Contains(t, sets[1], "git_read", "the reviewer toolset is read-only, not orchestrator mode")
 
 	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
 		"A10: final_text stays the executor's answer")
@@ -334,9 +349,10 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 // ExecuteRun itself uses. A's ExecuteRun must then fail fast with an
 // error wrapping agent.ErrSessionBusy — NOT queue — and nothing of A's
 // review turn may ever execute, not when B releases and not when B's own
-// queue drains afterwards: the review turn carries write/bash tools, so
-// a queued reviewer call executing under B's lifecycle after A already
-// received a failure is exactly the violation this pins.
+// queue drains afterwards: the review turn is read-only (its toolset is
+// narrowed to the reviewer read-only list), so leaving it to execute under
+// B's lifecycle after A already received a failure is exactly the violation
+// this pins.
 func TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim(t *testing.T) {
 	h := newReviewerPassApp(t, true)
 	sess := createModelOverrideSession(t, h.app, "reviewer-pass-fail-fast")

@@ -510,6 +510,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	// trailing-newline defer below stays registered here (before the
 	// first phase) so its LIFO position among this function's defers is
 	// unchanged.
+	basis := req.reviewBasis
+	if basis == nil && !req.reviewerTurn && !req.drainTurn && !req.deferReviewer {
+		basis = app.captureReviewBasis(ctx, overrides.ModelRole, prompt, runStart)
+	}
 	loop := &executeRunLoop{
 		app:            app,
 		sess:           sess,
@@ -548,7 +552,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		if req.onTurnSubmitted != nil {
 			req.onTurnSubmitted()
 		}
-		result, resultErr := loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
+		result, resultErr := loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
 		loop.flushTerseOutput()
 		return result, resultErr
 	}
@@ -612,17 +616,31 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	}
 	if reviewerCandidate {
 		primaryResult := result
+		primaryFinalText := loop.finalText
 		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
-		reviewResult, reviewErr := loop.runTurnPhase(reviewerPassPrompt, reviewRunFn)
-		// A10: the executor's answer stays final_text; the reviewer's
-		// verdict moves to the additive review field. Only a FAILED review
-		// turn still replaces the run's outcome, exactly as before.
-		if reviewErr == nil && reviewResult != nil && primaryResult != nil {
-			primaryResult.Review = reviewResult.FinalText
+		reviewResult, reviewErr := loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
+		switch {
+		case reviewErr == nil && reviewResult != nil && primaryResult != nil:
+			// A10: the executor's answer stays final_text; the reviewer's
+			// verdict moves to the additive review field, with the parsed
+			// verdict beside it.
+			app.attachReview(ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
 			loop.finalText = primaryResult.FinalText
 			result, resultErr = primaryResult, nil
-		} else {
+		case reviewFailureKeepsPrimary(ctx, reviewErr):
+			// A review turn that failed for a reason of its own (a provider
+			// error, a timeout of the review turn) keeps the executor's
+			// answer as the run's outcome; only a canceled run, a
+			// fail-fast busy refusal or a queued review replace it.
+			slog.Warn("reviewer pass failed", "session", sess.ID, "err", reviewErr)
+			primaryResult.ReviewVerdict = "error"
+			primaryResult.Warnings = append(primaryResult.Warnings,
+				fmt.Sprintf("reviewer pass failed: %v", reviewErr))
+			fmt.Fprintf(stderr, "rush run: reviewer pass failed: %v\n", reviewErr)
+			loop.finalText = primaryFinalText
+			result, resultErr = primaryResult, nil
+		default:
 			result, resultErr = reviewResult, reviewErr
 		}
 	}

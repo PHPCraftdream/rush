@@ -204,6 +204,10 @@ type cliLoop struct {
 	// reviewerDone: the reviewer pass ran (or was refused); it never runs again
 	// in this invocation, and later Drains run on its call options and model.
 	reviewerDone bool
+	// reviewBasis is the evidence snapshot the loop's reviewer turn needs:
+	// captured from the FIRST turn's ExecuteRun (which owns the user prompt)
+	// and carried forward, since the loop's later calls do not repeat it.
+	reviewBasis *reviewBasis
 
 	// firstSubmitted: the user's own turn was launched (every setup step that
 	// can fail before it had passed). A failure before that ends the run.
@@ -304,6 +308,7 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		hideSpinner: hideSpinner, overrides: overrides, turnOverrides: turnOverrides,
 		prompt: prompt, continueSessionID: continueSessionID, useLast: useLast,
 		started: started, sessionID: continueSessionID, lastBuffered: &bytes.Buffer{},
+		reviewBasis: app.captureReviewBasis(ctx, overrides.ModelRole, prompt, started),
 	}
 	// Doc sec.3.4: this loop IS the external driver for its session -- claimed
 	// (durably, so no other process starts a reaction turn for it) as soon as
@@ -404,6 +409,7 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 		captureResult:     true,
 		loopTurn:          true,
 		reviewerTurn:      true,
+		reviewBasis:       l.reviewBasis,
 		onSessionResolved: l.claim,
 	})
 	if cliLoopTurnDoneSeam != nil {
@@ -461,10 +467,18 @@ func (l *cliLoop) closePhase() cliStepResult {
 			// terse output stays the printed answer); the reviewer's verdict
 			// is attached as the additive review field.
 			if l.final != nil {
-				l.final.Review = result.FinalText
+				l.app.attachReview(l.ctx, l.final, l.sessionID, result.FinalText, l.errOut())
 			}
 			l.runErr, l.lastFailed = nil, nil
 			return cliStepResult{ev: evCloseAgain}
+		}
+		if turnErr != nil && reviewFailureKeepsPrimary(l.ctx, turnErr) {
+			// A review turn that failed for a reason of its own (a provider
+			// error, its own timeout) keeps the executor's answer.
+			l.runErr, l.lastFailed = nil, nil
+			recordReviewFailure(l.final, l.errOut(), turnErr)
+			final, err := l.exit(nil, "")
+			return cliStepResult{ev: evCloseEnded, final: final, err: err}
 		}
 		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, turnErr, nil
 		final, err := l.exit(turnErr, "")

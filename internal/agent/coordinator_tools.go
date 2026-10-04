@@ -569,6 +569,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 	agent = c.applyCallFolderScope(ctx, agent)
+	agent = applyCallReviewerReadOnly(ctx, agent, isSubAgent)
 
 	// The scope and disk provider the fs_* tools constructed below are
 	// built with: THIS call's FolderScope/DiskProvider, or their zero
