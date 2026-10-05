@@ -2,7 +2,10 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 )
 
 // JobKindBGShell is async_jobs.kind for a background shell that survives its
@@ -43,9 +46,33 @@ func (s *AsyncJobStore) ClaimShell(ctx context.Context, owner, shellID string, o
 		return ClaimResult{}, fmt.Errorf("async job store: claim shell: %w", err)
 	}
 	if err := s.MarkAnnounced(ctx, owner, shellID); err != nil {
+		if !errors.Is(err, ErrAsyncJobGone) {
+			s.abandonShellClaim(owner, shellID, result.Row.ClaimID)
+		}
 		return ClaimResult{}, fmt.Errorf("async job store: claim shell: mark announced: %w", err)
 	}
 	return result, nil
+}
+
+// shellClaimCleanupBudget bounds abandonShellClaim on its own context: the
+// claim's context may be the very thing that ran out.
+const shellClaimCleanupBudget = 5 * time.Second
+
+// abandonShellClaim removes the row ClaimShell just inserted when announcing it
+// failed (B9-1, ox round 9). The caller refuses the background start and kills
+// the shell, so no observer is ever registered, and nothing else closes an
+// unannounced running row of a LIVE host: it would stay open work for the whole
+// life of the process. The delete is scoped to this claim AND to announced=0, so
+// the already-announced row of an earlier claim of the same shell id (an
+// idempotent repeat) and a row another incarnation claimed meanwhile are never
+// touched. Best effort: a database that cannot delete either is logged and left
+// to the next restart's dead-host sweep.
+func (s *AsyncJobStore) abandonShellClaim(owner, shellID, claimID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), shellClaimCleanupBudget)
+	defer cancel()
+	if _, err := s.deleteUnannouncedForClaim(ctx, owner, shellID, claimID); err != nil {
+		slog.Error("background shell claim: could not remove the unannounced row", "session_id", owner, "shell_id", shellID, "err", err)
+	}
 }
 
 // ShellExitState maps a finished shell's outcome to the row's terminal state.
