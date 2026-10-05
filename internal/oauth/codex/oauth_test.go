@@ -53,7 +53,7 @@ func TestLoginBrowserPKCEStateAndExactCallback(t *testing.T) {
 	defer tokenServer.Close()
 
 	listen := func() (net.Listener, error) {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 		callbackListener = listener
 		boundBeforeURL = err == nil
 		return listener, err
@@ -86,7 +86,7 @@ func TestLoginBrowserPKCEStateAndExactCallback(t *testing.T) {
 
 		callbackURL := "http://" + callbackListener.Addr().String() + "/auth/callback"
 		client := &http.Client{Transport: &http.Transport{Proxy: nil}}
-		badRequest, err := http.NewRequest(http.MethodGet, callbackURL+"?state=incorrect&code=attacker-code", nil)
+		badRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL+"?state=incorrect&code=attacker-code", nil)
 		if err != nil {
 			return err
 		}
@@ -100,7 +100,7 @@ func TestLoginBrowserPKCEStateAndExactCallback(t *testing.T) {
 			return fmt.Errorf("wrong-state callback status = %d, want %d", badResponse.StatusCode, http.StatusBadRequest)
 		}
 
-		goodRequest, err := http.NewRequest(http.MethodGet, callbackURL+"?state="+url.QueryEscape(expectedState)+"&code=one-time-code", nil)
+		goodRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL+"?state="+url.QueryEscape(expectedState)+"&code=one-time-code", nil)
 		if err != nil {
 			return err
 		}
@@ -130,7 +130,7 @@ func TestLoginBrowserPKCEStateAndExactCallback(t *testing.T) {
 func TestLoginBrowserCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestCallbackRejectsNonLoopbackOrIncorrectHost(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := make(chan callbackResult, 1)
-			request := httptest.NewRequest(http.MethodGet, "http://localhost:1455/auth/callback?"+test.query, nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:1455/auth/callback?"+test.query, nil)
 			request.Host = test.host
 			request.RemoteAddr = test.remoteAddr
 			response := httptest.NewRecorder()
@@ -316,6 +316,7 @@ func TestTokenEndpointErrorDoesNotLeakRefreshToken(t *testing.T) {
 		t.Fatalf("refresh error = %T %v, want revocation-aware token error", err, err)
 	}
 }
+
 func tokenJSON(account, access, refresh string) string {
 	return fmt.Sprintf(`{"access_token":%q,"refresh_token":%q,"expires_in":3600}`, jwtWithSubject(account, access), refresh)
 }

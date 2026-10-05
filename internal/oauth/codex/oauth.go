@@ -184,7 +184,7 @@ func LoginBrowser(ctx context.Context, onURL func(string) error) (*oauth.Token, 
 
 func loginBrowser(ctx context.Context, onURL func(string) error, client *http.Client, listen listenFunc, authEndpoint, exchangeEndpoint string) (*oauth.Token, error) {
 	if onURL == nil {
-		return nil, errors.New("Codex browser login requires a URL callback")
+		return nil, errors.New("codex browser login requires a URL callback")
 	}
 	flowCtx, cancel := context.WithTimeout(ctx, browserTimeout)
 	defer cancel()
@@ -195,7 +195,7 @@ func loginBrowser(ctx context.Context, onURL func(string) error, client *http.Cl
 	}
 	if !listenerIsLoopback(listener) {
 		listener.Close()
-		return nil, errors.New("Codex OAuth callback listener is not bound to loopback")
+		return nil, errors.New("codex OAuth callback listener is not bound to loopback")
 	}
 	defer listener.Close()
 
@@ -233,7 +233,7 @@ func loginBrowser(ctx context.Context, onURL func(string) error, client *http.Cl
 	select {
 	case <-flowCtx.Done():
 		if errors.Is(flowCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return nil, errors.New("Codex browser authorization timed out")
+			return nil, errors.New("codex browser authorization timed out")
 		}
 		return nil, flowCtx.Err()
 	case result = <-callback:
@@ -281,7 +281,7 @@ func callbackHandler(expectedState string, result chan<- callbackResult) http.Ha
 		}
 		if len(oauthErrors) == 1 && oauthErrors[0] != "" {
 			http.Error(w, "Codex authorization was denied", http.StatusBadRequest)
-			sendResult(callbackResult{err: errors.New("Codex authorization was denied")})
+			sendResult(callbackResult{err: errors.New("codex authorization was denied")})
 			return
 		}
 		codes := query["code"]
@@ -342,7 +342,7 @@ func LoginDevice(ctx context.Context, onCode func(url, code string) error) (*oau
 
 func loginDevice(ctx context.Context, onCode func(url, code string) error, client *http.Client, userCodeEndpoint, deviceTokenEndpoint, exchangeEndpoint string, interval, safetyMargin time.Duration, maxPolls int) (*oauth.Token, error) {
 	if onCode == nil {
-		return nil, errors.New("Codex device login requires a code callback")
+		return nil, errors.New("codex device login requires a code callback")
 	}
 	client = oauthHTTPClient(client)
 	initCtx, initCancel := context.WithTimeout(ctx, requestTimeout)
@@ -354,10 +354,10 @@ func loginDevice(ctx context.Context, onCode func(url, code string) error, clien
 		Interval     json.RawMessage `json:"interval"`
 	}
 	if err := postJSON(initCtx, client, userCodeEndpoint, map[string]string{"client_id": clientID}, &initResponse); err != nil {
-		return nil, fmt.Errorf("Codex device authorization initiation failed: %w", err)
+		return nil, fmt.Errorf("codex device authorization initiation failed: %w", err)
 	}
 	if initResponse.DeviceAuthID == "" || initResponse.UserCode == "" {
-		return nil, errors.New("Codex device authorization response missing required fields")
+		return nil, errors.New("codex device authorization response missing required fields")
 	}
 	pollDelay := devicePollDelay(initResponse.Interval, safetyMargin)
 	deviceCtx, cancel := context.WithTimeout(ctx, time.Duration(maxPolls)*(max(interval, pollDelay)+requestTimeout)+requestTimeout)
@@ -374,7 +374,7 @@ func loginDevice(ctx context.Context, onCode func(url, code string) error, clien
 		}
 		if err := waitContext(deviceCtx, delay); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return nil, errors.New("Codex device authorization timed out")
+				return nil, errors.New("codex device authorization timed out")
 			}
 			return nil, err
 		}
@@ -383,7 +383,7 @@ func loginDevice(ctx context.Context, onCode func(url, code string) error, clien
 			"user_code":      initResponse.UserCode,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("Codex device token polling failed: %w", err)
+			return nil, fmt.Errorf("codex device token polling failed: %w", err)
 		}
 		if status == http.StatusForbidden || status == http.StatusNotFound {
 			continue
@@ -399,11 +399,11 @@ func loginDevice(ctx context.Context, onCode func(url, code string) error, clien
 			return nil, fmt.Errorf("invalid Codex device token response: %w", err)
 		}
 		if pollResponse.AuthorizationCode == "" || pollResponse.CodeVerifier == "" {
-			return nil, errors.New("Codex device token response missing authorization_code or code_verifier")
+			return nil, errors.New("codex device token response missing authorization_code or code_verifier")
 		}
 		return exchangeCode(deviceCtx, client, exchangeEndpoint, pollResponse.AuthorizationCode, pollResponse.CodeVerifier, deviceRedirectURI)
 	}
-	return nil, errors.New("Codex device authorization timed out")
+	return nil, errors.New("codex device authorization timed out")
 }
 
 func devicePollDelay(raw json.RawMessage, safetyMargin time.Duration) time.Duration {
@@ -440,7 +440,7 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 // Refresh rotates a ChatGPT OAuth refresh token using the configured network client.
 func Refresh(ctx context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
 	if refreshToken == "" {
-		return nil, errors.New("Codex refresh token is empty")
+		return nil, errors.New("codex refresh token is empty")
 	}
 	return refresh(ctx, client, tokenURL, refreshToken)
 }
@@ -474,7 +474,7 @@ func exchangeForm(ctx context.Context, client *http.Client, endpoint string, val
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := oauthHTTPClient(client).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Codex token request failed: %w", err)
+		return nil, fmt.Errorf("codex token request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := readBounded(resp.Body)
@@ -502,7 +502,7 @@ func exchangeForm(ctx context.Context, client *http.Client, endpoint string, val
 		return nil, fmt.Errorf("invalid Codex token response: %w", err)
 	}
 	if response.AccessToken == "" || response.RefreshToken == "" || response.ExpiresIn <= 0 {
-		return nil, errors.New("Codex token response missing access_token, refresh_token, or expires_in")
+		return nil, errors.New("codex token response missing access_token, refresh_token, or expires_in")
 	}
 	token := &oauth.Token{
 		AccessToken:  response.AccessToken,
@@ -546,7 +546,7 @@ func postJSONResponse(ctx context.Context, client *http.Client, endpoint string,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("Codex device request failed: %w", err)
+		return 0, nil, fmt.Errorf("codex device request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	responseBody, err := readBounded(resp.Body)

@@ -16,7 +16,7 @@ func TestCallbackOnlySendsFirstResult(t *testing.T) {
 	result := make(chan callbackResult, 1)
 	handler := callbackHandler("expected-state", result)
 	request := func(code string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodGet, "http://localhost:1455/auth/callback?state=expected-state&code="+code, nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:1455/auth/callback?state=expected-state&code="+code, nil)
 		r.Host = "localhost:1455"
 		r.RemoteAddr = "127.0.0.1:12345"
 		response := httptest.NewRecorder()
@@ -50,7 +50,7 @@ func TestCallbackOnlySendsFirstResult(t *testing.T) {
 }
 
 func TestLoopbackListenerBindsIPv4AndAvailableIPv6(t *testing.T) {
-	probe, probeErr := net.Listen("tcp6", net.JoinHostPort("::1", "0"))
+	probe, probeErr := (&net.ListenConfig{}).Listen(t.Context(), "tcp6", net.JoinHostPort("::1", "0"))
 	ipv6Available := probeErr == nil
 	if probeErr == nil {
 		if err := probe.Close(); err != nil {
@@ -72,7 +72,7 @@ func TestLoopbackListenerBindsIPv4AndAvailableIPv6(t *testing.T) {
 		if host == "::1" && !ipv6Available {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), time.Second)
+		conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", net.JoinHostPort(host, port))
 		if err != nil {
 			t.Fatalf("could not connect to callback listener at %s: %v", net.JoinHostPort(host, port), err)
 		}
