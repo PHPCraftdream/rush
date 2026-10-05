@@ -164,6 +164,16 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		persistedFastModel = &session.ModelSlotUpdate{Provider: fastOverride.Provider, Model: fastOverride.Model}
 	}
 
+	// Apply explicit effort to the override of the targeted slot. #1221 prohibits
+	// inheriting effort across a model switch unless given explicitly here.
+	if overrides.ReasoningEffort != "" {
+		if overrides.RoleSmart && smartOverride != nil {
+			smartOverride.ReasoningEffort = overrides.ReasoningEffort
+		} else if !overrides.RoleSmart && fastOverride != nil {
+			fastOverride.ReasoningEffort = overrides.ReasoningEffort
+		}
+	}
+
 	var (
 		spinner   *format.Spinner
 		stderrTTY bool
