@@ -192,15 +192,44 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 	}, true
 }
 
+// NormalizeCodexModel re-applies the context-window rules to a model that was
+// not just parsed from the live catalog but taken from a cache written by an
+// older Rush: such an entry keeps the value of the Rush that wrote it (272000
+// for every gpt-6 model until the documented window was applied), and the
+// cache would otherwise replay it until its TTL runs out.
+func NormalizeCodexModel(model catwalk.Model) catwalk.Model {
+	model.ContextWindow = codexContextWindow(model.ID, model.ContextWindow)
+	if model.DefaultMaxTokens > model.ContextWindow {
+		model.DefaultMaxTokens = model.ContextWindow
+	}
+	return model
+}
+
+// codexGPT6Documented reports whether id is a model of the documented GPT-6
+// family: gpt-6 or a later gpt-6.N release of astra, sol or luna.
+func codexGPT6Documented(id string) bool {
+	if !strings.HasPrefix(id, "gpt-6") {
+		return false
+	}
+	for _, tier := range []string{"-astra", "-sol", "-luna"} {
+		if strings.HasSuffix(id, tier) {
+			return true
+		}
+	}
+	return false
+}
+
 func codexContextWindow(id string, reported int64) int64 {
 	canonicalID := strings.TrimSuffix(id, "-wm")
-	switch canonicalID {
-	case "gpt-6-astra", "gpt-6-sol", "gpt-6-luna":
+	if codexGPT6Documented(canonicalID) {
 		// A stale or account-reduced catalog value never lowers the
 		// documented window of these models.
 		if reported < codexGPT6ContextWindow {
 			return codexGPT6ContextWindow
 		}
+		return reported
+	}
+	switch canonicalID {
 	case "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra":
 		if reported < codexGPT56OneMContextWindow {
 			return codexGPT56OneMContextWindow

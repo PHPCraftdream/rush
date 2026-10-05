@@ -85,6 +85,39 @@ func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
 		"a stale-schema cache must still hide the superseded families when served")
 }
 
+// TestCachedProviderModelsRaisesStaleCodexContext: a Codex catalog cache
+// written by a Rush that predates the documented GPT-6 window (observed: every
+// gpt-6 entry at 272000, valid for seven days) must not replay those values.
+//
+// Revert-check: serve entry.Models without normalizeCatalogModels and the
+// gpt-6 windows come back as 272000.
+func TestCachedProviderModelsRaisesStaleCodexContext(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	entry := cachedModelCatalog{
+		Fingerprint: modelCatalogFingerprint("openai-codex", "https://chatgpt.com/backend-api/codex", "account-a"),
+		FetchedAt:   time.Now(),
+		Models: []catwalk.Model{
+			{ID: "gpt-6-luna", ContextWindow: 272000, DefaultMaxTokens: 128000},
+			{ID: "gpt-6.1-sol", ContextWindow: 272000, DefaultMaxTokens: 128000},
+		},
+	}
+	data, err := json.Marshal(entry)
+	require.NoError(t, err)
+	path := modelCatalogPath("openai-codex")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, atomicWriteFile(path, data, 0o600))
+
+	fetchCalls := 0
+	models, err := cachedProviderModels(t.Context(), "openai-codex", "https://chatgpt.com/backend-api/codex", "account-a",
+		func(context.Context) ([]catwalk.Model, error) { fetchCalls++; return nil, nil })
+	require.NoError(t, err)
+	require.Zero(t, fetchCalls, "a fresh cache must be served without refetching")
+	require.Len(t, models, 2)
+	for _, model := range models {
+		require.EqualValues(t, 1_050_000, model.ContextWindow, model.ID)
+	}
+}
+
 // modelIDs extracts model ids in order for the assertions above.
 func modelIDs(models []catwalk.Model) []string {
 	ids := make([]string, 0, len(models))
