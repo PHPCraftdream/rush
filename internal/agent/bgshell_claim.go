@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -13,6 +16,25 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
+
+// bgShellMissingRowGrace bounds how long finishBGShellRow keeps retrying a
+// missing bg_shell row. Guarded by a mutex so tests can shorten it without
+// racing the goroutines that read it.
+var bgShellMissingRowGraceMu sync.Mutex
+
+var bgShellMissingRowGrace = 30 * time.Second
+
+func setBGShellMissingRowGrace(d time.Duration) {
+	bgShellMissingRowGraceMu.Lock()
+	defer bgShellMissingRowGraceMu.Unlock()
+	bgShellMissingRowGrace = d
+}
+
+func bgShellMissingRowGraceDuration() time.Duration {
+	bgShellMissingRowGraceMu.Lock()
+	defer bgShellMissingRowGraceMu.Unlock()
+	return bgShellMissingRowGrace
+}
 
 // claimBackgroundShellRow gives a SYNC bash call's background escape a durable
 // async_jobs row (R-BG-1, docs/plans/2026-10-01-bg-shell-ledger.md). The
@@ -79,11 +101,24 @@ func (t *asyncTool) finishBGShellRow(ctx context.Context, sessionID, shellID, su
 		return
 	}
 	store := t.coordinator.asyncJobs.store
+	var missingSince time.Time
 	if err := t.coordinator.asyncJobs.retryAsyncStoreOp(ctx, func() error {
 		row, err := store.Get(ctx, sessionID, shellID)
 		if err != nil {
+			// Only a missing row gets a grace period; every other error
+			// keeps the existing retry behaviour.
+			if errors.Is(err, sql.ErrNoRows) {
+				if missingSince.IsZero() {
+					missingSince = time.Now()
+				} else if time.Since(missingSince) > bgShellMissingRowGraceDuration() {
+					slog.Warn("background shell row is gone; giving up",
+						"session_id", sessionID, "shell_id", shellID)
+					return nil
+				}
+			}
 			return err
 		}
+		missingSince = time.Time{} // Readable again; the timer is irrelevant.
 		if row.State != "running" {
 			return nil
 		}

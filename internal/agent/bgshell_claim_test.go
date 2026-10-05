@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -349,6 +350,72 @@ func TestFinishBGShellRow_RetriesUntilTheRowIsReadable(t *testing.T) {
 		t.Fatal("finishBGShellRow never completed")
 	}
 	row, err := store.Get(context.Background(), "sess", "sh-late")
+	require.NoError(t, err)
+	require.Equal(t, "completed", row.State)
+}
+
+// A row that never appears is gone for good (the claim always precedes the
+// observer, so a missing row means it was deleted mid-run, e.g. with its
+// session): after bgShellMissingRowGrace the finisher must give up instead of
+// retrying until process exit. Mutating the package grace var, so this test
+// does not run in parallel.
+//
+// REVERT CHECK: removing the missing-row grace from finishBGShellRow leaves it
+// retrying forever -- this test FAILED (timed out waiting for the give-up).
+func TestFinishBGShellRow_GivesUpOnRowMissingPastGrace(t *testing.T) {
+	previous := bgShellMissingRowGraceDuration()
+	setBGShellMissingRowGrace(200 * time.Millisecond)
+	t.Cleanup(func() { setBGShellMissingRowGrace(previous) })
+
+	store := newTestAsyncJobStore(t)
+	registry := newWorkLedger(nil)
+	registry.store = store
+	tool := &asyncTool{coordinator: &coordinator{asyncJobs: registry}}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		tool.finishBGShellRow(context.Background(), "sess", "sh-never-claimed", "gone", false)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("finishBGShellRow never gave up on the missing row")
+	}
+	_, err := store.Get(context.Background(), "sess", "sh-never-claimed")
+	require.ErrorIs(t, err, sql.ErrNoRows, "no row must appear for a shell that was never claimed")
+}
+
+// A row that appears WITHIN the grace still completes: the grace only bounds
+// the case of a row that never comes back. Unlike the 50 ms late-claim test
+// above, this runs under a shortened grace, so the give-up logic itself is in
+// play and must not fire early.
+func TestFinishBGShellRow_RowWithinShortenedGraceStillCompletes(t *testing.T) {
+	previous := bgShellMissingRowGraceDuration()
+	setBGShellMissingRowGrace(500 * time.Millisecond)
+	t.Cleanup(func() { setBGShellMissingRowGrace(previous) })
+
+	store := newTestAsyncJobStore(t)
+	registry := newWorkLedger(nil)
+	registry.store = store
+	tool := &asyncTool{coordinator: &coordinator{asyncJobs: registry}}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		tool.finishBGShellRow(context.Background(), "sess", "sh-slow-claim", "slow", false)
+	}()
+	// Appears inside the 500 ms grace; earlier attempts must keep retrying.
+	time.Sleep(100 * time.Millisecond)
+	_, err := store.ClaimShell(context.Background(), "sess", "sh-slow-claim", false)
+	require.NoError(t, err)
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("finishBGShellRow gave up on a row that appeared within the grace")
+	}
+	row, err := store.Get(context.Background(), "sess", "sh-slow-claim")
 	require.NoError(t, err)
 	require.Equal(t, "completed", row.State)
 }
