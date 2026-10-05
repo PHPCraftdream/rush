@@ -185,7 +185,9 @@ func (l *workLedger) answerHeldDelegation(ctx context.Context, owner, childID, p
 		return fantasy.ToolResponse{}, false
 	}
 	job := l.heldQuestionJob(childID)
-	if job == nil || job.owner != owner {
+	// A sync X (#1212) has no durable row to hold and its consumer is blocked
+	// in awaitSync: it is never answered here.
+	if job == nil || job.owner != owner || job.sync {
 		return fantasy.ToolResponse{}, false
 	}
 	// Not a held question: ordinary path (Claim; the phase-4 refusal stands).
@@ -219,10 +221,15 @@ func (l *workLedger) answerHeldDelegation(ctx context.Context, owner, childID, p
 	call := driver.callFor(prompt)
 	agent := l.coord.agentFor(childID)
 	go func() {
-		// Origin is preserved: CLI/web callers detached this call's ctx from
-		// their turn already (asyncTool.Run), and the answer turn must
-		// outlive it like any delegation executor.
+		// Detached from the caller's turn like any delegation executor; the
+		// replayed turn carries X's own origin (#1212) so the child's async
+		// tools register as jobs instead of blocking the turn.
 		runCtx := context.WithoutCancel(ctx)
+		if job.cli {
+			runCtx = WithCallOrigin(runCtx, message.OriginCLI)
+		} else {
+			runCtx = WithCallOrigin(runCtx, message.OriginWeb)
+		}
 		_, _, _ = l.coord.runAwaitingAdmission(runCtx, agent, call)
 		l.clearAnswerHold(job)
 		l.recheckChild(childID)

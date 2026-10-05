@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,74 +228,212 @@ func TestInspectAgent_AwaitingAfterQuestionToolResult(t *testing.T) {
 	require.Contains(t, insp.LastActivitySummary, "the queue is full")
 }
 
-// T2: the parent's answer goes INTO the held delegation -- no new row, the
-// inner agent tool is not invoked, the child's turn receives the prompt, and
-// the delegation still releases once the child's own work drains, now with
-// the final text instead of the question.
+// originRecordingAgent records the call origin of every Run it forwards to
+// the fixture's real session agent.
+type originRecordingAgent struct {
+	*sessionAgent
+	mu      sync.Mutex
+	origins []message.Origin
+}
+
+func (a *originRecordingAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	a.mu.Lock()
+	a.origins = append(a.origins, CallOriginFrom(ctx))
+	a.mu.Unlock()
+	return a.sessionAgent.Run(ctx, call)
+}
+
+func (a *originRecordingAgent) recordedOrigins() []message.Origin {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]message.Origin(nil), a.origins...)
+}
+
+// T2: the parent's answer goes INTO the held delegation -- no new row, no
+// second delegation, the child's turn receives the prompt, and the delegation
+// releases exactly once -- for EVERY call origin, including the absent one: a
+// parent woken for the child_question by a Drain turn (#1212) answers with no
+// origin on its ctx at all, and the intercept must not depend on it. The
+// replayed answer turn itself runs with X's OWN origin (OriginCLI for a
+// CLI-claimed X, OriginWeb otherwise), not the answering call's.
 //
-// Revert-check: removing the answerHeldDelegation intercept in asyncTool.Run
-// hits ASYNC-01's ErrAsyncChildSessionBusy refusal and this test goes red on
-// the error assertion.
+// Revert-check: restoring the `!sync` gate on the intercept makes the
+// unspecified-origin subtest miss the held path and block in a sync
+// delegation's awaitSync -- Run misses the 2s deadline and the inner tool
+// runs (innerCalled).
 func TestChildQuestion_ResumeAnswersHeldDelegation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		origin     message.Origin
+		claimCLI   bool
+		wantReplay message.Origin
+	}{
+		{name: "cli", origin: message.OriginCLI, claimCLI: true, wantReplay: message.OriginCLI},
+		{name: "web", origin: message.OriginWeb, claimCLI: false, wantReplay: message.OriginWeb},
+		// The Drain turn's ctx: no WithCallOrigin was ever applied to it.
+		{name: "unspecified", origin: message.OriginUnspecified, claimCLI: false, wantReplay: message.OriginWeb},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f, parentID, childID, delivered, held := questionFixture(t)
+			waitChildQuestion(t, f, parentID)
+
+			// The driver's agent becomes a recording wrapper so the test can
+			// observe the origin the replayed answer turn is run with.
+			rec := &originRecordingAgent{sessionAgent: f.sa}
+			f.coord.subAgentDrivers.register(childID, subAgentDriver{
+				agent: rec, call: SessionAgentCall{SessionID: childID}, parentSessionID: parentID,
+			})
+			if tc.claimCLI {
+				// A CLI parent claims X with origin_cli=1 (asyncTool.Run's Start).
+				xjob := jobOf(f.ledger, parentID, "delegate-1")
+				f.ledger.mu.Lock()
+				xjob.cli = true
+				f.ledger.mu.Unlock()
+			}
+
+			var mu sync.Mutex
+			var bodies []string
+			f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				bodies = append(bodies, string(b))
+				mu.Unlock()
+				textFinishResponse(w, "final answer after the answer")
+			})
+
+			innerCalled := &atomic.Bool{}
+			inner := fantasy.NewAgentTool(AgentToolName, "inner",
+				func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+					innerCalled.Store(true)
+					return fantasy.NewTextResponse("inner"), nil
+				})
+			tl := &asyncTool{inner: inner, coordinator: f.coord, name: AgentToolName}
+			call := fantasy.ToolCall{ID: "call-answer", Input: fmt.Sprintf(`{"prompt":"report now","resume_session_id":%q}`, childID)}
+			sessCtx := context.WithValue(ctx, tools.SessionIDContextKey, parentID)
+			if tc.origin != message.OriginUnspecified {
+				sessCtx = WithCallOrigin(sessCtx, tc.origin)
+			}
+
+			// Run must return promptly while the child's own job (the held
+			// shell) is still running: a missed intercept falls into a sync
+			// delegation whose awaitSync only unblocks when the child's scope
+			// drains -- it never does here until finishHungJob below.
+			type runOutcome struct {
+				resp fantasy.ToolResponse
+				err  error
+			}
+			done := make(chan runOutcome, 1)
+			go func() {
+				resp, err := tl.Run(sessCtx, call)
+				done <- runOutcome{resp, err}
+			}()
+			var res runOutcome
+			select {
+			case res = <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("agent tool did not return within 2s: the answer missed the held delegation and blocked in awaitSync")
+			}
+			require.NoError(t, res.err)
+			require.False(t, res.resp.IsError)
+			require.Contains(t, res.resp.Content, "Answer delivered to sub-agent "+childID)
+			require.Contains(t, res.resp.Content, "delegate-1")
+			require.False(t, innerCalled.Load(), "the inner agent tool must not run for an answered delegation")
+
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				for _, b := range bodies {
+					if strings.Contains(b, "report now") {
+						return true
+					}
+				}
+				return false
+			}, 10*time.Second, 25*time.Millisecond, "the child's answer turn must reach the provider")
+
+			origins := rec.recordedOrigins()
+			require.Len(t, origins, 1, "exactly one replayed answer turn")
+			require.Equal(t, tc.wantReplay, origins[0], "the replayed turn carries X's own origin")
+
+			xrow, err := f.store.Get(ctx, parentID, "delegate-1")
+			require.NoError(t, err)
+			require.Equal(t, "running", xrow.State, "no new row: the answer lands in the held delegation")
+			require.Equal(t, childID, xrow.ChildSessionID.String)
+			require.Equal(t, phaseRunning, jobOf(f.ledger, parentID, "delegate-1").state)
+			f.ledger.mu.Lock()
+			jobs := len(f.ledger.bySession[parentID].jobs)
+			f.ledger.mu.Unlock()
+			require.Equal(t, 1, jobs, "no second delegation may be registered next to X")
+
+			finishHungJob(t, f, childID, held)
+			f.ledger.recheckChild(childID)
+			found := 0
+			for _, c := range collectCompletions(t, delivered, 1) {
+				if c.ToolCallID != "delegate-1" {
+					continue
+				}
+				found++
+				require.Contains(t, c.Content, "final answer after the answer")
+				require.NotContains(t, c.Content, "SUB-AGENT QUESTION",
+					"after the answer the delegation releases with the final text, not the question")
+			}
+			require.Equal(t, 1, found, "the delegation itself must release, exactly once")
+			select {
+			case c := <-delivered:
+				t.Fatalf("the delegation must release exactly once: got a second completion %+v", c)
+			case <-time.After(300 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// T2c: an X claimed by an SDK-sync caller is never answered into (#1212): it
+// has no durable hold of its own, so the resume falls through to the ordinary
+// path and the child is not resumed by the answer machinery.
+//
+// Revert-check: dropping the `job.sync` guard makes answerHeldDelegation
+// intercept this resume and return answerAcceptedResponse.
+func TestChildQuestion_SyncHeldJobNotAnswered(t *testing.T) {
 	ctx := context.Background()
-	f, parentID, childID, delivered, held := questionFixture(t)
+	f, parentID, childID, _, _ := questionFixture(t)
 	waitChildQuestion(t, f, parentID)
 
-	var mu sync.Mutex
-	var bodies []string
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		bodies = append(bodies, string(b))
-		mu.Unlock()
-		textFinishResponse(w, "final answer after the answer")
-	})
+	// Make X look SDK-sync-claimed (work_ledger.Start sets done for sync jobs).
+	xjob := jobOf(f.ledger, parentID, "delegate-1")
+	f.ledger.mu.Lock()
+	xjob.sync = true
+	xjob.done = make(chan struct{})
+	f.ledger.mu.Unlock()
 
-	innerCalled := false
+	requestsBefore := f.requests.Load()
+	resp, answered := f.ledger.answerHeldDelegation(ctx, parentID, childID, "report now")
+	require.False(t, answered, "a sync X must not take the held-answer path")
+	require.Empty(t, resp.Content)
+	require.Equal(t, requestsBefore, f.requests.Load(), "no answer turn may reach the provider")
+
+	innerCalled := &atomic.Bool{}
 	inner := fantasy.NewAgentTool(AgentToolName, "inner",
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			innerCalled = true
+			innerCalled.Store(true)
 			return fantasy.NewTextResponse("inner"), nil
 		})
 	tl := &asyncTool{inner: inner, coordinator: f.coord, name: AgentToolName}
 	call := fantasy.ToolCall{ID: "call-answer", Input: fmt.Sprintf(`{"prompt":"report now","resume_session_id":%q}`, childID)}
 	sessCtx := WithCallOrigin(context.WithValue(ctx, tools.SessionIDContextKey, parentID), message.OriginCLI)
-	resp, err := tl.Run(sessCtx, call)
+	toolResp, err := tl.Run(sessCtx, call)
 	require.NoError(t, err)
-	require.False(t, resp.IsError)
-	require.Contains(t, resp.Content, "Answer delivered to sub-agent "+childID)
-	require.Contains(t, resp.Content, "delegate-1")
-	require.False(t, innerCalled, "the inner agent tool must not run for an answered delegation")
-
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, b := range bodies {
-			if strings.Contains(b, "report now") {
-				return true
-			}
-		}
-		return false
-	}, 10*time.Second, 25*time.Millisecond, "the child's answer turn must reach the provider")
+	require.True(t, toolResp.IsError, "the ordinary path's refusal stands for a sync X")
+	require.NotContains(t, toolResp.Content, "Answer delivered")
+	require.Contains(t, toolResp.Content, "still has work running",
+		"the resume hits the child-session-busy refusal, as before the held-answer path")
 
 	xrow, err := f.store.Get(ctx, parentID, "delegate-1")
 	require.NoError(t, err)
-	require.Equal(t, "running", xrow.State, "no new row: the answer lands in the held delegation")
-	require.Equal(t, childID, xrow.ChildSessionID.String)
-
-	finishHungJob(t, f, childID, held)
-	f.ledger.recheckChild(childID)
-	found := false
-	for _, c := range collectCompletions(t, delivered, 1) {
-		if c.ToolCallID != "delegate-1" {
-			continue
-		}
-		found = true
-		require.Contains(t, c.Content, "final answer after the answer")
-		require.NotContains(t, c.Content, "SUB-AGENT QUESTION",
-			"after the answer the delegation releases with the final text, not the question")
-	}
-	require.True(t, found)
+	require.Equal(t, "running", xrow.State)
+	f.ledger.mu.Lock()
+	hold := xjob.answerHold
+	f.ledger.mu.Unlock()
+	require.False(t, hold, "answerHold must stay off a sync X")
 }
 
 // T2b: the race -- the child's own work drains between the answer being
