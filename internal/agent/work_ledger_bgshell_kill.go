@@ -47,6 +47,11 @@ func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimI
 	if err != nil || session.JobKind(row.Kind) != session.JobKindBGShell {
 		return "", "", tools.JobStopNotFound
 	}
+	if row.HostID != store.HostID() {
+		// Another process's shell row (cross-process id collision): not ours
+		// to cancel, and the shell is not in this process to kill.
+		return "", "", tools.JobStopNotFound
+	}
 	if row.State != "running" {
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: shellID, ToolName: tools.BashToolName,

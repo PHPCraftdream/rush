@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
@@ -168,4 +169,40 @@ func TestJobKill_RawShellIDOverTheRealLedger(t *testing.T) {
 	notices, err := store.ListSessionNotices(context.Background(), "session")
 	require.NoError(t, err)
 	require.Empty(t, notices)
+}
+
+// A shell id keys a running row of ANOTHER rush process's host (cross-process
+// id collision): job_kill must not cancel that row or kill anything.
+//
+// REVERT CHECK: temporarily removed the row.HostID != store.HostID() guard
+// from StopBackgroundShellRow -- this test FAILED (verdict JobStopStopped,
+// want JobStopNotFound: job_kill cancelled another process's running row,
+// row.State "cancelled", want "running"). Restored the guard; re-ran, passed.
+func TestStopBackgroundShellRow_ForeignHostRowIsNotOurs(t *testing.T) {
+	t.Parallel()
+	store, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	registry := newWorkLedger(nil)
+	registry.store = store
+	mgr := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { mgr.KillAll(context.Background()) })
+	coord := &coordinator{asyncJobs: registry, background: mgr}
+	coord.asyncJobs.coord = coord
+	sh, err := mgr.StartOwned(t.Context(), "session", t.TempDir(), nil, "sleep 30", "foreign row")
+	require.NoError(t, err)
+	bgShellEscape(t, coord, sh.ID)
+	res, err := conn.ExecContext(context.Background(), `UPDATE async_jobs SET host_id = 'other-rush-host' WHERE owner_session_id = 'session' AND tool_call_id = ?`, sh.ID)
+	require.NoError(t, err)
+	n, _ := res.RowsAffected()
+	require.Equal(t, int64(1), n)
+
+	text, claimID, verdict := coord.asyncJobs.StopBackgroundShellRow("session", sh.ID)
+
+	require.Equal(t, tools.JobStopNotFound, verdict)
+	require.Empty(t, text)
+	require.Empty(t, claimID)
+	require.False(t, sh.IsDone(), "the foreign shell itself must not be touched")
+	row, err := store.Get(context.Background(), "session", sh.ID)
+	require.NoError(t, err)
+	require.Equal(t, "other-rush-host", row.HostID)
+	require.Equal(t, "running", row.State, "another process's running row must not be cancelled")
 }

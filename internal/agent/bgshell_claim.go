@@ -77,7 +77,13 @@ func (t *asyncTool) claimBackgroundShellRow(job *asyncJob, sessionID string, res
 			killCancel()
 		}
 		completion.IsError = true
-		completion.Content = fmt.Sprintf("background shell %s refused: its ledger row could not be committed (%s)", metadata.ShellID, err)
+		var collision *session.ErrBGShellIDCollision
+		if errors.As(err, &collision) {
+			// Cross-process shell id collision: tell the model why, and how out.
+			completion.Content = fmt.Sprintf("background shell %s refused: its id already keys a running background shell of another rush process (host %s) on this session; re-run the command to get a fresh shell id", metadata.ShellID, collision.HostID)
+		} else {
+			completion.Content = fmt.Sprintf("background shell %s refused: its ledger row could not be committed (%s)", metadata.ShellID, err)
+		}
 		return
 	}
 	manager := t.coordinator.background

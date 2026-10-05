@@ -25,6 +25,19 @@ const BGShellToolName = "bash"
 // (idempotent), never an input mismatch.
 const bgShellInputPrefix = "bg-shell:"
 
+// ErrBGShellIDCollision is ClaimShell's refusal when the shell id already
+// keys a running row of another rush process's host: the per-manager counter
+// is unique per process only, so this is a cross-process collision, not an
+// idempotent repeat. The foreign row is not ours to touch.
+type ErrBGShellIDCollision struct {
+	ShellID string
+	HostID  string
+}
+
+func (e *ErrBGShellIDCollision) Error() string {
+	return fmt.Sprintf("background shell id %s collides with a running shell row of another rush process (host %s) on this session", e.ShellID, e.HostID)
+}
+
 // ClaimShell durably claims a background shell: kind=bg_shell, tool_call_id = shellID,
 // running, and announced in one step -- the shell's start is announced by the
 // tool response that reported the shell id, so the row is immediately both
@@ -34,16 +47,29 @@ const bgShellInputPrefix = "bg-shell:"
 // background start (fail-closed): a shell without a row is the defect class
 // this claim removes.
 func (s *AsyncJobStore) ClaimShell(ctx context.Context, owner, shellID string, originCLI bool) (ClaimResult, error) {
-	result, err := s.Claim(ctx, ClaimParams{
+	params := ClaimParams{
 		Owner:      owner,
 		ToolCallID: shellID,
 		Kind:       JobKindBGShell,
 		ToolName:   BGShellToolName,
 		Input:      bgShellInputPrefix + shellID,
 		OriginCLI:  originCLI,
-	})
+	}
+	result, err := s.Claim(ctx, params)
 	if err != nil {
 		return ClaimResult{}, fmt.Errorf("async job store: claim shell: %w", err)
+	}
+	if result.Existing && result.Row.HostID != s.HostID() {
+		// The id keys another host's row: give a dead host the same one
+		// recovery chance Claim's child-session conflict gets, then refuse.
+		if _, recErr := s.RecoverDeadHost(ctx, result.Row.HostID, s.messageService()); recErr != nil {
+			slog.Warn("async job store: claim shell: dead-host recovery of the colliding row failed", "host_id", result.Row.HostID, "err", recErr)
+		} else if result, err = s.Claim(ctx, params); err != nil {
+			return ClaimResult{}, fmt.Errorf("async job store: claim shell: %w", err)
+		}
+		if result.Existing && result.Row.HostID != s.HostID() {
+			return ClaimResult{}, &ErrBGShellIDCollision{ShellID: shellID, HostID: result.Row.HostID}
+		}
 	}
 	if err := s.MarkAnnounced(ctx, owner, shellID); err != nil {
 		if !errors.Is(err, ErrAsyncJobGone) {

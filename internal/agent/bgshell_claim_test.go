@@ -419,3 +419,43 @@ func TestFinishBGShellRow_RowWithinShortenedGraceStillCompletes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "completed", row.State)
 }
+
+// A colliding claim (the shell id keys a running row of ANOTHER rush process's
+// host) refuses the background start with text that names the collision.
+//
+// REVERT CHECK: this test is NOT required to have failed without the
+// agent-side change: the session collision error already arrived and the shell
+// was killed, but the text was the generic "background shell %s refused: its
+// ledger row could not be committed (...)" -- the Contains("another rush
+// process") / Contains("fresh shell id") assertions failed on that text.
+func TestAsyncTool_BGShellClaimCollisionRefusesStart(t *testing.T) {
+	t.Parallel()
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	foreign := session.NewAsyncJobStore(conn, dataDir, 12345, "other-app")
+	t.Cleanup(func() { _ = foreign.Close(context.Background()) })
+	registry := newWorkLedger(nil)
+	registry.store = store
+	mgr := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { mgr.KillAll(context.Background()) })
+	coord := &coordinator{asyncJobs: registry, background: mgr}
+	sh, err := mgr.StartOwned(t.Context(), "session", t.TempDir(), nil, "sleep 30", "collides")
+	require.NoError(t, err)
+	_, err = foreign.ClaimShell(context.Background(), "session", sh.ID, false)
+	require.NoError(t, err)
+
+	wrapped := &asyncTool{inner: bgShellInnerTool(sh.ID), coordinator: coord, name: tools.BashToolName}
+	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
+	ctx = WithCallOrigin(ctx, message.OriginSDK)
+	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call-" + sh.ID, Name: tools.BashToolName, Input: `{"command":"x","run_in_background":true}`})
+	require.NoError(t, err)
+	require.True(t, resp.IsError, "a colliding claim must fail the background start")
+	require.Contains(t, resp.Content, "another rush process")
+	require.Contains(t, resp.Content, "fresh shell id")
+
+	sh.Wait()
+	require.True(t, sh.IsDone(), "the colliding shell must be killed")
+	row, err := store.Get(context.Background(), "session", sh.ID)
+	require.NoError(t, err)
+	require.Equal(t, foreign.HostID(), row.HostID)
+	require.Equal(t, "running", row.State, "the foreign row must be left alone")
+}
