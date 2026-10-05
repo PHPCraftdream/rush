@@ -59,7 +59,9 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	// DefaultMaxTokens > 0 in rush.json). The facts overlay never touches
 	// these fields, not even to raise them to the documented floor; a zero
 	// in the config (e.g. a `rush providers update` dump) is unknown, not a
-	// user value.
+	// user value, and so is a positive value that exactly equals the
+	// catalog's raw number for the same model -- that is the dump itself
+	// (forgetDumpedUserSet below and in the Codex branch).
 	userSet := make(map[string]map[string]discover.UserModelFacts)
 	for id, pc := range c.Providers.Seq2() {
 		for _, model := range pc.Models {
@@ -75,6 +77,12 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				ContextWindow:    model.ContextWindow > 0,
 				DefaultMaxTokens: model.DefaultMaxTokens > 0,
 			}
+		}
+	}
+	// The catalog every known provider ships with is available right here.
+	for _, p := range knownProviders {
+		if pc, ok := c.Providers.Get(string(p.ID)); ok {
+			forgetDumpedUserSet(userSet, string(p.ID), pc.Models, p.Models)
 		}
 	}
 
@@ -219,6 +227,9 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				if err != nil {
 					slog.Warn("OpenAI Codex model discovery failed", "provider", p.ID, "error", err)
 				} else {
+					// The account catalog is only known now: a dump of its
+					// raw numbers in rush.json must not stay user-set.
+					forgetDumpedUserSet(userSet, string(p.ID), config.Models, models)
 					prepared.Models = mergeCodexModels(prepared.Models, models)
 					prepared.LiveEfforts = liveEffortsFromModels(models)
 				}
@@ -584,6 +595,43 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	}
 
 	return nil
+}
+
+// forgetDumpedUserSet clears the user-set flags of config rows whose values
+// equal the catalog's raw numbers -- a `rush providers update` dump of a
+// catalog that is only fetched later (the Codex account catalog, inside the
+// provider loop) must not block the facts overlay. Rows absent from the
+// catalog keep their flags, and the entry vanishes once nothing is set.
+func forgetDumpedUserSet(userSet map[string]map[string]discover.UserModelFacts, providerID string, configModels, catalog []catwalk.Model) {
+	if len(catalog) == 0 {
+		return
+	}
+	byID := make(map[string]catwalk.Model, len(catalog))
+	for _, model := range catalog {
+		byID[model.ID] = model
+	}
+	set := userSet[providerID]
+	for _, model := range configModels {
+		entry, tracked := set[model.ID]
+		if !tracked {
+			continue
+		}
+		base, inCatalog := byID[model.ID]
+		if !inCatalog {
+			continue
+		}
+		if model.ContextWindow == base.ContextWindow {
+			entry.ContextWindow = false
+		}
+		if model.DefaultMaxTokens == base.DefaultMaxTokens {
+			entry.DefaultMaxTokens = false
+		}
+		if !entry.ContextWindow && !entry.DefaultMaxTokens {
+			delete(set, model.ID)
+			continue
+		}
+		set[model.ID] = entry
+	}
 }
 
 func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
