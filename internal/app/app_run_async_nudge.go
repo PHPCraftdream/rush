@@ -2,9 +2,11 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -47,6 +49,13 @@ func (l *cliLoop) openTodos() (count int, fingerprint string, err error) {
 // changed since the previous nudge; once the budget is spent without
 // progress the run is allowed to end, with a warning recorded at the exit.
 func (l *cliLoop) todoNudgeDue() bool {
+	// The last turn ended on a question for the caller: the run exits with
+	// awaiting_answer, and a reminder turn would bury the question under a
+	// prompt the caller never sent.
+	var asked *agent.AwaitingAnswerError
+	if errors.As(l.runErr, &asked) {
+		return false
+	}
 	n, fp, err := l.openTodos()
 	if err != nil || n == 0 {
 		return false
