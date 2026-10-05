@@ -206,3 +206,45 @@ func TestStopBackgroundShellRow_ForeignHostRowIsNotOurs(t *testing.T) {
 	require.Equal(t, "other-rush-host", row.HostID)
 	require.Equal(t, "running", row.State, "another process's running row must not be cancelled")
 }
+
+// shortKillCtx bounds the KillOwned calls that follow a StopBackgroundShellRow
+// in tests, the way the real tool bounds them.
+func shortKillCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// B9-6: job_kill releases the shell's completion hold at once: the cancelled
+// row is the shell's answer, so a delegated child whose killed process never
+// exits (a descendant holds the output pipe, done stays open) counts as
+// finished immediately instead of parking its delegation for up to
+// completionHoldMax.
+//
+// REVERT CHECK: removing the MarkCompletionRecorded call from
+// StopBackgroundShellRow keeps the hold -- this test FAILED at the first
+// assertion (PendingCompletionsOwned stays 1, childScopeDrained false).
+func TestStopBackgroundShellRow_KillReleasesTheCompletionHoldAtOnce(t *testing.T) {
+	t.Parallel()
+	coord, store, mgr, dir := newBGShellFixture(t)
+	coord.asyncJobs.coord = coord
+	child := "child-1"
+	sh, err := mgr.StartOwned(t.Context(), child, dir, nil, "sleep 30", "held")
+	require.NoError(t, err)
+	sh.OnDone(func() { coord.notifyBackgroundJobDone(child, sh) })
+	_, err = store.ClaimShell(context.Background(), child, sh.ID, false)
+	require.NoError(t, err)
+
+	text, claimID, verdict := coord.asyncJobs.StopBackgroundShellRow(child, sh.ID)
+	require.Equal(t, tools.JobStopStopped, verdict)
+	require.NotEmpty(t, text)
+	require.NotEmpty(t, claimID)
+	// Checked BEFORE the process is touched: the callbacks can never have run
+	// (done is still open), so only the kill's own release can answer this.
+	require.Zero(t, mgr.PendingCompletionsOwned(child),
+		"job_kill's cancelled row is the answer: no completion may stay pending")
+	require.NoError(t, coord.background.KillOwned(shortKillCtx(t), child, sh.ID))
+	require.True(t, coord.asyncJobs.childScopeDrained(child),
+		"the killed shell must not park the child's delegation")
+}

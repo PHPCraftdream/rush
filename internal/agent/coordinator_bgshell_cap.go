@@ -77,6 +77,11 @@ func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary strin
 	}
 	_ = c.bgArrival.lock(context.Background()) // cannot fail: Background never ends
 	defer c.bgArrival.unlock()
+	// B9-7: job_kill owns a cancelled shell's answer: under the same gate the
+	// kill decided at, a callback that lost the race inserts nothing.
+	if c.bgShellRowCancelled(sessionID, shellID) {
+		return false
+	}
 	var rowID int64
 	if c.asyncJobs != nil && c.asyncJobs.store != nil {
 		c.pruneBGShellOverCap(sessionID)

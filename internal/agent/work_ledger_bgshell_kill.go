@@ -7,6 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // bgShellStopBudget bounds job_kill's store work for a bg_shell row.
@@ -26,6 +27,12 @@ const bgShellStopBudget = 10 * time.Second
 // (bgShellRowCancelled) both stand down instead of reporting "finished: exit 1"
 // and waking the session a second time.
 //
+// The decision is serialised with the completion callbacks on the
+// coordinator's bgArrival gate (B9-7): a process that has already exited
+// defers to its callbacks' natural completion, and a won transition releases
+// the shell's completion hold at once (B9-6) instead of parking the session's
+// scope for completionHoldMax.
+//
 // Only a shell this process owns is stopped: the row of a shell on another
 // host cannot be killed from here, so it stays the dead-host sweep's business.
 func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimID string, verdict tools.JobStopVerdict) {
@@ -38,7 +45,8 @@ func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimI
 	if store == nil || l.coord == nil || l.coord.background == nil {
 		return "", "", tools.JobStopNotFound
 	}
-	if _, ok := l.coord.background.GetOwned(owner, shellID); !ok {
+	sh, ok := l.coord.background.GetOwned(owner, shellID)
+	if !ok {
 		return "", "", tools.JobStopNotFound
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bgShellStopBudget)
@@ -56,6 +64,26 @@ func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimI
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: shellID, ToolName: tools.BashToolName,
 			Content: row.ResultSummary.String, IsError: row.ResultIsError.Int64 != 0,
+		}), "", tools.JobStopAlreadyTerminal
+	}
+	// B9-7: the decision is one step relative to the completion callbacks:
+	// they hold the same gate around their cancelled-row check and their
+	// notice insert (persistBGShellCompletion).
+	if err := l.coord.bgArrival.lock(ctx); err != nil {
+		slog.Warn("job_kill: timed out waiting for the background-arrival gate",
+			"session_id", owner, "shell_id", shellID, "err", err)
+		return "", "", tools.JobStopNotFound
+	}
+	defer l.coord.bgArrival.unlock()
+	if sh.IsDone() {
+		// The process already exited: the natural completion path owns the
+		// answer, so the row is left to its callbacks (B9-7).
+		stdout, stderr, _, runErr := sh.GetOutput()
+		exitCode := shell.ExitCode(runErr)
+		return FormatAsyncCompletion(AsyncCompletion{
+			ToolCallID: shellID, ToolName: tools.BashToolName,
+			Content: backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, exitCode, sh.Elapsed()),
+			IsError: exitCode != 0,
 		}), "", tools.JobStopAlreadyTerminal
 	}
 
@@ -77,6 +105,13 @@ func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimI
 	}
 	switch result.Outcome {
 	case session.TransitionWon:
+		if !sh.IsDone() {
+			// B9-6: job_kill's result is this shell's answer, so its
+			// completion hold ends now instead of at completionHoldMax. If
+			// the process exited during the transition, its callback is
+			// writing the notice and keeps the hold.
+			sh.MarkCompletionRecorded()
+		}
 		return FormatAsyncCompletion(AsyncCompletion{
 			ToolCallID: shellID, ToolName: tools.BashToolName,
 			Content: partial.content, IsError: partial.isError, Stopped: true,
@@ -95,6 +130,8 @@ func (l *workLedger) StopBackgroundShellRow(owner, shellID string) (text, claimI
 // bgShellRowCancelled reports whether shellID's bg_shell row was already
 // cancelled by job_kill: its completion must then produce neither a wake
 // notice nor an auto-resume slot, because the job_kill result IS its answer.
+// It is also called under the coordinator's bgArrival gate from
+// persistBGShellCompletion, after the gate a winning job_kill decision holds.
 func (c *coordinator) bgShellRowCancelled(sessionID, shellID string) bool {
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false
