@@ -78,15 +78,23 @@ func OneLineQuestion(s string) string {
 // PendingChildQuestions reads the owner's still-pending child_question
 // notices (the delivered ones are already in the parent's history and no
 // longer need surfacing) and parses each into a ChildQuestion. Read-only:
-// no delivery state changes. Unparsable rows are skipped.
+// no delivery state changes. Unparsable rows are skipped. A notice whose
+// bound delegation is no longer running (finished, voided or gone -- the
+// pull path's own void rule) is dropped.
 func (s *AsyncJobStore) PendingChildQuestions(ctx context.Context, owner string) ([]ChildQuestion, error) {
-	rows, err := s.q.ListPendingSessionNoticesForOwner(ctx, owner)
+	rq := s.readQuerier()
+	rows, err := rq.ListPendingSessionNoticesForOwner(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ChildQuestion, 0, len(rows))
 	for _, row := range rows {
 		if row.Kind != NoticeKindChildQuestion {
+			continue
+		}
+		// The pull path's own void rule (ownHostID is unused for this
+		// kind); an unread job fact keeps the notice (fail-open).
+		if void, voidErr := s.sessionNoticeVoidCondition(ctx, rq, owner, "", row); voidErr == nil && void {
 			continue
 		}
 		q, ok := ParseChildQuestionNotice(row.Text, row.JobToolCallID.String)

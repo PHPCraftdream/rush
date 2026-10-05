@@ -67,6 +67,14 @@ func TestPendingChildQuestions(t *testing.T) {
 	root2, err := svc.Create(ctx, "other root")
 	require.NoError(t, err)
 
+	// The void filter drops a notice whose bound job row is missing (the
+	// pull path's rule), so the fixture claims its running delegation.
+	_, err = store.Claim(ctx, ClaimParams{
+		Owner: root1.ID, ToolCallID: "delegate-1", Kind: JobKindAgent,
+		Input: "ask", ToolName: "agent", ChildSessionID: "child-1",
+	})
+	require.NoError(t, err)
+
 	require.NoError(t, store.InsertSessionNotice(ctx, root1.ID, NoticeKindChildQuestion, noticeText("child-1", "go on?"), true, "delegate-1"))
 	require.NoError(t, store.InsertSessionNotice(ctx, root1.ID, NoticeKindSupervision, "supervision text", true, ""))
 	require.NoError(t, store.InsertSessionNotice(ctx, root2.ID, NoticeKindChildQuestion, noticeText("child-2", "foreign"), true, "delegate-2"))

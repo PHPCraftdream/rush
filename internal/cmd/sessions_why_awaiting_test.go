@@ -90,6 +90,12 @@ func TestExplainSessionStatus_AwaitingAnswer_WithLiveDriverOmitsRelay(t *testing
 	require.NoError(t, err)
 	child, err := a.Sessions.CreateTaskSession(ctx, "awaiting-driven-child", parent.ID, "worker")
 	require.NoError(t, err)
+	// The question is only surfaced while its delegation row is running.
+	_, err = store.Claim(ctx, session.ClaimParams{
+		Owner: parent.ID, ToolCallID: "delegate-7", Kind: session.JobKindAgent,
+		Input: "delegate to " + child.ID, ChildSessionID: child.ID,
+	})
+	require.NoError(t, err)
 	insertChildQuestionNotice(t, store, parent.ID, child.ID, "delegate-7", "proceed?")
 	require.NoError(t, store.ClaimSessionDriver(ctx, parent.ID))
 	t.Cleanup(func() { _ = store.ReleaseSessionDriver(ctx, parent.ID) })
