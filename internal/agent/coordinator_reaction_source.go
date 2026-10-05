@@ -230,6 +230,11 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return CLIScopeState{}, nil
 	}
+	// Read the shell manager's completion hold BEFORE the DB reads: released
+	// only after notifyBackgroundJobDone's notice insert commits, "hold gone"
+	// implies the debt read below sees the notice; reading it after that read
+	// would let the loop exit in the row-committed, notice-not-yet window.
+	pending := c.background != nil && c.background.PendingCompletionsOwned(sessionID) > 0
 	workOpen, err := c.runningWorkOpen(ctx, sessionID)
 	if err != nil {
 		return CLIScopeState{}, err
@@ -250,6 +255,10 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	}
 	state.OnceWakeOpen = len(once) > 0
 	if state.OnceWakeOpen {
+		state.WorkOpen = true
+	}
+	// A completion still in flight (its callback holds) is open work too.
+	if pending {
 		state.WorkOpen = true
 	}
 	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
