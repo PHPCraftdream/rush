@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- «Ждёт ответа» для делегации, чей ребёнок завершил ход вопросом (#1158): `sessions why` печатает секцию «waiting for your answer» (ребёнок, вопрос ≤200, путь ответа `agent(resume_session_id=<child>)`, без живого `rush run` — команда-ретранслятор `sessions inject <root>`); `sessions list` показывает подсостояние «(awaiting answer)» и поля `awaiting_answer`/`awaiting_child`/`awaiting_question` в `--json`; web-панель «Агенты» вешает бейдж «awaiting your answer» с текстом вопроса на строку делегации (`awaitingAnswer`/`awaitingQuestion` в снапшоте live-work). Источник — уже существующие pending `child_question` уведомления #1157; только чтение, новых записей нет.
 - `rush sessions compact` возвращает место из rush.db после удалений (SQLite VACUUM, #1161): отказывается при живых процессах на этой БД (`--force` пропускает проверку host/session lock'ов, но не startup-lock и не открытые транзакции), заранее проверяет свободное место, печатает размер и freelist до/после; `--dry-run`, `--json`. `sessions gc/purge` подсказывают команду, когда свободные страницы ≥ 64 МБ и ≥ 50% файла. Автоматического VACUUM нет.
 
 - Связанный git-worktree теперь работает на общем каталоге данных проекта

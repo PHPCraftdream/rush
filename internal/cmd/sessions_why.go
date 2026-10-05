@@ -135,6 +135,17 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	v := act.Verdict
 	f := act.Facts
 
+	// Awaiting-answer enrichment (#1158): the pending child_question
+	// notices are the durable record the coordinator's in-memory ledger
+	// leaves for readers outside its process. Read-only; a failed read
+	// changes nothing (the plain verdict stands).
+	if store := a.AsyncJobStore(); store != nil {
+		if qs, qsErr := store.PendingChildQuestions(ctx, sessionID); qsErr == nil && len(qs) > 0 {
+			f.ChildQuestions = qs
+			v = session.ClassifySessionActivity(f)
+		}
+	}
+
 	status := listStatus(v)
 	if status == "" {
 		status = "at rest"
@@ -151,6 +162,7 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	if f.EndUnreadable {
 		fmt.Fprintf(out, "note: the session row could not be read; the end state is unknown.\n")
 	}
+	describeChildQuestionsForWhy(f, sessionID, out)
 
 	// Sub-agent pulse (in turn only, display only): the lock heartbeat proves
 	// the process is alive, not that a delegated sub-agent is making
@@ -214,6 +226,30 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	describeAsyncJobsAndDebt(ctx, a, sessionID, out)
 
 	return nil
+}
+
+// describeChildQuestionsForWhy renders the awaiting-answer section of
+// `sessions why` (#1158): one line per pending child_question notice naming
+// the child and its question, then WHO must answer. The question is not
+// addressed to the CLI operator -- it is addressed to the orchestrating
+// agent driving the root session, which answers in-process via the
+// `agent` tool (resume_session_id=<child>); only when that loop is gone
+// does the operator relay the question by injecting a hint into the root.
+func describeChildQuestionsForWhy(f session.ActivityFacts, rootID string, out io.Writer) {
+	if len(f.ChildQuestions) == 0 {
+		return
+	}
+	fmt.Fprintln(out)
+	for _, q := range f.ChildQuestions {
+		fmt.Fprintf(out, "waiting for your answer: child %s asked: %s\n", q.ChildSessionID, q.Question)
+		fmt.Fprintf(out, "  answer: the orchestrating agent must call `agent` with resume_session_id=%q and its answer as prompt (the result arrives with delegation %s).\n",
+			q.ChildSessionID, q.DelegationToolCallID)
+		if f.Driver == nil {
+			fmt.Fprintf(out, "  the orchestrating `rush run` loop is not live; to relay the question, run:\n")
+			fmt.Fprintf(out, "    rush sessions inject %s \"Sub-agent %s is paused on its question; resume it with agent(resume_session_id=%q) and your answer as prompt.\"\n",
+				rootID, q.ChildSessionID, q.ChildSessionID)
+		}
+	}
 }
 
 // describeRunDriver renders the "why" clause naming the live `rush run` loop

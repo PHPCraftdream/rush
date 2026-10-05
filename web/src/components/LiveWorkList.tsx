@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import type { LiveWorkItem } from "../types";
 import { requestExpandToolCall } from "../store_livework";
+import { awaitingAnswerInfo } from "../liveWorkAwaiting";
 
 function formatElapsed(startedAt: number): string {
   const secs = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
@@ -116,6 +117,18 @@ function LiveWorkRow({ item }: { item: LiveWorkItem }) {
           <span className="text-text-subtle text-xs font-mono tabular-nums shrink-0">{elapsed}</span>
         )}
       </button>
+      {(() => {
+        const awaiting = awaitingAnswerInfo(item);
+        if (!awaiting) return null;
+        return (
+          <div data-test-id="live-work-row-awaiting" className="px-2 pb-1">
+            <span className="text-yellow text-xs font-semibold">
+              awaiting your answer
+            </span>
+            <p className="text-text-subtle text-[11px] mt-0.5">{awaiting.question}</p>
+          </div>
+        );
+      })()}
       {notFound && (
         <p data-test-id="live-work-row-hint" className="px-2 pb-1 text-[11px] text-text-subtle">
           Not in the loaded conversation — try scrolling manually.

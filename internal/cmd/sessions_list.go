@@ -6,12 +6,14 @@ package cmd
 // prints -- there is no second status machinery here.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -72,10 +74,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		if err != nil {
 			return fmt.Errorf("failed to classify sessions: %w", err)
 		}
-		statusByID := make(map[string]string, len(sessions))
-		for id, act := range activities.ByID {
-			statusByID[id] = listStatus(act.Verdict)
-		}
+		statusByID, awaitingByID := listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, idsOf(sessions))
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -83,6 +82,11 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				item := makeSessionListItem(s, sessionBudget(cmd.Context(), a.Sessions, s))
 				if st := statusByID[s.ID]; st != "" {
 					item.Status = st
+				}
+				if q, ok := awaitingByID[s.ID]; ok {
+					item.AwaitingAnswer = true
+					item.AwaitingChild = q.ChildSessionID
+					item.AwaitingQuestion = q.Question
 				}
 				if err := enc.Encode(item); err != nil {
 					return err
@@ -108,6 +112,39 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		}
 		return tw.Flush()
 	},
+}
+
+// listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
+// column, adding the awaiting-answer substate (#1158): each listed root's
+// pending child_question notices re-classify its verdict (read-only; a
+// failed notice read leaves the plain verdict) and become the
+// "(awaiting answer)" annotation plus the JSON wire fields.
+func listStatusesWithAwaiting(ctx context.Context, store *session.AsyncJobStore, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
+	questionsByRoot := map[string][]session.ChildQuestion{}
+	if store != nil {
+		for _, id := range ids {
+			if qs, err := store.PendingChildQuestions(ctx, id); err == nil && len(qs) > 0 {
+				questionsByRoot[id] = qs
+			}
+		}
+	}
+	statusByID := make(map[string]string, len(ids))
+	awaitingByID := make(map[string]session.ChildQuestion, len(questionsByRoot))
+	for id, act := range activities.ByID {
+		v := act.Verdict
+		if qs := questionsByRoot[id]; len(qs) > 0 {
+			f := act.Facts
+			f.ChildQuestions = qs
+			v = session.ClassifySessionActivity(f)
+			awaitingByID[id] = qs[0]
+		}
+		st := listStatus(v)
+		if _, ok := questionsByRoot[id]; ok && st != "" {
+			st += " (awaiting answer)"
+		}
+		statusByID[id] = st
+	}
+	return statusByID, awaitingByID
 }
 
 // idsOf projects the session list to the id slice the batched
@@ -173,6 +210,12 @@ type sessionListItem struct {
 	// Classified by the one session-activity classifier; omitempty keeps
 	// the wire shape minimal for at-rest sessions.
 	Status string `json:"status,omitempty"`
+	// AwaitingAnswer marks a live session whose held delegation's child
+	// paused on a question (#1158): additive to the wire shape, set only
+	// together with AwaitingChild/AwaitingQuestion.
+	AwaitingAnswer   bool   `json:"awaiting_answer,omitempty"`
+	AwaitingChild    string `json:"awaiting_child,omitempty"`
+	AwaitingQuestion string `json:"awaiting_question,omitempty"`
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable

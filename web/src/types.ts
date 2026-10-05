@@ -284,6 +284,10 @@ export interface LiveWorkItem {
   finishedAt?: number;
   // Last async_jobs row update, unix ms.
   lastActivityAt?: number;
+  // A running delegation whose child paused on a question (#1158); set only
+  // together with awaitingQuestion (the display-capped question text).
+  awaitingAnswer?: boolean;
+  awaitingQuestion?: string;
 }
 
 // SessionLiveWorkPayload mirrors the server's SessionLiveWorkPayload: the

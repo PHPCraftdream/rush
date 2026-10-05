@@ -96,6 +96,19 @@ func buildSessionLiveWork(ctx context.Context, a *appPkg.App, cache *titleCache,
 		return snap, nil
 	}
 
+	// Awaiting-answer badges (#1158): the owner's pending child_question
+	// notices are matched to their held delegation rows by the notice's
+	// job_tool_call_id. No new polling: the snapshot is built on the same
+	// marks and on-demand requests as before.
+	questions := map[string]session.ChildQuestion{}
+	if qs, err := store.PendingChildQuestions(ctx, sessionID); err == nil {
+		for _, q := range qs {
+			if q.DelegationToolCallID != "" {
+				questions[q.DelegationToolCallID] = q
+			}
+		}
+	}
+
 	commands := capLiveWorkRows(jobs, string(session.JobKindCommand))
 	agents := capLiveWorkRows(jobs, string(session.JobKindAgent))
 	fetches := capLiveWorkRows(jobs, string(session.JobKindFetch))
@@ -118,6 +131,10 @@ func buildSessionLiveWork(ctx context.Context, a *appPkg.App, cache *titleCache,
 			}
 			if item.Title == "" {
 				item.Title = row.ResultSummary.String
+			}
+			if q, ok := questions[row.ToolCallID]; ok {
+				item.AwaitingAnswer = true
+				item.AwaitingQuestion = q.Question
 			}
 			if row.State != "running" {
 				item.FinishedAt = row.UpdatedAt * 1000

@@ -61,6 +61,7 @@ const (
 	WaitTasks    = "tasks"    // the session's own running async jobs
 	WaitSchedule = "schedule" // open once wake schedules
 	WaitRetry    = "retry"    // reaction debt behind a LIVE driver
+	WaitAnswer   = "answer"   // a held delegation's child paused on a question (#1158)
 	WaitUnknown  = "unknown"  // a live-work fact that could not be read
 )
 
@@ -121,6 +122,13 @@ type ActivityFacts struct {
 	LiveDescendantSessionIDs []string
 	// OpenSchedules: the session's open once wake schedules.
 	OpenSchedules []OpenWakeSchedule
+	// ChildQuestions: the session's pending child_question notices (#1158)
+	// -- held delegations whose child paused on a question. Purely additive
+	// to the facts: readers that do not read notices leave it nil and the
+	// verdict is exactly what it was before. Display data: it never makes a
+	// live session out of a dead one (the held delegation row already
+	// does), it only names WHAT the wait is.
+	ChildQuestions []ChildQuestion
 	// DeadHostDriver: a session_drivers row names a provably dead host (a
 	// crash fact: the loop died before its marker was purged).
 	DeadHostDriver bool
@@ -270,6 +278,9 @@ func waitingOn(f ActivityFacts) []string {
 	if f.Driver != nil && f.DriverOwes {
 		waits = append(waits, WaitRetry)
 	}
+	if len(f.ChildQuestions) > 0 {
+		waits = append(waits, WaitAnswer)
+	}
 	for range f.Unreadable {
 		waits = append(waits, WaitUnknown)
 	}
@@ -283,10 +294,23 @@ func describeDelegating(f ActivityFacts, crashedPID int64) string {
 	if f.Driver != nil {
 		fmt.Fprintf(&b, " (driven by `rush run` PID %d)", f.Driver.PID)
 	}
+	if clause := describeChildQuestions(f); clause != "" {
+		fmt.Fprintf(&b, "; %s", clause)
+	}
 	if crashedPID > 0 {
 		fmt.Fprintf(&b, "; a lock records dead PID %d", crashedPID)
 	}
 	return b.String()
+}
+
+// describeChildQuestions renders the awaiting-answer clause of a verdict
+// whose held delegation(s) have a child paused on a question (#1158).
+func describeChildQuestions(f ActivityFacts) string {
+	if len(f.ChildQuestions) == 0 {
+		return ""
+	}
+	q := f.ChildQuestions[0]
+	return fmt.Sprintf("waiting for your answer: child %s asked: %s", q.ChildSessionID, q.Question)
 }
 
 func describeBetweenTurns(f ActivityFacts, waits []string, crashedPID int64) string {
@@ -312,6 +336,9 @@ func describeBetweenTurns(f ActivityFacts, waits []string, crashedPID int64) str
 				parts = append(parts, "could not read "+u+" (assuming it is live)")
 			}
 		}
+	}
+	if clause := describeChildQuestions(f); clause != "" {
+		parts = append(parts, clause)
 	}
 	if crashedPID > 0 {
 		parts = append(parts, fmt.Sprintf("a lock records dead PID %d", crashedPID))

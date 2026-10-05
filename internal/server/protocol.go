@@ -733,6 +733,11 @@ type LiveWorkItemWire struct {
 	Reason         string `json:"reason,omitempty"`
 	FinishedAt     int64  `json:"finishedAt"`
 	LastActivityAt int64  `json:"lastActivityAt"`
+	// AwaitingAnswer marks a running delegation whose child paused on a
+	// question (#1158): set only together with AwaitingQuestion (the
+	// display-capped question text). Additive to the wire shape.
+	AwaitingAnswer   bool   `json:"awaitingAnswer,omitempty"`
+	AwaitingQuestion string `json:"awaitingQuestion,omitempty"`
 }
 
 // SessionLiveWorkPayload is both the session_live_work push and the
