@@ -634,10 +634,8 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			// answer as the run's outcome; only a canceled run, a
 			// fail-fast busy refusal or a queued review replace it.
 			slog.Warn("reviewer pass failed", "session", sess.ID, "err", reviewErr)
-			primaryResult.ReviewVerdict = "error"
-			primaryResult.Warnings = append(primaryResult.Warnings,
-				fmt.Sprintf("reviewer pass failed: %v", reviewErr))
-			fmt.Fprintf(stderr, "rush run: reviewer pass failed: %v\n", reviewErr)
+			// primaryResult is nil in terse/stream mode without captureResult.
+			recordReviewFailure(primaryResult, stderr, reviewErr)
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
 		default:
