@@ -715,12 +715,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 		if fast == nil && sess.FastModelID != "" {
 			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
 		}
-		if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" {
-			smart.ReasoningEffort = sess.SmartModelReasoningEffort
-		}
-		if fast != nil && fast.ReasoningEffort == "" && sess.FastModelReasoningEffort != "" {
-			fast.ReasoningEffort = sess.FastModelReasoningEffort
-		}
+		inheritSessionEffort(smart, fast, sess)
 	}
 
 	// R9-2 (round-9 audit): the session-inheritance fill-in above lives on
@@ -742,6 +737,21 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)
+}
+
+// inheritSessionEffort fills an override slot's empty reasoning effort from
+// the session's durable effort, but only when the slot names the session's
+// own model: the effort was recorded for that model, and applyModelOverrides
+// deliberately clears the effort whenever the model differs.
+func inheritSessionEffort(smart, fast *ModelOverride, sess session.Session) {
+	if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" &&
+		smart.Model == sess.SmartModelID && smart.Provider == sess.SmartModelProvider {
+		smart.ReasoningEffort = sess.SmartModelReasoningEffort
+	}
+	if fast != nil && fast.ReasoningEffort == "" && sess.FastModelReasoningEffort != "" &&
+		fast.Model == sess.FastModelID && fast.Provider == sess.FastModelProvider {
+		fast.ReasoningEffort = sess.FastModelReasoningEffort
+	}
 }
 
 // ReserveExclusive implements Coordinator — see the interface doc and
@@ -822,12 +832,7 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 		if fast == nil && sess.FastModelID != "" {
 			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
 		}
-		if smart != nil && smart.ReasoningEffort == "" {
-			smart.ReasoningEffort = sess.SmartModelReasoningEffort
-		}
-		if fast != nil && fast.ReasoningEffort == "" {
-			fast.ReasoningEffort = sess.FastModelReasoningEffort
-		}
+		inheritSessionEffort(smart, fast, sess)
 	}
 
 	var pinned *resolvedOverrides

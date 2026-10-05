@@ -545,9 +545,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			"session_id", call.SessionID,
 			"err", err,
 		)
-		// The refusal is noted like the lock-busy one above, so the gate does
-		// not immediately relaunch a drain the process has no claim on; the
-		// arbiter then classifies it as VDefer without a recheck.
+		// The refusal is noted like the lock-busy one above: noteDrainRefused
+		// paces the gate and queues a recheck before any accounting runs.
 		a.noteRefusal(call.SessionID, err)
 		return nil, notAttempted(call, err)
 	}
