@@ -238,8 +238,6 @@ type cliLoop struct {
 	// lastScope is the most recent CLIScopeState read in nextStep: the wait
 	// heartbeat names its once schedule (stage 5a).
 	lastScope agent.CLIScopeState
-	// loopSchedulesCancelled: the scope-close cancellation ran once per run.
-	loopSchedulesCancelled bool
 	// Unfinished-todos reminder state (#A18): how many reminders fired in a
 	// row without the todos changing, their last (content,status)
 	// fingerprint, and whether the budget was spent without progress.

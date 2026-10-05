@@ -24,12 +24,16 @@ import (
 // into an error. Once schedules are never touched (they hold the process,
 // so a scope close cannot be happening while one is open) and other
 // sessions' schedules are out of reach (the store API is owner-checked).
+//
+// It runs at EVERY scope close, not once per run: a reminder or reviewer turn
+// that follows a close can create a loop schedule of its own (C9-3), and the
+// next close must cancel that one too. A close with nothing to cancel is
+// silent.
 func (l *cliLoop) cancelLoopSchedulesAtClose() {
 	canceler, ok := l.source.(agent.LoopWakeCanceler)
-	if !ok || l.sessionID == "" || l.loopSchedulesCancelled {
+	if !ok || l.sessionID == "" {
 		return
 	}
-	l.loopSchedulesCancelled = true
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
 	defer cancel()
 	n, err := canceler.CancelLoopWakeSchedules(ctx, l.sessionID)
