@@ -105,6 +105,26 @@ func TestLoggedTool_FatalErrorIsLoggedAtError(t *testing.T) {
 	require.Contains(t, rec["err"], "disk is on fire")
 }
 
+// ask_question returns AwaitingAnswerError to stop the turn on purpose; 14 of
+// them per day were logged at ERROR next to real failures (A44). It is a
+// protocol pause: INFO, still greppable by level_kind=pause.
+//
+// Revert-check: drop the errAwaitingAnswer case and this goes red (ERROR).
+func TestLoggedTool_AwaitingAnswerIsAPauseNotAnError(t *testing.T) {
+	recs := runWrapped(t, stubTool{
+		name: "ask_question",
+		err:  &AwaitingAnswerError{Question: "create the .rush directory?", SessionID: "child-1"},
+	})
+
+	require.Len(t, recs, 1)
+	rec := recs[0]
+	require.Equal(t, "INFO", rec["level"], "a question to the orchestrator is not a failure")
+	require.Equal(t, "pause", rec["level_kind"])
+	require.Equal(t, "ask_question", rec["tool"])
+	require.Equal(t, "sess-42", rec["session_id"])
+	require.Contains(t, rec["err"], "create the .rush directory?")
+}
+
 func TestLoggedTool_RecoverableErrorIsLoggedAtWarn(t *testing.T) {
 	recs := runWrapped(t, stubTool{
 		name: "view",

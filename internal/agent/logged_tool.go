@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"unicode/utf8"
@@ -124,6 +125,17 @@ func (l *loggedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 	// The attribute is level_kind, not level: slog owns "level" in its own
 	// output, and a second one would emit a duplicate JSON key.
 	switch {
+	case err != nil && errors.Is(err, errAwaitingAnswer):
+		// ask_question unwinds the loop on purpose (the turn stops cleanly and
+		// hands the question to the orchestrator/operator): a protocol step,
+		// not a failure, so not ERROR.
+		slog.Info("tool paused the run: awaiting an answer",
+			"tool", call.Name,
+			"session_id", tools.GetSessionFromContext(ctx),
+			"tool_call_id", call.ID,
+			"level_kind", "pause",
+			"err", err,
+		)
 	case err != nil:
 		slog.Error("tool call failed, ending the run",
 			"tool", call.Name,

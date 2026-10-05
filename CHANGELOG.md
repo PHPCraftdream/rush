@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- Вопрос воркера (`ask_question`) больше не пишется в rush.log как ERROR «tool call failed, ending the run»: это штатная пауза хода, теперь INFO «tool paused the run: awaiting an answer» с `level_kind=pause` (#1194).
 - Сбой потока Codex с кодом `server_is_overloaded` / `server_error` / `rate_limit_exceeded` больше не обрывает ход без повтора: он получает статус 503/500/429 и повторяется общим механизмом (раньше воркер на gpt-6 умирал на первой перегрузке серверов); коды исчерпания лимита остаются терминальными (#1191).
 - Эффорт `max` для z.ai (GLM-5.3, glm-5.2…) и DeepSeek больше не валит вызов ошибкой «reasoning model `max` not supported»: значение уходит только в `extra_body`, а не в верхнеуровневое поле `reasoning_effort`, которое библиотека проверяет по словарю OpenAI. Раньше так падал каждый проход ревью при слоте reviewer `@max` (#1190).
 - `stop_agent` / `inject_agent` без `child_session_id` отвечают, откуда взять id: из ответа `agent` или `inspect_agent` без аргументов (раньше — голое «is required»; #1186).
