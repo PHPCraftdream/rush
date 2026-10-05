@@ -5,6 +5,9 @@ package config
 
 import (
 	"context"
+	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,7 +37,9 @@ import (
 // setDefaults, ProjectSkillsDir) treats worktreeRoot purely as a config-file
 // SEARCH BOUNDARY, never as a live git status source of truth — a stale
 // boundary would at worst mean an upward config search stops one directory
-// too early/late until restart, not silent data corruption.
+// too early/late until restart, not silent data corruption. Launch failures
+// (git not on PATH, resource errors) are NOT cached; only git's own answers
+// are.
 var worktreeRootCache sync.Map // map[string]string
 
 // worktreeRoot returns the absolute path of the git working tree root for
@@ -54,6 +59,11 @@ func worktreeRoot(dir string) string {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			// Git could not be launched; retry on a later call.
+			return ""
+		}
 		worktreeRootCache.Store(dir, "")
 		return ""
 	}
@@ -77,9 +87,34 @@ func worktreeRoot(dir string) string {
 // "outside any working tree"; ownership's home/not-home question is a
 // SEPARATE flag -- see WorkspaceHome -- and must never be inferred from this
 // value being empty or not. One shared implementation keeps the callers from
-// drifting into different notions of "the workspace".
+// drifting into different notions of "the workspace". When git cannot be
+// launched, falls back to walking up for a .git entry so a normal checkout
+// never degrades to "".
 func WorkspaceRoot(dir string) string {
-	return worktreeRoot(dir)
+	if root := worktreeRoot(dir); root != "" {
+		return root
+	}
+	return dotGitRoot(dir)
+}
+
+// dotGitRoot walks up from dir looking for a .git entry (file or
+// directory), the gitless fallback mirroring internal/log's locateGit.
+// It returns "" when no entry exists up to the filesystem root.
+func dotGitRoot(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+			return abs
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return ""
+		}
+		abs = parent
+	}
 }
 
 // WorkspaceHome reports whether this process owns ITS OWN data directory
