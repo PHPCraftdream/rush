@@ -366,10 +366,10 @@ func TestCommandResultsFromTranscript(t *testing.T) {
 // The inputs below are deliberately far bigger than the block can ever be, and
 // they must stay that way: every per-section cap is in RUNES
 // (reviewEvidenceRequestRunes, reviewEvidenceChangedLines, ...) while the
-// overall cap reviewEvidenceMaxChars is compared in BYTES. A smaller input can
-// leave the whole block under 6000 bytes, in which case no truncation happens
+// overall cap reviewEvidenceMaxChars is compared in RUNES too. A smaller input can
+// leave the whole block under 6000 runes, in which case no truncation happens
 // at all and the assertions below would be vacuous. Only an input this large
-// exercises the byte-level truncation path.
+// exercises the truncation path.
 func TestReviewEvidence_SizeCapped(t *testing.T) {
 	t.Parallel()
 
@@ -399,14 +399,14 @@ func TestReviewEvidence_SizeCapped(t *testing.T) {
 	// truncated. Long paths are therefore the only lever that can push the block
 	// past reviewEvidenceMaxChars.
 	// DO NOT "tidy" these paths back to short ones: with short paths the sections
-	// only sum to ~4600 bytes, under the 6000-byte cap, so
+	// only sum to ~4600 runes, under the 6000-rune cap, so
 	// `buildReviewEvidence` takes the "it fits" early return and never appends
 	// the truncation marker — the assertions below would go vacuous and this
 	// test would silently stop testing anything.
 	for i := range 200 {
-		// ~95 bytes per path: the 40 changed_during_run rows plus the 20
-		// dirty_before_run rows alone are ~5700 bytes, which together with the
-		// other sections carries the block comfortably past 6000 bytes.
+		// ~95 runes per path: the 40 changed_during_run rows plus the 20
+		// dirty_before_run rows alone are ~5700 runes, which together with the
+		// other sections carries the block comfortably past 6000 runes.
 		path := fmt.Sprintf("internal/module%02d/subpackage/nested/deeper/component_file_%03d_with_a_long_descriptive_name.go", i%20, i)
 		before.Status[path] = " M"
 		before.Numstat[path] = "0\t1"
@@ -457,7 +457,7 @@ func TestReviewEvidence_SizeCapped(t *testing.T) {
 	require.True(t, strings.HasSuffix(out, "(evidence truncated)\n</review_evidence>"),
 		"a capped block ends with the truncation marker, not mid-sentence")
 	require.Contains(t, out, `<review_evidence trust="computed by rush, not by the orchestrator">`)
-	// The cap is a byte cut, so the sections behind it are gone by construction:
+	// The cap is a rune cut, so the sections behind it are gone by construction:
 	// only the two the block STARTED with are guaranteed to survive. Their
 	// presence proves the truncation really cut the listing rather than
 	// replacing it.

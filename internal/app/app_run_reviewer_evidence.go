@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"regexp"
@@ -32,8 +33,9 @@ import (
 )
 
 // reviewEvidenceMaxChars is the hard cap on the whole block, suffix included.
-// Beyond it the block is cut and closed with the truncation marker so the
-// reviewer can tell an incomplete listing from a complete one.
+// Counted in runes, like the per-section caps. Beyond it the block is cut and
+// closed with the truncation marker so the reviewer can tell an incomplete
+// listing from a complete one.
 const reviewEvidenceMaxChars = 6000
 
 // Per-section caps. Each section is trimmed on its own so one runaway section
@@ -165,7 +167,8 @@ func evidenceGit(ctx context.Context, dir string, args ...string) (string, error
 	cmd.Env = evidenceGitEnv()
 	var out strings.Builder
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	// Stderr must not reach the porcelain parser; on failure it stays unsurfaced.
+	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
 		return "", err
 	}
@@ -280,19 +283,16 @@ func buildReviewEvidence(basis *reviewBasis, after gitSnapshot, msgs []message.M
 	b.WriteString("</review_evidence>")
 
 	out := b.String()
-	if len(out) <= reviewEvidenceMaxChars {
+	if utf8.RuneCountInString(out) <= reviewEvidenceMaxChars {
 		return out
 	}
 	suffix := "\n(evidence truncated)\n</review_evidence>"
-	if len(suffix) >= reviewEvidenceMaxChars {
+	if utf8.RuneCountInString(suffix) >= reviewEvidenceMaxChars {
 		return suffix
 	}
-	cut := reviewEvidenceMaxChars - len(suffix)
-	// Never cut a UTF-8 sequence in half: the block is read by the model.
-	for cut > 0 && !utf8.RuneStart(out[cut]) {
-		cut--
-	}
-	return out[:cut] + suffix
+	cut := reviewEvidenceMaxChars - utf8.RuneCountInString(suffix)
+	// The cap is in runes, so a rune index can never split a sequence.
+	return string([]rune(out)[:cut]) + suffix
 }
 
 func writeEvidenceGitSection(b *strings.Builder, after gitSnapshot) {
