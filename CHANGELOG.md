@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- Инструмент `write` отказывается заменять существующий файл от 2 КБ содержимым меньше четверти его размера (раньше воркер затёр реестр законов одной строкой): ответ объясняет, что `write` перезаписывает файл целиком, и предлагает `edit`/`multiedit`; осознанная замена — параметром `allow_shrink=true` (#1192). `fs_write` не затронут.
 - Фоновый shell, запущенный в ходе без колбэка завершения (`notify_on_background_job_done=false`, Drain/wake-ходы SDK), больше не оставляет строку `async_jobs` в `running` навсегда и не держит область сессии открытой: терминальный переход пишет наблюдатель, зарегистрированный при claim, независимо от уведомления (#1188).
 - Вопрос воркера (`ask_question`) больше не пишется в rush.log как ERROR «tool call failed, ending the run»: это штатная пауза хода, теперь INFO «tool paused the run: awaiting an answer» с `level_kind=pause` (#1194).
 - Сбой потока Codex с кодом `server_is_overloaded` / `server_error` / `rate_limit_exceeded` больше не обрывает ход без повтора: он получает статус 503/500/429 и повторяется общим механизмом (раньше воркер на gpt-6 умирал на первой перегрузке серверов); коды исчерпания лимита остаются терминальными (#1191).

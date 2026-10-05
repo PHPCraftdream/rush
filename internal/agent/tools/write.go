@@ -28,8 +28,9 @@ import (
 var writeDescription string
 
 type WriteParams struct {
-	FilePath string `json:"file_path" description:"The path to the file to write"`
-	Content  string `json:"content" description:"The content to write to the file"`
+	FilePath    string `json:"file_path" description:"The path to the file to write"`
+	Content     string `json:"content" description:"The content to write to the file"`
+	AllowShrink bool   `json:"allow_shrink,omitempty" description:"Set true only to deliberately replace a large existing file with much smaller content (write is refused otherwise: use edit for partial changes)"`
 }
 
 type WritePermissionsParams struct {
@@ -88,6 +89,9 @@ func NewWriteTool(
 				oldContent, readErr := os.ReadFile(filePath)
 				if readErr == nil && string(oldContent) == params.Content {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s already contains the exact content. No changes made.", filePath)), nil
+				}
+				if readErr == nil && !params.AllowShrink && writeWouldShrinkFile(len(oldContent), len(params.Content)) {
+					return fantasy.NewTextErrorResponse(writeShrinkRefusal(filePath, len(oldContent), len(params.Content))), nil
 				}
 			} else if !os.IsNotExist(err) {
 				if osFailureIsFatal(err) {
