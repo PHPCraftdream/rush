@@ -115,6 +115,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   ANSWER»; ответ через `agent resume_session_id=...` принимается в
   удерживаемую делегацию (без новой строки, итог приходит под исходным job),
   гонка с release закрыта флагом `answerHold`.
+- Документация оркестратора под общий каталог данных (#1144 SD-E): тексты `/rush`
+  и `/wrush` говорят, что id сессии должен быть уникален в пределах проекта (все
+  linked worktree пишут в одну БД `<main>/.rush`, повторный id продолжит старую
+  сессию), что сессия принадлежит checkout'у, где создана (`--session` из другого
+  checkout отказывает «belongs to <root>»; продолжить историю там можно только
+  `rush sessions fork <id> --cwd <path>`), что `rush sessions list/locks/watch/why`
+  из корня видят всех агентов, а worktree с уже существующей локальной
+  `.rush/rush.db` продолжает ею пользоваться.
 - Флейк `TestHeartbeatTouchesFile` (#1168): `Release` возвращал управление до
   того, как heartbeat-горутина закрыла файл замка, и очистка `t.TempDir` на
   Windows падала с «file in use»; heartbeat-тесты теперь ждут закрытия файла.

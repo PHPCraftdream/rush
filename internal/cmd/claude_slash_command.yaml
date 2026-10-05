@@ -190,6 +190,12 @@ blocks:
         not the plain two-positional form, which only touches smart/fast.
       - Stable, task-meaningful `--session` id (issue/branch/topic slug) —
         same id continues across runs and is recognisable in `sessions watch`.
+        Make it unique across the PROJECT: all linked git worktrees of one
+        project share one sessions database (`<main>/.rush`), so an id from a
+        finished task would be resumed, not created. A session belongs to the
+        checkout that created it: `--session <id>` from another checkout is
+        refused (`belongs to <root>`); to continue that history there use
+        `rush sessions fork <id> --cwd <path>`.
       - No `--timeout` needed — a launched run has no `--timeout` deadline by
         default (only a 6 h wall-clock cap, see "Time limits" at the bottom); it
         ends on its own once the task is done. `--idle-timeout`

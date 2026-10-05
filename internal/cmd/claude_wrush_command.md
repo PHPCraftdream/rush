@@ -43,7 +43,17 @@ primary checkout.
 2. Create a branch + worktree from the current base (default `HEAD`,
    unless told otherwise): `git worktree add -b <task-slug>
    <repo-root>/worktrees/<task-slug> <base>`. Name `<task-slug>` like a
-   `--session` id.
+   `--session` id, and make it unique across the PROJECT, not just the
+   run: a linked worktree's sessions, messages, `async_jobs` and logs are
+   written to the project's shared `<main>/.rush`, so they survive `git
+   worktree remove` and `rush sessions list/locks/watch/why` from the
+   primary checkout shows every agent — and an id reused from a finished
+   task resumes that old session instead of creating a new one (add the
+   issue/PR number or a date; never a bare `fix` or `test`). A session
+   belongs to the checkout that created it: `--session <id>` from a
+   different worktree is refused (`belongs to <root>`); continue that
+   history elsewhere only with `rush sessions fork <id> --cwd <path>`.
+   A worktree that already has its own `.rush/rush.db` keeps using it.
 3. Launch `rush run` with cwd inside the worktree (`cd` in the same
    Bash call) — every edit, git op, and test the sub-agent runs stays
    inside that tree. Redirect `.rush/stdin/<task>.{out,err}` to the
