@@ -436,8 +436,10 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 // closePhase handles a closed scope: the reviewer pass first, when due. A
 // clean review turn returns evCloseAgain: the turn keeps bash (every CLI bash
 // is an async job), so the loop decides again -- running work waited on, Owed
-// debt Drained on the reviewer's options -- and the answer becomes the last
-// completed turn (R4C-1). Every other outcome ends the run: a failed review is
+// debt Drained on the reviewer's options. A pre-review Drain's result becomes
+// the answer (R4C-1); a Drain after the review only settles usage and errors,
+// never replacing the reviewed answer (C9-16, A10). Every other outcome ends
+// the run: a failed review is
 // the run's error, like the pass inside ExecuteRun (work it started is
 // cancelled with the run, as at any error exit), a review that queued behind
 // another owner or was refused by the session lock's holder did not run and
@@ -692,9 +694,11 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 	l.tot.add(result)
 	switch classifyDrainOutcome(result, err) {
 	case drainCompleted:
-		// A completed turn (or a question -- an answer of its own kind): it is
-		// now the run's answer.
-		if result != nil {
+		// A completed turn (or a question -- an answer of its own kind) becomes
+		// the run's answer -- until the reviewer pass has run (C9-16): a Drain
+		// after the review only settles usage, never replacing the reviewed
+		// answer (A10).
+		if result != nil && !l.reviewerDone {
 			l.final = result
 			l.lastBuffered = buffered
 		}

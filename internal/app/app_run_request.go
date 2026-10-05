@@ -224,6 +224,9 @@ type RunRequest struct {
 	// ordinary (non-Drain) turn on the session it already claimed. Setup is
 	// mutation-free like a Drain's.
 	reviewerTurn bool
+	// nudgeTurn marks the loop's unfinished-todos reminder turn: a follow-up
+	// of the same invocation, so its setup is mutation-free like a Drain's.
+	nudgeTurn bool
 	// deferReviewer tells ExecuteRun not to run the reviewer pass itself: the
 	// `rush run` loop runs it once when its scope closes (reviewerTurn).
 	deferReviewer bool
@@ -271,7 +274,8 @@ type RunRequest struct {
 }
 
 // mutationFree reports a follow-up call of a `rush run` invocation (a Drain
-// iteration or the loop's reviewer pass): the invocation's own session setup --
+// iteration, the loop's reviewer pass or its unfinished-todos reminder): the
+// invocation's own session setup --
 // system prompt, reasoning effort, model slots, cancel flag, budget,
 // ended_reason -- ran once with the first turn and is not repeated.
-func (r RunRequest) mutationFree() bool { return r.drainTurn || r.reviewerTurn }
+func (r RunRequest) mutationFree() bool { return r.drainTurn || r.reviewerTurn || r.nudgeTurn }

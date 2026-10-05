@@ -133,6 +133,7 @@ func (l *cliLoop) runTodoNudgeTurn() (*RunResult, *bytes.Buffer, error) {
 		HideSpinner:       l.hideSpinner,
 		captureResult:     true,
 		loopTurn:          true,
+		nudgeTurn:         true,
 		deferReviewer:     true,
 		reviewerConfig:    l.reviewerDone,
 		onSessionResolved: l.claim,
