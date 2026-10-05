@@ -156,7 +156,7 @@ to you at all.
   **exits** with `exit_reason: "awaiting_answer"`. You see this as your
   background command completing, and you must resume it yourself with
   a fresh `rush run --session <id> "<answer>"`. Exception: if the agent
-  still has its OWN running background tasks (bash jobs, delegations),
+  still has its OWN running background tasks (bash jobs),
   the tool refuses to end the run — the model gets a hint to finish the
   turn without tool calls instead, the tasks' results arrive as
   messages, and the run continues on its own.

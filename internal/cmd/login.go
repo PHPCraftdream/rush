@@ -247,6 +247,9 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	// Ctrl-C in the link controls cancels the login exactly like SIGINT.
+	ctx, interrupt := context.WithCancel(ctx)
+	defer interrupt()
 	var (
 		token            *oauth.Token
 		err              error
@@ -262,12 +265,12 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 			fmt.Println()
 			fmt.Println(lipgloss.NewStyle().Bold(true).Render(userCode))
 			fmt.Println()
-			stopLinkControls = startOAuthLinkControls(ctx, verificationURL)
+			stopLinkControls = startOAuthLinkControls(ctx, verificationURL, interrupt)
 			return nil
 		})
 	} else {
 		token, err = codexauth.LoginBrowser(ctx, func(authorizationURL string) error {
-			stopLinkControls = startOAuthLinkControls(ctx, authorizationURL)
+			stopLinkControls = startOAuthLinkControls(ctx, authorizationURL, interrupt)
 			return nil
 		})
 	}

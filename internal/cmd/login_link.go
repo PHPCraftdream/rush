@@ -13,11 +13,12 @@ import (
 )
 
 type oauthLinkModel struct {
-	url    string
-	status string
-	width  int
-	open   func(string) error
-	copy   func(string) error
+	url       string
+	status    string
+	width     int
+	open      func(string) error
+	copy      func(string) error
+	interrupt func()
 }
 
 func (m *oauthLinkModel) Init() tea.Cmd { return nil }
@@ -34,6 +35,13 @@ func (m *oauthLinkModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	code := key.BaseCode
 	if code == 0 {
 		code = key.Code
+	}
+	// In raw mode Ctrl-C arrives as a key press, not SIGINT: abort, never copy.
+	if key.Mod.Contains(tea.ModCtrl) && (code == 'c' || code == 'C') {
+		if m.interrupt != nil {
+			m.interrupt()
+		}
+		return m, tea.Quit
 	}
 	switch {
 	case key.Code == tea.KeyF2 || code == 'o' || code == 'O':
@@ -77,8 +85,8 @@ func (m *oauthLinkModel) View() tea.View {
 	return view
 }
 
-func startOAuthLinkControls(ctx context.Context, url string) func() {
-	model := &oauthLinkModel{url: url, open: browser.OpenURL, copy: clipboard.WriteAll}
+func startOAuthLinkControls(ctx context.Context, url string, interrupt func()) func() {
+	model := &oauthLinkModel{url: url, open: browser.OpenURL, copy: clipboard.WriteAll, interrupt: interrupt}
 	if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
 		fmt.Printf("Open this URL to authenticate with your ChatGPT account:\n%s\n\n[o/F2] Open link   [c/F3] Copy full link (interactive terminal only)\n", url)
 		return func() {}
