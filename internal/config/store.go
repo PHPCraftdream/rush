@@ -94,7 +94,12 @@ type ConfigStore struct {
 	// dataDirSource records why Load picked the data directory (WS-3:
 	// computed once, never changed by reload). The empty value behaves
 	// as DataDirSourceDefault -- see DataDirSource().
-	dataDirSource       DataDirSource
+	dataDirSource DataDirSource
+	// sharedDataDir records that the resolved data directory IS the
+	// shared directory of a linked worktree even when an explicit
+	// source (flag/config) picked it: shared-from-linked is defined by
+	// the directory (SD-D #1143). The zero value stays home.
+	sharedDataDir       bool
 	globalDataPath      string // ~/.local/share/rush/rush.json
 	workingDirOwnerOnce sync.Once
 	workingDirOwner     int
@@ -320,20 +325,22 @@ func (s *ConfigStore) DataDirSource() DataDirSource {
 }
 
 // WorkspaceHome is the store-scoped form of config.WorkspaceHome: the
-// process owns its own data directory unless Load resolved a shared
-// directory for a linked worktree.
+// process owns its own data directory unless Load resolved the shared
+// directory of a linked worktree, by redirection or by an explicit
+// flag/config value pointing at it.
 func (s *ConfigStore) WorkspaceHome() bool {
-	return s.DataDirSource() != DataDirSourceShared
+	return !(s.sharedDataDir || s.DataDirSource() == DataDirSourceShared)
 }
 
 // MayMigrateData reports whether this process may apply pending schema
 // migrations to the data directory's database (SD-D #1143 section 2):
 // only a DEV build running against the SHARED directory of a linked
-// worktree is barred -- branch builds must never migrate the shared DB,
+// worktree -- reached by redirection or by an explicit source -- is
+// barred -- branch builds must never migrate the shared DB,
 // while deployed binaries migrate from anywhere and dev builds on their
 // own (dev-isolated / home) directories migrate as always.
 func (s *ConfigStore) MayMigrateData() bool {
-	return s.DataDirSource() != DataDirSourceShared || !isDevBuild()
+	return !(s.sharedDataDir || s.DataDirSource() == DataDirSourceShared) || !isDevBuild()
 }
 
 // Resolver returns the variable resolver.

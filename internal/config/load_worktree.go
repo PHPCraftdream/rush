@@ -86,9 +86,10 @@ func WorkspaceRoot(dir string) string {
 // rather than a shared directory handed out to linked worktrees (#1142 step
 // C, WS-1: a legacy unbound session row -- workspace_root empty -- is owned
 // by home processes only). This is deliberately NOT derived from the
-// workspace root: it comes from the data-directory SOURCE Load resolved
-// (SD-D #1143, datadir.go): source shared (a linked worktree running
-// against <main>/.rush) is not home; every other source is. Load stores the
+// workspace root: it comes from Load's data-directory resolution (SD-D
+// #1143, datadir.go): shared-from-linked -- source shared, or an explicit
+// --data-dir / options.data_directory resolving to <main>/.rush inside a
+// linked worktree -- is not home; everything else is. Load stores the
 // flag exactly once per process and reload never changes it (WS-3). This
 // function is the SINGLE source of the flag: app wiring passes its value
 // into the session/wake/queue services, and the agent guard and the server

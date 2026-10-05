@@ -119,6 +119,27 @@ func cleanDataDirPath(workingDir, dir string) string {
 	return filepath.Clean(filepathext.SmartJoin(workingDir, dir))
 }
 
+// dataDirIsSharedOfLinkedWorktree reports whether dataDir IS the shared
+// data directory of a linked worktree (<main>/.rush), whatever source
+// picked it: the redirected default (source shared), or an explicit
+// --data-dir / options.data_directory pointing there. The directory,
+// not the resolution step, defines shared-from-linked (WS-1). Outside a
+// linked worktree, or when the probe is unavailable, it is always false.
+func dataDirIsSharedOfLinkedWorktree(workingDir, dataDir string, source DataDirSource) bool {
+	if source == DataDirSourceShared {
+		return true
+	}
+	wtRoot := worktreeRoot(workingDir)
+	if wtRoot == "" {
+		return false
+	}
+	info := linkedWorktreeInfo(wtRoot)
+	if info == nil || info.mainRoot == "" {
+		return false
+	}
+	return sameDir(dataDir, filepath.Join(info.mainRoot, defaultDataDirectory))
+}
+
 // defaultDataDirForWorkspace implements priorities 3-5 for the case
 // where neither the flag nor the config named a directory.
 func defaultDataDirForWorkspace(workingDir string) (string, DataDirSource) {
@@ -450,9 +471,9 @@ func MarkSharedWorkspace(mainDataDir, wsRoot string) error {
 }
 
 // workspaceHomeFlag is the process-wide "owns its own data directory"
-// flag behind WorkspaceHome. It defaults to true (every pre-SD-D
-// process is home) and Load stores source != shared exactly once; reload
-// never touches it (WS-3).
+// flag behind WorkspaceHome. It defaults to true (every pre-SD-D process
+// is home) and Load stores !dataDirIsSharedOfLinkedWorktree exactly once;
+// reload never touches it (WS-3).
 var workspaceHomeFlag atomic.Bool
 
 func init() { workspaceHomeFlag.Store(true) }

@@ -75,7 +75,8 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	}
 	dataDirResolved, dataDirSource := resolveDataDirectory(workingDir, dataDir, configuredDataDir)
 	cfg.setDefaults(workingDir, dataDirResolved)
-	workspaceHomeFlag.Store(dataDirSource != DataDirSourceShared)
+	sharedDataDir := dataDirIsSharedOfLinkedWorktree(workingDir, dataDirResolved, dataDirSource)
+	workspaceHomeFlag.Store(!sharedDataDir)
 
 	globalDataPath := normalizeReloadPath(GlobalConfigData())
 	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
@@ -95,6 +96,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		workingDir:     workingDir,
 		globalDataPath: globalDataPath,
 		dataDirSource:  dataDirSource,
+		sharedDataDir:  sharedDataDir,
 	}
 	// Load workspace config last so it has highest priority.
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
