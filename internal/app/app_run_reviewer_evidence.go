@@ -589,15 +589,32 @@ var reviewSyncExitRe = regexp.MustCompile(`Exit code (\d+)`)
 // reviewAsyncExitRe matches backgroundJobSummary's "finished: exit N".
 var reviewAsyncExitRe = regexp.MustCompile(`finished:?\s+exit\s+(-?\d+)`)
 
-// evidenceNoticeExit reads the exit code out of a background-job notice. The
-// other terminal wordings FormatAsyncCompletion uses ("timed out", "was
-// stopped", "was cancelled", "failed") carry no exit code, and the caller maps
-// that to unknown rather than to zero.
+// reviewAsyncStatusRe matches agent.FormatAsyncCompletion's finished/failed
+// notices ("Async job <id> (<tool>) finished.").
+var reviewAsyncStatusRe = regexp.MustCompile(`(?s)\AAsync job \S+ \([^)]*\) (finished|failed)\.`)
+
+// evidenceNoticeExit reads the exit code out of a background-job notice. Both
+// notice families are handled; the other terminal wordings
+// FormatAsyncCompletion uses ("timed out", "was stopped", "was cancelled",
+// "was interrupted") carry no exit code, and the caller maps that to unknown
+// rather than to zero.
 func evidenceNoticeExit(content string) (int, bool) {
 	if m := reviewAsyncExitRe.FindStringSubmatch(content); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil {
 			return n, true
 		}
+	}
+	if m := reviewAsyncStatusRe.FindStringSubmatch(content); m != nil {
+		if m[1] == "finished" {
+			return 0, true
+		}
+		// A failed job's bash output carries the real "\nExit code N" tail.
+		if m := reviewSyncExitRe.FindStringSubmatch(content); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				return n, true
+			}
+		}
+		return 0, false
 	}
 	return 0, false
 }
