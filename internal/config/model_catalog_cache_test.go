@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,13 +86,15 @@ func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
 		"a stale-schema cache must still hide the superseded families when served")
 }
 
-// TestCachedProviderModelsRaisesStaleCodexContext: a Codex catalog cache
-// written by a Rush that predates the documented GPT-6 window (observed: every
-// gpt-6 entry at 272000, valid for seven days) must not replay those values.
+// TestCachedProviderModelsServesRawEntriesAndOverlayRaises: the cache layer
+// serves catalog entries exactly as the fetching Rush wrote them (a Rush that
+// predates the documented GPT-6 window wrote 272000 for every gpt-6 entry,
+// valid for seven days). The documented windows are applied once, by the
+// facts overlay at config load -- not by the cache.
 //
-// Revert-check: serve entry.Models without normalizeCatalogModels and the
-// gpt-6 windows come back as 272000.
-func TestCachedProviderModelsRaisesStaleCodexContext(t *testing.T) {
+// Revert-check: re-add cache-level normalization (or drop the final
+// ApplyModelFacts pass in loadProviders) and the raised rows go red.
+func TestCachedProviderModelsServesRawEntriesAndOverlayRaises(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	entry := cachedModelCatalog{
 		Fingerprint: modelCatalogFingerprint("openai-codex", "https://chatgpt.com/backend-api/codex", "account-a"),
@@ -114,6 +117,11 @@ func TestCachedProviderModelsRaisesStaleCodexContext(t *testing.T) {
 	require.Zero(t, fetchCalls, "a fresh cache must be served without refetching")
 	require.Len(t, models, 2)
 	for _, model := range models {
+		require.EqualValues(t, 272000, model.ContextWindow,
+			"the cache must replay exactly what was written; overlay rules are not its business")
+	}
+	raised := discover.ApplyModelFacts("openai-codex", models, nil)
+	for _, model := range raised {
 		require.EqualValues(t, 1_050_000, model.ContextWindow, model.ID)
 	}
 }

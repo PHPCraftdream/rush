@@ -34,20 +34,6 @@ func modelCatalogFingerprint(provider, endpoint, identity string) string {
 	return hex.EncodeToString(value[:])
 }
 
-// normalizeCatalogModels re-applies a provider's own model rules to catalog
-// entries served from the cache, which keeps whatever the Rush that wrote it
-// computed (the Codex context windows, for one).
-func normalizeCatalogModels(provider string, models []catwalk.Model) []catwalk.Model {
-	if provider != "openai-codex" {
-		return models
-	}
-	normalized := make([]catwalk.Model, len(models))
-	for i, model := range models {
-		normalized[i] = discover.NormalizeCodexModel(model)
-	}
-	return normalized
-}
-
 // visibleCatalogModels drops the superseded model families (see
 // discover.ModelVisible) from a provider catalog, including one served from
 // a cache written before the filter existed.
@@ -79,7 +65,7 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 	entry, exists := readModelCatalog(path, fingerprint)
 	age := time.Since(entry.FetchedAt)
 	if exists && age >= 0 && age < modelCatalogTTL {
-		return normalizeCatalogModels(provider, visibleCatalogModels(provider, entry.Models)), nil
+		return visibleCatalogModels(provider, entry.Models), nil
 	}
 	models, err := fetch(ctx)
 	if err == nil {

@@ -153,13 +153,10 @@ func TestConfigureProviders_ZAIResolveErrorSkipsNoFallback(t *testing.T) {
 }
 
 // TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt verifies the
-// GLM-5.3 model-list synthesis (task #459, follow-up to the glm5_3 atom in
-// models_atoms.go): when the catwalk-provided Z.AI model list doesn't
-// already include "glm-5.3" (the real, current state as of 2026-08-14 — see
-// docs.z.ai/guides/llm/glm-5.3's 404), configureProviders appends a
-// provisional entry so the web UI's model picker (which reads
-// KnownProviders()/ProviderConfig.Models, not the CLI-only atom registry)
-// can show it — confirmed live via `rush ping --model zai/glm-5.3`.
+// GLM-5.3 ensure-present entry (task #459, follow-up to the glm5_3 atom in
+// models_atoms.go): when catwalk and the live catalog omit "glm-5.3", the
+// final model-facts overlay appends the documented template so the web UI's
+// model picker and worker/reviewer slots can use it.
 func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) {
 	t.Parallel()
 
@@ -213,9 +210,8 @@ func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) 
 }
 
 // TestConfigureProviders_ZAIDoesNotDuplicateGLM53IfCatwalkAddsIt verifies the
-// synthesis is skipped once catwalk (or a user's own providers.zai.models
-// config) already lists glm-5.3 — the fork's provisional entry must never
-// shadow or duplicate a real, authoritative one.
+// ensure-present template is skipped once catwalk or the user's own
+// providers.zai.models config already lists glm-5.3.
 func TestConfigureProviders_ZAIDoesNotDuplicateGLM53IfCatwalkAddsIt(t *testing.T) {
 	t.Parallel()
 

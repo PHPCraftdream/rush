@@ -17,16 +17,8 @@ const (
 	// CodexBaseURL is the authenticated ChatGPT backend root used for Codex.
 	CodexBaseURL = "https://chatgpt.com/backend-api"
 	// CodexClientVersion selects the model catalog version supported by Rush.
-	CodexClientVersion                = "0.159.0"
-	codexDefaultContextWindow   int64 = 272_000
-	codexGPT56ContextWindow     int64 = 372_000
-	codexGPT56OneMContextWindow int64 = 1_000_000
-	// codexGPT6ContextWindow is the documented window of the GPT-6 family
-	// (Astra, Sol, Luna: 1,050,000 context, 922,000 max input, 128,000 max
-	// output -- developers.openai.com/api/docs/models/gpt-6-*).
-	codexGPT6ContextWindow int64 = 1_050_000
-	codexDefaultMaxTokens  int64 = 128_000
-	codexMaxResponseBytes        = 10 << 20
+	CodexClientVersion    = "0.159.0"
+	codexMaxResponseBytes = 10 << 20
 )
 
 // DiscoverCodexModels reads the authenticated account's ChatGPT Codex model
@@ -152,11 +144,11 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 		return catwalk.Model{}, false
 	}
 
-	contextWindow := codexContextWindow(id, codexPositiveInt(fields["context_window"]))
-	maxTokens := codexDefaultMaxTokens
-	if contextWindow < maxTokens {
-		maxTokens = contextWindow
-	}
+	// Raw values only: context-window and max-token facts come from the
+	// documented-facts table (ApplyModelFacts at config load), never from
+	// parsing.
+	contextWindow := codexPositiveInt(fields["context_window"])
+	maxTokens := int64(0)
 
 	defaultEffort := strings.ToLower(codexString(fields["default_reasoning_level"]))
 	reasoningLevels := codexReasoningLevels(fields["supported_reasoning_levels"])
@@ -192,19 +184,6 @@ func parseCodexModel(raw json.RawMessage) (catwalk.Model, bool) {
 	}, true
 }
 
-// NormalizeCodexModel re-applies the context-window rules to a model that was
-// not just parsed from the live catalog but taken from a cache written by an
-// older Rush: such an entry keeps the value of the Rush that wrote it (272000
-// for every gpt-6 model until the documented window was applied), and the
-// cache would otherwise replay it until its TTL runs out.
-func NormalizeCodexModel(model catwalk.Model) catwalk.Model {
-	model.ContextWindow = codexContextWindow(model.ID, model.ContextWindow)
-	if model.DefaultMaxTokens > model.ContextWindow {
-		model.DefaultMaxTokens = model.ContextWindow
-	}
-	return model
-}
-
 // codexGPT6Documented reports whether id is a model of the documented GPT-6
 // family: gpt-6 or a later gpt-6.N release of astra, sol or luna.
 func codexGPT6Documented(id string) bool {
@@ -217,39 +196,6 @@ func codexGPT6Documented(id string) bool {
 		}
 	}
 	return false
-}
-
-func codexContextWindow(id string, reported int64) int64 {
-	canonicalID := strings.TrimSuffix(id, "-wm")
-	if codexGPT6Documented(canonicalID) {
-		// A stale or account-reduced catalog value never lowers the
-		// documented window of these models.
-		if reported < codexGPT6ContextWindow {
-			return codexGPT6ContextWindow
-		}
-		return reported
-	}
-	switch canonicalID {
-	case "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra":
-		if reported < codexGPT56OneMContextWindow {
-			return codexGPT56OneMContextWindow
-		}
-	case "gpt-5.6":
-		if reported == 0 {
-			return codexGPT56ContextWindow
-		}
-	default:
-		if reported == 0 && strings.HasPrefix(canonicalID, "gpt-6") {
-			return codexGPT6ContextWindow
-		}
-		if reported == 0 && strings.HasPrefix(canonicalID, "gpt-5.6-") {
-			return codexGPT56ContextWindow
-		}
-	}
-	if reported > 0 {
-		return reported
-	}
-	return codexDefaultContextWindow
 }
 
 func codexString(raw json.RawMessage) string {

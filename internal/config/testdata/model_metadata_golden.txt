@@ -1,0 +1,14 @@
+openai-codex	codex-model	272000	128000
+openai-codex	gpt-6-luna	100000	4096
+openai-codex	gpt-6.1-sol	1050000	128000
+zai	glm-4.7	0	0
+zai	glm-5	0	1000
+zai	glm-5.3	1000000	131072
+zai	glm-5.3-flash	1000000	131072
+zai	glm-5.3-flashx	1000000	131072
+
+LIVE EFFORTS
+openai-codex	gpt-6-luna	high	low,high
+openai-codex	gpt-6.1-sol	high	low,high
+zai	glm-5.3		low,high,max
+zai	glm-5.3-flash		low,high,max

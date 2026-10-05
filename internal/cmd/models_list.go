@@ -124,7 +124,7 @@ func emitModelsListJSON(cfg *config.Config) error {
 	var atoms []atomJSON
 	for _, k := range enabledAtomKeys(cfg) {
 		a := atomRegistry[k]
-		j := atomJSON{Name: k, Provider: a.Provider, Model: a.Model, Ctx: a.CtxLabel, Group: a.Group}
+		j := atomJSON{Name: k, Provider: a.Provider, Model: a.Model, Ctx: atomCtx(cfg, a), Group: a.Group}
 		if a.EffortSource != nil {
 			j.Levels = a.EffortSource.Levels()
 		}
@@ -156,6 +156,30 @@ func emitModelsListJSON(cfg *config.Config) error {
 	})
 }
 
+func modelListCtx(n int64) string {
+	if n <= 0 {
+		return "?"
+	}
+	return humanCtx(n)
+}
+
+func atomCtx(cfg *config.Config, a atom) string {
+	if cfg != nil && cfg.Providers != nil {
+		if p, ok := cfg.Providers.Get(a.Provider); ok {
+			for _, m := range p.Models {
+				if m.ID == a.Model && m.ContextWindow > 0 {
+					return humanCtx(m.ContextWindow)
+				}
+			}
+		}
+	}
+	cw, _ := discover.LookupModelFacts(a.Provider, a.Model)
+	if cw > 0 {
+		return humanCtx(cw)
+	}
+	return "?"
+}
+
 func renderOtherModelsBlock(cfg *config.Config) string {
 	enabled := cfg.EnabledProviders()
 	if len(enabled) == 0 {
@@ -184,10 +208,7 @@ func renderOtherModelsBlock(cfg *config.Config) string {
 			if !discover.ModelVisible(pid, m.ID) {
 				continue
 			}
-			ctx := "?"
-			if m.ContextWindow > 0 {
-				ctx = humanCtx(m.ContextWindow)
-			}
+			ctx := modelListCtx(m.ContextWindow)
 			reason := ""
 			if m.CanReason {
 				if len(m.ReasoningLevels) > 0 {

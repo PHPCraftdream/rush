@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDiscoverCodexModelsUsesAccountAndNormalizesMetadata(t *testing.T) {
+func TestDiscoverCodexModelsUsesAccountAndParsesRawMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/codex/models" ||
 			r.URL.Query().Get("client_version") != CodexClientVersion ||
@@ -49,7 +49,8 @@ func TestDiscoverCodexModelsUsesAccountAndNormalizesMetadata(t *testing.T) {
 	require.Equal(t, "codex-model", model.ID)
 	require.Equal(t, "Codex Model", model.Name)
 	require.Equal(t, int64(96000), model.ContextWindow)
-	require.Equal(t, int64(96000), model.DefaultMaxTokens)
+	require.Zero(t, model.DefaultMaxTokens,
+		"parse returns raw values; the facts table owns the output budget")
 	require.True(t, model.CanReason)
 	require.Equal(t, []string{"low", "high", "none"}, model.ReasoningLevels)
 	require.Equal(t, "high", model.DefaultReasoningEffort)
@@ -67,73 +68,27 @@ func TestCodexModelCatalogKeepsProviderDefinedEffortDefaults(t *testing.T) {
 	require.Equal(t, []string{"none", "minimal", "ultra"}, model.ReasoningLevels)
 }
 
-func TestCodexModelCatalogAppliesContextFallbacks(t *testing.T) {
+// TestCodexModelCatalogParsesRawContextValues: parse no longer applies the
+// context fallbacks itself -- ApplyModelFacts (model_facts.go) owns them at
+// config load, and the overlay reproduces the former parse-time results.
+func TestCodexModelCatalogParsesRawContextValues(t *testing.T) {
 	tests := []struct {
 		name          string
 		payload       string
 		contextWindow int64
 	}{
-		{
-			name:          "GPT-6 Luna floors a stale catalog value to the documented window",
-			payload:       `{"slug":"gpt-6-luna","context_window":272000}`,
-			contextWindow: 1_050_000,
-		},
-		{
-			name:          "GPT-6 Sol floors a stale catalog value to the documented window",
-			payload:       `{"slug":"gpt-6-sol","context_window":372000}`,
-			contextWindow: 1_050_000,
-		},
-		{
-			name:          "GPT-6 Astra omitted context uses the documented window",
-			payload:       `{"slug":"gpt-6-astra"}`,
-			contextWindow: 1_050_000,
-		},
-		{
-			name:          "GPT-6 model with a larger catalog value keeps it",
-			payload:       `{"slug":"gpt-6-luna","context_window":2000000}`,
-			contextWindow: 2_000_000,
-		},
-		{
-			name:          "later GPT-6 family member omitted context uses the documented window",
-			payload:       `{"slug":"gpt-6-orion"}`,
-			contextWindow: 1_050_000,
-		},
-		{
-			name:          "GPT-6 Luna floors a stale catalog value to the documented window",
-			payload:       `{"slug":"gpt-6-luna","context_window":272000}`,
-			contextWindow: codexGPT6ContextWindow,
-		},
-		{
-			name:          "GPT-6 Sol floors a stale catalog value to the documented window",
-			payload:       `{"slug":"gpt-6-sol","context_window":372000}`,
-			contextWindow: codexGPT6ContextWindow,
-		},
-		{
-			name:          "GPT-6 Astra omitted context uses the documented window",
-			payload:       `{"slug":"gpt-6-astra"}`,
-			contextWindow: codexGPT6ContextWindow,
-		},
-		{
-			name:          "GPT-6 model with a larger catalog value keeps it",
-			payload:       `{"slug":"gpt-6-luna","context_window":2000000}`,
-			contextWindow: 2_000_000,
-		},
-		{
-			name:          "later GPT-6 family member omitted context uses the documented window",
-			payload:       `{"slug":"gpt-6-orion"}`,
-			contextWindow: codexGPT6ContextWindow,
-		},
-		{
-			name:          "other models use general default",
-			payload:       `{"slug":"codex-model"}`,
-			contextWindow: codexDefaultContextWindow,
-		},
+		{name: "reported value kept as-is", payload: `{"slug":"gpt-6-luna","context_window":272000}`, contextWindow: 272000},
+		{name: "larger catalog value kept", payload: `{"slug":"gpt-6-luna","context_window":2000000}`, contextWindow: 2_000_000},
+		{name: "omitted context stays zero", payload: `{"slug":"gpt-6-astra"}`, contextWindow: 0},
+		{name: "unknown id without context stays zero", payload: `{"slug":"codex-model"}`, contextWindow: 0},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			model, ok := parseCodexModel(json.RawMessage(test.payload))
 			require.True(t, ok)
 			require.Equal(t, test.contextWindow, model.ContextWindow)
+			require.Zero(t, model.DefaultMaxTokens,
+				"parse must not invent a max-token budget; the facts table owns it")
 		})
 	}
 }
@@ -167,7 +122,8 @@ func TestDiscoverCodexModelsFallsBackToModelsRoute(t *testing.T) {
 	require.Equal(t, []string{"/codex/models", "/models"}, []string{<-requests, <-requests})
 	require.Len(t, models, 1)
 	require.Equal(t, "fallback-model", models[0].ID)
-	require.Equal(t, codexDefaultContextWindow, models[0].ContextWindow)
+	require.Zero(t, models[0].ContextWindow,
+		"parse must return the raw catalog value; the facts table fills defaults at config load")
 }
 
 func TestDiscoverCodexModelsStopsOnAccountAccessRejection(t *testing.T) {
@@ -219,12 +175,21 @@ func TestDiscoverCodexModelsHidesSupersededFamilies(t *testing.T) {
 	}
 	require.Equal(t, []string{"gpt-6-luna", "gpt-6-sol", "brand-new-family"}, ids)
 
-	luna := byID["gpt-6-luna"]
+	// Discovery returns raw catalog values; the documented windows are
+	// applied by the facts overlay at config load. Assert the overlay result
+	// here with literals so a constant edit cannot pass silently.
+	raised := ApplyModelFacts("openai-codex", models, nil)
+	byRaised := make(map[string]catwalk.Model, len(raised))
+	for _, model := range raised {
+		byRaised[model.ID] = model
+	}
+	luna := byRaised["gpt-6-luna"]
 	require.Equal(t, int64(1_050_000), luna.ContextWindow,
 		"the documented GPT-6 window is asserted as a literal so a constant edit cannot pass silently")
-	require.Equal(t, codexDefaultMaxTokens, luna.DefaultMaxTokens)
+	require.Equal(t, int64(128_000), luna.DefaultMaxTokens)
 	require.LessOrEqual(t, luna.DefaultMaxTokens, luna.ContextWindow)
-	sol := byID["gpt-6-sol"]
+	sol := byRaised["gpt-6-sol"]
 	require.Equal(t, int64(1_050_000), sol.ContextWindow)
 	require.LessOrEqual(t, sol.DefaultMaxTokens, sol.ContextWindow)
+	require.Equal(t, int64(272000), byRaised["brand-new-family"].ContextWindow)
 }

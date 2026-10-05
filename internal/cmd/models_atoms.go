@@ -9,13 +9,13 @@ import (
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/discover"
 )
 
 type atom struct {
 	Provider     string
 	Model        string
 	DisplayName  string
-	CtxLabel     string
 	Group        string
 	GroupNote    string
 	Vision       bool
@@ -94,7 +94,7 @@ var zaiReasoningLevels = []string{"off", "high", "max"}
 // SYNC WARNING: kept in sync with coordinator_providers.go's Z.AI switch
 // (the GLM-5.3-tier branch) and providerEffortDocs in models_efforts.go —
 // all three must describe the same three wire states for these two models.
-var zai53ReasoningLevels = []string{"low", "high", "max"}
+var zai53ReasoningLevels = discover.GLM53ReasoningLevels
 
 // zaiBooleanThinkingLevels is the levels array for every Z.AI (GLM) atom
 // OTHER than the 5.3-tier ones (GLM-5.3, GLM-5.3-Flash — see
@@ -115,30 +115,27 @@ var zai53ReasoningLevels = []string{"low", "high", "max"}
 var zaiBooleanThinkingLevels = []string{"off", "on"}
 
 var atomRegistry = map[string]atom{
-	"opus":   {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"opus46": {Provider: "local-cli", Model: "cli-claude-opus-4-6", DisplayName: "Claude Opus 4.6", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"opus47": {Provider: "local-cli", Model: "cli-claude-opus-4-7", DisplayName: "Claude Opus 4.7", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"opus48": {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus":   {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus46": {Provider: "local-cli", Model: "cli-claude-opus-4-6", DisplayName: "Claude Opus 4.6", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus47": {Provider: "local-cli", Model: "cli-claude-opus-4-7", DisplayName: "Claude Opus 4.7", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus48": {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	// `sonnet`/`haiku`/`fable` map to CLI specs that pass a moving alias, so
 	// their DisplayName must not name a version — the CLI decides which one
 	// runs. Measured 2026-08-16 (claude 2.1.197): the `sonnet` alias resolves
 	// to claude-sonnet-5, though this atom used to claim "Claude Sonnet 4.6".
 	// Use the pinned atoms below when a specific generation is required.
-	"sonnet": {Provider: "local-cli", Model: "cli-claude-sonnet", DisplayName: "Claude Sonnet (latest)", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"haiku":  {Provider: "local-cli", Model: "cli-claude-haiku", DisplayName: "Claude Haiku (latest)", CtxLabel: "200k", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"fable":  {Provider: "local-cli", Model: "cli-claude-fable", DisplayName: "Claude Fable (latest)", CtxLabel: "1M", Group: "anthropic", EffortSource: claudeEffortSource},
+	"sonnet": {Provider: "local-cli", Model: "cli-claude-sonnet", DisplayName: "Claude Sonnet (latest)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"haiku":  {Provider: "local-cli", Model: "cli-claude-haiku", DisplayName: "Claude Haiku (latest)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"fable":  {Provider: "local-cli", Model: "cli-claude-fable", DisplayName: "Claude Fable (latest)", Group: "anthropic", EffortSource: claudeEffortSource},
 	// Pinned Claude 5 entries. `opus5`/`sonnet5` use the CLI's `[1m]`
 	// context-window form (verified 1M vs 200k for the bare id); no alias
 	// reaches Opus 5 at all, `opus` still resolves to 4.8.
-	"opus5":   {Provider: "local-cli", Model: "cli-claude-opus-5-1m", DisplayName: "Claude Opus 5 (1M)", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"sonnet5": {Provider: "local-cli", Model: "cli-claude-sonnet-5-1m", DisplayName: "Claude Sonnet 5 (1M)", CtxLabel: "1M", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
-	"fable5":  {Provider: "local-cli", Model: "cli-claude-fable-5", DisplayName: "Claude Fable 5", CtxLabel: "1M", Group: "anthropic", EffortSource: claudeEffortSource},
-	// CtxLabel values below are from docs.z.ai/guides/llm/<model> (fetched
-	// 2026-07-26): every current-generation GLM model (4.6, 4.7, 4.7-flash,
-	// 4.7-flashx, 5, 5-turbo, 5.1) has a 200K context / 128K max-output
-	// window; GLM-5.2 was the only one at 1M. The previous "204.8k"/"131.1k"
-	// figures here were unverified guesses.
-	//
+	"opus5":   {Provider: "local-cli", Model: "cli-claude-opus-5-1m", DisplayName: "Claude Opus 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"sonnet5": {Provider: "local-cli", Model: "cli-claude-sonnet-5-1m", DisplayName: "Claude Sonnet 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"fable5":  {Provider: "local-cli", Model: "cli-claude-fable-5", DisplayName: "Claude Fable 5", Group: "anthropic", EffortSource: claudeEffortSource},
+	// Model context windows are supplied by runtime provider metadata; atoms no
+	// longer carry copied context-label literals. Runtime values take precedence
+	// and documented facts provide a fallback for unknown/zero catalog values.
 	// GLM-5, GLM-5.1 and GLM-5.2 were dropped as atoms on 2026-08-18 at the
 	// operator's request — glm5_3 is the only GLM-5 generation kept, plus
 	// glm5_turbo. The raw `zai/glm-5.2` syntax still works for anyone who
@@ -149,18 +146,15 @@ var atomRegistry = map[string]atom{
 	// toggle) instead. glm5_3/glm5_3_flash are the only current Z.AI atoms
 	// where the API itself rejects disabling reasoning.
 	//
-	// PARTIALLY VERIFIED (2026-08-14): `rush ping --model zai/glm-5.3`
-	// confirms the model id "glm-5.3" is real and reachable — a live call
-	// succeeded (32 in / 48 out tokens, ~1.9s latency). CtxLabel "1M" is
-	// COPIED FROM GLM-5.2 on the assumption a .3 point release keeps the
-	// same context-window tier; not independently re-verified for 5.3 the
-	// way it later was for 5.3-flash below. ReasoningLevels (low/high/max,
+	// Atom context follows a positive runtime catalog value first, with the
+	// documented model fact used only as fallback. ReasoningLevels (low/high/max,
 	// no off) IS independently verified — see zai53ReasoningLevels' comment.
-	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", CtxLabel: "1M", Group: "zai", ReasoningLevels: zai53ReasoningLevels},
-	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", Group: "zai", ReasoningLevels: zai53ReasoningLevels},
+	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
 	// VERIFIED (2026-08-26): `rush ping --model zai/glm-5.3-flash` succeeded
 	// (32 in / 97 out tokens, ~5.3s latency) — the model id is real and
-	// reachable. CtxLabel confirmed via docs.z.ai/guides/vlm/glm-5.3-flash
+	// reachable. Its documented context facts are the fallback when runtime
+	// catalog metadata is unknown; text/JSON use the same context formatter.
 	// ("text parameters consistent with GLM-5.3, 1M-token context window")
 	// and cross-checked against Z.ai's own launch announcement, OpenRouter,
 	// and vLLM's model recipe — all agree on 1,048,576 tokens (1M); the one
@@ -173,7 +167,7 @@ var atomRegistry = map[string]atom{
 	// docs.z.ai/guides/llm/glm-5.3-flash and the api-reference page, GLM-5.3
 	// and GLM-5.3-Flash share the identical low/high/max restriction, no
 	// off. See zai53ReasoningLevels' comment for the exact quotes.
-	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", CtxLabel: "1M", Group: "zai", Vision: true, ReasoningLevels: zai53ReasoningLevels},
+	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", Group: "zai", Vision: true, ReasoningLevels: zai53ReasoningLevels},
 	// GLM-4.7-FlashX is deliberately NOT an atom. Its model id
 	// ("glm-4.7-flashx") is real — verified by pinging it directly: it
 	// returned "Insufficient balance or no resource package" (an
@@ -185,10 +179,10 @@ var atomRegistry = map[string]atom{
 	//
 	// GLM-4.5.x (glm-4.5, glm-4.5-air, glm-4.5v) and older are intentionally
 	// not carried as atoms — 4.6 is the oldest generation kept.
-	"glm4_7":       {Provider: "zai", Model: "glm-4.7", DisplayName: "GLM 4.7", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
-	"glm4_7_flash": {Provider: "zai", Model: "glm-4.7-flash", DisplayName: "GLM 4.7 flash", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
-	"glm4_6":       {Provider: "zai", Model: "glm-4.6", DisplayName: "GLM 4.6", CtxLabel: "200k", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
-	"glm4_6v":      {Provider: "zai", Model: "glm-4.6v", DisplayName: "GLM 4.6v", CtxLabel: "204.8k", Group: "zai", Vision: true, ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_7":       {Provider: "zai", Model: "glm-4.7", DisplayName: "GLM 4.7", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_7_flash": {Provider: "zai", Model: "glm-4.7-flash", DisplayName: "GLM 4.7 flash", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_6":       {Provider: "zai", Model: "glm-4.6", DisplayName: "GLM 4.6", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_6v":      {Provider: "zai", Model: "glm-4.6v", DisplayName: "GLM 4.6v", Group: "zai", Vision: true, ReasoningLevels: zaiBooleanThinkingLevels},
 }
 
 var atomGroupOrder = []string{"anthropic", "zai"}
@@ -274,7 +268,7 @@ func enabledGroupAtomKeys(cfg *config.Config, group string) []string {
 	return keys
 }
 
-func formatAtomLine(w io.Writer, key string, a atom) {
+func formatAtomLine(w io.Writer, key string, a atom, ctx string) {
 	if a.EffortSource != nil {
 		levels := a.EffortSource.Levels()
 		names := make([]string, len(levels))
@@ -285,13 +279,13 @@ func formatAtomLine(w io.Writer, key string, a atom) {
 		if a.Vision {
 			suffix = ", vision"
 		}
-		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", strings.Join(names, ", "), a.DisplayName, a.CtxLabel, suffix)
+		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", strings.Join(names, ", "), a.DisplayName, ctx, suffix)
 	} else {
 		var suffix string
 		if a.Vision {
 			suffix = ", vision"
 		}
-		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", key, a.DisplayName, a.CtxLabel, suffix)
+		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", key, a.DisplayName, ctx, suffix)
 	}
 }
 
@@ -318,7 +312,7 @@ func renderAtomsBlock(cfg *config.Config) string {
 		}
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		for _, k := range keys {
-			formatAtomLine(tw, k, atomRegistry[k])
+			formatAtomLine(tw, k, atomRegistry[k], atomCtx(cfg, atomRegistry[k]))
 		}
 		tw.Flush()
 		b.WriteString("\n")
@@ -356,7 +350,7 @@ func renderAtomsBlockFallback() string {
 		}
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		for _, k := range keys {
-			formatAtomLine(tw, k, atomRegistry[k])
+			formatAtomLine(tw, k, atomRegistry[k], atomCtx(nil, atomRegistry[k]))
 		}
 		tw.Flush()
 		b.WriteString("\n")

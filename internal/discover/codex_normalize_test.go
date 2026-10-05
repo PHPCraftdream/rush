@@ -1,3 +1,11 @@
+// The documented-facts overlay replaces the former NormalizeCodexModel: the
+// same entries a catalog cache written by an older Rush still carries
+// (272000 for every gpt-6 model, observed in a real cache file) must be
+// raised by ApplyModelFacts at config load.
+//
+// Revert-check: drop the openai-codex rows from modelFactRules (or the final
+// pass in loadProviders) and every raised row goes red; narrow the GPT-6
+// predicate back to the three exact ids and the gpt-6.1-sol row goes red.
 package discover
 
 import (
@@ -7,17 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNormalizeCodexModelRaisesStaleCachedContext covers the entries a catalog
-// cache written before the documented GPT-6 window was applied still carries
-// (272000 for every gpt-6 model, observed in a real cache file). The family is
-// gpt-6 and every later gpt-6.N release of astra, sol and luna; a larger
-// reported value is kept, models outside the family are left alone, and the
-// default output budget never exceeds the window.
-//
-// Revert-check: return the model unchanged from NormalizeCodexModel and every
-// raised row goes red; narrow codexGPT6Documented back to the three exact ids
-// and the gpt-6.1-sol row goes red.
-func TestNormalizeCodexModelRaisesStaleCachedContext(t *testing.T) {
+func TestApplyModelFactsRaisesStaleCachedContext(t *testing.T) {
 	tests := []struct {
 		name       string
 		model      catwalk.Model
@@ -34,9 +32,10 @@ func TestNormalizeCodexModelRaisesStaleCachedContext(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := NormalizeCodexModel(test.model)
-			require.Equal(t, test.wantWindow, got.ContextWindow)
-			require.LessOrEqual(t, got.DefaultMaxTokens, got.ContextWindow)
+			models := []catwalk.Model{test.model}
+			ApplyModelFacts("openai-codex", models, nil)
+			require.Equal(t, test.wantWindow, models[0].ContextWindow)
+			require.LessOrEqual(t, models[0].DefaultMaxTokens, models[0].ContextWindow)
 		})
 	}
 }
