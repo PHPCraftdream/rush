@@ -16,12 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// laggingMigration is the migration the "one ALTER behind" fixtures drop: a
-// plain ALTER, so removing it leaves a database this binary is happy to bring
-// forward, one whose maximum applied version still exceeds the missing one.
-const laggingMigration = "20260929000003_add_announce_message_id_to_async_jobs.sql"
+// laggingMigration is the migration the "one ALTER behind" fixtures drop: an
+// ALTER that no later migration builds on, so removing it leaves a database
+// this binary is happy to bring forward, one whose maximum applied version
+// still exceeds the missing one. It must not be a migration a later rebuild
+// copies columns from: the bg_shell rebuild of async_jobs (20261005) selects
+// announce_message_id, so the announce_message_id ALTER (20260929000003) can
+// no longer be the one dropped -- the fixture would fail while building.
+const laggingMigration = "20261002000001_add_workspace_to_sessions.sql"
 
-const announceColumn = "announce_message_id"
+// laggingTable and laggingColumn are what laggingMigration adds.
+const (
+	laggingTable  = "sessions"
+	laggingColumn = "workspace_root"
+)
 
 // embeddedMigrationsFS copies the embedded migration set into a MapFS,
 // optionally dropping files skipFn rejects. It is how a database that does
@@ -202,7 +210,7 @@ func TestMigrate_LockSerializesConcurrentMigrations(t *testing.T) {
 		t.Fatal("timed out waiting for the second migrate")
 	}
 
-	require.True(t, hasColumn(t, first, "async_jobs", announceColumn),
+	require.True(t, hasColumn(t, first, laggingTable, laggingColumn),
 		"the pending ALTER must have been applied exactly once")
 }
 
@@ -225,7 +233,7 @@ func TestMigrate_VersionSetRules(t *testing.T) {
 		require.Contains(t, diverged.Pending, laggingVersion())
 
 		require.Equal(t, before, dbVersionSet(t, conn), "a diverged schema must not be touched")
-		require.False(t, hasColumn(t, conn, "async_jobs", announceColumn),
+		require.False(t, hasColumn(t, conn, laggingTable, laggingColumn),
 			"a diverged schema must not be migrated")
 	})
 
@@ -249,7 +257,7 @@ func TestMigrate_VersionSetRules(t *testing.T) {
 		require.NoError(t, migrate(context.Background(), conn, dbPath, full,
 			MigrateOptions{MayMigrate: true}))
 
-		require.True(t, hasColumn(t, conn, "async_jobs", announceColumn),
+		require.True(t, hasColumn(t, conn, laggingTable, laggingColumn),
 			"the out-of-order pending migration must be applied")
 		emitted, err := embeddedVersions(full)
 		require.NoError(t, err)
@@ -293,7 +301,7 @@ func TestMigrate_NotAllowedRefusesPending(t *testing.T) {
 	require.ErrorAs(t, err, &notAllowed)
 	require.Contains(t, notAllowed.Pending, laggingVersion())
 
-	require.False(t, hasColumn(t, conn, "async_jobs", announceColumn),
+	require.False(t, hasColumn(t, conn, laggingTable, laggingColumn),
 		"refusing to migrate must leave the schema untouched")
 	require.Len(t, dbVersionSet(t, conn), len(mustEmbeddedVersions(t))-1)
 }
@@ -320,7 +328,7 @@ func TestConnect_MigratesLaggingDatabase(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ReleaseConn(conn) })
 
-	require.True(t, hasColumn(t, conn, "async_jobs", announceColumn),
+	require.True(t, hasColumn(t, conn, laggingTable, laggingColumn),
 		"Connect must apply the pending migration")
 
 	lockPath := filepath.Join(dataDir, "migrate.lock")

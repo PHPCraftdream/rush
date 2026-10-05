@@ -342,6 +342,9 @@ func (t *asyncTool) run(ctx context.Context, cancel context.CancelFunc, job *asy
 	if t.name == tools.BashToolName && !sync {
 		t.awaitShell(ctx, job, sessionID, response, &completion)
 	}
+	if t.name == tools.BashToolName && sync {
+		t.claimBackgroundShellRow(job, sessionID, response, &completion)
+	}
 	completion.Content = tools.TruncateOutput(strings.TrimSpace(completion.Content))
 }
 

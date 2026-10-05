@@ -128,7 +128,7 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 
 	// The row and the slot decision are one step (persistBGShellCompletion).
-	claimed := c.persistBGShellCompletion(sessionID, sh.ID, summary)
+	claimed := c.persistBGShellCompletion(sessionID, sh.ID, summary, shell.ExitCode(runErr) != 0)
 	// The notice is durable (or its insert failed and nothing more will be
 	// written): the shell's completion hold ends here so the session's own
 	// debt answers "is work owed", and only now do this callback's re-checks
