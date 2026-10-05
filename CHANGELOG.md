@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- `stop_agent` / `inject_agent` без `child_session_id` отвечают, откуда взять id: из ответа `agent` или `inspect_agent` без аргументов (раньше — голое «is required»; #1186).
 - Отказ на повторную делегацию работающему под-агенту («still has work running») теперь говорит, что делать: результат придёт сам, повтор не нужен, написать ему можно через `inject_agent`; то же предложение добавлено в правило режима оркестратора. Оркестратор на wmeta 60 раз повторял такую делегацию за час (#1185).
 - `internal/oauth/codex`: сообщения об ошибках входа в Codex начинаются со строчной буквы («codex device authorization timed out» и т. п.), тесты используют контекстные сетевые вызовы; `golangci-lint run ./internal/oauth/...` — 0 замечаний (#1184).
 - Нулевое окно контекста или лимит вывода в `rush.json` (дамп `rush providers update`) больше не затирает значение каталога той же модели: ноль считается «неизвестно», подставляется значение каталога; положительное значение пользователя по-прежнему главное (#1183).

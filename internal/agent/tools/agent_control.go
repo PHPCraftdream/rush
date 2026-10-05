@@ -56,7 +56,7 @@ type childSessionIDParam struct {
 
 func childSessionFromParams(params childSessionIDParam) (string, error) {
 	if params.ChildSessionID == "" {
-		return "", fmt.Errorf("child_session_id is required")
+		return "", fmt.Errorf("child_session_id is required: pass the id the agent tool reported for the delegation, or call inspect_agent with no arguments to list your live delegations")
 	}
 	return params.ChildSessionID, nil
 }

@@ -131,6 +131,27 @@ func TestInjectAgentTool_EmptyMessageRefused(t *testing.T) {
 	require.Zero(t, ctrl.calls)
 }
 
+// A control call without child_session_id used to answer a bare "is required"
+// (session wmeta: five such calls, three of them urgent injects meant to stop
+// a duplicate worker). The refusal must point at the way to learn the id.
+//
+// Revert-check: restore the bare message and both subtests go red.
+func TestControlTools_MissingChildIDPointsAtInspectAgent(t *testing.T) {
+	ctrl := &fakeAgentControl{}
+	for name, tool := range map[string]fantasy.AgentTool{
+		"inject_agent": NewInjectAgentTool(ctrl),
+		"stop_agent":   NewStopAgentTool(ctrl),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := runToolTool(t, tool, agentControlContext("parent-1"), map[string]any{"message": "stop now"})
+			require.True(t, resp.IsError)
+			require.Contains(t, resp.Content, "child_session_id is required")
+			require.Contains(t, resp.Content, "inspect_agent with no arguments")
+		})
+	}
+	require.Zero(t, ctrl.calls)
+}
+
 func TestStopAgentTool_ModelSafeErrorNotGoError(t *testing.T) {
 	ctrl := &fakeAgentControl{err: errors.New("child_session_id \"child-1\" has no active turn or pending delegation to stop")}
 	resp := runToolTool(t, NewStopAgentTool(ctrl), agentControlContext("parent-1"),
