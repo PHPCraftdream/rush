@@ -36,6 +36,16 @@ func bgShellMissingRowGraceDuration() time.Duration {
 	return bgShellMissingRowGrace
 }
 
+// notifyOnBackgroundJobDone mirrors buildTools' kill-switch default
+// (coordinator_tools.go): a nil store/options or a nil pointer means enabled.
+func (c *coordinator) notifyOnBackgroundJobDone() bool {
+	if c.cfg == nil {
+		return true
+	}
+	opts := c.cfg.Config().Options
+	return opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
+}
+
 // claimBackgroundShellRow gives a SYNC bash call's background escape a durable
 // async_jobs row (R-BG-1, docs/plans/2026-10-01-bg-shell-ledger.md). The
 // CLI/web branch needs none: its row already exists (the async job's own) and
@@ -99,6 +109,13 @@ func (t *asyncTool) claimBackgroundShellRow(job *asyncJob, sessionID string, res
 		stdout, stderr, _, runErr := sh.GetOutput()
 		summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 		t.finishBGShellRow(context.Background(), sessionID, sh.ID, summary, shell.ExitCode(runErr) != 0)
+		// Notifications off: this observer is the only callback and the row it
+		// just committed is the durable outcome, so it ends the hold itself --
+		// before its recheck (R7B-1), never while a notifier owns the notice.
+		if !t.coordinator.notifyOnBackgroundJobDone() {
+			sh.MarkCompletionRecorded()
+		}
+		t.coordinator.noteSubAgentChildRunEnded(sessionID)
 	})
 }
 
