@@ -106,6 +106,12 @@ func (l *cliLoop) nudgePhase() cliStepResult {
 		if result == nil {
 			l.tot.addSince(usageBefore, l.sessionUsage())
 		}
+		// A pending operator cancel or a crossed cap beats the drop: the run ends
+		// through the normal stop exit, never as a success.
+		if stopErr := l.stopError(); stopErr != nil {
+			final, exitErr := l.exitPrecheck(stopErr)
+			return cliStepResult{ev: evNudgeEnded, final: final, err: exitErr}
+		}
 		l.nudgeFailed = true
 		if l.final != nil {
 			l.final.Warnings = append(l.final.Warnings, fmt.Sprintf("todo reminder turn failed: %v", err))
