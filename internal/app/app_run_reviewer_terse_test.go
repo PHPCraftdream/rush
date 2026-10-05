@@ -1,13 +1,9 @@
 package app
 
-// R5-3 (2026-09-22 audit): terse mode must carry exactly the single
-// final result, printed once after ExecuteRun's reviewer gate has
-// decided which phase owns the run's final answer. Before the fix,
-// handleMessageEvent published every finished assistant message to
-// stdout the moment it arrived, so an auto-reviewed run emitted the
-// primary's text first and the reviewer's text right after it —
-// "PRIMARYREVIEW\n" concatenated on stdout although the reviewer's
-// conclusion is THE output.
+// R5-3 pinned that terse mode prints one final text, once, after the
+// reviewer gate decides. A10/C9-21 settles WHICH text that is: always the
+// executor's — the reviewer's verdict is an additive envelope field, never
+// the run's stdout answer.
 
 import (
 	"bytes"
@@ -30,11 +26,13 @@ func terseContinuationRequest(output *bytes.Buffer) RunRequest {
 	}
 }
 
-// TestExecuteRunTerseReviewerPassPrintsOnlyFinalResult pins the R5-3
+// TestExecuteRunTerseReviewerPassPrintsOnlyFinalResult pins the A10/C9-21
 // stdout contract for an auto-reviewed run: stdout carries exactly the
-// reviewer's conclusion followed by the trailing newline — no primary
-// chain fragments, no concatenation. Before the fix this buffer held
-// the primary chain fragments followed by the reviewer text.
+// EXECUTOR's final text (the continuation chain, combined) plus the
+// trailing newline — never the reviewer's verdict, never both concatenated.
+// REVERT CHECK: restoring `reviewResult != nil && primaryResult != nil` in
+// the reviewer switch's first case fails this test with the reviewer's
+// text printed instead of the run's answer.
 func TestExecuteRunTerseReviewerPassPrintsOnlyFinalResult(t *testing.T) {
 	application := newContinuationApp(t, true)
 
@@ -42,8 +40,10 @@ func TestExecuteRunTerseReviewerPassPrintsOnlyFinalResult(t *testing.T) {
 	_, err := application.ExecuteRun(context.Background(), terseContinuationRequest(&output))
 	require.NoError(t, err)
 
-	require.Equal(t, contReviewText+"\n", output.String(),
-		"terse stdout must be exactly the reviewer's final text printed once")
+	require.Equal(t, contPartialText+contFinalText+"\n", output.String(),
+		"terse stdout must be exactly the executor's final text printed once")
+	require.NotContains(t, output.String(), contReviewText,
+		"the reviewer's verdict must never be printed as the run's answer")
 }
 
 // TestExecuteRunTerseWithoutReviewerPassPrintsSingleFinalText pins the

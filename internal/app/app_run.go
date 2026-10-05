@@ -629,12 +629,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		loop.resetForReviewerPass(reviewCtx)
 		reviewResult, reviewErr := loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
 		switch {
-		case reviewErr == nil && reviewResult != nil && primaryResult != nil:
-			// A10: the executor's answer stays final_text; the reviewer's
-			// verdict moves to the additive review field, with the parsed
-			// verdict beside it.
-			app.attachReview(ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
-			loop.finalText = primaryResult.FinalText
+		case reviewErr == nil:
+			// A10/C9-21: the executor's answer stays the run's final text
+			// in every mode; the reviewer's verdict is additive.
+			if primaryResult != nil && reviewResult != nil {
+				app.attachReview(ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
+			}
+			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
 		case reviewFailureKeepsPrimary(ctx, reviewErr):
 			// A review turn that failed for a reason of its own (a provider
