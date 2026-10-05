@@ -53,7 +53,7 @@ type ErrAsyncChildSessionBusy struct {
 }
 
 func (e *ErrAsyncChildSessionBusy) Error() string {
-	return "the sub-agent still has work running from a previous delegation; wait for its result"
+	return "the sub-agent still has work running from a previous delegation; wait for its result (it arrives on its own, so do not retry the delegation; to message the running sub-agent use inject_agent)"
 }
 
 // ErrAsyncJobInputMismatch is returned when a (owner, tool_call_id) key is

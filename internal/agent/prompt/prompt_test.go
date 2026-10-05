@@ -230,6 +230,8 @@ func TestBuild_WorkerConfiguredAndSmart_BlockPresent(t *testing.T) {
 	require.Contains(t, got, "Chunk the work", "must instruct chunking work to fit the worker's context window")
 	require.Contains(t, got, "resume_session_id", "should briefly mention resuming a paused worker")
 	require.Contains(t, got, "CLAIM, not a receipt", "must tell the orchestrator to treat worker reports as unverified claims")
+	require.Contains(t, got, "still has work running", "must say a running worker cannot be delegated to again (A38: 60 retries)")
+	require.Contains(t, got, "`inject_agent`", "must point at inject_agent for steering a running worker")
 	require.Contains(t, got, "re-read the file", "must instruct re-checking the actual change rather than trusting the worker's summary")
 	require.Contains(t, got, "re-run the test/command", "must instruct re-running tests/commands personally rather than trusting a 'tests pass' claim")
 }

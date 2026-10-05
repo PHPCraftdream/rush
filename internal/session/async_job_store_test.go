@@ -183,6 +183,10 @@ func TestAsyncJobStore_ClaimChildSessionConflictRefusedBeforeStarted(t *testing.
 	require.ErrorAs(t, err, &busy)
 	require.Equal(t, "child-1", busy.ChildSessionID)
 	require.Contains(t, busy.Error(), "wait for its result")
+	// The refusal must say what to do instead of retrying (A38: an
+	// orchestrator retried a busy worker 60 times in an hour).
+	require.Contains(t, busy.Error(), "do not retry")
+	require.Contains(t, busy.Error(), "inject_agent")
 
 	// The refused call must not have left a partial row of its own.
 	_, err = store.q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: "parent-2", ToolCallID: "call-2"})
