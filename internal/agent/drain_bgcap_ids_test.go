@@ -70,7 +70,7 @@ func TestBGShellCap_QueuedDrainNeverCommitsOnAnOverCapRow(t *testing.T) {
 
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, false), "the re-check queues Dq behind D5")
 	require.EqualValues(t, 2, runs.runs.Load())
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done", false), "no slot left: over the cap")
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done"), "no slot left: over the cap")
 	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
 
 	close(release)
@@ -122,7 +122,7 @@ func TestBGShellCap_QueuedDrainForTheLastSlotStillRuns(t *testing.T) {
 	awaitRequest(t, entered)
 
 	// Completion 5 takes the last slot while D4 streams: its Drain queues.
-	require.True(t, f.coord.persistBGShellCompletion(f.sessID, "sh5", "done", false))
+	require.True(t, f.coord.persistBGShellCompletion(f.sessID, "sh5", "done"))
 	require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true))
 
 	close(release)
@@ -150,7 +150,7 @@ func TestBGShellCap_FailedInsertIsNotOverCap(t *testing.T) {
 	f.insertSlotRow(ctx)
 
 	f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done", false))
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done"))
 	f.exec(ctx, `ALTER TABLE fx_session_notices RENAME TO session_notices`)
 
 	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a failed insert counts nothing")
@@ -174,7 +174,7 @@ func TestBGShellCap_SlotRowWhosePullFailedIsRetriedBehindAReactedOverCapRow(t *t
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
 	f.insertSlotRow(ctx) // slot 5's row: stays pending (its pull failed)
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done", false))
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh6", "done"))
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
 	require.NoError(t, err)
 	require.Len(t, notices, 2)
@@ -200,7 +200,7 @@ func TestBGShellCapDeferred_FollowsTheDurableDebt(t *testing.T) {
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
 	for range 3 {
-		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done", false))
+		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"))
 	}
 	require.EqualValues(t, 3, f.coord.bgShellOverCapCount(f.sessID))
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
@@ -232,14 +232,14 @@ func TestPersistBGShellCompletion_PrunesOverCapIDsThatLeftTheDebt(t *testing.T) 
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
 	for range 3 {
-		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done", false))
+		require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"))
 	}
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
 	require.NoError(t, err)
 	f.settleNotice(ctx, notices[0].ID)
 	f.settleNotice(ctx, notices[1].ID)
 
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done", false))
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"))
 
 	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(f.sessID), "the owed row and the new one")
 }

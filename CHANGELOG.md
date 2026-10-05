@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- Фоновый shell, запущенный в ходе без колбэка завершения (`notify_on_background_job_done=false`, Drain/wake-ходы SDK), больше не оставляет строку `async_jobs` в `running` навсегда и не держит область сессии открытой: терминальный переход пишет наблюдатель, зарегистрированный при claim, независимо от уведомления (#1188).
 - Вопрос воркера (`ask_question`) больше не пишется в rush.log как ERROR «tool call failed, ending the run»: это штатная пауза хода, теперь INFO «tool paused the run: awaiting an answer» с `level_kind=pause` (#1194).
 - Сбой потока Codex с кодом `server_is_overloaded` / `server_error` / `rate_limit_exceeded` больше не обрывает ход без повтора: он получает статус 503/500/429 и повторяется общим механизмом (раньше воркер на gpt-6 умирал на первой перегрузке серверов); коды исчерпания лимита остаются терминальными (#1191).
 - Эффорт `max` для z.ai (GLM-5.3, glm-5.2…) и DeepSeek больше не валит вызов ошибкой «reasoning model `max` not supported»: значение уходит только в `extra_body`, а не в верхнеуровневое поле `reasoning_effort`, которое библиотека проверяет по словарю OpenAI. Раньше так падал каждый проход ревью при слоте reviewer `@max` (#1190).

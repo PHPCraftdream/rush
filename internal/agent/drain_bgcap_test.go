@@ -332,7 +332,7 @@ func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T
 	bgArrivalInsertedSeam.Store(&seam)
 	t.Cleanup(func() { bgArrivalInsertedSeam.Store(nil) })
 
-	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done", false), "no slot left")
+	require.False(t, f.coord.persistBGShellCompletion(f.sessID, "sh", "done"), "no slot left")
 
 	require.True(t, rowVisible, "the row is durable before the decision")
 	require.True(t, heldBetween, "and the gate is held across the insert and the slot decision")

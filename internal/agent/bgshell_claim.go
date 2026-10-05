@@ -10,6 +10,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 // claimBackgroundShellRow gives a SYNC bash call's background escape a durable
@@ -30,9 +32,9 @@ import (
 // defect class being removed. A store-less ledger (isolated tests) skips the
 // claim; the OnDone callback's session_notices fallback still covers it.
 //
-// The shell's OnDone callback (registered by the bash tool itself, never
-// suppressed on the sync branch) later drives persistBGShellCompletion, which
-// transitions THIS row instead of writing a notice when it finds one.
+// The independent row observer is registered after ClaimShell below, even when
+// notification callbacks are disabled. Notification callbacks only persist the
+// wake notice; this observer is the sole terminal-row writer.
 func (t *asyncTool) claimBackgroundShellRow(job *asyncJob, sessionID string, response fantasy.ToolResponse, completion *AsyncCompletion) {
 	if t.coordinator == nil || t.coordinator.asyncJobs == nil || t.coordinator.asyncJobs.store == nil {
 		return
@@ -55,5 +57,51 @@ func (t *asyncTool) claimBackgroundShellRow(job *asyncJob, sessionID string, res
 		completion.IsError = true
 		completion.Content = fmt.Sprintf("background shell %s refused: its ledger row could not be committed (%s)", metadata.ShellID, err)
 		return
+	}
+	manager := t.coordinator.background
+	if manager == nil {
+		return
+	}
+	sh, ok := manager.GetOwned(sessionID, metadata.ShellID)
+	if !ok {
+		t.finishBGShellRow(context.Background(), sessionID, metadata.ShellID, "output unavailable", true)
+		return
+	}
+	sh.OnDone(func() {
+		stdout, stderr, _, runErr := sh.GetOutput()
+		summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
+		t.finishBGShellRow(context.Background(), sessionID, sh.ID, summary, shell.ExitCode(runErr) != 0)
+	})
+}
+
+func (t *asyncTool) finishBGShellRow(ctx context.Context, sessionID, shellID, summary string, failed bool) {
+	if t.coordinator == nil || t.coordinator.asyncJobs == nil || t.coordinator.asyncJobs.store == nil {
+		return
+	}
+	store := t.coordinator.asyncJobs.store
+	if err := t.coordinator.asyncJobs.retryAsyncStoreOp(ctx, func() error {
+		row, err := store.Get(ctx, sessionID, shellID)
+		if err != nil {
+			return err
+		}
+		if row.State != "running" {
+			return nil
+		}
+		if session.JobKind(row.Kind) != session.JobKindBGShell {
+			return nil
+		}
+		result, err := store.Transition(ctx, session.TransitionParams{
+			Owner: sessionID, ToolCallID: shellID, State: session.ShellExitState(failed),
+			ResultSummary: summary, ResultIsError: failed, Delivery: "done", Reacted: true,
+		})
+		if err != nil {
+			return err
+		}
+		if result.Outcome == session.TransitionWon || result.Outcome == session.TransitionLost {
+			return nil
+		}
+		return fmt.Errorf("background shell transition lost: %s", shellID)
+	}); err != nil {
+		slog.Error("failed to finish background-shell row", "session_id", sessionID, "shell_id", shellID, "err", err)
 	}
 }
