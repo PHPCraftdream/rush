@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,6 +127,16 @@ func TestWS1_Pump_ForeignWorkspace_NackWithoutAttemptPenalty(t *testing.T) {
 		"the coordinator must be retried far past RunQueueMaxAttempts — a foreign-workspace "+
 			"row is released without an attempt penalty, so it is never dead-lettered")
 
+	// The refusal reason is observed WHILE the pump runs: Stop() below can catch
+	// a cycle between its lease and its execution, and that cycle legitimately
+	// releases the row with the pump's own shutdown message (still without an
+	// attempt penalty), overwriting last_error. Asserting the reason only after
+	// Stop failed in 3 of 25 loaded runs.
+	require.Eventually(t, func() bool {
+		e, getErr := svc.GetRunQueueEntry(ctx, entryID)
+		return getErr == nil && e != nil && strings.Contains(e.LastError, "different workspace")
+	}, 10*time.Second, 20*time.Millisecond, "the refusal reason must be recorded on the row")
+
 	// Freeze the pump before reading the row's settled state, so no in-flight
 	// lease can race the assertions below.
 	pump.Stop()
@@ -133,8 +144,11 @@ func TestWS1_Pump_ForeignWorkspace_NackWithoutAttemptPenalty(t *testing.T) {
 	entry := awaitPendingRunQueueRow(t, svc, entryID)
 	require.Equal(t, session.RunQueueStatusPending, entry.Status)
 	require.Zero(t, entry.Attempts, "nack without attempt penalty: attempts must stay 0 across many ticks")
-	require.NotEmpty(t, entry.LastError, "the refusal reason must be recorded on the row")
-	require.Contains(t, entry.LastError, "different workspace")
+	require.NotEmpty(t, entry.LastError, "a release always records its reason on the row")
+	require.True(t,
+		strings.Contains(entry.LastError, "different workspace") ||
+			entry.LastError == "run_queue_pump: shutting down, releasing lease without executing",
+		"last_error must be the refusal or the pump's own shutdown release, got %q", entry.LastError)
 
 	// The row must still be claimable by its OWNER process — proof the release
 	// left it exactly as a fresh pending row, not as a dead-letter.
