@@ -729,14 +729,33 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 		if message == "" {
 			message = string(data)
 		}
+		status := streamFailureStatus(code)
 		if code != "" {
 			message = code + ": " + message
 		}
-		return &fantasy.ProviderError{Message: message, Title: "Codex response error"}
+		return &fantasy.ProviderError{Message: message, Title: "Codex response error", StatusCode: status}
 	case "rush.stream_error":
 		return fmt.Errorf("read Codex event stream: %s", rawString(event["message"]))
 	}
 	return nil
+}
+
+// streamFailureStatus maps the code of a failed Codex stream to the HTTP
+// status the same condition would carry before the stream starts, so the
+// retry classifiers treat a server-side hiccup like one (an overloaded or
+// failing backend is worth a re-run) instead of a terminal provider verdict:
+// the worker turn that met server_is_overloaded used to die without a retry.
+// Unknown codes keep status 0, which stays terminal.
+func streamFailureStatus(code string) int {
+	switch code {
+	case "server_is_overloaded", "overloaded", "service_unavailable":
+		return http.StatusServiceUnavailable
+	case "server_error", "internal_server_error", "internal_error":
+		return http.StatusInternalServerError
+	case "rate_limit_exceeded":
+		return http.StatusTooManyRequests
+	}
+	return 0
 }
 
 var errStreamStopped = errors.New("codex stream consumer stopped")

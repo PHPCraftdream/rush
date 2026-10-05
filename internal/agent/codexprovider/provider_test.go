@@ -284,3 +284,38 @@ func TestSanitizeCallIDProducesCodexSafeID(t *testing.T) {
 	assert.Regexp(t, `^[A-Za-z0-9_-]+$`, sanitizeCallID(""))
 	assert.Equal(t, 64, len(sanitizeCallID(strings.Repeat("x", 80))))
 }
+
+// A failed Codex stream carries the backend's own code. A server-side hiccup
+// (overloaded, internal error) must reach the retry classifiers as the
+// retryable status it stands for: the worker turn that met
+// "server_is_overloaded" used to die with no retry and the parent saw "worker
+// fell without a report". Codes that are not transient keep status 0.
+//
+// Revert-check: return 0 from streamFailureStatus for every code and the
+// retryable rows go red.
+func TestStreamFailureMapsServerSideCodesToRetryableStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      string
+		wantStatus int
+		wantRetry  bool
+	}{
+		{"overloaded in an error event", `{"type":"error","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded."}}`, http.StatusServiceUnavailable, true},
+		{"overloaded in response.failed", `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded."}}}`, http.StatusServiceUnavailable, true},
+		{"server_error", `{"type":"error","error":{"code":"server_error","message":"boom"}}`, http.StatusInternalServerError, true},
+		{"rate_limit_exceeded", `{"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}`, http.StatusTooManyRequests, true},
+		{"usage limit stays terminal", `{"type":"error","error":{"code":"usage_limit_reached","message":"The usage limit has been reached"}}`, 0, false},
+		{"invalid prompt stays terminal", `{"type":"error","error":{"code":"invalid_prompt","message":"bad"}}`, 0, false},
+		{"no code stays terminal", `{"type":"error","error":{"message":"boom"}}`, 0, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := newStreamState()
+			err := state.consume([]byte(test.event), func(fantasy.StreamPart) bool { return true })
+			var providerErr *fantasy.ProviderError
+			require.ErrorAs(t, err, &providerErr)
+			require.Equal(t, test.wantStatus, providerErr.StatusCode)
+			require.Equal(t, test.wantRetry, providerErr.IsRetryable())
+		})
+	}
+}
