@@ -420,14 +420,15 @@ func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, r
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// K-2 (task #782): the budget check and the charge are ONE atomic SQL
-	// statement (UPDATE ... WHERE cost + delta < max_cost), not the
-	// read-then-write pair this used to be. The old shape let two
-	// concurrent chargers — a real turn and a replay, or two replays — both
-	// observe cost < maxCost and then both land their delta, jointly
-	// overshooting the cap (e.g. 0.09 -> 0.14 against a 0.10 max). With the
-	// predicate inside the UPDATE, SQLite serializes the writers and only
-	// one racing charge can land when their combined delta would cross max.
+	// K-2 (task #782): the budget check and the charge share one
+	// transaction on the single-connection writer pool:
+	// IncrementCostIfUnderMax reads the subtree budget (GetSubtreeSpent
+	// and GetSessionCostBase) and lands the charge (IncrementSessionCost)
+	// inside that transaction. Two concurrent chargers — a real turn and
+	// a replay, or two replays — cannot both pass: the writer pool has a
+	// single connection, so the second sees the first one's
+	// already-updated cost_self and is refused. The budget is the SUBTREE
+	// budget (#1130), not this node's own cost column.
 	sess, charged, err := a.sessions.IncrementCostIfUnderMax(ctx, sessionID, cost, maxCost)
 	if err != nil {
 		slog.Error("cache keep-alive: failed to accrue replay cost", "session_id", sessionID, "err", err)

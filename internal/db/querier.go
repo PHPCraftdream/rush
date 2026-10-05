@@ -414,29 +414,6 @@ type Querier interface {
 	// (rollback path, #1130). Returns the updated row so the caller can
 	// refresh its snapshot.
 	IncrementSessionCost(ctx context.Context, arg IncrementSessionCostParams) (Session, error)
-	// task #782 (K-2, P1 release blocker): plain IncrementSessionCost has no
-	// budget predicate, so two concurrent callers (a real turn and a cache
-	// keep-alive replay, or two replays) can both read cost < maxCost, then
-	// both call IncrementSessionCost, and jointly overshoot maxCost (e.g.
-	// 0.09 -> 0.14 against a 0.10 cap). Moving the budget check into the WHERE
-	// clause of the additive UPDATE itself closes that TOCTOU window: only ONE
-	// of two racing callers can win when their combined delta would cross max,
-	// because SQLite serializes writers and the second writer's WHERE
-	// re-evaluates cost as already updated by the first.
-	//
-	// This is a NEW query, not a modified IncrementSessionCost: that query has
-	// other callers (agent_title.go, agent_turn.go, agent_compaction.go,
-	// coordinator cost transfer, sessions_reset) which do not carry a maxCost
-	// budget in the same shape and must keep their existing unconditional
-	// semantics.
-	//
-	// Returns rows affected: 0 means the charge was refused because the
-	// subtree budget + delta would meet or exceed max_cost. The subtree
-	// predicate lives in Go (session service, BEGIN IMMEDIATE tx): sqlc's
-	// parser cannot bind a WITH to an UPDATE, and the budget must be read in
-	// the same write transaction (SQLite serializes writers) to keep the #782
-	// TOCTOU closed. This query is the unconditional arm of that method.
-	IncrementSessionCostIfUnderMax(ctx context.Context, arg IncrementSessionCostIfUnderMaxParams) (int64, error)
 	// Notices half of IncrementAsyncJobWakeAttemptsForSnapshotRow (doc sec.3.4,
 	// R2A-5): keyed by id (session_notices' own PK) because the settle-by-failure
 	// scope is the exact set captured at the start of the failed turn, and still
@@ -707,7 +684,11 @@ type Querier interface {
 	// for releasing a mismatched attempts-exhausted lease unharmed.
 	// Scoped to the current lease owner, same as AckRunQueueEntry.
 	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, arg NackRunQueueEntryNoAttemptPenaltyParams) (SessionRunQueue, error)
-	// Earliest next_run_at among active rows, for the scheduler's timer.
+	// Earliest CLAIMABLE moment among active rows, for the scheduler's timer:
+	// a claimed row is claimable again exactly at its lease expiry
+	// (ListDueWakeSchedules takes lease_expires_at <= now), and the lease
+	// columns are always written and cleared together, so an unclaimed row's
+	// NULL expiry falls back to its next_run_at.
 	// WS-1 ownership (#1142 step C): identical predicate to ListDueWakeSchedules,
 	// so the timer never sleeps until a moment this process cannot claim (which
 	// would spin: claim empty, due moment in the past, repeat). LEFT JOIN plus

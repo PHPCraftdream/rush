@@ -246,9 +246,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
 	}
-	if q.incrementSessionCostIfUnderMaxStmt, err = db.PrepareContext(ctx, incrementSessionCostIfUnderMax); err != nil {
-		return nil, fmt.Errorf("error preparing query IncrementSessionCostIfUnderMax: %w", err)
-	}
 	if q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt, err = db.PrepareContext(ctx, incrementSessionNoticeWakeAttemptsForSnapshotRow); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionNoticeWakeAttemptsForSnapshotRow: %w", err)
 	}
@@ -924,11 +921,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing incrementSessionCostStmt: %w", cerr)
 		}
 	}
-	if q.incrementSessionCostIfUnderMaxStmt != nil {
-		if cerr := q.incrementSessionCostIfUnderMaxStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing incrementSessionCostIfUnderMaxStmt: %w", cerr)
-		}
-	}
 	if q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt != nil {
 		if cerr := q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionNoticeWakeAttemptsForSnapshotRowStmt: %w", cerr)
@@ -1542,7 +1534,6 @@ type Queries struct {
 	hasOutstandingRunQueueEntryForSessionStmt            *sql.Stmt
 	incrementAsyncJobWakeAttemptsForSnapshotRowStmt      *sql.Stmt
 	incrementSessionCostStmt                             *sql.Stmt
-	incrementSessionCostIfUnderMaxStmt                   *sql.Stmt
 	incrementSessionNoticeWakeAttemptsForSnapshotRowStmt *sql.Stmt
 	insertSessionDriverStmt                              *sql.Stmt
 	insertSessionNoticeStmt                              *sql.Stmt
@@ -1723,7 +1714,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		hasOutstandingRunQueueEntryForSessionStmt:            q.hasOutstandingRunQueueEntryForSessionStmt,
 		incrementAsyncJobWakeAttemptsForSnapshotRowStmt:      q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt,
 		incrementSessionCostStmt:                             q.incrementSessionCostStmt,
-		incrementSessionCostIfUnderMaxStmt:                   q.incrementSessionCostIfUnderMaxStmt,
 		incrementSessionNoticeWakeAttemptsForSnapshotRowStmt: q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt,
 		insertSessionDriverStmt:                              q.insertSessionDriverStmt,
 		insertSessionNoticeStmt:                              q.insertSessionNoticeStmt,

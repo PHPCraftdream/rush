@@ -27,5 +27,7 @@ func DiskFreeBytes(path string) (available uint64, total uint64, err error) {
 	if err := windows.GetDiskFreeSpaceEx(ptr, &freeToCaller, &totalBytes, &freeAvailable); err != nil {
 		return 0, 0, fmt.Errorf("disk free: %s: %w", abs, err)
 	}
-	return freeAvailable, totalBytes, nil
+	// freeToCaller honours per-user quotas (freeAvailable is volume-wide);
+	// it is the Windows counterpart of the Unix variant's Bavail.
+	return freeToCaller, totalBytes, nil
 }

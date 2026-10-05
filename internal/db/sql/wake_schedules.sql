@@ -104,14 +104,18 @@ SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
 WHERE state = 'active' AND lease_owner IS NOT NULL AND lease_expires_at < ?;
 
 -- name: NextDueWakeScheduleAt :one
--- Earliest next_run_at among active rows, for the scheduler's timer.
+-- Earliest CLAIMABLE moment among active rows, for the scheduler's timer:
+-- a claimed row is claimable again exactly at its lease expiry
+-- (ListDueWakeSchedules takes lease_expires_at <= now), and the lease
+-- columns are always written and cleared together, so an unclaimed row's
+-- NULL expiry falls back to its next_run_at.
 -- WS-1 ownership (#1142 step C): identical predicate to ListDueWakeSchedules,
 -- so the timer never sleeps until a moment this process cannot claim (which
 -- would spin: claim empty, due moment in the past, repeat). LEFT JOIN plus
 -- COALESCE for the same reason as there (SD-C): an orphaned owner session
 -- must not make an active schedule vanish from the timer, and must not send
 -- a linked process to a due moment it can never claim either.
-SELECT MIN(w.next_run_at) AS next_due_at FROM wake_schedules w
+SELECT MIN(MAX(w.next_run_at, COALESCE(w.lease_expires_at, 0))) AS next_due_at FROM wake_schedules w
 LEFT JOIN sessions s ON s.id = w.owner_session_id
 WHERE w.state = 'active'
   AND (COALESCE(s.workspace_root,'') = sqlc.arg(workspace_root)
