@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -501,7 +500,7 @@ func TestReviewerPass_PromptCarriesEvidence(t *testing.T) {
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd := platform.Command(context.Background(), "git", args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 		out, err := cmd.CombinedOutput()
