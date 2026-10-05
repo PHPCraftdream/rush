@@ -31,6 +31,8 @@ type FSWriteItem struct {
 	Path       string `json:"path" description:"File path, absolute or relative to the working directory"`
 	Content    string `json:"content" description:"Complete new content of the file"`
 	CreateOnly bool   `json:"create_only,omitempty" description:"Fail this item if the file already exists (create, never overwrite)"`
+	// AllowShrink: see the shrink guard in write_shrink_guard.go.
+	AllowShrink bool `json:"allow_shrink,omitempty" description:"Set true only to deliberately replace a large existing file with much smaller content (refused otherwise: use fs_replace or fs_write_lines for partial changes)"`
 }
 
 type FSWriteParams struct {
@@ -247,6 +249,13 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
 				Error:  fmt.Sprintf("File %s already contains the exact content. No changes made.", group.Path),
+			}
+			continue
+		}
+		if exists && !member.Item.AllowShrink && writeWouldShrinkFile(len(current), len(member.Item.Content)) {
+			outcomes[i] = FSItemOutcome{
+				Status: FSStatusFailed,
+				Error:  writeShrinkRefusal(FSWriteToolName, "fs_replace or fs_write_lines", group.Path, len(current), len(member.Item.Content)),
 			}
 			continue
 		}

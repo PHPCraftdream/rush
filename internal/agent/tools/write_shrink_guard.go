@@ -19,9 +19,11 @@ func writeWouldShrinkFile(oldBytes, newBytes int) bool {
 	return oldBytes >= writeShrinkMinOldBytes && newBytes*writeShrinkRatio < oldBytes
 }
 
-func writeShrinkRefusal(path string, oldBytes, newBytes int) string {
+// writeShrinkRefusal is the refusal text; partialTools names the partial-edit
+// tools of the toolset the caller is in (write's differ from fs_write's).
+func writeShrinkRefusal(tool, partialTools, path string, oldBytes, newBytes int) string {
 	return fmt.Sprintf(
-		"Refusing to replace %s (%d bytes) with %d bytes of content: write overwrites the WHOLE file, so sending only the changed part would delete the rest. "+
-			"For a partial change use edit or multiedit; if you really mean to replace the file with this much smaller content, repeat the call with allow_shrink=true. Nothing was written.",
-		path, oldBytes, newBytes)
+		"Refusing to replace %s (%d bytes) with %d bytes of content: %s overwrites the WHOLE file, so sending only the changed part would delete the rest. "+
+			"For a partial change use %s; if you really mean to replace the file with this much smaller content, repeat the call with allow_shrink=true. Nothing was written.",
+		path, oldBytes, newBytes, tool, partialTools)
 }

@@ -91,7 +91,7 @@ func NewWriteTool(
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s already contains the exact content. No changes made.", filePath)), nil
 				}
 				if readErr == nil && !params.AllowShrink && writeWouldShrinkFile(len(oldContent), len(params.Content)) {
-					return fantasy.NewTextErrorResponse(writeShrinkRefusal(filePath, len(oldContent), len(params.Content))), nil
+					return fantasy.NewTextErrorResponse(writeShrinkRefusal(WriteToolName, "edit or multiedit", filePath, len(oldContent), len(params.Content))), nil
 				}
 			} else if !os.IsNotExist(err) {
 				if osFailureIsFatal(err) {
