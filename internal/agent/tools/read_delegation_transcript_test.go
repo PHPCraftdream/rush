@@ -61,7 +61,9 @@ func newTranscriptTestDB(t *testing.T) (session.Service, message.Service) {
 			cost_self REAL NOT NULL DEFAULT 0,
 			cost_base REAL NOT NULL DEFAULT 0,
 			cost_parent_id TEXT NOT NULL DEFAULT '',
-			origin TEXT DEFAULT '' NOT NULL
+			origin TEXT DEFAULT '' NOT NULL,
+			workspace_root TEXT NOT NULL DEFAULT '',
+			git_branch TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE messages (
 			id TEXT PRIMARY KEY,
