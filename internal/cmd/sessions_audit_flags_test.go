@@ -120,8 +120,8 @@ func TestSessionsAudit_WorktreesScansEveryRegisteredDatabase(t *testing.T) {
 func TestSessionsAudit_SinceLimitsTheWindowNotTheReport(t *testing.T) {
 	const session = "audit-since-flags-1"
 
-	old := time.Now().Add(-72 * time.Hour).UnixMilli()
-	recent := time.Now().Add(-time.Minute).UnixMilli()
+	old := time.Now().Add(-72 * time.Hour).Unix()
+	recent := time.Now().Add(-time.Minute).Unix()
 
 	wait := func(createdAt int64) auditMessageFixture {
 		return auditMessageFixture{

@@ -80,7 +80,7 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 	_, err = db.ExecContext(context.Background(), auditSchemaFixture)
 	require.NoError(t, err)
 
-	now := timeNowUnixMilli()
+	now := timeNowUnix()
 	_, err = db.ExecContext(context.Background(), `INSERT INTO sessions (id, title, created_at, updated_at, message_count) VALUES
 		('audit-alpha-1', 'alpha session', ?, ?, 4),
 		('audit-beta-2', 'beta session', ?, ?, 1)`,
@@ -264,7 +264,7 @@ func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 	_, err = db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL;`)
 	require.NoError(t, err)
 
-	now := timeNowUnixMilli()
+	now := timeNowUnix()
 	_, err = db.ExecContext(context.Background(), `INSERT INTO sessions (id, title, created_at, updated_at, message_count) VALUES
 		('audit-alpha-1', 'alpha session', ?, ?, 4)`, now, now)
 	require.NoError(t, err)
@@ -412,10 +412,11 @@ func TestSessionsAudit_PrefixSelection(t *testing.T) {
 	require.NotContains(t, stdout, "sessions (", "an ambiguous prefix must not audit anything")
 }
 
-// timeNowUnixMilli keeps the fixture's timestamps in the millisecond
-// convention the real schema uses.
-func timeNowUnixMilli() int64 {
-	return time.Now().UnixMilli()
+// timeNowUnix keeps the fixture's timestamps in Unix seconds, the unit the
+// real schema stores (a millisecond fixture is how #1162 shipped with 1970
+// dates and an empty --since window).
+func timeNowUnix() int64 {
+	return time.Now().Unix()
 }
 
 // TestSessionsAudit_InvalidSinceIsRefused: --since reuses the shared

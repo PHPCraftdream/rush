@@ -125,7 +125,7 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 	// A session row per distinct session id in the messages: auditFindings is
 	// handed only the ids the selection produced, so a row belongs to a
 	// session only if that session exists.
-	now := timeNowUnixMilli()
+	now := timeNowUnix()
 	for _, id := range auditDistinctSessions(fixture.Messages) {
 		_, err = db.ExecContext(context.Background(), `INSERT INTO sessions (id, title, created_at, updated_at, message_count) VALUES
 			(?, ?, ?, ?, 0)`, id, id+" title", now, now)
@@ -704,8 +704,8 @@ func TestAuditRules_SinceWindow(t *testing.T) {
 	const session = "audit-since-1"
 	const path = "internal/cmd/sessions_audit.go"
 
-	old := time.Now().Add(-48 * time.Hour).UnixMilli()
-	recent := time.Now().Add(-time.Hour).UnixMilli()
+	old := time.Now().Add(-48 * time.Hour).Unix()
+	recent := time.Now().Add(-time.Hour).Unix()
 	view := func(createdAt int64) auditMessageFixture {
 		return auditMessageFixture{
 			SessionID: session,

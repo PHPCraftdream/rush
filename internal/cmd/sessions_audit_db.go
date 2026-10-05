@@ -307,12 +307,13 @@ func auditQuerySessions(ctx context.Context, db *sql.DB, query string, params []
 	return rows, nil
 }
 
-// auditFormatUnix renders a millisecond timestamp for the text output.
-func auditFormatUnix(ms int64) string {
-	if ms <= 0 {
+// auditFormatUnix renders a Unix-seconds timestamp (the unit every created_at /
+// updated_at column of rush.db holds) for the text output.
+func auditFormatUnix(sec int64) string {
+	if sec <= 0 {
 		return "-"
 	}
-	return time.UnixMilli(ms).Local().Format("2006-01-02 15:04:05")
+	return time.Unix(sec, 0).Local().Format("2006-01-02 15:04:05")
 }
 
 // auditFormatBytes renders a byte count the way an operator reads it.

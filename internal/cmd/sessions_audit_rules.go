@@ -174,11 +174,11 @@ func auditMessagesQuery(schema auditSchema, ids []string, since time.Duration) (
 	for _, id := range ids {
 		params = append(params, id)
 	}
-	// --since is a window over the message's own timestamp, the same
-	// millisecond convention the rest of Rush uses.
+	// --since is a window over the message's own timestamp, which rush.db
+	// stores in Unix SECONDS.
 	if since > 0 {
 		query += " AND created_at >= ?"
-		params = append(params, time.Now().Add(-since).UnixMilli())
+		params = append(params, time.Now().Add(-since).Unix())
 	}
 	return query + " ORDER BY created_at, rowid", params
 }
