@@ -440,15 +440,18 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 // Use this ONLY for commands that never read `a.AgentCoordinator` and never
 // depend on the startup recovery sweep having already run: the entire
 // `rush models *` family (state/list/use/bump/unset), `rush providers *`,
-// `rush mcp *`, `rush login`, and `rush queue add/list/show/rm/clear`
+// `rush mcp *`, `rush login`, `rush queue add/list/show/rm/clear`, and
+// `rush sessions compact` (Config()/DB() only; it must never start the
+// run-queue pump or the coder agent)
 // (task #772's classification (b), config-only / DB-only, zero App-service
 // dependency beyond a.Config()/a.Store()/a.DB()).
 //
 // Do NOT use this for: `rush` (web), `rush run`, `rush system-prompt`
-// (needs AgentCoordinator.BuildSystemPrompt), or the `rush sessions *`
-// family / `rush queue run` (task #772's classification (c) — these read
-// live session/message state that recoverInterruptedTurns keeps sane, even
-// though they too skip InitCoderAgent). Those must keep calling setupApp.
+// (needs AgentCoordinator.BuildSystemPrompt), the rest of the
+// `rush sessions *` family, or `rush queue run` (task #772's
+// classification (c) — these read live session/message state that
+// recoverInterruptedTurns keeps sane, even though they too skip
+// InitCoderAgent). Those must keep calling setupApp.
 func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 	debug, _ := cmd.Flags().GetBool("debug")
 	dataDir, _ := cmd.Flags().GetString("data-dir")

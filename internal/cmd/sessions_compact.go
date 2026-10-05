@@ -113,7 +113,7 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 	asJSON, _ := cmd.Flags().GetBool("json")
 
-	a, err := setupApp(cmd)
+	a, err := setupAppLite(cmd)
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Gate 2: hold migrate.lock for the rest of the run so new rush
 	// processes wait at startup instead of writing mid-VACUUM. Strictly
-	// AFTER Connect (setupApp above): connect() itself takes this lock,
+	// AFTER Connect (the setup above): connect() itself takes this lock,
 	// so grabbing it first would deadlock against our own startup. Never
 	// bypassed, not even with --force.
 	migrateLock, err := filelock.TryAcquireFileLock(filepath.Join(dataDir, "migrate.lock"))

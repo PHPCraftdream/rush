@@ -52,14 +52,15 @@ func buildCostGroups(facts []costSessionFact, order func(a, b costGroup) bool) (
 	for _, f := range facts {
 		g, ok := groups[f.Key]
 		if !ok {
-			g = &costGroup{Key: f.Key}
+			g = &costGroup{Key: f.Key, Priced: true}
 			groups[f.Key] = g
 			keys = append(keys, f.Key)
 		}
 		g.Sessions++
 		g.Tokens += f.Tokens
 		g.CostUSD += f.Cost
-		g.Priced = f.Priced
+		// A group is priced only when every member is.
+		g.Priced = g.Priced && f.Priced
 		if !f.Priced {
 			g.Unpriced++
 			total.Unpriced++

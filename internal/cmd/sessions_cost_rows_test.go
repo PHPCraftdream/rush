@@ -143,3 +143,51 @@ func TestWriteCostTable_PricedZeroIsStillADollar(t *testing.T) {
 	require.NotContains(t, out, costNoPriceText)
 	require.NotContains(t, out, "unpriced")
 }
+
+// TestBuildCostGroups_MixedPricedGroupIsUnpriced: a group mixing priced and
+// unpriced sessions must be unpriced, whatever order the facts arrive in.
+// REVERT CHECK: restoring `g.Priced = f.Priced` (last member wins) turns
+// both orders red.
+func TestBuildCostGroups_MixedPricedGroupIsUnpriced(t *testing.T) {
+	t.Parallel()
+
+	unpriced := costSessionFact{Key: "2026-01-02", Tokens: 100, Cost: 0, Priced: false}
+	priced := costSessionFact{Key: "2026-01-02", Tokens: 200, Cost: 0, Priced: true}
+	orders := [][]costSessionFact{
+		{unpriced, priced},
+		{priced, unpriced},
+	}
+
+	for _, facts := range orders {
+		rows, total := buildCostGroups(facts, nil)
+		require.Len(t, rows, 1)
+		require.False(t, rows[0].Priced)
+		require.Equal(t, 1, rows[0].Unpriced)
+		require.Equal(t, 2, rows[0].Sessions)
+		require.Equal(t, int64(300), rows[0].Tokens)
+		require.Equal(t, 1, total.Unpriced)
+
+		var buf bytes.Buffer
+		require.NoError(t, writeCostTable(&buf, "DATE\tSESSIONS\tTOKENS\tCOST", rows, total))
+		require.Contains(t, buf.String(), "n/a (no price)")
+		require.NotContains(t, buf.String(), "$0.000")
+	}
+}
+
+// TestBuildCostGroups_AllPricedGroupStaysPriced: the control case -- a group
+// whose every member is priced keeps its $0.000.
+func TestBuildCostGroups_AllPricedGroupStaysPriced(t *testing.T) {
+	t.Parallel()
+
+	rows, _ := buildCostGroups([]costSessionFact{
+		{Key: "2026-01-02", Tokens: 100, Cost: 0, Priced: true},
+		{Key: "2026-01-02", Tokens: 200, Cost: 0, Priced: true},
+	}, nil)
+	require.Len(t, rows, 1)
+	require.True(t, rows[0].Priced)
+	require.Equal(t, 0, rows[0].Unpriced)
+
+	var buf bytes.Buffer
+	require.NoError(t, writeCostTable(&buf, "DATE\tSESSIONS\tTOKENS\tCOST", rows, costTotals{Sessions: 2}))
+	require.Contains(t, buf.String(), "$0.000")
+}

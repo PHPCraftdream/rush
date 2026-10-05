@@ -107,7 +107,9 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				statusOrDash(statusByID[s.ID]),
 				time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"),
 				s.PromptTokens+s.CompletionTokens,
-				s.OwnCost,
+				// COST matches --json cost_usd: the subtree budget, delegated
+				// spend included.
+				sessionBudget(cmd.Context(), a.Sessions, s),
 			)
 		}
 		return tw.Flush()
