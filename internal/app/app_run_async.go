@@ -167,7 +167,22 @@ func (t *loopTotals) warningsFor(final *RunResult) []string {
 func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
 	final.Usage.DeltaTokens = t.tokens
 	final.Usage.DeltaCostUSD = t.cost
-	final.Warnings = t.warningsFor(final)
+	// Keep warnings appended to final after its snapshot (the loop's reviewer
+	// pass); skip ones the rebuild already has, so re-application stays idempotent.
+	var late []string
+	for i := range t.turns {
+		if t.turns[i].result == final && len(final.Warnings) > len(t.turns[i].warnings) {
+			late = final.Warnings[len(t.turns[i].warnings):]
+			break
+		}
+	}
+	out := t.warningsFor(final)
+	for _, w := range late {
+		if !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	final.Warnings = out
 	final.SubAgentOutputs = t.subAgentOutputs
 	final.DurationMs = time.Since(started).Milliseconds()
 	final.ToolCalls = final.ToolCalls[:0]
