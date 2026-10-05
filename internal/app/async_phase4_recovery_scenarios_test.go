@@ -64,6 +64,11 @@ func configureRecoveryProbeProvider(store *config.ConfigStore, baseURL string) {
 // each test does with the App objects themselves (a crash-simulating test
 // never calls Shutdown on App A) -- see SimulateCrashForTest's own doc for
 // why a real Shutdown() is deliberately NOT used here.
+// phase4ScenarioDeadline bounds one two-app scenario run. A scenario takes
+// ~0.5 s; 30 s flaked in a full-package run on a machine starved by other
+// builds (the run took 45 s), and a real hang is still caught -- just later.
+const phase4ScenarioDeadline = 90 * time.Second
+
 func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc) (appA, appB *App, sessionID string) {
 	t.Helper()
 
@@ -303,7 +308,7 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 
 	appA, appB, sessionID := newRecoveryTwoAppHarness(t, handlerA, handlerB)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), phase4ScenarioDeadline)
 	defer cancel()
 	resA, err := appA.RunNonInteractiveWithResult(ctx, io.Discard, "run a quick job", RunOverrides{
 		Origin: message.OriginCLI,

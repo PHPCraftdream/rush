@@ -232,7 +232,7 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 		appDriver.Shutdown()
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), phase4ScenarioDeadline)
 	defer cancel()
 	require.NoError(t, driverSource(t, appDriver).ClaimExternalDriver(ctx, sessionID))
 	before, err := appLate.Sessions.Get(ctx, sessionID)
@@ -271,7 +271,7 @@ func TestRunLoop_DurableDriverReleasedInNonPersistentMode(t *testing.T) {
 	handlerW, handlerC, _ := driverScenarioHandlers(t, &requestsW, &requestsC)
 	_, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), phase4ScenarioDeadline)
 	defer cancel()
 	res, err := appC.RunNonInteractiveWithResult(ctx, io.Discard, "just answer", RunOverrides{
 		Origin: message.OriginCLI,

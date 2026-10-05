@@ -111,31 +111,36 @@ func TestRunNonInteractive_ChildQuestionRoundTrip(t *testing.T) {
 				})
 			}
 		default:
-			// The root (coder agent). Scripted by turn counter.
-			switch rootTurns.Add(1) {
-			case 1:
-				admissionWriteSSE(w, []string{
-					admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-Q do the task"}`),
-					admissionSSEStop("delegate", "tool_calls"),
-				})
-			case 2:
-				admissionWriteSSE(w, []string{
-					admissionSSEText("root-yield", "root yielded: delegation parked"),
-					admissionSSEStop("root-yield", "stop"),
-				})
-			case 3:
-				// The question turn: the question text must be in the prompt.
-				m := childQuestionSessionRe.FindStringSubmatch(lastUser)
-				if m == nil {
-					http.Error(w, "root turn 3 ran without the child question text in the prompt: "+firstLine(lastUser), http.StatusBadRequest)
-					return
-				}
-				questionReachedParent.Store(true)
+			// The root (coder agent). The question can land in TWO places, and
+			// which one is a race against the root's own step timing: the
+			// delegation turn asks at once, so on a slow machine the release
+			// carrying the question is pulled into the root's NEXT provider
+			// step -- the "yield" step -- instead of arriving as a Drain turn
+			// after it. The script therefore keys the answer on the question
+			// text in the prompt, not on a turn number, and answers it
+			// wherever it first appears.
+			turn := rootTurns.Add(1)
+			if m := childQuestionSessionRe.FindStringSubmatch(lastUser); m != nil && questionReachedParent.CompareAndSwap(false, true) {
 				childSessionID.Store(m[1])
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("root-answer", "call-answer", "agent",
 						`{"resume_session_id":`+jsonString(m[1])+`,"prompt":"use port 9090 and finish"}`),
 					admissionSSEStop("root-answer", "tool_calls"),
+				})
+				return
+			}
+			switch {
+			case turn == 1:
+				admissionWriteSSE(w, []string{
+					admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-Q do the task"}`),
+					admissionSSEStop("delegate", "tool_calls"),
+				})
+			case !questionReachedParent.Load():
+				// Nothing to answer yet: yield; the question comes later as a
+				// Drain turn.
+				admissionWriteSSE(w, []string{
+					admissionSSEText("root-yield", "root yielded: delegation parked"),
+					admissionSSEStop("root-yield", "stop"),
 				})
 			default:
 				admissionWriteSSE(w, []string{
