@@ -92,6 +92,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if len(config.Models) > 0 {
 				models := []catwalk.Model{}
 				seen := make(map[string]bool)
+				catalog := make(map[string]catwalk.Model, len(p.Models))
+				for _, model := range p.Models {
+					catalog[model.ID] = model
+				}
 
 				for _, model := range config.Models {
 					if seen[model.ID] {
@@ -100,6 +104,17 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 					seen[model.ID] = true
 					if model.Name == "" {
 						model.Name = model.ID
+					}
+					// A zero is unknown, not a value: a dump written by
+					// `rush providers update` carries zeros that must not
+					// shadow what the catalog knows about the same model.
+					if base, ok := catalog[model.ID]; ok {
+						if model.ContextWindow == 0 {
+							model.ContextWindow = base.ContextWindow
+						}
+						if model.DefaultMaxTokens == 0 {
+							model.DefaultMaxTokens = base.DefaultMaxTokens
+						}
 					}
 					models = append(models, model)
 				}
