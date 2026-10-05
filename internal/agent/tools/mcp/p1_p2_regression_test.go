@@ -326,7 +326,7 @@ func TestMCPAdmissionFinalTurnCancellationReleasesConfigLocks(t *testing.T) {
 	select {
 	case err := <-writerDone:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
+	case <-time.After(mcpAwaitTimeout):
 		t.Fatal("config sidecar lock remained held after admission cancellation")
 	}
 }
