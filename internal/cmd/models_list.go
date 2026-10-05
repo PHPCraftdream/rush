@@ -203,9 +203,13 @@ func renderOtherModelsBlock(cfg *config.Config) string {
 	return b.String()
 }
 
+// humanCtx renders a context window compactly. Millions keep up to two
+// decimals (1.05M, not a rounded 1.1M that reads as a different window) with
+// trailing zeros trimmed, so 1000000 is "1M" and 1500000 is "1.5M".
 func humanCtx(n int64) string {
 	if n >= 1_000_000 {
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+		text := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", float64(n)/1_000_000), "0"), ".")
+		return text + "M"
 	}
 	if n >= 1_000 {
 		return fmt.Sprintf("%dk", n/1_000)
