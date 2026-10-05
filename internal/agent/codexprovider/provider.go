@@ -423,6 +423,8 @@ func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent st
 	if readErr != nil {
 		if ctx.Err() != nil {
 			readErr = ctx.Err()
+		} else if errors.Is(readErr, io.ErrUnexpectedEOF) {
+			readErr = streamTransportError(readErr)
 		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: readErr})
 		return
@@ -436,6 +438,12 @@ func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent st
 		return
 	}
 	state.finish(yield)
+}
+
+// streamTransportError wraps a truncated stream body so retry classification
+// sees a retryable provider error instead of a terminal raw EOF.
+func streamTransportError(err error) error {
+	return &fantasy.ProviderError{Title: "stream transport error", Message: err.Error(), Cause: err}
 }
 
 func readSSE(reader io.Reader, yield func([]byte) bool) error {

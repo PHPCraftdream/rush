@@ -195,6 +195,36 @@ func TestStreamEmitsIncrementalTextAndFunctionCall(t *testing.T) {
 	assert.Contains(t, streamPartTypes(parts), fantasy.StreamPartTypeToolInputEnd)
 }
 
+func TestStreamTruncationYieldsRetryableProviderError(t *testing.T) {
+	// Revert check: without wrapping the truncation in provider.go, this test
+	// fails because the raw io.ErrUnexpectedEOF is not a *fantasy.ProviderError.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexEvent(w, `{"type":"response.output_text.delta","delta":"partial"}`)
+		w.(http.Flusher).Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		_ = conn.Close()
+	}))
+	t.Cleanup(server.Close)
+
+	model := codexProviderForTest(t, server)
+	stream, err := model.Stream(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "hi"}}}}})
+	require.NoError(t, err)
+
+	var streamErr error
+	for part := range stream {
+		if part.Type == fantasy.StreamPartTypeError {
+			streamErr = part.Error
+		}
+	}
+	require.Error(t, streamErr)
+	var providerErr *fantasy.ProviderError
+	require.ErrorAs(t, streamErr, &providerErr)
+	assert.True(t, providerErr.IsRetryable())
+	// fantasy v0.25.2 ProviderError has no Unwrap, so check Cause directly.
+	assert.ErrorIs(t, providerErr.Cause, io.ErrUnexpectedEOF)
+}
+
 func TestGenerateReturnsCodexHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
