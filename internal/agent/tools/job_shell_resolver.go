@@ -122,3 +122,18 @@ func resolveShellID(resolver JobShellResolver, sessionID, jobID, shellID string)
 	}
 	return resolver.ResolveJobShellID(sessionID, jobID)
 }
+
+// BGShellStopper is the optional second capability of the resolver job_kill
+// receives: it stops a background shell that has a durable async_jobs row of
+// kind bg_shell but no in-memory ledger job (a shell started by a SYNC bash
+// call, R-BG-1), and so is invisible to MarkJobStopped. A resolver that does
+// not implement it leaves job_kill on its older path.
+type BGShellStopper interface {
+	// StopBackgroundShellRow records the row's terminal "cancelled" transition
+	// BEFORE job_kill kills the process, with the same verdicts as
+	// MarkJobStopped: JobStopStopped (the row is cancelled, text is the output
+	// snapshot, kill the shell), JobStopAlreadyTerminal (answer with text, do
+	// not kill) and JobStopNotFound (shellID has no running bg_shell row: take
+	// the older path).
+	StopBackgroundShellRow(sessionID, shellID string) (text, claimID string, verdict JobStopVerdict)
+}

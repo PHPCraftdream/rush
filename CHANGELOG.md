@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- `job_kill` по shell_id фонового shell'а, у которого есть строка `async_jobs` (shell из синхронного вызова bash), переводит строку в `cancelled` ДО убийства процесса: процесс, не желающий умирать, больше не оставляет строку в `running`, а его выход не пишет «finished: exit 1» и не будит сессию второй раз; результат `job_kill` сливается со строкой (#1189).
 - Инструмент `write` отказывается заменять существующий файл от 2 КБ содержимым меньше четверти его размера (раньше воркер затёр реестр законов одной строкой): ответ объясняет, что `write` перезаписывает файл целиком, и предлагает `edit`/`multiedit`; осознанная замена — параметром `allow_shrink=true` (#1192). `fs_write` не затронут.
 - Фоновый shell, запущенный в ходе без колбэка завершения (`notify_on_background_job_done=false`, Drain/wake-ходы SDK), больше не оставляет строку `async_jobs` в `running` навсегда и не держит область сессии открытой: терминальный переход пишет наблюдатель, зарегистрированный при claim, независимо от уведомления (#1188).
 - Вопрос воркера (`ask_question`) больше не пишется в rush.log как ERROR «tool call failed, ending the run»: это штатная пауза хода, теперь INFO «tool paused the run: awaiting an answer» с `level_kind=pause` (#1194).

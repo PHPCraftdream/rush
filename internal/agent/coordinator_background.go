@@ -124,6 +124,15 @@ func backgroundJobSummary(id, command string, stdout, stderr string, exitCode in
 // next natural turn/Drain to pull it (its wake=1 still counts then). A child
 // whose delegation row runs is woken regardless (delegatedChildDriven).
 func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
+	// A shell job_kill already cancelled (its row is terminal, the tool result
+	// is its answer) produces no wake notice and takes no auto-resume slot: its
+	// exit would otherwise read as "finished: exit 1" and wake the session a
+	// second time. The completion hold still ends and the scope is re-checked.
+	if c.bgShellRowCancelled(sessionID, sh.ID) {
+		sh.MarkCompletionRecorded()
+		c.noteSubAgentChildRunEnded(sessionID)
+		return
+	}
 	stdout, stderr, _, runErr := sh.GetOutput()
 	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
 

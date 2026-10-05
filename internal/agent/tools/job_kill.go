@@ -58,7 +58,19 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				return fantasy.NewTextErrorResponse("session ID is required for background shell ownership"), nil
 			}
 
+			// A shell with a durable bg_shell row but no ledger job (started by a
+			// SYNC bash call) is stopped through the row: its cancelled
+			// transition is committed BEFORE the kill, so a process that
+			// refuses to die cannot leave the row running (R8B-2) and its
+			// exit does not raise a second, failed-looking completion.
+			var bgStop bgShellStop
 			shellID, err := resolveShellID(resolver, sessionID, params.JobID, params.ShellID)
+			if err == nil && params.JobID == "" {
+				bgStop = tryStopBGShellRow(resolver, sessionID, shellID)
+				if bgStop.handled {
+					return bgStop.resp, nil
+				}
+			}
 			if err != nil {
 				var rcErr *RunCommandJobError
 				if errors.As(err, &rcErr) && runCtl != nil {
@@ -77,7 +89,18 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 					metadata := JobKillResponseMetadata{JobID: params.JobID, KilledClaimID: killedClaimID}
 					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stopText), metadata), nil
 				}
-				return fantasy.NewTextErrorResponse(err.Error()), nil
+				// A bash shell id passed as job_id: the ledger does not know it,
+				// but its durable row may.
+				if params.JobID != "" && params.ShellID == "" {
+					if bgStop = tryStopBGShellRow(resolver, sessionID, params.JobID); bgStop.handled {
+						return bgStop.resp, nil
+					} else if bgStop.stopped {
+						shellID, err = params.JobID, nil
+					}
+				}
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
 			}
 
 			// Task #1063: markText, on JobStopStopped, IS the tool's own
@@ -95,7 +118,10 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 			// the ledger has already moved past.
 			var markText, killedClaimID string
 			var marked bool
-			if resolver != nil && params.JobID != "" {
+			if bgStop.stopped {
+				marked, markText, killedClaimID = true, bgStop.text, bgStop.claimID
+			}
+			if resolver != nil && params.JobID != "" && !bgStop.stopped {
 				// Records the ledger's stop-on-request marker BEFORE the
 				// kill below, so the job's own finish() call (task #1023
 				// §2.2) produces a distinct "stopped (job_kill)" outcome
@@ -123,6 +149,10 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 			}
 
 			metadata := JobKillResponseMetadata{JobID: params.JobID, ShellID: shellID, KilledClaimID: killedClaimID}
+			if bgStop.stopped {
+				// Names the stopped row so the result is fused onto it (A3).
+				metadata.JobID = shellID
+			}
 			// R2B-11: once the ledger verdict is "stopped" the job IS stopped
 			// and its output is captured in markText, whatever the shell
 			// manager says next (a concurrent Stop/timeout/close() may have
