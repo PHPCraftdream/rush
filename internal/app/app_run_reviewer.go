@@ -55,6 +55,10 @@ type executeRunLoop struct {
 	runStart       time.Time
 	tokensBefore   int64
 	costBefore     float64
+	// costBeforeKnown: the pre-run SubtreeSpent read succeeded; when false
+	// the envelope and hook report a cost delta of 0, never the session's
+	// whole historical spend (#1130).
+	costBeforeKnown bool
 	// hookExitReason points at ExecuteRun's local variable: finish()
 	// writes it and ExecuteRun's ended_reason/on-finish-hook defers read
 	// it after both phases are done, so the review turn's outcome wins by
@@ -612,10 +616,12 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			deltaTokens = freshSess.PromptTokens + freshSess.CompletionTokens - s.tokensBefore
 			// #1130: the cost delta is the SUBTREE spend window (own +
 			// delegation children), matching costBefore's SubtreeSpent read.
+			// A failed before- or after-read reports ZERO instead of the
+			// whole history.
 			spentNow, spentErr := s.app.Sessions.SubtreeSpent(finalCtx, s.sess.ID)
 			if spentErr != nil {
 				slog.Warn("run: failed to read session budget for the JSON envelope; reporting zero delta", "session", s.sess.ID, "err", spentErr)
-			} else {
+			} else if s.costBeforeKnown {
 				deltaCost = spentNow - s.costBefore
 			}
 			if deltaTokens < 0 {

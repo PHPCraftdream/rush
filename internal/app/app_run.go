@@ -402,12 +402,14 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	runStart := time.Now()
 	tokensBefore := sess.PromptTokens + sess.CompletionTokens
 	// #1130: the window is the SUBTREE spend (delegation children included),
-	// not the root row's own ledger. A failed read starts the window at 0 —
-	// the hook then under-reports instead of inventing a number.
+	// not the root row's own ledger. A failed read makes the window UNKNOWN
+	// (costBeforeKnown): the hook and the envelope then report ZERO instead
+	// of the whole history — still under-reporting, not inventing a number.
 	costBefore, costBeforeErr := app.Sessions.SubtreeSpent(ctx, sess.ID)
 	if costBeforeErr != nil {
 		costBefore = 0
 	}
+	costBeforeKnown := costBeforeErr == nil
 
 	// Fork patch (operator UX): persist ended_reason when the run finishes.
 	// hookExitReason is always set before return, so this defer fires after it.
@@ -464,7 +466,12 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 				if spentErr != nil {
 					slog.Warn("Failed to refresh session budget for on-finish hook usage", "session_id", sess.ID, "err", spentErr)
 				}
-				hookCost = spentNow - costBefore
+				// A failed before- or after-read leaves the window unknown:
+				// hookCost stays 0 instead of carrying the whole history (or
+				// going negative) (#1130).
+				if costBeforeKnown && spentErr == nil {
+					hookCost = max(spentNow-costBefore, 0)
+				}
 			} else {
 				slog.Warn("Failed to refresh session for on-finish hook usage", "session_id", sess.ID, "err", err)
 			}
@@ -515,21 +522,22 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 		basis = app.captureReviewBasis(ctx, overrides.ModelRole, prompt, runStart)
 	}
 	loop := &executeRunLoop{
-		app:            app,
-		sess:           sess,
-		ctx:            ctx,
-		mode:           mode,
-		captureResult:  req.captureResult,
-		overrides:      overrides,
-		stdout:         stdout,
-		stderr:         stderr,
-		stderrTTY:      stderrTTY,
-		progress:       progress,
-		stopSpinner:    stopSpinner,
-		runStart:       runStart,
-		tokensBefore:   tokensBefore,
-		costBefore:     costBefore,
-		hookExitReason: &hookExitReason,
+		app:             app,
+		sess:            sess,
+		ctx:             ctx,
+		mode:            mode,
+		captureResult:   req.captureResult,
+		overrides:       overrides,
+		stdout:          stdout,
+		stderr:          stderr,
+		stderrTTY:       stderrTTY,
+		progress:        progress,
+		stopSpinner:     stopSpinner,
+		runStart:        runStart,
+		tokensBefore:    tokensBefore,
+		costBefore:      costBefore,
+		costBeforeKnown: costBeforeKnown,
+		hookExitReason:  &hookExitReason,
 	}
 	defer func() {
 		if progress && stderrTTY {

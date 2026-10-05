@@ -20,7 +20,7 @@ const cliTodoNudgeLimit = 2
 // todoNudgePrompt is the fixed user prompt of the unfinished-todos reminder
 // turn (#A18). Like the reviewer pass's prompt it must steer to a concrete
 // outcome, never to more announcements.
-const todoNudgePrompt = `Your todo list still has unfinished items (pending or in_progress). Continue working on them now, or mark each finished item completed and each dropped item cancelled, then end your turn with a summary of what is done and what remains. Do not end the turn while actionable work remains.`
+const todoNudgePrompt = `Your todo list still has unfinished items (pending or in_progress). Continue working on them now, or mark each finished item completed and remove each dropped item from the list, then end your turn with a summary of what is done and what remains. Do not end the turn while actionable work remains.`
 
 // openTodos reads the session's todos and returns how many are pending or
 // in_progress plus a fingerprint of their (content,status) pairs; a read
@@ -49,6 +49,11 @@ func (l *cliLoop) openTodos() (count int, fingerprint string, err error) {
 // changed since the previous nudge; once the budget is spent without
 // progress the run is allowed to end, with a warning recorded at the exit.
 func (l *cliLoop) todoNudgeDue() bool {
+	// A reminder turn already failed and was dropped (C9-4): no further
+	// reminders fire.
+	if l.nudgeFailed {
+		return false
+	}
 	// The last turn ended on a question for the caller: the run exits with
 	// awaiting_answer, and a reminder turn would bury the question under a
 	// prompt the caller never sent.
@@ -78,8 +83,9 @@ func (l *cliLoop) todoNudgeDue() bool {
 // nudgePhase runs one unfinished-todos reminder turn (#A18): a plain
 // prompted turn on the executor's model, then back to decide -- the closed
 // scope is re-read there, and the nudge fires again only if todos are still
-// open and the budget allows. Failures exit through the same paths a Drain's
-// would (afterDrain's streak, turnCanceled, stopError).
+// open and the budget allows. A reminder that failed for its own reason is
+// dropped, never the run's outcome (C9-4); cancellation, stop, a queued
+// reminder and a question keep their own paths.
 func (l *cliLoop) nudgePhase() cliStepResult {
 	if err := l.stopError(); err != nil {
 		final, exitErr := l.exitPrecheck(err)
@@ -91,6 +97,22 @@ func (l *cliLoop) nudgePhase() cliStepResult {
 	if l.ctx.Err() != nil {
 		final, exitErr := l.turnCanceled(result, buffered, err, usageBefore)
 		return cliStepResult{ev: evNudgeEnded, final: final, err: exitErr}
+	}
+	// C9-4: an optional reminder that failed for its own reason is dropped
+	// -- the executor's answer stands and no further reminders fire.
+	var awaiting *agent.AwaitingAnswerError
+	if err != nil && !errors.Is(err, ErrRunQueued) && !errors.As(err, &awaiting) {
+		l.tot.add(result)
+		if result == nil {
+			l.tot.addSince(usageBefore, l.sessionUsage())
+		}
+		l.nudgeFailed = true
+		if l.final != nil {
+			l.final.Warnings = append(l.final.Warnings, fmt.Sprintf("todo reminder turn failed: %v", err))
+		}
+		fmt.Fprintf(l.errOut(), "rush run: todo reminder turn failed: %v; the run keeps its last answer\n", err)
+		l.streak = drainStreak{}
+		return cliStepResult{ev: evNudgeAgain}
 	}
 	if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
 		final, exitFinal := l.exit(exitErr, "error")

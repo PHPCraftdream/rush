@@ -255,10 +255,12 @@ type cliLoop struct {
 	lastScope agent.CLIScopeState
 	// Unfinished-todos reminder state (#A18): how many reminders fired in a
 	// row without the todos changing, their last (content,status)
-	// fingerprint, and whether the budget was spent without progress.
+	// fingerprint, whether the budget was spent without progress, and
+	// whether a reminder turn failed and was dropped (C9-4).
 	todoNudges      int
 	todoFingerprint string
 	todosGaveUp     bool
+	nudgeFailed     bool
 	stderr          io.Writer
 }
 
