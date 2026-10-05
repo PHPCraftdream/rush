@@ -100,6 +100,19 @@ func subAgentQuestionWithPreamble(preamble, frame string) string {
 // text the parent should get for a child that asked it in a Drain turn --
 // there is no live AwaitingAnswerError left at that point.
 func subAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (string, bool) {
+	block, ok := subAgentQuestionBlockFromFinish(fp)
+	if !ok {
+		return "", false
+	}
+	return subAgentQuestionFrame(childSessionID, block), true
+}
+
+// subAgentQuestionBlockFromFinish extracts the raw question block (question
+// plus suggested options) from a question-tool stop's finish part -- the
+// unwrapped input of subAgentQuestionFrame, for readers that compose their
+// own frame around it (delegation_question.go's notice and supervision
+// texts).
+func subAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
 	if fp == nil || fp.Reason != message.FinishReasonError || fp.Message != awaitingAnswerStoppedTitle {
 		return "", false
 	}
@@ -107,11 +120,11 @@ func subAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (stri
 	if !ok {
 		return "", false
 	}
-	block, _, ok := strings.Cut(rest, awaitingGuidanceMarker)
-	if !ok {
+	block, _, found := strings.Cut(rest, awaitingGuidanceMarker)
+	if !found {
 		return "", false
 	}
-	return subAgentQuestionFrame(childSessionID, block), true
+	return block, true
 }
 
 // awaitingAnswerStoppedFinishText builds the (msg, details) pair recorded as

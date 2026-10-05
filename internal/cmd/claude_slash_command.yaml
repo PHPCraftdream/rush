@@ -162,8 +162,10 @@ blocks:
       - **Worker sub-agent's question**: a worker delegated to via the
         `agent` tool calls `ask_question` on its own turn. This does **not**
         make the `rush run` process exit — it stays alive. Rush's own
-        orchestrating model receives the pause as a normal (successful) tool
-        result telling it to resume the worker via `resume_session_id`, and —
+        orchestrating model receives the question immediately as a message
+        (a tool result, or a `child_question` notice even while the worker's
+        own background tasks are still running) telling it to resume the
+        worker via `resume_session_id`, and —
         driven by its own orchestrator-mode instructions — answers it and
         keeps going automatically, inside the still-running process. You
         never see this happen, your background command keeps running, and

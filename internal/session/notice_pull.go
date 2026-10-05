@@ -53,6 +53,12 @@ const (
 	// invariant); callers building the notice message must map this kind to
 	// "" themselves.
 	NoticeKindBGShellDone = "bg_shell_done"
+	// NoticeKindChildQuestion announces a delegated child paused on a
+	// question it asked while its delegation is still held (#1157). Bound to
+	// the delegation row via job_tool_call_id and voided exactly like
+	// wake_only: if the delegation reached terminal before the pull, the
+	// release itself carries the question.
+	NoticeKindChildQuestion = "child_question"
 	// NoticeKindReactionChain is the marker persisted once when the reaction
 	// chain guard (#1113) stops a session's automatic turns: like
 	// wake_failed it describes an outcome, so Rerun voids it instead of
@@ -259,7 +265,7 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 // other running row. Every other kind has no condition and never voids.
 func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
-	case NoticeKindWakeOnly:
+	case NoticeKindWakeOnly, NoticeKindChildQuestion:
 		if !row.JobToolCallID.Valid {
 			return false, nil
 		}

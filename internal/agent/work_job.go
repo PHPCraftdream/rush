@@ -217,6 +217,19 @@ type asyncJob struct {
 	// window), and the in-memory tail is finishInlineLocally, never the
 	// onWebDone hint. One bool, one writer, both readers under l.mu.
 	inlinePending bool
+
+	// questionNoticed is the child_question dedup latch (#1157): set under
+	// l.mu by noteChildQuestion before its insert goroutine runs, so
+	// concurrent recheckChild triggers produce exactly one notice; reset by
+	// the answer path (a new question after an answer re-arms it) and by a
+	// failed insert. Always false for a non-delegation job.
+	questionNoticed bool
+	// answerHold is set by answerHeldDelegation (delegation_question.go)
+	// under l.mu for the whole admission of the parent's answer turn: it
+	// makes recheckChild return instead of releasing X in the window where
+	// the child's own work drained but the answer turn has not registered
+	// its own work yet. Cleared once that turn returns.
+	answerHold bool
 }
 
 // transitionToTerminal is the in-memory half of a terminal transition,

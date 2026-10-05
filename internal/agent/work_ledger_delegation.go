@@ -113,6 +113,10 @@ func (l *workLedger) recheckChild(childSessionID string) {
 			return
 		}
 		if !l.childScopeDrained(childSessionID) {
+			// #1157: a child whose turn ended on an ask_question while its
+			// own work still runs would deadlock the parent ("wait" produces
+			// nothing) -- announce the held question once.
+			l.noteChildQuestion(childSessionID)
 			return
 		}
 		l.mu.Lock()
@@ -128,6 +132,14 @@ func (l *workLedger) recheckChild(childSessionID string) {
 			if l.coord != nil {
 				l.coord.releaseDriverIfScopeClosed(childSessionID)
 			}
+			return
+		}
+		if job.answerHold {
+			// #1157: the parent's answer turn is being admitted into this
+			// held delegation (answerHeldDelegation); its own work has not
+			// registered yet, so a release here would deliver the question
+			// and strand the answer outside the delegation.
+			l.mu.Unlock()
 			return
 		}
 		owner, toolCallID, sync := job.owner, job.toolCallID, job.sync

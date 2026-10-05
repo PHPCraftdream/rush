@@ -411,16 +411,29 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 	}
 	l.mu.Unlock()
 
-	commands, delegations := 0, 0
+	commands, delegations, awaitingCount := 0, 0, 0
 	lines := make([]string, 0, len(snaps))
 	for _, j := range snaps {
+		if j.childSession != "" {
+			delegations++
+			// #1157: a delegation whose child is paused on its question is
+			// the actionable case -- name it first, with the exact calls.
+			if line, ok := l.childAwaitingQuestionSummary(j.childSession, j.elapsed); ok {
+				awaitingCount++
+				lines = append(lines, line)
+				continue
+			}
+			if line, ok := l.idleChildSummary(j.childSession, j.elapsed); ok {
+				lines = append(lines, line)
+				continue
+			}
+		}
 		partial := l.capturePartial(rootSessionID, j.toolCallID, j.toolName, j.childSession, j.shellID, j.outputBuf)
 		last := lastNonEmptyLine(tools.TruncateOutput(strings.TrimSpace(partial.content)))
 		if last == "" {
 			last = "(no output yet)"
 		}
 		if j.childSession != "" {
-			delegations++
 			lines = append(lines, fmt.Sprintf("- %s (sub-agent, child session %s): running %s, last activity: %s",
 				j.toolCallID, j.childSession, j.elapsed.Round(time.Second), last))
 		} else {
@@ -435,14 +448,64 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 	}
 
 	guidance := "Keep waiting, inspect with job_output, or stop with job_kill (commands); for a sub-agent use inspect_agent, inject_agent or stop_agent."
+	if awaitingCount > 0 {
+		guidance = "A sub-agent is blocked on your answer; waiting will not progress it.\n" + guidance
+	}
 	if paused {
 		guidance = fmt.Sprintf(
 			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
 			tickNum, guidance)
 	}
+	awaitingClause := ""
+	if awaitingCount > 0 {
+		awaitingClause = fmt.Sprintf(" (%d awaiting your answer)", awaitingCount)
+	}
 	return fmt.Sprintf(
-		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress.\n\n%s\n\n%s",
-		tickNum, interval.Minutes(), commands, delegations, body, guidance)
+		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
+		tickNum, interval.Minutes(), commands, delegations, awaitingClause, body, guidance)
+}
+
+// idleChildSummary is the #1157 visibility line for the OTHER variant of the
+// old deadlock: a child that finished its turn with text and is now idle
+// while its own jobs still run. The stale "last activity" reading (an old
+// turn's text) said nothing about why nothing happens. ok=false when the
+// child has no question and no own running work, or was never a delegation
+// child -- the ordinary "last activity" line applies.
+func (l *workLedger) idleChildSummary(childID string, elapsed time.Duration) (string, bool) {
+	if l.coord == nil {
+		return "", false
+	}
+	if ag := l.coord.agentFor(childID); ag != nil && ag.IsSessionBusy(childID) {
+		return "", false
+	}
+	own := l.childOwnRunningJobs(childID)
+	bg := 0
+	if l.coord.background != nil {
+		bg = l.coord.background.ActiveOwned(childID)
+	}
+	if own+bg == 0 {
+		return "", false
+	}
+	oldest := ""
+	l.mu.Lock()
+	var oldestAt time.Time
+	if s := l.bySession[childID]; s != nil {
+		for _, job := range s.jobs {
+			if job.state != phaseRunning {
+				continue
+			}
+			if oldestAt.IsZero() || job.startedAt.Before(oldestAt) {
+				oldestAt, oldest = job.startedAt, job.toolName
+			}
+		}
+	}
+	l.mu.Unlock()
+	detail := fmt.Sprintf("oldest: %s running %s", oldest, time.Since(oldestAt).Round(time.Second))
+	if oldest == "" {
+		detail = "none in this ledger"
+	}
+	return fmt.Sprintf("- (sub-agent, child session %s): idle, waiting on its own %d job(s); %s",
+		childID, own+bg, detail), true
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, or "".

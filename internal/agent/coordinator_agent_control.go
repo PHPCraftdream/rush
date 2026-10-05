@@ -83,20 +83,30 @@ func (c *coordinator) childHasActiveWork(childID string) bool {
 	return false
 }
 
-// childLastActivity reads the child's last message for inspect_agent's
-// last_activity_* fields (the same List refreshSubAgentCompletion uses) and
-// reports whether that message carries the exact question-stop finish
-// literal (§4.1's awaiting_answer signal).
+// childLastActivity reads the child's last FINISHED assistant message for
+// inspect_agent's last_activity_* fields (the same List and the same
+// finished-assistant scan refreshSubAgentCompletion uses) and reports
+// whether it ends on a question-tool stop (§4.1's awaiting_answer signal).
+// #1157: the literal "last message" of a paused child is its ask_question
+// tool RESULT -- a tool message with no finish part -- which made a
+// question-paused child read as idle; the question lives on the assistant
+// message before it.
 func (c *coordinator) childLastActivity(ctx context.Context, childID string) (msg *message.Message, awaiting bool) {
 	msgs, err := c.messages.List(ctx, childID)
-	if err != nil || len(msgs) == 0 {
+	if err != nil {
 		return nil, false
 	}
-	last := msgs[len(msgs)-1]
-	fp := last.FinishPart()
-	awaiting = fp != nil && fp.Reason == message.FinishReasonError &&
-		fp.Message == awaitingAnswerStoppedTitle
-	return &last, awaiting
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != message.Assistant || !m.IsFinished() {
+			continue
+		}
+		fp := m.FinishPart()
+		awaiting = fp != nil && fp.Reason == message.FinishReasonError &&
+			fp.Message == awaitingAnswerStoppedTitle
+		return &m, awaiting
+	}
+	return nil, false
 }
 
 // InspectAgent implements tools.AgentControl (§4.1). Priority: running

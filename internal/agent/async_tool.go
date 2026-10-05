@@ -77,6 +77,19 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
+	// #1157: an `agent` resume naming a child whose held delegation is
+	// paused on its question is answered INTO that delegation (no new row,
+	// ASYNC-01 untouched) instead of refused by Claim. Checked before Start;
+	// anything else -- including a resume with no held question, where the
+	// phase-4 ErrAsyncChildSessionBusy refusal still stands -- falls through.
+	if !sync && t.name == AgentToolName && t.coordinator != nil && t.coordinator.asyncJobs != nil {
+		var params AgentParams
+		if json.Unmarshal([]byte(call.Input), &params) == nil && params.ResumeSessionID != "" {
+			if resp, answered := t.coordinator.asyncJobs.answerHeldDelegation(ctx, sessionID, childSessionID, params.Prompt); answered {
+				return resp, nil
+			}
+		}
+	}
 	timeoutSpec, err := parseTimeoutParam(t.name, call.Input)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
