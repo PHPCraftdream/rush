@@ -7,6 +7,7 @@ mergers — this file tracks what actually changed in behavior.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- `rush sessions compact` возвращает место из rush.db после удалений (SQLite VACUUM, #1161): отказывается при живых процессах на этой БД (`--force` пропускает проверку host/session lock'ов, но не startup-lock и не открытые транзакции), заранее проверяет свободное место, печатает размер и freelist до/после; `--dry-run`, `--json`. `sessions gc/purge` подсказывают команду, когда свободные страницы ≥ 64 МБ и ≥ 50% файла. Автоматического VACUUM нет.
 
 - Связанный git-worktree теперь работает на общем каталоге данных проекта
   `<main>/.rush` (#1143 SD-D): сессии, логи и `async_jobs` пишутся туда и

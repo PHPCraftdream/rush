@@ -239,6 +239,13 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "%s %d session(s)\n", prefix, len(toDelete))
 	}
 
+	// Point at `rush sessions compact` when this run left enough free
+	// pages behind: gc moves rows to the freelist but never shrinks the
+	// file (#1161).
+	if !dryRun && !asJSON && len(toDelete) > 0 {
+		compactHint(cmd.Context(), a.DB())
+	}
+
 	return nil
 }
 

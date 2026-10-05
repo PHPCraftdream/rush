@@ -112,6 +112,13 @@ func sessionsPurgeCmdRun(cmd *cobra.Command, args []string) error {
 		prefix = "deleted"
 	}
 	fmt.Fprintf(os.Stderr, "%s %d session(s)\n", prefix, len(victims))
+
+	// Same pointer as gc: purge moves rows to the freelist but never
+	// shrinks the file (#1161).
+	if !dryRun {
+		compactHint(cmd.Context(), a.DB())
+	}
+
 	return nil
 }
 

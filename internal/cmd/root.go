@@ -99,7 +99,7 @@ Companion CLI subcommands for scripting and CI:
   - ` + "`rush run`" + `             one-shot prompt; --session, --timeout, --max-cost,
                           --max-tokens, --on-finish, --json.
   - ` + "`rush sessions`" + `        list / show / delete / last / tail / locks / watch /
-                          pick / grep / cost / diff / tree / fork / cancel / gc.
+                          pick / grep / cost / diff / tree / fork / cancel / gc / compact.
   - ` + "`rush queue`" + `           batch task queue — add / list / run / rm / clear / show.
   - ` + "`rush models`" + `          use / list / set / unset — atom-based model selection
                           with short codes (o47x, s46h, hl, etc.).

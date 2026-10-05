@@ -29,7 +29,8 @@ Orchestrate: cancel <id> (graceful DB-flag stop), fork <id> [--at N],
              inject <id> (message into a session from another process),
              tree (parent-child hierarchy), gc (garbage-collect stale)
 Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
-             reap (remove all orphan locks)`,
+             reap (remove all orphan locks),
+             compact (rebuild rush.db: VACUUM the freelist #1161)`,
 }
 
 func init() {
@@ -59,7 +60,7 @@ func init() {
 	sessionsCacheCmd.Flags().String("since", "", "Only count messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days. Aggregates across all sessions; omit the session argument.")
 	sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
 
-	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd)
+	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
 	rootCmd.AddCommand(sessionsCmd)
 }
 
