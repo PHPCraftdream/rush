@@ -252,10 +252,12 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 			}
 			continue
 		}
-		if exists && !member.Item.AllowShrink && writeWouldShrinkFile(len(current), len(member.Item.Content)) {
+		// Baseline is the larger of disk and in-call size: items must not compound.
+		baseline := max(len(oldContent), len(current))
+		if exists && !member.Item.AllowShrink && writeWouldShrinkFile(baseline, len(member.Item.Content)) {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
-				Error:  writeShrinkRefusal(FSWriteToolName, "fs_replace or fs_write_lines", group.Path, len(current), len(member.Item.Content)),
+				Error:  writeShrinkRefusal(FSWriteToolName, "fs_replace or fs_write_lines", group.Path, baseline, len(member.Item.Content)),
 			}
 			continue
 		}

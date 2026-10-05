@@ -131,4 +131,41 @@ func TestFSWriteRefusesToShrinkALargeFile(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, grown, string(got))
 	})
+
+	// Sizes compound across items: 8000 -> 2000 is exactly the allowed
+	// quarter, and 500 would pass against the 2000 the first item left
+	// (below writeShrinkMinOldBytes), so the second item must be judged
+	// against the disk's 8000 instead.
+	//
+	// REVERT CHECK: measuring item 2 against current instead of the
+	// baseline lets it through -- this subtest FAILED (item 2 status ok,
+	// disk ended at 500 bytes).
+	t.Run("shrinking below the guard one quarter at a time is refused", func(t *testing.T) {
+		t.Parallel()
+		dir, path, _ := fsWriteShrinkSeed(t, "compound.md", 8000)
+		first := strings.Repeat("a", 2000)
+		meta := fsWriteShrinkRun(t, dir,
+			FSWriteItem{Path: "compound.md", Content: first},
+			FSWriteItem{Path: "compound.md", Content: strings.Repeat("b", 500)},
+		)
+		require.Equal(t, FSStatusOK, meta.Items[0].Status, "%+v", meta.Items)
+		require.Equal(t, FSStatusFailed, meta.Items[1].Status, "%+v", meta.Items)
+		require.Contains(t, meta.Items[1].Error, "allow_shrink=true")
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t, first, string(got), "the call must land on the last allowed item's content")
+	})
+
+	t.Run("allow_shrink on the second item still walks the size down", func(t *testing.T) {
+		t.Parallel()
+		dir, path, _ := fsWriteShrinkSeed(t, "compound.md", 8000)
+		meta := fsWriteShrinkRun(t, dir,
+			FSWriteItem{Path: "compound.md", Content: strings.Repeat("a", 2000)},
+			FSWriteItem{Path: "compound.md", Content: strings.Repeat("b", 500), AllowShrink: true},
+		)
+		require.Equal(t, 2, meta.Succeeded, "%+v", meta.Items)
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Len(t, got, 500)
+	})
 }
