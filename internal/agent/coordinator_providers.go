@@ -90,6 +90,17 @@ func effectiveReasoningEffort(model Model) string {
 	return ""
 }
 
+// fantasyAcceptsReasoningEffort reports whether fantasy's OpenAI-compatible
+// providers take effort as the top-level reasoning_effort value.
+func fantasyAcceptsReasoningEffort(effort string) bool {
+	switch openai.ReasoningEffort(effort) {
+	case openai.ReasoningEffortNone, openai.ReasoningEffortMinimal, openai.ReasoningEffortLow,
+		openai.ReasoningEffortMedium, openai.ReasoningEffortHigh, openai.ReasoningEffortXHigh:
+		return true
+	}
+	return false
+}
+
 func getProviderOptions(sessionID string, model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
 	options := fantasy.ProviderOptions{}
 
@@ -395,6 +406,19 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 		case string(catwalk.InferenceProviderAlibabaSingapore):
 			if model.CatwalkCfg.CanReason {
 				extraBody["enable_thinking"] = model.ModelCfg.Think
+			}
+		}
+
+		// z.ai and DeepSeek carry their effort in extra_body, in wire values
+		// ("max") the OpenAI vocabulary does not have. Fantasy validates the
+		// top-level reasoning_effort against that vocabulary and fails the
+		// whole call ("reasoning model `max` not supported"), so a value it
+		// would reject must not also ride there: it made every reviewer pass
+		// at @max fail.
+		switch providerCfg.ID {
+		case string(catwalk.InferenceProviderZAI), string(catwalk.InferenceProviderDeepSeek):
+			if effort, ok := mergedOptions["reasoning_effort"].(string); ok && !fantasyAcceptsReasoningEffort(effort) {
+				delete(mergedOptions, "reasoning_effort")
 			}
 		}
 
