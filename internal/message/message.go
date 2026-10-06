@@ -950,22 +950,3 @@ func (s *service) SetPinned(ctx context.Context, id string, pinned bool) error {
 	s.PublishMustDeliver(ctx, pubsub.UpdatedEvent, msg.Clone())
 	return nil
 }
-
-// TruncateStreamedContent removes every TextContent and ReasoningContent
-// part: the text and reasoning a cut stream attempt accumulated, which a
-// provider retry would otherwise duplicate when it replays the step's
-// deltas. Tool calls, tool results and Finish parts are kept.
-func (m *Message) TruncateStreamedContent() bool {
-	kept := m.Parts[:0]
-	for _, part := range m.Parts {
-		switch part.(type) {
-		case TextContent, ReasoningContent:
-			continue
-		default:
-			kept = append(kept, part)
-		}
-	}
-	removed := len(kept) < len(m.Parts)
-	m.Parts = kept
-	return removed
-}

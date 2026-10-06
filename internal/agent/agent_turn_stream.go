@@ -350,27 +350,6 @@ func (ts *turnStream) onToolInputEnd(id string) error {
 func (ts *turnStream) onRetry(err *fantasy.ProviderError, delay time.Duration) {
 	ts.bumpActivity()
 	slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
-	// A retry re-runs the whole step on the same callbacks, so the cut
-	// attempt's partial text/reasoning would ride under the retry's deltas.
-	ts.mu.Lock()
-	if ts.currentAssistant == nil {
-		ts.mu.Unlock()
-		return
-	}
-	var snap message.Message
-	removed := ts.currentAssistant.TruncateStreamedContent()
-	if removed {
-		snap = ts.currentAssistant.Clone()
-	}
-	ts.mu.Unlock()
-	if !removed {
-		return
-	}
-	// Outer ctx: must land even mid-cancel, like onToolInputStart's write.
-	if updateErr := ts.a.messages.Update(ts.ctx, snap); updateErr != nil {
-		slog.Warn("agent: failed to persist truncated assistant after retry",
-			"session_id", ts.call.SessionID, "message_id", snap.ID, "err", updateErr)
-	}
 }
 
 func (ts *turnStream) onWarnings(warnings []fantasy.CallWarning) error {
