@@ -20,6 +20,8 @@ import (
 
 const syncRevKey = "sync_rev"
 
+var reservedSettingsKeys = []string{syncRevKey, "cache_rev"}
+
 var (
 	ErrSettingsLocked           = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
 	ErrWrongPassword            = errors.New("wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
@@ -78,7 +80,10 @@ func processPasswordHash() string {
 func CheckPasswordAgainstDisk(password string) error {
 	data, _, err := readStableConfigFile(GlobalConfigData())
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return ErrSettingsLocked
 	}
 	hash := settingsHash(data)
 	if hash == "" {
@@ -86,6 +91,29 @@ func CheckPasswordAgainstDisk(password string) error {
 	}
 	if !sameSettingsHash(HashPassword(password), hash) {
 		return ErrWrongPassword
+	}
+	return nil
+}
+
+func SettingsWriteAllowed(workspaceDir string) error {
+	process := processPasswordHash()
+	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
+		{path: GlobalConfigData(), global: true},
+		{path: canonicalGlobalDataPath(), global: true},
+		{path: naturalWorkspaceSettingsPath(workspaceDir)},
+		{path: filepath.Join(workspaceDir, "rush.json")},
+	})
+	if err != nil {
+		return ErrSettingsLocked
+	}
+	checks := globals
+	if len(checks) == 0 {
+		checks = locals
+	}
+	for _, hash := range checks {
+		if !sameSettingsHash(process, hash) {
+			return ErrSettingsLocked
+		}
 	}
 	return nil
 }
@@ -109,23 +137,36 @@ func (s *ConfigStore) SettingsLocked() (bool, error) {
 
 func (s *ConfigStore) CheckProcessPassword() error {
 	process := processPasswordHash()
+	global, local, err := s.currentLockHashes()
+	if err != nil {
+		return ErrSettingsLocked
+	}
 	if process == "" {
 		return nil
 	}
-	global, local := s.currentLockHashes()
-	if global == "" && local == "" {
-		return nil
+	checks := global
+	if len(checks) == 0 {
+		checks = local
 	}
-	if !authorizedSettingsPassword(process, global, local) {
-		return ErrWrongPassword
+	for _, hash := range checks {
+		if !sameSettingsHash(process, hash) {
+			return ErrWrongPassword
+		}
 	}
 	return nil
 }
 
-func (s *ConfigStore) currentLockHashes() (string, string) {
-	global, _ := freshSettingsHash(s.globalDataPath)
-	local, _ := freshSettingsHash(s.loadSnapshot().workspacePath)
-	return global, local
+func (s *ConfigStore) currentLockHashes() ([]string, []string, error) {
+	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
+		{path: s.globalDataPath, global: true},
+		{path: canonicalGlobalDataPath(), global: true},
+		{path: s.loadSnapshot().workspacePath},
+		{path: naturalWorkspaceSettingsPath(s.workingDir)},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return globals, locals, nil
 }
 
 func freshSettingsHash(path string) (string, error) {
@@ -148,17 +189,41 @@ func settingsHash(data []byte) string {
 func sameSettingsHash(a, b string) bool {
 	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
-func authorizedSettingsPassword(process, global, local string) bool {
-	if global != "" {
-		return sameSettingsHash(process, global)
+
+func touchesReservedKey(key string) bool {
+	first := key
+	if strings.HasPrefix(first, ":") {
+		first = first[1:]
 	}
-	return local != "" && sameSettingsHash(process, local)
+	var component strings.Builder
+	for i := 0; i < len(first); i++ {
+		switch first[i] {
+		case '.':
+			first = component.String()
+			goto check
+		case '\\':
+			i++
+			if i < len(first) {
+				component.WriteByte(first[i])
+			}
+		default:
+			component.WriteByte(first[i])
+		}
+	}
+	first = component.String()
+check:
+	for _, reserved := range reservedSettingsKeys {
+		if first == reserved {
+			return true
+		}
+	}
+	return false
 }
 
 // guardSettingsWrite rejects protected writes without taking any locks.
 func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string) (string, error) {
 	for _, key := range keys {
-		if key == syncRevKey || strings.HasPrefix(key, syncRevKey+".") {
+		if touchesReservedKey(key) {
 			return "", errSettingsLockKeyReserved
 		}
 	}
@@ -172,30 +237,73 @@ func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string
 			break
 		}
 	}
-	workspace := s.loadSnapshot().workspacePath
-	globalHash := readSettingsHashBestEffort(s.globalDataPath, path, data)
-	localHash := readSettingsHashBestEffort(workspace, path, data)
-	if globalHash == "" && localHash == "" {
+	if allRecent {
 		return "", nil
 	}
-	if authorizedSettingsPassword(processPasswordHash(), globalHash, localHash) || allRecent {
-		return "", nil
+	if err := s.checkExternalSettingsSources(path, data); err != nil {
+		return "change refused", err
 	}
-	return "change refused", ErrSettingsLocked
+	return "", nil
 }
 
-func readSettingsHashBestEffort(candidate, path string, data []byte) string {
+func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	if candidate == "" {
-		return ""
+		return "", nil
 	}
 	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
-		return settingsHash(data)
+		return settingsHash(data), nil
 	}
 	contents, _, err := readStableConfigFile(candidate)
-	if err != nil {
-		return ""
+	if os.IsNotExist(err) {
+		return "", nil
 	}
-	return settingsHash(contents)
+	if err != nil {
+		return "", err
+	}
+	return settingsHash(contents), nil
+}
+
+func pathWithinDirectory(directory, path string) bool {
+	rel, err := filepath.Rel(directory, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func (s *ConfigStore) lockHashesForTarget(path string, data []byte) ([]string, []string, error) {
+	workspace := s.loadSnapshot().workspacePath
+	natural := naturalWorkspaceSettingsPath(s.workingDir)
+	canonical := canonicalGlobalDataPath()
+	globals := []string{}
+	locals := []string{}
+	for _, source := range []struct {
+		path string
+		kind string
+	}{{s.globalDataPath, "global"}, {canonical, "global"}, {workspace, "local"}, {natural, "local"}} {
+		if source.path == "" {
+			continue
+		}
+		hash, err := readSettingsHash(source.path, path, data)
+		if err != nil {
+			return nil, nil, err
+		}
+		if normalizeReloadPath(source.path) == normalizeReloadPath(path) {
+			continue
+		}
+		if source.kind == "global" && normalizeReloadPath(source.path) == normalizeReloadPath(canonical) && normalizeReloadPath(source.path) != normalizeReloadPath(s.globalDataPath) && normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) {
+			continue
+		}
+		if source.kind == "local" && workspace != "" && natural != "" && normalizeReloadPath(source.path) == normalizeReloadPath(natural) && normalizeReloadPath(natural) != normalizeReloadPath(workspace) && pathWithinDirectory(filepath.Dir(workspace), path) {
+			continue
+		}
+		if hash == "" {
+			continue
+		}
+		if source.kind == "global" {
+			globals = append(globals, hash)
+		} else {
+			locals = append(locals, hash)
+		}
+	}
+	return globals, locals, nil
 }
 
 func (s *ConfigStore) LockSettings(scope Scope, password string) error {
@@ -208,12 +316,8 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 	}
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
-		globalHash := readSettingsHashBestEffort(s.globalDataPath, path, data)
-		localHash := readSettingsHashBestEffort(s.loadSnapshot().workspacePath, path, data)
-		if globalHash != "" || localHash != "" {
-			if !authorizedSettingsPassword(processPasswordHash(), globalHash, localHash) {
-				return "", ErrSettingsLocked
-			}
+		if err := s.checkExternalSettingsSources(path, data); err != nil {
+			return "", err
 		}
 		written, err := sjson.SetBytes(data, syncRevKey, HashPassword(password))
 		return string(written), err
@@ -229,6 +333,10 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	}
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
+		globals, locals, hashErr := s.lockHashesForTarget(path, data)
+		if hashErr != nil {
+			return "", ErrSettingsLocked
+		}
 		hash := settingsHash(data)
 		if hash == "" {
 			return "", ErrNotLocked
@@ -236,10 +344,16 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 		if !sameSettingsHash(HashPassword(password), hash) {
 			return "", ErrWrongPassword
 		}
-		globalHash := readSettingsHashBestEffort(s.globalDataPath, path, data)
-		if scope == ScopeWorkspace && globalHash != "" && !sameSettingsHash(processPasswordHash(), globalHash) {
-			refusedBy = "change refused"
-			return "", ErrSettingsLocked
+		process := processPasswordHash()
+		checks := globals
+		if len(checks) == 0 && !(normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) && hash != "") {
+			checks = locals
+		}
+		for _, sourceHash := range checks {
+			if !sameSettingsHash(process, sourceHash) {
+				refusedBy = "change refused"
+				return "", ErrSettingsLocked
+			}
 		}
 		written, err := sjson.DeleteBytes(data, syncRevKey)
 		return string(written), err
@@ -251,12 +365,12 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
 	var committedErr error
 	err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
-		if err != nil {
-			if os.IsNotExist(err) {
+		data, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
 				data = []byte("{}")
 			} else {
-				return fmt.Errorf("failed to read config file: %w", err)
+				return ErrSettingsLocked
 			}
 		}
 		newValue, err := mutate(data)
@@ -311,7 +425,7 @@ func emitSettingsEvent(ev SettingsEvent) {
 	if len(ev.Keys) > 0 {
 		ev.Keys = append([]string(nil), ev.Keys...)
 		for i, key := range ev.Keys {
-			if key == syncRevKey || strings.HasPrefix(key, syncRevKey+".") {
+			if touchesReservedKey(key) {
 				ev.Keys[i] = "*"
 			}
 		}

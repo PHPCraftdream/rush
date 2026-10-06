@@ -140,6 +140,12 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	// Normalize the root path to ensure consistent comparison.
 	root = filepath.Clean(root)
 
+	if !dryRun {
+		if err := config.SettingsWriteAllowed(root); err != nil {
+			return err
+		}
+	}
+
 	// Initialize counters.
 	renamedCount := 0
 	refusedCount := 0
@@ -170,6 +176,11 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 			// Skip the root itself - already migrated above.
 			if path == root {
 				return nil
+			}
+			if !dryRun && d.IsDir() {
+				if err := config.SettingsWriteAllowed(path); err != nil {
+					return err
+				}
 			}
 
 			base := filepath.Base(path)
@@ -258,7 +269,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 			return nil
 		})
 		if err != nil {
-			cmd.Printf("walk completed with error: %v\n", err)
+			return err
 		}
 	} else {
 		// Single-dir mode: handle root's .crush/ and crush.json.

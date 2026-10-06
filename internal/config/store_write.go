@@ -324,7 +324,7 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	path, err := s.configPath(scope)
 	if err != nil {
-		return fmt.Errorf("%v: %w", kv, err)
+		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
 	}
 
 	// Apply keys in sorted order so the on-disk output is deterministic
@@ -450,7 +450,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 	path, err := s.configPath(scope)
 	if err != nil {
-		return fmt.Errorf("%s: %w", key, err)
+		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
@@ -480,7 +480,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // both the full-timeout public API and the short-timeout internal caller
 // (configureProviders) go through one write implementation.
 func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool) error {
-	if key == syncRevKey || strings.HasPrefix(key, syncRevKey+".") {
+	if touchesReservedKey(key) {
 		if userInitiated {
 			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}}
 			finalizeSettingsEvent(&ev, "", errSettingsLockKeyReserved)
@@ -599,6 +599,10 @@ func (s *ConfigStore) removeConfigFieldBestEffort(scope Scope, key string) {
 	ctx, cancel := configContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key, false); err != nil {
+		if errors.Is(err, ErrSettingsLocked) {
+			slog.Debug("Best-effort config field removal was refused by settings lock")
+			return
+		}
 		slog.Warn("Best-effort config field removal did not complete; will retry on next reload",
 			"key", key, "path", path, "error", err)
 	}
