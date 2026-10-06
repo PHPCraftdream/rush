@@ -175,6 +175,7 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 func resetSessionCmdFlags() *cobra.Command {
 	if f := sessionsResetCmd.Flags().Lookup("force"); f != nil {
 		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
 	}
 	return sessionsResetCmd
 }

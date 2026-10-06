@@ -23,6 +23,7 @@ func resetModelsBumpFlags(t *testing.T) {
 	for _, fl := range []string{"global", "local"} {
 		if f := modelsBumpCmd.Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
 		}
 	}
 	modelsBumpCmd.SetArgs(nil)

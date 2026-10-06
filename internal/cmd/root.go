@@ -19,11 +19,13 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
@@ -38,6 +40,8 @@ import (
 )
 
 func init() {
+	rootCmd.PersistentFlags().String("password", "", "Password for protected settings")
+	rootCmd.PersistentPreRunE = settingsPasswordPreRun
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
 	rootCmd.PersistentFlags().StringP("data-dir", "D", "",
 		"Override the .rush/ data directory (sessions DB, logs, attachments). "+
@@ -72,6 +76,8 @@ func init() {
 	)
 
 	rootCmd.AddCommand(
+		lockCmd,
+		unlockCmd,
 		runCmd,
 		dirsCmd,
 		projectsCmd,
@@ -84,8 +90,9 @@ func init() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "rush",
-	Short: "Run the Rush coding agent with a browser-based UI",
+	Use:          "rush",
+	Short:        "Run the Rush coding agent with a browser-based UI",
+	SilenceUsage: true,
 	Long: `Rush is an AI coding assistant. Running ` + "`rush`" + ` (or ` + "`rush web`" + `)
 starts a local HTTP + WebSocket server, prints the URL and a one-time
 access token, and opens your default browser to the UI.
@@ -112,6 +119,7 @@ Companion CLI subcommands for scripting and CI:
                           orchestrator-driven phase).
   - ` + "`rush system-prompt`" + `   print the system prompt that would be sent.
   - ` + "`rush ping`" + `            health-check (verify API connectivity).
+  - ` + "`rush lock`" + ` / ` + "`rush unlock`" + ` protect or restore settings.
 
 See the FLAGS section below for every top-level flag (--color-scheme,
 --cwd, --data-dir, --debug, ...) — each is documented once, on its own
@@ -169,6 +177,31 @@ rush claude-init --global
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runWebMode(cmd)
 	},
+}
+
+func settingsPasswordPreRun(cmd *cobra.Command, _ []string) error {
+	setSettingsAudit(cmd)
+	password, _ := cmd.Flags().GetString("password")
+	config.SetProcessPassword(password)
+	if password == "" {
+		return nil
+	}
+	if err := config.CheckPasswordAgainstDisk(password); err != nil {
+		_ = audit.Write(audit.Event{"kind": "command_denied", "cmd": cmd.CommandPath(), "reason": "wrong password"})
+		return err
+	}
+	return nil
+}
+
+var settingsAuditOnce sync.Once
+
+func setSettingsAudit(cmd *cobra.Command) {
+	settingsAuditOnce.Do(func() {
+		audit.SetDirFunc(func() string { return filepath.Dir(config.GlobalConfigData()) })
+	})
+	config.SetSettingsAuditSink(func(ev config.SettingsEvent) {
+		_ = audit.Write(audit.Event{"kind": "settings_change", "scope": ev.Scope, "path": ev.Path, "keys": ev.Keys, "models": ev.Models, "outcome": ev.Outcome, "reason": ev.Reason, "cmd": cmd.CommandPath()})
+	})
 }
 
 func runWebMode(cmd *cobra.Command) error {
@@ -387,6 +420,9 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := store.CheckProcessPassword(); err != nil {
+		return nil, err
+	}
 
 	cfg := store.Config()
 	if err := createDotRushDir(cfg.Options.DataDirectory); err != nil {
@@ -464,6 +500,9 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 
 	store, err := config.Init(cwd, dataDir, debug)
 	if err != nil {
+		return nil, err
+	}
+	if err := store.CheckProcessPassword(); err != nil {
 		return nil, err
 	}
 

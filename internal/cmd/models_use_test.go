@@ -493,6 +493,7 @@ func resetModelsUseFlags(t *testing.T) {
 	for _, fl := range []string{"global", "local", "smart", "fast", "worker", "reviewer"} {
 		if f := modelsUseCmd.Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
 		}
 	}
 	modelsUseCmd.SetArgs(nil)
@@ -503,6 +504,7 @@ func resetModelsUnsetFlags(t *testing.T) {
 	for _, fl := range []string{"global", "local"} {
 		if f := modelsUnsetCmd.Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
 		}
 	}
 	modelsUnsetCmd.SetArgs(nil)
@@ -512,6 +514,7 @@ func resetModelsStateFlags(t *testing.T) {
 	t.Helper()
 	if f := modelsStateCmd.Flags().Lookup("json"); f != nil {
 		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
 	}
 	modelsStateCmd.SetArgs(nil)
 }
