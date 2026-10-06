@@ -70,6 +70,10 @@ rush models state   # see the full picture afterward
 		}
 		defer a.Shutdown()
 
+		if a.Store().ModelsIntegrity() != nil {
+			warnModelsEditedDirectly()
+		}
+
 		cfg := a.Config()
 		current, has := cfg.Models[slot]
 		if !has {

@@ -20,7 +20,7 @@ import (
 
 const syncRevKey = "sync_rev"
 
-var reservedSettingsKeys = []string{syncRevKey, "cache_rev"}
+var reservedSettingsKeys = []string{syncRevKey, cacheRevKey}
 
 var (
 	ErrSettingsLocked           = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
@@ -186,32 +186,13 @@ func freshSettingsHash(path string) (string, error) {
 func settingsHash(data []byte) string {
 	return gjson.GetBytes(data, syncRevKey).String()
 }
+
 func sameSettingsHash(a, b string) bool {
 	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func touchesReservedKey(key string) bool {
-	first := key
-	if strings.HasPrefix(first, ":") {
-		first = first[1:]
-	}
-	var component strings.Builder
-	for i := 0; i < len(first); i++ {
-		switch first[i] {
-		case '.':
-			first = component.String()
-			goto check
-		case '\\':
-			i++
-			if i < len(first) {
-				component.WriteByte(first[i])
-			}
-		default:
-			component.WriteByte(first[i])
-		}
-	}
-	first = component.String()
-check:
+	first := settingsKeyFirstComponent(key)
 	for _, reserved := range reservedSettingsKeys {
 		if first == reserved {
 			return true
@@ -320,7 +301,10 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 			return "", err
 		}
 		written, err := sjson.SetBytes(data, syncRevKey, HashPassword(password))
-		return string(written), err
+		if err != nil {
+			return "", err
+		}
+		return applyModelsIntegrity(string(written))
 	})
 	s.emitLockEvent(scope, path, err, refusedBy)
 	return err
@@ -421,6 +405,7 @@ func SetSettingsAuditSink(f func(SettingsEvent)) {
 	}
 	settingsAuditSink.Store(&f)
 }
+
 func emitSettingsEvent(ev SettingsEvent) {
 	if len(ev.Keys) > 0 {
 		ev.Keys = append([]string(nil), ev.Keys...)
@@ -435,6 +420,7 @@ func emitSettingsEvent(ev SettingsEvent) {
 		(*sink)(ev)
 	}
 }
+
 func finalizeSettingsEvent(ev *SettingsEvent, refusedBy string, err error) {
 	if err == nil {
 		ev.Outcome = "applied"
@@ -450,12 +436,14 @@ func finalizeSettingsEvent(ev *SettingsEvent, refusedBy string, err error) {
 	}
 	ev.Reason = "operation failed"
 }
+
 func settingsScope(scope Scope) string {
 	if scope == ScopeGlobal {
 		return "global"
 	}
 	return "workspace"
 }
+
 func (s *ConfigStore) emitLockEvent(scope Scope, path string, err error, refusedBy string) {
 	ev := SettingsEvent{Scope: settingsScope(scope), Path: path, Keys: []string{"*"}}
 	finalizeSettingsEvent(&ev, refusedBy, err)

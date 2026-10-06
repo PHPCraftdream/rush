@@ -133,6 +133,10 @@ rush models state
 		}
 		defer a.Shutdown()
 
+		if a.Store().ModelsIntegrity() != nil {
+			warnModelsEditedDirectly()
+		}
+
 		resolve := func(modelPart string) (string, string, bool, error) {
 			provider, modelID, known, rerr := a.ResolveModel(modelPart)
 			return provider, modelID, known, rerr

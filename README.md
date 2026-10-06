@@ -106,7 +106,7 @@ comment in the code so conflicts surface at the right line.
 
 ## Protecting settings
 
-Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts.
+Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts. Models can only be changed with the `rush models` commands; direct edits of the settings file are detected at start-up.
 
 ## Security — `rush run` has no permission gating at all
 

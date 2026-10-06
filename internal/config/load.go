@@ -275,6 +275,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		if err := publish(); err != nil {
 			return nil, err
 		}
+		store.verifyModelsIntegrityAtLoad()
 		return store, nil
 	}
 
@@ -290,6 +291,7 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		return nil, err
 	}
 
+	store.verifyModelsIntegrityAtLoad()
 	return store, nil
 }
 

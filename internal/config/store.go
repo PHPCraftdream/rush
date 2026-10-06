@@ -99,8 +99,11 @@ type ConfigStore struct {
 	// shared directory of a linked worktree even when an explicit
 	// source (flag/config) picked it: shared-from-linked is defined by
 	// the directory (SD-D #1143). The zero value stays home.
-	sharedDataDir       bool
-	globalDataPath      string // ~/.local/share/rush/rush.json
+	sharedDataDir  bool
+	globalDataPath string // ~/.local/share/rush/rush.json
+	// modelsIntegrity records the one-time startup check result. Written
+	// once during Load; never recomputed by reload.
+	modelsIntegrity     error
 	workingDirOwnerOnce sync.Once
 	workingDirOwner     int
 	workingDirOwnerErr  error

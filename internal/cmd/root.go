@@ -423,6 +423,9 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	if err := store.CheckProcessPassword(); err != nil {
 		return nil, err
 	}
+	if err := store.ModelsIntegrity(); err != nil {
+		return nil, err
+	}
 
 	cfg := store.Config()
 	if err := createDotRushDir(cfg.Options.DataDirectory); err != nil {

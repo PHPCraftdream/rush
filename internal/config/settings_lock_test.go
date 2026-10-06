@@ -29,6 +29,7 @@ func lockStore(t *testing.T, path string) *ConfigStore {
 	t.Cleanup(func() { SetProcessPassword("") })
 	return newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
 }
+
 func fileBytes(t *testing.T, path string) []byte {
 	t.Helper()
 	b, e := os.ReadFile(path)
@@ -38,6 +39,7 @@ func fileBytes(t *testing.T, path string) []byte {
 	require.NoError(t, e)
 	return b
 }
+
 func TestHashPasswordVectors(t *testing.T) {
 	got := HashPassword("secret")
 	require.Equal(t, secretHash, got)
@@ -149,6 +151,7 @@ func TestSettingsLock_BlocksSetConfigFieldWhileLocked(t *testing.T) {
 	require.ErrorIs(t, err, ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
 }
+
 func TestSettingsLock_BlocksRemoveConfigFieldWhileLocked(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
@@ -158,6 +161,7 @@ func TestSettingsLock_BlocksRemoveConfigFieldWhileLocked(t *testing.T) {
 	require.ErrorIs(t, s.RemoveConfigField(ScopeGlobal, "models.smart"), ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
 }
+
 func TestSettingsLock_BlocksUpdatePreferredModelsWhileLocked(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
@@ -166,6 +170,7 @@ func TestSettingsLock_BlocksUpdatePreferredModelsWhileLocked(t *testing.T) {
 	require.ErrorIs(t, s.UpdatePreferredModels(ScopeGlobal, map[SelectedModelType]SelectedModel{SelectedModelTypeFast: {Provider: "x", Model: "y"}}), ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
 }
+
 func TestSettingsLock_AuthorizedProcessWrites(t *testing.T) {
 	_, _ = isolateAllGlobalConfigPaths(t)
 	p := GlobalConfigData()
@@ -193,6 +198,7 @@ func TestSettingsLock_RecentModelsExemptWhileLocked(t *testing.T) {
 	require.ErrorIs(t, err, ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
 }
+
 func TestSettingsLock_OAuthRefreshExemptWhileLocked(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
 	path := GlobalConfigData()
@@ -209,6 +215,7 @@ func TestSettingsLock_OAuthRefreshExemptWhileLocked(t *testing.T) {
 	require.Equal(t, "newer-access-token", got.APIKey)
 	require.ErrorIs(t, s.SetConfigField(ScopeGlobal, "providers.hyper.oauth", map[string]any{"access_token": "bad"}), ErrSettingsLocked)
 }
+
 func TestSettingsLock_SettingsLockKeyProtection(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
@@ -240,6 +247,7 @@ func TestSettingsLock_MCPPersistRefusedWhileLocked(t *testing.T) {
 	t.Cleanup(func() { SetProcessPassword("") })
 	require.NoError(t, s.PersistMCPConfig(ScopeGlobal, "srv2", MCPConfig{Type: MCPHttp, URL: "http://x"}))
 }
+
 func TestSettingsLock_InvisibleInConfigJSON(t *testing.T) {
 	s := lockStore(t, filepath.Join(t.TempDir(), "g.json"))
 	require.NoError(t, s.LockSettings(ScopeGlobal, "secret"))
@@ -299,6 +307,7 @@ func TestSettingsLock_ConcurrentLockVersusWriters(t *testing.T) {
 		require.ErrorIs(t, s.SetConfigField(ScopeGlobal, "models.fast", "x"), ErrSettingsLocked)
 	}
 }
+
 func TestSettingsLock_GlobalLockBlocksAllWorkspaces(t *testing.T) {
 	root := t.TempDir()
 	gp := filepath.Join(root, "global.json")
@@ -311,6 +320,7 @@ func TestSettingsLock_GlobalLockBlocksAllWorkspaces(t *testing.T) {
 		}
 	}
 }
+
 func TestSettingsLock_LocalLockOnlyBlocksItsWorkspace(t *testing.T) {
 	root := t.TempDir()
 	gp := filepath.Join(root, "g.json")
@@ -324,6 +334,7 @@ func TestSettingsLock_LocalLockOnlyBlocksItsWorkspace(t *testing.T) {
 	require.NoError(t, e)
 	require.False(t, locked)
 }
+
 func TestSettingsLock_GlobalLockOverridesLocalPassword(t *testing.T) {
 	root := t.TempDir()
 	gp := filepath.Join(root, "g.json")
@@ -344,6 +355,7 @@ func TestSettingsLock_GlobalLockOverridesLocalPassword(t *testing.T) {
 	SetProcessPassword("nope")
 	require.ErrorIs(t, a.CheckProcessPassword(), ErrWrongPassword)
 }
+
 func TestSettingsLock_LocalUnlockUnderGlobalLock(t *testing.T) {
 	root := t.TempDir()
 	gp := filepath.Join(root, "g.json")
@@ -366,6 +378,7 @@ func TestSettingsLock_LocalUnlockUnderGlobalLock(t *testing.T) {
 	require.ErrorIs(t, a.UnlockSettings(ScopeGlobal, "lpass"), ErrWrongPassword)
 	require.NoError(t, a.UnlockSettings(ScopeGlobal, "gpass"))
 }
+
 func TestSettingsLock_ForeignWorkspaceKeyIgnored(t *testing.T) {
 	root := t.TempDir()
 	gp := filepath.Join(root, "g.json")

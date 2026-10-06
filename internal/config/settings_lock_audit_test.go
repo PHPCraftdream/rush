@@ -168,6 +168,7 @@ func TestSettingsLock_AuditEvents(t *testing.T) {
 		t.Skip("Windows-only failure injection")
 	}
 }
+
 func awaitAudit(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
 	select {

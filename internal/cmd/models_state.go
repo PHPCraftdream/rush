@@ -15,6 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// warnModelsEditedDirectly prints the startup warning shown when the model
+// settings failed their one-time integrity check.
+func warnModelsEditedDirectly() {
+	fmt.Fprintln(os.Stderr, "warning: the model settings were changed outside the rush models commands")
+}
+
 var modelsStateCmd = &cobra.Command{
 	Use:     "state",
 	Aliases: []string{"show"}, // backwards-compat: `rush models show` used to exist.
@@ -60,6 +66,11 @@ rush models show
 
 		cfg := a.Config()
 		store := a.Store()
+
+		integrityErr := store.ModelsIntegrity()
+		if integrityErr != nil {
+			warnModelsEditedDirectly()
+		}
 
 		globalAll, gerr := store.ReadAllModelsAtScope(config.ScopeGlobal)
 		if gerr != nil {
@@ -119,6 +130,9 @@ rush models show
 					"reviewer": localReviewer,
 				},
 				"restore_commands": restore,
+			}
+			if integrityErr != nil {
+				payload["edited_directly"] = true
 			}
 			return json.NewEncoder(os.Stdout).Encode(payload)
 		}

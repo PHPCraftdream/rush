@@ -82,6 +82,10 @@ rush models state
 
 		store := a.Store()
 
+		if store.ModelsIntegrity() != nil {
+			warnModelsEditedDirectly()
+		}
+
 		// Snapshot prior values so we can show what was unset.
 		priorAll, _ := store.ReadAllModelsAtScope(scope)
 

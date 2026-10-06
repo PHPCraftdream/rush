@@ -373,6 +373,12 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
 			}
 		}
+		if touchesModelsKey(keys) {
+			newValue, err = applyModelsIntegrity(newValue)
+			if err != nil {
+				return fmt.Errorf("failed to update model settings signature: %w", err)
+			}
+		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
@@ -527,6 +533,12 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		newValue, err := sjson.Delete(string(data), key)
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
+		}
+		if settingsKeyFirstComponent(key) == "models" {
+			newValue, err = applyModelsIntegrity(newValue)
+			if err != nil {
+				return fmt.Errorf("failed to update model settings signature: %w", err)
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
