@@ -593,26 +593,31 @@ var reviewAsyncExitRe = regexp.MustCompile(`finished:?\s+exit\s+(-?\d+)`)
 // notices ("Async job <id> (<tool>) finished.").
 var reviewAsyncStatusRe = regexp.MustCompile(`(?s)\AAsync job \S+ \([^)]*\) (finished|failed)\.`)
 
+// reviewAsyncTailRe matches the bash tool's failure tail at the very end.
+var reviewAsyncTailRe = regexp.MustCompile(`Exit code (\d+)\s*\z`)
+
 // evidenceNoticeExit reads the exit code out of a background-job notice. Both
 // notice families are handled; the other terminal wordings
 // FormatAsyncCompletion uses ("timed out", "was stopped", "was cancelled",
 // "was interrupted") carry no exit code, and the caller maps that to unknown
 // rather than to zero.
 func evidenceNoticeExit(content string) (int, bool) {
+	// An explicit "finished: exit N" summary is the most specific fact.
 	if m := reviewAsyncExitRe.FindStringSubmatch(content); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil {
 			return n, true
 		}
 	}
 	if m := reviewAsyncStatusRe.FindStringSubmatch(content); m != nil {
-		if m[1] == "finished" {
-			return 0, true
-		}
-		// A failed job's bash output carries the real "\nExit code N" tail.
-		if m := reviewSyncExitRe.FindStringSubmatch(content); m != nil {
-			if n, err := strconv.Atoi(m[1]); err == nil {
+		// The bash tool reports a non-zero exit as a normal response ending
+		// in an "Exit code N" tail, so even a "finished." notice can carry it.
+		if tail := reviewAsyncTailRe.FindStringSubmatch(content); tail != nil {
+			if n, err := strconv.Atoi(tail[1]); err == nil {
 				return n, true
 			}
+		}
+		if m[1] == "finished" {
+			return 0, true
 		}
 		return 0, false
 	}
@@ -631,6 +636,9 @@ func noticeJobID(content string) string {
 }
 
 var reviewNoticeIDRes = []*regexp.Regexp{
+	// The FormatAsyncCompletion header names the CALL id; the body may name a
+	// shell id ("Background job 001"), which must not win.
+	regexp.MustCompile(`\AAsync job ([^\s(` + "`" + `]+)`),
 	regexp.MustCompile(`Background job ([^\s(` + "`" + `]+)`),
 	regexp.MustCompile(`Async job ([^\s(` + "`" + `]+)`),
 }
