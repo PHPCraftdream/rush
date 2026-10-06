@@ -65,12 +65,17 @@ func relpath(path string) string {
 		slog.Warn("Error getting basepath", "error", err)
 		return path
 	}
-	relpath, err := filepath.Rel(basepath, path)
+	return relpathFrom(basepath, path)
+}
+
+// relpathFrom makes path relative to base. A path with no relative form
+// (another Windows volume) stays absolute: a normal case, not a warning.
+func relpathFrom(base, path string) string {
+	rel, err := filepath.Rel(base, path)
 	if err != nil {
-		slog.Warn("Error getting relpath", "error", err)
 		return path
 	}
-	return relpath
+	return rel
 }
 
 // ListReadFiles returns the paths of all files read in a session.
@@ -87,6 +92,10 @@ func (s *service) ListReadFiles(ctx context.Context, sessionID string) ([]string
 
 	paths := make([]string, 0, len(readFiles))
 	for _, rf := range readFiles {
+		if filepath.IsAbs(rf.Path) {
+			paths = append(paths, rf.Path) // stored absolute: no relative form (see relpathFrom)
+			continue
+		}
 		paths = append(paths, filepath.Join(basepath, rf.Path))
 	}
 	return paths, nil
