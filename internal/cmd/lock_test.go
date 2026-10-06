@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -258,6 +259,7 @@ func isolateLockEnv(t *testing.T) (string, string, string) {
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	require.NoError(t, os.WriteFile(filepath.Join(global, "rush.json"), []byte(`{"providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o600))
 	config.ResetProviderCacheForTests()
+	rushlog.Setup("", false)
 	return global, workspace, dataDir
 }
 
