@@ -29,6 +29,9 @@ var modelsStateCmd = &cobra.Command{
   3. The atom name in parens when the effective model matches a known atom.
   4. For a slot with no explicit effort, the known unset-default (e.g.
      "unset -> thinking on, high" for Z.AI) — silent when undocumented.
+  5. RESTORE — copy-pasteable ` + "`rush models use --<role> <spec>`" + ` commands
+     that re-create this state: one per slot explicitly set in a scope
+     (global before local), nothing for unset slots.
 
 Set worker/reviewer with ` + "`rush models use <smart> <fast> --worker <m> --reviewer <m>`" + `
 and clear them with ` + "`rush models unset worker`" + ` / ` + "`rush models unset reviewer`" + `.
@@ -66,6 +69,7 @@ rush models show
 		if lerr != nil {
 			return fmt.Errorf("read local scope: %w", lerr)
 		}
+		restore := restoreCommands(globalAll, localAll)
 
 		globalSmart, globalFast := globalAll[config.SelectedModelTypeSmart], globalAll[config.SelectedModelTypeFast]
 		localSmart, localFast := localAll[config.SelectedModelTypeSmart], localAll[config.SelectedModelTypeFast]
@@ -114,6 +118,7 @@ rush models show
 					"worker":   localWorker,
 					"reviewer": localReviewer,
 				},
+				"restore_commands": restore,
 			}
 			return json.NewEncoder(os.Stdout).Encode(payload)
 		}
@@ -135,6 +140,15 @@ rush models show
 		printScopeLine(tw, "local", "worker", localWorker, globalWorker, "local")
 		printScopeLine(tw, "local", "reviewer", localReviewer, globalReviewer, "local")
 		tw.Flush()
+		fmt.Println()
+		fmt.Println("RESTORE (run these to re-create this state)")
+		if len(restore) == 0 {
+			fmt.Println("  (nothing is set explicitly)")
+			return nil
+		}
+		for _, c := range restore {
+			fmt.Println("  " + c)
+		}
 		return nil
 	},
 }
