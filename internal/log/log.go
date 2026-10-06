@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/charmbracelet/x/term"
 )
 
@@ -71,9 +72,14 @@ func NewLogger(logFile string, debug bool, ws ...io.Writer) *slog.Logger {
 	// several worktrees share the data directory. Both are cheap (one
 	// int and one string per log line) and harmless with a single
 	// process.
+	// `launch_cwd` is the directory the process was started in (audit.LaunchCwd), which can differ from `ws`.
 	pid := os.Getpid()
 	wsRoot := WorkspaceRoot()
-	attrs := []slog.Attr{slog.Int("pid", pid), slog.String("ws", wsRoot)}
+	attrs := []slog.Attr{
+		slog.Int("pid", pid),
+		slog.String("ws", wsRoot),
+		slog.String("launch_cwd", audit.LaunchCwd()),
+	}
 	var handlers []slog.Handler
 	handlers = append(handlers, slog.NewJSONHandler(fileWriter, opts).WithAttrs(attrs))
 

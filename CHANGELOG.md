@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Каждая строка `rush.log` теперь содержит поле `launch_cwd` — каталог, из которого был запущен процесс (до смены каталога по `--cwd`); отличается от `ws`, когда процесс запущен из другой папки. Новый пакет `internal/audit` — центральный append-only журнал `audit-YYYY-MM-DD.jsonl` рядом с глобальным `rush.json` (одна запись — одна строка, сутки — один файл, без ротации переименованием); `rush logs prune` теперь ещё удаляет файлы журнала старше `--audit-days N` (по умолчанию 30; 0 — все), после обрезки `rush.log`.
 - `rush models state` печатает блок `RESTORE` — список команд `rush models use --<роль> <модель-усилие> [--local]`, которые воссоздают текущие модели по ролям (smart, fast, worker, reviewer) с усилиями, по одной команде на явно заданный слот и scope; в `--json` — массив `restore_commands`. Для атомов Claude/локального CLI без сохранённого усилия выдаётся форма `provider/model`, потому что голый атом `models use` отклоняет.
 
 ## [0.2.0-alpha.9] - 2026-10-06
