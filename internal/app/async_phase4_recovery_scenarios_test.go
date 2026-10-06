@@ -58,17 +58,17 @@ func configureRecoveryProbeProvider(store *config.ConfigStore, baseURL string) {
 	store.SetupAgents()
 }
 
+// phase4ScenarioDeadline bounds one two-app scenario run. A scenario takes
+// ~0.5 s; 30 s flaked in a full-package run on a machine starved by other
+// builds (the run took 45 s), and a real hang is still caught -- just later.
+const phase4ScenarioDeadline = 90 * time.Second
+
 // newRecoveryTwoAppHarness builds App A and App B against the SAME data
 // dir, each with its own probe provider server. DB connection refcounting
 // (internal/db) is released exactly twice by t.Cleanup regardless of what
 // each test does with the App objects themselves (a crash-simulating test
 // never calls Shutdown on App A) -- see SimulateCrashForTest's own doc for
 // why a real Shutdown() is deliberately NOT used here.
-// phase4ScenarioDeadline bounds one two-app scenario run. A scenario takes
-// ~0.5 s; 30 s flaked in a full-package run on a machine starved by other
-// builds (the run took 45 s), and a real hang is still caught -- just later.
-const phase4ScenarioDeadline = 90 * time.Second
-
 func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc) (appA, appB *App, sessionID string) {
 	t.Helper()
 

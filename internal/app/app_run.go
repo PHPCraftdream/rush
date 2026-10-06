@@ -634,6 +634,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			// in every mode; the reviewer's verdict is additive.
 			if primaryResult != nil && reviewResult != nil {
 				app.attachReview(ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
+			} else if primaryResult == nil {
+				// No envelope in terse/stream without captureResult: surface
+				// the verdict's stderr line from a throwaway result. The
+				// reviewer's own text is still loop.finalText here.
+				reviewText := loop.finalText
+				if reviewResult != nil {
+					reviewText = reviewResult.FinalText
+				}
+				app.attachReview(ctx, &RunResult{}, sess.ID, reviewText, stderr)
 			}
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
