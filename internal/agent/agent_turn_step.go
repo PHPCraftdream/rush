@@ -220,9 +220,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	callContext = context.WithValue(callContext, tools.MessageIDContextKey, assistantMsg.ID)
 	callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, ts.smartModel.CatwalkCfg.SupportsImages)
 	callContext = context.WithValue(callContext, tools.ModelNameContextKey, ts.smartModel.CatwalkCfg.Name)
-	ts.mu.Lock()
-	ts.currentAssistant = &assistantMsg
-	ts.mu.Unlock()
+	ts.beginAssistantStep(&assistantMsg)
 	// R3-1 (round 5): report this row's ID to the caller (e.g. the
 	// coordinator's transient-retry loop) so classification can act on
 	// THIS attempt's own evidence instead of session-wide last-row state.

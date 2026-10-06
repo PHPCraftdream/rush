@@ -169,6 +169,13 @@ type turnStream struct {
 	// from ANY goroutine including these callbacks, holds mu.
 	mu               sync.Mutex
 	currentAssistant *message.Message
+	// retryStale arms the lazy truncation of the cut attempt's streamed
+	// content after a provider retry: onRetry sets it, the retried
+	// attempt's first content callback consumes it, and the per-step
+	// reset (beginAssistantStep) clears it so it can never leak into a
+	// later step. Kept under mu alongside the currentAssistant it acts
+	// on, though the callbacks themselves are sequential.
+	retryStale bool
 
 	// See the struct doc's third bullet: asymmetric locking preserved as-is.
 	stepMessages []fantasy.Message
@@ -239,10 +246,25 @@ func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.File
 	}
 }
 
+// beginAssistantStep installs a freshly created step assistant row as the
+// stream target and resets per-step callback state: a retry flag armed by
+// an earlier step's failed attempt must never truncate this step's content.
+func (ts *turnStream) beginAssistantStep(msg *message.Message) {
+	ts.mu.Lock()
+	ts.currentAssistant = msg
+	ts.retryStale = false
+	ts.mu.Unlock()
+}
+
 func (ts *turnStream) onReasoningStart(id string, reasoning fantasy.ReasoningContent) error {
 	ts.bumpActivity()
 	slog.Debug("agent: OnReasoningStart called", "id", id)
 	ts.mu.Lock()
+	// ReasoningStart carries the retried attempt's first reasoning text
+	// and persists immediately, so the lazy truncation fires here too —
+	// before that text lands. Its own Update below then persists the
+	// already-truncated state; no extra write is needed.
+	ts.truncateStaleRetryContentLocked()
 	ts.currentAssistant.AppendReasoningContent(reasoning.Text)
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
@@ -253,8 +275,10 @@ func (ts *turnStream) onReasoningDelta(id string, text string) error {
 	ts.bumpActivity()
 	slog.Debug("agent: OnReasoningDelta called", "len", len(text))
 	ts.mu.Lock()
+	truncSnap := ts.truncateStaleRetryContentLocked()
 	ts.currentAssistant.AppendReasoningContent(text)
 	ts.mu.Unlock()
+	ts.persistTruncatedRetrySnap(truncSnap)
 	return ts.notifyUI()
 }
 
@@ -289,6 +313,11 @@ func (ts *turnStream) onTextDelta(id string, text string) error {
 	// first text delta of this step (lazily, once only).
 	ts.startCheckpoint()
 	ts.mu.Lock()
+	// First content delta after a retry: drop the cut attempt's
+	// streamed text/reasoning before the retry's own delta lands.
+	// Revert check: without this the saved answer reads as the cut
+	// attempt's partial followed by the retry's full answer.
+	truncSnap := ts.truncateStaleRetryContentLocked()
 	// Fork patch: batch 8 — emit final-composition log at most
 	// once per step, on the first text delta after a tool boundary.
 	if ts.phase == phaseToolBoundary && ts.currentAssistant != nil {
@@ -309,6 +338,7 @@ func (ts *turnStream) onTextDelta(id string, text string) error {
 
 	ts.currentAssistant.AppendContent(text)
 	ts.mu.Unlock()
+	ts.persistTruncatedRetrySnap(truncSnap)
 	return ts.notifyUI()
 }
 
@@ -350,6 +380,46 @@ func (ts *turnStream) onToolInputEnd(id string) error {
 func (ts *turnStream) onRetry(err *fantasy.ProviderError, delay time.Duration) {
 	ts.bumpActivity()
 	slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
+	// fantasy re-runs the whole step on the SAME callbacks (its retry
+	// wraps Stream+processStepStream; PrepareStep is not re-run), so the
+	// cut attempt's partial text/reasoning would ride under the retry's
+	// deltas. Arming only — truncation happens lazily on the retried
+	// attempt's first content callback; if the retries fail and no delta
+	// ever follows, the partial stays for the coordinator's continuation.
+	ts.mu.Lock()
+	ts.retryStale = true
+	ts.mu.Unlock()
+}
+
+// truncateStaleRetryContentLocked drops the cut attempt's streamed
+// text/reasoning on the first content callback of a retried attempt. Lazy
+// by design: if no delta ever follows the retry, the partial stays in the
+// message for the coordinator's continuation. Tool-call parts are kept —
+// orphaned ones are filtered later by preparePrompt's orphaned-tool-call
+// filters. Returns a snapshot of the truncated state to persist, or nil
+// when nothing was armed or nothing was removed. Call with ts.mu held.
+func (ts *turnStream) truncateStaleRetryContentLocked() *message.Message {
+	if !ts.retryStale || ts.currentAssistant == nil {
+		return nil
+	}
+	ts.retryStale = false
+	if !ts.currentAssistant.TruncateStreamedContent() {
+		return nil
+	}
+	snap := ts.currentAssistant.Clone()
+	return &snap
+}
+
+// persistTruncatedRetrySnap lands the truncated snapshot on the outer ctx —
+// it must survive a mid-stream cancel, like onToolInputStart's write.
+func (ts *turnStream) persistTruncatedRetrySnap(snap *message.Message) {
+	if snap == nil {
+		return
+	}
+	if updateErr := ts.a.messages.Update(ts.ctx, *snap); updateErr != nil {
+		slog.Warn("agent: failed to persist truncated assistant after retry",
+			"session_id", ts.call.SessionID, "message_id", snap.ID, "err", updateErr)
+	}
 }
 
 func (ts *turnStream) onWarnings(warnings []fantasy.CallWarning) error {
