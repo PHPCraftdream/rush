@@ -16,7 +16,7 @@ var modelsPresetCmd = &cobra.Command{
 		fmt.Fprintln(os.Stderr,
 			"`rush models preset` was removed in batch 11.\n"+
 				"Use `rush models list` to see atoms, then `rush models use <smart> <fast>`.")
-		os.Exit(2)
+		exitWithAudit(2)
 	},
 }
 

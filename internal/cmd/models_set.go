@@ -22,7 +22,7 @@ var modelsSetCmd = &cobra.Command{
 			"`rush models set` was removed in batch 11.\n"+
 				"Use `rush models use <smart> <fast>` instead (add --worker/--reviewer to set\n"+
 				"those optional slots too). See `rush models list` for atoms.")
-		os.Exit(2)
+		exitWithAudit(2)
 	},
 }
 

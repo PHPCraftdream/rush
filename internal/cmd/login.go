@@ -297,7 +297,7 @@ func getLoginContext() context.Context {
 	go func() {
 		<-ctx.Done()
 		cancel()
-		os.Exit(1)
+		exitWithAudit(1)
 	}()
 	return ctx
 }

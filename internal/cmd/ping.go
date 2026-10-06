@@ -318,7 +318,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 				return json.NewEncoder(os.Stdout).Encode(result)
 			}
 			printPingTextError(result, time.Time{})
-			os.Exit(2)
+			exitWithAudit(2)
 			return nil
 		}
 
@@ -337,7 +337,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 		}
 		resetAt, _ := rushagent.QuotaLimitResetTime(err, time.Now())
 		printPingTextError(result, resetAt)
-		os.Exit(1)
+		exitWithAudit(1)
 		return nil
 	}
 
@@ -356,7 +356,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
 		printPingTextError(result, time.Time{})
-		os.Exit(1)
+		exitWithAudit(1)
 		return nil
 	}
 
@@ -435,9 +435,9 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	case "ok":
 		return nil
 	case "degraded":
-		os.Exit(3)
+		exitWithAudit(3)
 	default:
-		os.Exit(1)
+		exitWithAudit(1)
 	}
 	return nil
 }

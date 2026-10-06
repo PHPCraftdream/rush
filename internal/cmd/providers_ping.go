@@ -75,7 +75,7 @@ rush providers test ollama   # works with a local openai-compat server too
 		fmt.Fprintf(os.Stdout, "latency:   %dms\n", result.LatencyMs)
 		// Non-zero exit for failures so wrapper scripts can branch on it.
 		if !result.OK {
-			os.Exit(1)
+			exitWithAudit(1)
 		}
 		return nil
 	},

@@ -710,7 +710,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			if n := session.KillAllTrackedTrees(); n > 0 {
 				fmt.Fprintf(os.Stderr, "\nrush: interrupted — killed %d CLI process tree(s)\n", n)
 			}
-			os.Exit(130)
+			exitWithAudit(130)
 		}()
 
 		// Wall-clock deadline: --timeout, or the default cap when it is not
@@ -725,7 +725,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		var stopDeadline func()
 		ctx, stopDeadline = installRunDeadline(ctx, timeoutDur,
 			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
-			hardKillGrace, os.Stderr, os.Exit)
+			hardKillGrace, os.Stderr, exitWithAudit)
 		defer stopDeadline()
 
 		a, err := setupApp(cmd)

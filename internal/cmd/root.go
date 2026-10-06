@@ -41,7 +41,12 @@ import (
 
 func init() {
 	rootCmd.PersistentFlags().String("password", "", "Password for protected settings")
-	rootCmd.PersistentPreRunE = settingsPasswordPreRun
+	// Chain: the journal start record is written first, before the
+	// password check, so denied commands are journalled too.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		journalCommandStart(cmd, args)
+		return settingsPasswordPreRun(cmd, args)
+	}
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
 	rootCmd.PersistentFlags().StringP("data-dir", "D", "",
 		"Override the .rush/ data directory (sessions DB, logs, attachments). "+
@@ -196,9 +201,7 @@ func settingsPasswordPreRun(cmd *cobra.Command, _ []string) error {
 var settingsAuditOnce sync.Once
 
 func setSettingsAudit(cmd *cobra.Command) {
-	settingsAuditOnce.Do(func() {
-		audit.SetDirFunc(func() string { return filepath.Dir(config.GlobalConfigData()) })
-	})
+	ensureAuditDirFunc()
 	config.SetSettingsAuditSink(func(ev config.SettingsEvent) {
 		_ = audit.Write(audit.Event{"kind": "settings_change", "scope": ev.Scope, "path": ev.Path, "keys": ev.Keys, "models": ev.Models, "outcome": ev.Outcome, "reason": ev.Reason, "cmd": cmd.CommandPath()})
 	})
@@ -275,6 +278,7 @@ const crashLogMarker = "rush: fatal panic, exiting"
 // <dataDir>/logs/rush.log.
 func recoverAndLogPanic() {
 	if r := recover(); r != nil {
+		journalEndForPanic()
 		slog.Error(crashLogMarker,
 			"panic", r,
 			"stack", string(debug.Stack()))
@@ -284,6 +288,7 @@ func recoverAndLogPanic() {
 
 func Execute() {
 	defer recoverAndLogPanic()
+	journalExecutionStarted()
 
 	options := []fang.Option{
 		// Fork patch: show the fork's own release-line version (not
@@ -311,12 +316,14 @@ func Execute() {
 		))
 	}
 
-	if err := fang.Execute(
+	err := fang.Execute(
 		context.Background(),
 		rootCmd,
 		options...,
-	); err != nil {
-		os.Exit(1)
+	)
+	finalizeCommandJournal(os.Args[1:], err)
+	if err != nil {
+		exitWithAudit(1)
 	}
 }
 
