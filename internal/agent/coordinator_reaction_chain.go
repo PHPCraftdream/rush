@@ -2,6 +2,8 @@
 // md): a session that waits on async commands by re-launching pure wait
 // commands (`sleep 90`, `echo tick`, ...) chains Drain turns that look healthy
 // -- each completion pays its own reaction debt -- while achieving nothing.
+// Re-launching the byte-identical previous async command (any command, A36)
+// is the same polling and counts as idle; a real action clears that memory.
 // The guard's COUNT and CLAIMS live in the arbiter state (R-ARB-2, one state
 // under one mutex, turn_arbiter_state.go): a successful reaction closes the
 // debt and must not reset the counter, which is exactly the event that masks

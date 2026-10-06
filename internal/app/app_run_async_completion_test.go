@@ -211,8 +211,10 @@ func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
 		switch {
 		case n <= 11 && n%2 == 1:
 			id := fmt.Sprintf("call-%d", n)
+			// Six DISTINCT commands: a byte-identical relaunch on every completion is polling and counts as idle for the reaction chain guard.
+			args := fmt.Sprintf(`{"program":"go","args":["env","%s"]}`, []string{"GOOS", "GOARCH", "GOROOT", "GOPATH", "GOFLAGS", "GOVERSION"}[(n-1)/2])
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall(fmt.Sprintf("start-%d", n), id, "run_command", `{"program":"go","args":["version"]}`),
+				admissionSSEToolCall(fmt.Sprintf("start-%d", n), id, "run_command", args),
 				admissionSSEStop(fmt.Sprintf("start-%d", n), "tool_calls"),
 			})
 		case n <= 12:

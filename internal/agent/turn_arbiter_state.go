@@ -19,14 +19,15 @@ import (
 // arbiterState is one session's launch-decision state. gate.RetryAt zero
 // means the gate is open (Paced is derived on the snapshot).
 type arbiterState struct {
-	holds        int // nested rerun holds (HoldAutomaticTurns)
-	suspended    bool
-	autoResumes  int
-	overCap      map[int64]struct{}
-	chainLinks   int
-	chainClaims  map[string]struct{}
-	chainNoticed bool
-	gate         GateFacts
+	holds           int // nested rerun holds (HoldAutomaticTurns)
+	suspended       bool
+	autoResumes     int
+	overCap         map[int64]struct{}
+	chainLinks      int
+	chainClaims     map[string]struct{}
+	chainNoticed    bool
+	chainLastLaunch string
+	gate            GateFacts
 }
 
 // arbiter owns every arbiterState. The zero value is ready to use.
@@ -270,7 +271,9 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 	defer a.mu.Unlock()
 	s := a.stateLocked(sid)
 	if att.chainProgress {
+		last := s.chainLastLaunch
 		a.resetChainLocked(sid, s)
+		s.chainLastLaunch = last
 		return
 	}
 	if len(att.chainIdleClaims) == 0 {
@@ -296,6 +299,8 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 	} else {
 		s.chainLinks = 1
 	}
+	// A recorded launch must survive this launch-only leg so the next leg can
+	// compare its command. A launch mixed with real action is not a chain link.
 	for _, claim := range att.chainIdleClaims {
 		claims[claim] = struct{}{}
 	}
@@ -305,6 +310,18 @@ func (a *arbiter) resetChainLocked(sid string, s *arbiterState) {
 	s.chainLinks = 0
 	s.chainClaims = nil
 	s.chainNoticed = false
+	s.chainLastLaunch = ""
+}
+
+// chainLastLaunch reports whether command matches the immediately preceding
+// async command launch in the session and records this launch under arbiter.mu.
+func (a *arbiter) chainLastLaunch(sid, command string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.stateLocked(sid)
+	repeated := command != "" && s.chainLastLaunch == command
+	s.chainLastLaunch = command
+	return repeated
 }
 
 // resetChain clears the chain state (a human message, real progress).

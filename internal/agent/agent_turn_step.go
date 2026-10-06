@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"charm.land/fantasy"
 
@@ -413,6 +414,23 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			continue
 		}
 		class := classifyStepCall(call, result, stepClassifyCtx{})
+		var meta asyncToolMetadata
+		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
+		command, isCommand := asyncLaunchCommand(call)
+		repeated := false
+		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
+			repeated = ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+		}
+		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && !repeated {
+			if class != stepCallWait {
+				ts.att.chainProgress = true
+				continue
+			}
+		}
+		if repeated {
+			ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
+			continue
+		}
 		switch class {
 		case stepCallWait:
 			var meta asyncToolMetadata
@@ -423,9 +441,33 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		case stepCallRefused, stepCallNeutral:
 			// a guard refusal is neither progress nor a claim: it started nothing
 		default: // act, read, reread: progress, as #1113 counts reread as progress
+			if ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
+				ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, "")
+			}
 			ts.att.chainProgress = true
 		}
 	}
+}
+
+func asyncLaunchCommand(call fantasy.ToolCallContent) (string, bool) {
+	var command string
+	switch call.ToolName {
+	case tools.BashToolName:
+		var params tools.BashParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = params.Command
+	case tools.RunCommandToolName:
+		var params tools.RunCommandParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = (tools.RunCommandPermissionsParams{Program: params.Program, Args: params.Args}).RunAllowlistCommand()
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(command), true
 }
 
 // chainIdleClaim reports whether call is an async launch of a pure wait
