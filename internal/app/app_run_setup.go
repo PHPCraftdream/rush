@@ -407,6 +407,8 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		DiskProvider:      overrides.DiskProvider,
 		FailIfSessionBusy: failIfSessionBusy,
 	}
+	// Turn-stall policy: resolve --stall-timeout (default 30m) onto this call.
+	applyTurnStallCallTimeout(callOpts, app.config.Config().Options)
 	ctx = agent.WithCallOptions(ctx, callOpts)
 	if modelOverrideRequested {
 		// The override applies to every turn of the invocation, but only the

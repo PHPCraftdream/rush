@@ -84,6 +84,12 @@ type CallOptions struct {
 	// tests) set it explicitly.
 	TimeoutOptionsSet bool
 
+	// TurnStallTimeout is the turn-stall detector's durable-progress
+	// threshold for this call (Phase 1: stored on the armed stall clock
+	// only; zero falls back to streamIdleTimeoutDefault). Wiring an abort
+	// policy is a later phase — see SetTurnStallPolicy.
+	TurnStallTimeout time.Duration
+
 	// MaxCost/MaxTokens abort this run when the session exceeds them
 	// (batch 30). Threaded onto SessionAgentCall exactly like the legacy
 	// SetRunLimits path does, but sourced per call.

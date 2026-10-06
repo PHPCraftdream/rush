@@ -69,6 +69,10 @@ type turnCheckpointWriter struct {
 	sessionLock *sync.Mutex
 	assistant   **message.Message
 
+	// stall is the turn's stall clock; each checkpoint persist tick is a
+	// durable progress point.
+	stall *stallClock
+
 	mu          sync.Mutex
 	generation  int64
 	stopCh      chan struct{}
@@ -76,13 +80,14 @@ type turnCheckpointWriter struct {
 	writeCancel context.CancelFunc
 }
 
-func newTurnCheckpointWriter(a *sessionAgent, sessionID string, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *turnCheckpointWriter {
+func newTurnCheckpointWriter(a *sessionAgent, sessionID string, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message, stall *stallClock) *turnCheckpointWriter {
 	return &turnCheckpointWriter{
 		a:           a,
 		sessionID:   sessionID,
 		genCtx:      genCtx,
 		sessionLock: sessionLock,
 		assistant:   assistant,
+		stall:       stall,
 	}
 }
 
@@ -127,6 +132,7 @@ func (cp *turnCheckpointWriter) start() {
 			case <-cp.genCtx.Done():
 				return
 			case <-ticker.C:
+				cp.stall.markProgress() // checkpoint tick counts as durable progress
 				// stop() closes `stop` BEFORE cancelling writeCtx
 				// (see its comment), so a tick that was already queued
 				// while the previous write was blocked can become ready

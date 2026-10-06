@@ -157,7 +157,10 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 		status += " (stale lock)"
 	}
 
-	fmt.Fprintf(out, "status: %s\n", status)
+	// Phase 0 stall surfacing (sessions_stall.go): the pulse/last-message
+	// lines, and a STALLED header when the heartbeat is stale past the
+	// threshold while the holder PID is alive.
+	printStallHeader(ctx, a, dataDir, sessionID, status, f.Lock, out)
 	fmt.Fprintf(out, "reason: %s.\n", v.Description)
 	if f.EndUnreadable {
 		fmt.Fprintf(out, "note: the session row could not be read; the end state is unknown.\n")

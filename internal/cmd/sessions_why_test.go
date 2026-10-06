@@ -365,7 +365,8 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
 	out := buf.String()
-	require.Contains(t, out, "status: running",
+	// An aged pulse with a live holder renders the STALLED variant of running.
+	require.Regexp(t, `(?m)^(status: running|STALLED )`, out,
 		"an alive recorded PID is held, whatever the lock's age (D10)")
 	require.Contains(t, out, "held by PID")
 	require.NotContains(t, out, "is not alive",

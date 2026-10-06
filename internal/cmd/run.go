@@ -464,6 +464,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			asJSON, _           = cmd.Flags().GetBool("json")
 			timeout, _          = cmd.Flags().GetString("timeout")
 			idleTimeout, _      = cmd.Flags().GetString("idle-timeout")
+			stallTimeout, _     = cmd.Flags().GetDuration("stall-timeout")
 			role, _             = cmd.Flags().GetString("role")
 			effort, _           = cmd.Flags().GetString("effort")
 			smartModel, _       = cmd.Flags().GetString("model")
@@ -747,6 +748,9 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		if !a.Config().IsConfigured() {
 			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
+		// Turn-stall abort policy: --stall-timeout (0 = off) feeds the
+		// config knob the run's CallOptions resolution reads.
+		a.Config().Options.TurnStallTimeoutSeconds = int(stallTimeout.Seconds())
 
 		// Fold --role into smartModel (see foldRoleModel); resolves
 		// --continue's session first so its worker/reviewer pin applies.
@@ -838,6 +842,7 @@ func init() {
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
 	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (no --timeout deadline; a graceful 6h default cap still applies, RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides it, and --timeout is how to wait longer; see --idle-timeout for the inactivity backstop).")
 	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
+	runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")

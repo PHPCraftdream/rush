@@ -111,6 +111,7 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 	if a.streamIdleTimeout > 0 {
 		idleTimeout = a.streamIdleTimeout
 	}
+	stallSetPhase(sessionID, "internal", "compaction")
 	// No tools in manual compaction, so use 0 for tool bounds
 	toolMaxDuration := time.Duration(0)
 	toolCleanupGrace := time.Duration(0)

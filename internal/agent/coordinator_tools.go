@@ -812,6 +812,9 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// per delegated turn. The top-level invocation of the sub-agent tool
 	// itself is still wrapped from the coder's side.
 	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
+	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
+	// turn any blocked synchronous Run into an immediate job-id result.
+	filteredTools = wrapToolsWithStallDetach(filteredTools)
 
 	// Error logging is NOT applied here. It used to be, and that was the
 	// bug: this function is only one of the places a tool slice is built,

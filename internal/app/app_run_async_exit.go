@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/PHPCraftdream/rush/internal/agent"
 )
 
 // The loop's exit path: every way a `rush run` loop ends goes through finish
@@ -15,6 +17,12 @@ import (
 // carried over) and finishes the run.
 func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 	final := l.final
+	// Turn-stall abort: the turn died past its stall timeout with the
+	// finish part already written — surface a dedicated "stalled"
+	// exit_reason (non-zero exit, since err is non-nil).
+	if err != nil && reason == "" && errors.Is(err, agent.ErrTurnStalled) {
+		reason = "stalled"
+	}
 	if final != nil {
 		switch {
 		case err != nil && reason != "":

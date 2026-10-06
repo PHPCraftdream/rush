@@ -58,6 +58,12 @@ func NewJobKillTool(resolver JobShellResolver, runCtl RunCommandController, mana
 				return fantasy.NewTextErrorResponse("session ID is required for background shell ownership"), nil
 			}
 
+			// Stall-detached synchronous tool jobs (turn-stall layer) are
+			// stopped entirely by this controller when it claims the job id.
+			if resp, handled := stallDetachKillResponse(sessionID, params.JobID); handled {
+				return resp, nil
+			}
+
 			// A shell with a durable bg_shell row but no ledger job (started by a
 			// SYNC bash call) is stopped through the row: its cancelled
 			// transition is committed BEFORE the kill, so a process that

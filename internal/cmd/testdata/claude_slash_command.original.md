@@ -332,6 +332,10 @@ prompt or target workspace warrants less than full auto-approve.
 prints a summary (duration, tokens, cost); unlike `sessions tail
 --follow` it never hangs on a dead lock.
 
+A fresh pulse means alive, not progressing. Trust STALLED / last
+activity from `sessions why`; on exit_reason=stalled resume with
+--session.
+
 With orchestrator mode active (see above), `sessions watch`/`sessions
 tree` may show child sessions (worker delegations) appearing and
 disappearing over the course of a single `rush run` invocation — that

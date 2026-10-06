@@ -47,6 +47,7 @@ type turnStreamConfig struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	stall  *stallClock
 	// att is the Drain leg being accounted (nil for any other call).
 	att *drainAttempt
 
@@ -111,6 +112,7 @@ type turnStream struct {
 	cancel context.CancelFunc
 	call   SessionAgentCall
 	genID  uint64
+	stall  *stallClock
 	att    *drainAttempt
 
 	smartModel   Model
@@ -191,6 +193,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		call:                 cfg.call,
 		att:                  cfg.att,
 		genID:                cfg.genID,
+		stall:                cfg.stall,
 		smartModel:           cfg.smartModel,
 		promptPrefix:         cfg.promptPrefix,
 		historyIDs:           cfg.historyIDs,
@@ -273,6 +276,9 @@ func (ts *turnStream) onReasoningStart(id string, reasoning fantasy.ReasoningCon
 
 func (ts *turnStream) onReasoningDelta(id string, text string) error {
 	ts.bumpActivity()
+	if ts.stall != nil {
+		ts.stall.reasoningChars.Add(int64(len(text))) // diagnostics only: never moves lastProgress
+	}
 	slog.Debug("agent: OnReasoningDelta called", "len", len(text))
 	ts.mu.Lock()
 	truncSnap := ts.truncateStaleRetryContentLocked()
@@ -309,6 +315,7 @@ func (ts *turnStream) onReasoningEnd(id string, reasoning fantasy.ReasoningConte
 
 func (ts *turnStream) onTextDelta(id string, text string) error {
 	ts.bumpActivity()
+	ts.stall.markProgress()
 	// Fork patch: batch 8 — start the checkpoint ticker on the
 	// first text delta of this step (lazily, once only).
 	ts.startCheckpoint()
@@ -438,6 +445,8 @@ func (ts *turnStream) onToolCall(tc fantasy.ToolCallContent) error {
 	// bounds every tool, including a sub-agent delegation (the
 	// `agent` tool) — see toolExecutionMaxDefault's doc in agent.go.
 	ts.toolStarted()
+	ts.stall.toolEnter(tc.ToolName, tc.ToolCallID)
+	ts.stall.markProgress()
 	ts.phase = phaseToolBoundary // Fork patch: batch 8
 	input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
 	if wasSanitized {
@@ -464,6 +473,8 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	// Tool finished — resume the stall watchdog (and restart its idle
 	// window so the tool's runtime isn't counted against the provider).
 	ts.toolFinished()
+	ts.stall.toolExit()
+	ts.stall.markProgress()
 	ts.phase = phaseToolBoundary // Fork patch: batch 8
 	toolResult := ts.a.convertToToolResult(result)
 	// Fork patch (#1147): hallucinated tool names get a self-correctable

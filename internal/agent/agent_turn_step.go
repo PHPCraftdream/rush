@@ -28,6 +28,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// slow prepare doesn't trip the watchdog before the stream
 	// even starts.
 	ts.bumpActivity()
+	ts.stall.setPhase("provider", ts.smartModel.ModelCfg.Model, "")
 	prepared.Messages = options.Messages
 	for i := range prepared.Messages {
 		prepared.Messages[i].ProviderOptions = nil
@@ -252,6 +253,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 // cap is still a recorded reaction.
 func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.bumpActivity()
+	ts.stall.markProgress()
 	ts.recordStepHistory(stepResult)
 	// Surface provider CallWarnings (malformed tool-call sanitization,
 	// unsupported settings, etc.) that fantasy otherwise discards
@@ -270,6 +272,11 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	// provider already answered and billed is a reaction even when a cap or
 	// the peak-hours window ends the turn right after it (else the notice
 	// stays debt and a paid reaction turn repeats without bound).
+	// The step's reaction is recorded BEFORE the abort checks: a step the
+	// provider already answered and billed is a reaction even when a cap or
+	// the peak-hours window ends the turn right after it (else the notice
+	// stays debt and a paid reaction turn repeats without bound).
+	ts.stall.setPhase("internal", "persist", "")
 	persistErr := ts.persistStepFinish()
 	if err := ts.enforceRunawayCaps(updatedSession); err != nil {
 		if persistErr != nil {

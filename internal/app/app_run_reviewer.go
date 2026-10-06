@@ -928,6 +928,7 @@ func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 		TimeoutHardCap:           primary.TimeoutHardCap,
 		TimeoutOptionsSet:        primary.TimeoutOptionsSet,
 		IdleTimeout:              primary.IdleTimeout,
+		TurnStallTimeout:         primary.TurnStallTimeout,
 		MaxCost:                  primary.MaxCost,
 		MaxTokens:                primary.MaxTokens,
 		AllowPeakHours:           primary.AllowPeakHours,

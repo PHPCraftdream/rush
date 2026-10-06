@@ -43,6 +43,10 @@ const (
 	// fired is incidental, not the cause. Must never be reported as either
 	// causeIdleStall or causeToolTimeout.
 	causeHardCap
+	// causeStall means the turn ran past its CallOptions.TurnStallTimeout
+	// with no durable progress. No fire site produces it yet — the wiring
+	// is a later phase; only the message mapping exists.
+	causeStall
 )
 
 // streamWatchdog implements the "Codec must surface control" invariant for
@@ -101,6 +105,10 @@ type streamWatchdog struct {
 	// done is closed when the watchdog goroutine has exited. Callers
 	// MUST receive from it before returning to avoid a goroutine leak.
 	done <-chan struct{}
+	// forceStall marks the watchdog stalled without firing it — the
+	// turn-stall abort policy uses it so handleStreamFailure takes the
+	// watchdog-stall branch when the policy cancels genCtx itself.
+	forceStall func()
 }
 
 // startStreamWatchdog launches a goroutine that calls cancel() if bump() is
@@ -110,12 +118,12 @@ type streamWatchdog struct {
 // onFire, if non-nil, is invoked AFTER stalled is set to true and BEFORE
 // cancel() — typically used to emit a slog.Warn with diagnostic context the
 // watchdog itself does not have (session ID, model, provider, etc.). The
-// watchdogCause identifies which of the three fire conditions triggered:
+// watchdogCause identifies which of the four fire conditions triggered:
 // causeToolTimeout when a tool exceeded toolMaxDuration (the never-freeze
 // backstop), causeHardCap when the turn hit --timeout-hard-cap (regardless
-// of whether a tool happened to be in flight at the time), or causeIdleStall
+// of whether a tool happened to be in flight at the time), causeIdleStall
 // when the provider genuinely stopped sending data for idleTimeout with no
-// tool in flight.
+// tool in flight, or causeStall for a turn-stall timeout.
 //
 // INVARIANT (task #227 + #232): every fire site below calls onFire strictly
 // BEFORE cancel(), never after — so onFire sits directly on the critical
@@ -484,6 +492,7 @@ func startStreamWatchdog(
 		toolFinished: toolFinished,
 		stalled:      &stalled,
 		disarm:       func() { disarmed.Store(true) },
+		forceStall:   func() { stalled.Store(true) },
 		done:         done,
 	}
 }
@@ -503,9 +512,11 @@ func startStreamWatchdog(
 //     of whether a tool happened to be in flight at that moment. Must NOT
 //     be phrased as blaming the provider (that's causeIdleStall's job) or a
 //     tool (that's causeToolTimeout's job).
+//   - causeStall → "Turn stalled", cites stallTimeout. The turn ran past
+//     its durable-progress threshold (CallOptions.TurnStallTimeout).
 //   - anything else (causeIdleStall) → "Stream stalled", cites idleTimeout
 //     and names the provider. The provider genuinely stopped sending data.
-func watchdogFinishMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTimeout time.Duration, provider string) (title, body string) {
+func watchdogFinishMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTimeout, stallTimeout time.Duration, provider string) (title, body string) {
 	switch cause {
 	case causeToolTimeout:
 		return "Tool timeout", fmt.Sprintf(
@@ -517,6 +528,11 @@ func watchdogFinishMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTi
 			"The turn exceeded its configured --timeout-hard-cap of %s and was auto-cancelled by the stream watchdog. This is the overall wall-clock limit for a single turn, not a provider stall or a stuck tool. Re-run with a larger --timeout-hard-cap if the turn genuinely needs more time.",
 			hardCap,
 		)
+	case causeStall:
+		return "Turn stalled", fmt.Sprintf(
+			"The turn made no durable progress for over %s and was auto-cancelled by the turn-stall watchdog. Re-run the prompt; if it keeps happening, raise --stall-timeout.",
+			stallTimeout,
+		)
 	default: // causeIdleStall
 		return streamStalledFinishTitle, fmt.Sprintf(
 			"Provider %q stopped sending streaming data for over %s — the request was auto-cancelled by the stream watchdog. Retry the prompt; if it keeps happening, try a different model or provider.",
@@ -525,8 +541,8 @@ func watchdogFinishMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTi
 	}
 }
 
-func composeWatchdogFinishBody(sessionID string, cause watchdogCause, toolMaxDuration, hardCap, idleTimeout time.Duration, provider string) string {
-	_, body := watchdogFinishMessage(cause, toolMaxDuration, hardCap, idleTimeout, provider)
+func composeWatchdogFinishBody(sessionID string, cause watchdogCause, toolMaxDuration, hardCap, idleTimeout, stallTimeout time.Duration, provider string) string {
+	_, body := watchdogFinishMessage(cause, toolMaxDuration, hardCap, idleTimeout, stallTimeout, provider)
 	if cause == causeHardCap {
 		body = fmt.Sprintf("%s\n\n%s", body, WatchdogResumeGuidance(sessionID, "--timeout-hard-cap"))
 	}
@@ -547,7 +563,7 @@ func composeWatchdogFinishBody(sessionID string, cause watchdogCause, toolMaxDur
 // fixed the human-facing message. Reuses watchdogFinishMessage's (title,
 // body) pair as the source of truth for cause-specific wording/duration so
 // the two call sites can never drift apart on what each cause means.
-func watchdogToolResultMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTimeout time.Duration, provider string) string {
-	title, body := watchdogFinishMessage(cause, toolMaxDuration, hardCap, idleTimeout, provider)
+func watchdogToolResultMessage(cause watchdogCause, toolMaxDuration, hardCap, idleTimeout, stallTimeout time.Duration, provider string) string {
+	title, body := watchdogFinishMessage(cause, toolMaxDuration, hardCap, idleTimeout, stallTimeout, provider)
 	return fmt.Sprintf("Tool call was cancelled: %s — %s", title, body)
 }

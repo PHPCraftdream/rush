@@ -273,6 +273,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
 	a.cancelCacheKeepAlive(call.SessionID)
+	stall := armTurnStall(call.SessionID, call.CallOptions)
+	defer disarmTurnStall(call.SessionID)
 
 	// R3-1: consume THIS call's pinned tool slice when it carries one, so
 	// no concurrent call's SetTools (UpdateModels' global rebuild) can
@@ -587,7 +589,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	)
 	// The watchdog now calls recordActivity (== notifyActivity(genCtx))
 	// internally on every bump(), so this wrapper can be just wd.bump.
-	bumpActivity := wd.bump
+	bumpActivity := func() { stall.markByte(); wd.bump() } // stall.markByte mirrors the watchdog's liveness clock for the stall sampler
+	// Turn-stall abort seam: the stall policy's abort closure routes through
+	// the existing watchdog fire path (causeStall → finish part) and then
+	// cancels genCtx. See turn_stall_policy.go.
+	stall.armStallAbort(a.stallAbortClosure(call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel, cancel, wd.forceStall))
 	// Store wd.bump in genCtx so runSummarizeBody and runSummarizeSilent
 	// can report LLM streaming progress during compaction (task #310).
 	genCtx = withWatchdogBump(genCtx, wd.bump)
@@ -702,6 +708,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		cancel:           cancel,
 		call:             call,
 		genID:            genID,
+		stall:            stall,
 		att:              att,
 		smartModel:       smartModel,
 		promptPrefix:     promptPrefix,
@@ -728,7 +735,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// design -- generation fencing, why the exit signal is a dedicated
 	// channel and not genCtx, and the mu/no-lock-across-Update invariant it
 	// shares with turnStream's other callbacks.
-	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &ts.mu, &ts.currentAssistant)
+	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &ts.mu, &ts.currentAssistant, stall)
 	ts.startCheckpoint = checkpoint.start
 	ts.stopCheckpoint = checkpoint.stop
 
@@ -756,7 +763,24 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		att.provider = smartModel.ModelCfg.Provider
 		att.credentialed = call.Credentials != nil
 	}
-	result, err := agent.Stream(genCtx, ts.streamCall(history, files, maxOutputTokens))
+	// runStallRetried re-issues the Stream attempt when the stall abort
+	// policy cancelled a stuck provider request (up to stallMaxRetries
+	// times); onRetry flags the cut attempt's partial content stale exactly
+	// like fantasy's OnRetry path does.
+	var result *fantasy.AgentResult
+	err = runStallRetried(stall, func() error {
+		attemptCtx, attemptCancel := context.WithCancel(genCtx)
+		stall.armAttemptCancel(attemptCancel)
+		var streamErr error
+		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(history, files, maxOutputTokens))
+		attemptCancel()
+		return streamErr
+	}, func(retry int) {
+		slog.Warn("turn-stall policy: re-issuing stalled provider step", "session_id", call.SessionID, "retry", retry)
+		ts.mu.Lock()
+		ts.retryStale = true
+		ts.mu.Unlock()
+	})
 	// Defensive: normally OnStepFinish stops the checkpoint ticker (via
 	// stopCheckpoint()) before its own final write. But if agent.Stream
 	// returned an error before any step completed (e.g. the very first

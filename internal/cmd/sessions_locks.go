@@ -249,6 +249,9 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// retry); Pulse is "between-turns", Stale false, DriverPID the loop's.
 		BetweenTurns bool `json:"between_turns,omitempty"`
 		DriverPID    int  `json:"driver_pid,omitempty"`
+		// Stalled: the heartbeat mtime is past stallPulseThreshold while a
+		// holder PID is still recorded (sessions_stall.go).
+		Stalled bool `json:"stalled,omitempty"`
 	}
 
 	// One classifier pass over every known session (top-level list + any
@@ -444,6 +447,9 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		// Phase 0 stall marker (sessions_stall.go): stale heartbeat, live PID.
+		stalled := !betweenTurns && pulseSec >= int64(stallPulseThreshold/time.Second) && pid > 0
+
 		if staleOnly && !stale {
 			continue
 		}
@@ -469,6 +475,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 
 			BetweenTurns: betweenTurns,
 			DriverPID:    driverPID,
+			Stalled:      stalled,
 		})
 	}
 
@@ -514,6 +521,9 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			} else {
 				pulseCell = "between turns (delegating)"
 			}
+		}
+		if lock.Stalled {
+			pulseCell = "STALLED " + formatDurationShort(time.Duration(lock.PulseSec)*time.Second)
 		}
 		fmt.Fprintf(
 			tw, "%s\t%d\t%s\t%ds ago\t%s\t%s\t%s\n",

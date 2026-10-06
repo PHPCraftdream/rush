@@ -67,6 +67,12 @@ func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, ma
 				return fantasy.NewTextErrorResponse("session ID is required for background shell ownership"), nil
 			}
 
+			// Stall-detached synchronous tool jobs (turn-stall layer) are
+			// served entirely by this controller when it claims the job id.
+			if resp, handled := stallDetachOutputResponse(sessionID, params); handled {
+				return resp, nil
+			}
+
 			shellID, err := resolveShellID(resolver, sessionID, params.JobID, params.ShellID)
 			if err != nil {
 				var rcErr *RunCommandJobError

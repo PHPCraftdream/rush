@@ -89,6 +89,9 @@ func restrictedRunWrapped(tool fantasy.AgentTool) bool {
 	if hooked, ok := tool.(*hookedTool); ok {
 		return restrictedRunWrapped(hooked.inner)
 	}
+	if detacher, ok := tool.(*stallDetacherTool); ok {
+		return restrictedRunWrapped(detacher.inner)
+	}
 	_, ok := tool.(restrictedRunMarker)
 	return ok
 }

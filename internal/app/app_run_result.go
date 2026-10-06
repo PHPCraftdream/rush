@@ -24,6 +24,7 @@ type RunResult struct {
 	//   "stop","end_turn","tool_use","max_tokens","unknown"  — model-level
 	//   "error"                                              — generic
 	//   "canceled"                                           — caller-cancel
+	//   "stalled" (fork-only)                                — turn-stall abort
 	//   "invalid_json" (fork-only)                           — --json /
 	//       --format json was active and stripped output failed
 	//       json.Valid; orchestrators that pipe final_text into jq

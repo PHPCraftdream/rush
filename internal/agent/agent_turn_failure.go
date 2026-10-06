@@ -33,6 +33,12 @@ func (ts *turnStream) handleStreamFailure(
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
 	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
+	// Turn-stall abort (causeStall): join ErrTurnStalled BEFORE the
+	// ErrCallAlreadyAttempted wrap so the CLI's exit mapping can classify
+	// the run as "stalled" through the Unwrap chain.
+	if isWatchdogStall && ts.watchdogCauseVal != nil && watchdogCause(ts.watchdogCauseVal.Load()) == causeStall {
+		err = errors.Join(err, ErrTurnStalled)
+	}
 	// The TURN's own context decides what a deadline error means: a net/http
 	// timeout satisfies errors.Is(err, context.DeadlineExceeded) with a live
 	// turn context and is a provider failure, not an operator stop.
@@ -92,6 +98,11 @@ func (ts *turnStream) handleStreamFailure(
 	// finish part MUST land on disk before we return.
 	flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ts.ctx), 15*time.Second)
 	defer flushCancel()
+	// Turn-stall abort threshold for finish/tool-result wording (nil-safe).
+	var stallTimeout time.Duration
+	if ts.call.CallOptions != nil {
+		stallTimeout = ts.call.CallOptions.TurnStallTimeout
+	}
 	// Ensure we finish thinking on error to close the reasoning state.
 	// From here to the final flush below, currentAssistant's Parts are
 	// mutated in place; every touch (including the plain reads used to
@@ -144,6 +155,7 @@ func (ts *turnStream) handleStreamFailure(
 				ts.toolMaxDuration,
 				ts.timeoutHardCap,
 				ts.idleTimeout,
+				stallTimeout,
 				ts.smartModel.ModelCfg.Provider,
 			)
 		} else if isCancelErr {
@@ -192,9 +204,10 @@ func (ts *turnStream) handleStreamFailure(
 			ts.toolMaxDuration,
 			ts.timeoutHardCap,
 			ts.idleTimeout,
+			stallTimeout,
 			ts.smartModel.ModelCfg.Provider,
 		)
-		body := composeWatchdogFinishBody(ts.call.SessionID, cause, ts.toolMaxDuration, ts.timeoutHardCap, ts.idleTimeout, ts.smartModel.ModelCfg.Provider)
+		body := composeWatchdogFinishBody(ts.call.SessionID, cause, ts.toolMaxDuration, ts.timeoutHardCap, ts.idleTimeout, stallTimeout, ts.smartModel.ModelCfg.Provider)
 		ts.currentAssistant.AddFinish(message.FinishReasonError, title, body)
 	} else if isCancelErr {
 		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")

@@ -625,9 +625,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if reviewerCandidate {
 		primaryResult := result
 		primaryFinalText := loop.finalText
-		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
-		loop.resetForReviewerPass(reviewCtx)
-		reviewResult, reviewErr := loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
+		// Reviewer pass stall handling (app_run_reviewer_stall.go): each
+		// attempt rebuilds the review turn fresh; a stalled attempt restarts
+		// the pass, and an always-stalling reviewer ends on the review-failed
+		// path with ErrReviewerUnresponsive.
+		attempt := func() (*RunResult, error) {
+			reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+			loop.resetForReviewerPass(reviewCtx)
+			return loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
+		}
+		reviewResult, reviewErr := retryStalledReviewerPass(attempt)
 		switch {
 		case reviewErr == nil:
 			// A10/C9-21: the executor's answer stays the run's final text
@@ -644,6 +651,12 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 				}
 				app.attachReview(ctx, &RunResult{}, sess.ID, reviewText, stderr)
 			}
+			loop.finalText = primaryFinalText
+			result, resultErr = primaryResult, nil
+		case errors.Is(reviewErr, ErrReviewerUnresponsive):
+			// The reviewer stalled through every attempt: keep the
+			// executor's answer and take the existing review-failed path.
+			recordReviewFailure(primaryResult, stderr, reviewErr)
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
 		case reviewFailureKeepsPrimary(ctx, reviewErr):

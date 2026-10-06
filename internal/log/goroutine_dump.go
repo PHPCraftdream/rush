@@ -145,6 +145,17 @@ func CaptureGoroutineStack(reason string) []byte {
 // to log, and none of them are worth escalating — a missing dump must never
 // turn a recoverable stall into a crash.
 func WriteGoroutineDump(buf []byte) (string, error) {
+	return WriteGoroutineDumpNamed(buf, "goroutines-")
+}
+
+// WriteGoroutineDumpNamed is WriteGoroutineDump with a caller-chosen
+// filename prefix (e.g. the turn-stall detector's "stall-<id8>-", so
+// session-scoped dumps are greppable separately from the generic ones).
+// An empty prefix falls back to the legacy "goroutines-".
+func WriteGoroutineDumpNamed(buf []byte, prefix string) (string, error) {
+	if prefix == "" {
+		prefix = "goroutines-"
+	}
 	if h, ok := writeDelayHook.Load().(func()); ok && h != nil {
 		h()
 	}
@@ -162,10 +173,10 @@ func WriteGoroutineDump(buf []byte) (string, error) {
 	// process within the same wall-clock second don't collide either
 	// (task #275).
 	seq := dumpSeq.Add(1)
-	name := fmt.Sprintf("goroutines-%d-%s-%03d.txt", os.Getpid(), time.Now().Format("20060102-150405"), seq)
+	name := fmt.Sprintf("%s%d-%s-%03d.txt", prefix, os.Getpid(), time.Now().Format("20060102-150405"), seq)
 	path := filepath.Join(dir, name)
 
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
 		return "", fmt.Errorf("goroutine dump: write %s: %w", path, err)
 	}
 	return path, nil

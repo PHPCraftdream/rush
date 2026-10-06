@@ -305,6 +305,12 @@ type Options struct {
 	// generated docs and editor tooltips, so a stale number there is a
 	// promise the binary does not keep.
 	StreamToolTimeoutSeconds int `json:"stream_tool_timeout_seconds,omitempty" jsonschema:"description=Max seconds a single tool may run while the stream watchdog is paused before it force-cancels the turn (never-freeze backstop). Omit to use the built-in default (2700s = 45m). Raise for very long synchronous tools.,default=0,example=3600"`
+	// TurnStallTimeoutSeconds bounds how long a turn may run with no
+	// durable progress (tool call/result, step finish, checkpoint
+	// persist) before the turn-stall detector's abort policy fires. 0
+	// (the default) means "not set"; the 30-minute default is resolved
+	// in Go code (see internal/app), not here.
+	TurnStallTimeoutSeconds int `json:"turn_stall_timeout_seconds,omitempty" jsonschema:"description=Max seconds a turn may run with no durable progress before the turn-stall abort policy fires. 0 = not set (the 30-minute default applies in Go code).,default=0,example=1800"`
 	// StreamStallRetries is the number of times to automatically retry a
 	// turn that ended in a transient provider failure (stream stall, empty
 	// stream, overload, 5xx, network). Embodies "solve it ourselves before
