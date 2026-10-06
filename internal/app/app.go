@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -17,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -295,6 +298,20 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	workspaceRoot := config.WorkspaceRoot(workingDir)
 	home := config.WorkspaceHome()
 
+	// Heartbeat attribution: snapshots land next to the global settings file,
+	// and the startup slot models are what STALE-MODEL comparisons read.
+	heartbeat.SetDirFunc(heartbeatDir)
+	slots := map[string]string{}
+	for _, slot := range []config.SelectedModelType{
+		config.SelectedModelTypeSmart, config.SelectedModelTypeFast,
+		config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer,
+	} {
+		if m, ok := cfg.Models[slot]; ok && m.Provider != "" && m.Model != "" {
+			slots[slot.String()] = m.Provider + "/" + m.Model
+		}
+	}
+	heartbeat.Init(workingDir, slots)
+
 	var qRead *db.Queries
 	var readConn *sql.DB
 	dataDir := cfg.Options.DataDirectory
@@ -518,4 +535,13 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	}
 
 	return app, nil
+}
+
+// heartbeatDir places snapshots next to the global settings file. A test
+// binary without an isolated global dir never writes the real registry.
+func heartbeatDir() string {
+	if testing.Testing() && os.Getenv("RUSH_GLOBAL_DATA") == "" {
+		return ""
+	}
+	return filepath.Join(config.GlobalWorkspaceDir(), "heartbeat")
 }

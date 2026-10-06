@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -608,6 +609,8 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// every provider before either consumer sees it.
 	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
+	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
+	addHeartbeatUsage(ts.genCtx, ts.smartModel.Model.Provider(), ts.smartModel.Model.Model(), usage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := ts.a.sessions.IncrementCost(ts.ctx, updatedSession.ID, costDelta); costErr != nil {
 			return session.Session{}, costErr
@@ -627,7 +630,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	ts.mu.Unlock()
 	ts.a.recordMessageUsage(ts.ctx, assistantID, ts.smartModel, usage, costDelta, estimated)
 	if usage.CacheCreationTokens > 0 {
-		ts.a.scheduleCacheKeepAlive(ts.call.SessionID, ts.smartModel, ts.stepMessages, ts.stepTools, ts.call.ProviderOptions, ts.call.MaxCost)
+		ts.a.scheduleCacheKeepAliveFromCtx(heartbeat.FromContext(ts.genCtx), ts.call.SessionID, ts.smartModel, ts.stepMessages, ts.stepTools, ts.call.ProviderOptions, ts.call.MaxCost)
 	}
 	ts.currentSession = updatedSession
 	return updatedSession, nil

@@ -790,7 +790,17 @@ func (c *coordinator) buildProviderWithLiteralCredentials(cfg *config.Config, pr
 	return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, providerCfg.APIKey, providerCfg.BaseURL)
 }
 
+// buildProviderWithValues wraps every provider built for agent sessions so
+// its model calls land in the heartbeat snapshot.
 func (c *coordinator) buildProviderWithValues(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string) (fantasy.Provider, error) {
+	p, err := c.buildProviderWithValuesInner(cfg, providerCfg, model, isSubAgent, apiKey, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return NewHeartbeatProvider(p), nil
+}
+
+func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
 		headers = make(map[string]string)

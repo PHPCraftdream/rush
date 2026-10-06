@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/spf13/cobra"
 )
@@ -238,6 +239,14 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 
+	// Attribute this ping's model calls in the heartbeat snapshot.
+	ctx = heartbeat.WithContext(ctx, heartbeat.Context{
+		SessionID: "ping",
+		Purpose:   heartbeat.PurposePing,
+		Role:      "ping",
+		Source:    "per-call",
+	})
+
 	cwd, _ := ResolveCwd(cmd)
 
 	// Build the provider
@@ -442,9 +451,19 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	return nil
 }
 
-// buildPingProvider constructs a provider for the ping request.
-// Mirrors the coordinator's buildProvider logic.
+// buildPingProvider builds the provider a ping talks to, wrapped so its
+// model calls land in the heartbeat snapshot.
 func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerCfg config.ProviderConfig, modelCfg *config.SelectedModel, cwd string) (fantasy.Provider, error) {
+	p, err := buildPingProviderRaw(ctx, store, providerCfg, modelCfg, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return rushagent.NewHeartbeatProvider(p), nil
+}
+
+// buildPingProviderRaw constructs a provider for the ping request.
+// Mirrors the coordinator's buildProvider logic.
+func buildPingProviderRaw(ctx context.Context, store *config.ConfigStore, providerCfg config.ProviderConfig, modelCfg *config.SelectedModel, cwd string) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
 		headers = make(map[string]string)

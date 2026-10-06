@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
@@ -502,6 +503,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(ctx, currentSession))
+	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
+	hb := heartbeat.FromContext(ctx)
+	ctx = withHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, hbTurnRole(call, hb), hbTurnSource(ctx, hb))
 	// Compose this turn's activity-notify callback with any ancestor's (see
 	// withActivityNotify) BEFORE deriving genCtx, so every fantasy stream
 	// callback below — via bumpActivity -> notifyActivity(genCtx) — records

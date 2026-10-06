@@ -131,6 +131,10 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		}
 	}
 
+	// Record where each slot's model came from for heartbeat attribution
+	// (design pt. 3); the marker rides the same ctx the turn inherits.
+	ctx = withModelSource(ctx, hbOverrideSource(smartOverride != nil), hbOverrideSource(fastOverride != nil))
+
 	// Merge overrides into the config copies.
 	if smartOverride != nil {
 		if smartCfg.Provider != smartOverride.Provider || smartCfg.Model != smartOverride.Model {
@@ -357,6 +361,8 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	cfg, _ := c.cfg.Snapshot()
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
+	// Explicit per-call overrides; unset slots fall back to their start slots.
+	ctx = withModelSource(ctx, hbOverrideSource(smart != nil), hbOverrideSource(fast != nil))
 
 	if smart != nil {
 		if smartCfg.Provider != smart.Provider || smartCfg.Model != smart.Model {

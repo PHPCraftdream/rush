@@ -17,6 +17,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -336,6 +337,9 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 // cancel for manual /compact, or the turn's genCtx for inline
 // auto-summarize).
 func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
+	// Heartbeat attribution: summary runs on the smart slot (design pt. 1).
+	role, source := hbInherited(ctx)
+	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -484,6 +488,8 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
 	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
+	// Heartbeat usage: one add per accounted compaction (design pt. 4).
+	addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr
@@ -526,6 +532,9 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 //
 // Pinned messages are never deleted.
 func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
+	// Heartbeat attribution: same summary purpose, silent path (design pt. 1).
+	role, source := hbInherited(ctx)
+	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -673,6 +682,8 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
 	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
+	// Heartbeat usage: one add per accounted silent compaction (design pt. 4).
+	addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr

@@ -148,6 +148,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// per-call credentials exist to prevent. A build failure is a hard
 	// error for the same reason: falling through to `model` would run
 	// tenant work on the shared config.
+	hbSource := hbSourceSlotStart
 	var credProviderCfg *config.ProviderConfig
 	var callCreds *CredentialSet
 	if creds := callCredentialsFrom(ctx); creds != nil {
@@ -165,6 +166,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			}
 			model = credModel
 			credProviderCfg = &provCfg
+			hbSource = hbSourcePerCall
 		}
 	}
 
@@ -173,6 +175,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
 			model = *override
+			hbSource = hbSourceSessionOverride
 		}
 	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -284,6 +287,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// "Sub-agent completed but produced no text output" about a turn that
 	// never ran. Blocking for the queued turn's real result instead closes
 	// that gap; every remaining line of this function is unchanged.
+	// Heartbeat attribution: delegation boundary re-parents onto the child
+	// session; root inherited from the dispatching turn (design pt. 2).
+	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
 		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, SessionAgentCall{
 			SessionID:        session.ID,

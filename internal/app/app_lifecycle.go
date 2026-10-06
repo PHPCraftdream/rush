@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 )
 
@@ -212,6 +213,8 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	if app.events != nil {
 		app.events.Shutdown()
 	}
+	// Publish heartbeat rows stopped and flush, bounded; see internal/heartbeat.
+	heartbeat.Shutdown(2 * time.Second)
 	result.Forced = stillBusy
 
 	// Shutdown policy: distinguish between graceful and forced shutdown.

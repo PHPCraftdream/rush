@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 )
 
 // cacheKeepAliveDefaultInterval is the fallback used when a keep-alive-
@@ -114,6 +116,12 @@ func cacheKeepAliveExplicitCacheProvider(provider string) bool {
 // exactly those already-prepared messages — re-adding WithSystemPrompt would
 // duplicate the system message in the replay's prompt.
 func (a *sessionAgent) scheduleCacheKeepAlive(sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
+	a.scheduleCacheKeepAliveFromCtx(heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, maxCost)
+}
+
+// scheduleCacheKeepAliveFromCtx carries the triggering turn's attribution into
+// the detached replay (the fire's own ctx is built from context.Background()).
+func (a *sessionAgent) scheduleCacheKeepAliveFromCtx(hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
 	if t, _ := strconv.ParseBool(os.Getenv("RUSH_DISABLE_ANTHROPIC_CACHE")); t {
 		return
 	}
@@ -136,7 +144,7 @@ func (a *sessionAgent) scheduleCacheKeepAlive(sessionID string, model Model, mes
 	gen := a.cacheKeepAliveGen.Add(1)
 	entry := &cacheKeepAliveEntry{generation: gen}
 	entry.timer = time.AfterFunc(cacheKeepAliveIntervalFor(model.Model.Provider()), func() {
-		a.fireCacheKeepAlive(sessionID, model, messages, tools, providerOptions, 0, gen, maxCost)
+		a.fireCacheKeepAliveHB(hb, sessionID, model, messages, tools, providerOptions, 0, gen, maxCost)
 	})
 	a.cacheKeepAlive.Set(sessionID, entry)
 }
@@ -186,9 +194,18 @@ func noExecuteTools(tools []fantasy.AgentTool) []fantasy.AgentTool {
 // its cap. Unlike a failed replay, a cost-capped skip does not reschedule,
 // matching a real turn's max-cost abort being terminal rather than retried.
 func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
+	a.fireCacheKeepAliveHB(heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, extension, gen, maxCost)
+}
+
+func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
 	// Built before the lock so it is ready to register atomically with the
 	// pending-entry removal below — see the in-flight-registration comment.
 	ctx, cancel := context.WithTimeout(context.Background(), cacheKeepAliveCallTimeout)
+	// Heartbeat attribution: carry the turn's root over the detached ctx (design pt. 2).
+	if hb.SessionID != "" || hb.RootSessionID != "" {
+		ctx = heartbeat.WithContext(ctx, hb)
+	}
+	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeKeepalive, hb.Role, hb.Source)
 
 	a.cacheKeepAliveMu.Lock()
 	current, ok := a.cacheKeepAlive.Get(sessionID)
@@ -293,7 +310,7 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 		return
 	}
 
-	if !a.recordCacheKeepAliveCost(sessionID, model, result, maxCost) {
+	if !a.recordCacheKeepAliveCost(ctx, sessionID, model, result, maxCost) {
 		// The session crossed maxCost while this replay was in flight (or
 		// the re-check itself couldn't be verified) — treated the same as
 		// the up-front max-cost skip: no charge, no rearm.
@@ -355,7 +372,7 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 	newGen := a.cacheKeepAliveGen.Add(1)
 	entry := &cacheKeepAliveEntry{extension: extension + 1, generation: newGen}
 	entry.timer = time.AfterFunc(cacheKeepAliveIntervalFor(model.Model.Provider()), func() {
-		a.fireCacheKeepAlive(sessionID, model, messages, tools, providerOptions, extension+1, newGen, maxCost)
+		a.fireCacheKeepAliveHB(hb, sessionID, model, messages, tools, providerOptions, extension+1, newGen, maxCost)
 	})
 	a.cacheKeepAlive.Set(sessionID, entry)
 }
@@ -383,7 +400,7 @@ func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, message
 // no charge, and no rearm — a session already over its cap, or one whose
 // cost we just failed to persist, must not keep spending on future
 // keep-alive extensions either.
-func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, result *fantasy.AgentResult, maxCost float64) bool {
+func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, maxCost float64) bool {
 	if result == nil {
 		return true
 	}
@@ -413,6 +430,8 @@ func (a *sessionAgent) recordCacheKeepAliveCost(sessionID string, model Model, r
 	if model.FlatRate {
 		cost = 0
 	}
+	// Heartbeat usage: recorded even when the DB charge is skipped at cost 0 (design pt. 4).
+	addHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
 	if cost == 0 {
 		return true
 	}

@@ -89,6 +89,7 @@ func init() {
 		updateProvidersCmd,
 		logsCmd,
 		schemaCmd,
+		psCmd,
 		loginCmd,
 		statsCmd,
 	)

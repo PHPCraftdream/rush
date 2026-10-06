@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -135,6 +136,10 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				// Search mode: let the sub-agent search and fetch as needed.
 				fullPrompt = fmt.Sprintf("%s\n\nUse the web_search tool to find relevant information. Break down the question into smaller, focused searches if needed. After searching, use web_fetch to get detailed content from the most relevant results.", params.Prompt)
 			}
+
+			// Heartbeat attribution: fetch's real call-point role is fast, its
+			// model is an explicit per-call build (design pt. 1/3).
+			ctx = withHeartbeat(ctx, validationResult.SessionID, heartbeat.PurposeFetch, "fast", hbSourcePerCall)
 
 			promptOpts := []prompt.Option{
 				prompt.WithWorkingDir(tmpDir),
