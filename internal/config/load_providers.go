@@ -843,13 +843,10 @@ func unverifiedPassthroughModel(c *Config, sel SelectedModel) *catwalk.Model {
 }
 
 // configureSelectedModels computes the effective smart/fast model
-// selection for cfg and writes the result back into cfg.Models. store is
-// only consulted when persist is true (the initial Load path), to persist
-// a corrected selection back to disk via UpdatePreferredModel — it is
-// never read for its own Config(), so callers preparing a *Config that has
-// not yet been published to the store (e.g. reloadFromDiskLocked building
-// the next generation locally) can pass any store here; only its
-// persistence side effects (disk write + eventual reload) are used.
+// selection for cfg and writes the result back into cfg.Models. An
+// unresolvable selection falls back to the default in memory only.
+// store and persist are kept for signature stability; neither causes
+// a disk write anymore.
 func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []catwalk.Provider, persist bool) error {
 	c := cfg
 	defaultSmart, defaultFast, err := c.defaultModelSelection(knownProviders)
@@ -872,14 +869,7 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		}
 		if model == nil {
 			smart = defaultSmart
-			if persist {
-				// Use the Locked variant because Load (the only caller with
-				// persist=true) already holds publishMu. The public
-				// UpdatePreferredModel would deadlock re-acquiring it.
-				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeSmart, smart); err != nil {
-					return fmt.Errorf("failed to update preferred smart model: %w", err)
-				}
-			}
+			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", SelectedModelTypeSmart, "selected", smartModelSelected.Provider+"/"+smartModelSelected.Model, "default", smart.Provider+"/"+smart.Model)
 		} else {
 			if smartModelSelected.MaxTokens > 0 {
 				smart.MaxTokens = smartModelSelected.MaxTokens
@@ -924,11 +914,7 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		}
 		if model == nil {
 			fast = defaultFast
-			if persist {
-				if err := store.updatePreferredModelLocked(ScopeGlobal, SelectedModelTypeFast, fast); err != nil {
-					return fmt.Errorf("failed to update preferred fast model: %w", err)
-				}
-			}
+			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", SelectedModelTypeFast, "selected", fastModelSelected.Provider+"/"+fastModelSelected.Model, "default", fast.Provider+"/"+fast.Model)
 		} else {
 			if fastModelSelected.MaxTokens > 0 {
 				fast.MaxTokens = fastModelSelected.MaxTokens

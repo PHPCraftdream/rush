@@ -172,6 +172,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 	var effectiveExists bool
 	var committed map[string]reloadFileFingerprint
 	var committedInputs map[string][32]byte
+	var audit settingsWriteAudit
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
@@ -203,7 +204,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		effectiveExists, effective, _ = afterValue(after, name)
 		committedInputs = after.mcpInputs
 		committed = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files)
+		writeErr := s.writeMCPFileChanges(files, &audit)
 		committed = committedMCPFingerprints(files)
 		if writeErr != nil {
 			return writeErr
@@ -217,6 +218,14 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed, committedInputs)
 	}
 	s.publishMu.Unlock()
+	auditErr := err
+	if mcpCommitWasReconciled(err) {
+		auditErr = nil
+	}
+	if audit.event != nil {
+		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
+		emitSettingsEvent(*audit.event)
+	}
 	if err != nil {
 		return err
 	}
@@ -240,6 +249,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 	var effectiveExists bool
 	var committed map[string]reloadFileFingerprint
 	var committedInputs map[string][32]byte
+	var audit settingsWriteAudit
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, evalErr := s.evaluateMCPFiles(files)
@@ -270,7 +280,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		effectiveExists, effective, _ = afterValue(after, name)
 		committedInputs = after.mcpInputs
 		committed = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files)
+		writeErr := s.writeMCPFileChanges(files, &audit)
 		committed = committedMCPFingerprints(files)
 		if writeErr != nil {
 			return writeErr
@@ -281,6 +291,14 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		s.publishMCPValueAndStalenessLocked(name, effective, effectiveExists, committed, committedInputs)
 	}
 	s.publishMu.Unlock()
+	auditErr := err
+	if mcpCommitWasReconciled(err) {
+		auditErr = nil
+	}
+	if audit.event != nil {
+		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
+		emitSettingsEvent(*audit.event)
+	}
 	return err
 }
 

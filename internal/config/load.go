@@ -210,10 +210,8 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	// Hold reloadMu AND publishMu during the initial load (same acquisition
 	// order as buildAndPublishReload: reloadMu -> publishMu), so that
 	// auto-reload triggered by config-modifying operations inside
-	// configureProviders (e.g. RemoveConfigField) or configureSelectedModels
-	// (persisting a newly-selected default model via
-	// updatePreferredModelsLocked -> SetConfigFields, when a role has no
-	// model configured yet) is skipped instead of recursing.
+	// configureProviders (e.g. RemoveConfigField) is skipped instead of
+	// recursing.
 	//
 	// autoReload's redundant-reload dedup is reloadMu.TryLock(), not
 	// publishMu (see reloadMu's field doc) — holding only publishMu here,

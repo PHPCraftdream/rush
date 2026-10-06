@@ -513,11 +513,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured after reload")
 	} else {
-		// persist=false: reloadFromDiskUnlocked runs without publishMu
-		// held, so configureSelectedModels must NOT take the Locked
-		// (reentrant-only) path here — there is no reentrant lock to
-		// avoid re-acquiring. Only Load (which does hold publishMu for
-		// its whole body) passes persist=true.
+		// persist=false; this reload runs without publishMu held.
 		if err := configureSelectedModels(s, cfg, providers, false); err != nil {
 			return fmt.Errorf("failed to configure selected models during reload: %w", err)
 		}

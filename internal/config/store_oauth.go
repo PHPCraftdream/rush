@@ -348,6 +348,7 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 
 var errOAuthCredentialCAS = errors.New("OAuth credentials changed on disk")
 
+// Settings-lock exempt: this CAS writer only touches providers.<id>.oauth/api_key.
 func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, expected, token *oauth.Token) (bool, error) {
 	path, err := s.configPath(scope)
 	if err != nil {

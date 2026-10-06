@@ -33,6 +33,7 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 	}
 	path = normalizeReloadPath(path)
 	var result MCPMutationResult
+	var audit settingsWriteAudit
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, err := s.evaluateMCPFiles(files)
@@ -59,7 +60,7 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 			return err
 		}
 		result.committedFingerprints = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files)
+		writeErr := s.writeMCPFileChanges(files, &audit)
 		result.committedFingerprints = committedMCPFingerprints(files)
 		after, evalErr := s.evaluateMCPFiles(files)
 		if evalErr != nil {
@@ -73,6 +74,14 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
+	auditErr := err
+	if mcpCommitWasReconciled(err) {
+		auditErr = nil
+	}
+	if audit.event != nil {
+		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
+		emitSettingsEvent(*audit.event)
+	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
 	}
@@ -86,6 +95,7 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 	}
 	path = normalizeReloadPath(path)
 	var result MCPMutationResult
+	var audit settingsWriteAudit
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, err := s.evaluateMCPFiles(files)
@@ -111,7 +121,7 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		writeErr := s.writeMCPFileChanges(files)
+		writeErr := s.writeMCPFileChanges(files, &audit)
 		after, err := s.evaluateMCPFiles(files)
 		if err != nil {
 			return err
@@ -126,6 +136,14 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
+	auditErr := err
+	if mcpCommitWasReconciled(err) {
+		auditErr = nil
+	}
+	if audit.event != nil {
+		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
+		emitSettingsEvent(*audit.event)
+	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
 	}
@@ -179,6 +197,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 	}
 	path = normalizeReloadPath(path)
 	var result MCPMutationResult
+	var audit settingsWriteAudit
 	s.publishMu.Lock()
 	err = s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
 		before, err := s.evaluateMCPFiles(files)
@@ -230,7 +249,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		writeErr := s.writeMCPFileChanges(files)
+		writeErr := s.writeMCPFileChanges(files, &audit)
 		after, err := s.evaluateMCPFiles(files)
 		if err != nil {
 			return err
@@ -251,6 +270,14 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		s.publishMCPMutationLocked(result)
 	}
 	s.publishMu.Unlock()
+	auditErr := err
+	if mcpCommitWasReconciled(err) {
+		auditErr = nil
+	}
+	if audit.event != nil {
+		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
+		emitSettingsEvent(*audit.event)
+	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
 	}
@@ -295,7 +322,7 @@ func (s *ConfigStore) prepareMCPFileMutation(files *mcpLockedFiles, path, operat
 	return files.setMCPData(path, data)
 }
 
-func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
+func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settingsWriteAudit) error {
 	for key, changed := range files.changed {
 		if !changed {
 			continue
@@ -318,6 +345,15 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles) error {
 		if err != nil {
 			return fmt.Errorf("failed to determine config owner: %w", err)
 		}
+		keys := []string{mcpContainerName(record.commitPath)}
+		ev := &SettingsEvent{Scope: s.settingsScopeForPath(record.commitPath), Path: record.commitPath, Keys: keys}
+		refusedBy, guardErr := s.guardSettingsWrite(record.commitPath, record.data, keys)
+		if guardErr != nil {
+			audit.event = ev
+			audit.refusedBy = refusedBy
+			return guardErr
+		}
+		audit.event = ev
 		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
 		commitReturnedNil := commitErr == nil
 		if commitReturnedNil {

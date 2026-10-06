@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -334,6 +335,8 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	}
 	slices.Sort(keys)
 	var committedErr error
+	var audit *SettingsEvent
+	refusedBy := ""
 
 	// withConfigWriteLock serialises the read-modify-write both in-process
 	// (diskWriteMu) and across processes (OS lock on path+".lock") — see its
@@ -346,6 +349,21 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 				data = []byte("{}")
 			} else {
 				return fmt.Errorf("failed to read config file: %w", err)
+			}
+		}
+		allRecent := len(keys) > 0
+		for _, key := range keys {
+			if !strings.HasPrefix(key, "recent_models.") {
+				allRecent = false
+				break
+			}
+		}
+		if !allRecent {
+			ev := &SettingsEvent{Scope: settingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: selectedModelsAudit(keys, kv)}
+			audit = ev
+			refusedBy, err = s.guardSettingsWrite(target.path, data, keys)
+			if err != nil {
+				return err
 			}
 		}
 		newValue := string(data)
@@ -377,7 +395,15 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	}); err != nil {
+		if audit != nil {
+			finalizeSettingsEvent(audit, refusedBy, err)
+			emitSettingsEvent(*audit)
+		}
 		return err
+	}
+	if audit != nil {
+		finalizeSettingsEvent(audit, refusedBy, committedErr)
+		emitSettingsEvent(*audit)
 	}
 	if committedErr != nil {
 		if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
@@ -393,7 +419,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	// history). This alone does not make autoReload safe to call from
 	// EVERY context: a caller that reaches this point while already
 	// holding publishMu itself (Load, via configureSelectedModels ->
-	// updatePreferredModelsLocked -> SetConfigFields) would still hang
+	// in-memory mutator -> SetConfigFields) would still hang
 	// here, because autoReload's own dedup guard is reloadMu.TryLock(),
 	// not publishMu — see Load's doc comment on why it now also holds
 	// reloadMu for exactly this reason.
@@ -429,7 +455,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
-	if err := s.removeConfigFieldAt(ctx, path, key); err != nil {
+	if err := s.removeConfigFieldAt(ctx, path, key, true); err != nil {
 		if outcome, ok := CommitOutcomeFromError(err); ok && outcome.Committed {
 			if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
 				slog.Warn("Config field removal committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
@@ -453,7 +479,15 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // path, bounding the inter-process lock wait to ctx's deadline. Shared so
 // both the full-timeout public API and the short-timeout internal caller
 // (configureProviders) go through one write implementation.
-func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string) error {
+func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool) error {
+	if key == syncRevKey || strings.HasPrefix(key, syncRevKey+".") {
+		if userInitiated {
+			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}}
+			finalizeSettingsEvent(&ev, "", errSettingsLockKeyReserved)
+			emitSettingsEvent(ev)
+		}
+		return errSettingsLockKeyReserved
+	}
 	// Skip acquiring the write lock entirely when there is no config file to
 	// edit: withConfigWriteLockCtx creates a path+".lock" sidecar (and its
 	// parent directory) as a side effect of acquiring the OS-level lock, so
@@ -476,10 +510,19 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 	}
 
 	var committedErr error
+	var audit *SettingsEvent
+	refusedBy := ""
 	if err := s.withConfigWriteLockCtx(ctx, path, func(target configWriteTarget) error {
 		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
+		}
+		if userInitiated && !strings.HasPrefix(key, "recent_models.") {
+			audit = &SettingsEvent{Scope: s.settingsScopeForPath(target.path), Path: target.path, Keys: []string{key}}
+		}
+		refusedBy, err = s.guardSettingsWrite(target.path, data, []string{key})
+		if err != nil {
+			return err
 		}
 		newValue, err := sjson.Delete(string(data), key)
 		if err != nil {
@@ -501,7 +544,15 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string)
 		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	}); err != nil {
+		if audit != nil {
+			finalizeSettingsEvent(audit, refusedBy, err)
+			emitSettingsEvent(*audit)
+		}
 		return err
+	}
+	if audit != nil {
+		finalizeSettingsEvent(audit, refusedBy, committedErr)
+		emitSettingsEvent(*audit)
 	}
 	return committedErr
 }
@@ -547,7 +598,7 @@ func (s *ConfigStore) removeConfigFieldBestEffort(scope Scope, key string) {
 
 	ctx, cancel := configContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
 	defer cancel()
-	if err := s.removeConfigFieldAt(ctx, path, key); err != nil {
+	if err := s.removeConfigFieldAt(ctx, path, key, false); err != nil {
 		slog.Warn("Best-effort config field removal did not complete; will retry on next reload",
 			"key", key, "path", path, "error", err)
 	}

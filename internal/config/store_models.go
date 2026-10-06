@@ -106,44 +106,6 @@ func (s *ConfigStore) UpdatePreferredModels(scope Scope, models map[SelectedMode
 	return nil
 }
 
-// updatePreferredModelLocked is the re-entrant-safe variant of
-// UpdatePreferredModel for callers that already hold publishMu (i.e. Load
-// via configureSelectedModels). It uses updateConfigLocked /
-// recordRecentModelLocked instead of the lock-taking variants.
-func (s *ConfigStore) updatePreferredModelLocked(scope Scope, modelType SelectedModelType, model SelectedModel) error {
-	return s.updatePreferredModelsLocked(scope, map[SelectedModelType]SelectedModel{modelType: model})
-}
-
-// updatePreferredModelsLocked is the re-entrant-safe variant of
-// UpdatePreferredModels for callers that already hold publishMu.
-func (s *ConfigStore) updatePreferredModelsLocked(scope Scope, models map[SelectedModelType]SelectedModel) error {
-	if len(models) == 0 {
-		return nil
-	}
-	fields := make(map[string]any, len(models))
-	for modelType, model := range models {
-		fields[fmt.Sprintf("models.%s", modelType)] = model
-	}
-	if err := s.SetConfigFields(scope, fields); err != nil {
-		return fmt.Errorf("failed to update preferred models: %w", err)
-	}
-	s.updateConfigLocked(func(cfgCopy *Config) {
-		cfgCopy.Models = maps.Clone(cfgCopy.Models)
-		if cfgCopy.Models == nil {
-			cfgCopy.Models = make(map[SelectedModelType]SelectedModel, len(models))
-		}
-		for modelType, model := range models {
-			cfgCopy.Models[modelType] = model
-		}
-	})
-	for modelType, model := range models {
-		if err := s.recordRecentModelLocked(scope, modelType, model); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // SetSelectedModelRuntime overrides a single model slot (smart/fast/
 // worker/reviewer) in memory ONLY — no disk write, no autoReload, no
 // recent-models bookkeeping. It exists for callers that need a
@@ -226,52 +188,6 @@ func (s *ConfigStore) recordRecentModel(scope Scope, modelType SelectedModelType
 	}
 
 	s.updateConfig(func(cfgCopy *Config) {
-		cfgCopy.RecentModels = maps.Clone(cfgCopy.RecentModels)
-		if cfgCopy.RecentModels == nil {
-			cfgCopy.RecentModels = make(map[SelectedModelType][]SelectedModel)
-		}
-		cfgCopy.RecentModels[modelType] = updated
-	})
-
-	if err := s.SetConfigField(scope, fmt.Sprintf("recent_models.%s", modelType), updated); err != nil {
-		return fmt.Errorf("failed to persist recent models: %w", err)
-	}
-
-	return nil
-}
-
-// recordRecentModelLocked is the re-entrant-safe variant of
-// recordRecentModel for callers that already hold publishMu. It uses
-// updateConfigLocked instead of updateConfig.
-func (s *ConfigStore) recordRecentModelLocked(scope Scope, modelType SelectedModelType, model SelectedModel) error {
-	if model.Provider == "" || model.Model == "" {
-		return nil
-	}
-
-	eq := func(a, b SelectedModel) bool {
-		return a.Provider == b.Provider && a.Model == b.Model
-	}
-
-	entry := SelectedModel{
-		Provider: model.Provider,
-		Model:    model.Model,
-	}
-
-	current := s.loadSnapshot().config.RecentModels[modelType]
-	withoutCurrent := slices.DeleteFunc(slices.Clone(current), func(existing SelectedModel) bool {
-		return eq(existing, entry)
-	})
-
-	updated := append([]SelectedModel{entry}, withoutCurrent...)
-	if len(updated) > maxRecentModelsPerType {
-		updated = updated[:maxRecentModelsPerType]
-	}
-
-	if slices.EqualFunc(current, updated, eq) {
-		return nil
-	}
-
-	s.updateConfigLocked(func(cfgCopy *Config) {
 		cfgCopy.RecentModels = maps.Clone(cfgCopy.RecentModels)
 		if cfgCopy.RecentModels == nil {
 			cfgCopy.RecentModels = make(map[SelectedModelType][]SelectedModel)

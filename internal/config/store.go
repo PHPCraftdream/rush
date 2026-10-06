@@ -592,11 +592,11 @@ func (s *ConfigStore) updateConfig(mutate func(cfgCopy *Config)) {
 // updateConfig but WITHOUT acquiring publishMu. The caller MUST already
 // hold publishMu.
 //
-// It exists for the re-entrant call path inside Load: Load holds
-// publishMu, then configureSelectedModels → updatePreferredModelLocked →
-// updateConfigLocked applies the in-memory mutation without re-acquiring
-// the lock. Without this separation, updateConfig would deadlock on the
-// Lock call because the calling goroutine already holds publishMu.
+// It exists for re-entrant in-memory mutators that already hold
+// publishMu: updateConfigLocked applies the mutation without
+// re-acquiring the lock. Without this separation, updateConfig would
+// deadlock on the Lock call because the calling goroutine already holds
+// publishMu.
 func (s *ConfigStore) updateConfigLocked(mutate func(cfgCopy *Config)) {
 	cur := s.loadSnapshot()
 	next := cur.clone()

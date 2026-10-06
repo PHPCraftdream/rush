@@ -146,18 +146,14 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	require.Equal(t, "gpt-4", store.Config().Models[SelectedModelTypeSmart].Model,
 		"a selection on an unconfigured provider must fall back to and persist the provider's first model")
 
-	// The corrected selection must actually have reached disk (proving the
-	// persist path really ran, not just the in-memory copy-on-write step).
-	// updatePreferredModelLocked always writes ScopeGlobal, which resolves to
-	// GlobalConfigData() (RUSH_GLOBAL_DATA) — NOT configPath, the workspace
-	// file Load was seeded from. Checking configPath here would be vacuous:
-	// "gpt-4" already appears verbatim in providers.openai.models in the
-	// seed above regardless of whether any persist happened at all.
+	// Loading may correct the effective selection in memory, but must not
+	// rewrite the operator's model slots in the global data file.
 	globalPath := filepath.Join(globalDataDir, "rush.json")
-	data, err := os.ReadFile(globalPath)
-	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
-	require.Contains(t, string(data), `"gpt-4"`)
-	require.Contains(t, string(data), `"openai"`)
+	if data, err := os.ReadFile(globalPath); err == nil {
+		require.NotContains(t, string(data), `"models"`)
+	} else {
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
 }
 
 // TestLoad_UnverifiedModelOnKnownProviderSurvives pins the load-side half of
@@ -288,20 +284,13 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough(t *testing
 	require.NotNil(t, store.Config().GetModel(smart.Provider, smart.Model),
 		"the resulting selection must be a real, catalog-resolvable (provider, model) pair")
 
-	// The heal must actually reach disk (persist=true on the Load path), not
-	// just the in-memory copy-on-write step — mirroring the disk assertion
-	// TestLoad_PersistingCorrectedModelDoesNotDeadlock already makes for the
-	// unknown-provider case. Must check the GLOBAL file (GlobalConfigData(),
-	// RUSH_GLOBAL_DATA here) — updatePreferredModelLocked always writes
-	// ScopeGlobal regardless of which file the original partial selection
-	// came from; configPath (the workspace seed file) is never touched by
-	// this persist path.
+	// A load-time fallback must remain in memory only and leave global slots untouched.
 	globalPath := filepath.Join(globalDataDir, "rush.json")
-	data, err := os.ReadFile(globalPath)
-	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
-	require.Contains(t, string(data), `"gpt-4"`)
-	require.NotContains(t, string(data), `"zai"`,
-		"the healed selection must not keep the mismatched provider on disk")
+	if data, err := os.ReadFile(globalPath); err == nil {
+		require.NotContains(t, string(data), `"models"`)
+	} else {
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
 }
 
 // TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough_ModelOnly
@@ -354,14 +343,13 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough_ModelOnly(
 		"must not keep the explicitly-set model paired with the inherited default provider")
 	require.NotNil(t, store.Config().GetModel(smart.Provider, smart.Model))
 
-	// See the provider-only test's comment above: the heal persists to the
-	// GLOBAL file (RUSH_GLOBAL_DATA), never to configPath.
+	// The model-only fallback is not persisted to the global file.
 	globalPath := filepath.Join(globalDataDir, "rush.json")
-	data, err := os.ReadFile(globalPath)
-	require.NoError(t, err, "the healed selection must have been persisted to the global config file")
-	require.Contains(t, string(data), `"gpt-4"`)
-	require.NotContains(t, string(data), `"brand-new-model"`,
-		"the healed selection must not keep the mismatched model on disk")
+	if data, err := os.ReadFile(globalPath); err == nil {
+		require.NotContains(t, string(data), `"models"`)
+	} else {
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
 }
 
 // TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot mirrors
