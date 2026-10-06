@@ -42,8 +42,9 @@ func (e *ErrBGShellIDCollision) Error() string {
 // running, and announced in one step -- the shell's start is announced by the
 // tool response that reported the shell id, so the row is immediately both
 // open work (running) and pullable once terminal (DUR-7 needs announced=1).
-// An existing claim of the same shell id is an idempotent success (Existing), never
-// a second row. The returned error is the caller's signal to refuse the
+// An existing claim of the same shell id on THIS host is an idempotent success
+// (Existing), never a second row; a running row of another host is refused
+// (ErrBGShellIDCollision) once a dead host has had its one recovery chance. The returned error is the caller's signal to refuse the
 // background start (fail-closed): a shell without a row is the defect class
 // this claim removes.
 func (s *AsyncJobStore) ClaimShell(ctx context.Context, owner, shellID string, originCLI bool) (ClaimResult, error) {

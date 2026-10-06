@@ -87,9 +87,11 @@ func worktreeRoot(dir string) string {
 // "outside any working tree"; ownership's home/not-home question is a
 // SEPARATE flag -- see WorkspaceHome -- and must never be inferred from this
 // value being empty or not. One shared implementation keeps the callers from
-// drifting into different notions of "the workspace". When git cannot be
-// launched, falls back to walking up for a .git entry so a normal checkout
-// never degrades to "".
+// drifting into different notions of "the workspace". When git gives no answer
+// (it cannot be launched, or it answers non-zero, e.g. "dubious ownership"),
+// falls back to walking up for a .git entry so a normal checkout never
+// degrades to "". The fallback returns the path as written, not
+// symlink-resolved like git's answer; it is reachable only without git's answer.
 func WorkspaceRoot(dir string) string {
 	if root := worktreeRoot(dir); root != "" {
 		return root

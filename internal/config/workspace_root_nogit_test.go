@@ -133,7 +133,12 @@ func TestWorkspaceRoot_LaunchFailureNotCached(t *testing.T) {
 
 	// Step 2: restored PATH, git genuinely resolves the real root.
 	t.Setenv("PATH", realPATH)
-	require.Equal(t, wantRoot, worktreeRoot(dir))
+	// git answers with the symlink-resolved root (macOS /var, Windows short TEMP).
+	gotGit, evalErr := filepath.EvalSymlinks(worktreeRoot(dir))
+	require.NoError(t, evalErr)
+	wantResolved, evalErr := filepath.EvalSymlinks(wantRoot)
+	require.NoError(t, evalErr)
+	require.Equal(t, wantResolved, gotGit)
 
 	// Step 3: a genuine non-zero git exit stays cached.
 	plain := t.TempDir()
