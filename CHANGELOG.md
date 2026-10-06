@@ -8,276 +8,276 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-- Загрузка конфигурации больше не переписывает на диск слот модели, которого нет в каталоге провайдера: слот заменяется значением по умолчанию только в памяти, с предупреждением в логе; файл настроек остаётся как есть. Раньше такая тихая перезапись глобального `rush.json` могла сменить модель оператора без его команды.
-- Основа защиты настроек (в `internal/config`, команды `lock`/`unlock` и флаг `--password` подключаются отдельным шагом): все пользовательские записи настроек проверяются под тем же файловым замком, что и сама запись; два уровня — глобальный (во всех папках) и локальный (только процессы в этой папке), приоритет у глобального. Служебные записи (`recent_models.*`, обновление OAuth-токена) защитой не блокируются. Отказ написан для агентов: «settings change is forbidden by the user … ask the user instead».
+- Loading the configuration no longer rewrites a model slot that is missing from the provider catalog onto disk: the slot is replaced by the default in memory only, with a log warning, and the settings file stays as it is. Previously such a silent rewrite of the global `rush.json` could change the operator's model without their command.
+- Foundation of the settings protection (in `internal/config`; the `lock`/`unlock` commands and the `--password` flag are wired in a separate step): every user-initiated settings write is checked under the same file lock as the write itself; two levels — global (all folders) and local (only processes in that folder), with the global one taking priority. Housekeeping writes (`recent_models.*`, OAuth token refresh) are not blocked. The refusal is written for agents: "settings change is forbidden by the user … ask the user instead".
 
-- Защита цепочки реакций теперь считает холостым повторный запуск побайтно той же асинхронной команды из хода-реакции (раньше холостыми были только литеральные `sleep`/`echo`): оркестратор, который ждёт подагента, перезапуская одну и ту же команду на каждое завершение (`… git log … >/dev/null; echo q` 24 раза за 3 часа), после `ReactionChainLimit` попыток получает отказ автоматических ходов. Первый запуск, другая команда и любое реальное действие (правка, запись, чтение) остаются прогрессом и сбрасывают память о последней команде.
-- Каждая строка `rush.log` теперь содержит поле `launch_cwd` — каталог, из которого был запущен процесс (до смены каталога по `--cwd`); отличается от `ws`, когда процесс запущен из другой папки. Новый пакет `internal/audit` — центральный append-only журнал `audit-YYYY-MM-DD.jsonl` рядом с глобальным `rush.json` (одна запись — одна строка, сутки — один файл, без ротации переименованием); `rush logs prune` теперь ещё удаляет файлы журнала старше `--audit-days N` (по умолчанию 30; 0 — все), после обрезки `rush.log`.
-- `rush models state` печатает блок `RESTORE` — список команд `rush models use --<роль> <модель-усилие> [--local]`, которые воссоздают текущие модели по ролям (smart, fast, worker, reviewer) с усилиями, по одной команде на явно заданный слот и scope; в `--json` — массив `restore_commands`. Для атомов Claude/локального CLI без сохранённого усилия выдаётся форма `provider/model`, потому что голый атом `models use` отклоняет.
+- The reaction chain guard now treats a relaunch of the byte-identical async command from a reaction turn as idle (previously only literal `sleep`/`echo` were idle): an orchestrator that waits for a sub-agent by relaunching the same command on every completion (`… git log … >/dev/null; echo q`, 24 times in 3 hours) has its automatic turns refused after `ReactionChainLimit` attempts. The first launch, a different command and any real action (edit, write, read) stay progress and clear the memory of the last command.
+- Every `rush.log` line now carries a `launch_cwd` field — the directory the process was started from (before the `--cwd` chdir); it differs from `ws` when the process is launched from another folder. New package `internal/audit` — a central append-only journal `audit-YYYY-MM-DD.jsonl` next to the global `rush.json` (one record per line, one file per day, no rename rotation); `rush logs prune` now also deletes journal files older than `--audit-days N` (default 30; 0 — all), after truncating `rush.log`.
+- `rush models state` prints a `RESTORE` block — a list of `rush models use --<role> <model-effort> [--local]` commands that re-create the current models by role (smart, fast, worker, reviewer) with efforts, one command per explicitly set slot and scope; `--json` gets a `restore_commands` array. For Claude/local-CLI atoms without a stored effort the `provider/model` form is printed, because `models use` rejects a bare atom.
 
 ## [0.2.0-alpha.9] - 2026-10-06
 
-- Успешный повтор шага после обрыва потока провайдера (в том числе Codex посреди тела ответа) больше не дописывает полный ответ к уже накопленному частичному: текст и reasoning оборванной попытки отбрасываются на первой дельте повтора (и в сохранённом сообщении). Если повтор не дал ни одной дельты (все внутренние попытки провалились), частичный текст остаётся — на нём держится continuation координатора, итог по-прежнему содержит обе половины ответа.
-- Ход ревьюера цикла `rush run`, упавший по своей причине, больше не маскирует `rush sessions cancel` и превышение лимитов: прогон завершается `canceled` (с очисткой флага) или ошибкой лимита, а не успехом с сохранённым ответом исполнителя.
-- Evidence ревьюера: уведомление о завершении bash-команды, пришедшее в реальной форме (заголовок `Async job <call id>` и тело `Background job 001 ...`), привязывается к команде по call id, а ненулевой выход, который bash сообщает хвостом «Exit code N» под заголовком «finished.», больше не отчитывается как «exit 0».
-- `rush run --model B --effort E` (и `--role fast --model F --effort E`) снова отправляет явный effort на первом ходе: он едет на override модели своего слота, а не только записывается в строку сессии (регрессия правки о наследовании effort: пока слот модели ещё не записан, effort терялся). Наследование effort при смене модели без явного флага по-прежнему не происходит.
-- `rush sessions cancel` или превышение `--max-cost`/`--max-tokens` во время хода-напоминания о todos больше не маскируются отбрасыванием напоминания: прогон завершается `canceled` (с очисткой флага) или ошибкой лимита, а не успехом `end_turn`.
-- `rush sessions why` и `rush sessions list` больше не показывают «waiting for your answer» для вопроса уже завершённой, аннулированной или исчезнувшей делегации: вопрос отбрасывается по тому же правилу, что и при вытягивании уведомлений; чтение идёт через пул читателей.
-- `rush sessions cost --by day`: группа, где смешаны оценённые и неоценённые сессии, больше не берёт признак «оценена» от последней сессии группы и печатает `n/a (no price)`, а в `--json` отдаёт `priced:false`.
-- `rush sessions list`: колонка COST показывает бюджет поддерева (с расходом делегаций), как `--json cost_usd`, а не только собственную стоимость корня.
-- `rush sessions compact` больше не поднимает приложение целиком (MCP-серверы, coder agent, насос очереди запусков, восстановление прерванных ходов): ему нужны только конфиг и БД, так что остатки очереди упавшего процесса не запускают платный ход посреди VACUUM.
-- В режиме terse без `captureResult` (по умолчанию в SDK) успешное ревью больше не подменяет итог: печатается ответ исполнителя, а не текст модели-ревьюера, как и на пути CLI/JSON (A10: вердикт ревью — дополнительное поле); при FAIL/«не разобран»/«непроверен» вердикт виден строкой `reviewer verdict: …` в stderr. В режиме stream текст ревьюера по-прежнему стримится по мере прихода.
-- При `notify_on_background_job_done=false` завершение фонового shell делегированного ребёнка сразу освобождает делегацию родителя: наблюдатель строки сам снимает hold и запускает повторную проверку, а не ждёт 60-секундный проход. При включённых уведомлениях hold по-прежнему снимает уведомитель после сохранения уведомления.
-- Ход-напоминание о незавершённых todos больше не переделывает настройку сессии прогона: он не стирает ожидающую отмену `rush sessions cancel` и не перезаписывает смену модели, сделанную оператором посреди прогона (настройка идёт один раз с первым ходом, как у Drain).
-- Drain, запущенный после ревью-прохода цикла `rush run`, больше не подменяет итог: `final_text` остаётся ответом исполнителя, а `review` и `review_verdict` не пропадают.
-- На Unix Ctrl-C на экране ссылки `rush login` больше не копирует ссылку, а прерывает вход так же, как SIGINT (раньше вход ждал до 10 минут); инструкция slash-команды больше не обещает делегации в счёте открытых jobs — считаются только собственные jobs сессии.
-- `job_kill` фонового shell сразу снимает hold завершения: делегация родителя больше не ждёт до 10 минут, если процесс shell не выходит.
-- Гонка `job_kill` и естественного выхода shell больше не даёт два противоречивых уведомления («stopped» и «finished») и лишний wake: решение принимается под общим замком прихода уведомлений; уже завершившийся процесс отвечает «already terminal» с реальным выводом, а завершение, проигравшее гонку, ничего не вставляет.
-- Блок evidence ревьюера: предупреждение git в stderr при успешной команде больше не разбирается как запись `status` или заголовок ветки, а общий лимит 6000 считается в символах, а не в байтах — на кириллице хвостовые секции (команды, вызовы инструментов, флаги итогового текста) больше не обрезаются вдвое раньше.
-- Сбой хода-напоминания о незавершённых todos (ошибка провайдера, занятая сессия) больше не превращает успешный ход исполнителя в `exit_reason=error`: напоминание отбрасывается с предупреждением `todo reminder turn failed`, ответ исполнителя остаётся итогом, повторных напоминаний нет; вопрос, заданный самим ходом-напоминанием, по-прежнему завершает прогон `awaiting_answer`.
-- Если чтение стоимости сессии перед прогоном не удалось, конверт и хук `--on-finish` отдают нулевую стоимость прогона, а не всю историческую; стоимость в хуке не бывает отрицательной. Промпт напоминания о todos больше не просит несуществующий статус `cancelled`: ненужные пункты предлагается убирать из списка.
-- Слот ревьюера и повторный запуск из web без собственного reasoning effort больше не наследуют effort сессии исполнителя, закреплённый за другой моделью: effort берётся из сессии, только если override указывает ту же модель того же провайдера.
-- Планировщик wake-расписаний больше не крутится вхолостую до 5 минут, когда строка уже арендована, а её срок наступил (сбой при срабатывании, убитый процесс): таймер целится в момент истечения аренды, а не в прошедший `next_run_at`.
-- `rush sessions compact` на Windows сверяет резерв места с байтами, доступными вызывающему (с учётом дисковых квот), а не со свободным местом всего тома.
-- Фоновый shell больше не принимает за свою строку другого процесса: id shell — счётчик процесса, а `rush.db` общая, поэтому `ClaimShell` с id, который уже держит running-строка чужого хоста, отказывает (команду нужно перезапустить, id будет новым), а строка мёртвого хоста сначала восстанавливается; `job_kill` по id чужого процесса отвечает «не найден» и не отменяет чужую строку.
-- Ответ родителя на `child_question` попадает в удерживаемую делегацию независимо от origin вызова: простаивающий web-родитель или вложенный родитель, разбуженный уведомлением, больше не создаёт вторую делегацию, не виснет в ожидании и итог ребёнка не приходит дважды; ход с ответом идёт с origin самой делегации.
-- Процесс в обычном git-checkout больше не отказывается от собственных привязанных сессий, когда `git` недоступен (нет в PATH, `dubious ownership`, нехватка ресурсов): сбой запуска git не кешируется на весь процесс, а корень рабочего пространства находится обходом вверх до `.git`.
-- Явный `--data-dir` или `options.data_directory` на `<main>/.rush` из связанного worktree больше не делает процесс «домашним»: домашность определяется самим каталогом, а не способом его выбора, поэтому привязка к рабочему пространству и миграция данных обойти нельзя.
-- Цикл `rush run` больше не выходит в окне, когда наблюдатель уже закрыл строку фонового shell, а уведомление о его завершении ещё не вставлено: невыданное уведомление держит область открытой, итог shell обрабатывается в этом же прогоне.
-- Предупреждения ревью-прохода, добавленные после снимка итогов цикла (поздние, из хода ревьюера), больше не теряются при слиянии итогов: `loopTotals.applyTo` сохраняет их без дублей.
-- Наблюдатель строки фонового shell больше не повторяет бесконечно «строки нет» после её исчезновения (например, при удалении сессии во время работы shell): через 30 с он пишет Warn и выходит, а не держит горутину до конца процесса; повтор остальных ошибок (занятая БД) не изменился (ox раунд 9, B9-3, #1207).
-- Гард усыхания `fs_write` больше не накапливается по элементам одного вызова: размер каждого элемента сравнивается с БОЛЬШИМ из исходного файла на диске и содержимого после предыдущего элемента, поэтому несколько элементов на один путь не сжимают файл до (1/4)^N и не обнуляют его ниже порога (ox раунд 9, B9-10, #1208).
-- Дамп `rush providers update` больше не пинит устаревшие числа каталога как «заданные пользователем»: положительный `context_window`/`default_max_tokens` в `rush.json`, в точности равный значению каталога той же модели (у известных провайдеров — каталог catwalk, у openai-codex — живой каталог аккаунта), перестаёт блокировать таблицу фактов моделей, поэтому `gpt-6.*` снова показывает 1 050 000, а не сырые 272 000, в рантайме, `rush models list` и web; значение, отличное от каталога, и значения кастомных провайдеров остаются пользовательскими (ox раунд 9, C9-7, #1204).
-- Ревью-проход (`reviewer`) больше не видит каждую async-команду длиннее ~3 с как «exit=unknown (still running?)»: код выхода восстанавливается из уведомления «Async job … finished./failed.» (0 для finished, `Exit code N` из хвоста для failed; таймаут, остановка, отмена и прерывание остаются «unknown»), что убирает ложные FAIL на хорошей работе (ox раунд 9, C9-6, #1203).
-- Обрыв потока ответа Codex посреди передачи (усечённое тело, `unexpected EOF`) больше не завершает ход воркера без повтора: ошибка оборачивается в повторяемую ошибку провайдера, как и у остальных провайдеров (ox раунд 9, B9-4, #1202).
+- A successful step retry after a provider stream cut (including Codex mid-body) no longer appends the full answer to the partial one already accumulated: the cut attempt's text and reasoning are discarded on the retry's first delta (in the persisted message too). If the retry produced no delta at all (all internal attempts failed), the partial text stays — the coordinator's continuation relies on it, so the result still contains both halves of the answer.
+- A `rush run` loop reviewer turn that failed for its own reason no longer masks `rush sessions cancel` and limit overruns: the run ends `canceled` (flag cleared) or with a limit error, not with success and the executor's saved answer.
+- Reviewer evidence: a bash-command completion notice that arrives in its real shape (header `Async job <call id>` and body `Background job 001 ...`) is bound to the command by call id, and a non-zero exit that bash reports as an "Exit code N" tail under the "finished." header is no longer reported as "exit 0".
+- `rush run --model B --effort E` (and `--role fast --model F --effort E`) sends the explicit effort on the first turn again: it travels on the model override of its slot instead of only being written to the session row (a regression of the effort-inheritance change: while the model slot was not yet written, the effort was lost). Effort is still not inherited when the model is switched without an explicit flag.
+- `rush sessions cancel` or exceeding `--max-cost`/`--max-tokens` during a todo-reminder turn is no longer masked by dropping the reminder: the run ends `canceled` (flag cleared) or with a limit error, not with an `end_turn` success.
+- `rush sessions why` and `rush sessions list` no longer show "waiting for your answer" for a question of an already finished, voided or vanished delegation: the question is dropped by the same rule as when pulling notices; reading goes through the reader pool.
+- `rush sessions cost --by day`: a group that mixes priced and unpriced sessions no longer takes the "priced" flag from the group's last session and prints `n/a (no price)`, and `--json` returns `priced:false`.
+- `rush sessions list`: the COST column shows the subtree budget (including delegation spend), like `--json cost_usd`, instead of the root's own cost only.
+- `rush sessions compact` no longer brings up the whole application (MCP servers, coder agent, run-queue pump, interrupted-turn recovery): it needs only the config and the DB, so leftovers in a crashed process's queue cannot start a paid turn in the middle of VACUUM.
+- In terse mode without `captureResult` (the SDK default) a successful review no longer replaces the result: the executor's answer is printed, not the reviewer model's text, as on the CLI/JSON path (A10: the review verdict is an additional field); on FAIL/"unparsed"/"unverified" the verdict is visible as a `reviewer verdict: …` line on stderr. In stream mode the reviewer's text is still streamed as it arrives.
+- With `notify_on_background_job_done=false`, the completion of a delegated child's background shell releases the parent's delegation immediately: the row observer drops the hold itself and triggers a re-check instead of waiting for the 60-second pass. With notifications on, the hold is still dropped by the notifier after the notice is saved.
+- The todo-reminder turn about unfinished todos no longer redoes the run session's setup: it does not erase a pending `rush sessions cancel` request and does not overwrite a model change the operator made mid-run (setup happens once with the first turn, as in Drain).
+- A Drain started after the review pass of a `rush run` loop no longer replaces the result: `final_text` stays the executor's answer, and `review` and `review_verdict` are not lost.
+- On Unix, Ctrl-C on the `rush login` link screen no longer copies the link but aborts the login the same way as SIGINT (before, the login waited up to 10 minutes); the slash-command instructions no longer promise delegations in the open-jobs count — only the session's own jobs are counted.
+- `job_kill` of a background shell releases the completion hold immediately: the parent's delegation no longer waits up to 10 minutes if the shell process does not exit.
+- A race between `job_kill` and the shell's natural exit no longer produces two contradictory notices ("stopped" and "finished") and an extra wake: the decision is made under the common notice-arrival lock; an already finished process answers "already terminal" with the real output, and a completion that lost the race inserts nothing.
+- Reviewer evidence block: a git warning on stderr from a successful command is no longer parsed as a `status` entry or a branch header, and the overall 6000 limit is counted in characters, not bytes — with Cyrillic the trailing sections (commands, tool calls, final-text flags) are no longer cut off twice as early.
+- A failure of the todo-reminder turn for unfinished todos (provider error, busy session) no longer turns a successful executor turn into `exit_reason=error`: the reminder is dropped with a `todo reminder turn failed` warning, the executor's answer stays the result, and there are no repeated reminders; a question asked by the reminder turn itself still ends the run as `awaiting_answer`.
+- If reading the session cost before the run failed, the envelope and the `--on-finish` hook report zero run cost instead of the whole historical cost; the hook cost is never negative. The todo-reminder prompt no longer asks for the non-existent `cancelled` status: unneeded items are to be removed from the list.
+- The reviewer slot and a web relaunch without their own reasoning effort no longer inherit the executor session's effort that is pinned to another model: the effort is taken from the session only if the override points at the same model of the same provider.
+- The wake-schedule planner no longer spins idle for up to 5 minutes when a row is already leased and its due time has come (a failure while firing, a killed process): the timer aims at the lease expiry rather than at the past `next_run_at`.
+- On Windows `rush sessions compact` checks the space reserve against the bytes available to the caller (taking disk quotas into account), not against the free space of the whole volume.
+- A background shell no longer mistakes another process's row for its own: the shell id is a per-process counter while `rush.db` is shared, so `ClaimShell` with an id that a running row of a foreign host already holds is refused (the command must be relaunched, the id will be new), and a dead host's row is recovered first; `job_kill` by a foreign process's id answers "not found" and does not cancel the foreign row.
+- A parent's answer to `child_question` reaches the held delegation regardless of the call's origin: an idle web parent or a nested parent woken by a notice no longer creates a second delegation, hangs waiting, or receives the child's result twice; the answering turn runs with the delegation's own origin.
+- A process in a regular git checkout no longer disowns its own bound sessions when `git` is unavailable (not in PATH, `dubious ownership`, resource exhaustion): a git launch failure is not cached for the whole process, and the workspace root is found by walking up to `.git`.
+- An explicit `--data-dir` or `options.data_directory` pointing at `<main>/.rush` from a linked worktree no longer makes the process "home": homeness is determined by the directory itself, not by how it was chosen, so the workspace binding and data migration cannot be bypassed.
+- The `rush run` loop no longer exits in the window where the observer has already closed the background shell's row but the completion notice is not inserted yet: the undelivered notice keeps the scope open, and the shell's result is handled in the same run.
+- Review-pass warnings added after the loop totals snapshot (late ones, from the reviewer turn) are no longer lost when the totals are merged: `loopTotals.applyTo` keeps them without duplicates.
+- The background-shell row observer no longer repeats "no row" forever after the row disappears (for example when the session is deleted while the shell runs): after 30 s it logs a Warn and exits instead of holding a goroutine until the process ends; retrying other errors (busy DB) is unchanged (ox round 9, B9-3, #1207).
+- The `fs_write` shrink guard no longer accumulates across the items of one call: each item's size is compared with the LARGER of the file on disk and the content after the previous item, so several items for one path do not shrink the file to (1/4)^N or zero it below the threshold (ox round 9, B9-10, #1208).
+- The `rush providers update` dump no longer pins stale catalog numbers as "user-set": a positive `context_window`/`default_max_tokens` in `rush.json` that exactly equals the catalog value of the same model (for known providers the catwalk catalog, for openai-codex the account's live catalog) stops blocking the model facts table, so `gpt-6.*` shows 1 050 000 again instead of the raw 272 000 in the runtime, `rush models list` and the web; a value that differs from the catalog, and values of custom providers, stay user-set (ox round 9, C9-7, #1204).
+- The review pass (`reviewer`) no longer sees every async command longer than ~3 s as "exit=unknown (still running?)": the exit code is recovered from the "Async job … finished./failed." notice (0 for finished, `Exit code N` from the tail for failed; timeout, stop, cancel and interrupt stay "unknown"), which removes false FAILs on good work (ox round 9, C9-6, #1203).
+- A Codex response stream cut mid-transfer (truncated body, `unexpected EOF`) no longer ends a worker turn without a retry: the error is wrapped into a retryable provider error, like for the other providers (ox round 9, B9-4, #1202).
 
 ## [0.2.0-alpha.8] - 2026-10-05
 
-- Loop-расписание, созданное ходом после первого закрытия области (ход-напоминание о todos или ревью), больше не переживает `rush run`: отмена loop-расписаний выполняется при каждом закрытии области, а не один раз за прогон, поэтому ни один хост каталога данных не будит сессию по таймеру бессрочно (ox раунд 9, C9-3, #1200).
-- Напоминание о незавершённых todos больше не перебивает вопрос корня: если последний ход закончился `ask_question`, `rush run` выходит с `exit_reason=awaiting_answer` (вопрос доходит до вызывающего), а не отправляет напоминание поверх вопроса и не завершается `end_turn` с кодом 0 (ox раунд 9, C9-2, #1199).
-- `ExecuteRun` больше не падает паникой (разыменование `nil`), когда ревью-ход провалился в terse/stream-режиме без `captureResult` (режим SDK по умолчанию): ответ исполнителя остаётся результатом прогона, провал ревью записывается через nil-безопасный `recordReviewFailure` (ox раунд 9, C9-1, #1198).
-- Фоновый shell, чей claim вставил строку `async_jobs`, но не смог её объявить (`MarkAnnounced` упал по SQLITE_BUSY или истёк контекст), больше не оставляет строку `running` навсегда на живом хосте: `ClaimShell` удаляет только что вставленную необъявленную строку по её `claim_id`, и `rush run` не висит на ней до `--timeout` (ox раунд 9, B9-1, #1197).
-- `fs_write` (замена `write` в запусках с ограничением по папкам) отказывает элементу, который заменил бы существующий файл от 2 КБ содержимым меньше четверти его размера: отказ называет `fs_replace`/`fs_write_lines` для частичных правок, осознанная замена — `allow_shrink=true` у элемента; новые файлы и рост не затронуты (тот же гард, что у `write`, #1196).
-- `job_kill` по shell_id фонового shell'а, у которого есть строка `async_jobs` (shell из синхронного вызова bash), переводит строку в `cancelled` ДО убийства процесса: процесс, не желающий умирать, больше не оставляет строку в `running`, а его выход не пишет «finished: exit 1» и не будит сессию второй раз; результат `job_kill` сливается со строкой (#1189).
-- Инструмент `write` отказывается заменять существующий файл от 2 КБ содержимым меньше четверти его размера (раньше воркер затёр реестр законов одной строкой): ответ объясняет, что `write` перезаписывает файл целиком, и предлагает `edit`/`multiedit`; осознанная замена — параметром `allow_shrink=true` (#1192). `fs_write` не затронут.
-- Фоновый shell, запущенный в ходе без колбэка завершения (`notify_on_background_job_done=false`, Drain/wake-ходы SDK), больше не оставляет строку `async_jobs` в `running` навсегда и не держит область сессии открытой: терминальный переход пишет наблюдатель, зарегистрированный при claim, независимо от уведомления (#1188).
-- Вопрос воркера (`ask_question`) больше не пишется в rush.log как ERROR «tool call failed, ending the run»: это штатная пауза хода, теперь INFO «tool paused the run: awaiting an answer» с `level_kind=pause` (#1194).
-- Сбой потока Codex с кодом `server_is_overloaded` / `server_error` / `rate_limit_exceeded` больше не обрывает ход без повтора: он получает статус 503/500/429 и повторяется общим механизмом (раньше воркер на gpt-6 умирал на первой перегрузке серверов); коды исчерпания лимита остаются терминальными (#1191).
-- Эффорт `max` для z.ai (GLM-5.3, glm-5.2…) и DeepSeek больше не валит вызов ошибкой «reasoning model `max` not supported»: значение уходит только в `extra_body`, а не в верхнеуровневое поле `reasoning_effort`, которое библиотека проверяет по словарю OpenAI. Раньше так падал каждый проход ревью при слоте reviewer `@max` (#1190).
-- `stop_agent` / `inject_agent` без `child_session_id` отвечают, откуда взять id: из ответа `agent` или `inspect_agent` без аргументов (раньше — голое «is required»; #1186).
-- Отказ на повторную делегацию работающему под-агенту («still has work running») теперь говорит, что делать: результат придёт сам, повтор не нужен, написать ему можно через `inject_agent`; то же предложение добавлено в правило режима оркестратора. Оркестратор на wmeta 60 раз повторял такую делегацию за час (#1185).
-- `internal/oauth/codex`: сообщения об ошибках входа в Codex начинаются со строчной буквы («codex device authorization timed out» и т. п.), тесты используют контекстные сетевые вызовы; `golangci-lint run ./internal/oauth/...` — 0 замечаний (#1184).
-- Нулевое окно контекста или лимит вывода в `rush.json` (дамп `rush providers update`) больше не затирает значение каталога той же модели: ноль считается «неизвестно», подставляется значение каталога; положительное значение пользователя по-прежнему главное (#1183).
-- Контекст семейства GLM-5.3 (glm-5.3, -flash, -flashx) = 1M токенов, максимум вывода 131072; единая таблица документированных фактов о моделях `internal/discover/model_facts.go` вместо нескольких копий (#1181): финальное наложение один раз в конце загрузки провайдеров, значение пользователя из rush.json побеждает, ноль = неизвестно; метки контекста атомов в `rush models list` берутся из рантайма (glm-4.7 204k, glm-4.6v 131k).
-- «Ждёт ответа» для делегации, чей ребёнок завершил ход вопросом (#1158): `sessions why` печатает секцию «waiting for your answer» (ребёнок, вопрос ≤200, путь ответа `agent(resume_session_id=<child>)`, без живого `rush run` — команда-ретранслятор `sessions inject <root>`); `sessions list` показывает подсостояние «(awaiting answer)» и поля `awaiting_answer`/`awaiting_child`/`awaiting_question` в `--json`; web-панель «Агенты» вешает бейдж «awaiting your answer» с текстом вопроса на строку делегации (`awaitingAnswer`/`awaitingQuestion` в снапшоте live-work). Источник — уже существующие pending `child_question` уведомления #1157; только чтение, новых записей нет.
-- Фоновые shell вне async-обёртки получили строку `async_jobs` (R-BG-1, #1126): sync-ветка `asyncTool` (SDK-origin, Drain/wake-ходы) при уходе bash в фон клеймит kind=`bg_shell` строку (`tool_call_id` = id shell, fail-closed при отказе БД), а завершение shell одним CAS пишет state+`result_summary` (`delivery=done/reacted=1`, долг и капа остаются на `bg_shell_done` notice); миграция 20261005000001 расширяет CHECK kind (rebuild таблицы); dead-host sweep переводит running `bg_shell` в interrupted (DUR-6). Закон ASYNC-13 (`docs/async-invariants.md`).
-- `rush sessions compact` возвращает место из rush.db после удалений (SQLite VACUUM, #1161): отказывается при живых процессах на этой БД (`--force` пропускает проверку host/session lock'ов, но не startup-lock и не открытые транзакции), заранее проверяет свободное место, печатает размер и freelist до/после; `--dry-run`, `--json`. `sessions gc/purge` подсказывают команду, когда свободные страницы ≥ 64 МБ и ≥ 50% файла. Автоматического VACUUM нет.
+- A loop schedule created by a turn after the scope's first close (a todo-reminder or review turn) no longer outlives `rush run`: loop schedules are cancelled on every scope close, not once per run, so no host of the data directory wakes the session on a timer indefinitely (ox round 9, C9-3, #1200).
+- The unfinished-todos reminder no longer overrides the root's question: if the last turn ended with `ask_question`, `rush run` exits with `exit_reason=awaiting_answer` (the question reaches the caller) instead of sending a reminder on top of the question and ending with `end_turn` and code 0 (ox round 9, C9-2, #1199).
+- `ExecuteRun` no longer panics (nil dereference) when the review turn failed in terse/stream mode without `captureResult` (the SDK default mode): the executor's answer stays the run's result, and the review failure is recorded through the nil-safe `recordReviewFailure` (ox round 9, C9-1, #1198).
+- A background shell whose claim inserted the `async_jobs` row but could not announce it (`MarkAnnounced` failed with SQLITE_BUSY or the context expired) no longer leaves the row `running` forever on a live host: `ClaimShell` deletes the just-inserted unannounced row by its `claim_id`, and `rush run` does not hang on it until `--timeout` (ox round 9, B9-1, #1197).
+- `fs_write` (the replacement of `write` in folder-restricted runs) refuses an item that would replace an existing file of 2 KB or more with content smaller than a quarter of its size: the refusal names `fs_replace`/`fs_write_lines` for partial edits, a deliberate replacement is `allow_shrink=true` on the item; new files and growth are unaffected (the same guard as `write`, #1196).
+- `job_kill` by the shell_id of a background shell that has an `async_jobs` row (a shell from a synchronous bash call) moves the row to `cancelled` BEFORE killing the process: a process that refuses to die no longer leaves the row in `running`, and its exit does not write "finished: exit 1" or wake the session a second time; the `job_kill` result is merged with the row (#1189).
+- The `write` tool refuses to replace an existing file of 2 KB or more with content smaller than a quarter of its size (before, a worker wiped the laws registry with one line): the reply explains that `write` overwrites the whole file and suggests `edit`/`multiedit`; a deliberate replacement uses the `allow_shrink=true` parameter (#1192). `fs_write` is unaffected.
+- A background shell started in a turn without a completion callback (`notify_on_background_job_done=false`, SDK Drain/wake turns) no longer leaves the `async_jobs` row in `running` forever and does not keep the session scope open: the terminal transition is written by the observer registered at claim, independent of the notice (#1188).
+- A worker's question (`ask_question`) is no longer written to rush.log as ERROR "tool call failed, ending the run": it is a normal turn pause, now INFO "tool paused the run: awaiting an answer" with `level_kind=pause` (#1194).
+- A Codex stream failure with code `server_is_overloaded` / `server_error` / `rate_limit_exceeded` no longer ends the turn without a retry: it gets status 503/500/429 and is retried by the common mechanism (before, a gpt-6 worker died on the first server overload); quota-exhaustion codes stay terminal (#1191).
+- The `max` effort for z.ai (GLM-5.3, glm-5.2…) and DeepSeek no longer fails the call with the error "reasoning model `max` not supported": the value goes only into `extra_body`, not into the top-level `reasoning_effort` field that the library validates against the OpenAI vocabulary. Before, every review pass failed this way with a reviewer slot at `@max` (#1190).
+- `stop_agent` / `inject_agent` without `child_session_id` say where to get the id: from the `agent` response or from `inspect_agent` without arguments (before, a bare "is required"; #1186).
+- The refusal to re-delegate to a running sub-agent ("still has work running") now says what to do: the result will arrive by itself, no repeat is needed, and you can write to it via `inject_agent`; the same advice was added to the orchestrator-mode rule. An orchestrator on wmeta repeated such a delegation 60 times in an hour (#1185).
+- `internal/oauth/codex`: Codex login error messages start with a lowercase letter ("codex device authorization timed out" and the like), tests use context-aware network calls; `golangci-lint run ./internal/oauth/...` — 0 findings (#1184).
+- A zero context window or output limit in `rush.json` (a `rush providers update` dump) no longer overwrites the catalog value of the same model: zero is treated as "unknown" and the catalog value is substituted; a positive user value still takes precedence (#1183).
+- GLM-5.3 family context (glm-5.3, -flash, -flashx) = 1M tokens, max output 131072; a single table of documented model facts `internal/discover/model_facts.go` instead of several copies (#1181): the final overlay is applied once at the end of provider loading, the user's value from rush.json wins, zero = unknown; atom context labels in `rush models list` come from the runtime (glm-4.7 204k, glm-4.6v 131k).
+- "Waiting for an answer" for a delegation whose child ended its turn with a question (#1158): `sessions why` prints a "waiting for your answer" section (the child, the question ≤200, the answer path `agent(resume_session_id=<child>)`, and without a live `rush run` the relay command `sessions inject <root>`); `sessions list` shows the sub-state "(awaiting answer)" and the `awaiting_answer`/`awaiting_child`/`awaiting_question` fields in `--json`; the web "Agents" panel puts an "awaiting your answer" badge with the question text on the delegation row (`awaitingAnswer`/`awaitingQuestion` in the live-work snapshot). The source is the already existing pending `child_question` notices of #1157; read-only, no new writes.
+- Background shells outside the async wrapper got an `async_jobs` row (R-BG-1, #1126): the sync branch of `asyncTool` (SDK origin, Drain/wake turns), when bash goes to the background, claims a kind=`bg_shell` row (`tool_call_id` = shell id, fail-closed when the DB refuses), and the shell's completion writes state+`result_summary` in one CAS (`delivery=done/reacted=1`, the debt and the cap stay on the `bg_shell_done` notice); migration 20261005000001 widens the kind CHECK (table rebuild); the dead-host sweep moves running `bg_shell` rows to interrupted (DUR-6). Law ASYNC-13 (`docs/async-invariants.md`).
+- `rush sessions compact` returns space from rush.db after deletions (SQLite VACUUM, #1161): it refuses while live processes use this DB (`--force` skips the host/session lock check, but not the startup lock or open transactions), checks free space beforehand, prints the size and freelist before/after; `--dry-run`, `--json`. `sessions gc/purge` suggest the command when free pages are ≥ 64 MB and ≥ 50% of the file. There is no automatic VACUUM.
 
-- Связанный git-worktree теперь работает на общем каталоге данных проекта
-  `<main>/.rush` (#1143 SD-D): сессии, логи и `async_jobs` пишутся туда и
-  переживают `git worktree remove`; порядок выбора каталога: `--data-dir` →
-  `options.data_directory` → существующий локальный `.rush` с `rush.db`
-  (legacy, сохраняется; без маркера общего режима остаётся локальным, при
-  маркере игнорируется с WARN «stray local DB ignored») → общая `<main>/.rush`
-  для linked worktree → `<wt>/.rush/dev` для dev-сборок (`go run`, `go build -o`),
-  чтобы сборка ветки не трогала общую БД (она её и не мигрирует) → `<cwd>/.rush`.
-  Источник выбора виден в `ConfigStore.DataDirSource()`; `ResolveDataDirectory`
-  (rescue-команды) даёт тот же результат; reload каталог и источник не меняет.
-- Метка `reasoning_effort` в строках сообщений теперь пишет effort ЭТОГО
-  вызова, а не строки сессии: у ревью-хода в колонке оказывается effort слота
-  reviewer (например `max`), а не унаследованный от смарта (#1166).
-- Ревью-проход стал проверяющим (#1165): ход ревьюера получает read-only набор
-  инструментов (`view`, `grep`, `glob`, `ls`, `git_read`,
+- A linked git worktree now works on the project's shared data directory
+  `<main>/.rush` (#1143 SD-D): sessions, logs and `async_jobs` are written there and
+  survive `git worktree remove`; directory selection order: `--data-dir` →
+  `options.data_directory` → an existing local `.rush` with `rush.db`
+  (legacy, kept; without the shared-mode marker it stays local, with the
+  marker it is ignored with the WARN "stray local DB ignored") → the shared `<main>/.rush`
+  for a linked worktree → `<wt>/.rush/dev` for dev builds (`go run`, `go build -o`),
+  so that a branch build does not touch the shared DB (and does not migrate it) → `<cwd>/.rush`.
+  The source of the choice is visible in `ConfigStore.DataDirSource()`; `ResolveDataDirectory`
+  (rescue commands) gives the same result; a reload changes neither the directory nor the source.
+- The `reasoning_effort` label in message rows now records the effort of THIS
+  call, not of the session row: a review turn's column gets the effort of the
+  reviewer slot (for example `max`), not the one inherited from the smart slot (#1166).
+- The review pass became a verifier (#1165): the reviewer turn gets a read-only set
+  of tools (`view`, `grep`, `glob`, `ls`, `git_read`,
   `read_delegation_transcript`, `fs_read`/`fs_list`/`fs_find`/`fs_grep`) —
-  запись, shell, суб-агенты, MCP, сеть и `ask_question` из набора исчезают
-  (через тот же per-call фильтр роли, что и запрет суб-агентов). Бюджета
-  вызовов нет: ревьюер читает столько, сколько нужно для уверенного вердикта;
-  проход ограничен лишь 60-минутной страховкой от зависания.
-- Промпт ревьюера переписан и идёт в паре с детерминированным блоком улик
-  `<review_evidence>`: явная смена роли (работа оркестратора закончена, ревьюер —
-  другой агент), «кто что писал» (сообщения выше — чужие заявления, а не
-  наблюдённые факты), обязательные проверки (запрос, изменения, не менее трёх
-  утверждений по файлам, вакуумность тестов, заглушки, итоговый ответ, процесс)
-  и правила вердикта. Блок rush считает сам из git-дерева и БД сессии:
-  изменения за прогон, исходный запрос, последние команды тестов/сборки с
-  кодами выхода, открытые todos, счётчики вызовов, флаги качества `final_text`.
-- В JSON-конверте появилось поле `review_verdict` (`pass`, `pass_with_notes`,
-  `fail`, `unverified`, `unparsed`, `error`). Зачёт без единого собственного
-  read-вызова инструмента понижается до `unverified`. Вердикт — мнение второй
-  модели и код выхода не меняет; упавший ход ревью больше не подменяет ответ
-  исполнителя — основной результат сохраняется с предупреждением.
-- Страж «нет прогресса» внутри хода (#1149, шаги 3–4): остановленный стражем ход
-  теперь виден — одно предупреждение в `warnings` ответа `rush run --json`
-  («turn stopped by the in-turn progress guard: …», сохраняется даже если
-  ответом стал другой ход) и одна строка stderr на сообщение; `exit_reason`
-  остаётся `end_turn`. Системный промпт сессии согласуется с набором инструментов
-  вызова: если в наборе появился/исчез воркер (режим оркестратора), сохранённый
-  промпт пересобирается и пересохраняется, поэтому правило 7 больше не отсутствует
-  в промпте хода, собранного до настройки воркера (A24).
-- Отказ лимита async-задач сессии теперь считается шагом без прогресса (#1155, шаг 3):
-  запуск, который не состоялся из-за лимита (метаданные `async_cap` в ответе инструмента),
-  классифицируется как отказ, поэтому ход, в котором модель при занятом лимите повторяет
-  настоящую команду, страж «нет прогресса» останавливает после H=5 шагов вместо
-  бесконечной платной серии. Единственное место решения — `classifyStepCall`
-  (`internal/agent/step_progress.go`), тем же путём его читает и защита цепочки реакций.
-- Пустое ожидание с `cd` больше не считается работой (#1150): `cd <dir> && sleep N; echo X`
-  теперь распознаётся как ожидание — `shell.IsNoOpCommand` допускает ведущий литеральный
-  `cd <path> &&` перед пустой командой (`cd` ничего не наблюдает). Раньше такие таймеры
-  проходили мимо стража «нет прогресса» и не попадали в список таймеров отказа лимита
-  async-задач. Путь обязан быть литеральным: `cd $D && sleep 1`, `cd $(foo) && sleep 1`,
-  `cd x; sleep 1`, `cd - && sleep 1` и одиночный `cd x` ожиданием не являются.
-- Надёжность: чек-ин supervision больше не роняет процесс, когда у координатора
-  ещё нет агента — `agentFor` возвращал nil и паника в горутине таймера валила
-  весь процесс (наблюдалась в полном прогоне internal/agent); такой fire стал
-  no-op. Тест `TestJQ_CtxCancel_MidReadAll` переписан детерминированно: отмена
-  по сигналу читалки («прочитано N чанков») вместо гонки настенных часов
-  (50мс таймер, порог 1с), которые ложно роняли его под нагрузкой.
-- Контекст моделей GPT-6 в каталоге Codex (#1172): `gpt-6-luna`, `gpt-6-sol`,
-  `gpt-6-astra` — 1 050 000 токенов по официальным страницам OpenAI (вход до
-  922 000, выход до 128 000). Заниженное значение каталога для этих моделей
-  поднимается до документированного, отсутствующее — берётся из таблицы;
-  остальные `gpt-6*` без значения в каталоге получают те же 1 050 000.
-- Загрузка провайдеров (#1174): запись `openai-codex` с OAuth-токеном больше не
-  печатает ложные WARN «Provider is missing API key» и «Skipping custom provider
-  due to missing API endpoint» — у такого аккаунта нет API-ключа, а адрес задан в
-  коде. Запись без токена по-прежнему предупреждает об обоих.
-- Скрыты устаревшие семейства моделей (#1171, #1173): у провайдера
-  `openai-codex` в списках (`rush models`, `rush models list`,
-  `rush providers fetch-models`, веб-пикер) остаются только модели `gpt-6`
-  и новее (gpt-5.x, o3, codex-mini скрыты); у всех провайдеров модели GLM
-  ниже 5.3 скрыты (glm-5.3+ видны, запись вида `cc-glm-5.1` тоже фильтруется).
-  Неразбираемые или незнакомые id не теряются. Явно выбранная в конфиге
-  старая модель продолжает работать и не ломает загрузку конфига.
-- Привязка сессий к рабочему каталогу (WS-1, #1142, шаг C): новая сессия
-  запоминает корень своего checkout и ветку (`workspace_root`, `git_branch`;
-  ветка читается из `.git/HEAD` без запуска git), очередь запусков тоже хранит
-  корень. Миграция `20261002000001` аддитивная: у старых строк и у старых
-  бинарей значение пустое. Процесс ведёт только сессии своего checkout и
-  старые непривязанные строки, если он «домашний» (владеет своим каталогом
-  данных); для чужой сессии отказывают `--session`/`--continue`, ход, разбор
-  очереди, планировщик пробуждений, перезапуск и «удалить остальные» в web, а
-  арбитр хода откладывает её долг без пейсинга и перепроверки. До SD-D (#1143)
-  все процессы домашние (`config.WorkspaceHome()` всегда `true`), поэтому для
-  существующих сессий поведение не меняется.
-- Флейк `TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted` (#1167):
-  сценарии восстановления держали задание командой на 3 секунды по настенным
-  часам (`ping -n 4` / `sleep 3`), и под нагрузкой к проверке состояния строка
-  уже была `completed`. Команда теперь ждёт файл-сентинел (running до выпуска
-  тестом, завершается за одну итерацию после), а cleanup выпускает её и
-  останавливает приложение до удаления `t.TempDir`, поэтому осиротевший
-  процесс не держит каталог на Windows.
-- Флейк `TestRunNonInteractive_PeakRefusalNeverSettles` (#1175): тест задавал окно
-  пик-часов `00:00`–`23:59`, а конец окна исключающий, поэтому с 23:59:00 до
-  23:59:59 локального времени провайдер не был «в пике» и ход доходил до
-  провайдера (тест падал раз в сутки, пойман в 23:59:46). Окно теперь строится
-  от текущего времени (час в обе стороны, с переходом через полночь).
-- Вопрос воркера больше не топит оркестратора (#1157): если делегированный
-  воркер вызвал `ask_question`, пока у него ещё бегут собственные фоновые
-  задачи, родитель сразу получает notice `child_question` (wake=1) с вопросом
-  и точными вызовами ответа/отказа; `inspect_agent` показывает
-  `awaiting_answer`; supervision-тик помечает делегацию «AWAITING YOUR
-  ANSWER»; ответ через `agent resume_session_id=...` принимается в
-  удерживаемую делегацию (без новой строки, итог приходит под исходным job),
-  гонка с release закрыта флагом `answerHold`.
-- Документация оркестратора под общий каталог данных (#1144 SD-E): тексты `/rush`
-  и `/wrush` говорят, что id сессии должен быть уникален в пределах проекта (все
-  linked worktree пишут в одну БД `<main>/.rush`, повторный id продолжит старую
-  сессию), что сессия принадлежит checkout'у, где создана (`--session` из другого
-  checkout отказывает «belongs to <root>»; продолжить историю там можно только
-  `rush sessions fork <id> --cwd <path>`), что `rush sessions list/locks/watch/why`
-  из корня видят всех агентов, а worktree с уже существующей локальной
-  `.rush/rush.db` продолжает ею пользоваться.
-- `rush sessions audit` (#1179): временные метки сессий читались как миллисекунды,
-  а в `rush.db` они в секундах, поэтому на реальной БД колонка CREATED/UPDATED
-  показывала даты 1970 года, а окно `--since` не содержало ни одного сообщения.
-  Тесты соглашались с ошибкой (фикстуры тоже были в миллисекундах); теперь
-  секунды, а регрессионный тест берёт время у реального сервиса сессий.
-- `rush models list` и пикер показывали у `openai-codex/gpt-6-*` контекст 272k, а не
-  документированный 1 050 000 (#1180): значения брались из кэша каталога аккаунта
-  (`model-catalog-openai-codex.json`, живёт 7 дней), записанного версией до исправления
-  #1172, и кэш отдавал их как есть. Теперь при выдаче из кэша к моделям Codex заново
-  применяются правила контекста; порог распространён на все выпуски `gpt-6.N` линеек
-  astra/sol/luna (в частности `gpt-6.1-sol`), большее заявленное значение сохраняется.
-- `rush models list`: контекст в миллионах печатается с двумя знаками (1.05M, 1M, 1.5M)
-  вместо округления до одного (1 050 000 читалось как «1.1M», то есть как другое окно).
-- Флейк `TestHeartbeatTouchesFile` (#1168): `Release` возвращал управление до
-  того, как heartbeat-горутина закрыла файл замка, и очистка `t.TempDir` на
-  Windows падала с «file in use»; heartbeat-тесты теперь ждут закрытия файла.
-- Новая подкоманда `rush logs summary` (#1164): сводка по одному или
-  нескольким лог-файлам `rush` — сколько WARN и ERROR каждого текста
-  (счётчики по `msg`, с примером полей одной строки группы), какие процессы
-  стартовали (`process start`: версия, команда, ws, session, data_dir, по
-  порядку) и где лог молчал дольше порога (`--gap`, по умолчанию 15м).
-  Команда строго read-only: только `os.Open` на чтение, лог не пишется, не
-  обрезается и не удаляется (это `logs prune`), БД не открывается. Строки,
-  не являющиеся JSON, считаются нерегулярными, а не роняют команду; пустые
-  секции печатаются как `(none)`. Флаги `--since`, `--file` (повторяемый),
-  `--gap`, `--json` и унаследованные `--data-dir`/`--cwd`; без `--file` читается `<data-dir>/logs/rush.log`,
-  разрешённый тем же read-only способом, что и `sessions audit`.
-- `rush sessions cost`: модель больше не «(unknown)» (#1163). Поле
-  `smart_model_id` сессии пишется только явным per-session оверрайдом
-  (веб-пикер, `/model`), поэтому обычная сессия, наследовавшая модель по
-  умолчанию, имела NULL и попадала в группу `(unknown)`; теперь в этом случае
-  берётся модель, которая действительно сгенерировала сообщения сессии
-  (доминирующая по числу сообщений, при равенстве — по токенам). Там же:
-  модель без заданных цен больше не печатает `$0.000` — такая строка получает
-  `n/a (no price)`, а TOTAL получает счётчик `+ N unpriced` (токены при этом
-  считаются как раньше). Цена задаётся ключами `cost_per_1m_in`,
-  `cost_per_1m_out`, `cost_per_1m_in_cached`, `cost_per_1m_out_cached` (USD за
-  миллион токенов) у модели в `providers.<id>.models[]` — это теперь написано в
-  help команды. В `--json` у каждой строки появилось поле `priced:false`, а у
+  writes, shell, sub-agents, MCP, network and `ask_question` disappear from the set
+  (through the same per-call role filter that forbids sub-agents). There is no
+  call budget: the reviewer reads as much as it needs for a confident verdict;
+  the pass is bounded only by a 60-minute hang safeguard.
+- The reviewer prompt was rewritten and is paired with a deterministic evidence block
+  `<review_evidence>`: an explicit role change (the orchestrator's work is finished, the reviewer is
+  another agent), "who wrote what" (the messages above are other people's claims, not
+  observed facts), mandatory checks (the request, the changes, at least three
+  file-level claims, vacuous tests, stubs, the final answer, the process)
+  and the verdict rules. The block is computed by rush itself from the git tree and the session DB:
+  changes made during the run, the original request, the latest test/build commands with
+  exit codes, open todos, call counters, `final_text` quality flags.
+- The JSON envelope gained a `review_verdict` field (`pass`, `pass_with_notes`,
+  `fail`, `unverified`, `unparsed`, `error`). A pass without a single own
+  read tool call is downgraded to `unverified`. The verdict is the opinion of a second
+  model and does not change the exit code; a failed review turn no longer replaces the executor's
+  answer — the primary result is kept with a warning.
+- The in-turn "no progress" guard (#1149, steps 3–4): a turn stopped by the guard
+  is now visible — one warning in the `warnings` of the `rush run --json` response
+  ("turn stopped by the in-turn progress guard: …", kept even if another turn
+  became the answer) and one stderr line per message; `exit_reason`
+  stays `end_turn`. The session's system prompt is reconciled with the call's tool set:
+  if a worker appeared/disappeared in the set (orchestrator mode), the stored
+  prompt is rebuilt and re-saved, so rule 7 is no longer missing
+  from the prompt of a turn built before the worker was configured (A24).
+- A session's async-job cap refusal now counts as a no-progress step (#1155, step 3):
+  a launch that did not happen because of the limit (`async_cap` metadata in the tool response)
+  is classified as a refusal, so a turn in which the model, with the limit busy, repeats
+  a real command is stopped by the "no progress" guard after H=5 steps instead of
+  an endless paid series. The single decision point is `classifyStepCall`
+  (`internal/agent/step_progress.go`); the reaction chain guard reads it the same way.
+- An empty wait with `cd` no longer counts as work (#1150): `cd <dir> && sleep N; echo X`
+  is now recognised as a wait — `shell.IsNoOpCommand` accepts a leading literal
+  `cd <path> &&` before an empty command (`cd` observes nothing). Before, such timers
+  slipped past the "no progress" guard and did not make it into the timer list of the async-job
+  cap refusal. The path must be literal: `cd $D && sleep 1`, `cd $(foo) && sleep 1`,
+  `cd x; sleep 1`, `cd - && sleep 1` and a lone `cd x` are not waits.
+- Reliability: the supervision check-in no longer crashes the process when the coordinator
+  has no agent yet — `agentFor` returned nil and a panic in the timer goroutine took down
+  the whole process (seen in a full internal/agent run); such a fire is now a
+  no-op. The test `TestJQ_CtxCancel_MidReadAll` was rewritten deterministically: cancellation
+  on the reader's signal ("N chunks read") instead of a wall-clock race
+  (50 ms timer, 1 s threshold) that falsely failed it under load.
+- Context of GPT-6 models in the Codex catalog (#1172): `gpt-6-luna`, `gpt-6-sol`,
+  `gpt-6-astra` — 1 050 000 tokens per the official OpenAI pages (input up to
+  922 000, output up to 128 000). An understated catalog value for these models
+  is raised to the documented one, a missing one is taken from the table;
+  the other `gpt-6*` models without a catalog value get the same 1 050 000.
+- Provider loading (#1174): an `openai-codex` entry with an OAuth token no longer
+  prints the false WARNs "Provider is missing API key" and "Skipping custom provider
+  due to missing API endpoint" — such an account has no API key, and the address is set in
+  code. An entry without a token still warns about both.
+- Obsolete model families hidden (#1171, #1173): for the `openai-codex` provider
+  the lists (`rush models`, `rush models list`,
+  `rush providers fetch-models`, the web picker) keep only `gpt-6`
+  and newer models (gpt-5.x, o3, codex-mini are hidden); for all providers GLM models
+  below 5.3 are hidden (glm-5.3+ are visible, an entry like `cc-glm-5.1` is filtered too).
+  Unparseable or unfamiliar ids are not lost. An old model chosen explicitly in the config
+  keeps working and does not break config loading.
+- Binding sessions to a working directory (WS-1, #1142, step C): a new session
+  remembers its checkout root and branch (`workspace_root`, `git_branch`;
+  the branch is read from `.git/HEAD` without launching git), and the run queue stores
+  the root too. Migration `20261002000001` is additive: old rows and old
+  binaries have an empty value. A process serves only the sessions of its checkout and
+  old unbound rows if it is "home" (owns its data
+  directory); for a foreign session `--session`/`--continue`, a turn, queue
+  processing, the wake scheduler, restart and "delete the others" in the web are refused, and
+  the turn arbiter defers its debt without pacing or re-checking. Until SD-D (#1143)
+  all processes are home (`config.WorkspaceHome()` is always `true`), so for
+  existing sessions behaviour does not change.
+- Flake `TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted` (#1167):
+  the recovery scenarios held the job with a command for 3 seconds by the wall
+  clock (`ping -n 4` / `sleep 3`), and under load by the time of the state check the row
+  was already `completed`. The command now waits for a sentinel file (running until released by the
+  test, finishing one iteration after), and the cleanup releases it and
+  stops the application before `t.TempDir` is removed, so an orphaned
+  process does not hold the directory on Windows.
+- Flake `TestRunNonInteractive_PeakRefusalNeverSettles` (#1175): the test set the peak-hours
+  window `00:00`–`23:59`, and the end of the window is exclusive, so from 23:59:00 to
+  23:59:59 local time the provider was not "in peak" and the turn reached
+  the provider (the test failed once a day, caught at 23:59:46). The window is now built
+  from the current time (an hour either way, wrapping past midnight).
+- A worker's question no longer drowns the orchestrator (#1157): if a delegated
+  worker called `ask_question` while its own background
+  jobs were still running, the parent immediately gets a `child_question` notice (wake=1) with the question
+  and the exact answer/decline calls; `inspect_agent` shows
+  `awaiting_answer`; the supervision tick marks the delegation "AWAITING YOUR
+  ANSWER"; an answer via `agent resume_session_id=...` is accepted into the
+  held delegation (no new row, the result arrives under the original job),
+  the race with release is closed by the `answerHold` flag.
+- Orchestrator documentation for the shared data directory (#1144 SD-E): the `/rush`
+  and `/wrush` texts say that a session id must be unique within the project (all
+  linked worktrees write to one DB `<main>/.rush`, a repeated id continues the old
+  session), that a session belongs to the checkout where it was created (`--session` from another
+  checkout is refused with "belongs to <root>"; history can be continued there only by
+  `rush sessions fork <id> --cwd <path>`), that `rush sessions list/locks/watch/why`
+  from the root see all agents, and a worktree with an already existing local
+  `.rush/rush.db` keeps using it.
+- `rush sessions audit` (#1179): session timestamps were read as milliseconds,
+  while in `rush.db` they are in seconds, so on a real DB the CREATED/UPDATED column
+  showed 1970 dates and the `--since` window contained no messages at all.
+  The tests agreed with the mistake (the fixtures were in milliseconds too); now
+  seconds, and the regression test takes the time from the real session service.
+- `rush models list` and the picker showed a context of 272k for `openai-codex/gpt-6-*` instead of the
+  documented 1 050 000 (#1180): the values came from the account catalog cache
+  (`model-catalog-openai-codex.json`, lives 7 days) written by a version before the #1172 fix,
+  and the cache served them as they were. Now the context rules are re-applied to Codex models
+  when serving from the cache; the threshold is extended to all `gpt-6.N` releases of the
+  astra/sol/luna lines (in particular `gpt-6.1-sol`), a larger declared value is kept.
+- `rush models list`: the context in millions is printed with two decimals (1.05M, 1M, 1.5M)
+  instead of rounding to one (1 050 000 read as "1.1M", i.e. as a different window).
+- Flake `TestHeartbeatTouchesFile` (#1168): `Release` returned control before
+  the heartbeat goroutine closed the lock file, and the `t.TempDir` cleanup on
+  Windows failed with "file in use"; heartbeat tests now wait for the file to be closed.
+- New subcommand `rush logs summary` (#1164): a summary over one or
+  several `rush` log files — how many WARNs and ERRORs of each text
+  (counters by `msg`, with an example of one group line's fields), which processes
+  started (`process start`: version, command, ws, session, data_dir, in
+  order) and where the log was silent longer than a threshold (`--gap`, default 15m).
+  The command is strictly read-only: only `os.Open` for reading, the log is not written, not
+  truncated and not deleted (that is `logs prune`), the DB is not opened. Lines
+  that are not JSON are counted as irregular instead of failing the command; empty
+  sections are printed as `(none)`. Flags `--since`, `--file` (repeatable),
+  `--gap`, `--json` and the inherited `--data-dir`/`--cwd`; without `--file` `<data-dir>/logs/rush.log` is read,
+  resolved in the same read-only way as `sessions audit`.
+- `rush sessions cost`: the model is no longer "(unknown)" (#1163). The session's
+  `smart_model_id` field is written only by an explicit per-session override
+  (web picker, `/model`), so an ordinary session that inherited the default model
+  had NULL and fell into the `(unknown)` group; now in that case
+  the model that actually generated the session's messages is taken
+  (dominant by message count, ties broken by tokens). Also:
+  a model without set prices no longer prints `$0.000` — such a row gets
+  `n/a (no price)`, and TOTAL gets a `+ N unpriced` counter (tokens are
+  counted as before). The price is set by the keys `cost_per_1m_in`,
+  `cost_per_1m_out`, `cost_per_1m_in_cached`, `cost_per_1m_out_cached` (USD per
+  million tokens) of the model in `providers.<id>.models[]` — this is now written in the
+  command help. In `--json` every row gained a `priced:false` field, and for
   `--by total` — `unpriced_sessions`.
-- Новая подкоманда `rush sessions audit` (строго read-only, #1162): сканирует БД
-  сессий на аномалии — повторяющиеся просмотры одного файла (≥ 3),
-  повторяющиеся нормализованные bash-команды (≥ 3), «ожидающие» команды
-  (≥ 3), ошибки инструментов по классам (≥ 3), уведомления
-  supervision/wake_failed (≥ 1) и незавершённые async_jobs
-  (running/interrupted, ≥ 1). Доступны флаги `--all`, `--since`,
-  `--worktrees`, `--json` и унаследованный `--data-dir`. БД открывается в
-  режиме `mode=ro` + `PRAGMA query_only` (без setupApp, который открыл бы
-  её на запись и выполнил миграции): никаких миграций, локов и записи —
-  файл rush.db не меняется, а файлы -wal/-shm/journal не создаются и не
-  удаляются. Для каждой БД печатается блок DB health (размер,
-  page_size × page_count, freelist и процент свободного места). Незнакомая
-  или слишком старая схема лишь сообщается — команда завершается успехом
-  и ничего не создаёт.
-- Страж «нет прогресса» внутри хода (A22/A23, #1149 шаги 1–2): после S=2
-  подряд шагов без прогресса (пустое ожидание `sleep`/`echo`, повторное
-  чтение уже прочитанных окон файла) такие вызовы отклоняются мягко, после
-  H=5 ход завершается стражем; классификатор вызова один на страж хода и на
-  защиту цепочки реакций (#1113), отказ стража для цепочки нейтрален.
-- bash/run_command/agent: параметр `timeout` принимает голое число секунд
-  (#1159): `"timeout": 300` теперь означает `{"seconds": 300, "kind":
-  "wake_only"}` вместо криптичной ошибки unmarshal; строка и мусор
-  отклоняются с понятным текстом.
-- inspect_agent без `child_session_id` (#1160) вместо ошибки «child_session_id
-  is required» возвращает список живых делегаций сессии (id, инструмент,
-  статус, возраст, последняя активность); ровно одна делегация — сразу её
-  полная сводка.
-- Async-лимит сессии (A27, #1155): лимит 50 теперь считает только
-  незавершённые задачи — завершённая, но ещё недоставленная задача слот
-  больше не занимает, поэтому потерянное подтверждение не блокирует новые
-  bash-задачи навсегда. Отказ при полном лимите теперь объясняет, что
-  ничего не стоит в очереди, перечисляет до 10 бегущих задач (таймеры
-  первыми) с метаданными `async_cap` и предписывает освободить слоты
-  `job_kill` или закончить ход без вызова инструмента (не повторять вызов
-  и не задавать вопрос через ask_question). Тот же совет теперь в
-  сообщении лимита фоновых процессов shell (`maximum number of background
+- New subcommand `rush sessions audit` (strictly read-only, #1162): scans the session
+  DB for anomalies — repeated views of one file (≥ 3),
+  repeated normalised bash commands (≥ 3), "waiting" commands
+  (≥ 3), tool errors by class (≥ 3), notices of
+  supervision/wake_failed (≥ 1) and unfinished async_jobs
+  (running/interrupted, ≥ 1). Flags `--all`, `--since`,
+  `--worktrees`, `--json` and the inherited `--data-dir` are available. The DB is opened in
+  `mode=ro` + `PRAGMA query_only` mode (without setupApp, which would open
+  it for writing and run migrations): no migrations, locks or writes —
+  the rush.db file does not change, and -wal/-shm/journal files are neither created nor
+  deleted. For each DB a DB health block is printed (size,
+  page_size × page_count, freelist and the percentage of free space). An unfamiliar
+  or too old schema is merely reported — the command succeeds
+  and creates nothing.
+- The in-turn "no progress" guard (A22/A23, #1149 steps 1–2): after S=2
+  consecutive steps without progress (an empty `sleep`/`echo` wait, a repeated
+  read of already-read file windows) such calls are refused softly, after
+  H=5 the turn is ended by the guard; the call classifier is one for the turn guard and for
+  the reaction chain guard (#1113), a guard refusal is neutral for the chain.
+- bash/run_command/agent: the `timeout` parameter accepts a bare number of seconds
+  (#1159): `"timeout": 300` now means `{"seconds": 300, "kind":
+  "wake_only"}` instead of a cryptic unmarshal error; a string and garbage
+  are rejected with a clear text.
+- inspect_agent without `child_session_id` (#1160) instead of the error "child_session_id
+  is required" returns the list of the session's live delegations (id, tool,
+  status, age, last activity); exactly one delegation — straight its
+  full summary.
+- Session async limit (A27, #1155): the limit of 50 now counts only
+  unfinished jobs — a finished but not yet delivered job no longer
+  occupies a slot, so a lost acknowledgement does not block new
+  bash jobs forever. The refusal on a full limit now explains that
+  nothing is queued, lists up to 10 running jobs (timers
+  first) with `async_cap` metadata and prescribes freeing slots with
+  `job_kill` or ending the turn without a tool call (not repeating the call
+  and not asking a question via ask_question). The same advice is now in the
+  message of the background shell process limit (`maximum number of background
   jobs`).
-- Миграции БД стали безопасными для общей БД из нескольких процессов
-  (подготовка шага B дизайна shared-data-dir): вся последовательность
-  «прочитать версии → решить → применить» теперь выполняется под
-  межпроцессным файловым локом `<dataDir>/migrate.lock`; до этого
-  параллельный старт двух rush после деплоя приводил к
-  `duplicate column name` у второго. Добавлена проверка множеств версий
-  (применённые vs встроенные): при расхождении истории схемы
-  (`unknown` + `pending`) процесс не стартует с `ErrSchemaDiverged` вместо
-  молчаливой миграции; при только `unknown` БД открывается без миграций с
-  одним WARN. Появилась опция `WithMayMigrate(false)`
-  (`ErrSchemaMigrationNotAllowed` при pending) — пока ни один путь её не
-  выставляет, поведение по умолчанию не изменилось. `FileLock` перенесён
-  из `internal/session` в листовой пакет `internal/filelock` без изменения
-  поведения (в session оставлены алиасы-обёртки).
+- DB migrations became safe for a DB shared by several processes
+  (preparation for step B of the shared-data-dir design): the whole sequence
+  "read versions → decide → apply" now runs under
+  the inter-process file lock `<dataDir>/migrate.lock`; before that
+  a parallel start of two rush processes after a deploy led to
+  `duplicate column name` in the second one. A version-set check was added
+  (applied vs built-in): when the schema history diverges
+  (`unknown` + `pending`) the process does not start, failing with `ErrSchemaDiverged` instead of
+  a silent migration; with only `unknown` the DB is opened without migrations with
+  a single WARN. The `WithMayMigrate(false)` option appeared
+  (`ErrSchemaMigrationNotAllowed` when pending) — no path sets it
+  yet, the default behaviour has not changed. `FileLock` was moved
+  from `internal/session` to the leaf package `internal/filelock` without changing
+  behaviour (alias wrappers are left in session).
 
 - `rush sessions kill` / `cancel` / `reset --force` (A26): they now also remove
   the session's queued runs, pending injects and orphan-call outbox rows. Before,
@@ -286,12 +286,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   leftover rows) and kept running. Conversation history is not touched; an
   inject into a session that was not stopped is delivered as before.
 
-- CLI и web: короткие команды (`bash`/`run_command`, завершившиеся за ~3
-  секунды) теперь возвращают свой результат прямо в ответе инструмента
-  вместо «Async bash job ... started» и отдельного уведомления позже.
-  Модели это видно: результат приходит немедленно, одним сообщением, без
-  промежуточного хода; длинные команды и все остальные случаи ведут себя
-  как раньше.
+- CLI and web: short commands (`bash`/`run_command` that finished within ~3
+  seconds) now return their result directly in the tool response
+  instead of "Async bash job ... started" and a separate notice later.
+  Models can see this: the result arrives immediately, in one message, without
+  an intermediate turn; long commands and all other cases behave
+  as before.
 
 - `rush run` (A15): a top-level `ask_question` asked while the session still
   has its own running background tasks no longer ends the run with
@@ -760,7 +760,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   process, as the CLI does; until it does, the rows of that host stay
   `running` and a new App in the same process cannot recover them.
 - **A sub-agent delegation whose last turn produced no text (only reasoning
-  or tool calls) now reports "завершено без итогового ответа" to its
+  or tool calls) now reports "завершено без итогового ответа" ("finished without a final answer") to its
   parent**, instead of resurfacing the stale text captured when the
   delegation was parked mid-flight. A child whose reaction was closed by
   failure finishes its delegation as failed with the text of the closed
