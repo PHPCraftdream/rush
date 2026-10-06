@@ -63,3 +63,102 @@ justified by the stop rule. The four fixes are narrow (≤ 30 lines each) with a
 and a mutant apiece; no further round is scheduled for them. A next round is
 justified only by a new P0/P1 in new code or an explicit operator request, not by
 the P2/P3 list above.
+
+## Backlog resolution and delta review (2026-10-06)
+
+The operator asked for the whole backlog to be resolved, not parked. Every P2/P3
+item was re-checked against the then-current code by read-only consultants (three
+`@ox` agents, one per area) and either fixed through a worktree-isolated rush agent
+(each diff re-verified by the orchestrator: mutants, full packages, lint) or closed
+with a reason.
+
+### Fixed
+
+| Item | Task | Commit |
+|---|---|---|
+| A9-2 / B9-8 shell id collision across processes | #1210 | `92e267ac` |
+| B9-2 observer/notice window in `CLIScope` | #1211 | `5ea19d80` |
+| B9-5 held-question answer by origin (was P1) | #1212 | `0ff6c988` |
+| config home flag by directory; `WorkspaceRoot` without git | #1213, #1214 | `e9ad503e`, `279fa77e` |
+| C9-4 / C9-9 / C9-11 reminder failure, cost window, prompt text | #1206, #1209 | `e4b40a2e` |
+| C9-5 reviewer warnings kept by `applyTo` | #1205 | `b7fc6e8f` |
+| B9-3 `finishBGShellRow` retry loop | #1207 | `34114959` |
+| B9-10 `fs_write` compounding shrink | #1208 | `c6ab8a27` |
+| A9-12 wake timer vs leases; A9-7 dead query; A9-10 Windows free space | #1216, #1218 | `ad6c0fba` |
+| A9-5 / A9-6 `PendingChildQuestions` of a finished delegation | #1217 | `fffc19c1` |
+| B9-6 / B9-7 `job_kill` hold and race with the natural exit | #1219 | `9f4a0a0d` |
+| B9-9 observer recheck without a notifier | #1220 | `d323d67b` |
+| adjacent: reviewer effort inherited across models | #1221 | `6727f0cb` |
+| C9-15b / C9-19 evidence stderr and rune cap | #1222 | `0869fdb0` |
+| C9-12 / C9-13 / C9-20 sessions cost, list, compact | #1223 | `2c2c1ad6` |
+| C9-18 / C9-17 login Ctrl-C, slash-command text | #1224 | `99fc8a84` |
+| C9-8 / C9-16 / C9-21 reminder mutation-free, Drain after review, terse reviewer text | #1225 | `5a5f326b`, `c38c1664` |
+
+### Closed with a reason
+
+| Item | Reason |
+|---|---|
+| A9-3 negative cost delta | unreachable: the only caller passes non-negative prices |
+| A9-4 `Owns("", "", false)` | unreachable: a non-home process always has a non-empty root |
+| A9-8 subtree base above spent | intentional clamp, documented in `session_cost_subtree.go` |
+| A9-9 out-of-order migration column loss | unreachable today; note for future table rebuilds |
+| A9-11 `ws` vs `workspace_root=''` | display only; never compared |
+| A9-13 vanished-workspace queue rows | by design (WS-1); purge/cascade clears them |
+| B9-11 foreign-workspace refusal retried | not reached through any shipped turn-start path (all filter by the same rule); the guard is a documented backstop. Reading-based, not proven |
+| C9-10 WAL sidecar claim untested | cosmetic |
+| C9-14 one failed tool call = verified pass | by design (reviewer-pass design, test T10; the verdict never changes the exit code) |
+| C9-15a untracked files in `changed_during_run` | by design: no numstat for `??`, so a changed existing untracked file is otherwise invisible |
+| `web/src/types.ts` `Session.Cost` | no consumers |
+| #1226 lost question with a live delegation | not a defect (two independent reads): after `ask_question` the agent suspends automatic turns, so a late completion is Deferred, never Owed; pinned by `TestRunLoop_QuestionWithOpenDelegationExitsAwaitingAnswer` (`529d7c4c`) |
+
+### Delta review of the fix series (reviewer role + `@ox`, three areas each)
+
+Six read-only reviews of `4874fb73..fffc19c1`. Two P1 regressions came out of the
+fixes themselves, both confirmed by a second reviewer and fixed in-cycle:
+
+- **#1227** (`65ebf2a0`) -- since #1206 a failed todo-reminder turn was dropped even
+  when the failure was the operator's `sessions cancel` / a crossed cap, so the run
+  reported success. The stop signals are re-checked before dropping. The in-turn
+  cancellation variant could not be driven through the harness; the test pins the
+  invariant with a reminder that fails for its own reason while the flag is pending.
+- **#1230** (`8f096349`) -- #1221 stopped `--model B --effort high` from sending the
+  effort (it reached only the session row). The explicit effort now rides the
+  override of its slot; tests assert on the prepared overrides.
+
+P2s from the same reviews, fixed: #1228 (evidence parsing of real async bash notices:
+call id key and `Exit code N` tail, `17da6107`), #1229 (terse-mode verdict on stderr,
+reviewer-turn stop recheck; `fda7a88e`, which also moved the loop exit path out of
+`app_run_async.go` when it hit the 1000-line limit), #1232 (test/comment hygiene, `c613d557`), #1233 (a provider
+retry no longer duplicates the cut attempt's text, `8499e9ae`), #1231 (registry
+re-anchored, `a432e6dd`).
+
+Accepted, with reasons:
+
+- `bgshell_claim.go` reads the live `notify_on_background_job_done` while the notifier is
+  chosen when the turn's tools are built: a hot switch of the option while a shell runs
+  can release a hold early. Narrow window, no data loss.
+- `job_kill` holds `bgArrival` for up to its 10 s budget while retrying the transition;
+  bounded by design. The gate's own exclusion window has no deterministic test (the
+  `IsDone` deferral and the under-gate cancelled check are each pinned by mutants).
+- Any callback hold counts as open work: a killed process tree that never exits keeps
+  `rush run` open up to `completionHoldMax` (10 min).
+- The `WorkspaceRoot` `.git`-walk fallback returns the path as written, not
+  symlink-resolved like git's answer; resolving it could change drive-letter case or 8.3
+  names on Windows and orphan stored rows. Reachable only when git gives no answer.
+- Reviewer effort on CLI/codex providers still comes through the context key (outside
+  #1221's API-provider scope); `--effort` without `--model` on a fresh session is ignored
+  (pre-existing).
+- `ask_question` checks only the session's own jobs, so a question over a live
+  delegation or a `wakein` schedule is delivered when that work ends (latency, not loss;
+  ASYNC-02).
+
+### Process notes
+
+The sweep of the 56 packages on `fffc19c1` before these follow-ups: 45 ok, 11 without
+tests, 0 failures. Orchestrating flash-class workers needed zero-trust review every
+time: two agent tests were vacuous (they asserted the session row, not what the turn
+sent; one passed with and without the fix), one agent's final report was garbled; the
+reviewer-role and `@ox` passes disagreed on severity only where reachability was
+unproven, and the ones that were reproduced held. The 5-hour provider budget and the
+shared heavy-command queue (queue wait counts against `--timeout`) are the real
+throughput limits of a parallel agent wave.
