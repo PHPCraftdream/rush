@@ -104,6 +104,9 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 		DataDirectory: f.env.workingDir, Sessions: f.env.sessions, Messages: f.env.messages,
 		Tools: tools, DisableAutoSummarize: true, AsyncJobs: f.ledger,
 		StreamIdleTimeout: o.streamIdle, StreamWatchdogTick: o.streamTick,
+		// The probe handler answers title requests with the same scripted
+		// turn, so the title never resolves: do not hold each turn 10 s on it.
+		TitleJoinGrace: 100 * time.Millisecond,
 	}
 	if !o.noIdle {
 		opts.OnSessionIdle = f.coord.onSessionIdleHook
