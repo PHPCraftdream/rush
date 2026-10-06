@@ -19,6 +19,8 @@ import (
 
 func TestPingProviderRecordsHeartbeat(t *testing.T) {
 	t.Setenv("RUSH_HEARTBEAT_DIR", t.TempDir())
+	heartbeat.ResetForTest()
+	t.Cleanup(heartbeat.ResetForTest)
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	t.Cleanup(func() { heartbeat.Shutdown(time.Second) })

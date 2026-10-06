@@ -69,6 +69,8 @@ func psIsolateEnv(t *testing.T) (hbDir, dataDir string) {
 	require.NoError(t, os.MkdirAll(hbDir, 0o755))
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	t.Setenv("RUSH_HEARTBEAT_DIR", hbDir)
+	heartbeat.ResetForTest()
+	t.Cleanup(heartbeat.ResetForTest)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(tmp, "config"))
 	t.Chdir(t.TempDir())

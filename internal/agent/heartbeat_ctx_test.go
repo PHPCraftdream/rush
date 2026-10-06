@@ -47,6 +47,8 @@ import (
 func hbIsolateEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("RUSH_HEARTBEAT_DIR", t.TempDir())
+	heartbeat.ResetForTest()
+	t.Cleanup(heartbeat.ResetForTest)
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 }

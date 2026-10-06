@@ -412,6 +412,17 @@ func ensureWorker() {
 	})
 }
 
+// ResetForTest drops every in-memory row and the Init state. Test-only: the
+// registry is process-wide, so tests in other packages that reuse a session
+// id or run with -count>1 would otherwise accumulate each other's counts.
+func ResetForTest() {
+	registry.Lock()
+	registry.rows = map[string]*record{}
+	initWorkspace = ""
+	initSlots = map[string]string{}
+	registry.Unlock()
+}
+
 // resetWorkerForTest re-arms the once so a fresh setup starts a new worker.
 func resetWorkerForTest() {
 	workerOnce = sync.Once{}

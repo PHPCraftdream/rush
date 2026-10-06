@@ -34,6 +34,8 @@ func hbIsolate(t *testing.T) string {
 	t.Helper()
 	d := t.TempDir()
 	t.Setenv("RUSH_HEARTBEAT_DIR", d)
+	heartbeat.ResetForTest()
+	t.Cleanup(heartbeat.ResetForTest)
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	t.Cleanup(func() { heartbeat.Shutdown(time.Second) })

@@ -21,6 +21,8 @@ func TestAppHeartbeatWiring(t *testing.T) {
 	isolateAppNewTestEnv(t)
 	hbDir := t.TempDir()
 	t.Setenv("RUSH_HEARTBEAT_DIR", hbDir)
+	heartbeat.ResetForTest()
+	t.Cleanup(heartbeat.ResetForTest)
 
 	dataDir := t.TempDir()
 	store, err := config.Init(dataDir, dataDir, false)
