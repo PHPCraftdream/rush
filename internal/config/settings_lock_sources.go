@@ -77,7 +77,9 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 		includeNatural := workspace == "" || normalizeReloadPath(natural) == normalizeReloadPath(workspace)
 		if !includeNatural && workspace != "" {
 			// A redirected workspace's natural lock applies only outside its directory.
-			rel, relErr := filepath.Rel(filepath.Dir(workspace), path)
+			// Both sides canonical: the target arrives resolved, so an aliased
+			// workspace dir (macOS /var → /private/var, Windows 8.3) must too.
+			rel, relErr := filepath.Rel(filepath.Dir(normalizeReloadPath(workspace)), normalizeReloadPath(path))
 			if relErr != nil || rel == ".." || filepath.IsAbs(rel) || (len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)) {
 				includeNatural = true
 			}

@@ -142,7 +142,7 @@ func TestSettingsLock_AuditEvents(t *testing.T) {
 		})
 		configTestHooks.Lock()
 		configTestHooks.afterCommitRenamePath = func(path string) error {
-			if filepath.Clean(path) == filepath.Clean(gp) {
+			if canonicalConfigPath(path) == canonicalConfigPath(gp) {
 				return errors.New("injected post-publication error")
 			}
 			return nil

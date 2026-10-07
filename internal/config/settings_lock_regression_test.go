@@ -52,6 +52,26 @@ func TestSettingsLockRegression_F3RedirectedWorkspacePath(t *testing.T) {
 	require.NoError(t, store.SetConfigField(ScopeGlobal, "value", "allowed"))
 }
 
+// A redirected workspace reached through a directory alias is still inside its
+// own directory (macOS TempDir is /var → /private/var; Windows CI has 8.3 names).
+func TestSettingsLockRegression_F3AliasedWorkspaceDir(t *testing.T) {
+	t.Cleanup(func() { SetProcessPassword("") })
+	root := t.TempDir()
+	natural := filepath.Join(root, ".rush", "rush.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(natural), 0o700))
+	require.NoError(t, os.WriteFile(natural, []byte(`{"sync_rev":"`+HashPassword("workspace-lock")+`"}`), 0o600))
+	realDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: filepath.Join(root, "global.json"), workspacePath: filepath.Join(alias, "rush.json")})
+	store.workingDir = root
+	SetProcessPassword("")
+	require.NoError(t, store.SetConfigField(ScopeWorkspace, "value", "allowed"))
+}
+
 func TestSettingsLockRegression_NonregularGlobalFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
