@@ -186,7 +186,7 @@ func LocalizeResetHint(text string, now time.Time) string {
 	if !ok || qualified {
 		return text
 	}
-	local := t.Local()
+	local := t.In(resetDisplayZone())
 	out := local.Format(localResetLayout)
 	if d := local.Sub(now); d > 0 {
 		out += " (in " + FormatResetDuration(d) + ")"
@@ -258,7 +258,7 @@ func QuotaLimitGuidance(err error) (guidance string, ok bool) {
 	if !found {
 		return "", false
 	}
-	local := resetAt.Local()
+	local := resetAt.In(resetDisplayZone())
 	line := fmt.Sprintf(
 		"Limit resets: %s (local time, RFC3339: %s)",
 		local.Format("2006-01-02 15:04:05 -07:00"),
@@ -269,3 +269,7 @@ func QuotaLimitGuidance(err error) (guidance string, ok bool) {
 	}
 	return line, true
 }
+
+// resetDisplayZone is the zone reset times are shown in; tests swap it
+// instead of time.Local, which every time.Now call reads.
+var resetDisplayZone = func() *time.Location { return time.Local }

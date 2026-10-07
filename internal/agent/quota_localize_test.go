@@ -12,12 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setTestLocal pins time.Local to UTC+2 for the test (not parallel-safe).
+// setTestLocal pins the reset display zone to UTC+2 for the test (not
+// parallel-safe). time.Local itself is left alone: the process-wide heartbeat
+// writer reads it through time.Now, so mutating it is a data race.
 func setTestLocal(t *testing.T) {
 	t.Helper()
-	old := time.Local
-	time.Local = time.FixedZone("TEST", 2*3600)
-	t.Cleanup(func() { time.Local = old })
+	old := resetDisplayZone
+	zone := time.FixedZone("TEST", 2*3600)
+	resetDisplayZone = func() *time.Location { return zone }
+	t.Cleanup(func() { resetDisplayZone = old })
 }
 
 func TestLocalizeResetHint(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 func TestWriteTruncatedKeyIsReserved(t *testing.T) {
 	dir := setDir(t)
 
-	require.NoError(t, Write(Event{"kind": "small", "truncated": "yes"}))
+	require.NoError(t, Write(Event{"kind": "short", "truncated": "yes"}))
 	ints := make([]int, 2000)
 	require.NoError(t, Write(Event{"kind": "big", "truncated": "no", "payload": ints}))
 

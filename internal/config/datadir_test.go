@@ -31,7 +31,9 @@ func gitRun(t *testing.T, dir string, args ...string) string {
 // linked worktree. Returns both canonical-ish absolute paths.
 func makeMainRepoWithWorktree(t *testing.T) (string, string) {
 	t.Helper()
-	base := t.TempDir()
+	// Long form: Windows runners hand out 8.3 temp paths, git reports long ones.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	mainRoot := filepath.Join(base, "main")
 	wtRoot := filepath.Join(base, "wt")
 	require.NoError(t, os.MkdirAll(mainRoot, 0o755))
