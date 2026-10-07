@@ -426,6 +426,10 @@ func ResetForTest() {
 	registry.Unlock()
 }
 
+// FlushForTest publishes every dirty row now, bypassing the 5 s throttle.
+// Test-only: a test reading snapshots must not wait on the writer cadence.
+func FlushForTest() { requestFlush(true) }
+
 // resetWorkerForTest re-arms the once so a fresh setup starts a new worker.
 func resetWorkerForTest() {
 	workerOnce = sync.Once{}

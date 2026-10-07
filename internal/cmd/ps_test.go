@@ -95,6 +95,8 @@ func psSeedLiveRow(t *testing.T, hbDir, session, provider, model, source string,
 	ctx := psCtx(session, source, purpose)
 	heartbeat.RecordRequest(ctx, provider, model, nil)
 	heartbeat.AddUsage(ctx, provider, model, heartbeat.Usage{Input: 1000, Output: 250, CostUSD: 0.01})
+	// Publish now: the writer's 5 s throttle would make each seed wait up to ~10 s.
+	heartbeat.FlushForTest()
 	return psSnapshotForSession(t, hbDir, session)
 }
 
@@ -142,6 +144,7 @@ func psSnapshotForSession(t *testing.T, dir, session string) string {
 // requests: the writer flushes asynchronously, ps reads only files.
 func psWaitRequests(t *testing.T, hbDir, session string, n int64) {
 	t.Helper()
+	heartbeat.FlushForTest()
 	path := psSnapshotForSession(t, hbDir, session)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
