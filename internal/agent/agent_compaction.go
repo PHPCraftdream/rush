@@ -185,13 +185,15 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 				)
 				// Release mailbox ownership with handoff so queued work gets a runner.
 				a.abandonOwnershipWithHandoff(sessionID, epoch)
-				return fmt.Errorf("session %q is already in use: %w", sessionID, lockErr)
+				a.requeueSummarizeSnapshot(sessionID, snapshot)
+				return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
 			}
 			slog.Error("agent.runSummarize: failed to acquire inter-process session lock, refusing to compact unprotected",
 				"session_id", sessionID, "err", lockErr)
 			// Release mailbox ownership with handoff so queued work gets a runner.
 			a.abandonOwnershipWithHandoff(sessionID, epoch)
-			return fmt.Errorf("session %q: could not acquire session lock: %w", sessionID, lockErr)
+			a.requeueSummarizeSnapshot(sessionID, snapshot)
+			return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
 		}
 	}
 
@@ -292,6 +294,16 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 	}
 	_, runErr := a.Run(ctx, firstQueued)
 	return runErr
+}
+
+// requeueSummarizeSnapshot puts a compaction back in summarizeQueue after a
+// lock-acquisition failure so the session's next owner drains and runs it.
+// GetOrSet (not Set) never clobbers a newer queued request, and no compaction
+// is spawned here, so a long-held lock cannot cause a busy retry loop.
+func (a *sessionAgent) requeueSummarizeSnapshot(sessionID string, snapshot *SummarizeSnapshot) {
+	a.summarizeQueue.GetOrSet(sessionID, func() *SummarizeSnapshot { return snapshot })
+	slog.Info("agent.runSummarize: re-queued compaction after session lock failure",
+		"session_id", sessionID)
 }
 
 func (a *sessionAgent) SummarizeQueued(sessionID string) bool {
