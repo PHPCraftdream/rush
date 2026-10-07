@@ -1,32 +1,53 @@
 package app
 
-// A question suspends automatic resumption even when completing open work
-// creates deferred debt while the run waits for that work.
+// A question asked while live work runs no longer suspends the run (#1270):
+// the ask_question tool hands back a keep-alive hint and the turn continues.
 
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
-// REVERT CHECK: removing coord.suspendAutoResume(call.SessionID) in
-// internal/agent/drain_attempt.go makes this issue a second provider request.
-func TestRunLoop_QuestionWithOpenDelegationExitsAwaitingAnswer(t *testing.T) {
-	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, _ []byte, _ bool, n int) {
-		if n == 1 {
+// TestRunLoop_QuestionWithLiveDelegationContinuesWithHint replaces the old
+// awaiting-answer contract (#1270): ask_question with a live delegation now
+// returns the keep-alive hint (the text names await_tasks), the turn CONTINUES
+// with that hint as the tool result, and the run does NOT exit awaiting_answer.
+//
+// REVERT CHECK: restoring suspendAutoResume(call.SessionID) in
+// internal/agent/drain_attempt.go (or dropping the live-work branch in
+// internal/agent/tools/ask_question.go so the tool returns AskQuestionError
+// while the delegation runs) makes the run exit awaiting_answer at request 1 --
+// request 2 never happens and this test goes red.
+func TestRunLoop_QuestionWithLiveDelegationContinuesWithHint(t *testing.T) {
+	var body2 atomic.Value // string
+	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, body []byte, _ bool, n int) {
+		switch n {
+		case 1:
 			admissionWriteSSE(w, []string{
 				admissionSSEToolCall("q", "call_q", "ask_question", `{"question":"which environment?"}`),
 				admissionSSEStop("q", "tool_calls"),
 			})
-			return
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				_, transitionErr := h.app.asyncJobStore.Transition(context.Background(),
+					session.TransitionParams{
+						Owner: h.sessionID, ToolCallID: "deleg-1", State: "completed",
+						ResultSummary: "done", Wake: true,
+					})
+				require.NoError(h.t, transitionErr)
+			}()
+		case 2:
+			body2.Store(string(body))
+			loopText(w, "h", "waiting for the worker", 11, 3)
+		default:
+			loopText(w, "f", "done", 11, 3)
 		}
-		h.t.Errorf("unexpected provider request #%d: the run must stop on its question", n)
-		loopText(w, "x", "unexpected", 1, 1)
 	})
 	ctx, cancel := context.WithTimeout(loopCtx(t), 15*time.Second)
 	t.Cleanup(cancel)
@@ -38,26 +59,17 @@ func TestRunLoop_QuestionWithOpenDelegationExitsAwaitingAnswer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, h.sessionID, "deleg-1"))
-	transitionDone := make(chan error, 1)
-	h.afterFirstTurn(func() {
-		h.seedDebt()
-		go func() {
-			time.Sleep(300 * time.Millisecond)
-			_, transitionErr := h.app.asyncJobStore.Transition(ctx, session.TransitionParams{
-				Owner: h.sessionID, ToolCallID: "deleg-1", State: "completed", ResultSummary: "done", Wake: true,
-			})
-			transitionDone <- transitionErr
-		}()
-	})
 
 	res, _, runErr := h.run(ctx, RunOverrides{})
 
+	require.NoError(t, runErr)
 	require.NoError(t, ctx.Err(), "the run finishes within ~15s")
-	require.NoError(t, <-transitionDone)
-	var awaiting *agent.AwaitingAnswerError
-	require.ErrorAs(t, runErr, &awaiting)
 	require.NotNil(t, res)
-	require.Equal(t, "awaiting_answer", res.ExitReason)
-	require.EqualValues(t, 1, h.requests.Load())
-	require.True(t, h.debtOpen(), "the completion is deferred, never owed: the notice stays for the answer turn")
+	require.Equal(t, "end_turn", res.ExitReason,
+		"the hinted question keeps the run alive; it never exits awaiting_answer")
+	require.Equal(t, "done", res.FinalText)
+	require.EqualValues(t, 3, h.requests.Load(),
+		"the question turn, the hint continuation, the completion drain")
+	require.Contains(t, body2.Load().(string), "await_tasks",
+		"the hint names await_tasks as the way to wait for the delegation")
 }

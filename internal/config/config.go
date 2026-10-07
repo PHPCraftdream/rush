@@ -428,6 +428,7 @@ func allToolNames() []string {
 		"inspect_agent",
 		"inject_agent",
 		"stop_agent",
+		"await_tasks",
 		"wakein",
 		"wakeon",
 		"loop",

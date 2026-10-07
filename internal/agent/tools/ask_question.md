@@ -22,9 +22,8 @@ in the same turn — it will not run.
 
 EXCEPTION: if you have running background tasks of your own (bash jobs,
 delegations) the call does NOT end the turn. You get a hint telling you to
-finish the turn without any tool call instead — the tasks' results arrive
-as new messages and the run continues on its own. Asking while work is
-running would end the whole run and orphan that work.
+call `await_tasks` to sleep until they finish instead — asking while work
+is running would end the whole run and orphan that work.
 </important>
 
 <tips>

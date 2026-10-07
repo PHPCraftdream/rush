@@ -703,6 +703,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		tools.NewInjectAgentTool(c),
 		tools.NewStopAgentTool(c),
 		tools.NewWakeinTool(c),
+		tools.NewAwaitTasksTool(c),
 		tools.NewWakeonTool(c),
 		tools.NewWakeLoopTool(c),
 		tools.NewWakeListTool(c),

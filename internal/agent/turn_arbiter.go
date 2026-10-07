@@ -74,9 +74,16 @@ type SessionFacts struct {
 	ChainOwnsAllDebt  bool
 	ChainNoticed      bool
 	RunningDelegation bool
-	DurableChild      bool
-	AutonomyEnabled   bool
-	AutoResumes       int
+	// RunningOwnJobs counts the session's running await_tasks work: its own
+	// async rows PLUS its live descendant delegation rows (rule 4b; the
+	// Child-side RunningDelegation is a different fact). readTurnFacts reads
+	// it only while the sleep is armed, so the hot path pays nothing.
+	RunningOwnJobs  int
+	DurableChild    bool
+	AutonomyEnabled bool
+	// SleepAll is await_tasks' "until: all" sleep (rule 4b).
+	SleepAll    bool
+	AutoResumes int
 }
 
 // DebtFacts is the DB half of the snapshot. OverCapRows counts the debt's
@@ -85,9 +92,18 @@ type SessionFacts struct {
 // covers the whole bg-shell debt" is BGShellOnly && OverCapRows ==
 // BGShellNotices (the same predicate the arbiter cap rule answers).
 type DebtFacts struct {
-	Visible        session.DebtSnapshot
-	PendingIncl    bool
-	BGShellOnly    bool
+	Visible     session.DebtSnapshot
+	PendingIncl bool
+	BGShellOnly bool
+	// CompletionOnly reports whether every pending row is a COMPLETION of
+	// finished work (#1270 rule 4b): notice rows count only when their kind
+	// is bg_shell_done or supervision, and job-debt rows are treated as
+	// completion-class unconditionally -- the rows read here
+	// (PendingInclusiveDebtRows) do not carry the job row's kind, and a
+	// finished job's pending delivery IS a completion. A pending child
+	// question (NoticeKindChildQuestion) is never completion-class, so a
+	// sleeping session wakes for it at once.
+	CompletionOnly bool
 	BGShellNotices int
 	OverCapRows    int
 }
@@ -211,7 +227,7 @@ func gateShut(f TurnFacts) (v Verdict, ok bool) {
 }
 
 // decide is THE pure launch decision (design sec.3, with the orchestrator's
-// corrected order, sec.9.1): WS-1, then rules 1-5 and 7, then the gate (8-10)
+// corrected order, sec.9.1): WS-1, then rules 1-4b and 7, then the gate (8-10)
 // for every session including a child under a running delegation, then 11-12,
 // which a running delegation skips, then 13. No clocks (Now is input), no I/O,
 // no global state. The rule order is contract: swapping 5/6 or 6/8 must turn
@@ -245,6 +261,17 @@ func decide(f TurnFacts) Verdict {
 	// 4: Stop or a pending question suspended automatic turns.
 	if f.Session.Suspended {
 		return Verdict{Kind: VDefer, Reason: "automatic turns suspended"}
+	}
+	// 4b (#1270): await_tasks' "until: all" sleep. While the sleep is armed
+	// AND the session still has running rows (own jobs or delegations -- an
+	// open once wake schedule is NOT work) AND every pending row is a
+	// completion of that work, the launch defers: the sleep is broken only
+	// by a completion (each one re-wakes the session) or the max_wait
+	// schedule. A question debt (or any other non-completion row) makes
+	// CompletionOnly false and falls through at once.
+	if f.Session.SleepAll && f.Debt.CompletionOnly &&
+		(f.Session.RunningOwnJobs > 0 || f.Session.RunningDelegation) {
+		return Verdict{Kind: VDefer, Reason: "sleeping until all tasks finish"}
 	}
 	// 5: the reaction chain guard (#1113) -- deliberately ABOVE the running
 	// delegation shortcut it replaced (R6B-1).
@@ -419,6 +446,18 @@ func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site 
 		}
 	}
 	f.Debt.BGShellNotices = len(notices)
+	// CompletionOnly (#1270 rule 4b): every pending row is a completion.
+	// Job-debt rows (hasJobDebt) are completion-class unconditionally: the
+	// rows read here do not classify them by kind, and a finished job's
+	// pending delivery IS a completion (see DebtFacts.CompletionOnly).
+	f.Debt.CompletionOnly = true
+	for _, n := range notices {
+		switch n.Kind {
+		case session.NoticeKindBGShellDone, session.NoticeKindSupervision:
+		default:
+			f.Debt.CompletionOnly = false
+		}
+	}
 	// Pending-inclusive debt, from the SAME rows read (same predicate as
 	// ReactionDebtExists): a debt that appeared after the earlier reads is
 	// still this decision's debt.
@@ -456,8 +495,22 @@ func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site 
 	f.Session.AutoResumes = s.AutoResumes
 	f.Session.Held = s.Held
 	f.Session.Suspended = s.Suspended
+	f.Session.SleepAll = s.SleepAll
 	f.Session.ChainLinks = s.ChainLinks
 	f.Session.ChainNoticed = s.ChainNoticed
+	// Rule 4b's running-rows fact is read ONLY while the sleep is armed, so
+	// the hot path pays nothing; the read reuses the same source as the
+	// session-activity facts (AsyncJobStore.LiveWorkForRoots). An unreadable
+	// read fails closed by leaving the count at zero -- the sleep then does
+	// not defer, and the launch proceeds exactly as it would without it.
+	if s.SleepAll {
+		work := l.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		// Descendant delegation rows count too (#1270): await_tasks arms the
+		// sleep for them exactly like for own jobs (Own excludes them), and
+		// RunningDelegation is the CHILD-side fact, never the root's own
+		// live delegations.
+		f.Session.RunningOwnJobs = len(work.Own) + len(work.Descendants)
+	}
 	// The chain guard's second half: the ENTIRE pending-inclusive debt must
 	// be completions of the chain's own idle launches -- no notice row at
 	// all and every job claim inside the chain's set.

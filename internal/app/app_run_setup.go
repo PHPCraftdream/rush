@@ -133,7 +133,10 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		if err != nil {
 			return 0, false
 		}
-		return act.Facts.OwnRunningJobs, true
+		// Live delegations count too (#1270): a question asked while a
+		// delegation runs would end the run and orphan that child work
+		// exactly like an own job would.
+		return act.Facts.OwnRunningJobs + act.Facts.LiveDelegations, true
 	})
 
 	// Per-call credentials (sdk.Client.RunWithCredentials): validate the

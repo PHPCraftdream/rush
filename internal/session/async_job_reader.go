@@ -29,10 +29,13 @@ const maxDescendantWalkDepth = 16
 // sec.3.6: never treated as dead). A row whose host is confirmed dead is
 // never returned by either walk.
 type LiveJob struct {
-	SessionID      string // owner_session_id
-	Depth          int    // 0 = root itself, 1 = direct delegation child, ...
-	ToolCallID     string
-	Kind           string
+	SessionID  string // owner_session_id
+	Depth      int    // 0 = root itself, 1 = direct delegation child, ...
+	ToolCallID string
+	Kind       string
+	// ToolName is the async_jobs.tool_name column (the tool that started
+	// the row); empty on rows written before the column existed.
+	ToolName       string
 	HostID         string
 	HostStatus     HostLockStatus // Alive or Unknown -- never Dead
 	StartedAt      time.Time
@@ -133,6 +136,7 @@ func (s *AsyncJobStore) LiveJobs(ctx context.Context, rootSessionID string) (liv
 				Depth:      depth,
 				ToolCallID: row.ToolCallID,
 				Kind:       row.Kind,
+				ToolName:   row.ToolName,
 				HostID:     row.HostID,
 				HostStatus: status,
 				StartedAt:  time.Unix(row.CreatedAt, 0),
@@ -220,6 +224,7 @@ func (s *AsyncJobStore) LiveOwnJobs(ctx context.Context, sessionID string) (live
 			SessionID:  row.OwnerSessionID,
 			ToolCallID: row.ToolCallID,
 			Kind:       row.Kind,
+			ToolName:   row.ToolName,
 			HostID:     row.HostID,
 			HostStatus: status,
 			StartedAt:  time.Unix(row.CreatedAt, 0),

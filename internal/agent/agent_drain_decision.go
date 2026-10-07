@@ -36,6 +36,14 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, sn
 		return false, unreadablePolicyInput("launch decision input", sessionID, err)
 	}
 	dv := drainVerdictOf(v)
+	if dv.kind == drainAllow {
+		// An allowed drain launch breaks await_tasks' sleep and cancels its
+		// max_wait schedule (#1270). The wakeSession funnel (drainPolicy)
+		// never sees an externally-driven session's drains — its loop
+		// launches those itself — so this is the commit-side half of the
+		// "every allowed launch clears" contract.
+		a.asyncJobs.coord.clearSleepAll(sessionID)
+	}
 	return dv.kind == drainAllow, dv
 }
 

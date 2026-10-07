@@ -183,6 +183,7 @@ func liveJobOf(row db.AsyncJob, depth int, status HostLockStatus) LiveJob {
 		Depth:      depth,
 		ToolCallID: row.ToolCallID,
 		Kind:       row.Kind,
+		ToolName:   row.ToolName,
 		HostID:     row.HostID,
 		HostStatus: status,
 		StartedAt:  time.Unix(row.CreatedAt, 0),

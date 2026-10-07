@@ -87,6 +87,9 @@ func (c *coordinator) stopTree(sessionID string) {
 		// the bg-shell cap counter; the human-message reset path
 		// (ResetAutoResumeCounter) clears both.
 		c.suspendAutoResume(id)
+		// A Stop ends the await_tasks sleep too; its max_wait schedule is
+		// cancelled so no uncancelled once schedule keeps the run open.
+		c.clearSleepAll(id)
 	}
 	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
 	// (pending/done) debt row across the whole stopped tree, closing the

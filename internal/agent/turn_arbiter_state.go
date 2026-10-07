@@ -27,7 +27,14 @@ type arbiterState struct {
 	chainClaims     map[string]struct{}
 	chainNoticed    bool
 	chainLastLaunch string
-	gate            GateFacts
+	// sleepAll is await_tasks' "until: all" sleep (#1270): armed by the
+	// tool, cleared by every allowed drain launch, a human message and
+	// Stop. sleepWakeID remembers the sleep's pending max_wait once
+	// schedule so the clear paths can cancel it (an uncancelled schedule
+	// keeps OnceWakeOpen set and holds the run open).
+	sleepAll    bool
+	sleepWakeID string
+	gate        GateFacts
 }
 
 // arbiter owns every arbiterState. The zero value is ready to use.
@@ -65,6 +72,7 @@ type arbiterSnapshot struct {
 	ChainLinks   int
 	ChainClaims  map[string]struct{}
 	ChainNoticed bool
+	SleepAll     bool
 	Gate         GateFacts
 }
 
@@ -82,6 +90,7 @@ func (a *arbiter) snapshot(sid string) arbiterSnapshot {
 		AutoResumes:  s.autoResumes,
 		ChainLinks:   s.chainLinks,
 		ChainNoticed: s.chainNoticed,
+		SleepAll:     s.sleepAll,
 		Gate:         s.gate,
 	}
 	out.Gate.Paced = !s.gate.RetryAt.IsZero()
@@ -139,6 +148,34 @@ func (a *arbiter) suspended(sid string) bool {
 	defer a.mu.Unlock()
 	s := a.bySession[sid]
 	return s != nil && s.suspended
+}
+
+// setSleepAll arms await_tasks' "until: all" sleep for sid, remembering
+// the max_wait once schedule id (empty when none) so the clear paths can
+// cancel it.
+func (a *arbiter) setSleepAll(sid, wakeID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.stateLocked(sid)
+	s.sleepAll = true
+	if wakeID != "" {
+		s.sleepWakeID = wakeID
+	}
+}
+
+// clearSleepAll disarms the sleep and returns the pending max_wait schedule
+// id ("" when there is none) for the caller to cancel.
+func (a *arbiter) clearSleepAll(sid string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.bySession[sid]
+	if s == nil {
+		return ""
+	}
+	id := s.sleepWakeID
+	s.sleepAll = false
+	s.sleepWakeID = ""
+	return id
 }
 
 // autoResumesOf returns the bg-shell auto-resume counter since the last human
@@ -244,7 +281,8 @@ func (a *arbiter) resetGate(sid string) {
 
 // resetForHumanMessage clears EVERYTHING one human message re-arms: the
 // bg-shell cap and its over-cap set, Stop's suspension, the reaction chain,
-// and the launch gate. A rerun's hold is NOT a human message's to lift: the
+// await_tasks' sleep flag with its remembered schedule id, and the launch
+// gate. A rerun's hold is NOT a human message's to lift: the
 // holds survive the reset and the entry dies only when the last hold is
 // released (P1-2 of the R-ARB-2 review).
 func (a *arbiter) resetForHumanMessage(sid string) {
@@ -387,7 +425,8 @@ func (a *arbiter) sessionsWithState() []string {
 }
 
 // dropIfIdle deletes sid's entry when nothing in it means anything any more
-// (no hold, no suspension, no cap counter, no chain, and a gate that is open:
+// (no hold, no suspension, no cap counter, no chain, no await_tasks sleep,
+// and a gate that is open:
 // never paced, or its pause has passed with both streaks at zero -- R4B-4).
 // A suspended session or a spent cap counter of an EXISTING session is kept:
 // only a human message re-arms those.
@@ -404,6 +443,7 @@ func (s *arbiterState) idle(now time.Time) bool {
 	pauseOver := s.gate.RetryAt.IsZero() || !s.gate.RetryAt.After(now)
 	return s.holds == 0 && !s.suspended && s.autoResumes == 0 &&
 		len(s.overCap) == 0 && s.chainLinks == 0 && len(s.chainClaims) == 0 &&
+		!s.sleepAll &&
 		pauseOver && s.gate.FreeStreak == 0 && s.gate.PaidStreak == 0
 }
 

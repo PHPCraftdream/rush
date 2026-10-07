@@ -126,6 +126,13 @@ func (c *coordinator) drainPolicy(ctx context.Context, sessionID string, spent b
 		}
 	}
 	dv := drainVerdictOf(v)
+	if dv.kind == drainAllow {
+		// Every allowed launch breaks await_tasks' sleep (rule 4b defers
+		// while it holds, so an allow means the sleep is over or was broken
+		// by a non-completion row); the max_wait schedule is cancelled with
+		// it. This is the one funnel every Drain launch passes through.
+		c.clearSleepAll(sessionID)
+	}
 	if dv.kind == drainDeferred && dv.reason == reactionChainReason &&
 		!facts.Session.ChainNoticed && !facts.Session.ExternallyDrivenSelf {
 		c.chainGuardMarker(ctx, sessionID)

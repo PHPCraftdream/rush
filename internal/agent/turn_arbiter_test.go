@@ -75,6 +75,34 @@ func TestDecide_Rule4_Suspended(t *testing.T) {
 	require.False(t, v.ReopenOnHint)
 }
 
+func TestDecide_Rule4b_SleepAllDefersUntilWorkFinishes(t *testing.T) {
+	// #1270: await_tasks' "until: all" sleep defers between rule 4 and
+	// rule 5 while the session still has running rows and every pending
+	// row is a completion of that work.
+	f := baseFacts()
+	f.Site = siteFact
+	f.Session.SleepAll = true
+	f.Session.RunningOwnJobs = 1
+	f.Debt.CompletionOnly = true
+	v := decide(f)
+	require.Equal(t, VDefer, v.Kind)
+	require.Equal(t, "sleeping until all tasks finish", v.Reason)
+	require.True(t, v.RecheckAt.IsZero())
+	// A non-completion row (a pending child question) breaks the sleep at
+	// once: CompletionOnly is false and the decision falls through.
+	f.Debt.CompletionOnly = false
+	require.Equal(t, VRun, decide(f).Kind)
+	// The sleep defers only while rows still run; once they are all done
+	// the next launch collects the completions.
+	f.Debt.CompletionOnly = true
+	f.Session.RunningOwnJobs = 0
+	f.Session.RunningDelegation = false
+	require.Equal(t, VRun, decide(f).Kind)
+	// A live delegation row also holds the sleep open.
+	f.Session.RunningDelegation = true
+	require.Equal(t, VDefer, decide(f).Kind)
+}
+
 func TestDecide_Rule5_ChainGuardAboveRunningDelegation(t *testing.T) {
 	// #1113, R6B-1: the chain guard fires BEFORE the running-delegation
 	// shortcut: a child is freed from the auto-resume policy, not from the

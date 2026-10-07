@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- New agent tool `await_tasks`: the top-level agent ends its turn and sleeps while its own background jobs or delegations are running. `until: "any"` (default) wakes it on the first completion, `until: "all"` defers every wake-up turn until all running work has finished (a delegation's question or a human message still wakes it at once); optional `max_wait_seconds` (60..21600) schedules a safety wake that is cancelled as soon as the sleep ends. With nothing running the call is refused, so it cannot hang a run. The orchestrator rule in the system prompt tells the model to wait with `await_tasks` instead of `ask_question` or polling.
+- `ask_question` in `rush run` no longer ends the run with `awaiting_answer` while delegations (sub-agents) are still running — before, only the agent's own background jobs counted, so an orchestrator that "asked" to wait for its workers exited and orphaned them. It now returns a hint to call `await_tasks` instead.
+- A settings write to a redirected workspace file reached through a directory alias (a symlinked dir, macOS `/var` → `/private/var`, Windows short 8.3 names) is no longer refused by the lock in the workspace's natural location: the target and the workspace directory are now compared in canonical form.
+
 ## [0.2.0-alpha.11] - 2026-10-07
 
 - A background job that Stop cancelled before its "started" result was written keeps its durable `cancelled` record when that write then fails (the abort path used to delete every unannounced row), and the job still leaves the in-memory ledger, so it never holds a job slot or keeps the session "running".

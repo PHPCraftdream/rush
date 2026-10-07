@@ -13,6 +13,7 @@ var restrictedToolActions = map[string]string{
 	"agent":                      "delegate",
 	"agentic_fetch":              "fetch",
 	"ask_question":               "ask",
+	"await_tasks":                "read",
 	"download":                   "download",
 	"edit":                       "write",
 	"fetch":                      "fetch",

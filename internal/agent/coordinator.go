@@ -576,8 +576,10 @@ func (c *coordinator) consecutiveResume(sessionID string) int {
 
 // resetConsecutiveResume clears, in the arbiter's one state, everything a
 // human message re-arms: the bg-shell cap counter and its over-cap set, Stop's
-// suspension, the reaction chain, and the launch gate.
+// suspension, the reaction chain, await_tasks' sleep (its max_wait schedule
+// is cancelled too), and the launch gate.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
+	c.clearSleepAll(sessionID)
 	c.arb.resetForHumanMessage(sessionID)
 }
 

@@ -110,11 +110,12 @@ func NewAskQuestionTool() fantasy.AgentTool {
 			sessionID := GetSessionFromContext(ctx)
 
 			if running, ok := OwnRunningJobsFromContext(ctx); ok && running > 0 {
-				// The agent has its own background work in flight: ending the
-				// run now would orphan it. Do NOT stop the turn — hand the
-				// model a hint it can act on and let the turn continue.
+				// The agent has live work in flight (its own background jobs
+				// and/or running delegations): ending the run now would
+				// orphan it. Do NOT stop the turn — hand the model a hint
+				// it can act on and let the turn continue.
 				return fantasy.NewTextResponse(fmt.Sprintf(
-					"You still have %d running background task(s) of your own. ask_question does NOT wait for them — calling it would end the whole run and leave them orphaned. Finish this turn WITHOUT any tool call instead: their results will arrive as new messages and the run continues automatically. Reserve ask_question for a decision you cannot make yourself.", running)), nil
+					"You still have %d running background task(s) (your own jobs and/or live delegations). ask_question does NOT wait for them — calling it would end the whole run and leave them orphaned. Call await_tasks instead to sleep until they finish (until: \"all\" when you need every result), or finish this turn WITHOUT any tool call and let their results arrive as new messages. Reserve ask_question for a decision you cannot make yourself.", running)), nil
 			}
 
 			return fantasy.ToolResponse{}, &AskQuestionError{
