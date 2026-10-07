@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -205,24 +206,38 @@ func TestRunNonInteractiveWaitsForAsyncSubAgentResult(t *testing.T) {
 }
 
 func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
-	var requests atomic.Int32
+	// Content-driven server: each request launches the next job until six are
+	// started; the final text comes only once all six completions are visible.
+	// Distinct commands: a byte-identical relaunch counts as idle polling for
+	// the reaction chain guard (A36).
+	var mu sync.Mutex
+	started := map[string]bool{}
+	envVars := []string{"GOOS", "GOARCH", "GOROOT", "GOPATH", "GOFLAGS", "GOVERSION"}
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
-		n := requests.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		acked := 0
+		for i := range envVars {
+			id := fmt.Sprintf("call-%d", i+1)
+			if started[id] && strings.Contains(string(body), "Async job "+id) {
+				acked++
+			}
+		}
 		switch {
-		case n <= 11 && n%2 == 1:
-			id := fmt.Sprintf("call-%d", n)
-			// Six DISTINCT commands: a byte-identical relaunch on every completion is polling and counts as idle for the reaction chain guard.
-			args := fmt.Sprintf(`{"program":"go","args":["env","%s"]}`, []string{"GOOS", "GOARCH", "GOROOT", "GOPATH", "GOFLAGS", "GOVERSION"}[(n-1)/2])
+		case len(started) < len(envVars):
+			i := len(started)
+			id := fmt.Sprintf("call-%d", i+1)
+			started[id] = true
+			args := fmt.Sprintf(`{"program":"go","args":["env","%s"]}`, envVars[i])
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall(fmt.Sprintf("start-%d", n), id, "run_command", args),
-				admissionSSEStop(fmt.Sprintf("start-%d", n), "tool_calls"),
+				admissionSSEToolCall(fmt.Sprintf("start-%d", i+1), id, "run_command", args),
+				admissionSSEStop(fmt.Sprintf("start-%d", i+1), "tool_calls"),
 			})
-		case n <= 12:
-			admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("waiting-%d", n), "waiting"), admissionSSEStop(fmt.Sprintf("waiting-%d", n), "stop")})
-		case n == 13:
+		case acked == len(envVars):
 			admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
 		default:
-			http.Error(w, "unexpected model call", http.StatusBadRequest)
+			admissionWriteSSE(w, []string{admissionSSEText("waiting", "waiting"), admissionSSEStop("waiting", "stop")})
 		}
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -231,7 +246,9 @@ func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
 	result, err := application.RunNonInteractiveWithResult(ctx, &output, "run six jobs", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
 	require.NoError(t, err)
 	require.Equal(t, "all six jobs finished", result.FinalText)
-	require.EqualValues(t, 13, requests.Load())
+	mu.Lock()
+	require.Len(t, started, 6)
+	mu.Unlock()
 	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`))
 	messages, err := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, err)
