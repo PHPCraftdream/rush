@@ -41,9 +41,11 @@ var launchCwd = func() string {
 	return wd
 }()
 
-var dirFunc atomic.Pointer[func() string]
-var parentName = sync.OnceValue(func() string { return parentProcessName(os.Getppid()) })
-var now = time.Now
+var (
+	dirFunc    atomic.Pointer[func() string]
+	parentName = sync.OnceValue(func() string { return parentProcessName(os.Getppid()) })
+	now        = time.Now
+)
 
 // recoverPanic converts a recovered panic into the returned error.
 func recoverPanic(err *error) {

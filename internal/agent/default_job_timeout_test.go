@@ -84,7 +84,13 @@ func TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut(t *testing.T) {
 		// deliverLocked deletes the job once it is terminal AND acknowledged,
 		// so nil means the timed-out outcome was already delivered.
 		job := jobOf(l, "session", "call")
-		return job == nil || job.state == phaseTimedOut
+		if job == nil {
+			return true
+		}
+		// job.state is written under l.mu by the timeout service.
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return job.state == phaseTimedOut
 	}, 5*time.Second, 10*time.Millisecond, "the default deadline must terminate the job")
 	select {
 	case got := <-delivered:
