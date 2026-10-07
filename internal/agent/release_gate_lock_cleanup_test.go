@@ -116,8 +116,8 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 				cleanupStarted.Store(true)
 				// PERMANENTLY BLOCK
 				select {
-				case <-time.After(10 * time.Second):
-					// Timeout to allow test to complete
+				// Blocked far past the hang-detector bound below.
+				case <-time.After(5 * time.Minute):
 				case <-cleanupUnblock:
 				}
 			}),
@@ -133,40 +133,27 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 	}
 
 	runErrCh := make(chan error, 1)
-	runStart := time.Now()
 	go func() {
 		_, err := sa2.Run(t.Context(), firstCall)
 		runErrCh <- err
 	}()
 
-	// Wait for Run() to return - should be QUICK despite blocked cleanup
+	// Latency is NOT the property here — "returns vs never returns" is.
+	// 30s is a hang detector only: the blocked cleanup now holds 5 minutes,
+	// so a Run() that waits for cleanup cannot pass this bound.
 	select {
 	case runErr := <-runErrCh:
-		runDuration := time.Since(runStart)
-		// runDuration covers the WHOLE Run() turn (provider HTTP round-trip
-		// + agent processing + the releaseMetadataCleanupBound release
-		// itself, see internal/session/lock.go), not just the isolated
-		// 50ms release bound, so it needs more headroom than a pure
-		// lock-release timing test. 500ms was observed to fail under heavy
-		// full-package parallel load even on an unmodified tree (510ms,
-		// 988ms), since every step of the turn is scheduler-jitter
-		// sensitive, not only the release. 3s stays far below the 10s
-		// permanent cleanup block and the 5s outer timeout below, so it
-		// still proves Run() does not wait for the blocked cleanup.
-		require.Less(t, runDuration, 3*time.Second,
-			"Run() should return quickly despite hung cleanup, got %v", runDuration)
-		// Run() should SUCCEED (not fail) because it completes before cleanup finishes
 		require.NoError(t, runErr, "Run should succeed")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run() did not return within 5s - cleanup is NOT running in background")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run() did not return within 30s - cleanup is NOT running in background")
 	}
 
 	// Wait for the cleanup goroutine to start (proves Release() reached it).
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for !cleanupStarted.Load() {
 		select {
 		case <-deadline:
-			t.Fatal("cleanup goroutine did not start within 2s - Release() was never called")
+			t.Fatal("cleanup goroutine did not start within 30s - Release() was never called")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -181,7 +168,7 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 		var err error
 		lk2, err = session.TryAcquireSessionLock(tmpDir, sessionID)
 		return err == nil && lk2 != nil
-	}, 2*time.Second, 10*time.Millisecond,
+	}, 30*time.Second, 10*time.Millisecond,
 		"OS lock should be acquirable even though cleanup is blocked")
 	require.NotNil(t, lk2)
 	_ = lk2.Release()

@@ -164,7 +164,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// Release the OS lock so the pump can acquire it.
 	lock.Release()

@@ -108,11 +108,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	t.Cleanup(func() {
-		// Pump.Stop() now returns a bool indicating forced shutdown.
-		// In test cleanup, we don't need to check it.
-		_ = pump.Stop()
-	})
+	stopRunQueuePumpForTest(t, pump)
 
 	// Exactly what drainOrReleaseMerged does for its `orphaned` return value.
 	sa.restartOrphaned([]SessionAgentCall{{
@@ -260,11 +256,7 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	t.Cleanup(func() {
-		// Pump.Stop() now returns a bool indicating forced shutdown.
-		// In test cleanup, we don't need to check it.
-		_ = pump.Stop()
-	})
+	stopRunQueuePumpForTest(t, pump)
 
 	// Do exactly what drainOrReleaseMerged does with `orphaned`.
 	sa.restartOrphaned(orphaned)

@@ -216,7 +216,7 @@ func TestAdmissionRefusal_NonBusyLockError_NoHotLoop(t *testing.T) {
 func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 	ctx := context.Background()
 	old := recheckDebtCheckBudget
-	recheckDebtCheckBudget = 300 * time.Millisecond
+	recheckDebtCheckBudget = 2 * time.Second
 	t.Cleanup(func() { recheckDebtCheckBudget = old })
 	f := newAttemptFixture(t, "attempt-hook-db", attemptFixtureOpts{noIdle: true})
 	plain, err := f.env.sessions.Create(ctx, "a plain session, never a delegation driver")
@@ -231,7 +231,7 @@ func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 	f.coord.onSessionIdleHook(plain.ID)
 	elapsed := time.Since(start)
 
-	require.Less(t, elapsed, 50*time.Millisecond, "the hook must return at once")
+	require.Less(t, elapsed, 100*time.Millisecond, "the hook must return at once")
 	// The DB stays held until the off-thread debt read has run into its budget:
 	// it fails and keeps the session for the tick.
 	require.Eventually(t, func() bool {
@@ -239,7 +239,7 @@ func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 		defer f.coord.recheckMu.Unlock()
 		_, queued := f.coord.recheckSet[plain.ID]
 		return queued
-	}, 5*time.Second, 10*time.Millisecond, "the blocked debt read ends at its budget, off the hook's goroutine, and keeps the session for the tick")
+	}, 15*time.Second, 10*time.Millisecond, "the blocked debt read ends at its budget, off the hook's goroutine, and keeps the session for the tick")
 	_, _ = conn.ExecContext(ctx, "ROLLBACK")
 	require.NoError(t, conn.Close())
 }

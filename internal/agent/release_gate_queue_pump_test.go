@@ -23,6 +23,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// stopRunQueuePumpForTest stops a test RunQueuePump at cleanup and fails the
+// test if shutdown was forced. Revert check: make a pumpTestCoordinator Run
+// block >5s (time.Sleep(6*time.Second)); Stop then returns true and this
+// helper fails the test where the old unchecked `defer pump.Stop()` /
+// `_ = pump.Stop()` passed silently while testEnv's db.Release cleanup closed
+// the DB under a live worker (session.RunQueuePump.Stop, run_queue_lifecycle.go).
+func stopRunQueuePumpForTest(t *testing.T, pump *session.RunQueuePump) {
+	t.Helper()
+	t.Cleanup(func() {
+		if pump.Stop() {
+			t.Errorf("RunQueuePump.Stop was forced: a worker was still running after the 5s grace; DB release cleanup would have closed the database under a live execution")
+		}
+	})
+}
+
 // TestReleaseGate_2_OSLockHeldPastRetryWindow proves that calls accepted through
 // detached path (restartOrphanedWithRetry/abandonOwnershipWithHandoff) execute
 // autonomously via REAL pump after OS lock becomes available.
@@ -138,7 +153,7 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// CRITICAL: Release the OS lock - this is the ONLY "action" we take.
 	// The pump AUTONOMOUSLY detects the queued entry and executes it.
@@ -329,7 +344,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for pump to autonomously process and execute the queued call.
 	require.Eventually(t, func() bool {
@@ -549,7 +564,7 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for pump to process the call and delete the entry via
 	// TerminalFailRunQueueEntry.

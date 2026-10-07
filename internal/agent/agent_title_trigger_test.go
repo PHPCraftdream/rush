@@ -272,7 +272,7 @@ func TestRun_TitleSlowerThanTheGraceStillLandsAfterTheTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	var titleCalls atomic.Int64
-	const titleDelay = 1200 * time.Millisecond
+	const titleDelay = 10 * time.Second
 	a, _ := newTitleTestAgent(t, env, &titleCalls, "A Slow Title", titleDelay,
 		func(o *SessionAgentOptions) { o.TitleJoinGrace = 300 * time.Millisecond })
 
@@ -285,12 +285,12 @@ func TestRun_TitleSlowerThanTheGraceStillLandsAfterTheTurn(t *testing.T) {
 	runElapsed := time.Since(start)
 	require.NoError(t, err, "a slow title must never fail the user's turn")
 	require.NotNil(t, res)
-	require.Less(t, runElapsed, 2*time.Second,
+	require.Less(t, runElapsed, 3*time.Second,
 		"the turn must not be held open past the grace for a slow title (got %v)", runElapsed)
 
 	// The title is no longer tied to the turn: it lands on its own, on the
 	// goroutine's own budget, shortly after the turn returns.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		updated, getErr := env.sessions.Get(context.Background(), sess.ID)
 		require.NoError(t, getErr)

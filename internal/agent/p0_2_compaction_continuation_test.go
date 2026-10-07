@@ -230,7 +230,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for the precise Ack event (not "queue looks empty" — a leased,
 	// still-executing row is already absent from ListPendingRunQueueEntries,

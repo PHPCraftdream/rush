@@ -290,7 +290,7 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
 	pump.Start()
-	defer pump.Stop()
+	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for the pump to process and execute the queued call.
 	require.Eventually(t, func() bool {
