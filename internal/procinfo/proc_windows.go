@@ -12,13 +12,17 @@ import (
 
 const tokensSupported = true
 
+// openProcess is swappable so tests can force ERROR_ACCESS_DENIED: an
+// elevated runner may open even the System process.
+var openProcess = windows.OpenProcess
+
 // Probe reports whether pid is alive and its creation token when readable.
 // ERROR_ACCESS_DENIED => alive=true, token="", known=false.
 func Probe(pid int) (alive bool, token string, known bool) {
 	if pid <= 0 {
 		return false, "", true
 	}
-	h, e := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	h, e := openProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if e != nil {
 		if e == windows.ERROR_ACCESS_DENIED {
 			return true, "", false
