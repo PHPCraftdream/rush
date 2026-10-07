@@ -77,6 +77,7 @@ func TestTurnStallZeroTimeoutWarnsButNeverAborts(t *testing.T) {
 	set := installFakeStallNow(t)
 	set(t0)
 	log.SetLogDirForTest(t, t.TempDir())
+	t.Cleanup(stallDumpWrites.Wait)
 	installStallTestPolicy(t, turnStallAbortPolicy)
 
 	sc, cancels, aborts := newArmedZeroClock(t, "sess-zero", &CallOptions{TurnStallTimeout: 0})
@@ -107,6 +108,9 @@ func TestTurnStallSamplerRaceWithHooks(t *testing.T) {
 	set := installFakeStallNow(t)
 	set(time.Now())
 	log.SetLogDirForTest(t, t.TempDir())
+	// Registered after TempDir, so it runs first: async dump writes must land
+	// before the dir is removed.
+	t.Cleanup(stallDumpWrites.Wait)
 	installStallTestPolicy(t, func(string, turnPhase, time.Duration, time.Duration) {})
 
 	shared := &stallClock{}

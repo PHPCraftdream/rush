@@ -1,11 +1,13 @@
 package log
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
+	"testing"
 	"time"
 )
 
@@ -22,6 +24,12 @@ var logDir atomic.Value // string
 // exactly the moment they are most needed. A process-local monotonic
 // counter is enough — the PID already disambiguates across processes.
 var dumpSeq atomic.Uint64
+
+// skipUnsetDirInTests drops a dump in a test binary when no log dir is set;
+// the fallback test turns it off.
+var skipUnsetDirInTests = testing.Testing()
+
+var errNoDumpDirInTest = errors.New("goroutine dump: no log dir set in a test binary")
 
 // SetLogDirForTest points WriteGoroutineDump's target directory at dir for
 // the duration of the calling test, restoring the previous value via
@@ -161,6 +169,10 @@ func WriteGoroutineDumpNamed(buf []byte, prefix string) (string, error) {
 	}
 	dir, _ := logDir.Load().(string)
 	if dir == "" {
+		// A test binary with no log dir must not litter the shared temp dir.
+		if skipUnsetDirInTests {
+			return "", errNoDumpDirInTest
+		}
 		dir = os.TempDir()
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {

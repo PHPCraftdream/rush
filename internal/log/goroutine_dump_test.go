@@ -56,6 +56,8 @@ func TestDumpGoroutines_WritesUsableDump(t *testing.T) {
 // before/without log.Setup — a hang during early startup is exactly when the
 // operator has the least information, so this path must not silently no-op.
 func TestDumpGoroutines_FallsBackWhenLogDirUnset(t *testing.T) {
+	skipUnsetDirInTests = false
+	t.Cleanup(func() { skipUnsetDirInTests = true })
 	prev := logDir.Load()
 	logDir.Store("")
 	t.Cleanup(func() {
@@ -260,4 +262,23 @@ func TestWriteGoroutineDump_ConcurrentDumpsDoNotCollide(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, n, "every concurrent dump must have produced its own file on disk")
+}
+
+// TestWriteGoroutineDump_TestBinaryWithoutDirWritesNothing: a test binary
+// with no log dir must not drop dumps into the shared temp dir.
+// Revert check: removing the skipUnsetDirInTests branch in
+// WriteGoroutineDumpNamed writes a file and returns a nil error.
+func TestWriteGoroutineDump_TestBinaryWithoutDirWritesNothing(t *testing.T) {
+	prev := logDir.Load()
+	logDir.Store("")
+	t.Cleanup(func() {
+		if s, ok := prev.(string); ok {
+			logDir.Store(s)
+		} else {
+			logDir.Store("")
+		}
+	})
+	path, err := WriteGoroutineDump([]byte("x"))
+	require.ErrorIs(t, err, errNoDumpDirInTest)
+	require.Empty(t, path)
 }

@@ -273,7 +273,9 @@ func stallSamplerCheck(sessionID string, clock *stallClock, now time.Time) {
 	)
 	// onFire must never block on I/O: dispatch the dump write
 	// asynchronously, in its own goroutine.
+	stallDumpWrites.Add(1)
 	go func() {
+		defer stallDumpWrites.Done()
 		path, err := log.WriteGoroutineDumpNamed(dump, prefix)
 		if err != nil {
 			slog.Warn("turn-stall detector: failed to write goroutine dump", "err", err)
@@ -282,6 +284,10 @@ func stallSamplerCheck(sessionID string, clock *stallClock, now time.Time) {
 		slog.Warn("turn-stall detector: wrote goroutine dump", "path", path)
 	}()
 }
+
+// stallDumpWrites counts in-flight async dump writes so a test can wait for
+// them before its log dir is removed.
+var stallDumpWrites sync.WaitGroup
 
 // stallDumpPrefix builds the dump filename prefix for a session:
 // "stall-<first8-of-session-id>-".
