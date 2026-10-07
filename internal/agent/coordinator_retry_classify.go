@@ -71,6 +71,9 @@ const (
 	classTerminal retryClass = iota
 	// classTransient is a provider/network hiccup worth a re-run.
 	classTransient
+	// classRateLimit is a 429 non-quota overload: retryable with its own
+	// dedicated wait budget.
+	classRateLimit
 )
 
 // classifyProviderError classifies a NON-NIL turn-terminating error.
@@ -106,7 +109,7 @@ func classifyProviderError(err error) retryClass {
 			if isQuotaLimit(providerErr) {
 				return classTerminal // multi-hour usage wall — operator accepts a fast fail
 			}
-			return classTransient // momentary overload
+			return classRateLimit // momentary overload — dedicated wait budget
 		case http.StatusRequestTimeout, http.StatusConflict:
 			return classTransient
 		}
@@ -252,7 +255,7 @@ func (c *coordinator) ownAttemptAssistantMessage(ctx context.Context, sessionID,
 //   - turn produced any content                                 → don't retry
 //   - persisted "Stream stalled" title (err is context.Canceled) → retry
 //   - turn returned no error (empty-stream close)                → retry
-//   - otherwise classify the returned error                      → transient?
+//   - otherwise classify the returned error                      → transient/rate limit?
 func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err error, attemptAssistantMsgID string) bool {
 	// R3-1: an admission refusal means this call never started a provider
 	// request — classify nothing, not even the message lookup.
@@ -293,7 +296,8 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 	if err == nil {
 		return true
 	}
-	return classifyProviderError(err) == classTransient
+	// rate limit are both retryable; everything terminal is not.
+	return classifyProviderError(err) != classTerminal
 }
 
 // shouldContinueTurn decides whether a turn that already produced partial
@@ -313,8 +317,8 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 // session's last row, which a concurrent caller's newer turn can own) has
 // FinishReasonError, it DID make progress, and the failure reads as
 // transient -- either the persisted "Stream stalled" finish title
-// (matching shouldRetryTurn's stall check), or
-// classifyProviderError(err) == classTransient. A nil err paired with
+// (matching shouldRetryTurn's stall check), or a retryable
+// classifyProviderError class (transient or rate limit). A nil err paired with
 // progress is left alone (returns false): that combination doesn't
 // correspond to any known transient signal (the nil-err retry path exists
 // only for the empty-stream-close case, which by definition has no
@@ -353,7 +357,7 @@ func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, 
 	if err == nil {
 		return message.Message{}, false
 	}
-	if classifyProviderError(err) == classTransient {
+	if classifyProviderError(err) != classTerminal {
 		return msg, true
 	}
 	return message.Message{}, false

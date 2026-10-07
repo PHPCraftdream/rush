@@ -627,7 +627,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	if agentCall.IsDrain {
 		maxRetries = 0 // one attempt, see above
 	}
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	rateLimitWaits := 0
+	var rateLimitSpent time.Duration
+	for attempt := 1; ; {
 		// R7-1: ADMISSION OUTCOME gates retry classification, checked
 		// BEFORE any attemptEvidence consultation. A queued call never
 		// executed a turn: originalErr's nil is the queueing return, not
@@ -669,22 +671,52 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 				trackCall.ExistingMessageID = createdUserMessageID
 			}
 		}
-		backoff := streamStallRetryBaseBackoff
-		for i := 1; i < attempt; i++ {
-			backoff = time.Duration(float64(backoff) * streamStallRetryBackoffMultiplier)
-		}
-		slog.Warn(
-			"coordinator: retrying transient turn failure",
-			"session_id", sessionID,
-			"attempt", attempt+1,
-			"max_attempts", maxRetries+1,
-			"backoff", backoff.String(),
-			"continuation", isContinuation,
-		)
-		select {
-		case <-ctx.Done():
-			return result, ctx.Err()
-		case <-time.After(backoff):
+		if isRateLimitError(originalErr) {
+			// A non-quota 429 retries on its OWN budget: Retry-After when
+			// the provider sent one, else exponential, never counted
+			// against maxRetries. Explicit stream_stall_retries=0 (and a
+			// Drain) disables this wait too.
+			if maxRetries == 0 {
+				break
+			}
+			wait := rateLimitWaitFor(originalErr, rateLimitWaits)
+			deadline := time.Now().Add(wait)
+			slog.Warn(
+				"coordinator: provider rate limit, waiting before next attempt",
+				"session_id", sessionID,
+				"attempt", rateLimitWaits+1,
+				"wait", wait.String(),
+				"wait_until", deadline.Format("15:04"),
+			)
+			if err := c.waitRateLimit(ctx, sessionID, wait, &rateLimitSpent); err != nil {
+				if errors.Is(err, errRateLimitBudgetExhausted) {
+					break
+				}
+				return result, ctx.Err()
+			}
+			rateLimitWaits++
+		} else {
+			if attempt > maxRetries {
+				break
+			}
+			backoff := streamStallRetryBaseBackoff
+			for i := 1; i < attempt; i++ {
+				backoff = time.Duration(float64(backoff) * streamStallRetryBackoffMultiplier)
+			}
+			slog.Warn(
+				"coordinator: retrying transient turn failure",
+				"session_id", sessionID,
+				"attempt", attempt+1,
+				"max_attempts", maxRetries+1,
+				"backoff", backoff.String(),
+				"continuation", isContinuation,
+			)
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-time.After(backoff):
+			}
+			attempt++
 		}
 		// Fresh capture target for the next attempt (R3-1, round 6);
 		// this attempt's instance is sealed by the resolve() below.

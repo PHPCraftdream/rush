@@ -145,7 +145,9 @@ func TestClassifyProviderError(t *testing.T) {
 		{"403", providerErr(http.StatusForbidden, "forbidden"), classTransient},
 
 		{"429 quota wall", providerErr(http.StatusTooManyRequests, quotaMsg), classTerminal},
-		{"429 overload", providerErr(http.StatusTooManyRequests, overloadMsg), classTransient},
+		// Non-quota 429 now takes the dedicated rate-limit wait budget, not
+		// the transient backoff leg.
+		{"429 overload", providerErr(http.StatusTooManyRequests, overloadMsg), classRateLimit},
 
 		{"408", providerErr(http.StatusRequestTimeout, "timeout"), classTransient},
 		{"409", providerErr(http.StatusConflict, "conflict"), classTransient},
@@ -168,7 +170,7 @@ func TestClassifyProviderError(t *testing.T) {
 		{
 			"RetryError wrapping 429 overload",
 			&fantasy.RetryError{Errors: []error{providerErr(http.StatusTooManyRequests, overloadMsg)}},
-			classTransient,
+			classRateLimit,
 		},
 		{
 			"RetryError wrapping 429 quota",
