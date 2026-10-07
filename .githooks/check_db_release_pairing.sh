@@ -128,6 +128,8 @@ while IFS= read -r file; do
 		continue
 		;;
 	internal/app/app_broker_shutdown_test.go|\
+	internal/app/app_heartbeat_test.go|\
+	internal/app/app_run_workspace_test.go|\
 	internal/app/app_new_skip_agent_setup_test.go|\
 	internal/app/app_run_admission_race_test.go|\
 	internal/app/app_run_json_envelope_golden_test.go|\

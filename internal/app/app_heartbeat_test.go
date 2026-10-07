@@ -63,9 +63,14 @@ func TestAppHeartbeatWiring(t *testing.T) {
 }
 
 func TestHeartbeatDirNeverRealInTests(t *testing.T) {
+	t.Setenv("RUSH_HEARTBEAT_DIR", "")
 	t.Setenv("RUSH_GLOBAL_DATA", "")
 	require.Empty(t, heartbeatDir())
-	tmp := t.TempDir()
-	t.Setenv("RUSH_GLOBAL_DATA", tmp)
-	require.Equal(t, filepath.Join(tmp, "heartbeat"), heartbeatDir())
+	// An isolated global dir alone is not enough: the process-wide writer
+	// would keep writing into a TempDir after its test ended.
+	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
+	require.Empty(t, heartbeatDir())
+	hb := filepath.Join(t.TempDir(), "hb")
+	t.Setenv("RUSH_HEARTBEAT_DIR", hb)
+	require.Equal(t, hb, heartbeatDir())
 }

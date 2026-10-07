@@ -15,8 +15,13 @@ func DefaultDir() string {
 	if d := os.Getenv("RUSH_HEARTBEAT_DIR"); d != "" {
 		return d
 	}
-	if testing.Testing() && os.Getenv("RUSH_GLOBAL_DATA") == "" {
+	// A test binary writes snapshots only into an explicit RUSH_HEARTBEAT_DIR:
+	// the process-wide writer outlives each test and would race its TempDir.
+	if skipDefaultDirInTests {
 		return ""
 	}
 	return filepath.Join(config.GlobalWorkspaceDir(), "heartbeat")
 }
+
+// skipDefaultDirInTests is true in a test binary; the dir test turns it off.
+var skipDefaultDirInTests = testing.Testing()

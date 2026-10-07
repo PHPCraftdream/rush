@@ -34,7 +34,8 @@ type inlineFixture struct {
 	wrapped  *asyncTool
 	ctx      context.Context
 	call     fantasy.ToolCall
-	innerCtx context.Context
+	// innerStarted is set by the executor goroutine (atomic: read by the test).
+	innerStarted atomic.Bool
 	// release unblocks a slow inner tool.
 	release chan struct{}
 	webDone atomic.Int32
@@ -61,10 +62,15 @@ func newInlineFixture(t *testing.T, mode inlineInnerMode) *inlineFixture {
 	f.l = newWorkLedger(func(AsyncCompletion) { f.webDone.Add(1) })
 	f.l.store = store
 	f.l.timeouts = newTimeoutService(f.l)
+	// A fast job must land inside the window even under -race load; a slow
+	// job blocks on release, so its short window only bounds the test.
 	f.l.inlineWindow = 80 * time.Millisecond
+	if mode == innerFast {
+		f.l.inlineWindow = 30 * time.Second
+	}
 
-	inner := fantasy.NewAgentTool("run_command", "Run a program", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		f.innerCtx = ctx
+	inner := fantasy.NewAgentTool("run_command", "Run a program", func(_ context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		f.innerStarted.Store(true)
 		if mode == innerSlow {
 			<-f.release
 		}
@@ -312,7 +318,7 @@ func TestInlineWindow_StopInWindow(t *testing.T) {
 		require.NoError(t, err)
 		respCh <- resp
 	}()
-	require.Eventually(t, func() bool { return f.innerCtx != nil }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return f.innerStarted.Load() }, 5*time.Second, 5*time.Millisecond)
 
 	f.l.cancelSession("owner-1")
 	resp := <-respCh
@@ -345,7 +351,7 @@ func TestInlineWindow_CtxCancelInWindow(t *testing.T) {
 		require.NoError(t, err)
 		runDone <- resp
 	}()
-	require.Eventually(t, func() bool { return f.innerCtx != nil }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return f.innerStarted.Load() }, 5*time.Second, 5*time.Millisecond)
 	cancel()
 	resp := <-runDone
 	require.Contains(t, resp.Content, "started")
@@ -398,7 +404,7 @@ func TestInlineWindow_CloseInWindow(t *testing.T) {
 		require.NoError(t, err)
 		runDone <- resp.Content
 	}()
-	require.Eventually(t, func() bool { return f.innerCtx != nil }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return f.innerStarted.Load() }, 5*time.Second, 5*time.Millisecond)
 	f.l.close()
 	require.Contains(t, <-runDone, "started")
 	row := f.row(t)
