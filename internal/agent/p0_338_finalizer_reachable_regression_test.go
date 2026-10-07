@@ -34,9 +34,9 @@ import (
 //  2. Starts a Run() that acquires the OS lock.
 //  3. The first call to the provider returns an error via a custom context,
 //     causing Run() to error out quickly and trigger the finalizer.
-//  4. Verifies that Run() returns quickly (within 1s, well below the 2s the
-//     injected hung cleanup blocks for) even though cleanup is blocked — this
-//     proves Release() defer doesn't block.
+//  4. The run wait is a 30-second HANG DETECTOR, not a latency bound: a
+//     reverted fix makes Release() block forever on the injected cleanup, so
+//     Run() never returns and the detector fires.
 //  5. Verifies that the cleanup goroutine actually started (proves it was spawned).
 //  6. Verifies that the OS lock is available even while cleanup is blocked.
 //  7. Verifies that the finalizer abandonOwnershipWithHandoff actually ran
@@ -45,9 +45,9 @@ import (
 //     b. orphanedCall.Prompt appears in the session's message history
 //
 // Since task #340 ROUND 3, the finalizer's detached run durably enqueues the
-// orphaned call instead of executing it inline, so this test also starts a
-// session.RunQueuePump (fast TestTick) to prove the queue is actually drained,
-// not just written to.
+// orphaned call instead of executing it inline, so this test runs one cold
+// synchronous DrainSessionNow on the queue pump to prove the queue is actually
+// drained, not just written to.
 //
 // This is the SAME execution proof pattern as p0_2_regression_test.go
 // (TestP0_2_RetryExhaustion_QueuesCall), using httptest.Server with SSE responses
@@ -60,7 +60,8 @@ import (
 //  1. In lock.go Release(), change "go cleanupFn(path)" back to "cleanupFn(path)"
 //     (remove the "go " keyword) in the background goroutine launch.
 //  2. Run: go test ./internal/agent -run TestP0_338_FinalizerReachableDespiteHungCleanup -v
-//  3. The test will FAIL because Run() hangs forever on Release().
+//  3. The test will FAIL via the 30-second hang detector: Release() blocks
+//     forever on the injected cleanup, so Run() never returns.
 //  4. Restore the fix (add "go " back) and the test will PASS.
 func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -122,6 +123,9 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	conn, err := db.Connect(t.Context(), tmpDir)
 	require.NoError(t, err)
 	q := db.New(conn)
+	// t.Cleanup runs even on failure paths, so rush.db can't block t.TempDir's
+	// RemoveAll if an assertion above bails out early.
+	t.Cleanup(func() { require.NoError(t, db.Release(tmpDir)) })
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)
 
@@ -175,15 +179,9 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 			session.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
 				safeLogf("cleanup goroutine started for path: %s", path)
 				cleanupStarted.Store(true)
-				// Block for 2 seconds to prove the point, then unblock to avoid process cleanup issues.
-				select {
-				case <-time.After(2 * time.Second):
-					safeLogf("cleanup goroutine unblocking after timeout")
-					// Timeout - unblock and proceed with cleanup
-				case <-cleanupUnblock:
-					safeLogf("cleanup goroutine unblocking via explicit unblock")
-					// Explicit unblock (used in cleanup phase)
-				}
+				// Hung until the test's defer: a synchronous Release can never return.
+				<-cleanupUnblock
+				safeLogf("cleanup goroutine unblocking via explicit unblock")
 				safeLogf("cleanup goroutine completed")
 			}),
 		},
@@ -227,28 +225,17 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 		runDuration := time.Since(runStart)
 		currentCalls := providerCalls.Load()
 		t.Logf("Run() returned in %v with error: %v, provider calls: %d", runDuration, runErr, currentCalls)
-		// The property under test is binary, not precise: with the #337 fix in
-		// place, Run() returns as soon as the local httptest round trip
-		// completes (a few tens of ms); with the fix reverted (see REVERT
-		// CHECK PROCEDURE above), Release() blocks synchronously on cleanupFn,
-		// which the injected hung cleanup holds for 2 full seconds. A margin
-		// just has to sit comfortably between those two regimes -- it doesn't
-		// need to be tight. The original 200ms bound flaked on CI (ubuntu-latest
-		// run 31714546616, actual 371.9ms -- ordinary shared-runner variance on
-		// a real HTTP round trip plus DB/session setup, not the 2s-scale hang
-		// this test exists to catch), so widened to 1s: still >5x below the 2s
-		// hang and comfortably above observed CI variance.
-		require.Less(t, runDuration, 1*time.Second,
-			"Run() should return quickly even with hung cleanup, got %v", runDuration)
+		// With the fix present, Run() returns as soon as the HTTP round trip
+		// completes; with the fix reverted, Release() blocks forever on
+		// cleanupUnblock, so the 30s wait is a hang detector, not a latency bound.
 		require.Error(t, runErr, "Run should fail")
 		// The error message indicates Run() failed (expected since our provider returns HTTP 400).
 		// What matters is that Run() returned quickly, proving Release() defer didn't block.
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		currentCalls := providerCalls.Load()
 		t.Logf("Provider call count: %d", currentCalls)
 		t.Logf("Cleanup started: %v", cleanupStarted.Load())
-		require.Fail(t, "Run() did not return within 5 seconds - "+
-			"this proves Release() is NOT running cleanup in background (fix #337 broken)")
+		require.Fail(t, "Run() never returned - Release() is blocking on cleanup, i.e. fix #337 is broken")
 	}
 
 	// Wait for the cleanup goroutine to start (proves Release() reached it).
@@ -275,99 +262,50 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	// CRITICAL VERIFICATION 2: The OS lock should be available even though cleanup is blocked.
 	// This proves Release() returned after unlock/close, not after cleanup.
 	//
-	// We use Eventually with a short timeout because there might be a tiny race where
-	// the background cleanup goroutine is reopening the file (for metadata clear) when
-	// we try to acquire. The OS lock was already released by unlockFile() in Release(),
-	// so this retry is just waiting for the file descriptor to be fully closed.
-	var lk2 *session.SessionLock
-	require.Eventually(t, func() bool {
-		var err error
-		lk2, err = session.TryAcquireSessionLock(tmpDir, sessionID)
-		return err == nil && lk2 != nil
-	}, 2*time.Second, 10*time.Millisecond,
-		"OS lock should be acquirable even though cleanup is blocked")
+	// Release() unlocks and closes the file before spawning the cleanup goroutine,
+	// and the acquire path waits for any pending handoff, so a single TryAcquire is enough.
+	lk2, err := session.TryAcquireSessionLock(tmpDir, sessionID)
+	require.NoError(t, err, "OS lock should be acquirable after Run returned: Release unlocks before spawning cleanup (lock.go) and acquire waits for any pending handoff")
 	require.NotNil(t, lk2)
-	if lk2 != nil {
-		_ = lk2.Release()
-	}
+	_ = lk2.Release()
 
 	// CRITICAL VERIFICATION 3: The finalizer's detached run actually executed the orphaned call.
-	// We verify this by waiting for the provider call count to reach at least 2:
-	//   - Call 1: firstCall (returns error, triggers finalizer)
-	//   - Call 2+: orphaned call(s) executed by detached run
+	// Since task #340 ROUND 3, restartOrphanedWithRetry durably enqueues the call
+	// synchronously inside Run's defer, so the queue row already exists when Run returns.
 	//
-	// Since task #340 ROUND 3, restartOrphanedWithRetry no longer executes the
-	// call itself — it durably enqueues it and relies on a session.RunQueuePump
-	// to pick it up. Without a pump running, the enqueued call would sit
-	// pending forever, so we start one here (TestTick keeps its poll interval
-	// short instead of the production 3s) before waiting for execution. This
-	// is still NOT an "external poke": the finalizer autonomously durably
-	// enqueued the call the moment Run() failed; the pump is just the
-	// mandatory background executor for that queue, equivalent to what
-	// App.New() wires in production.
+	// The finalizer enqueued synchronously before Run returned, so one cold synchronous
+	// drain proves the queue is actually drained; the drain runs the entry to completion,
+	// so its DB writes finish before db.Release in t.Cleanup.
 	pumpCoord := &p0338PumpCoordinator{sessionAgent: sa}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       sessions,
 		Coordinator:    pumpCoord,
 		PumpInstanceID: "test-pump-p0-338",
-		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
-	pump.Start()
-	defer pump.Stop()
+	drainCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	result, drainErr := pump.DrainSessionNow(drainCtx, sessionID)
+	require.NoError(t, drainErr, "synchronous drain of the session queue should succeed")
+	require.Equal(t, session.DrainComplete, result, "synchronous drain should execute the orphaned call end to end")
 
-	require.Eventually(t, func() bool {
-		return providerCalls.Load() >= 2
-	}, 10*time.Second, 100*time.Millisecond,
+	require.GreaterOrEqual(t, providerCalls.Load(), int64(2),
 		"Finalizer's detached run should have executed orphaned call "+
 			"(provider call count >= 2, got %d)", providerCalls.Load())
 
 	// CRITICAL VERIFICATION 4: The orphaned call's prompt appears in message history.
 	// This proves the call was actually executed, not just queued.
-	//
-	// The finalizer's detached run should have completed at least one turn for the orphaned call,
-	// which means the prompt should appear in the session's message history.
-	require.Eventually(t, func() bool {
-		msgs, err := messages.List(t.Context(), sess.ID)
-		if err != nil {
-			return false
-		}
-		for _, m := range msgs {
-			for _, part := range m.Parts {
-				if tc, ok := part.(message.TextContent); ok {
-					if tc.Text == "orphaned call" {
-						return true
-					}
-				}
+	msgs, err := messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	var found bool
+	for _, m := range msgs {
+		for _, part := range m.Parts {
+			if tc, ok := part.(message.TextContent); ok && tc.Text == "orphaned call" {
+				found = true
 			}
 		}
-		return false
-	}, 10*time.Second, 100*time.Millisecond,
-		"Orphaned call prompt should appear in message history "+
-			"(proving the call was actually executed, not just queued)")
-
-	// Stop the pump BEFORE releasing the DB: the two require.Eventually
-	// calls above only prove the orphaned call's turn STARTED writing
-	// (provider called, prompt visible in history) — the pump worker's
-	// turn (title generation, lock release, final bookkeeping) can still
-	// be mid-flight on the single writer connection when they return.
-	// Stop() waits up to 5s for in-flight workers to finish, so by the
-	// time it returns the pump is done touching the DB. Calling it here
-	// (Stop() is idempotent, guarded by p.started) makes the deferred
-	// Stop() above a no-op; without this explicit call in the right
-	// order, db.Release below could close the connection out from under
-	// a still-running worker, which on Windows surfaces as t.TempDir()'s
-	// RemoveAll failing with "the process cannot access the file"
-	// (rush.db still open) rather than as a DB error.
-	pump.Stop()
-
-	// Clean up the DB connection so tmpDir can be removed. db.Connect pools
-	// connections by absolute dataDir path and additionally opens a
-	// separate read-only pool sharing the same refcount (see
-	// internal/db/connect.go) — a raw conn.Close() only closes the writer
-	// handle and leaves the reader pool's file handle open, which on
-	// Windows blocks t.TempDir()'s own RemoveAll cleanup. db.Release tears
-	// down both.
-	require.NoError(t, db.Release(tmpDir))
+	}
+	require.True(t, found, "Orphaned call prompt should appear in message history "+
+		"(proving the call was actually executed, not just queued)")
 }
 
 // p0338PumpCoordinator adapts session.SessionAgentCallData to agent.SessionAgentCall

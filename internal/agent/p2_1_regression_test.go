@@ -29,7 +29,8 @@ import (
 //  1. In agent.go abandonOwnershipWithHandoff (~line 985), comment out the
 //     entire summarizeQueue drain block (lines 985-994).
 //  2. Run: go test ./internal/agent -run TestP2_1_SummarizeQueueDrainedFromNonWebPath -v
-//  3. The test will FAIL because summarize is never executed (queue never drains).
+//  3. The test will FAIL via the 30s hang detector: with the drain block
+//     removed, the summarize is never executed, summarizeCalled never closes.
 //  4. Restore the fix and the test will PASS again.
 func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 	t.Parallel()
@@ -42,6 +43,8 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 	releaseChunks := func() {
 		releaseOnce.Do(func() { close(chunksReleased) })
 	}
+	summarizeCalled := make(chan struct{})
+	var summarizeOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		totalCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -53,6 +56,10 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 		// decision exactly once and is race-free under concurrent
 		// handlers.
 		gated := firstRequest.CompareAndSwap(false, true)
+		if !gated {
+			// Non-gated request: this is the summarize reaching the provider.
+			summarizeOnce.Do(func() { close(summarizeCalled) })
+		}
 
 		// Stream a simple response.
 		chunks := []string{
@@ -171,10 +178,6 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 	// Verify the session is busy (owned by the Run).
 	require.True(t, sessionAgent.IsSessionBusy(sess.ID), "session should be busy after Run starts")
 
-	// Busy state confirmed: release the gate so the Run request can
-	// stream its remaining chunks and complete.
-	releaseChunks()
-
 	// Call Summarize directly (NON-WEB PATH) while the session is busy.
 	// This should queue the request and return ErrSummarizeQueued.
 	err = sessionAgent.Summarize(ctx, sess.ID, sessionAgent.testBuildSummarizeSnapshot())
@@ -184,31 +187,33 @@ func TestP2_1_SummarizeQueueDrainedFromNonWebPath(t *testing.T) {
 	// Verify the summarize was queued (SummarizeQueued returns true).
 	require.True(t, sessionAgent.SummarizeQueued(sess.ID), "summarize should be queued")
 
+	// Release the gate only after the queued-summarize assertions: they need the Run
+	// to still own the session; releasing earlier lets the finalizer drain the queue
+	// first and Summarize would execute inline instead of returning ErrSummarizeQueued.
+	releaseChunks()
+
 	// Wait for the Run to complete (this will trigger abandonOwnershipWithHandoff,
 	// which should drain the summarizeQueue and execute the summarize).
 	select {
 	case <-runDone:
 		// Good - Run completed.
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not complete within timeout")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not complete within 30 seconds - hang detector (Run should complete promptly once the gate opens)")
 	}
 
-	// Give the detached summarize goroutine time to complete.
-	// The fix runs Summarize in a detached goroutine with context.Background(),
-	// so it may take a moment to finish.
-	require.Eventually(t, func() bool {
-		return totalCalls.Load() >= 2 // Run + summarize
-	}, 2*time.Second, 50*time.Millisecond, "summarize provider should have been called")
+	// The handler closing summarizeCalled proves the queued summarize was drained
+	// and reached the provider (replaces a wall-clock Eventually).
+	select {
+	case <-summarizeCalled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("summarize never executed - abandonOwnershipWithHandoff's summarizeQueue drain is broken")
+	}
 
-	// Verify the summarize was executed (SummarizeQueued returns false).
-	require.Eventually(t, func() bool {
-		return !sessionAgent.SummarizeQueued(sess.ID)
-	}, 2*time.Second, 50*time.Millisecond, "summarize queue should be empty after execution")
+	// The summarize was admitted through tryAdmitRunWg (agent_compaction.go), so
+	// waiting on runWg guarantees its commit and message deletes are done before teardown.
+	sessionAgent.runWg.Wait()
 
-	// Verify that the provider was called for both Run and summarize (total = 2).
-	require.Eventually(t, func() bool {
-		return totalCalls.Load() >= 2
-	}, 2*time.Second, 50*time.Millisecond, "provider should have been called twice (Run + summarize)")
+	require.False(t, sessionAgent.SummarizeQueued(sess.ID), "summarize queue should be empty after execution")
 
 	// Verify the summary message was added to the history.
 	msgs, err := env.messages.List(ctx, sess.ID)
