@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.11] - 2026-10-07
+
 - A background job that Stop cancelled before its "started" result was written keeps its durable `cancelled` record when that write then fails (the abort path used to delete every unannounced row), and the job still leaves the in-memory ledger, so it never holds a job slot or keeps the session "running".
 - A queued compaction (`/compact` or an automatic summary) whose Summarize loses the session lock to another process is put back in the queue for the session's next owner instead of being silently dropped; the caller now sees it as queued rather than as an error.
 
