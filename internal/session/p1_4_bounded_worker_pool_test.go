@@ -203,11 +203,13 @@ func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 
 	// Start pump with very small concurrency limit
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
-		Sessions:                    svc,
-		Coordinator:                 coord,
-		PumpInstanceID:              "p1-4-bounded-pool-pump",
-		TestTick:                    func() time.Duration { return 10 * time.Millisecond },
-		TestLeaseTTL:                100 * time.Millisecond,
+		Sessions:       svc,
+		Coordinator:    coord,
+		PumpInstanceID: "p1-4-bounded-pool-pump",
+		TestTick:       func() time.Duration { return 10 * time.Millisecond },
+		// A 100 ms lease expired under -race load, re-running an entry and
+		// pushing entryCount past numSessions; the pool limit does not need it short.
+		TestLeaseTTL:                2 * time.Second,
 		TestMaxConcurrentExecutions: maxConcurrent,
 	})
 	pump.Start()
