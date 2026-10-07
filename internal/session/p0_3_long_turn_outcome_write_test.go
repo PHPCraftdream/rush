@@ -67,27 +67,40 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, idempotencyKey, sess.ID, callDataJSON))
 
-	// The coordinator's Run() sleeps for 150ms — deliberately longer than
-	// the 50ms TestDBWriteTimeout below. Before the fix, dbCtx was created
-	// (with this same 50ms budget) BEFORE Run() was called, so it would
+	// The coordinator's Run() sleeps for 1s — deliberately longer than
+	// the 500ms TestDBWriteTimeout below. Before the fix, dbCtx was created
+	// (with this same 500ms budget) BEFORE Run() was called, so it would
 	// already be expired by the time the post-Run Ack ran.
-	coord := &sleepingCoordinator{sleep: 150 * time.Millisecond}
+	//
+	// Why 500ms/1s and not the original 50ms/150ms: a fresh per-write DELETE
+	// can itself exceed a 50ms budget under a loaded runner (observed ~20% of
+	// runs as "ack failed after success — context deadline exceeded"), which
+	// is the same wall-clock dependency that failed this test on CI; 500ms
+	// gives the fresh write ample headroom while a reverted single dbCtx
+	// created before Run is still guaranteed expired (its deadline passes
+	// 500ms after entry, Run returns at ~1s).
+	coord := &sleepingCoordinator{sleep: 1 * time.Second}
 
-	// Run on the fake pump clock (pump_fake_clock_test.go). With the real
-	// clock, the lease watchdog's margin defaults to production 5s clamped
-	// to TTL/2 = 100ms, and its deadline is seeded from the whole-Unix-
-	// seconds lease_expires_at column — up to ~1s later than a 200ms TTL —
-	// so the watchdog fired on REAL time as early as ~100ms after the
-	// lease, racing this test's 150ms Run sleep depending on the arbitrary
-	// wall-clock phase the lease landed on: a mid-sleep cancellation made
-	// Run return ctx.Err, the row was Nacked back to pending and re-leased,
-	// and the row-deletion wait below timed out. That was a watchdog-vs-
-	// test race, not the outcome-write property this test protects. On the
-	// fake clock the deadline sits at lease + 100ms of FAKE time and fake
-	// time never advances past the single lease tick, so the watchdog is
-	// deterministically silent while the Run sleep and the Ack proceed on
-	// real time (only the pump's scheduling decisions run on the fake
-	// clock).
+	// Run on the fake pump clock (pump_fake_clock_test.go). The pump's run
+	// loop performs an immediate initial p.tick() on startup
+	// (run_queue_lifecycle.go:146), which can lease and dispatch the entry
+	// BEFORE this test's single clk.Advance(100ms) — awaitPump only proves
+	// the scan ticker is registered, not that the initial tick hasn't
+	// already leased. With a short TTL (e.g. 200ms) the lease is stamped
+	// (whole-Unix-seconds, floor) at the fake epoch and the watchdog
+	// deadline (lease_expires_at - min(margin, TTL/2) = epoch - 100ms) is
+	// already at or before the post-Advance fake time, so the single Advance
+	// fires the pre-created watchdog fake ticker and it cancels the
+	// execution: Run returns ctx.Err, the row is Nacked back to pending,
+	// and with fake time frozen no later tick ever re-leases it — a
+	// scheduling race on how fast the initial tick ran, not the
+	// outcome-write property under test. With the production 30s TTL the
+	// watchdog deadline is lease + 25s of fake time and the renewal interval
+	// is 10s of fake time; both fake tickers stay silent under ANY
+	// scheduling (whether the lease lands before or after the single
+	// Advance), so the test no longer depends on wall-clock speed. The
+	// outcome-write property is unchanged: Run still sleeps 1s of real
+	// time against the 500ms TestDBWriteTimeout.
 	clk := newFakePumpClock(fakePumpEpoch)
 	probe := newFakeClockService(svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -95,8 +108,8 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 		Coordinator:        coord,
 		PumpInstanceID:     "p0-3-long-turn-pump",
 		TestTick:           func() time.Duration { return 100 * time.Millisecond },
-		TestLeaseTTL:       200 * time.Millisecond,
-		TestDBWriteTimeout: 50 * time.Millisecond,
+		TestLeaseTTL:       30 * time.Second,
+		TestDBWriteTimeout: 500 * time.Millisecond,
 		TestClock:          clk,
 	})
 	pump.Start()
@@ -106,10 +119,12 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	t.Cleanup(func() { pump.Stop() })
 
 	// Wait for the pump's scan ticker to exist, then advance exactly one
-	// scan tick of fake time to lease and dispatch the entry; fake time
-	// never moves again, so the watchdog (lease + TTL - margin = lease +
-	// 100ms of fake time) cannot fire while the 150ms real-time Run sleep
-	// is in flight.
+	// scan tick of fake time to lease and dispatch the entry (if the
+	// startup's initial tick hasn't already done so). With the production
+	// 30s TTL the watchdog deadline (lease + 25s of fake time) and the
+	// renewal interval (10s of fake time) are both far beyond the single
+	// Advance, so neither fake ticker can fire while the 1s real-time
+	// Run sleep is in flight, under any scheduling.
 	awaitPump(t, func() bool { return clk.liveTickers() >= 1 },
 		"scan ticker must be registered")
 	clk.Advance(100 * time.Millisecond)
@@ -117,7 +132,7 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	// Wait for the entry to be Acked (deleted) — poll for the row's
 	// disappearance rather than a fixed sleep, since exact scheduling
 	// timing varies.
-	require.Eventually(t, func() bool {
+	awaitPump(t, func() bool {
 		var exists bool
 		row := sqlDB.QueryRowContext(ctx,
 			"SELECT EXISTS(SELECT 1 FROM session_run_queue WHERE id = ?)", idempotencyKey)
@@ -125,7 +140,7 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 			return false
 		}
 		return !exists
-	}, 5*time.Second, 20*time.Millisecond,
+	},
 		"entry must be Acked (deleted) once the long turn completes, even though "+
 			"Run() outlived the per-write DB context budget")
 
