@@ -251,7 +251,8 @@ type Querier interface {
 	DeleteTerminalUnannouncedAsyncJobsForHost(ctx context.Context, hostID string) (int64, error)
 	// Abort: the "started" tool-result write itself failed, so nothing durable
 	// should remain (ASYNC-05). Scoped to announced=0 so a row that won the
-	// ack-gate race concurrently is never deleted out from under it.
+	// ack-gate race concurrently is never deleted out from under it; a row Stop
+	// already cancelled is kept as the durable record of that Stop.
 	DeleteUnannouncedAsyncJob(ctx context.Context, arg DeleteUnannouncedAsyncJobParams) (int64, error)
 	// Recovery's twin of DeleteUnannouncedAsyncJob (R3A-3): recoverers no longer
 	// hold the dead host's exclusive lock, so two of them can list the same row;

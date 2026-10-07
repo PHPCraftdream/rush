@@ -143,8 +143,9 @@ WHERE owner_session_id = ? AND tool_call_id = ?;
 -- name: DeleteUnannouncedAsyncJob :execrows
 -- Abort: the "started" tool-result write itself failed, so nothing durable
 -- should remain (ASYNC-05). Scoped to announced=0 so a row that won the
--- ack-gate race concurrently is never deleted out from under it.
-DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0;
+-- ack-gate race concurrently is never deleted out from under it; a row Stop
+-- already cancelled is kept as the durable record of that Stop.
+DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0 AND state <> 'cancelled';
 
 -- name: DeleteUnannouncedAsyncJobForClaim :execrows
 -- Recovery's twin of DeleteUnannouncedAsyncJob (R3A-3): recoverers no longer

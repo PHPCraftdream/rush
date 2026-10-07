@@ -509,7 +509,8 @@ func (l *workLedger) finishAcknowledgeLocally(job *asyncJob) {
 // completely alone: dropping it would close its scope while the row stays
 // announced/running forever. Phase-4 step 2: a non-sync job's durable row is
 // deleted via store.DeleteUnannounced (same growing-backoff retry rule)
-// before the in-memory drop.
+// before the in-memory drop. A row Stop already cancelled survives the
+// delete as its durable record; the in-memory job is dropped all the same.
 func (l *workLedger) abort(job *asyncJob) {
 	if job == nil {
 		return
@@ -526,9 +527,9 @@ func (l *workLedger) abort(job *asyncJob) {
 		_ = l.retryAsyncStoreOp(context.Background(), func() error {
 			return store.DeleteUnannounced(context.Background(), job.owner, job.toolCallID)
 		})
-		// DeleteUnannounced is scoped to announced=0, so a row that survives
-		// it is announced: it is not this abort's to drop.
-		if _, err := store.Get(context.Background(), job.owner, job.toolCallID); err == nil {
+		// A surviving announced row won the ack race: not this abort's to drop.
+		// A surviving unannounced row is Stop's cancelled record: drop the job.
+		if row, err := store.Get(context.Background(), job.owner, job.toolCallID); err == nil && row.Announced != 0 {
 			return
 		}
 	}

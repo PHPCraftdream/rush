@@ -335,7 +335,7 @@ func (q *Queries) DeleteTerminalUnannouncedAsyncJobsForHost(ctx context.Context,
 }
 
 const deleteUnannouncedAsyncJob = `-- name: DeleteUnannouncedAsyncJob :execrows
-DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0
+DELETE FROM async_jobs WHERE owner_session_id = ? AND tool_call_id = ? AND announced = 0 AND state <> 'cancelled'
 `
 
 type DeleteUnannouncedAsyncJobParams struct {
@@ -345,7 +345,8 @@ type DeleteUnannouncedAsyncJobParams struct {
 
 // Abort: the "started" tool-result write itself failed, so nothing durable
 // should remain (ASYNC-05). Scoped to announced=0 so a row that won the
-// ack-gate race concurrently is never deleted out from under it.
+// ack-gate race concurrently is never deleted out from under it; a row Stop
+// already cancelled is kept as the durable record of that Stop.
 func (q *Queries) DeleteUnannouncedAsyncJob(ctx context.Context, arg DeleteUnannouncedAsyncJobParams) (int64, error) {
 	result, err := q.exec(ctx, q.deleteUnannouncedAsyncJobStmt, deleteUnannouncedAsyncJob, arg.OwnerSessionID, arg.ToolCallID)
 	if err != nil {
