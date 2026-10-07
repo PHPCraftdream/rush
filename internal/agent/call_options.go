@@ -119,6 +119,13 @@ type CallOptions struct {
 	// the built-in 5-minute default".
 	SupervisionInterval time.Duration
 
+	// BackgroundJobDefaultTimeout is the opt-in default terminate_and_wake
+	// deadline for background bash/run_command calls that pass no explicit
+	// timeout (`rush run --job-timeout`, config's
+	// background_job_default_timeout_seconds). Zero means "off — no default
+	// deadline"; the per-call timeout{} parameter always wins.
+	BackgroundJobDefaultTimeout time.Duration
+
 	// FailIfSessionBusy rejects this run instead of queueing it when the
 	// session's mailbox is already owned by another turn (sdk.Client's
 	// fail-fast contract, #818). Enforced AT the atomic mailbox

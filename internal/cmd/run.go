@@ -509,6 +509,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			// root-session check-in for this invocation.
 			noSupervision, _           = cmd.Flags().GetBool("no-supervision")
 			supervisionIntervalFlag, _ = cmd.Flags().GetString("supervision-interval")
+			jobTimeoutFlag, _          = cmd.Flags().GetString("job-timeout")
 		)
 
 		if effort != "" {
@@ -634,6 +635,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		supervisionIntervalDur, err := parseDurationFlexible(supervisionIntervalFlag)
 		if err != nil {
 			return fmt.Errorf("--supervision-interval: %w", err)
+		}
+		jobTimeoutDur, err := parseDurationFlexible(jobTimeoutFlag)
+		if err != nil {
+			return fmt.Errorf("--job-timeout: %w", err)
 		}
 		if idleTimeoutDur <= 0 {
 			// "0" (or the flag's own zero value) means "disable this
@@ -795,29 +800,30 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// leak into stdout. The summary line on stderr we still emit.
 		hideSpinner := quiet || verbose || asJSON
 		overrides := app.RunOverrides{
-			SmartModel:               smartModel,
-			FastModel:                fastModel,
-			SystemPrompt:             systemPrompt,
-			ReasoningEffort:          effort,
-			RoleSmart:                roleSmart,
-			ModelRole:                modelType,
-			DisableSubAgents:         agentsDisable,
-			StripJSONFences:          formatFlag == "json" || strings.HasPrefix(formatFlag, "json-schema:"),
-			AggregationMode:          aggregationMode,
-			TimeoutExtendsOnProgress: timeoutExtendsOnProgress, // Fork patch: batch 8
-			TimeoutHardCap:           hardCapDur,               // Fork patch: batch 8
-			OnFinishHook:             onFinishHook,             // Fork patch: batch 24
-			MaxCost:                  maxCost,                  // Fork patch: batch 30
-			MaxTokens:                maxTokens,                // Fork patch: batch 30
-			Timeout:                  timeoutDur,               // Fork patch: operator UX (budget display)
-			IdleTimeout:              idleTimeoutDur,           // Fork patch: inactivity backstop
-			RestrictedRun:            restrictRun,              // Fork patch: run allowlist
-			AllowBash:                allowBash,                // Fork patch: run allowlist
-			AllowTools:               allowTool,                // Fork patch: run allowlist
-			AllowPeakHours:           allowPeakHours,           // Fork patch: peak-hours bypass
-			NoSupervision:            noSupervision,            // Fork patch: supervision opt-out
-			SupervisionInterval:      supervisionIntervalDur,   // Fork patch: supervision interval override
-			Origin:                   message.OriginCLI,        // Fork patch: entry-channel origin
+			SmartModel:                  smartModel,
+			FastModel:                   fastModel,
+			SystemPrompt:                systemPrompt,
+			ReasoningEffort:             effort,
+			RoleSmart:                   roleSmart,
+			ModelRole:                   modelType,
+			DisableSubAgents:            agentsDisable,
+			StripJSONFences:             formatFlag == "json" || strings.HasPrefix(formatFlag, "json-schema:"),
+			AggregationMode:             aggregationMode,
+			TimeoutExtendsOnProgress:    timeoutExtendsOnProgress, // Fork patch: batch 8
+			TimeoutHardCap:              hardCapDur,               // Fork patch: batch 8
+			OnFinishHook:                onFinishHook,             // Fork patch: batch 24
+			MaxCost:                     maxCost,                  // Fork patch: batch 30
+			MaxTokens:                   maxTokens,                // Fork patch: batch 30
+			Timeout:                     timeoutDur,               // Fork patch: operator UX (budget display)
+			IdleTimeout:                 idleTimeoutDur,           // Fork patch: inactivity backstop
+			RestrictedRun:               restrictRun,              // Fork patch: run allowlist
+			AllowBash:                   allowBash,                // Fork patch: run allowlist
+			AllowTools:                  allowTool,                // Fork patch: run allowlist
+			AllowPeakHours:              allowPeakHours,           // Fork patch: peak-hours bypass
+			NoSupervision:               noSupervision,            // Fork patch: supervision opt-out
+			SupervisionInterval:         supervisionIntervalDur,   // Fork patch: supervision interval override
+			BackgroundJobDefaultTimeout: jobTimeoutDur,            // Fork patch: default background-job deadline
+			Origin:                      message.OriginCLI,        // Fork patch: entry-channel origin
 		}
 		// The CLI calls the App's RunNonInteractive directly: the sdk
 		// facade no longer re-exports an internal *app.App wrapper in
@@ -883,6 +889,7 @@ func init() {
 	runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
 	runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
 	runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
+	runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 	runCmd.MarkFlagsMutuallyExclusive("stream", "json")

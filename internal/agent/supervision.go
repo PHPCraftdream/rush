@@ -119,6 +119,10 @@ type supervisionState struct {
 	interval      time.Duration // current (grows on no-progress ticks, resets to cfg.Interval on progress)
 	tickCount     int           // consecutive no-progress ticks delivered since the last progress reset
 	paused        bool          // true once tickCount reaches cfg.MaxNoProgress; cleared only by recordProgress
+	// flaggedOnce remembers command jobs already seen silent on an earlier
+	// tick: only a job silent on TWO consecutive ticks gets the escalation
+	// line. Cleared by recordProgress (and noteWorkStarted's resume branch).
+	flaggedOnce map[string]bool
 }
 
 // supervisionRegistry maps root session id -> its live supervision state.
@@ -174,6 +178,7 @@ func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
 		st.interval = cfg.Interval
 		st.tickCount = 0
 		st.paused = false
+		st.flaggedOnce = nil
 	default:
 		// Already counting down; a second job starting mid-countdown does
 		// not need a fresh deadline of its own.
@@ -209,6 +214,7 @@ func (l *workLedger) recordProgress(sessionID string) {
 	st.interval = st.cfg.Interval
 	st.tickCount = 0
 	st.paused = false
+	st.flaggedOnce = nil
 	sr.nextGen++
 	st.generation = sr.nextGen
 	gen := st.generation
@@ -353,14 +359,37 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 		sr.nextGen++
 		st.generation = sr.nextGen
 		nextGen = st.generation
+		// Keep the stale-check in the flaggedOnce block below meaningful:
+		// this tick moved the state's generation, so the fired one is now
+		// stale by definition and the memory write would never happen.
+		generation = nextGen
 		nextDeadline = time.Now().Add(interval)
 	}
 	sr.mu.Unlock()
 
-	text := l.buildSupervisionSummary(rootSessionID, tickNum, interval, lastTick)
+	text, flagged := l.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, lastTick)
 	if !lastTick {
 		l.timeouts.armFunc(nextDeadline, func() { l.handleSupervisionDeadline(rootSessionID, nextGen) })
 	}
+	// Second consecutive silent tick for a job: escalate to an explicit
+	// kill instruction. Then remember this tick's flagged set. All under
+	// sr.mu (flaggedOnce belongs to supervisionState).
+	sr.mu.Lock()
+	if st, ok := sr.byRoot[rootSessionID]; ok && st.generation == generation {
+		if st.flaggedOnce == nil {
+			st.flaggedOnce = make(map[string]bool)
+		}
+		for _, fj := range flagged {
+			if st.flaggedOnce[fj.ToolCallID] {
+				text += fmt.Sprintf("\njob %s has been silent for %s: job_kill it unless you can name evidence of progress other than processes existing.",
+					fj.ToolCallID, fj.Silence.Round(time.Second))
+			}
+		}
+		for _, fj := range flagged {
+			st.flaggedOnce[fj.ToolCallID] = true
+		}
+	}
+	sr.mu.Unlock()
 
 	coord := l.coord
 	go func() {
@@ -387,6 +416,8 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 type jobSnapshot struct {
 	toolCallID, toolName, childSession, shellID string
 	outputBuf                                   tools.LiveOutputBuffer
+	input                                       string
+	startedAt                                   time.Time
 	elapsed                                     time.Duration
 }
 
@@ -397,15 +428,25 @@ type jobSnapshot struct {
 // task's explicit instruction to reuse them rather than add a second
 // output-reading path.
 func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, interval time.Duration, paused bool) string {
+	text, _ := l.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, paused)
+	return text
+}
+
+// buildSupervisionSummaryAt is buildSupervisionSummary with the clock passed
+// in, so tests can backdate job ages/silences instead of sleeping. Alongside
+// the text it returns the set of command jobs flagged as silent this tick
+// (see supervision_silence.go), which handleSupervisionDeadline uses for the
+// second-tick escalation and the pause line.
+func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
 	l.mu.Lock()
 	var snaps []jobSnapshot
 	if s := l.bySession[rootSessionID]; s != nil {
-		now := time.Now()
 		for _, job := range s.jobs {
 			snaps = append(snaps, jobSnapshot{
 				toolCallID: job.toolCallID, toolName: job.toolName,
 				childSession: job.childSession, shellID: job.shellID,
-				outputBuf: job.outputBuf, elapsed: now.Sub(job.startedAt),
+				outputBuf: job.outputBuf, input: job.input,
+				startedAt: job.startedAt, elapsed: now.Sub(job.startedAt),
 			})
 		}
 	}
@@ -438,10 +479,11 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 				j.toolCallID, j.childSession, j.elapsed.Round(time.Second), last))
 		} else {
 			commands++
-			lines = append(lines, fmt.Sprintf("- %s (%s): running %s, last output: %s",
-				j.toolCallID, j.toolName, j.elapsed.Round(time.Second), last))
+			line, _ := l.silenceLine(now, rootSessionID, j)
+			lines = append(lines, line)
 		}
 	}
+	flagged := l.silenceFlaggedJobs(now, rootSessionID, snaps)
 	body := strings.Join(lines, "\n")
 	if body == "" {
 		body = "(no details available)"
@@ -450,6 +492,9 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 	guidance := "Keep waiting, inspect with job_output, or stop with job_kill (commands); for a sub-agent use inspect_agent, inject_agent or stop_agent."
 	if awaitingCount > 0 {
 		guidance = "A sub-agent is blocked on your answer; waiting will not progress it.\n" + guidance
+	}
+	if len(flagged) > 0 {
+		guidance = "Verify liveness with job_output (last output time, recent lines). Process existence is not progress. If there is no sign of progress, stop it with job_kill and report.\n" + guidance
 	}
 	if paused {
 		guidance = fmt.Sprintf(
@@ -460,9 +505,29 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 	if awaitingCount > 0 {
 		awaitingClause = fmt.Sprintf(" (%d awaiting your answer)", awaitingCount)
 	}
-	return fmt.Sprintf(
+	text := fmt.Sprintf(
 		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
 		tickNum, interval.Minutes(), commands, delegations, awaitingClause, body, guidance)
+	// Pausing with a silent job: name the oldest flagged one and demand a
+	// kill-or-justify decision -- no further ticks follow a pause.
+	if paused {
+		if oldest := oldestFlaggedJob(flagged); oldest != nil {
+			text += fmt.Sprintf("\nSupervision is pausing: job %s has been running %s and silent %s — job_kill it now or state why it must keep running.",
+				oldest.ToolCallID, oldest.Running.Round(time.Second), oldest.Silence.Round(time.Second))
+		}
+	}
+	return text, flagged
+}
+
+// oldestFlaggedJob returns the flagged job with the earliest start time.
+func oldestFlaggedJob(flagged []flaggedJob) *flaggedJob {
+	var oldest *flaggedJob
+	for i := range flagged {
+		if oldest == nil || flagged[i].StartedAt.Before(oldest.StartedAt) {
+			oldest = &flagged[i]
+		}
+	}
+	return oldest
 }
 
 // idleChildSummary is the #1157 visibility line for the OTHER variant of the

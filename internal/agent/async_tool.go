@@ -92,6 +92,17 @@ func (t *asyncTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.Too
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
+	if timeoutSpec == nil && (t.name == tools.BashToolName || t.name == tools.RunCommandToolName) {
+		// Opt-in operator default (item 5): a bash/run_command call with no
+		// explicit timeout gets the configured terminate_and_wake deadline.
+		if d := t.coordinator.resolveBackgroundJobDefaultTimeout(ctx); d > 0 {
+			timeoutSpec = &TimeoutSpec{
+				Deadline: time.Now().Add(d),
+				Kind:     timeoutTerminateAndWake,
+				Seconds:  int(d.Seconds()),
+			}
+		}
+	}
 	// Only CLI/web jobs are detached from the triggering turn's ctx: they
 	// must survive the turn that started them ending (their result is
 	// delivered LATER, as a notice). A sync job has no "deliver later" path

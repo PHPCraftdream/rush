@@ -131,6 +131,10 @@ type boundedBuffer struct {
 	// or not they are still resident in buf/head. It only ever increases.
 	writtenBytes atomic.Int64
 
+	// lastWriteNS is the nanosecond Unix timestamp of the last non-empty
+	// Write (0 = never written). Survives release().
+	lastWriteNS atomic.Int64
+
 	// truncated is set once bytes have been dropped from the middle, so
 	// String() knows to splice in the marker.
 	truncated atomic.Bool
@@ -164,6 +168,10 @@ func (b *boundedBuffer) Write(p []byte) (n int, err error) {
 
 	n = len(p)
 	b.writtenBytes.Add(int64(n))
+	// Record the last-output time only for real output; empty writes don't count.
+	if n > 0 {
+		b.lastWriteNS.Store(time.Now().UnixNano())
+	}
 
 	// Fill head first, from the very first bytes ever written.
 	if b.head.Len() < b.headCap {
@@ -222,6 +230,15 @@ func (b *boundedBuffer) String() string {
 	dropped := b.droppedBytes.Load()
 	marker := fmt.Sprintf("\n... [%d bytes truncated] ...\n", dropped)
 	return b.head.String() + marker + b.buf.String()
+}
+
+// lastWriteAt reports when the buffer last received non-empty output.
+func (b *boundedBuffer) lastWriteAt() (time.Time, bool) {
+	ns := b.lastWriteNS.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
 }
 
 // Len reports the total number of bytes ever written to the buffer,
@@ -291,6 +308,24 @@ type BackgroundShell struct {
 	retentionTimer       *time.Timer
 	detachedReleaseTimer *time.Timer
 	detached             bool
+}
+
+// LastOutputAt reports the most recent non-empty output time across the
+// job's stdout and stderr streams. False when neither stream ever wrote.
+func (bs *BackgroundShell) LastOutputAt() (time.Time, bool) {
+	var last time.Time
+	for _, buf := range []*boundedBuffer{bs.stdout, bs.stderr} {
+		if buf == nil {
+			continue
+		}
+		if ts, ok := buf.lastWriteAt(); ok && (last.IsZero() || ts.After(last)) {
+			last = ts
+		}
+	}
+	if last.IsZero() {
+		return time.Time{}, false
+	}
+	return last, true
 }
 
 // BackgroundShellManager manages background shell instances.

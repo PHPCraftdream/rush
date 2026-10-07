@@ -363,6 +363,10 @@ type Options struct {
 	// no-progress ticks (doubling, capped at 60 minutes) and resets to this
 	// value once a real completion happens. 0 (default) = 5 minutes.
 	SupervisionIntervalMinutes int `json:"supervision_interval_minutes,omitempty" jsonschema:"description=Minutes of chat silence before a supervision check-in while work is open. Default 5. 0 = use default.,default=0,example=10"`
+	// BackgroundJobDefaultTimeoutSeconds is the opt-in default
+	// terminate_and_wake deadline for background bash/run_command calls that
+	// pass no explicit timeout. 0 (default) = off.
+	BackgroundJobDefaultTimeoutSeconds int `json:"background_job_default_timeout_seconds,omitempty" jsonschema:"description=Default terminate_and_wake deadline in seconds for background bash/run_command calls that pass no explicit timeout. A per-call timeout always wins. Default 0 = off (opt-in).,default=0,example=120"`
 	// NoRealWorkspace marks a config whose session has no real host
 	// working directory (sdk.ModeLibrary with an empty Options.WorkingDir:
 	// an ephemeral, in-memory session). It is the single authoritative

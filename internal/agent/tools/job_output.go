@@ -172,6 +172,12 @@ func NewJobOutputTool(resolver JobShellResolver, runCtl RunCommandController, ma
 				header = fmt.Sprintf("Status: %s (elapsed %s, exit %d)", status, elapsed, exitCode)
 			} else {
 				header = fmt.Sprintf("Status: %s (elapsed %s)", status, elapsed)
+				// Surface last-output recency so the model can tell a hung job.
+				if lastAt, ok := bgShell.LastOutputAt(); ok {
+					header += fmt.Sprintf(", last output %s ago", time.Since(lastAt).Round(time.Second))
+				} else {
+					header += ", no output yet"
+				}
 			}
 			result := fmt.Sprintf("%s\n\n%s", header, output)
 			resp := fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata)

@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // LiveOutputBuffer is a concurrency-safe, size-bounded output sink a
@@ -41,6 +43,9 @@ type runCommandOutputBuffer struct {
 	data     []byte
 	maxBytes int
 	total    int64 // monotonic count of all bytes ever written
+	// lastWriteNS is the nanosecond Unix timestamp of the last non-empty
+	// Write (0 = never written).
+	lastWriteNS atomic.Int64
 }
 
 func newRunCommandOutputBuffer(maxBytes int) *runCommandOutputBuffer {
@@ -56,11 +61,24 @@ func (b *runCommandOutputBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.total += int64(len(p))
+	// Record the last-output time only for real output; empty writes don't count.
+	if len(p) > 0 {
+		b.lastWriteNS.Store(time.Now().UnixNano())
+	}
 	b.data = append(b.data, p...)
 	if excess := len(b.data) - b.maxBytes; excess > 0 {
 		b.data = b.data[excess:]
 	}
 	return len(p), nil
+}
+
+// LastWriteAt reports when the buffer last received non-empty output.
+func (b *runCommandOutputBuffer) LastWriteAt() (time.Time, bool) {
+	ns := b.lastWriteNS.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
 }
 
 // availableFromLocked is the earliest logical offset still resident (bytes

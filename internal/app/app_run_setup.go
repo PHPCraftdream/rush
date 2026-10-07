@@ -395,6 +395,9 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// here.
 		SupervisionDisabled: overrides.NoSupervision,
 		SupervisionInterval: overrides.SupervisionInterval,
+		// Opt-in default deadline for background bash/run_command jobs with
+		// no explicit timeout (`rush run --job-timeout`). Zero = off.
+		BackgroundJobDefaultTimeout: overrides.BackgroundJobDefaultTimeout,
 		// T10: the compiled folder scope for THIS call (nil = unscoped).
 		// The coordinator's applyCallFolderScope rebuilds the toolset
 		// from it per call; rejectScopedCallOnCLIProvider (T9) refuses

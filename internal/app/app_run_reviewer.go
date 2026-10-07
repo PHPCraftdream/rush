@@ -922,18 +922,19 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 // future field from being forgotten).
 func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 	return &agent.CallOptions{
-		ModelRole:                config.SelectedModelTypeReviewer,
-		DisableSubAgents:         true,
-		TimeoutExtendsOnProgress: primary.TimeoutExtendsOnProgress,
-		TimeoutHardCap:           primary.TimeoutHardCap,
-		TimeoutOptionsSet:        primary.TimeoutOptionsSet,
-		IdleTimeout:              primary.IdleTimeout,
-		TurnStallTimeout:         primary.TurnStallTimeout,
-		MaxCost:                  primary.MaxCost,
-		MaxTokens:                primary.MaxTokens,
-		AllowPeakHours:           primary.AllowPeakHours,
-		SupervisionDisabled:      primary.SupervisionDisabled,
-		SupervisionInterval:      primary.SupervisionInterval,
+		ModelRole:                   config.SelectedModelTypeReviewer,
+		DisableSubAgents:            true,
+		TimeoutExtendsOnProgress:    primary.TimeoutExtendsOnProgress,
+		TimeoutHardCap:              primary.TimeoutHardCap,
+		TimeoutOptionsSet:           primary.TimeoutOptionsSet,
+		IdleTimeout:                 primary.IdleTimeout,
+		TurnStallTimeout:            primary.TurnStallTimeout,
+		MaxCost:                     primary.MaxCost,
+		MaxTokens:                   primary.MaxTokens,
+		AllowPeakHours:              primary.AllowPeakHours,
+		SupervisionDisabled:         primary.SupervisionDisabled,
+		SupervisionInterval:         primary.SupervisionInterval,
+		BackgroundJobDefaultTimeout: primary.BackgroundJobDefaultTimeout,
 		// R2-3: honor the caller's fail-fast busy policy on the review
 		// turn too. The decision itself stays at the mailbox reservation
 		// (sessionAgent.Run -> mailbox.submit), which is atomic under

@@ -69,6 +69,10 @@ type RunOverrides struct {
 	// SupervisionInterval overrides the check-in's silence interval
 	// (`rush run --supervision-interval`). Zero = no override.
 	SupervisionInterval time.Duration
+	// BackgroundJobDefaultTimeout is the opt-in default terminate_and_wake
+	// deadline for background bash/run_command jobs that pass no explicit
+	// timeout (`rush run --job-timeout`). Zero = off.
+	BackgroundJobDefaultTimeout time.Duration
 	// AggregationMode controls how sub-agent fan-out output reaches
 	// the orchestrator. "" / "summary" = upstream default (parent
 	// composes a wrap-up, sub-agent details live in the DB only).
