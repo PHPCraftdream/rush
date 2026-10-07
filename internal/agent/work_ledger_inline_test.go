@@ -303,6 +303,9 @@ func TestInlineWindow_SlowJobAnswersStartedWithExactlyOneNotice(t *testing.T) {
 func TestInlineWindow_StopInWindow(t *testing.T) {
 	t.Parallel()
 	f := newInlineFixture(t, innerSlow)
+	// Stop must land INSIDE the window: the 80 ms fixture window elapsed
+	// before cancelSession under load, taking the timer path instead.
+	f.l.inlineWindow = 30 * time.Second
 	respCh := make(chan fantasy.ToolResponse, 1)
 	go func() {
 		resp, err := f.wrapped.Run(f.ctx, f.call)
