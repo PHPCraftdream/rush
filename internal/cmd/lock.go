@@ -57,6 +57,11 @@ var unlockCmd = &cobra.Command{
 			return err
 		}
 		defer a.Shutdown()
+		if scope == config.ScopeGlobal {
+			if state, stateErr := a.Store().LockState(); stateErr == nil && !state.Global && state.Local {
+				return errors.New("only the workspace is locked; pass --local to unlock it")
+			}
+		}
 		if err := a.Store().UnlockSettings(scope, args[0]); err != nil {
 			return err
 		}

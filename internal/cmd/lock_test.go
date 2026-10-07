@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -77,8 +78,9 @@ func TestPassword_FlagSetsProcessPasswordAndAuthorizesModelsUse(t *testing.T) {
 	defer resetModelsUseFlags(t)
 	config.SetProcessPassword("")
 	require.NoError(t, os.WriteFile(globalPath, []byte(`{"sync_rev":"`+config.HashPassword("models-pass")+`","providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o600))
-	rootCmd.AddCommand(modelsCmd)
-	defer rootCmd.RemoveCommand(modelsCmd)
+	if modelsCmd.Parent() != rootCmd {
+		rootCmd.AddCommand(modelsCmd)
+	}
 	_, _, err := runLockTree(t, filepath.Dir(globalPath), filepath.Join(filepath.Dir(globalPath), "test-data"), "--password", "models-pass", "models", "use", "glm4_6", "glm5_turbo")
 	require.NoError(t, err)
 }
@@ -182,7 +184,7 @@ func TestSettingsAuditRecordsAndWebSocketMapping(t *testing.T) {
 			outcomes[outcome] = true
 		}
 		require.NotEmpty(t, record["launch_cwd"])
-		lineWithoutOutcome := strings.ReplaceAll(strings.ToLower(line), `"outcome":"blocked"`, "")
+		lineWithoutOutcome := strings.ReplaceAll(strings.ToLower(stripAuditPaths(line)), `"outcome":"blocked"`, "")
 		for _, secret := range []string{"secret", config.HashPassword("secret"), "sync_rev", "sha256", "hash", "lock"} {
 			require.NotContains(t, lineWithoutOutcome, strings.ToLower(secret))
 		}
@@ -244,6 +246,16 @@ func TestSettingsLock_RefusalMessageDoesNotLeakHints(t *testing.T) {
 	require.NoError(t, err)
 	_, stderr, err := runLockTree(t, workspace, dataDir, "models", "use", "glm4_6", "glm5_turbo")
 	assertRefusal(t, stderr, err, config.ErrSettingsLocked)
+}
+
+// stripAuditPaths removes path-valued fields (launch_cwd, path) so the
+// secret-substring checks cannot fail on the checkout's own directory name.
+func stripAuditPaths(line string) string {
+	for _, field := range []string{"launch_cwd", "path"} {
+		re := regexp.MustCompile(`"` + field + `":"[^"]*"`)
+		line = re.ReplaceAllString(line, "")
+	}
+	return line
 }
 
 func isolateLockEnv(t *testing.T) (string, string, string) {

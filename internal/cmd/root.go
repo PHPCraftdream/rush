@@ -185,6 +185,21 @@ rush claude-init --global
 	},
 }
 
+// checkAppPassword refuses a wrong --password once config.Init has made the
+// workspace lock visible; skipped without --password, settings writes stay
+// guarded by the write path itself. Same refusal shape as the pre-run check.
+func checkAppPassword(cmd *cobra.Command, store *config.ConfigStore) error {
+	password, _ := cmd.Flags().GetString("password")
+	if password == "" {
+		return nil
+	}
+	if err := store.CheckProcessPassword(); err != nil {
+		_ = audit.Write(audit.Event{"kind": "command_denied", "cmd": cmd.CommandPath(), "reason": "wrong password"})
+		return err
+	}
+	return nil
+}
+
 func settingsPasswordPreRun(cmd *cobra.Command, _ []string) error {
 	setSettingsAudit(cmd)
 	password, _ := cmd.Flags().GetString("password")
@@ -428,7 +443,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := store.CheckProcessPassword(); err != nil {
+	if err := checkAppPassword(cmd, store); err != nil {
 		return nil, err
 	}
 	if err := store.ModelsIntegrity(); err != nil {
@@ -513,7 +528,7 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := store.CheckProcessPassword(); err != nil {
+	if err := checkAppPassword(cmd, store); err != nil {
 		return nil, err
 	}
 
