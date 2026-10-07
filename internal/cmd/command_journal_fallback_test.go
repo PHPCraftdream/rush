@@ -26,6 +26,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PHPCraftdream/rush/internal/audit"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -147,7 +148,7 @@ func TestJournalExecuteEndToEnd(t *testing.T) {
 	}{{"ok", 0}, {"badflag", 1}} {
 		journalTestEnv(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestJournalExecuteEndToEnd$")
+		child := platform.Command(ctx, os.Args[0], "-test.run=^TestJournalExecuteEndToEnd$")
 		child.Env = append(os.Environ(), "RUSH_JOURNAL_CHILD="+tc.scenario)
 		out, err := child.CombinedOutput()
 		cancel()

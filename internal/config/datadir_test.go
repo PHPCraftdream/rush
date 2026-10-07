@@ -375,6 +375,9 @@ func TestLoad_DevBuild_IsolatedInLinkedWorktree(t *testing.T) {
 	})
 
 	t.Run("dev exe inside the checkout", func(t *testing.T) {
+		// The bin dir must exist: detectDevBuild asks git about exeDir, and a
+		// missing dir only passed before via the temp-dir branch by accident.
+		require.NoError(t, os.MkdirAll(filepath.Join(wtRoot, "bin"), 0o755))
 		t.Cleanup(setOSExecutablePathForTest(filepath.Join(wtRoot, "bin", "rush.exe")))
 		store, err := Load(wtRoot, "", false)
 		require.NoError(t, err)

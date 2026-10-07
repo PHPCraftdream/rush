@@ -3,8 +3,9 @@ package procinfo
 import (
 	"context"
 	"os"
-	"os/exec"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 func TestSelfIdentity(t *testing.T) {
@@ -36,7 +37,7 @@ func TestExitedChild(t *testing.T) {
 	if os.Getenv("PROCINFO_CHILD") == "1" {
 		return
 	}
-	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^$")
+	cmd := platform.Command(context.Background(), os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), "PROCINFO_CHILD=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
