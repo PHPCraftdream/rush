@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
@@ -155,7 +156,7 @@ func NewGlobTool(workingDir string, permissionServices ...permission.Service) fa
 			}
 			defer anchor.Close()
 
-			files, truncated, err := globFilesFS(ctx, params.Pattern, anchor, 100)
+			files, truncated, note, err := globFilesFS(ctx, params.Pattern, anchor.FS(), anchor.rootPath(), anchor.displayRoot(), 100)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error finding files: %v", err)), nil
 			}
@@ -170,6 +171,9 @@ func NewGlobTool(workingDir string, permissionServices ...permission.Service) fa
 					output += "\n\n(Results are truncated. Consider using a more specific path or pattern.)"
 				}
 			}
+			if note != "" {
+				output += "\n\n" + note
+			}
 
 			return fantasy.WithResponseMetadata(
 				fantasy.NewTextResponse(output),
@@ -182,6 +186,8 @@ func NewGlobTool(workingDir string, permissionServices ...permission.Service) fa
 	)
 }
 
+// globFiles searches with the non-FS ripgrep path when available; that path
+// is ctx-bounded but NOT entry-budgeted.
 func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
 	cmdRg := getRgCmd(ctx, pattern)
 	if cmdRg != nil {
@@ -203,8 +209,9 @@ func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]st
 	return fsext.GlobGitignoreAwareNoFollow(pattern, searchPath, limit)
 }
 
-func globFilesFS(_ context.Context, pattern string, anchor *readAnchor, limit int) ([]string, bool, error) {
-	return fsext.GlobGitignoreAwareFS(anchor.FS(), anchor.rootPath(), anchor.displayRoot(), pattern, limit)
+// globFilesFS is the anchored, budget-bounded glob over an fs.FS.
+func globFilesFS(ctx context.Context, pattern string, fsys fs.FS, rootPath, displayRoot string, limit int) ([]string, bool, string, error) {
+	return fsext.GlobGitignoreAwareFSBounded(ctx, fsys, rootPath, displayRoot, pattern, limit)
 }
 
 func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {

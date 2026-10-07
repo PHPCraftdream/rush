@@ -314,7 +314,7 @@ func NewGrepTool(workingDir string, config config.ToolGrep, permissionServices .
 			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 			defer cancel()
 
-			matches, truncated, err := searchFilesFS(searchCtx, searchPattern, anchor, params.Include, 100)
+			matches, truncated, note, err := searchFilesFS(searchCtx, searchPattern, anchor.FS(), anchor.rootPath(), anchor.displayRoot(), anchor.path, params.Include, 100)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error searching files: %v", err)), nil
 			}
@@ -352,6 +352,9 @@ func NewGrepTool(workingDir string, config config.ToolGrep, permissionServices .
 				if truncated {
 					output.WriteString("\n(Results are truncated. Consider using a more specific path or pattern.)")
 				}
+			}
+			if note != "" {
+				output.WriteString("\n" + note)
 			}
 
 			return fantasy.WithResponseMetadata(
@@ -399,21 +402,19 @@ func searchFiles(ctx context.Context, pattern, rootPath, include string, limit i
 // searchFilesFS performs the bounded fallback search through an anchored FS.
 // Ripgrep cannot consume fs.FS, so rooted searches deliberately use this
 // equivalent bounded walker instead of reopening a path by name.
-func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, include string, limit int) ([]grepMatch, bool, error) {
+func searchFilesFS(ctx context.Context, pattern string, root fs.FS, start, displayRoot, anchorPath string, include string, limit int) ([]grepMatch, bool, string, error) {
 	regex, err := searchRegexCache.get(pattern)
 	if err != nil {
-		return nil, false, fmt.Errorf("invalid regex pattern: %w", err)
+		return nil, false, "", fmt.Errorf("invalid regex pattern: %w", err)
 	}
 	var includePattern *regexp.Regexp
 	if include != "" {
 		includePattern, err = globRegexCache.get(globToRegex(include))
 		if err != nil {
-			return nil, false, fmt.Errorf("invalid include pattern: %w", err)
+			return nil, false, "", fmt.Errorf("invalid include pattern: %w", err)
 		}
 	}
 
-	root := anchor.FS()
-	start := anchor.rootPath()
 	walker := fsext.NewFastGlobWalkerFSAt(root, start)
 	h := &boundedMatchHeap{}
 	capacity := limit
@@ -422,7 +423,8 @@ func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, incl
 	}
 	var seq int64
 	var totalMatches int64
-	err = fs.WalkDir(root, start, func(path string, entry fs.DirEntry, walkErr error) error {
+	var visited int
+	reason, err := fsext.WalkDirBounded(ctx, root, start, fsext.BoundedWalkOptions{Visited: &visited}, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -449,11 +451,11 @@ func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, incl
 		if infoErr != nil {
 			return nil
 		}
-		displayPath := filepath.Join(anchor.displayRoot(), filepath.FromSlash(path))
+		displayPath := filepath.Join(displayRoot, filepath.FromSlash(path))
 		if path == start {
-			displayPath = anchor.path
+			displayPath = anchorPath
 		} else if start != "." {
-			displayPath = filepath.Join(anchor.displayRoot(), filepath.FromSlash(relPath))
+			displayPath = filepath.Join(displayRoot, filepath.FromSlash(relPath))
 		}
 		if hook, ok := ctx.Value(regexWalkHookKey{}).(func(string)); ok {
 			hook(displayPath)
@@ -481,8 +483,12 @@ func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, incl
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return nil, false, err
+	if err != nil {
+		return nil, false, "", err
+	}
+	note := ""
+	if reason == fsext.WalkStoppedEntries || reason == fsext.WalkStoppedTime {
+		note = fsext.PartialNote(visited, fsext.BoundedWalkTimeout, filepath.ToSlash(start))
 	}
 	matches := []grepMatch(*h)
 	sort.SliceStable(matches, func(i, j int) bool {
@@ -494,7 +500,7 @@ func searchFilesFS(ctx context.Context, pattern string, anchor *readAnchor, incl
 	if limit < 1 {
 		matches = nil
 	}
-	return matches, totalMatches > int64(limit), nil
+	return matches, totalMatches > int64(limit), note, nil
 }
 
 // regexWalkHookKey is a test-only context seam. Production callers never put

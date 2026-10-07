@@ -216,7 +216,7 @@ func NewViewTool(
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					// Try to offer suggestions for similarly named files
-					suggestions := anchoredSuggestions(anchor, filePath)
+					suggestions := anchoredSuggestions(ctx, anchor.FS(), anchor.rootPath(), filePath)
 					if len(suggestions) > 0 {
 						return fantasy.NewTextErrorResponse(fmt.Sprintf("File not found: %s\n\nDid you mean one of these?\n%s",
 							filePath, strings.Join(suggestions, "\n"))), nil
@@ -353,14 +353,13 @@ func NewViewTool(
 	)
 }
 
-func anchoredSuggestions(anchor *readAnchor, requestedPath string) []string {
-	rootPath := anchor.rootPath()
+func anchoredSuggestions(ctx context.Context, fsys fs.FS, rootPath string, requestedPath string) []string {
 	parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(rootPath)))
 	if parent == "" {
 		parent = "."
 	}
-	entries, err := fs.ReadDir(anchor.FS(), parent)
-	if err != nil {
+	entries := boundedReadDirNames(ctx, fsys, parent, anchoredSuggestionMaxEntries)
+	if entries == nil {
 		return nil
 	}
 	base := strings.ToLower(filepath.Base(requestedPath))

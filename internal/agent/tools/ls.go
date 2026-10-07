@@ -103,7 +103,7 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 			}
 			defer anchor.Close()
 
-			output, metadata, err := listDirectoryTreeFS(anchor.FS(), anchor.displayRoot(), anchor.rootPath(), params, lsConfig)
+			output, metadata, err := listDirectoryTreeFS(ctx, anchor.FS(), anchor.displayRoot(), anchor.rootPath(), params, lsConfig)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -149,13 +149,13 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 	return output + "\n" + printTree(tree, searchPath), metadata, nil
 }
 
-func listDirectoryTreeFS(fsys fs.FS, displayRoot string, start string, params LSParams, lsConfig config.ToolLs) (string, LSResponseMetadata, error) {
+func listDirectoryTreeFS(ctx context.Context, fsys fs.FS, displayRoot string, start string, params LSParams, lsConfig config.ToolLs) (string, LSResponseMetadata, error) {
 	if _, err := fs.Stat(fsys, start); errors.Is(err, fs.ErrNotExist) {
 		return "", LSResponseMetadata{}, fmt.Errorf("path does not exist: %s", displayRoot)
 	}
 	depth, limit := lsConfig.Limits()
 	maxFiles := cmp.Or(limit, maxLSFiles)
-	files, truncated, err := fsext.ListDirectoryFS(fsys, start, displayRoot, params.Ignore, cmp.Or(params.Depth, depth), maxFiles)
+	files, truncated, note, err := fsext.ListDirectoryFSBounded(ctx, fsys, start, displayRoot, params.Ignore, cmp.Or(params.Depth, depth), maxFiles)
 	if err != nil {
 		return "", LSResponseMetadata{}, fmt.Errorf("error listing directory: %w", err)
 	}
@@ -167,6 +167,9 @@ func listDirectoryTreeFS(fsys fs.FS, displayRoot string, start string, params LS
 	}
 	if depth > 0 {
 		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
+	}
+	if note != "" {
+		output += "\n" + note
 	}
 	return output + "\n" + printTree(tree, displayRoot), metadata, nil
 }

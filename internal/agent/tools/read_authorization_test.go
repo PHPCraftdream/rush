@@ -288,8 +288,9 @@ func TestAnchoredGrepKeepsNewestMatchesAfterEarlyWalk(t *testing.T) {
 	require.NoError(t, err)
 	defer root.Close()
 	anchor := &readAnchor{root: root, rel: ".", path: workspace}
-	matches, truncated, err := searchFilesFS(t.Context(), "needle", anchor, "", 100)
+	matches, truncated, note, err := searchFilesFS(t.Context(), "needle", anchor.FS(), anchor.rootPath(), anchor.displayRoot(), anchor.path, "", 100)
 	require.NoError(t, err)
+	require.Empty(t, note)
 	require.True(t, truncated)
 	require.Len(t, matches, 100)
 	for _, match := range matches {
