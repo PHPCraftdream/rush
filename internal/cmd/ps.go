@@ -11,12 +11,10 @@ import (
 	"maps"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/spf13/cobra"
 )
@@ -69,10 +67,7 @@ func init() {
 // psHeartbeatDir resolves the global heartbeat directory: RUSH_HEARTBEAT_DIR
 // wins, else the heartbeat/ folder next to the global settings file.
 func psHeartbeatDir() string {
-	if d := os.Getenv("RUSH_HEARTBEAT_DIR"); d != "" {
-		return d
-	}
-	return filepath.Join(filepath.Dir(config.GlobalConfigData()), "heartbeat")
+	return heartbeat.DefaultDir()
 }
 
 func psRunE(cmd *cobra.Command, _ []string) error {

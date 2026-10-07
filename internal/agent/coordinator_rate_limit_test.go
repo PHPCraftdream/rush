@@ -48,6 +48,13 @@ func rateLimit429Err() *fantasy.ProviderError {
 // call count and prompts seen.
 func rateLimitLoopRun(t *testing.T, ctx context.Context, providerID string, cfgMut func(*config.Config), fn func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error)) (*fantasy.AgentResult, int, []string, error) {
 	t.Helper()
+	return rateLimitLoopRunWith(t, ctx, providerID, cfgMut, nil, fn)
+}
+
+// rateLimitLoopRunWith is rateLimitLoopRun with a hook on the coordinator
+// before the run starts.
+func rateLimitLoopRunWith(t *testing.T, ctx context.Context, providerID string, cfgMut func(*config.Config), coordMut func(*coordinator), fn func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error)) (*fantasy.AgentResult, int, []string, error) {
+	t.Helper()
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
@@ -69,6 +76,9 @@ func rateLimitLoopRun(t *testing.T, ctx context.Context, providerID string, cfgM
 		cfg: cfg, sessions: env.sessions, messages: env.messages,
 		permissions: env.permissions, history: env.history, filetracker: *env.filetracker,
 		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+	if coordMut != nil {
+		coordMut(coord)
 	}
 	sess, err := env.sessions.Create(t.Context(), "rl-loop-"+providerID)
 	require.NoError(t, err)
@@ -223,13 +233,18 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 // makes the wait run to completion and this test goes red.
 func TestRunInternal_RateLimitWaitContextDeadline(t *testing.T) {
 	shrinkRateLimitVars(t, time.Minute, time.Minute, time.Hour, 10*time.Millisecond, time.Millisecond)
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	// The deadline starts at the first provider call: a cold setup slower
+	// than the deadline would otherwise expire it before the wait begins.
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	_, calls, _, err := rateLimitLoopRun(t, ctx, "test-rl-ctx-deadline", nil,
 		func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			if n == 0 {
+				time.AfterFunc(300*time.Millisecond, cancel)
+			}
 			return rateLimitErrorAttempt(t, env, sess, context.WithoutCancel(callCtx), call, rateLimit429Err())
 		})
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, 1, calls)
 }
 

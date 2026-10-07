@@ -162,6 +162,9 @@ type Entry struct {
 	Totals        *model            `json:"totals"`
 	Models        map[string]*model `json:"models"`
 	Agents        []*agent          `json:"agents"`
+	// RateLimitedUntil is the RFC3339 deadline of a pending provider
+	// rate-limit wait; empty when not waiting.
+	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
 }
 
 // probeFn indirection lets tests stub the tri-state probe.

@@ -31,8 +31,12 @@ import (
 // concurrent sessions. Returning the values means the caller never has to
 // read them back.
 type resolvedOverrides struct {
-	smart        Model
-	fast         Model
+	smart Model
+	fast  Model
+	// smartSource/fastSource are the heartbeat source labels decided where
+	// the slots were resolved; runInternal attaches them to the turn ctx.
+	smartSource  string
+	fastSource   string
 	promptPrefix string
 	systemPrompt string
 	// orchestrator is the worker/orchestrator mode this snapshot's systemPrompt
@@ -131,9 +135,8 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		}
 	}
 
-	// Record where each slot's model came from for heartbeat attribution
-	// (design pt. 3); the marker rides the same ctx the turn inherits.
-	ctx = withModelSource(ctx, hbOverrideSource(smartOverride != nil), hbOverrideSource(fastOverride != nil))
+	// Where each slot's model came from is recorded for heartbeat
+	// attribution (design pt. 3); the labels ride the returned snapshot.
 
 	// Merge overrides into the config copies.
 	if smartOverride != nil {
@@ -215,6 +218,8 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		smart: smartModel,
 		fast:  fastModel,
 	}
+	resolved.smartSource = hbOverrideSource(smartOverride != nil)
+	resolved.fastSource = hbOverrideSource(fastOverride != nil)
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	// Resolve prompt prefix from provider config using the same atomic snapshot.
@@ -361,8 +366,8 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	cfg, _ := c.cfg.Snapshot()
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
-	// Explicit per-call overrides; unset slots fall back to their start slots.
-	ctx = withModelSource(ctx, hbOverrideSource(smart != nil), hbOverrideSource(fast != nil))
+	// Where each slot came from is recorded for heartbeat attribution;
+	// the labels ride the returned snapshot.
 
 	if smart != nil {
 		if smartCfg.Provider != smart.Provider || smartCfg.Model != smart.Model {
@@ -401,6 +406,8 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	}
 
 	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
+	resolved.smartSource = hbCallSource(smart != nil)
+	resolved.fastSource = hbCallSource(fast != nil)
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {

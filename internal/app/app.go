@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -540,8 +538,5 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 // heartbeatDir places snapshots next to the global settings file. A test
 // binary without an isolated global dir never writes the real registry.
 func heartbeatDir() string {
-	if testing.Testing() && os.Getenv("RUSH_GLOBAL_DATA") == "" {
-		return ""
-	}
-	return filepath.Join(config.GlobalWorkspaceDir(), "heartbeat")
+	return heartbeat.DefaultDir()
 }

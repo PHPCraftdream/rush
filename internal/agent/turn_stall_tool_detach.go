@@ -116,12 +116,14 @@ func (t *stallDetacherTool) Run(ctx context.Context, call fantasy.ToolCall) (fan
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- runResult{fantasy.NewTextErrorResponse(fmt.Sprintf("%s panicked: %v", name, r)), nil}
+				resp := fantasy.NewTextErrorResponse(fmt.Sprintf("%s panicked: %v", name, r))
+				entry.complete(resp, nil)
+				done <- runResult{resp, nil}
 			}
 		}()
 		resp, err := t.inner.Run(runCtx, call)
-		done <- runResult{resp, err}
 		entry.complete(resp, err)
+		done <- runResult{resp, err}
 	}()
 	select {
 	case r := <-done:
@@ -252,14 +254,21 @@ func (stallDetachJobController) StallDetachOutput(sessionID, jobID string, curso
 	}
 	e := v.(*stallDetachEntry)
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if !e.done {
+		e.mu.Unlock()
 		return "still running (final output is kept here when the detached tool finishes)", false, 0, true
 	}
 	if cursor < 0 || cursor > int64(len(e.content)) {
 		cursor = 0
 	}
-	return tools.TruncateOutput(e.content[cursor:]), true, int64(len(e.content)), true
+	out, total := tools.TruncateOutput(e.content[cursor:]), int64(len(e.content))
+	// A kill-requested job's final output stays readable (the model keeps
+	// polling after job_kill); others are served once and dropped.
+	if !e.killRequested {
+		defer deleteStallDetachJob(sessionID, jobID)
+	}
+	e.mu.Unlock()
+	return out, true, total, true
 }
 
 // StallDetachKill requests a stop for a detached job. This is the ONLY
@@ -271,11 +280,43 @@ func (stallDetachJobController) StallDetachKill(sessionID, jobID string) (string
 	}
 	e := v.(*stallDetachEntry)
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.done {
+		e.mu.Unlock()
+		deleteStallDetachJob(sessionID, jobID)
 		return fmt.Sprintf("detached job %s already finished", jobID), true
 	}
+	defer e.mu.Unlock()
 	e.killRequested = true
 	e.cancel()
 	return fmt.Sprintf("detached job %s (%s) stop requested; its final output is kept under job_output", jobID, e.toolName), true
+}
+
+// deleteStallDetachJob removes one finished detached job from the registry.
+func deleteStallDetachJob(sessionID, jobID string) {
+	stallDetachJobs.Delete(stallDetachKey(sessionID, strings.TrimPrefix(jobID, "stall-")))
+}
+
+// stallDetachCleanupSession drops a session's pending entries and finished
+// detached jobs when its run ends; still-running jobs stay reachable.
+func stallDetachCleanupSession(sessionID string) {
+	prefix := sessionID + "\x00"
+	stallDetachPending.Range(func(k, v any) bool {
+		if strings.HasPrefix(k.(string), prefix) {
+			stallDetachPending.Delete(k)
+		}
+		return true
+	})
+	stallDetachJobs.Range(func(k, v any) bool {
+		if !strings.HasPrefix(k.(string), prefix) {
+			return true
+		}
+		e := v.(*stallDetachEntry)
+		e.mu.Lock()
+		done := e.done
+		e.mu.Unlock()
+		if done {
+			stallDetachJobs.Delete(k)
+		}
+		return true
+	})
 }

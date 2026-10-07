@@ -41,6 +41,14 @@ func hbOverrideSource(overridden bool) string {
 	return hbSourceSlotStart
 }
 
+// hbCallSource maps one slot's explicit per-call override to its label.
+func hbCallSource(overridden bool) string {
+	if overridden {
+		return hbSourcePerCall
+	}
+	return hbSourceSlotStart
+}
+
 // hbFallbackRole is the role reported when nothing more specific is known:
 // the default slot the code names for an ordinary run.
 const hbFallbackRole = "smart"

@@ -140,3 +140,24 @@ func (c *coordinator) waitRateLimit(ctx context.Context, sessionID string, wait 
 	}
 	return nil
 }
+
+// RateLimitNotifier is the optional coordinator extension the app installs
+// to surface each provider rate-limit wait to the operator.
+type RateLimitNotifier interface {
+	SetRateLimitNotify(f func(sessionID string, until time.Time, attempt int))
+}
+
+// SetRateLimitNotify installs the per-wait callback.
+func (c *coordinator) SetRateLimitNotify(f func(sessionID string, until time.Time, attempt int)) {
+	if f == nil {
+		return
+	}
+	c.rateLimitNotify.Store(&f)
+}
+
+// notifyRateLimitWait invokes the installed callback, if any.
+func (c *coordinator) notifyRateLimitWait(sessionID string, until time.Time, attempt int) {
+	if f := c.rateLimitNotify.Load(); f != nil {
+		(*f)(sessionID, until, attempt)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -169,6 +170,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// child's mailbox and OS lock are already released by this point (see
 	// runOwned's deferred abandonOwnershipWithHandoff).
 	defer c.noteSubAgentChildRunEnded(sessionID)
+	defer stallDetachCleanupSession(sessionID)
 
 	// R8-3: capture the DIRECT caller's call-result recorder, then detach
 	// it for everything downstream -- a nested runInternal reached through
@@ -183,6 +185,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	ctx = session.WithoutExecutionAssistantIdentity(ctx)
 
 	model := pinned.smart
+
+	// The heartbeat source labels are decided at resolve time, not here.
+	ctx = withModelSource(ctx, pinned.smartSource, pinned.fastSource)
 
 	// creds is non-nil for RunWithCredentials calls (see
 	// resolvedOverrides.credentials): the 401 rebuild below must
@@ -688,7 +693,11 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 				"wait", wait.String(),
 				"wait_until", deadline.Format("15:04"),
 			)
-			if err := c.waitRateLimit(ctx, sessionID, wait, &rateLimitSpent); err != nil {
+			c.notifyRateLimitWait(sessionID, deadline, rateLimitWaits+1)
+			heartbeat.SetRateLimitedUntilFor(sessionID, deadline)
+			err := c.waitRateLimit(ctx, sessionID, wait, &rateLimitSpent)
+			heartbeat.SetRateLimitedUntilFor(sessionID, time.Time{})
+			if err != nil {
 				if errors.Is(err, errRateLimitBudgetExhausted) {
 					break
 				}

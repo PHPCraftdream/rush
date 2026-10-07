@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -148,10 +149,33 @@ func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, statu
 		fmt.Fprintf(out, "status: %s\n", status)
 	}
 	fmt.Fprintf(out, "pulse: %s ago\n", formatDurationShort(pulse))
+	if line := rateLimitLineForWhy(sessionID, now); line != "" && !stalled {
+		fmt.Fprint(out, line)
+	}
 	if last := lastMessageAgeForWhy(ctx, a, sessionID, now); last != "" {
 		fmt.Fprintf(out, "last message: %s\n", last)
 	} else {
 		fmt.Fprintf(out, "last message: (none persisted)\n")
 	}
 	return stalled
+}
+
+// rateLimitLineForWhy scans heartbeat entries for a future rate-limit
+// wait stamp on the session; "" when absent, past, or unreadable.
+func rateLimitLineForWhy(sessionID string, now time.Time) string {
+	entries, err := heartbeat.ReadAll()
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.Session != sessionID || e.RateLimitedUntil == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, e.RateLimitedUntil)
+		if err != nil || !t.After(now) {
+			continue
+		}
+		return fmt.Sprintf("rate limit: waiting for provider rate limit until %s\n", t.Local().Format("15:04"))
+	}
+	return ""
 }

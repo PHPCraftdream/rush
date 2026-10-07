@@ -229,9 +229,12 @@ type record struct {
 	Totals        *model            `json:"totals"`
 	Models        map[string]*model `json:"models"`
 	Agents        []*agent          `json:"agents"`
-	identity      string            `json:"-"`
-	dirty         bool              `json:"-"`
-	generation    uint64            `json:"-"`
+	// RateLimitedUntil is the RFC3339 deadline of a pending provider
+	// rate-limit wait; empty when not waiting.
+	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
+	identity         string `json:"-"`
+	dirty            bool   `json:"-"`
+	generation       uint64 `json:"-"`
 }
 
 // SetDirFunc installs a lazily evaluated output directory.

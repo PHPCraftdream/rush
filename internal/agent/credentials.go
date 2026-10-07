@@ -413,6 +413,8 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	if base != nil {
 		resolved.smart = base.smart
 		resolved.fast = base.fast
+		resolved.smartSource = base.smartSource
+		resolved.fastSource = base.fastSource
 		resolved.promptPrefix = base.promptPrefix
 		resolved.systemPrompt = base.systemPrompt
 		resolved.providerCfg = base.providerCfg
@@ -430,6 +432,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 			return nil, err
 		}
 		resolved.smart = smart
+		resolved.smartSource = hbSourcePerCall
 		resolved.providerCfg = providerCfg
 		if err := c.rejectScopedCallOnCLIProvider(ctx, "smart", providerCfg); err != nil {
 			return nil, err
@@ -448,6 +451,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 			return nil, err
 		}
 		resolved.fast = fast
+		resolved.fastSource = hbSourcePerCall
 	}
 	var workerProviderCfg config.ProviderConfig
 	var workerConfigured bool

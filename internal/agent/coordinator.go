@@ -320,6 +320,10 @@ type coordinator struct {
 	activeModelRoleMu sync.Mutex
 	activeModelRole   config.SelectedModelType
 
+	// rateLimitNotify is the optional app-installed callback that surfaces
+	// each provider rate-limit wait; see coordinator_rate_limit.go.
+	rateLimitNotify atomic.Pointer[func(sessionID string, until time.Time, attempt int)]
+
 	// Phase 4 autonomous idle-resume guardrails.
 	// persistentMode: true only for the long-lived web server; false for
 	// rush run. Currently written exactly once at process start (no real

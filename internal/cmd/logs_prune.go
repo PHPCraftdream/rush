@@ -38,9 +38,7 @@ func pruneAuditFiles(days int, quiet bool) (int, error) {
 // the retention. The package's prune only ever touches that directory, its
 // own tmp files, and never a live process. days == 0 disables the prune.
 func pruneHeartbeatFiles(days int, quiet bool) (int, error) {
-	heartbeat.SetDirFunc(func() string {
-		return filepath.Join(filepath.Dir(config.GlobalConfigData()), "heartbeat")
-	})
+	heartbeat.SetDirFunc(heartbeat.DefaultDir)
 	if days == 0 {
 		if !quiet {
 			fmt.Fprintln(os.Stderr, "heartbeat pruning disabled (--heartbeat-days 0)")

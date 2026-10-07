@@ -23,18 +23,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // pruneIsolateEnv points the two global config paths at throwaway dirs (no
 // RUSH_HEARTBEAT_DIR: logs prune must reach the heartbeat dir through its
-// own dir func, the same way production does).
+// own dir func, the same way production does). The dir func is pre-installed
+// because the heartbeat flusher needs it before the first `logs prune` run.
 func pruneIsolateEnv(t *testing.T) (dataDir, hbDir string) {
 	t.Helper()
 	dataDir = t.TempDir()
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
+	heartbeat.SetDirFunc(heartbeat.DefaultDir)
+	t.Cleanup(func() { heartbeat.SetDirFunc(nil) })
 	hbDir = filepath.Join(dataDir, "heartbeat")
 	require.NoError(t, os.MkdirAll(hbDir, 0o755))
 	return dataDir, hbDir

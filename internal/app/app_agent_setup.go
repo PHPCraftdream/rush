@@ -7,8 +7,10 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -179,6 +181,18 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		if ctrl, ok := app.AgentCoordinator.(agent.WakeScheduleController); ok {
 			ctrl.SetWakeScheduleStore(app.wakeScheduleStore)
 		}
+	}
+	// Optional-interface assertion (agent.RateLimitNotifier), same shape
+	// as above: each rate-limit wait is echoed to the run loop's stderr.
+	if rn, ok := app.AgentCoordinator.(agent.RateLimitNotifier); ok {
+		rn.SetRateLimitNotify(func(sessionID string, until time.Time, attempt int) {
+			out := io.Writer(os.Stderr)
+			if cliLoopStderr != nil {
+				out = cliLoopStderr
+			}
+			fmt.Fprintf(out, "rush run: session %q waiting for provider rate limit until %s (attempt %d)\n",
+				sessionID, until.Format("15:04"), attempt)
+		})
 	}
 	return nil
 }
