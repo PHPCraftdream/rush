@@ -1,9 +1,8 @@
 // Fork addition: `grok-init` installs the `rush`/`rush-fallback` slash
 // commands as xAI Grok Build CLI Skills (`.grok/skills/<name>/SKILL.md`).
-// Part of the `<tool>-init`/`<tool>-del` family alongside claude-init/
-// claude-del, codex-init/codex-del and gemini-init/gemini-del/
-// qwen-init/qwen-del, converting from embedded command sources via the
-// helpers in multi_cli_convert.go.
+// Part of the `<tool>-init`/`<tool>-del` family alongside claude, codex,
+// gemini, qwen, opencode and omp, converting from embedded sources via
+// the helpers in multi_cli_convert.go.
 package cmd
 
 import (

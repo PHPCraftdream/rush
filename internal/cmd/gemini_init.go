@@ -1,9 +1,8 @@
 // Fork addition: `gemini-init` installs the `rush`/`rush-fallback` slash
 // commands as Gemini CLI custom commands (`.gemini/commands/*.toml`). Part
-// of the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del
-// and codex-init/codex-del; grok-init/grok-del and qwen-init/qwen-del follow
-// the same pattern, converting from embedded command sources via the
-// helpers in multi_cli_convert.go.
+// of the `<tool>-init`/`<tool>-del` family alongside claude, codex, grok,
+// qwen, opencode and omp, converting from embedded sources via
+// the helpers in multi_cli_convert.go.
 package cmd
 
 import (

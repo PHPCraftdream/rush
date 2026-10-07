@@ -21,14 +21,25 @@ blocks:
       - **Mid-plan with the user** — keep the plan coherent in one head.
 
       ## Fallback when `rush` hits rate limits
-
+    claude: |-
       If the operator has armed `/rush-fallback <agent>`, a hard window/quota
       limit — weekly/monthly budget gone, account suspended, or "context
       window exceeded"/"quota exceeded" with no retry-after inside this
       session — is one of its two triggers: switch to that agent immediately
       and silently, per that command's "Trigger 2 — hard limit". Don't ask,
       don't request the refusal text.
-
+    codex: &no_auto_fallback |-
+      This CLI's `/rush-fallback` cannot arm an automatic switch. On a hard
+      window/quota limit — weekly/monthly budget gone, account suspended, or
+      "context window exceeded"/"quota exceeded" with no retry-after inside
+      this session — report the exact error, the provider, and any retry
+      time, and ask the operator how to route the work.
+    gemini: *no_auto_fallback
+    grok: *no_auto_fallback
+    qwen: *no_auto_fallback
+    opencode: *no_auto_fallback
+    omp: *no_auto_fallback
+  - common: |-
       If no fallback is armed, report the limit to the operator and stop —
       never pick a sub-agent to re-route to on your own initiative.
 
@@ -268,6 +279,31 @@ blocks:
       - Run `rush run --role smart --session <id> --json` using Codex's `exec_command`, and set the working directory to the intended workspace. If `exec_command` returns a `session_id`, retain that handle. Do not append `&`, sleep-poll, or mistake completion of a shell wrapper for completion of Rush.
       - Capture stdout and stderr in `.rush/stdin/<task>.out` and `.rush/stdin/<task>.err`. For a multi-line prompt, write `.rush/stdin/<task>.prompt` and feed it through stdin.
       - Once `exec_command` returns, leave the chat free after launch. Do not call `write_stdin` merely to wait for Rush. When `rush_done:<session>` arrives, treat it as an automated wake marker, not a new user request: read the saved result and verify only what the task needs. For a run-only or read-only task, the result and worktree cleanup suffice; for code changes, inspect the diff and run relevant tests. If the result is missing or cleanup shows the process is still running, wait once on the retained `session_id`. Never launch a duplicate.
+    opencode: |-
+      ## Launching
+
+      - Use `--role smart` for non-trivial work and `--role fast` for one-liners. The optional `--role worker` and `--role reviewer` roles are never auto-selected. Configure them with `rush models use <smart> <fast> --worker <model> --reviewer <model>` (the two positional arguments are still required; these flags are additive).
+      - Use a stable, task-meaningful `--session` ID. Reuse it for retries and resumes.
+      - No `--timeout` is needed by default. `--idle-timeout` defaults to `15m` and ends a genuinely stuck run; do not add an arbitrary overall timeout.
+      - Run in the FOREGROUND — this harness's `bash` tool has no background mode, no completion notification, and no job API; the tool call returning IS the completion signal. Set `timeout` to a large value in MILLISECONDS (e.g. 36000000) — the default 120000 (2 min) kills a `rush run` minutes in. One bare command per bash call; NEVER append `&` (or `; echo`): the call returns instantly (false-done), the child is untracked, and on win32 it dies when the shell session tears down.
+      - bash({ command: "rush run --role smart --session foo --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", workdir: "<workspace>", timeout: 36000000 })
+      - Multi-line prompts → write `.rush/stdin/<task>.prompt` and feed via `< file`.
+      - **Fallback here is operator-directed:** if a peak-hours refusal or hard quota limit occurs, report exact error/provider/retry time, then ask for direction. Use this tool only after explicit authorization.
+      - Do not confuse this with OpenCode's own `Task` tool (subagent_type `explore|general`) — that is an internal sub-agent, not rush delegation.
+    omp: |-
+      ## Launching
+
+      - Use `--role smart` for non-trivial work and `--role fast` for one-liners. The optional `--role worker` and `--role reviewer` roles are never auto-selected. Configure them with `rush models use <smart> <fast> --worker <model> --reviewer <model>` (the two positional arguments are still required; these flags are additive).
+      - Use a stable, task-meaningful `--session` ID. Reuse it for retries and resumes.
+      - No `--timeout` is needed by default. `--idle-timeout` defaults to `15m` and ends a genuinely stuck run; do not add an arbitrary overall timeout.
+      - Run `rush run --role smart --session <id> --json` with the bash tool using `"async": true` AND `"timeout": 0` — without `timeout: 0` the default 300 s deadline applies even in background — plus `"pty": false` and `"cwd"` set to the intended workspace. One bare rush command per call; never `&`, `nohup`, `disown`, or an echo-launched wrapper. Do not use named-service mode (`name`) for this finite run.
+      - bash({ "i": "Launching Rush delegation", "command": "rush run --role smart --session <id> --json < .rush/stdin/<task>.prompt > .rush/stdin/<task>.out 2> .rush/stdin/<task>.err", "async": true, "timeout": 0, "pty": false, "cwd": "<workspace>" })
+      - The call returns a job id immediately; completion or failure automatically wakes this conversation. Retain the job id: `read proc://<job-id>` inspects status/output, `write proc://<job-id>/kill` cancels.
+      - Redirect stdout/stderr to `.rush/stdin/<task>.{out,err}`; multi-line prompts → write `.rush/stdin/<task>.prompt` and feed via `< file`.
+      - In print mode (`omp -p`) keep the turn alive — call `wait` when otherwise idle — until rush finishes and verification is done; session disposal cancels the job.
+      - Prerequisite: under approval modes other than yolo a bash call may require approval and fails closed without a UI. Ensure rush invocations are allow-listed; redirections may not qualify for simple-command allow rules, so confirm the full command is permitted. Never bypass policy through another execution tool.
+      - **Fallback here is operator-directed:** report exact refusal details and ask for direction; reroute through OMP `task` only when authorized.
+      - Do not confuse this with OMP's own `task` tool — that is an internal sub-agent, not rush delegation.
   - common: |-
       ## Scoping permissions for a delegation — `--restrict-run`
 
@@ -419,6 +455,10 @@ blocks:
       not proof; `sessions locks`/`reap`).
     codex: |-
       **Process completion.** Keep the returned `exec_command` session handle but do not block the chat waiting on it. The `rush_done:<session>` marker wakes this thread; read `.rush/stdin/<task>.{out,err}` and finish the task's verification. Do not call `write_stdin`, `rush sessions why`, `sessions last`, or `sessions locks` after an ordinary complete result. If output is missing or inconsistent, or worktree cleanup finds a live process, wait once on the retained handle and investigate that anomaly. Never relaunch while the session lock is held.
+    opencode: |-
+      **Liveness watchdog — before launch and after return, not periodic.** You cannot observe the run while the bash call blocks, and nothing notifies you later. BEFORE launching: `rush sessions why <id>` and `rush sessions locks <id>` — never launch into a live lock; nudge a live session with `rush sessions inject <id> -m "<msg>"` (`--interrupt` to cut in) instead. DURING: nothing to poll — the turn is blocked; a healthy multi-hour run inside a generous `timeout` needs no probing. AFTER the call returns (or when re-entering later): `rush sessions why <id>` — `running` (it names the loop's PID) means another holder is alive: wait; `crashed`, or `at rest`/`done (stale lock)` with no result, means gone: inspect `.rush/stdin/<task>.{out,err}`, `rush sessions last <id>`, reap the lock, and relaunch into the same `--session`. Do NOT read `offline`/`stopping` locks as death — a loop between turns holds no lock. If bash killed the run via its own `timeout`, treat it as dead: verify with `sessions why`, then relaunch with a larger `timeout`.
+    omp: |-
+      **Liveness watchdog.** Neither bash nor `wait` provides a configurable wake interval; `wait` has a thirty-minute safety cap. While awake, probe roughly every ten minutes: `rush sessions why <id>`, then `rush sessions locks <id>`. When idle, call `wait`; after a safety-cap return with the job still running, probe liveness and wait again. `running` in `sessions why` means alive; `offline`/`stopping` in `locks` alone does not establish death between turns. If completion is missing and `why` reports `crashed` or `at rest`/done with a stale lock, inspect `.rush/stdin/<task>.{out,err}` and `sessions last`, confirm the old process is gone (check `proc://<job-id>`), reap the lock, and only then relaunch into the same `--session`. Never launch another `rush run` into a live session; steer it with `rush sessions inject <id> -m "<message>"` instead. Stop the watchdog when no rush runs remain; re-arm on the next launch.
   - common: |-
       ## Steering a running session — `sessions inject`
 

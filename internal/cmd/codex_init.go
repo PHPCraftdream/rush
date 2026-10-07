@@ -1,8 +1,7 @@
 // Fork addition: `codex-init` installs the `rush`/`rush-fallback`/`wrush`/`wcrush` slash
 // commands as Codex CLI Skills (`.agents/skills/<name>/SKILL.md`). First of
-// the `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del;
-// gemini-init/gemini-del, grok-init/grok-del and qwen-init/qwen-del follow
-// the same pattern, converting from embedded command sources via the
+// `<tool>-init`/`<tool>-del` family: claude, codex, gemini, grok, qwen,
+// opencode and omp; converting from embedded command sources via the
 // helpers in multi_cli_convert.go.
 package cmd
 

@@ -499,17 +499,18 @@ cache visibility differs.
 If you drive Rush from another LLM (e.g. Claude Code), run once:
 
 ```bash
-rush claude-init                 # install /rush, /rush-fallback and /wrush
+rush claude-init                 # install /rush, /rush-fallback, /wrush, /wcrush
 ```
 
-For Codex CLI, install the same three Rush-owned delegation commands as
+For Codex CLI, install the four Rush-owned delegation commands as
 Skills (global by default, or local with `--local`):
 
 ```bash
-rush codex-init                  # install rush, rush-fallback and wrush
+rush codex-init                  # install rush, rush-fallback, wrush and wcrush
 ```
 
-This writes `rush/SKILL.md`, `rush-fallback/SKILL.md` and `wrush/SKILL.md`
+This writes `rush/SKILL.md`, `rush-fallback/SKILL.md`, `wrush/SKILL.md` and
+`wcrush/SKILL.md`
 under `~/.agents/skills/` (or the project's `.agents/skills/` in local mode).
 Each file starts with valid YAML frontmatter; Rush's ownership sentinel follows
 the closing frontmatter delimiter so Codex can parse the Skill normally.
@@ -518,7 +519,7 @@ The generated `wrush` Skill inherits its base instructions from the sibling
 `rush codex-del` removes only those Skills when they carry Rush's sentinel;
 foreign files with the same names are preserved.
 
-This installs three slash-commands into `.claude/commands/`, each
+This installs four slash-commands into `.claude/commands/`, each
 triggered explicitly by the operator — never auto-discovered:
 
 - **`rush.md`** — `/rush <task>`, an operator-triggered command that
@@ -547,6 +548,17 @@ triggered explicitly by the operator — never auto-discovered:
   from the primary checkout, or an orchestrator that ignores the
   instruction, gets no runtime enforcement catching the mistake.
 
+- **`wcrush.md`** — `/wcrush <task>`, `/wrush` with the same mandatory worktree isolation; the sub-agent does not run tests until the orchestrator grants explicit phase-2 permission.
+
+OpenCode and Oh My Pi use the same four Markdown commands, with global installs by default and `--local`/`--cwd` project scope:
+
+```bash
+rush opencode-init              # ~/.config/opencode/commands/
+rush omp-init                   # ~/.omp/agent/commands/
+```
+
+Local installs use `<cwd>/.opencode/commands/` for OpenCode and `<cwd>/.omp/commands/` for OMP. OpenCode may also load Codex-targeted Rush Skills from global or project `.agents/skills/`; when found, its installer emits one warning. Use OpenCode's `/rush` command entry point; no OpenCode Skills are installed. Generated Markdown starts with real YAML frontmatter and places the Rush ownership sentinel after its closing delimiter so native parsers see valid frontmatter. OpenCode uses foreground bash calls with large millisecond timeouts; OMP uses managed async bash jobs and requires keeping the conversation alive through verification. `rush opencode-del` and `rush omp-del` remove only the four sentinel-owned command files.
+
 Earlier versions of this fork also wrote a long "delegate everything to
 rush" block into `CLAUDE.md`. That block turned out to be a recursive-
 delegation footgun: a sub-agent reading it on startup would try to
@@ -557,7 +569,7 @@ invocation (matching any version, v1..vN) and removes `CLAUDE.md`
 entirely if stripping leaves it empty. Re-run `claude-init` at any time
 — it's idempotent.
 
-To uninstall completely: `rush claude-del` removes all three
+To uninstall completely: `rush claude-del` removes all four
 slash-command files and strips any remaining legacy `CLAUDE.md` block.
 
 ### 6. `rush models` — picking and inspecting models

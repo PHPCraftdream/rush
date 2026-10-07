@@ -1,8 +1,7 @@
 // Fork addition: `qwen-init` installs the `rush`/`rush-fallback` slash
 // commands for Qwen Code CLI (`.qwen/commands/*.md`). Part of the
-// `<tool>-init`/`<tool>-del` family alongside claude-init/claude-del and
-// codex-init/codex-del; gemini-init/gemini-del and grok-init/grok-del
-// follow the same pattern, converting from embedded command sources via
+// `<tool>-init`/`<tool>-del` family: claude, codex, gemini, grok, qwen,
+// opencode and omp; converting from embedded command sources via
 // the helpers in multi_cli_convert.go.
 //
 // Qwen Code CLI's custom-command convention is structurally almost

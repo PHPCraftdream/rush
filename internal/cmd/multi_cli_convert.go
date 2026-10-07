@@ -1,7 +1,8 @@
 // Fork addition: shared conversion + filesystem helpers used by the
-// `<tool>-init`/`<tool>-del` command family (codex-init/codex-del today;
-// gemini-init/gemini-del, grok-init/grok-del, qwen-init/qwen-del follow the
-// same pattern). Each of those CLIs has its own on-disk convention for
+// `<tool>-init`/`<tool>-del` command family (codex-init/codex-del,
+// gemini-init/gemini-del, grok-init/grok-del, qwen-init/qwen-del,
+// `opencode-init`/`opencode-del` and `omp-init`/`omp-del`. Each CLI has
+// its own on-disk convention for
 // "custom command"/"skill" — Claude Code uses `.claude/commands/*.md`
 // front-matter, Codex/Grok use Skills-style `<name>/SKILL.md`, Gemini uses
 // TOML, Qwen uses a different front-matter placeholder. Rather than
@@ -29,12 +30,14 @@ var skillSourceFiles embed.FS
 type skillTarget string
 
 const (
-	skillTargetCommon skillTarget = "common"
-	skillTargetClaude skillTarget = "claude"
-	skillTargetCodex  skillTarget = "codex"
-	skillTargetGemini skillTarget = "gemini"
-	skillTargetGrok   skillTarget = "grok"
-	skillTargetQwen   skillTarget = "qwen"
+	skillTargetCommon   skillTarget = "common"
+	skillTargetClaude   skillTarget = "claude"
+	skillTargetCodex    skillTarget = "codex"
+	skillTargetGemini   skillTarget = "gemini"
+	skillTargetGrok     skillTarget = "grok"
+	skillTargetQwen     skillTarget = "qwen"
+	skillTargetOpenCode skillTarget = "opencode"
+	skillTargetOmp      skillTarget = "omp"
 )
 
 type structuredSkillSource struct {
@@ -43,12 +46,14 @@ type structuredSkillSource struct {
 }
 
 type structuredBlocks struct {
-	Common string `yaml:"common"`
-	Claude string `yaml:"claude"`
-	Codex  string `yaml:"codex"`
-	Gemini string `yaml:"gemini"`
-	Grok   string `yaml:"grok"`
-	Qwen   string `yaml:"qwen"`
+	Common   string `yaml:"common"`
+	Claude   string `yaml:"claude"`
+	Codex    string `yaml:"codex"`
+	Gemini   string `yaml:"gemini"`
+	Grok     string `yaml:"grok"`
+	Qwen     string `yaml:"qwen"`
+	Opencode string `yaml:"opencode"`
+	Omp      string `yaml:"omp"`
 }
 
 // loadSkillSource selects a source by extension and assembles its target
@@ -118,7 +123,7 @@ func parseStructuredSkillSource(raw string, target skillTarget) (string, string,
 	}
 	parts := make([]string, 0, len(source.Blocks)*2)
 	for i, block := range source.Blocks {
-		allFields := []string{block.Common, block.Claude, block.Codex, block.Gemini, block.Grok, block.Qwen}
+		allFields := []string{block.Common, block.Claude, block.Codex, block.Gemini, block.Grok, block.Qwen, block.Opencode, block.Omp}
 		present := false
 		for _, part := range allFields {
 			if strings.TrimSpace(part) != "" {
@@ -156,6 +161,10 @@ func (b structuredBlocks) forTarget(target skillTarget) string {
 		return b.Grok
 	case skillTargetQwen:
 		return b.Qwen
+	case skillTargetOpenCode:
+		return b.Opencode
+	case skillTargetOmp:
+		return b.Omp
 	default:
 		return ""
 	}
@@ -268,6 +277,35 @@ const (
 	claudeWcrushResumeBlock = "```\n" +
 		"rush run --role smart --session <same id> \"<permission and what to run>\"\n" +
 		"```"
+	opencodeWrushLaunchGuidance = "Launch `rush run` with the bash tool, `workdir` set to the worktree —\n" +
+		"   every edit, git op, and test the sub-agent runs stays inside that\n" +
+		"   tree. Run in the FOREGROUND with a large `timeout` in MILLISECONDS\n" +
+		"   (e.g. 36000000; the 120000 default kills a `rush run` minutes in),\n" +
+		"   one bare command, never `&`. Redirect\n" +
+		"   `.rush/stdin/<task>.{out,err}` to the PRIMARY checkout's ABSOLUTE\n" +
+		"   path (a relative path lands inside the worktree, because `workdir`\n" +
+		"   is the worktree) so results survive the eventual worktree removal."
+	ompWrushLaunchGuidance = "Launch `rush run` with the bash tool's `\"async\": true`, `\"timeout\": 0`,\n" +
+		"   `\"pty\": false` and `\"cwd\"` set to the worktree — every edit, git op,\n" +
+		"   and test the sub-agent runs stays inside that tree. Retain the\n" +
+		"   returned job id; completion auto-wakes this conversation. Never\n" +
+		"   `&`, `nohup`, or `disown`. Redirect\n" +
+		"   `.rush/stdin/<task>.{out,err}` to the PRIMARY checkout's ABSOLUTE\n" +
+		"   path (a relative path lands inside the worktree, because `cwd`\n" +
+		"   is the worktree) so results survive the eventual worktree removal."
+	opencodeWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
+		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
+		"  once. Run long phase-2 tests in the FOREGROUND with a large\n" +
+		"  `timeout` in MILLISECONDS (the 120000 default kills a long test\n" +
+		"  run); the call returning is the completion signal. Never append\n" +
+		"  `&` — it false-completes instantly and the child is untracked."
+	ompWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
+		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
+		"  once. Run long phase-2 tests with the bash tool's `\"async\": true` and\n" +
+		"  `\"timeout\": 0` (without `timeout: 0` the 300 s deadline applies even\n" +
+		"  in background); the returned job id auto-wakes this conversation on\n" +
+		"  completion — in print mode, keep calling `wait` until the tests\n" +
+		"  finish. Never `&`, `nohup`, or `disown`."
 )
 
 // toCodexWrushSkillMD converts the canonical Claude /wrush body to Codex's
@@ -322,6 +360,49 @@ func toCodexWcrushSkillMD(description, body string) (string, error) {
 	body = wrappedPhrase.ReplaceAllString(body, codexSiblingReference)
 	body = regexp.MustCompile(`\bwrush\.md\b`).ReplaceAllString(body, "../wrush/SKILL.md")
 	return toSkillMD("wcrush", description, body), nil
+}
+
+// Guidance swapped per Markdown-command target: [from, to] pairs keyed by
+// target.
+var wrushLaunchGuidanceByTarget = map[skillTarget][2]string{
+	skillTargetOpenCode: {claudeWrushLaunchGuidance, opencodeWrushLaunchGuidance},
+	skillTargetOmp:      {claudeWrushLaunchGuidance, ompWrushLaunchGuidance},
+}
+
+var wcrushBackgroundGuidanceByTarget = map[skillTarget][2]string{
+	skillTargetOpenCode: {claudeWcrushBackgroundGuidance, opencodeWcrushBackgroundGuidance},
+	skillTargetOmp:      {claudeWcrushBackgroundGuidance, ompWcrushBackgroundGuidance},
+}
+
+// toMarkdownWrushCommandMD converts the canonical Claude /wrush body for a
+// Markdown-command target (OpenCode, omp). Only the harness-specific launch
+// guidance is swapped — all four files live in one commands directory, so
+// the same-directory rush.md reference stays as written.
+func toMarkdownWrushCommandMD(target skillTarget, description, body string) (string, error) {
+	repl, ok := wrushLaunchGuidanceByTarget[target]
+	if !ok {
+		return "", fmt.Errorf("toMarkdownWrushCommandMD: unsupported target %q", target)
+	}
+	swapped, err := replaceCodexGuidance(body, repl[0], repl[1])
+	if err != nil {
+		return "", err
+	}
+	return renderFrontMatterMD(claudeSlashCommandSentinel, description, swapped, "$ARGUMENTS") + "\n", nil
+}
+
+// toMarkdownWcrushCommandMD is the /wcrush counterpart of
+// toMarkdownWrushCommandMD, swapping the harness-specific background
+// guidance instead.
+func toMarkdownWcrushCommandMD(target skillTarget, description, body string) (string, error) {
+	repl, ok := wcrushBackgroundGuidanceByTarget[target]
+	if !ok {
+		return "", fmt.Errorf("toMarkdownWcrushCommandMD: unsupported target %q", target)
+	}
+	swapped, err := replaceCodexGuidance(body, repl[0], repl[1])
+	if err != nil {
+		return "", err
+	}
+	return renderFrontMatterMD(claudeSlashCommandSentinel, description, swapped, "$ARGUMENTS") + "\n", nil
 }
 
 // writeSentinelledFile writes content to path, refusing to overwrite a file

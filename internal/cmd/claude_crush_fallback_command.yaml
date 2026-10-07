@@ -12,6 +12,8 @@ blocks:
     gemini: *limited_opening
     grok: *limited_opening
     qwen: *limited_opening
+    opencode: *limited_opening
+    omp: *limited_opening
   - codex: |-
       If the operator directs another `rush run`, including a retry or resumed session, run it and wait for it through the normal fallback described by the rush Skill.
   - common: |-
@@ -29,6 +31,10 @@ blocks:
     gemini: *limited_switch
     grok: *limited_switch
     qwen: *limited_switch
+    opencode: |-
+      If the operator explicitly authorizes fallback work, route it through OpenCode's `Task` tool (subagent_type `explore|general`) with the usual scope and verification precautions.
+    omp: |-
+      If the operator explicitly authorizes fallback work, route it through OMP's `task` tool with the usual scope and verification precautions.
   - common: |-
       If `<agent>` is missing on invocation, **stop and ask** which agent type to use — that's the only thing you may never pick yourself.
   - claude: |-
