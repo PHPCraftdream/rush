@@ -340,8 +340,19 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 		}
 	}()
 
-	// Give the child time to write its PID and enter the sleep.
-	time.Sleep(500 * time.Millisecond)
+	// Cancel only after the child wrote its PID: under load MSYS `ps` can take
+	// longer than any fixed delay, and an early cancel leaves no PID file.
+	pidDeadline := time.Now().Add(20 * time.Second)
+	for {
+		if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) != "" {
+			break
+		}
+		if time.Now().After(pidDeadline) {
+			cancel()
+			t.Fatal("child did not write its pid file within 20s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	cancel()
 
 	select {
