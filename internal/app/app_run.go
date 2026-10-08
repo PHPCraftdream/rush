@@ -52,7 +52,12 @@ var executeRunDoneCaseSeam func()
 // streaming behaviour). Streaming output goes to req.Stdout, diagnostics to
 // req.Stderr; nil falls back to io.Discard. For RunModeJSON the caller is
 // responsible for encoding the returned *RunResult.
-func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, runErr error) {
+func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResult, runErr error) {
+	runCtx := ctx
+	sessionID := req.ContinueSessionID
+	defer func() {
+		result, runErr = classifyRunTimeout(runCtx, result, runErr, sessionID, string(req.Overrides.ModelRole))
+	}()
 	mode := req.Mode
 	continueSessionID := req.ContinueSessionID
 	useLast := req.UseLast
@@ -85,6 +90,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
+	sessionID = sess.ID
 	if req.onSessionResolved != nil {
 		if err := req.onSessionResolved(sess.ID); err != nil {
 			return nil, err
@@ -479,6 +485,14 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (_ *RunResult, r
 			runOnFinishHook(overrides.OnFinishHook, sess.ID, hookExitReason, hookCost, hookTokens, duration)
 		}()
 	}
+
+	defer func() {
+		result, runErr = classifyRunTimeout(runCtx, result, runErr, sess.ID, string(overrides.ModelRole))
+		var timeoutErr *RunTimeoutError
+		if errors.As(runErr, &timeoutErr) {
+			hookExitReason = "timeout"
+		}
+	}()
 
 	runFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
 		if reservedHold != nil && modelOverrideRequested {

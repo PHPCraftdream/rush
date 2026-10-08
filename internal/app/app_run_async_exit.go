@@ -44,6 +44,10 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 // ctx cancellation, a wait error, a stuck debt, or the ordinary scope-closed
 // end -- goes through here exactly once.
 func (l *cliLoop) finish(err error) (*RunResult, error) {
+	l.final, err = classifyRunTimeout(l.ctx, l.final, err, l.sessionID, l.resumeRole())
+	if l.lastBuffered == nil {
+		l.lastBuffered = &bytes.Buffer{}
+	}
 	if l.final != nil {
 		l.applyTotals(l.final)
 		// A18: the budget for unfinished-todos reminders was spent without
@@ -59,7 +63,7 @@ func (l *cliLoop) finish(err error) (*RunResult, error) {
 	l.clearHonouredCancel(l.final, err)
 	l.persistEndedReason(l.final, err)
 	if flushErr := flushLoopExit(l.output, l.mode, l.final, l.lastBuffered); flushErr != nil {
-		return l.final, flushErr
+		return l.final, errors.Join(err, flushErr)
 	}
 	return l.final, err
 }
@@ -87,7 +91,7 @@ func (l *cliLoop) exitCanceled() (*RunResult, error) {
 func (l *cliLoop) exitWait(waitErr error) (*RunResult, error) {
 	if l.final != nil {
 		l.final.ExitReason = "canceled"
-		if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
+		if !errors.Is(waitErr, context.Canceled) && !(l.ctx.Err() != nil && errors.Is(waitErr, context.DeadlineExceeded)) {
 			// A persistent DB-read failure is not a cancellation.
 			l.final.ExitReason = "error"
 		}

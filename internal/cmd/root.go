@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -302,6 +303,15 @@ func recoverAndLogPanic() {
 	}
 }
 
+func commandErrorHandler(w io.Writer, styles fang.Styles, err error) {
+	var timeoutErr *app.RunTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		fang.DefaultErrorHandler(w, styles, err)
+		return
+	}
+	fmt.Fprintf(w, "rush: %s; resume: %s; stored work remains in the session (rush sessions show/last)\n", timeoutErr.Error(), timeoutErr.ResumeCommand)
+}
+
 func Execute() {
 	defer recoverAndLogPanic()
 	journalExecutionStarted()
@@ -311,6 +321,7 @@ func Execute() {
 		// upstream's) plus build provenance. See version.VersionLine.
 		fang.WithVersion(version.VersionLine()),
 		fang.WithNotifySignal(os.Interrupt),
+		fang.WithErrorHandler(commandErrorHandler),
 	}
 
 	// Resolve --color-scheme / RUSH_COLOR_SCHEME. fang builds its help/error

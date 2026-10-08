@@ -25,6 +25,7 @@ type RunResult struct {
 	//   "provider_limit"                                    — own hard quota
 	//   "error"                                              — generic
 	//   "canceled"                                           — caller-cancel
+	//   "timeout"                                            — owned run deadline
 	//   "stalled" (fork-only)                                — turn-stall abort
 	//   "invalid_json" (fork-only)                           — --json /
 	//       --format json was active and stripped output failed
@@ -82,7 +83,7 @@ type RunResult struct {
 	// on the latest unfinished assistant row). Contains the partial text
 	// so the orchestrator can salvage it. Fork patch: batch 8.
 	RecoveredPartial *RecoveredPartial `json:"recovered_partial,omitempty"`
-	// Set only for exit_reason provider_limit.
+	// Set for exit_reason provider_limit or timeout.
 	ResumeCommand         string                 `json:"resume_command,omitempty"`
 	QuotaResetAt          string                 `json:"quota_reset_at,omitempty"`
 	FinishedWork          []FinishedWork         `json:"finished_work,omitempty"`

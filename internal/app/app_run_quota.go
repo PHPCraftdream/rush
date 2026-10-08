@@ -174,8 +174,5 @@ func (l *cliLoop) snapshotQuotaTerminal() {
 }
 
 func (l *cliLoop) resumeRole() string {
-	if l.overrides.ModelRole != "" {
-		return string(l.overrides.ModelRole)
-	}
-	return "smart"
+	return runResumeRole(string(l.overrides.ModelRole))
 }

@@ -20,8 +20,8 @@ const hardKillGrace = 60 * time.Second
 // (the default cap, RUSH_RUN_DEFAULT_HARD_TIMEOUT). Both are the SAME graceful
 // context deadline: a loop that is waiting -- phase 4 holds the run open for
 // jobs and reaction chains -- ends through its normal exit (envelope,
-// --on-finish, App.Shutdown) instead of being killed, and the default cap
-// prints one line naming itself. Only a process still alive `grace` past the
+// --on-finish, App.Shutdown) instead of being killed; the command renderer
+// prints the timeout notice. Only a process still alive `grace` past the
 // deadline (a deadlock, a read that ignores ctx) is force-killed through exit
 // (124): that is the zombie backstop, and it holds the session lock no longer
 // than the deadline plus the grace.
@@ -34,23 +34,18 @@ func installRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.
 	if deadline <= 0 {
 		deadline, isCap = defaultCap, true
 	}
-	var cancel context.CancelFunc
+	source := "--timeout"
 	if isCap {
-		// The cause lets a turn the cap cuts off name the cap, not a --timeout
-		// nobody passed (agent.runTimeoutFinishText, R7C-5).
-		ctx, cancel = context.WithTimeoutCause(ctx, deadline, agent.ErrRunDefaultCap)
-	} else {
-		ctx, cancel = context.WithTimeout(ctx, deadline)
+		source = "default cap (RUSH_RUN_DEFAULT_HARD_TIMEOUT; no --timeout set)"
 	}
-	timers := make([]*time.Timer, 0, 2)
-	if isCap {
-		timers = append(timers, time.AfterFunc(deadline, func() {
-			fmt.Fprintf(stderr,
-				"rush: run reached its default wall-clock cap of %s (no --timeout set; pass --timeout <duration> or set RUSH_RUN_DEFAULT_HARD_TIMEOUT for a longer wait) — ending it\n",
-				deadline)
-		}))
-	}
+	ctx, cancel := context.WithTimeoutCause(ctx, deadline, &agent.RunTimeoutCause{
+		Duration: deadline, Source: source, DefaultCap: isCap,
+	})
+	timers := make([]*time.Timer, 0, 1)
 	timers = append(timers, time.AfterFunc(deadline+grace, func() {
+		if cause, ok := context.Cause(ctx).(*agent.RunTimeoutCause); !ok || cause == nil {
+			return
+		}
 		if isCap {
 			fmt.Fprintf(stderr,
 				"rush: run exceeded its default cap of %s + %s grace (no --timeout set; override via RUSH_RUN_DEFAULT_HARD_TIMEOUT) without exiting — force-killing\n",

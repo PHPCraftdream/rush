@@ -565,6 +565,13 @@ func (l *cliLoop) firstTurnPhase() cliStepResult {
 	// an exit 0 -- fail now with that error, having run nothing and without
 	// the exit effects (no envelope, no ended_reason).
 	if err != nil && (!l.driverClaimed || !l.firstSubmitted) {
+		var timeoutErr *RunTimeoutError
+		if errors.As(err, &timeoutErr) {
+			if flushErr := flushLoopExit(l.output, l.mode, result, buffered); flushErr != nil {
+				return cliStepResult{ev: evFirstDead, final: result, err: errors.Join(err, flushErr)}
+			}
+			return cliStepResult{ev: evFirstDead, final: result, err: err}
+		}
 		return cliStepResult{ev: evFirstDead, err: err}
 	}
 	l.final, l.runErr, l.lastBuffered = result, err, buffered

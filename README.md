@@ -252,10 +252,18 @@ jq -r '.error' "$out"         # error.message if non-success
   default wall-clock cap** applies (override with
   `RUSH_RUN_DEFAULT_HARD_TIMEOUT`: seconds or a Go duration such as
   `30m`/`2h`; invalid or non-positive falls back to 6 h). Reaching the
-  cap or `--timeout` ends the run gracefully like Ctrl-C (exit reason
-  `canceled`, exit 1, an envelope; the jobs the run started are
-  cancelled), so a wait longer than 6 h (an 8-hour soak test) needs an
-  explicit `--timeout`.
+  cap or `--timeout` ends the run gracefully (exit reason `timeout`,
+  exit 1, an envelope; the jobs the run started are cancelled), so a
+  wait longer than 6 h (an 8-hour soak test) needs an explicit `--timeout`.
+  The envelope's `error` names the effective duration and source;
+  `resume_command` is `rush run --role <role> --session <id>`. Stderr
+  prints one plain line with the same error, exact command and a stored-work
+  hint. Session history/partial work remains available for continuation.
+  A process still alive 60 seconds past its deadline is force-killed (124).
+  **Compatibility:** owned deadlines previously reported `canceled`; now
+  they report `timeout`. Ctrl-C, caller cancellation and parent deadlines
+  still report `canceled`. An inner provider/reviewer deadline while the
+  run context is live is not a run timeout.
 
 #### Background shell ownership
 
@@ -287,6 +295,8 @@ must arrange another explicit coordination path.
   never composed a top-level reply; and `reduction-loss: final_text
   is X% of N combined sub-agent chars` when the parent over-summarised
   (re-run with `--aggregation=attach` or `concat` to recover).
+- `resume_command` — present for `timeout` and `provider_limit`; preserves
+  the run's role and session ID. Timeout `error` identifies the limit/source.
 - `error` — present whenever `exit_reason` is non-success. If the
   provider's Finish part had no message (some providers emit a bare
   error finish), a fallback names the most likely causes (provider

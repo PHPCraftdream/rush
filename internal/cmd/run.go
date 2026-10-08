@@ -120,17 +120,17 @@ saved on the session row. "sessions show" displays cost vs budget, and
 "sessions locks" shows an ELAPSED / BUDGET column. ended_reason is written
 when the run ends and equals its exit_reason (the --json envelope's): the
 model's finish (end_turn, stop, max_tokens, ...), "error" (a failed run; also
-a --max-cost/--max-tokens exit), or "canceled" (Ctrl-C, --timeout, the default
-6h cap, "sessions cancel"; a turn cut short before its envelope exists can
-leave the older spelling "cancelled"). It is empty while a run is in progress
+a --max-cost/--max-tokens exit), "timeout" (--timeout or the default 6h cap),
+or "canceled" (Ctrl-C, caller cancellation, "sessions cancel"; an early
+cancel can leave the older spelling "cancelled"). It is empty while a run is in progress
 and appears in "sessions show" and "sessions list --json" (ended_reason).
 
 Wake timers: the model can schedule its own wakeups with the wakein/wakeon
 (one-shot) and loop (recurring) tools. A ONE-SHOT timer holds this process
 open: the run waits until it fires, reacts to the wake_fired event, and
 exits as usual (--timeout, the 6h cap, Ctrl-C and "sessions cancel" still
-stop the wait, ending the run "canceled"; an overdue timer is not caught
-up). An endless loop schedule never holds a non-interactive run open: when
+stop the wait: owned deadlines end "timeout", caller cancellation "canceled";
+an overdue timer is not caught up). An endless loop schedule never holds a non-interactive run open: when
 the scope closes with no other open work, the session's loop schedules are
 cancelled at run end (one stderr line and a --json warnings entry), while a
 Ctrl-C/--timeout exit leaves them in the DB to fire when any rush process
@@ -227,11 +227,16 @@ Runaway protection:
   partial work so you can inspect or fork from it.
   Without --timeout a 6h default wall-clock cap applies: a GRACEFUL deadline
   like --timeout (a run waiting on jobs ends through its normal exit, with an
-  envelope and exit_reason "canceled"); a process still alive 60s past it
+  envelope and exit_reason "timeout"); a process still alive 60s past it
   (deadlock / a read that ignores ctx) is force-killed. A wait longer than the
   cap needs an explicit --timeout. Override the cap via
   RUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a Go duration like
   30m/2h; invalid/non-positive falls back to the 6h default).
+  Timeout error names duration/source; resume_command preserves role/session.
+  Stderr: plain error + exact resume command + stored-work hint; exit 1 (124
+  for the hard backstop). Compatibility: owned deadlines changed "canceled"
+  to "timeout"; caller/parent cancellation remains "canceled". Inner deadlines
+  while the run context is live are not run timeouts.
 
 Peak-hours override:
   --allow-peak-hours  bypass a provider's configured peak_hours refusal for
@@ -719,15 +724,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			exitWithAudit(130)
 		}()
 
-		// Wall-clock deadline: --timeout, or the default cap when it is not
-		// set. The agent run gets context.DeadlineExceeded instead of
-		// context.Canceled; agent.go's Run() distinguishes the two (see
-		// isRunTimeout there) so the in-flight assistant message finishes
-		// with a clear "Run timeout exceeded" error instead of being
-		// misreported as a generic provider failure or an unlabeled cancel.
-		// A loop waiting between turns ends through its normal exit
-		// (envelope, --on-finish, Shutdown); only a process still alive
-		// hardKillGrace past the deadline is force-killed (installRunDeadline).
+		// Both run deadlines carry their owned cause through graceful cleanup.
+		// Only a process still alive past hardKillGrace is force-killed.
 		var stopDeadline func()
 		ctx, stopDeadline = installRunDeadline(ctx, timeoutDur,
 			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),

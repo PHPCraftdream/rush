@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // WatchdogResumeGuidance returns the orchestrator-facing resume
@@ -32,17 +33,29 @@ func WatchdogResumeGuidance(sessionID, timeoutFlag string) string {
 	)
 }
 
-// ErrRunDefaultCap is the cancellation cause of a `rush run` whose wall-clock
-// deadline is the default cap (no --timeout set): the run installs its deadline
-// with context.WithTimeoutCause(ctx, d, ErrRunDefaultCap), and a turn cut off by
-// it reads the cause (context.Cause) to name the cap instead of a --timeout the
-// operator never passed. A --timeout deadline carries no cause.
-//
-// It wraps context.DeadlineExceeded: net/http HTTP/1.1 returns
-// context.Cause(ctx) itself from a cut stream, and that must still classify as
-// a deadline (isRunTimeout, operatorStop) exactly like the same cut by
-// --timeout (R8B-1). errors.Is(DeadlineExceeded, ErrRunDefaultCap) stays false.
+// ErrRunDefaultCap remains compatible with default-cap agent diagnosis.
 var ErrRunDefaultCap = fmt.Errorf("run default wall-clock cap reached: %w", context.DeadlineExceeded)
+
+// RunTimeoutCause identifies the run's own wall-clock deadline.
+type RunTimeoutCause struct {
+	Duration   time.Duration
+	Source     string
+	DefaultCap bool
+}
+
+func (e *RunTimeoutCause) Error() string {
+	hint := ""
+	if e.DefaultCap {
+		hint = "; pass --timeout to change the cap"
+	}
+	return fmt.Sprintf("run timeout %s exceeded (source: %s%s)", e.Duration, e.Source, hint)
+}
+
+func (e *RunTimeoutCause) Unwrap() error { return context.DeadlineExceeded }
+
+func (e *RunTimeoutCause) Is(target error) bool {
+	return e.DefaultCap && target == ErrRunDefaultCap
+}
 
 // runTimeoutFinishText is the finish message of a turn cut off by the run's
 // deadline; cause is context.Cause of the turn's context.

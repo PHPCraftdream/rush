@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -73,28 +74,64 @@ func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
-// With no --timeout the default cap is a context deadline: the run's ctx ends
-// with DeadlineExceeded at the cap, the cap names itself on stderr, and the
-// process is NOT killed (the grace is far away and stop() disarms it).
-//
-// Revert-check: not deriving the deadline context for the default cap (the old
-// bare-timer shape) makes ctx never end and the test time out; a plain
-// WithTimeout (no cause) fails the cause assertion.
+// Revert-check: installRunDeadline's WithTimeoutCause pins the typed default cap and RunTimeoutCause.Error wording.
 func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 	t.Parallel()
 	stderr, rec := newLockedBuf(), newExitRecorder()
 	ctx, stop := installRunDeadline(context.Background(), 0, 30*time.Millisecond, time.Hour, stderr, rec.exit)
 
+	defer stop()
 	awaitClosed(t, ctx.Done(), "the default cap to end the run's context")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 	require.ErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "the cap tags its deadline so a cut-off turn names it (R7C-5)")
-	awaitClosed(t, stderr.sawN, "the cap notice")
-	require.Contains(t, stderr.String(), "default wall-clock cap of 30ms")
-	require.Contains(t, stderr.String(), "no --timeout set")
+	var cause *agent.RunTimeoutCause
+	require.ErrorAs(t, context.Cause(ctx), &cause)
+	require.Equal(t, 30*time.Millisecond, cause.Duration)
+	require.True(t, cause.DefaultCap)
+	require.EqualError(t, cause, "run timeout 30ms exceeded (source: default cap (RUSH_RUN_DEFAULT_HARD_TIMEOUT; no --timeout set); pass --timeout to change the cap)")
+	require.Empty(t, stderr.String(), "only the command handler renders graceful timeouts")
 	require.Empty(t, rec.calls(), "the cap is graceful: nothing is force-killed at the deadline")
 
 	stop()
 	require.Empty(t, rec.calls())
+}
+
+// Revert-check: installRunDeadline preserves earlier parent deadline/cancel without an owned timeout marker.
+func TestInstallRunDeadline_ParentEndsEarlier(t *testing.T) {
+	for _, mode := range []string{"default-cap", "explicit"} {
+		for _, ending := range []string{"deadline", "cancel"} {
+			t.Run(mode+"/"+ending, func(t *testing.T) {
+				var parent context.Context
+				var cancel context.CancelFunc
+				wantErr := context.Canceled
+				if ending == "deadline" {
+					parent, cancel = context.WithTimeout(t.Context(), 30*time.Millisecond)
+					wantErr = context.DeadlineExceeded
+				} else {
+					parent, cancel = context.WithCancel(t.Context())
+				}
+				defer cancel()
+				timeout := time.Duration(0)
+				if mode == "explicit" {
+					timeout = time.Hour
+				}
+				stderr, rec := newLockedBuf(), newExitRecorder()
+				ctx, stop := installRunDeadline(parent, timeout, time.Hour, time.Hour, stderr, rec.exit)
+				defer stop()
+				if ending == "cancel" {
+					cancel()
+				}
+				awaitClosed(t, ctx.Done(), "the parent to end the run's context")
+				require.ErrorIs(t, ctx.Err(), wantErr)
+				require.ErrorIs(t, context.Cause(ctx), wantErr)
+				var cause *agent.RunTimeoutCause
+				require.False(t, errors.As(context.Cause(ctx), &cause))
+				require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap)
+				require.Empty(t, stderr.String())
+				require.Empty(t, rec.calls())
+			})
+		}
+	}
 }
 
 // A process that has not exited by cap + grace is force-killed with 124.
@@ -127,6 +164,9 @@ func TestInstallRunDeadline_TimeoutFlagUnchanged(t *testing.T) {
 	awaitClosed(t, ctx.Done(), "the --timeout deadline")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 	require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "an explicit --timeout is not the default cap")
+	var cause *agent.RunTimeoutCause
+	require.ErrorAs(t, context.Cause(ctx), &cause)
+	require.EqualError(t, cause, "run timeout 10ms exceeded (source: --timeout)")
 	awaitClosed(t, rec.first, "the --timeout hard kill")
 	require.Equal(t, []int{124}, rec.calls())
 	out := stderr.String()

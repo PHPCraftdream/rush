@@ -523,7 +523,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		s.finalErrDetails = ""
 		s.toolCallCounts = make(map[string]int)
 	}
-	isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, agent.ErrRequestCancelled))
+	isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || (s.ctx.Err() != nil && errors.Is(runErr, context.DeadlineExceeded)) || errors.Is(runErr, agent.ErrRequestCancelled))
 	finalCtx := s.cachedTerminalCtx
 	finalCancel := s.cachedTerminalCancel
 	if finalCtx == nil {
