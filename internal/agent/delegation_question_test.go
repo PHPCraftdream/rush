@@ -387,6 +387,19 @@ func TestChildQuestion_ResumeAnswersHeldDelegation(t *testing.T) {
 	}
 }
 
+// settleRequests waits until the fixture's request count has been stable for
+// 200ms (requests cancelled mid-flight still reach the server late).
+func settleRequests(t *testing.T, f *attemptFixture) {
+	t.Helper()
+	last, since := f.requests.Load(), time.Now()
+	require.Eventually(t, func() bool {
+		if n := f.requests.Load(); n != last {
+			last, since = n, time.Now()
+		}
+		return time.Since(since) >= 200*time.Millisecond
+	}, 10*time.Second, 20*time.Millisecond)
+}
+
 // T2c: an X claimed by an SDK-sync caller is never answered into (#1212): it
 // has no durable hold of its own, so the resume falls through to the ordinary
 // path and the child is not resumed by the answer machinery.
@@ -405,6 +418,12 @@ func TestChildQuestion_SyncHeldJobNotAnswered(t *testing.T) {
 	xjob.done = make(chan struct{})
 	f.ledger.mu.Unlock()
 
+	// The child's detached title goroutine keeps retrying against the probe
+	// server (~100 requests/s): stop and join it, then let requests already
+	// in flight land, or the count below moves on its own.
+	f.sa.titleGens.cancelAll()
+	f.sa.runWg.Wait()
+	settleRequests(t, f)
 	requestsBefore := f.requests.Load()
 	resp, answered := f.ledger.answerHeldDelegation(ctx, parentID, childID, "report now")
 	require.False(t, answered, "a sync X must not take the held-answer path")
