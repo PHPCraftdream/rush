@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.12] - 2026-10-08
+
 - Delegated workers can use `await_tasks` too. For a worker the call blocks inside its own turn until its background jobs finish (`any`/`all`), so the delegation stays open and the worker continues with the results instead of handing the orchestrator a premature answer; every worker wait is capped at 40 minutes (or `max_wait_seconds`, if shorter), is never moved to the background by the stall detector, and ends at once on `stop_agent`, an interrupting `inject_agent` or Stop. Workers also get `job_output`, so they can read their own background jobs.
 
 - New agent tool `await_tasks`: the top-level agent ends its turn and sleeps while its own background jobs or delegations are running. `until: "any"` (default) wakes it on the first completion, `until: "all"` defers every wake-up turn until all running work has finished (a delegation's question or a human message still wakes it at once); optional `max_wait_seconds` (60..21600) schedules a safety wake that is cancelled as soon as the sleep ends. With nothing running the call is refused, so it cannot hang a run. The orchestrator rule in the system prompt tells the model to wait with `await_tasks` instead of `ask_question` or polling.
