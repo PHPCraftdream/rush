@@ -1,518 +1,727 @@
-# Job batches — design
+# Job batches — standalone engine and later Rush integration
 
-Status: design only, nothing implemented. Grounded in a read-only pass over
-HEAD `322705af`; every `file:line` below is as of that commit and will drift.
+Status: design only; this document does not authorize implementation or agent
+launches. Revised 2026-10-08 for an autonomous, separately runnable component
+and parallel implementation by several agents.
 
-## 0. Requirements
+The original integration investigation used HEAD `322705af`. File names below
+are navigation aids, not frozen line-number contracts; re-read the current
+implementation before changing it.
 
-From the operator:
+## 0. Scope and delivery boundary
 
-- A batch is a list of items. An item is a nested batch, a CLI command, a tool
-  call, an MCP call, or an agent launch.
-- A batch is parallel (everything starts at once, the batch waits for all) or
-  sequential (one by one), and a sequential batch either stops on the first
-  failed item or continues with the next one.
-- Per batch, one of two notification modes: notify on every item (finished or
-  failed), or notify only once all items have stopped.
-- Several batches may run at the same time.
-- Any batch accepts new items while it runs; any item in any batch can be
-  stopped; the output of any item can be inspected; at any nesting level a
-  message can be injected into an agent item.
+The first deliverable is ordinary Go code in this repository:
 
-Added while this design was being written:
-
-- An agent item must be able to end in two distinct ways, success or failure,
-  and that outcome must drive the batch (stop-on-fail, summaries).
-- The batch mechanism must be separate, abstract code that is tested on its
-  own and is easy to apply later from other surfaces.
-
-Naming: "batch" is already taken twice in the tree — the fs_* batch runner
-(`internal/agent/tools/fs_batch.go`) and the batched live-work reader
-(`internal/session/async_job_reader_batch.go`). This feature is called
-**job batches**; the package is `jobbatch`, tools are `batch_run`,
-`batch_add`, `batch_status`, `batch_stop`.
-
-## 1. Who creates and drives batches
-
-**v1: the model, through new tools. The operator CLI is phase 3, the web UI
-phase 5.**
-
-Reasons:
-
-1. All execution machinery is keyed to a session and a tool call: the work
-   ledger's job key is `(owner, toolCallID)` (`internal/agent/work_ledger.go:254`),
-   a non-sync job is announced through the ack gate on its own tagged "started"
-   tool result (`work_ledger.go:442-503`, `async_tool.go:265-270`), and
-   completions reach the agent as pulled notices plus a wake
-   (`coordinator_background.go:71-93`, `coordinator_wake.go:27-79`). A model
-   tool gets all of that unchanged.
-2. Jobs belong to the process that hosts them. There is no cross-process
-   job-level stop today: `rush sessions jobs` is observation-only, explicitly
-   because only the owning host can stop its jobs
-   (`internal/cmd/sessions_jobs.go:11-18`). Operator control from the CLI
-   needs a new control channel (phase 3).
-3. The operator is not blind in v1. Leaf items are ordinary `async_jobs` rows,
-   so `rush sessions jobs` and the web live-work panel
-   (`internal/server/handlers_livework.go:1-13`) list them, and
-   `rush sessions inject <child-session-id>` reaches any agent item
-   cross-process (`internal/cmd/sessions_inject.go:202-235`). The operator can
-   also tell the model to add or stop items through that inject.
-
-## 2. Architecture: an abstract engine plus rush adapters
-
-The batch logic lives in its own package, `internal/jobbatch`, which imports
-nothing from `internal/` (no agent, session, db, fantasy). It is a functional
-core with a thin imperative shell:
-
-```go
-package jobbatch
-
-type Kind string   // KindBatch, KindCommand, KindAgent, KindTool, KindMCP
-type Mode string   // ModeParallel, ModeSequential
-type OnFail string // OnFailStop, OnFailContinue
-type Notify string // NotifyEach, NotifyAll
-type State string  // Pending, Running, Completed, Failed, Cancelled,
-                   // TimedOut, Interrupted, Skipped
-
-type NodeID string // "<rootID>.<ordinal>[.<ordinal>...]", ordinals append-only
-
-type Spec struct {
-	Kind        Kind
-	Payload     json.RawMessage // opaque to the engine; the executor parses it
-	Mode        Mode            // batch nodes only
-	OnFail      OnFail          // sequential batch nodes only
-	Notify      Notify          // batch nodes only
-	MaxParallel int             // batch nodes only
-	Items       []Spec          // batch nodes only
-}
-
-// Tree is the pure state machine: no goroutines, no locks, no clock, no I/O.
-func New(root NodeID, spec Spec, lim Limits) (*Tree, []Command, error)
-func (t *Tree) Apply(ev Event) ([]Command, error) // Added, StopRequested,
-                                                  // Started, StartFailed, Settled
-func (t *Tree) View(id NodeID) (NodeView, bool)
-
-// Commands the tree emits: StartLeaf{ID, Kind, Payload, Notify bool},
-// StopLeaf{ID}, Notice{ID, ...}, Persist{Nodes}, Done{Summary}.
-
-// The shell: the only part with a mutex, and it never calls out while
-// holding it (commands are executed after unlock).
-type Executor interface {
-	Start(ctx context.Context, id NodeID, kind Kind, payload json.RawMessage, notify bool) error
-	Stop(id NodeID) error
-}
-type Sink interface{ Deliver(n Notice) }
-type Store interface{ Save(nodes []NodeView) error }
-
-type Runner struct{ /* mu, tree, exec, sink, store, done chan */ }
-func (r *Runner) Settle(id NodeID, s State, summary string) // idempotent
-func (r *Runner) Add(parent NodeID, items []Spec) ([]NodeID, error)
-func (r *Runner) Stop(id NodeID) error
-func (r *Runner) Done() <-chan struct{}
+```text
+internal/jobbatch/                  Independent engine and runtime.
+internal/jobbatch/testdata/         Deterministic scenarios and replay inputs.
+internal/jobbatch/lab/              Scenario and process executors for batchlab.
+cmd/batchlab/                      Standalone development executable.
 ```
 
-Why this shape:
+There is one module and one implementation. `batchlab` imports the package
+that Rush will eventually use; it must not contain a second scheduler.
+`internal/jobbatch/lab` is a consumer of the engine, not an engine dependency.
+The engine/runtime depend only on the standard library. The command adapter
+may reuse narrowly scoped platform process helpers, but not Rush's app,
+coordinator, session services, provider configuration, or MCP owner.
 
-- Testable alone: every invariant below is checked by feeding events to
-  `Tree.Apply` and asserting on the emitted commands, with no database, no
-  provider and no goroutines; `Runner` is tested with a fake `Executor` under
-  `-race`; a randomized test drives random event sequences and checks the
-  invariants after every step.
-- Easy to apply later: the only rush-specific seam is `Executor` (plus `Sink`
-  and `Store`). The same engine can back the model tools (v1), the operator
-  CLI (phase 3), a model-less `rush batch run spec.json` (open question 6),
-  and the web UI, without touching the core.
-- Deadlock-free by construction at this layer: the core has no lock, the
-  runner holds one lock only around `Apply`, and adapters call back into the
-  runner only after releasing the ledger lock (the ledger already promises
-  that for its own callbacks, `work_ledger.go:370-371`).
+**Current scope ends at a working autonomous engine plus batchlab.** No Rush
+tool registrations, DB migrations, changes to existing launch paths, new
+model prompts, or project pre-refactoring are prerequisites for that delivery.
+Section 9 records the later integration work; it is not part of the first
+implementation wave.
 
-Core invariants (each one a table-driven test in `internal/jobbatch`):
+Required behavior, retained from the operator's original request:
 
-- **E1** A leaf gets at most one `StartLeaf`. `Settled` for an unknown or
-  already-terminal node is a no-op.
-- **E2** Sequential: `StartLeaf(k+1)` is emitted only after `Settled(k)`.
-- **E3** Sequential stop-on-fail: after a child ends Failed, TimedOut or
-  Interrupted, every Pending sibling becomes Skipped and nothing else starts.
-- **E4** Every batch node emits exactly one terminal notice, never before all
-  its children are terminal. Once terminal it refuses `Add`.
-- **E5** Running leaves stay within `MaxParallel` per batch and the global
-  limits. `StartFailed{Retryable: true}` (capacity) keeps the item Pending,
-  never Failed, and it is retried on the next `Settled`.
-- **E6** `Stop(node)`: no new starts in the subtree, `StopLeaf` for each
-  running leaf, Pending children become Cancelled. The node is terminal only
-  once every running leaf has settled.
-- **E7** Notices: a child's settle is announced iff its parent batch has
-  `NotifyEach`; the root's completion is always announced, exactly once.
+- A batch contains tasks and/or nested batches.
+- Parallel batches start eligible work up to their limit and wait for every
+  started task. Sequential batches process direct children in order, stopping
+  on failure or continuing according to policy.
+- Notifications are per-item or aggregate; several batches can coexist.
+- Items can be appended to a nonterminal batch. Any item/subtree can be
+  stopped. Task output can be inspected. Message-capable executors can receive
+  input at any nesting depth.
+- Success, failure, cancellation, timeout, interruption, and skipped work are
+  distinct. An executor reports outcomes explicitly; the engine never
+  interprets natural-language answers.
+- Every independent CLI-command, MCP-call, or agent launch will eventually
+  enter as a batch with one task. An existing batch's leaf is not wrapped
+  again. This is a future integration invariant, tested abstractly now.
 
-Rush adapters live in `internal/agent` (section 5).
+Job batches are not the existing `fs_*` batching utilities. This component
+owns group scheduling and policy, not filesystem-operation atomicity.
 
-## 3. Data model
+## 1. Architecture and ownership of truth
 
-**Identity.** The batch id is the tool call id of the `batch_run` call, which
-is also the root's `async_jobs` key — the same id the model already uses for
-jobs. An item id is `<batchID>.<path>` (for example `toolu_x.2.1`). Ordinals
-are append-only, so adding items never renumbers anything. A leaf's
-`async_jobs.tool_call_id` is its item id. An agent item's child session id is
-`CreateAgentToolSessionID(<batch_run message id>, <item id>)`
-(`internal/session/session_lifecycle.go:160`). Item ids must not contain
-`#reused#` (`internal/session/async_job_store.go:699-709`).
+### 1.1 Pure engine
 
-**Tree.** The root batch is one ledger job (one `async_jobs` row,
-`kind='batch'`). Nested batches are pure tree nodes with no row. Each running
-leaf is one ledger job with a row of its existing kind (`command` or `agent`).
+`Engine` owns a forest of batch trees and their shared scheduling budget.
+Keeping shared admission here prevents each batch from independently
+allocating the supposedly global limit. The tree is an internal representation,
+not another public scheduler.
 
-**States.** Pending → Running → {Completed, Failed, Cancelled, TimedOut,
-Interrupted}. Pending → {Skipped, Cancelled}. A batch node is Running while
-any child is non-terminal; Completed if every child Completed; Failed if any
-child Failed, TimedOut or Interrupted (after the on-fail policy has played
-out); Cancelled if it was stopped.
+The engine has no goroutines, mutexes, clock reads, filesystem/network I/O,
+process launching, or Rush imports. It accepts events and produces an ordered
+transition containing changed views, execution commands, and notifications.
+The same ordered input events produce the same scheduling and terminal states.
+Time-dependent behavior enters as explicit events, not `time.Now()` in core.
 
-**What "failed" means per kind.**
+### 1.2 Runtime
 
-| Kind | Failed when | Notes |
-|---|---|---|
-| command (`run_command`) | the tool response is an error: non-zero exit, program not found, the process-kill timeout, an agentguard refusal, a hook deny (`internal/agent/tools/run_command.go:236-268`) | `causeNaturalFinish` maps `isError` to `failed` (`work_ledger_transition.go:96-102`) |
-| agent | the delegation is released with `isError`: provider error or no text output (`coordinator_subagents.go:339-346`), last turn finished with an error (`coordinator_work_scope.go:109`), settle-by-failure (`coordinator_work_scope.go:53-68`), and, new, a declared failure (section 4) | a question (`AwaitingAnswerError`) is not terminal: the delegation is held and the item stays Running |
-| tool / MCP (phase 4) | an error response or a Go error. `Owner.RunTool` errors already become error responses (`internal/agent/tools/mcp-tools.go:161-164`) | a hook Halt has no turn to stop: the item fails and its batch is stopped |
-| nested batch | any descendant failed after the policy ran | — |
-| any leaf | Interrupted: its host died and recovery transitioned the row (`internal/session/async_job_recovery.go:110-161`) | wake=0 |
+One `Runner` owns one engine, potentially serving many root batches. It
+serializes public requests and executor reports through one event loop.
+Snapshots are requested through that loop, not by reading the engine from
+another goroutine.
 
-**Cancellation propagation.**
+The loop applies events and schedules effects in transition order. Blocking
+executor work happens outside it. Merely unlocking a mutex before calling an
+executor is insufficient: separately dispatched transitions must not reorder
+Start and Stop effects or issue duplicate executions.
 
-- Stop of a batch node: `Runner.Stop` → per running leaf `Executor.Stop`.
-  The command adapter calls `StopRunCommandJob` (snapshot, then transition,
-  then kill; `work_ledger.go:817-875`). The agent adapter calls
-  `coordinator.Cancel(child)` exactly as `stop_agent` does
-  (`coordinator_agent_control.go:274-286`), which delivers the cancelled
-  delegation.
-- Stop of one item inside a nested parallel batch stops only that leaf; its
-  siblings keep running. In a sequential batch a Cancelled item does not
-  trigger stop-on-fail (open question 2).
-- Session Stop: `cancelSession` already cancels every job the session owns —
-  the root and all leaves (`work_ledger_delegation.go:321-360`). The root's
-  executor context is cancelled too, and the runner treats "root context
-  done" as `Stop(root)`. The same rule covers the root's ack-abort
-  (`work_ledger.go:513-546`).
-- Process shutdown: `workLedger.close` leaves rows running for the next host
-  to recover (`work_ledger.go:976-997`). The runner must not persist
-  Cancelled states on shutdown.
+### 1.3 Executors and observers
 
-**Persistence and restart.** One new table, `job_batch_nodes`: `id` (PK, the
-item id), `owner_session_id` (FK to sessions, cascade on delete),
-`root_tool_call_id`, `parent_id`, `ordinal`, `kind`, `spec` (JSON), `mode`,
-`on_fail`, `notify`, `max_parallel`, `state`, `child_session_id`,
-`result_summary`, `created_at`, `updated_at`. The engine's `Store` writes
-through on every state change. `async_jobs.kind` gains `'batch'` through a
-table rebuild, following `internal/db/migrations/20261005000001_bg_shell_jobs.sql:17-75`.
+The executor owns the actual execution and its output. The engine sees task
+identity, admission group, cancellation intent, and explicit completion.
+CLI, MCP, and agent are adapter kind names, not branches of the pure engine.
+Unknown executor kinds fail validation in the consumer before launch.
 
-After a host dies, the existing dead-host sweep turns the root row and the
-leaf rows `interrupted`. The tree stays readable: readers derive "not started
-(batch interrupted)" for Pending nodes whose root row is terminal. v1 does not
-resume batches (open question 5).
+The diagnostic event feed is not durable storage and is not a promise of
+exactly-once delivery across crashes. It must not block executor cancellation
+or the state loop. The final snapshot/Wait result remains authoritative even
+if an observer falls behind.
 
-## 4. Agent outcome: success or failure
+## 2. Contract to freeze before parallel implementation
 
-Today a sub-agent that concludes "this cannot be done, the tests still fail"
-ends its turn with ordinary text, so its delegation is reported as finished
-(`coordinator_work_scope.go:99-110`, `coordinator_subagents.go:343-347`). A
-batch cannot tell that apart from success.
+The integration owner implements the shared declarations in phase A0 before
+spawning implementers. All slices use those declarations. The following names
+and semantics are the shared contract, not competing design suggestions.
 
-Design:
+```go
+type ID string
+type Mode string       // Parallel, Sequential.
+type OnFail string     // StopOnFail, ContinueOnFail.
+type Notify string     // NotifyEach, NotifyAll.
+type State string      // See section 3.
 
-- New tool **`task_outcome`**, offered to sub-agent builds only:
-  `{"status": "success" | "failure", "summary": "..."}`. It returns its result
-  with `StopTurn = true`, the existing turn-ending contract
-  (`internal/agent/tools/tools.go:78-80`), so the declaration is the last act
-  of the turn.
-- Durable for free: the call and its result are in the child's history, the
-  same way the question stop is read back from history
-  (`question_stop.go:98-128`). There is no new table.
-- Read back in `refreshSubAgentCompletion` (`coordinator_work_scope.go:52-113`),
-  through a new helper in `coordinator_task_outcome.go`. Order: settle-by-failure
-  first (unchanged), then a question (unchanged, still not terminal), then the
-  newest `task_outcome` (Content = summary plus the last text,
-  IsError = status is failure), then the existing last-text rule. The
-  sync/SDK first-turn path in `runSubAgent` (`coordinator_subagents.go:343-347`)
-  applies the same reader.
-- The latest declaration wins: an agent resumed or injected later may
-  re-declare.
-- Undeclared outcome: for batch agent items it is **failed** by default
-  ("the agent ended without task_outcome; its last text: …"); fail-closed,
-  see open question 1. Plain `agent` delegations keep today's behaviour unless
-  they declare.
-- Batch agent items get a fixed prompt appendix that requires ending with
-  `task_outcome`. The tool name is added to `allToolNames`
-  (`internal/config/config.go:416`) and to the sub-agent tool set
-  (`coordinator_tools.go:192`).
-- The declared outcome reaches the engine as `Settled(Failed)` or
-  `Settled(Completed)` when the delegation is released, so stop-on-fail and
-  the summaries follow it.
+type TaskSpec struct {
+    Kind    string
+    Group   string
+    Payload json.RawMessage
+    Timeout time.Duration // Zero means no item timeout.
+}
+type BatchSpec struct {
+    Mode        Mode
+    OnFail      OnFail
+    Notify      Notify
+    MaxParallel int
+    Items       []Spec
+}
+type Spec struct {
+    Task  *TaskSpec
+    Batch *BatchSpec // Exactly one of Task/Batch is set.
+}
+type Limits struct {
+    MaxConcurrent int
+    ByGroup       map[string]int
+    MaxDepth      int
+    MaxNodes      int // Per root, including its nested batches.
+}
+type Result struct {
+    State   State
+    Summary string
+    Details json.RawMessage // Opaque; never logged automatically.
+}
+type Launch struct {
+    ID    ID
+    Token uint64 // Admission-attempt identity.
+    Task  TaskSpec
+}
+type Executor interface {
+    Start(context.Context, Launch, func(Result)) (Execution, error)
+}
+type Execution interface {
+    Stop(context.Context) error
+}
+type OutputReader interface {
+    ReadOutput(context.Context, uint64) (OutputChunk, error)
+}
+type Messenger interface {
+    Inject(context.Context, json.RawMessage) error
+}
+```
 
-## 5. Execution: mapping onto existing machinery
+Lab adapter contracts (bodies belong to their A1 slices, not A0):
 
-**Root (`batch_run`).** Added to `wrapAsyncTools`
-(`async_tool.go:527`), so the root gets `Start`/claim, the ack gate, the
-"started" response, and on completion a normal wake=1 notice through
-`finalize` → `finish` (`async_tool.go:375-385`). Its inner `Run` constructs
-the `Runner` and blocks until `Done`, returning the summary as the job result.
+```go
+// In package lab; ProcessOptions defines a positive retained-output byte cap.
+func NewProcessExecutor(ProcessOptions) (jobbatch.Executor, error)
+func NewControlledExecutor() *ControlledExecutor
+func (c *ControlledExecutor) Complete(context.Context, jobbatch.ID, jobbatch.Result) error
+func (c *ControlledExecutor) ReleaseStart(context.Context, jobbatch.ID) error
+```
 
-It is **never sync** — an explicit exception at `async_tool.go:71`. Web Drain
-turns carry no origin and would otherwise take the sync branch (stated at
-`internal/db/migrations/20261005000001_bg_shell_jobs.sql:4-6`), blocking a
-Drain turn for the batch's whole life and running into the 45-minute tool
-watchdog. Delivery routing does not depend on the origin flag
-(`work_ledger.go:362-368`). SDK origin is refused in v1. `batch_run` accepts
-the shared `timeout` parameter (`async_tool.go:451-519`); `terminate_and_wake`
-on the root stops the whole tree.
+Laboratory owns the kind-routing executor for `process` and `controlled`;
+it dispatches to those factories, not to a second scheduling implementation.
+Payload structs and gate semantics are frozen in A0. Concrete Engine, Runner,
+Batch, and executor structs are defined by their owning slices; shared files
+contain data contracts, not empty structs or function-body placeholders.
 
-**Leaves.** `Executor.Start` calls a new ledger entry point,
-`startBatchLeaf`, in a new file `work_ledger_batch.go`. `work_ledger.go` is
-already at 997 lines and must not grow. `startBatchLeaf`:
+Public core API:
 
-- applies the same per-session cap as `Start` (`work_ledger.go:271-277`) and
-  maps `asyncCapError` to `StartFailed{Retryable}`;
-- claims the row and marks it announced in one step, like `ClaimShell`
-  (`internal/session/async_job_bgshell.go:50-82`), because a leaf has no
-  "started" tool result to wait for;
-- records the batch reference and a `quiet` flag on the job.
+```go
+func NewEngine(Limits) (*Engine, error)
+func (e *Engine) Apply(Event) (Transition, error)
+func (e *Engine) View(ID) (NodeView, bool)
+func (e *Engine) Snapshot(ID) (BatchView, bool)
+```
 
-It then launches the existing executor unchanged: an
-`&asyncTool{inner: itemTool, name: ...}` whose `run`/`finalize`
-(`async_tool.go:296-385`) already handle bash backgrounding, the run_command
-live output sink and delegation arming. For agent leaves, the
-permission-inheritance block of `launchExecutor` (`async_tool.go:180-195`) is
-extracted into a helper and shared, not copied. The context carries
-`SessionIDContextKey`, plus `MessageIDContextKey` = the `batch_run` message
-id that the agent tool requires (`agent_tool.go:59-67`,
-`internal/agent/tools/tools.go:20-52`).
+Public runtime API:
 
-**Two ledger hooks**, both in `work_ledger_transition.go` (366 lines):
+```go
+func NewRunner(context.Context, Limits, Executor) (*Runner, error)
+func (r *Runner) Submit(context.Context, ID, Spec) (*Batch, error)
+func (r *Runner) Add(context.Context, ID, []Spec) ([]ID, error)
+func (r *Runner) Stop(context.Context, ID) error
+func (r *Runner) CapacityAvailable(context.Context, string) error
+func (r *Runner) View(context.Context, ID) (NodeView, error)
+func (r *Runner) Snapshot(context.Context, ID) (BatchView, error)
+func (r *Runner) Events(context.Context, uint64) (EventPage, error)
+func (r *Runner) Output(context.Context, ID, uint64) (OutputChunk, error)
+func (r *Runner) Inject(context.Context, ID, json.RawMessage) error
+func (r *Runner) Release(context.Context, ID) error
+func (r *Runner) Close(context.Context) error
+func (b *Batch) Done() <-chan struct{}
+func (b *Batch) Wait(context.Context) (Summary, error)
+```
 
-1. After `causeStateNoticeKindWake` (`:231`): a `quiet` leaf (its parent has
-   NotifyAll) commits `delivery='done', wake=0, reacted=1` — the existing
-   job_kill shape (`:107-109`). A NotifyEach leaf is unchanged: its own row is
-   its per-item notice.
-2. At the in-memory adoption (`:297`): only when `transitionToTerminal`
-   returns true, i.e. once per job whichever cause won, call
-   `Runner.Settle` after `l.mu` is released. `dropLocked` (gone or ABA) settles
-   the leaf as Failed.
+A0 also fixes concrete JSON tags, enum strings, error sentinels, and these
+supporting types in the contract files:
 
-**Is a direct tool call outside a model turn possible today?** Yes. A tool is
-`Run(ctx, ToolCall)` with the session/message ids in `ctx`, and the codebase
-already runs tools off the turn goroutine (`async_tool.go:296`,
-`turn_stall_tool_detach.go:15-24`). Policy must still hold:
+- `Event`: Submit, Add, StopRequested, Started, StartRejected, Settled,
+  CapacityAvailable, DeadlineExpired, HostClosing, Release. Events identify
+  root/node plus launch token where applicable. Capacity rejection is typed.
+- `Command`: StartLeaf and StopLeaf, always with node and launch token.
+- `Transition`: monotonic sequence, accepted event, changed node views,
+  commands, selected notices, newly settled roots. Invalid requests produce
+  no mutation, no sequence increment, and no execution commands.
+- `NodeView`: id/root/parent/ordinal, kind, state, cancellation reason,
+  launch token, outcome, and control-error code for explicit inspection.
+  Payload is not a view field; outcome text is not safe diagnostic metadata.
+- `BatchView`/`Summary`: root state and terminal-task counts; count leaves,
+  not both a nested batch and its descendants.
+- `OutputChunk`: bytes, next byte cursor, EOF, and explicit truncation/gap
+  information. Output storage/retention belongs to the executor.
+- `Record`/`EventPage`: cursor-based lifecycle records with bounded retention
+  and explicit gap error. Include identity, event/state, counts, and input
+  reference; exclude Result.Summary/Details and opaque inputs. Events waits
+  for new records without blocking the state loop. A consumer that misses
+  records can recover current state through Snapshot/Wait, not reconstruct
+  the missing journal as though it were complete.
 
-- Item tools are taken from the same per-call filtered set the calling turn
-  has, wrapped by restricted-run and hooks (`coordinator_tools.go:808-814`)
-  but not by `asyncTool` or stall-detach. Agentguard runs inside bash and
-  run_command themselves (`internal/agent/tools/bash.go:142`,
-  `run_command.go:141`).
-- A batch can only call tools its caller may call, so orchestrator mode's
-  edit stripping (`coordinator_tools.go:194-208`) cannot be bypassed.
-- Permissions: web sessions are auto-approved (`internal/server/handlers.go:164-175`);
-  a `rush run` root is auto-approved and its children inherit
-  (`coordinator_subagents.go:117-118`).
+No fake implementations of Engine/Runner methods are needed to unblock
+siblings: A0 supplies contracts; final compilation waits for the joint handoff.
+Do not add a mandatory Store interface or DB-style transaction to this scope.
 
-**MCP (phase 4)** goes through the existing `tools.Tool.Run` →
-`Owner.RunTool` (`mcp-tools.go:132-184`). Stop cancels the item context,
-which INV-19/INV-20 already define (`docs/mcp-invariants.md`). There is no
-change in `internal/agent/tools/mcp`.
+### 2.1 IDs, ownership, and validation
 
-**Batch tools in sub-agents.** Batch tools exist only in top-level builds,
-like `agent` (`coordinator_tools.go:627-641`). The delegation tree stays two
-levels (`coordinator_tools.go:180-182`), and every agent item is a direct
-child of the batch owner at any batch depth.
+Callers supply a unique nonempty root ID; the contract reserves `.` as the
+item-path separator. Descendant IDs are deterministic append-only ordinal
+paths, such as `root.1.2`. Parent and ordinal are explicit view fields;
+consumers must not parse IDs for ownership. Duplicate root submission fails
+without executing anything. Rerunning work requires a new root ID.
 
-**Concurrency limits** (defaults, open question 3):
+Root specs must be batches. A consumer normalizes a standalone task to a
+one-task batch once at ingress. This normalization preserves the caller's
+selected policy; it does not normalize every nested leaf.
 
-- `max_parallel` per batch: 4, hard maximum 16.
-- Running agent leaves per process: 4.
-- Running command leaves per process: 2 — the machine's memory ceiling, where
-  two concurrent heavy builds/tests already hit `errno=1455` (CLAUDE.md).
-- Tree size: depth ≤ 3, ≤ 100 nodes per tree.
-- The per-session cap of 50 (`work_ledger.go:24`) still counts the root and
-  every leaf; the engine queues against it instead of failing items.
+Validate a complete Submit/Add subtree before accepting any of it: exactly
+one node shape, known mode/policy, nonnegative timeout, valid limits and IDs,
+depth/node bounds, and no irrelevant task/batch-only fields. Add is atomic
+as a request, not as execution across tasks.
 
-**Ordering.** Sequential: item k+1 is claimed only after item k's terminal
-transition committed. Parallel: starts in ordinal order, completion order
-unspecified. Added items get the next ordinal; in a sequential batch they run
-after the current queue. Notices are pulled oldest first
-(`internal/session/notice_pull.go:105-108`).
+Require positive global, depth, and node limits. A missing group limit
+inherits the global budget. Batch MaxParallel zero inherits the applicable
+budget; Sequential permits only zero/one. Numeric machine-specific defaults
+belong to batchlab/Rush, not hardcoded command/agent categories in core.
 
-**Timeouts.** Per item: the existing `TimeoutSpec` (`work_job.go:52-64`).
-run_command keeps its own 600 s process cap (`run_command.go:43`), which is
-why bash items (no such cap) are phase 4.
+Mode is explicit; absent Notify normalizes to NotifyAll. A Sequential batch
+with absent OnFail uses StopOnFail; Parallel requires OnFail to be empty.
+Group limits, when supplied, must be positive. Root depth is one and ordinals
+start at one. These defaults are resolved before subtree validation, once.
 
-## 6. Notifications
+Runner copies externally mutable specs/results once at the request/report
+boundary, then transfers ownership of its events to Engine.Apply; direct core
+callers must also transfer immutable inputs. Public snapshots cannot mutate
+internal state. Do not clone the entire forest on every transition; report
+changed nodes only.
 
-**To the owning agent.**
+## 3. State, scheduling, and races
 
-- NotifyEach: each leaf's own row is a pending wake=1 notice. It wakes a
-  Drain (web: `coordinator_background.go:89-91`) or hints the `rush run` loop,
-  which reads debt through `CLIScope` (`coordinator_reaction_source.go:229-291`).
-  Pending notices that land before a turn starts are pulled into that one
-  turn (`agent_notice_pull.go:28`).
-- A nested batch's own settle under a NotifyEach parent is a new
-  `session_notices` kind, `batch_item`, bound to the root row through
-  `job_tool_call_id`. Its void rule must be "root row voided by a Rerun", not
-  wake_only's "job not running" (`notice_pull.go:266-281`) — otherwise it
-  would void after the root completes.
-- NotifyAll: only the root's terminal notice. In NotifyEach mode the root
-  summary is short (counts and ids), so outputs are not repeated.
-- Never suppressed by quiet mode: `child_question`
-  (`work_ledger_delegation.go:116-120`), `timeout_wake_only`, supervision.
+### 3.1 Lifecycle
 
-**To the operator.**
+Leaf states:
 
-- `rush run`: the root row keeps the scope open
-  (`coordinator_reaction_source.go:295`), and the heartbeat already names
-  running rows, leaves included (`internal/app/app_run_async_wait.go:21-62`).
-  One stderr line per settled item is phase 3.
-- Web: leaf rows already appear in the live-work panel. A Batches tab is
-  phase 5.
+```mermaid
+stateDiagram-v2
+    Pending --> Starting: admitted
+    Pending --> Cancelled: stopped before dispatch
+    Pending --> Skipped: stop on failure
+    Pending --> Interrupted: host closing
+    Starting --> Pending: capacity refused
+    Starting --> Failed: start rejected
+    Starting --> Running: execution accepted
+    Starting --> Cancelling: cancellation requested
+    Running --> Completed: finished successfully
+    Running --> Failed: execution failed
+    Running --> Cancelled: executor confirmed cancellation
+    Running --> TimedOut: executor confirmed timeout
+    Running --> Interrupted: executor confirmed interruption
+    Running --> Cancelling: cancellation requested
+    Cancelling --> Cancelled: stop confirmed
+    Cancelling --> TimedOut: timeout termination confirmed
+    Cancelling --> Interrupted: shutdown termination confirmed
+```
 
-## 7. Operations
+Natural completion may arrive before Start returns. Runner buffers that
+report and publishes Started before Settled for an accepted start. A failed
+Start is authoritative: it must return no accepted execution, and any
+completion callback made by that rejected attempt is ignored and reported
+as an executor-contract violation in diagnostics.
+Start must honor cancellation and finish its setup in bounded time. A nil
+error with a nil execution is a failed start. If cancellation was already
+accepted, a rejected start confirms that no execution exists and settles
+with the latched cancellation cause, not a fresh Failed/Pending state.
 
-| Operation | Model (v1) | Operator CLI (phase 3) | Missing today |
+Starting/Cancelling still hold their reserved slots until rejection or
+confirmed execution termination. A successful Start means accepted work,
+not completed work. At most one accepted execution per leaf. Rejected
+admission attempts have distinct tokens and may retry without side effects.
+
+Stop/timeout records intent and requests executor cancellation. It does not
+pretend a process, MCP call, or agent has already stopped. Executor Stop
+returning nil only acknowledges the request; completion confirms termination.
+Stop failure leaves the item nonterminal with a surfaced control error.
+
+Batch states are Pending, Running, Cancelling, and terminal. For a batch
+that was not explicitly stopped, aggregate after all children are terminal:
+any Failed/TimedOut/Interrupted => Failed; otherwise any Cancelled => Cancelled;
+otherwise Completed. An explicitly stopped batch ends with its requested
+cancellation reason; descendant failures remain visible in the counts.
+Skipped is only produced by stop-on-fail, never used to conceal a start error.
+
+Empty batches complete immediately, have zero task counts, and then reject
+Add. An item asking for input is not terminal and does not free capacity;
+waiting/interaction details belong to its executor.
+
+### 3.2 Concurrency and fair admission
+
+- Sequential orders direct children. A nested batch must settle before the
+  next direct sibling starts; its own mode governs execution within it.
+- Parallel admits in append order up to the batch's budget. An ancestor's
+  MaxParallel counts all Starting/Running/Cancelling leaves beneath it,
+  not just direct children. Batch nodes consume no executor slot.
+- One engine shares global and group budgets across all roots. Select
+  eligible roots round-robin, then eligible leaves in ordinal order.
+  A group-blocked root must not prevent other eligible groups from running.
+- Releasing a slot considers waiting work across the forest, including a
+  batch that never managed to start its first leaf.
+- A typed capacity refusal before acceptance returns the leaf to Pending,
+  releases its reservation, and blocks immediate retry for that admission
+  group. Resume on explicit CapacityAvailable or relevant accepted-work
+  settlement. Do not busy-loop or wait only for that same tree to settle.
+- Operational start failure is Failed, not a capacity refusal. Automatic
+  retries of failed tasks are out of scope.
+
+### 3.3 Linearization rules
+
+The event-loop acceptance order, not wall-clock callback order, decides:
+
+1. **Add vs last completion:** Add accepted first extends the batch;
+   completion accepted first makes it terminal and subsequent Add fails.
+2. **Stop vs dispatch:** stop cancels undispatched tasks. An already
+   authorized Start may be in flight; its context is cancelled and the
+   returned execution is stopped before waiting for its final report.
+   A Start entered with an already-cancelled context must do no side effects.
+3. **Stop vs natural completion:** Settled accepted first keeps its natural
+   terminal state. Stop accepted first latches cancellation as terminal cause;
+   retain the executor's reported outcome as details, not as a second notice.
+4. **Repeated/late reports:** reports for terminal nodes or stale launch
+   tokens cannot release capacity twice, restart work, or change the winner.
+5. **Timeout vs Stop:** the first accepted cancellation cause is retained.
+   A later timer cannot relabel an operator stop or a completed task.
+
+Report callbacks must return without waiting for the event loop, including
+callbacks invoked synchronously by Start. Use a per-attempt completion latch,
+not a blocking callback channel that deadlocks Start. Executor errors/panics
+must settle accepted work once; rejected work must not leak a reservation.
+
+Public operation contexts bound request submission/waiting, not task lifetime.
+Cancellation of Batch.Wait alone does not stop work. Runner's host context
+or explicit Stop controls work lifetime. Rush's eventual synchronous adapter
+will explicitly connect caller cancellation to Stop.
+
+Host shutdown is distinct from user Stop: reject new work, request execution
+termination with Interrupted intent, and bound Close by its caller context.
+A timed-out Close returns an error and must not report unconfirmed tasks
+terminal. Restart/resumption and cross-process delivery are later work.
+
+## 4. Notifications, output, and injection
+
+Separate three concepts:
+
+- Diagnostic lifecycle records describe every accepted transition.
+- Selected notices implement NotifyEach/NotifyAll.
+- Batch.Wait returns one root result; it is not an extra user notification.
+
+Root completion produces one selected root notice. For descendant completion,
+NotifyEach applies to direct children; an ancestor NotifyAll suppresses
+ordinary notices inside its subtree. A nested aggregate may be announced by
+its NotifyEach parent without repeating descendant output. Question/input
+requests must not be suppressed by completion-notification policy.
+
+One-task ingress defaults to NotifyAll. Its adapter delivers either the
+synchronous result or the root completion notice, never both plus a leaf
+notice. Opt-in NotifyEach can expose lifecycle information, but must not
+duplicate the full user-facing result.
+
+Output/Inject resolve node ownership explicitly and are callable at any depth.
+Batch nodes and executions without OutputReader/Messenger return typed
+unsupported-operation errors. No silent no-op injection. Retain handles for
+settled-task output until Release(root); injection into terminal work fails.
+Release is refused while work is nonterminal. It frees retained tree/output
+data without invalidating an immutable summary; retain a small root-ID
+tombstone for the Runner lifetime so an old ID cannot launch new work.
+
+An execution's input callback must not call back synchronously into a
+blocking Runner operation. Output reading, injection, and Stop run outside
+the state loop; their errors are surfaced to their callers.
+Question/input transport remains an executor/host concern. A paused lab
+execution can advertise that state through inspected output and accept Inject;
+the core does not need an agent-specific question event to schedule it.
+
+## 5. Batchlab: separate runnable verification
+
+Commands to implement:
+
+```bash
+go run ./cmd/batchlab run scenario.json
+go run ./cmd/batchlab run scenario.json --events events.jsonl
+go run ./cmd/batchlab replay scenario.json events.jsonl
+go test ./internal/jobbatch/...
+go test -race ./internal/jobbatch/...
+```
+
+`run` uses the real Runner. Scenario JSON declares root specs, scripted control
+actions (Add/Stop/Inject), limits, and payload references. Use two executors:
+
+1. **Controlled executor:** explicit completion/start-refusal gates and input
+   requests. It permits reproducible interleavings without sleep-based tests.
+   It is a development/test fixture, not a production MCP/agent fallback.
+2. **Process executor:** real program + argv, optional cwd, bounded retained
+   stdout/stderr, exit status, cancellation, and live output reading.
+   Never run arbitrary shell text implicitly. Stop only its own child
+   process/tree; use existing platform isolation helpers where appropriate.
+
+Runner implements execution timeouts outside core using standard timers;
+unit tests use synctest/barriers instead of real-time sleeps. Timeout starts
+at authorized execution, not time spent queued. A timeout requests termination
+and settles TimedOut only after confirmation. batchlab imposes an explicit
+overall wait bound on each smoke scenario so a broken executor is reported as
+unfinished, not silently passed.
+
+Cancellation of the invocation and the scenario wait bound must always enter
+Runner.Close with a bounded cleanup wait. A missing program/nonzero exit,
+failed aggregate, and unfinished cleanup return nonzero CLI exit status;
+no successful exit solely because a scenario's control script ended.
+
+The journal records sequence, input-reference ID, node/launch identity,
+transition reason, and outcome state. Do not print task payloads, injected
+messages, raw details, command arguments, or agent prompts by default.
+Task output is available through explicit inspection, not copied into every
+completion log.
+
+`replay` reconstructs pure-engine control/completion events using the supplied
+scenario's payload references. It compares final states, counts, and command
+ordering. It must never instantiate an executor or rerun processes.
+Reject missing/mismatched references, sequence gaps, and incompatible format
+versions. A replay of a cancelled/failed run reproduces that outcome.
+
+Do not build a daemon, RPC transport, or second Rush CLI inside batchlab.
+All help and examples must describe real supported behavior.
+
+## 6. Autonomous acceptance matrix
+
+These are behavioral tests, not tests of source text, import lists, function
+counts, forwarding, or copied constants. Agent reports are not verification.
+
+### 6.1 Engine and admission
+
+- **E1:** standalone-task normalization and an explicit one-task batch have
+  equivalent execution/outcome; nested leaves are not wrapped twice.
+- **E2:** sequential and nested sequential ordering; parallel overlap and
+  ancestor limits; aggregate counts include each leaf once.
+- **E3:** StopOnFail skips only pending successors after Failed/TimedOut/
+  Interrupted; ContinueOnFail executes successors; Cancelled alone does not
+  trigger StopOnFail.
+- **E4:** several roots/groups share budgets; freeing work in root A starts
+  pending work in root B; no starving an eligible group behind a blocked one.
+- **E5:** capacity refusal performs no execution, queues without spinning,
+  retries only on CapacityAvailable or relevant accepted-work settlement,
+  and ultimately runs once.
+- **E6:** stop leaf/subtree/root; sibling isolation; no false terminal state
+  before execution termination; repeated Stop is safe.
+- **E7:** Add ordering, atomic rejection of invalid subtrees, Add/last-settle
+  race, empty batch, duplicate root ID, depth/node-limit boundaries.
+- **E8:** terminal result/notice emitted once; stale tokens and duplicate
+  reports cannot change the winner or release a slot twice.
+- **E9:** snapshots/spec ownership, Release restrictions, and diagnostics
+  excluding opaque task/result payloads.
+
+### 6.2 Runtime and laboratory
+
+- **R1:** immediate completion inside Start, start error/panic, Stop before
+  Start returns, and concurrent Add/Stop/Settled; no deadlock or leaked slot.
+- **R2:** timeout vs natural completion/operator stop under virtual time;
+  Wait cancellation does not implicitly stop work; HostClosing is distinct.
+- **R3:** blocked/failed observers do not freeze scheduling/cancellation;
+  cursor gaps are explicit and final snapshots remain correct.
+- **R4:** unsupported output/injection, live output, paused message-capable
+  fixture resumed by Inject at nested depth, and terminal injection refusal.
+- **L1:** three real short command items, including one nonzero exit:
+  correct individual results and failed aggregate; no model/API needed.
+- **L2:** real command cancellation plus partial-output inspection; Stop
+  waits for the child to terminate and does not kill unrelated processes.
+- **L3:** controlled multi-root scenario exercises Add, capacity release,
+  failure policy, nested stop, and both notification modes.
+- **L4:** replay preserves structural final state and performs no side effects,
+  even if the scenario includes a process that would write a file.
+
+Use channels/barriers or synctest for timing-sensitive unit tests. Property/
+fuzz tests check invariants after event sequences with reproducible seeds and
+publish failing sequences. Do not manufacture CPU/memory load to test limits;
+controlled held tasks demonstrate admission limits.
+
+## 7. Parallel-agent execution plan
+
+The orchestrator owns decomposition, contract approval, shared-file edits,
+integration, and verification. Several agents implement independent slices;
+they do not independently redesign the API. No agent is launched by updating
+this document.
+
+### 7.1 A0 — shared prerequisite, inline by integration owner
+
+Before fan-out:
+
+1. Freeze the declarations and event/error semantics from sections 2-4 in
+   `types.go`, `events.go`, `executor.go`, and `runtime_types.go`.
+2. Define scenario/journal schema and lab factory declarations in
+   `internal/jobbatch/lab/schema.go`: version, references, scripted actions,
+   process payload (program/argv/cwd/output limit), process-executor factory,
+   controlled-executor factory, and safe output format. Give Laboratory a
+   callable process factory contract before parallel implementation starts.
+3. Record named smoke scenarios and acceptance IDs. Establish platform
+   process helper behavior before assigning the process slice.
+4. Set the target branch/worktree and allowed file ownership. No commits,
+   pushes, Rush integration, library bumps, or nested agent launches by
+   implementers.
+
+Contract changes later belong only to the integration owner. An implementer
+reports the missing field/method and its consumer-visible reason; the owner
+updates the contract and informs all affected agents before they depend on it.
+Do not ask sibling agents to edit the same shared declarations.
+
+### 7.2 A1 — genuine parallel implementation wave
+
+```mermaid
+flowchart LR
+    A0["A0: owner freezes contracts"] --> Core["Core"]
+    A0 --> Runtime["Runtime"]
+    A0 --> Process["Process executor"]
+    A0 --> Lab["Laboratory"]
+    Core --> A2["A2: owner integrates and verifies"]
+    Runtime --> A2
+    Process --> A2
+    Lab --> A2
+```
+
+| Slice | Owned files | Inputs from A0 | Required output |
 |---|---|---|---|
-| add item | `batch_add(batch_id, parent, items)` → `Runner.Add`; the owner is checked | `rush batch add` → control row | the tool; a cross-process channel |
-| stop item | `job_kill(item id)`: a run_command leaf works as is (`work_ledger.go:621-625` → `:817`); agent leaf → `stop_agent(child)`; a batch node → new branch → `Runner.Stop`; or `batch_stop(id)` | `rush batch stop` → control row polled by the host | the batch-node branch; the control table |
-| view output | `job_output(item id)` is live for run_command (`work_ledger.go:773-793`); `batch_status` returns state plus `result_summary` for settled and quiet items; `inspect_agent` / `read_delegation_transcript` for agents | `rush sessions jobs` (exists); `rush batch show` | `batch_status` |
-| inject into an agent item | `inject_agent(child)`; ownership holds at any batch depth (`coordinator_agent_control.go:24-36`) | `rush sessions inject <child>` works today | an idle child whose delegation is held does not run on inject (`coordinator_agent_control.go:246-249`) |
+| Core | `internal/jobbatch/engine.go`, `tree.go`, `tree_apply.go`, `admission.go`, `view.go` and their tests | Types, events, transition commands, limits | E1-E9; pure forest scheduling and immutable views |
+| Runtime | `internal/jobbatch/runner.go`, `runner_dispatch.go`, `runner_control.go`, `runner_observe.go` and their tests | Engine API, Executor, runtime declarations | R1-R4; event-loop ordering, attempts, cancellation, handles |
+| Process executor | `internal/jobbatch/lab/process*.go` and process tests | Executor/OutputReader, process payload schema | L1-L2; real process output and safe tree termination |
+| Laboratory | `internal/jobbatch/lab/scenario.go`, `controlled.go`, `journal.go`, `replay.go`, `cmd/batchlab/*.go`, lab-owned testdata and tests | Runner API, process factory API, scenario schema | L3-L4; CLI, controlled execution, replay and help |
 
-Prerequisite (phase 0): `ResolveJobShellID` and the job-control methods live
-in `work_ledger.go:586-875`. They move, as a pure move, into
-`work_ledger_jobctl.go` before the batch branch is added there.
+Runtime may write against the frozen Engine API while Core is unfinished;
+Laboratory may do the same against Runner and the process factory. Shared
+API bodies are never replaced with placeholders merely to compile early.
+Actual compilation/execution is the joint gate, not a reason to serialize
+independent writing work.
 
-## 8. Risks and invariants
+Process and Laboratory agents use separate testdata subdirectories. Core/
+Runtime use package-local helpers in their own test files, not a shared
+mutable helper file. README/changelog, contract files, and cross-slice
+reconciliation remain owned by the integration owner.
 
-- **Deadlock, sequential batch ↔ agent.** A child can never wait on its
-  parent's batch: children get no batch tools, and job addressing is
-  owner-scoped (`work_ledger.go:596-604`). A child that asks a question holds
-  its item, and the `child_question` notice wakes the owner even in quiet
-  mode. The owner answers through `agent(resume_session_id)`
-  (`async_tool.go:83-90`). `batch_*`, `job_*`, `wake*`, `agent`,
-  `ask_question` and `task_outcome` are never allowed as tool items.
-- **Lock order.** The runner's mutex is never held across ledger calls; the
-  ledger calls the runner only after releasing `l.mu`.
-- **Runaway fan-out.** Section 5's caps; `batch_add` is refused past them.
-  NotifyEach on a large batch means many paid Drain turns. The 5-resume cap
-  applies to background shells only (`coordinator.go:132`,
-  `coordinator_bgshell_cap.go:102`), and the reaction-chain guard stops only
-  sleep/echo chains (`coordinator_reaction_chain.go:27`). Hence the default
-  is NotifyAll (open question 4).
-- **Double delivery.** One notice source per fact: a leaf's row (NotifyEach),
-  or nothing (quiet), plus exactly one root notice. A job_kill's answer is the
-  tool result itself (delivery `done`). `Settle` fires once per job, at the
-  first in-memory adoption, and is idempotent in the core (E1).
-- **Turn-stall watchdog.** Add `batch_run` to `stallDetachExcludedTools`
-  (`turn_stall_tool_detach.go:31-36`). Leaves run outside any turn, so no
-  stall clock is involved.
-- **Drain turns.** `batch_run` is never sync (section 5); `batch_add`,
-  `batch_status` and `batch_stop` return immediately.
-- **1000-line rule.** `work_ledger.go` is at 997 lines; new ledger code goes
-  in new files only. `coordinator_tools.go` is at 826, so a handful of lines
-  at most. No new file may exceed 1000 lines.
-- **MCP.** Nothing in `internal/agent/tools/mcp` changes.
-- **Review stop rule.** The acceptance tests in section 9 define "done".
-  Only a reproducible P0/P1 reopens the work; P2/P3 go to the backlog.
-  Interleaving speculation inside the engine is answered by the core's
-  property test, not by new guards.
+A slice task supplied to an agent must include the complete scope, file
+ownership, relevant acceptance IDs, fixed interfaces, exclusions, and handoff
+requirements. Supply the plan/artifact path instead of an incomplete summary.
 
-## 9. Phased plan
+Each implementer skips build, lint, tests, and formatters during the shared
+editing wave. It statically reviews its slice and hands off:
 
-**Phase 0 — pure move.** `work_ledger.go:586-875` → `work_ledger_jobctl.go`.
-Acceptance: the declaration diff from CLAUDE.md is empty, and the test-function
-count is unchanged.
+- exact touched files and implemented acceptance IDs;
+- executor assumptions and any unresolved contract issues;
+- tests written, commands needed, and specific unverified behavior;
+- no claim of successful execution.
 
-**Phase 1 — the engine, no rush wiring.** New files in `internal/jobbatch/`:
-`spec.go`, `tree.go`, `tree_apply.go`, `runner.go`, `view.go` (each under 400
-lines), plus `tree_test.go`, `runner_test.go` and `property_test.go`.
+Agents do not touch each other's slices. The orchestrator keeps working
+during fan-out and does not poll or launch duplicate agents for the same job.
 
-Acceptance:
-- E1–E7 each covered by table tests;
-- the runner passes with a fake executor under `-race`;
-- the randomized property test holds for 10k sequences;
-- an import test asserts the package imports nothing under `internal/`.
+### 7.3 A2 — integration and verification, one owner
 
-**Phase 2 — v1 in rush: model tools, command and agent leaves, task_outcome,
-persistence.**
+After every A1 slice has handed off:
 
-New files:
-- `internal/db/migrations/20261007000001_job_batches.sql` (kind rebuild plus
-  the new table), the sqlc queries and generated code;
-- `internal/session/job_batch_store.go`;
-- in `internal/agent/`: `work_ledger_batch.go`, `batch_adapter.go`
-  (Executor/Sink/Store), `batch_tool.go`, `coordinator_task_outcome.go`;
-- in `internal/agent/tools/`: `batch_control.go` with `batch_run.md`,
-  `batch_add.md`, `batch_status.md`, `batch_stop.md`, and `task_outcome.go`
-  with `task_outcome.md`.
+1. Reconcile contracts and remove dead/duplicate code; format changed Go files.
+2. Compile the package and batchlab together. Run focused core/runtime/lab
+   tests, then `-race` where the platform supports it; record any actual
+   platform prerequisite instead of claiming an unexecuted race check.
+3. Run L1-L4 through batchlab and inspect output/process termination/replay.
+   Tests alone do not prove the command executable works.
+4. Run repository-required checks once after integration. Do not run several
+   memory-heavy suites concurrently. Fix failures in the same work cycle.
+5. Update documentation with the actual commands, semantics, and verification
+   limits. Remove temporary scripts/binaries; retain useful scenario fixtures.
 
-Edits:
-- `async_tool.go` (`:71`, `:452`, `:527`, the extracted inheritance helper);
-- `work_ledger_transition.go` (`:231`, `:297`);
-- `work_ledger_jobctl.go` (the batch-node branch);
-- `coordinator_tools.go`, `coordinator_work_scope.go`,
-  `coordinator_subagents.go`, `turn_stall_tool_detach.go:31`,
-  `internal/config/config.go:416`.
+If a real defect spans slices, the owner assigns disjoint corrective work or
+fixes the shared boundary itself. Any changed slice is reverified with its
+affected behavioral tests and smoke path. Do not widen the scope into Rush
+integration to make the autonomous deliverable appear complete.
 
-Acceptance tests (each with a revert-check):
+Autonomous completion means the real Engine, Runner, command executor, and
+batchlab all work together, with the matrix satisfied. A compiling skeleton,
+mock-only program, or pending integration gate is not completion.
 
-- **A1.** A parallel batch of 3 run_command items, one exiting 1, NotifyAll:
-  exactly one notice, which reports 2 completed and 1 failed; the leaf rows
-  are `delivery='done'`.
-- **A2.** Sequential stop-on-fail where item 2 fails: item 3 never claims a
-  row and ends Skipped.
-- **A3.** Sequential continue: all items run, in order of the leaf rows'
-  creation.
-- **A4.** NotifyEach: 3 leaf notices plus 1 root summary, and nothing else.
-- **A5.** `job_kill(item id)` on a running leaf: the item is Cancelled and the
-  sequential batch moves to the next item.
-- **A6.** `batch_stop(root)` while an agent leaf runs: the delegation is
-  cancelled, Pending items are Cancelled, one root notice is delivered.
-- **A7.** An agent that calls `task_outcome(failure)`: the item is Failed and
-  the batch stops. An agent that declares nothing: the item is Failed with the
-  "no task_outcome" text.
-- **A8.** `batch_add` to a running sequential batch: the new item runs last.
-  `batch_add` to a settled batch is refused.
-- **A9.** `rush run` end to end: the run stays open while the batch runs and
-  exits after the root notice has been reacted to.
-- **A10.** `batch_run` in an origin-less (web Drain) turn returns "started"
-  immediately.
-- **A11.** A simulated host crash: the root and leaf rows end `interrupted`;
-  `batch_status` shows Pending nodes as not started.
-- **A12.** A parallel batch of 60 items with `max_parallel` 16: the 50 cap is
-  never exceeded and no item fails for capacity.
+## 8. Decisions fixed now and decisions deferred
 
-**Phase 3 — operator CLI.** Control table `job_batch_controls` (add/stop
-requests), consumed by the host runner on its hint wait or a 2 s tick. This is
-the same pattern as the cancel flag (`internal/session/session_update.go:311-320`)
-and pending injects. Commands: `rush batch show|add|stop`, plus stderr lines
-for settled items in `rush run`. Acceptance: a stop issued from a second
-process stops a leaf within 5 s; `show` matches `batch_status`.
+Fixed for autonomous implementation:
 
-**Phase 4 — more item kinds:** bash, generic tool, MCP. Adds
-`async_jobs.kind 'tool'` (a table rebuild) and the tool-item denylist.
-Acceptance: an MCP item stopped mid-call settles Cancelled, and the server's
-session survives (INV-19).
+- Notifications default to NotifyAll; callers may request NotifyEach.
+- Cancelled does not trigger StopOnFail; aggregate still exposes cancellation.
+- Empty batches immediately complete; Add to terminal/cancelling batches fails.
+- No automatic task retries; typed pre-execution capacity refusal is different.
+- No automatic execution resumption after host restart.
+- Scheduling limits are caller supplied and shared across roots in one Runner.
+- Opaque results and capability interfaces, not agent-text interpretation.
 
-**Phase 5 — web.** A Batches tab in `web/src/components/LiveWorkPanel.tsx`,
-with stop/add through the phase-3 control table. Playwright e2e.
+Deferred to Rush integration, without blocking autonomous development:
 
-## 10. Open questions for the operator
+- Default numeric limits and mapping to existing per-session admission caps.
+- Durable root/leaf representation, transactional delivery, and recovery.
+- Required task_outcome for new explicitly outcome-aware agent work.
+  Preserve the existing success contract for automatically wrapped legacy
+  agents until an explicit migration is approved; do not silently make all
+  their text-only completions fail because they are now singleton batches.
+- Which operator/model controls expose additional batch items and nesting.
 
-1. **An agent item that never declares `task_outcome`: failed or completed?**
-   Recommended: failed (fail-closed). Plain `agent` delegations are unchanged.
-2. **Does a Cancelled item (stopped by the model or operator) trigger
-   stop-on-fail?** Recommended: no — to halt the batch, stop the batch.
-3. **Concurrency defaults.** Recommended: `max_parallel` 4 (hard 16), command
-   leaves 2 per process, agent leaves 4 per process.
-4. **Default notification mode.** Recommended: notify only when all items
-   have stopped, since every per-item notice can cost a paid model turn.
-5. **Resume a batch after a process restart?** Recommended: not in v1; the
-   tree stays readable, interrupted items are reported, and the model or the
-   operator re-adds them.
-6. **Operator-created batches with no model** (`rush batch run spec.json`, the
-   same engine with a stderr Sink)? Recommended: yes, after phase 3; the
-   engine's design already allows it.
+The old recommendations of 4 parallel tasks, 16 hard maximum, 2 commands,
+4 agents, depth 3, and 100 nodes are integration proposals, not engine laws.
+Do not run every heavy command at once merely because a batch is parallel.
+
+## 9. Later Rush integration roadmap
+
+This is a separate work package, started only after autonomous acceptance.
+It must be planned against the then-current repository, not old file offsets.
+
+### 9.1 Addressed pre-refactoring
+
+- Pure move of job-control methods from `work_ledger.go` to
+  `work_ledger_jobctl.go`; preserve observable behavior and ownership checks.
+- Extract shared permission-inheritance/executor-launch setup from
+  `asyncTool.launchExecutor`. Separate starting work from synchronous waiting,
+  inline-window delivery, and detached "started" responses.
+- One post-commit terminal observation seam for the adapter, outside ledger
+  locks and guarded by claim identity. An in-memory duplicate or stale
+  execution cannot settle another claim's leaf.
+- One tool construction path retaining hooks, permissions, restricted-run,
+  folder scope, and agentguard. A leaf reuses policy-wrapped execution without
+  recursively reapplying the batch ingress wrapper.
+
+No second registry, no wholesale coordinator rewrite, and no MCP
+connection/protocol refactor just to accommodate batching.
+
+### 9.2 Execution cutover
+
+Ordinary command/MCP/agent ingress becomes a one-task root. Explicit groups
+submit multiple tasks to the same scheduler. Adapters reuse existing
+executors; the core does not import Fantasy or parse Rush tool input.
+
+Preserve existing response/cancellation semantics:
+
+- SDK/synchronous calls may wait for the root outcome, with caller context
+  cancellation explicitly mapped to Stop; they are not automatically detached.
+- CLI/web asynchronous calls and explicit batch_run may return started plus
+  later aggregate delivery. Web Drain must not block a turn for a long batch.
+  There is no blanket "every batch is never sync" rule and no blanket SDK ban.
+- The root/leaf ack gate and durable claim precede externally visible effects.
+  Singleton wrapping must not duplicate rows, cap accounting, results, or
+  billable notification turns.
+- Agent completion comes from settled delegation work, not merely Run()
+  returning after a child model turn. Questions and descendant work keep
+  the item nonterminal; existing inject/resume ownership rules remain.
+- MCP leaves use `tools.Tool.Run` -> `Owner.RunTool(ctx, ...)`. Stopping the
+  call cancels its execution context without killing the shared MCP server
+  session (existing MCP cancellation invariants).
+- Existing job-control code may record cancellation before its executor
+  returns. The adapter must not treat that row alone as proof of physical
+  termination: hold Runner admission until the corresponding executor has
+  actually finished. Test that a stopped leaf cannot free capacity early.
+
+Shared admission must account for Rush work outside a batch during migration.
+A ledger refusal needs a capacity-release signal from that work as well.
+Root orchestration records must not occupy all execution slots and leave no
+room for leaves. Define record/accounting rules before the DB migration.
+
+### 9.3 Outcomes, persistence, and recovery
+
+`task_outcome(success|failure)` belongs to the agent adapter, not the engine.
+New outcome-aware agent items can require it; undeclared outcome is Failed
+only where that contract was explicitly selected. Re-declarations are scoped
+to a new execution/attempt, not allowed to overwrite an already terminal leaf.
+
+Persist batch structure and stable execution mappings using existing SQLite/
+sqlc conventions. Choose tables/migration timestamps at implementation time;
+do not reserve the original plan's historical filename. Preserve the ledger's
+shutdown-vs-user-stop distinction, claim CAS, ack gate, and delivery state.
+
+After a host crash, expose interrupted work and unstarted descendants without
+silently rerunning side effects. Replay of a diagnostic trace is not execution
+recovery. Exactly-once durable notification requires its own transactional
+contract; a callback from Runner alone does not provide it.
+
+### 9.4 Model tools, operator CLI, and web
+
+Model tools: batch_run, batch_add, batch_status, batch_stop. Commands:
+`rush batch run|show|add|stop`. `batchlab` already proves model-less execution;
+Rush-specific commands add authenticated ownership and cross-process control.
+Web presents the same hierarchy and operations, not a separate scheduler.
+
+Control routing, job_kill/job_output, and inject must resolve stable owner/
+item/execution identities. Do not bypass hooks/permissions or allow a child
+to block awaiting its own parent batch. Generic tool items must not recursively
+invoke scheduler/control tools; use explicit task kinds for supported work.
+
+Integration acceptance must include:
+
+- single-task CLI, MCP, and agent launches with unchanged results and exactly
+  one consumer completion; sync caller cancellation and detached work;
+- parallel/sequential/nested groups, failure policy, Add, subtree Stop,
+  cross-process operator control, and group-aware cap accounting;
+- immediate finish before ack, duplicate tool-call retries, late old-claim
+  reports, crash/shutdown recovery, and no duplicate notices;
+- held child questions, input injection at nested depth, declared failure,
+  and unchanged legacy-agent success semantics;
+- interrupted MCP call without connection destruction and actual WebUI
+  controls verified in the browser.
+
+No integration phase is marked complete merely because batchlab passed.
