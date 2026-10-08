@@ -786,6 +786,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 
 		var finalUsage fantasy.Usage
+		var diagnostics exitDiagnostics
 		scanDone := false
 		var scanErr error
 		var linesSeen int
@@ -832,6 +833,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				raw := res.raw
 				slog.Debug("cliprovider: raw line", "raw", string(raw))
 				line := bytes.TrimSpace(ansiEscape.ReplaceAll(raw, nil))
+				diagnostics.add(line)
 
 				// Capture CLI session ID from the system init event for --resume.
 				if m.spec.SupportsResume && cliSessionKey != "" {
@@ -920,6 +922,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			} else {
 				exitErr = fmt.Errorf("%s failed: %w", m.spec.Binary, waitErr)
 			}
+			exitErr = mapCLIExitError(exitErr, stderr, diagnostics)
 			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: exitErr}) //nolint:errcheck
 			return
 		}
