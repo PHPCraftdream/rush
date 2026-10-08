@@ -3,8 +3,8 @@
 //
 //   - Two syntaxes set effort: short codes / long-form atom suffix
 //     (opus-high, glm5_3-max, ...) and raw "provider/model@effort".
-//   - Effort-bearing letter short codes (o47x, h45l, ...) exist ONLY for
-//     local-cli/Claude atoms. Z.AI atoms carry a static ReasoningLevels
+//   - Effort-bearing letter short codes (o3x, h1l, ...) exist for BOTH
+//     local-cli/Claude and Codex atoms. Z.AI atoms carry a static ReasoningLevels
 //     array instead (see models_atoms.go) and accept the long-form
 //     "<atom>-<level>" suffix, e.g. "glm5_3-max".
 //   - The raw "@effort" suffix is validated (validateEffortForModel in
@@ -18,8 +18,10 @@ import (
 	"text/tabwriter"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
+
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // providerEffortDoc describes one provider (or provider-family)'s effort
@@ -44,6 +46,10 @@ type providerEffortDoc struct {
 }
 
 var providerEffortDocs = []providerEffortDoc{
+	{Key: "codex-cli", Title: "Codex models (local-cli provider)", Body: []string{
+		"Effort is forwarded verbatim as -c model_reasoning_effort=<level>.",
+		"Supported levels come from each CLISpec (see `rush models efforts <code>`).",
+	}},
 	{
 		Key:   "anthropic-cli",
 		Title: "Claude models (local-cli provider: opus, sonnet, haiku, fable atoms)",
@@ -52,7 +58,7 @@ var providerEffortDocs = []providerEffortDoc{
 			"`claude --help` (cached per process; falls back to low/medium/high/xhigh/max",
 			"if detection fails). ReasoningEffort is forwarded as-is as the CLI's own",
 			"`--effort <level>` flag — the CLI binary validates it, not Rush.",
-			"These are the ONLY atoms with effort-bearing short codes (o47x, h45l, sl, ...).",
+			"Generated short codes cover Claude and Codex; legacy version codes (o48x, s46h, ...) were removed.",
 		},
 	},
 	{
@@ -152,10 +158,10 @@ var modelsEffortsCmd = &cobra.Command{
 not visible from ` + "`rush models list`" + `.
 
 Two syntaxes set effort:
-  1. Short codes, e.g. ` + "`o47x`" + `, ` + "`h45l`" + `, ` + "`sh`" + ` (local-cli/Claude atoms only) or
+  1. Short codes, e.g. ` + "`o3x`" + `, ` + "`h1l`" + `, ` + "`sh`" + ` (local-cli/Claude and Codex) or
      the long-form atom suffix, e.g. ` + "`glm5_3-max`" + `.
   2. Raw ` + "`provider/model@effort`" + `, e.g. ` + "`zai/glm-5.3@max`" + `. Validated when the
-     target is a known atom; otherwise a blind, unvalidated string split.
+     target is a known atom or CLI spec; otherwise an unvalidated string split.
 
 Run with no argument for per-provider semantics. Run with a model or atom
 argument (` + "`glm5_3`" + `, ` + "`zai/glm-5.3`" + `, ` + "`fl`" + `) for that model's exact levels and
@@ -213,17 +219,17 @@ func renderEffortsOverview() string {
 	b.WriteString("REASONING EFFORT — how it's set and what it does\n\n")
 
 	b.WriteString("SYNTAX:\n")
-	b.WriteString("  1. Short codes    e.g. `rush models use o47x h45l` — local-cli/Claude only.\n")
+	b.WriteString("  1. Short codes    e.g. `rush models use o3x h1l` — local-cli/Claude and Codex.\n")
 	b.WriteString("                    Long-form atom suffix works for any atom with a known\n")
 	b.WriteString("                    levels array, e.g. `rush models use glm5_3-max`.\n")
 	b.WriteString("  2. Raw @effort    e.g. `rush models use zai/glm-5.3@max glm4_7`\n")
 	b.WriteString("     Validated against the atom's real levels when the target is a\n")
-	b.WriteString("     known atom (rejects a typo like `@hihg`); UNVALIDATED (blind string\n")
-	b.WriteString("     split) for any model outside the atom registry.\n\n")
+	b.WriteString("     known atom or CLI spec (rejects a typo like `@hihg`); UNVALIDATED\n")
+	b.WriteString("     for models outside both catalogs.\n\n")
 
-	b.WriteString("ASYMMETRY: LETTER short codes (o47x, h45l, ...) exist ONLY for the\n")
+	b.WriteString("ASYMMETRY: Generated LETTER short codes cover Claude and Codex. Long-form atoms use\n")
 	b.WriteString("local-cli/Claude atoms (opus, opus46, opus47, opus48, sonnet, haiku,\n")
-	b.WriteString("fable) — there is no `glm5_3xx`. Every other provider has no letter\n")
+	b.WriteString("fable) — there is no `glm5_3xx`. Remote providers have no letter\n")
 	b.WriteString("short code for effort; Z.AI atoms use the validated long-form atom\n")
 	b.WriteString("suffix instead (`glm5_3-max`). DeepSeek, io.net, Alibaba Singapore,\n")
 	b.WriteString("and hyper have no atom-level validation at all — only the unvalidated\n")
@@ -249,28 +255,19 @@ type resolvedEffortTarget struct {
 	DisplayName string
 }
 
-// resolveEffortTarget accepts an atom key (glm5_3, fable, opus47), a
-// short-code base without the effort suffix is NOT accepted here (short
-// codes always include a level, e.g. "fl" not "f") — but a full short code
-// like "fl" or "o47x" IS accepted and resolved to its underlying atom, or a
-// raw "provider/model" string.
+// resolveEffortTarget accepts an atom key (glm5_3, fable, opus47), a full
+// generated short code (exact cahNameMap lookup, e.g. "o3x"; a bare base
+// like "o" is not accepted), or a raw "provider/model" string.
 func resolveEffortTarget(arg string) (resolvedEffortTarget, bool) {
+	if r, ok := cahNameMap[arg]; ok {
+		return resolvedEffortTarget{Provider: r.Provider, Model: r.Slug, DisplayName: r.Display}, true
+	}
 	// 1. Direct atom key.
 	if a, ok := atomRegistry[arg]; ok {
 		return resolvedEffortTarget{AtomKey: arg, Provider: a.Provider, Model: a.Model, DisplayName: a.DisplayName}, true
 	}
 
-	// 2. Full short code (e.g. "fl", "o47x", "h45l") — resolve to its atom.
-	if sm, ok := parseShortCode(arg); ok {
-		key := lookupAtomForModel(config.SelectedModel{Provider: sm.Provider, Model: sm.Model})
-		display := sm.Model
-		if key != "" {
-			display = atomRegistry[key].DisplayName
-		}
-		return resolvedEffortTarget{AtomKey: key, Provider: sm.Provider, Model: sm.Model, DisplayName: display}, true
-	}
-
-	// 3. Raw "provider/model" (with optional @effort, ignored for lookup).
+	// 2. Raw "provider/model" (with optional @effort, ignored for lookup).
 	if strings.Contains(arg, "/") {
 		modelPart, _ := splitModelEffort(arg)
 		idx := strings.Index(modelPart, "/")
@@ -333,6 +330,36 @@ func unsetEffortNote(provider string) string {
 }
 
 func renderEffortsForModel(arg string) (string, error) {
+	// Generated codes and raw CLI models use per-spec metadata, never CLI detection.
+	model := ""
+	if r, ok := cahNameMap[arg]; ok {
+		model = r.Slug
+	}
+	if strings.HasPrefix(arg, "local-cli/") {
+		model, _ = splitModelEffort(strings.TrimPrefix(arg, "local-cli/"))
+	}
+	if model != "" {
+		for _, spec := range cliprovider.All {
+			if spec.ModelID != model {
+				continue
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "%s - local-cli/%s\n\nPROVIDER SEMANTICS:\n", spec.ModelName, spec.ModelID)
+			switch spec.Binary {
+			case "codex":
+				b.WriteString("  Codex: effort is forwarded verbatim as -c model_reasoning_effort=<level>.\n")
+			case "claude":
+				b.WriteString("  Claude: effort is forwarded verbatim as --effort <level>.\n")
+			}
+			b.WriteString("\nHOW TO SET EACH LEVEL FOR THIS MODEL:\n\n")
+			for _, level := range spec.EffortLevels {
+				fmt.Fprintf(&b, "  %s  rush models use local-cli/%s@%s <fast>\n", level, model, level)
+			}
+			b.WriteString("\n  Levels from CLI model metadata; @effort is validated against this list.\n")
+			return b.String(), nil
+		}
+	}
+
 	target, ok := resolveEffortTarget(arg)
 	if !ok {
 		return "", fmt.Errorf("%q is not a recognized atom, short code, or provider/model — see `rush models list`", arg)

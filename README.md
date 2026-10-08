@@ -620,6 +620,46 @@ Anthropic atoms require a level suffix (`opus-high`, `sonnet-low`, etc.) —
 the level list comes from parsing `claude --help` at first use (falls back
 to a static `low/medium/high/xhigh/max` list if parsing fails).
 
+### Model shortcodes
+
+`rush models list` prints the generated model/effort table and a
+`generated from cc-arch-hands <version>` footer.
+Claude codes use **family-slot-effort**: `o/s/h/f` for Opus/Sonnet/Haiku/Fable,
+no slot for top, `1` for previous, `2` for the next older entry, followed by
+`l/m/h/x/xx` (low/medium/high/xhigh/max). For example, `ox` is top Opus
+xhigh, `o3x` is Opus 4.7 xhigh, and `h1l` is pinned Haiku 4.5 low.
+Codex uses **effort-family-slot**: `l/m/h/x/xx/u` followed by
+`s/t/l/a` (Sol/Terra/Luna/Astra), then the optional older slot;
+`hs` is top Sol high and `hs1` is the previous Sol high.
+
+Top codes move with the catalog: **`ox` now means Opus 5.5, not 4.8**;
+use `o2x` for 4.8. The legacy hand-written version codes
+`o48*/o47*/o46*/s46*/s45*/h45*` were **removed** and are now rejected with an
+error. Use the generated codes (`rush models list`), long-form atoms such as
+`opus47-high`, or raw `local-cli/<slug>@<effort>`.
+`hl` belongs to Haiku low; use **`local-cli/cli-codex-gpt-6-luna@high`** for GPT 6 Luna high.
+In cc-arch-hands 0.16.1, `us1` selects GPT 6 Sol ultra and `ua` selects
+GPT 6 Astra ultra. `ul1` was removed: Luna has no ultra effort.
+Raw forms remain `local-cli/cli-codex-gpt-6-sol@ultra` and
+`local-cli/cli-codex-gpt-6-astra@ultra`.
+
+```bash
+rush models use o3x h1l
+rush models use ox hl --reviewer xxs
+```
+
+Plain `go build`, `go install`, and `go test` consume committed generated
+files only, without refreshing the catalog. Artifact entrypoints
+(`go run build.go`, npm publishing, and GoReleaser) refresh automatically
+before compilation. Local refresh failures warn and keep committed outputs;
+`CI=true` implies strict failure, and release pipelines explicitly refresh
+with `-mode refresh -strict` (not check-only).
+Manual refresh: `go run ./internal/tools/cahsync`; `-strict` makes failures
+fatal, `-check -strict` detects drift without writing, and `-offline` skips
+network and output I/O. Refresh never downgrades below the committed cah version. Successful refresh logs the source version and
+changed paths. CI drift checking is a separate nonblocking warning job;
+ordinary test/lint jobs are not coupled to catalog acquisition.
+
 Z.AI atoms are **not** all effort-less: **GLM-5.3** (`glm5_3`) has 3 real
 wire states (`off`/`high`/`max`) settable via the long-form suffix
 (`glm5_3-max`) or raw `zai/glm-5.3@max` — one more

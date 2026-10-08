@@ -273,18 +273,9 @@ func TestParseShortCode_Valid(t *testing.T) {
 		model  string
 		effort string
 	}{
-		{"o48h", "cli-claude-opus-4-8", "high"},
-		{"o48xx", "cli-claude-opus-4-8", "max"},
-		{"o47h", "cli-claude-opus-4-7", "high"},
-		{"o47xx", "cli-claude-opus-4-7", "max"},
-		{"o47x", "cli-claude-opus-4-7", "xhigh"},
-		{"o46xx", "cli-claude-opus-4-6", "max"},
-		{"s46h", "cli-claude-sonnet", "high"},
-		{"s45h", "cli-claude-sonnet", "high"},
-		{"h45l", "cli-claude-haiku", "low"},
-		{"oh", "cli-claude-opus-4-8", "high"},
-		{"sl", "cli-claude-sonnet", "low"},
-		{"hm", "cli-claude-haiku", "medium"},
+		{"oh", cahNameMap["oh"].Slug, "high"},
+		{"sl", cahNameMap["sl"].Slug, "low"},
+		{"hm", cahNameMap["hm"].Slug, "medium"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {
@@ -298,7 +289,7 @@ func TestParseShortCode_Valid(t *testing.T) {
 }
 
 func TestParseShortCode_Invalid(t *testing.T) {
-	invalid := []string{"o47-3", "o47-0", "s45xx", "h45x", "x47h", "o99h", "", "opus-high"}
+	invalid := []string{"o47-3", "o47-0", "s45xx", "h45x", "x47h", "o99h", "", "opus-high", "o47x", "s46xx", "h45l", "o48xx", "s45h"}
 	for _, code := range invalid {
 		_, ok := parseShortCode(code)
 		assert.False(t, ok, "expected not-ok for %q", code)
@@ -307,9 +298,11 @@ func TestParseShortCode_Invalid(t *testing.T) {
 
 func TestParseAtom_ShortCodeRoundtrip(t *testing.T) {
 	defer setMockEffortLevels([]string{"low", "medium", "high", "xhigh", "max"})()
-	sm, err := parseAtom("o47x")
+	code := sortedCAHCodes()[0]
+	want := cahNameMap[code]
+	sm, err := parseAtom(code)
 	require.NoError(t, err)
-	assert.Equal(t, "local-cli", sm.Provider)
-	assert.Equal(t, "cli-claude-opus-4-7", sm.Model)
-	assert.Equal(t, "xhigh", sm.ReasoningEffort)
+	assert.Equal(t, want.Provider, sm.Provider)
+	assert.Equal(t, want.Slug, sm.Model)
+	assert.Equal(t, want.Effort, sm.ReasoningEffort)
 }

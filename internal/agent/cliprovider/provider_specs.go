@@ -253,11 +253,9 @@ func geminiSpec(modelID, modelName, modelArg string) CLISpec {
 
 // All is the list of hardcoded CLI model specs.
 // Add new entries here to register additional CLI-backed models.
-var All = []CLISpec{
-	// Anthropic's `claude` CLI on PATH. One entry per model family;
-	// pinned Opus versions because the operator usually wants a specific
-	// generation (4.6/4.7/4.8 differ meaningfully). Sonnet / Haiku /
-	// Fable use the aliases so each tab auto-tracks the latest.
+var All = append([]CLISpec{
+	// Compatibility moving aliases remain hand-written. Pinned Claude models
+	// and their per-model metadata are appended from cahSpecs below.
 	//
 	// Alias entries deliberately carry NO version number in their display
 	// name: the CLI resolves an alias to whatever it currently considers
@@ -269,13 +267,9 @@ var All = []CLISpec{
 	// "Sonnet 4.6" while actually running Sonnet 5.
 	claudeSpec("cli-claude-haiku", "Claude Haiku (CLI, latest)", "haiku", 200_000),
 	claudeSpec("cli-claude-sonnet", "Claude Sonnet (CLI, latest)", "sonnet", 1_000_000),
-	// Opus: alias entry kept so DB rows / atoms (`opus`) referencing the
-	// classic ModelID don't dangle, plus three pinned variants the operator
-	// can pick explicitly.
+	// The classic Opus ModelID remains valid for stored rows.
 	claudeSpec("cli-claude-opus", "Claude Opus (CLI, latest)", "opus", 1_000_000),
-	claudeSpec("cli-claude-opus-4-6", "Claude Opus 4.6 (CLI)", "claude-opus-4-6", 1_000_000),
-	claudeSpec("cli-claude-opus-4-7", "Claude Opus 4.7 (CLI)", "claude-opus-4-7", 1_000_000),
-	claudeSpec("cli-claude-opus-4-8", "Claude Opus 4.8 (CLI)", "claude-opus-4-8", 1_000_000),
+
 	claudeSpec("cli-claude-fable", "Claude Fable (CLI, latest)", "fable", 1_000_000),
 	// Claude 5 generation, pinned. The `[1m]` suffix is a real
 	// context-window switch the CLI understands, not cosmetic: measured
@@ -286,9 +280,7 @@ var All = []CLISpec{
 	// ModelID keeps our `cli-claude-*` slug convention and spells the
 	// suffix `-1m` rather than embedding brackets, which would otherwise
 	// end up inside `provider/model` strings in config, atoms and the DB.
-	claudeSpec("cli-claude-opus-5-1m", "Claude Opus 5 1M (CLI)", "claude-opus-5[1m]", 1_000_000),
-	claudeSpec("cli-claude-sonnet-5-1m", "Claude Sonnet 5 1M (CLI)", "claude-sonnet-5[1m]", 1_000_000),
-	claudeSpec("cli-claude-fable-5", "Claude Fable 5 (CLI)", "claude-fable-5", 1_000_000),
+
 	// NOT exposed: claude-mythos-5. The id and a `mythos` alias both exist in
 	// the CLI, but both return HTTP 404 model_not_found ("It may not exist or
 	// you may not have access to it") on this account. An earlier check
@@ -328,9 +320,7 @@ var All = []CLISpec{
 	// All codex models are 272_000, NOT the 400_000 these entries used to
 	// claim. ContextWindow drives the auto-summarization threshold, so a 48%
 	// overstatement let conversations run well past the real limit.
-	codexSpec("cli-codex-sol", "GPT-5.6-Sol (CLI)", "gpt-5.6-sol", codexEffortLevelsUltra),
-	codexSpec("cli-codex-terra", "GPT-5.6-Terra (CLI)", "gpt-5.6-terra", codexEffortLevelsUltra),
-	codexSpec("cli-codex-luna", "GPT-5.6-Luna (CLI)", "gpt-5.6-luna", codexEffortLevelsMax),
+
 	// gpt-5.5 stops at xhigh. Note the ceiling below only clamps efforts RUSH
 	// sends; it says nothing about codex's own default. If the operator's
 	// ~/.codex/config.toml sets a higher model_reasoning_effort (e.g. "max",
@@ -359,4 +349,4 @@ var All = []CLISpec{
 	codexSpec("cli-codex-gpt-5-2", "Codex gpt-5.2-codex (CLI, unsupported)", "gpt-5.2-codex", codexEffortLevelsStandard),
 	codexSpec("cli-codex-max", "Codex gpt-5.1-codex-max (CLI, unsupported)", "gpt-5.1-codex-max", codexEffortLevelsStandard),
 	codexSpec("cli-codex-mini", "Codex gpt-5.1-codex-mini (CLI, unsupported)", "gpt-5.1-codex-mini", codexEffortLevelsStandard),
-}
+}, cahSpecs...)

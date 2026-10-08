@@ -48,37 +48,37 @@ See ` + "`rush models list`" + ` for the full atom table.`,
 	Args: cobra.MaximumNArgs(2),
 	Example: `
 # Short codes: Opus 4.7 xhigh (1M ctx) + Haiku 4.5 low (200k ctx)
-rush models use o47x h45l
+rush models use o3x h1l
 
 # Sonnet 4.6 high (200k ctx) + Haiku 4.5 low — cheaper than Opus, still smart
-rush models use s46h h45l
+rush models use s2h h1l
 
 # Max thinking on smart (1M ctx), fast on fast
-rush models use o47xx h45l
+rush models use o3xx h1l
 
 # Z.AI stack
 rush models use glm5_3 glm5_turbo
 
 # Mixed: Opus xhigh (1M ctx) + Z.AI turbo
-rush models use o47x glm5_turbo
+rush models use o3x glm5_turbo
 
 # Long-form atom syntax still works
 rush models use opus-high sonnet-low
 
 # Also set the worker slot (cheap sub-agent model) in the same call
-rush models use o47x h45l --worker glm5_turbo
+rush models use o3x h1l --worker glm5_turbo
 
 # Also set the reviewer slot (strongest model, --role reviewer only)
-rush models use o47x h45l --reviewer oxx
+rush models use o3x h1l --reviewer oxx
 
 # Set effort on a role slot in the same call: "<atom>-<level>" or "provider/model@level"
-rush models use o47x h45l --reviewer glm5_3-max
+rush models use o3x h1l --reviewer glm5_3-max
 
 # Set worker and reviewer together with smart/fast
-rush models use o47x h45l --worker fl --reviewer oxx
+rush models use o3x h1l --worker h1l --reviewer oxx
 
 # Workspace-only override (writes ./.rush/rush.json, leaves global untouched).
-rush models use --local o47x h45l
+rush models use --local o3x h1l
 
 # Raw "provider/model[@level]" syntax for models not in the registry.
 rush models use openai/gpt-5@high zai/glm-5-turbo
@@ -87,10 +87,10 @@ rush models use openai/gpt-5@high zai/glm-5-turbo
 rush models use --fast glm4_7_flash
 
 # Change ONLY the smart slot
-rush models use --smart o47x
+rush models use --smart o3x
 
 # --smart and --fast together, still without touching worker/reviewer
-rush models use --smart o47x --fast h45l
+rush models use --smart o3x --fast h1l
 
 # After running, verify with:
 rush models state

@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- **Breaking:** short codes for the local `claude` and `codex` CLI models now come only from the cc-arch-hands catalog (the same names as its slash-commands and sub-agents: `ox`, `o1h`, `s2m`, `hl`, `xs`, `us1`, …; suffix N means N releases behind the top model). The old hand-written version codes (`o48*`, `o47*`, `o46*`, `s46*`, `s45*`, `h45*`) are removed and fail with a migration hint; `ox` now selects Opus 5.5. Long-form atoms and raw `provider/model@effort` still work, and stored `cli-claude-*`/`cli-codex-*` model ids stay valid. The tables, per-model context windows and accepted efforts are generated from the cc-arch-hands package (`go run ./internal/tools/cahsync`), refreshed on every artifact build (`build.go`, the npm publish workflow, goreleaser): release builds fail if the catalog cannot be fetched, local builds keep the committed tables and never downgrade them, and a non-blocking CI job reports drift.
 - The Anthropic HTTP provider no longer sends a blank `Authorization:` header next to `X-Api-Key` (or a blank `X-Api-Key` next to a Bearer token): the unused one was only blanked to keep the process environment out of the request, and the SDK put the empty header on the wire. Blank auth headers are now dropped by the provider's HTTP client.
 
 ## [0.2.0-alpha.12] - 2026-10-08

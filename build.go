@@ -3,12 +3,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/cahgen"
 )
 
 func run(dir, name string, args ...string) {
@@ -28,6 +31,10 @@ func run(dir, name string, args ...string) {
 
 func main() {
 	root, _ := os.Getwd()
+	if err := cahgen.RefreshBuild(context.Background(), root, os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	fmt.Println("→ Installing web dependencies...")
 	run(root+"/web", "pnpm", "install")

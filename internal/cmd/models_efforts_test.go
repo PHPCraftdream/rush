@@ -20,7 +20,7 @@ func TestRenderEffortsOverview_NoArg(t *testing.T) {
 	assert.Contains(t, out, "@effort")
 	assert.Contains(t, out, "UNVALIDATED")
 
-	// Claude-only LETTER short-code asymmetry (o47x, h45l, ...) — Z.AI atoms
+	// Claude-only LETTER short-code asymmetry (o3x, h1l, ...) — Z.AI atoms
 	// now have their OWN validated levels array + long-form atom suffix
 	// (glm5_3-max), so the assertion here is scoped to "no letter short
 	// code", not "no way at all to set effort with validation".
@@ -112,16 +112,12 @@ func TestRenderEffortsForModel_Claude(t *testing.T) {
 	out, err := renderEffortsForModel("fl")
 	require.NoError(t, err)
 
-	assert.Contains(t, out, "atom: fable")
-	assert.Contains(t, out, "local-cli/cli-claude-fable")
-	assert.Contains(t, out, "claude` CLI")
-	assert.Contains(t, out, "fable-low")
-	assert.Contains(t, out, "fable-high")
-	assert.Contains(t, out, "fable-max")
-	assert.Contains(t, out, "rush models use fable-high <fast>")
-
-	// Must NOT suggest the @effort form for a Claude atom.
-	assert.NotContains(t, out, "fable@")
+	assert.Contains(t, out, "local-cli/"+cahNameMap["fl"].Slug)
+	assert.Contains(t, out, "Claude: effort")
+	for _, level := range []string{"low", "high", "max"} {
+		assert.Contains(t, out, "rush models use local-cli/"+cahNameMap["fl"].Slug+"@"+level+" <fast>")
+	}
+	assert.NotContains(t, out, "detected")
 }
 
 // TestRenderEffortsForModel_Claude_ByAtomKey verifies the same lookup by
@@ -161,7 +157,9 @@ func TestResolveEffortTarget_Variants(t *testing.T) {
 		defer setMockEffortLevels([]string{"low", "medium", "high"})()
 		target, ok := resolveEffortTarget("hl")
 		require.True(t, ok)
-		assert.Equal(t, "haiku", target.AtomKey)
+		assert.Empty(t, target.AtomKey) // Generated top Haiku is pinned, not the moving haiku atom.
+		assert.Equal(t, cahNameMap["hl"].Slug, target.Model)
+		assert.Equal(t, cahNameMap["hl"].Display, target.DisplayName)
 		assert.Equal(t, "local-cli", target.Provider)
 	})
 

@@ -115,7 +115,7 @@ Companion CLI subcommands for scripting and CI:
                           pick / grep / cost / diff / tree / fork / cancel / gc / compact.
   - ` + "`rush queue`" + `           batch task queue — add / list / run / rm / clear / show.
   - ` + "`rush models`" + `          use / list / set / unset — atom-based model selection
-                          with short codes (o47x, s46h, hl, etc.).
+                          with short codes (o3x, s2h, hl, etc.).
   - ` + "`rush claude-init`" + `     install the /rush, /rush-fallback, /wrush
                           and /wcrush slash-commands into
                           .claude/commands/ (/wrush is /rush but forced
@@ -174,7 +174,7 @@ rush queue add --role smart --max-cost 0.20 < task.prompt
 rush queue run --concurrent 2 --stop-on-fail
 
 # Model selection with short codes
-rush models use o47x h45l            # Opus 4.7 xhigh + Haiku low
+rush models use o3x h1l            # Opus 4.7 xhigh + Haiku low
 rush models use oh sl                # top Opus high + top Sonnet low
 
 # Install slash-commands & sub-agents for Claude Code

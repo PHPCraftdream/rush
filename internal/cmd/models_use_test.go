@@ -454,7 +454,7 @@ func TestModelsUse_WorkerAndReviewerFlags(t *testing.T) {
 }
 
 func TestModelsUse_WorkerViaShortCode(t *testing.T) {
-	// Verify the short-code/atom resolution path (o47x, h45l, ...) also
+	// Verify the short-code/atom resolution path (o3x, h1l, ...) also
 	// applies to the new --worker/--reviewer flags, not just smart/fast.
 	globalPath := isolatedModelsEnv(t)
 
@@ -469,9 +469,9 @@ func TestModelsUse_WorkerViaShortCode(t *testing.T) {
 	require.NoError(t, err)
 	content := string(data)
 
-	// "fl" is the fable-low short code -> local-cli / cli-claude-fable, effort low.
+	// "fl" is the generated top Fable code, effort low.
 	assert.Contains(t, content, `"local-cli"`)
-	assert.Contains(t, content, `"cli-claude-fable"`)
+	assert.Contains(t, content, `"`+cahNameMap["fl"].Slug+`"`)
 	assert.Contains(t, content, `"low"`)
 }
 

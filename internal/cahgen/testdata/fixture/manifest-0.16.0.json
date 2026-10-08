@@ -1,0 +1,613 @@
+{
+  "version": "0.16.0",
+  "claude": [
+    {
+      "name": "fl",
+      "model": "claude-fable-5-1",
+      "effort": "low",
+      "display": "Fable (top, 1M) – low"
+    },
+    {
+      "name": "fm",
+      "model": "claude-fable-5-1",
+      "effort": "medium",
+      "display": "Fable (top, 1M) – medium"
+    },
+    {
+      "name": "fh",
+      "model": "claude-fable-5-1",
+      "effort": "high",
+      "display": "Fable (top, 1M) – high"
+    },
+    {
+      "name": "fx",
+      "model": "claude-fable-5-1",
+      "effort": "xhigh",
+      "display": "Fable (top, 1M) – xhigh"
+    },
+    {
+      "name": "fxx",
+      "model": "claude-fable-5-1",
+      "effort": "max",
+      "display": "Fable (top, 1M) – max"
+    },
+    {
+      "name": "f1l",
+      "model": "claude-fable-5",
+      "effort": "low",
+      "display": "Fable 5 (1M) – low"
+    },
+    {
+      "name": "f1m",
+      "model": "claude-fable-5",
+      "effort": "medium",
+      "display": "Fable 5 (1M) – medium"
+    },
+    {
+      "name": "f1h",
+      "model": "claude-fable-5",
+      "effort": "high",
+      "display": "Fable 5 (1M) – high"
+    },
+    {
+      "name": "f1x",
+      "model": "claude-fable-5",
+      "effort": "xhigh",
+      "display": "Fable 5 (1M) – xhigh"
+    },
+    {
+      "name": "f1xx",
+      "model": "claude-fable-5",
+      "effort": "max",
+      "display": "Fable 5 (1M) – max"
+    },
+    {
+      "name": "ol",
+      "model": "claude-opus-5-5",
+      "effort": "low",
+      "display": "Opus (top, 1M) – low"
+    },
+    {
+      "name": "om",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "display": "Opus (top, 1M) – medium"
+    },
+    {
+      "name": "oh",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "display": "Opus (top, 1M) – high"
+    },
+    {
+      "name": "ox",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "display": "Opus (top, 1M) – xhigh"
+    },
+    {
+      "name": "oxx",
+      "model": "claude-opus-5-5",
+      "effort": "max",
+      "display": "Opus (top, 1M) – max"
+    },
+    {
+      "name": "o1l",
+      "model": "claude-opus-5",
+      "effort": "low",
+      "display": "Opus 5 (1M) – low"
+    },
+    {
+      "name": "o1m",
+      "model": "claude-opus-5",
+      "effort": "medium",
+      "display": "Opus 5 (1M) – medium"
+    },
+    {
+      "name": "o1h",
+      "model": "claude-opus-5",
+      "effort": "high",
+      "display": "Opus 5 (1M) – high"
+    },
+    {
+      "name": "o1x",
+      "model": "claude-opus-5",
+      "effort": "xhigh",
+      "display": "Opus 5 (1M) – xhigh"
+    },
+    {
+      "name": "o1xx",
+      "model": "claude-opus-5",
+      "effort": "max",
+      "display": "Opus 5 (1M) – max"
+    },
+    {
+      "name": "o2l",
+      "model": "claude-opus-4-8",
+      "effort": "low",
+      "display": "Opus 4.8 (1M) – low"
+    },
+    {
+      "name": "o2m",
+      "model": "claude-opus-4-8",
+      "effort": "medium",
+      "display": "Opus 4.8 (1M) – medium"
+    },
+    {
+      "name": "o2h",
+      "model": "claude-opus-4-8",
+      "effort": "high",
+      "display": "Opus 4.8 (1M) – high"
+    },
+    {
+      "name": "o2x",
+      "model": "claude-opus-4-8",
+      "effort": "xhigh",
+      "display": "Opus 4.8 (1M) – xhigh"
+    },
+    {
+      "name": "o2xx",
+      "model": "claude-opus-4-8",
+      "effort": "max",
+      "display": "Opus 4.8 (1M) – max"
+    },
+    {
+      "name": "o3l",
+      "model": "claude-opus-4-7",
+      "effort": "low",
+      "display": "Opus 4.7 (1M) – low"
+    },
+    {
+      "name": "o3m",
+      "model": "claude-opus-4-7",
+      "effort": "medium",
+      "display": "Opus 4.7 (1M) – medium"
+    },
+    {
+      "name": "o3h",
+      "model": "claude-opus-4-7",
+      "effort": "high",
+      "display": "Opus 4.7 (1M) – high"
+    },
+    {
+      "name": "o3x",
+      "model": "claude-opus-4-7",
+      "effort": "xhigh",
+      "display": "Opus 4.7 (1M) – xhigh"
+    },
+    {
+      "name": "o3xx",
+      "model": "claude-opus-4-7",
+      "effort": "max",
+      "display": "Opus 4.7 (1M) – max"
+    },
+    {
+      "name": "o4l",
+      "model": "claude-opus-4-6",
+      "effort": "low",
+      "display": "Opus 4.6 (1M) – low"
+    },
+    {
+      "name": "o4m",
+      "model": "claude-opus-4-6",
+      "effort": "medium",
+      "display": "Opus 4.6 (1M) – medium"
+    },
+    {
+      "name": "o4h",
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "display": "Opus 4.6 (1M) – high"
+    },
+    {
+      "name": "o4x",
+      "model": "claude-opus-4-6",
+      "effort": "xhigh",
+      "display": "Opus 4.6 (1M) – xhigh"
+    },
+    {
+      "name": "o4xx",
+      "model": "claude-opus-4-6",
+      "effort": "max",
+      "display": "Opus 4.6 (1M) – max"
+    },
+    {
+      "name": "sl",
+      "model": "claude-sonnet-5-5",
+      "effort": "low",
+      "display": "Sonnet (top, 1M) – low"
+    },
+    {
+      "name": "sm",
+      "model": "claude-sonnet-5-5",
+      "effort": "medium",
+      "display": "Sonnet (top, 1M) – medium"
+    },
+    {
+      "name": "sh",
+      "model": "claude-sonnet-5-5",
+      "effort": "high",
+      "display": "Sonnet (top, 1M) – high"
+    },
+    {
+      "name": "sx",
+      "model": "claude-sonnet-5-5",
+      "effort": "xhigh",
+      "display": "Sonnet (top, 1M) – xhigh"
+    },
+    {
+      "name": "sxx",
+      "model": "claude-sonnet-5-5",
+      "effort": "max",
+      "display": "Sonnet (top, 1M) – max"
+    },
+    {
+      "name": "s1l",
+      "model": "claude-sonnet-5",
+      "effort": "low",
+      "display": "Sonnet 5 (1M) – low"
+    },
+    {
+      "name": "s1m",
+      "model": "claude-sonnet-5",
+      "effort": "medium",
+      "display": "Sonnet 5 (1M) – medium"
+    },
+    {
+      "name": "s1h",
+      "model": "claude-sonnet-5",
+      "effort": "high",
+      "display": "Sonnet 5 (1M) – high"
+    },
+    {
+      "name": "s1x",
+      "model": "claude-sonnet-5",
+      "effort": "xhigh",
+      "display": "Sonnet 5 (1M) – xhigh"
+    },
+    {
+      "name": "s1xx",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "display": "Sonnet 5 (1M) – max"
+    },
+    {
+      "name": "s2l",
+      "model": "claude-sonnet-4-6",
+      "effort": "low",
+      "display": "Sonnet 4.6 (200k) – low"
+    },
+    {
+      "name": "s2m",
+      "model": "claude-sonnet-4-6",
+      "effort": "medium",
+      "display": "Sonnet 4.6 (200k) – medium"
+    },
+    {
+      "name": "s2h",
+      "model": "claude-sonnet-4-6",
+      "effort": "high",
+      "display": "Sonnet 4.6 (200k) – high"
+    },
+    {
+      "name": "s2xx",
+      "model": "claude-sonnet-4-6",
+      "effort": "max",
+      "display": "Sonnet 4.6 (200k) – max"
+    },
+    {
+      "name": "s3l",
+      "model": "claude-sonnet-4-5",
+      "effort": "low",
+      "display": "Sonnet 4.5 (200k) – low"
+    },
+    {
+      "name": "s3m",
+      "model": "claude-sonnet-4-5",
+      "effort": "medium",
+      "display": "Sonnet 4.5 (200k) – medium"
+    },
+    {
+      "name": "s3h",
+      "model": "claude-sonnet-4-5",
+      "effort": "high",
+      "display": "Sonnet 4.5 (200k) – high"
+    },
+    {
+      "name": "hl",
+      "model": "claude-haiku-5-5",
+      "effort": "low",
+      "display": "Haiku (top, 1M) – low"
+    },
+    {
+      "name": "hm",
+      "model": "claude-haiku-5-5",
+      "effort": "medium",
+      "display": "Haiku (top, 1M) – medium"
+    },
+    {
+      "name": "hh",
+      "model": "claude-haiku-5-5",
+      "effort": "high",
+      "display": "Haiku (top, 1M) – high"
+    },
+    {
+      "name": "hx",
+      "model": "claude-haiku-5-5",
+      "effort": "xhigh",
+      "display": "Haiku (top, 1M) – xhigh"
+    },
+    {
+      "name": "hxx",
+      "model": "claude-haiku-5-5",
+      "effort": "max",
+      "display": "Haiku (top, 1M) – max"
+    },
+    {
+      "name": "h1l",
+      "model": "claude-haiku-4-5",
+      "effort": "low",
+      "display": "Haiku 4.5 (200k) – low"
+    },
+    {
+      "name": "h1m",
+      "model": "claude-haiku-4-5",
+      "effort": "medium",
+      "display": "Haiku 4.5 (200k) – medium"
+    },
+    {
+      "name": "h1h",
+      "model": "claude-haiku-4-5",
+      "effort": "high",
+      "display": "Haiku 4.5 (200k) – high"
+    },
+    {
+      "name": "h1x",
+      "model": "claude-haiku-4-5",
+      "effort": "xhigh",
+      "display": "Haiku 4.5 (200k) – xhigh"
+    },
+    {
+      "name": "h1xx",
+      "model": "claude-haiku-4-5",
+      "effort": "max",
+      "display": "Haiku 4.5 (200k) – max"
+    }
+  ],
+  "codex": [
+    {
+      "name": "ls",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "display": "Sol 6.1 - low"
+    },
+    {
+      "name": "ms",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "display": "Sol 6.1 - medium"
+    },
+    {
+      "name": "hs",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "display": "Sol 6.1 - high"
+    },
+    {
+      "name": "xs",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "display": "Sol 6.1 - Extra High"
+    },
+    {
+      "name": "xxs",
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "display": "Sol 6.1 - max"
+    },
+    {
+      "name": "us",
+      "model": "gpt-6.1-sol",
+      "effort": "ultra",
+      "display": "Sol 6.1 - ultra"
+    },
+    {
+      "name": "ls1",
+      "model": "gpt-6-sol",
+      "effort": "low",
+      "display": "Sol 6 - low"
+    },
+    {
+      "name": "ms1",
+      "model": "gpt-6-sol",
+      "effort": "medium",
+      "display": "Sol 6 - medium"
+    },
+    {
+      "name": "hs1",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "display": "Sol 6 - high"
+    },
+    {
+      "name": "xs1",
+      "model": "gpt-6-sol",
+      "effort": "xhigh",
+      "display": "Sol 6 - Extra High"
+    },
+    {
+      "name": "xxs1",
+      "model": "gpt-6-sol",
+      "effort": "max",
+      "display": "Sol 6 - max"
+    },
+    {
+      "name": "ls2",
+      "model": "gpt-5.6-sol",
+      "effort": "low",
+      "display": "Sol 5.6 - low"
+    },
+    {
+      "name": "ms2",
+      "model": "gpt-5.6-sol",
+      "effort": "medium",
+      "display": "Sol 5.6 - medium"
+    },
+    {
+      "name": "hs2",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "display": "Sol 5.6 - high"
+    },
+    {
+      "name": "xs2",
+      "model": "gpt-5.6-sol",
+      "effort": "xhigh",
+      "display": "Sol 5.6 - Extra High"
+    },
+    {
+      "name": "xxs2",
+      "model": "gpt-5.6-sol",
+      "effort": "max",
+      "display": "Sol 5.6 - max"
+    },
+    {
+      "name": "us2",
+      "model": "gpt-5.6-sol",
+      "effort": "ultra",
+      "display": "Sol 5.6 - ultra"
+    },
+    {
+      "name": "ll",
+      "model": "gpt-6-luna",
+      "effort": "low",
+      "display": "Luna - low"
+    },
+    {
+      "name": "ml",
+      "model": "gpt-6-luna",
+      "effort": "medium",
+      "display": "Luna - medium"
+    },
+    {
+      "name": "hl",
+      "model": "gpt-6-luna",
+      "effort": "high",
+      "display": "Luna - high"
+    },
+    {
+      "name": "xl",
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "display": "Luna - Extra High"
+    },
+    {
+      "name": "xxl",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "display": "Luna - max"
+    },
+    {
+      "name": "lt",
+      "model": "gpt-5.6-terra",
+      "effort": "low",
+      "display": "Terra - low"
+    },
+    {
+      "name": "mt",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "display": "Terra - medium"
+    },
+    {
+      "name": "ht",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "display": "Terra - high"
+    },
+    {
+      "name": "xt",
+      "model": "gpt-5.6-terra",
+      "effort": "xhigh",
+      "display": "Terra - Extra High"
+    },
+    {
+      "name": "xxt",
+      "model": "gpt-5.6-terra",
+      "effort": "max",
+      "display": "Terra - max"
+    },
+    {
+      "name": "ut",
+      "model": "gpt-5.6-terra",
+      "effort": "ultra",
+      "display": "Terra - ultra"
+    },
+    {
+      "name": "ll1",
+      "model": "gpt-5.6-luna",
+      "effort": "low",
+      "display": "Luna 5.6 - low"
+    },
+    {
+      "name": "ml1",
+      "model": "gpt-5.6-luna",
+      "effort": "medium",
+      "display": "Luna 5.6 - medium"
+    },
+    {
+      "name": "hl1",
+      "model": "gpt-5.6-luna",
+      "effort": "high",
+      "display": "Luna 5.6 - high"
+    },
+    {
+      "name": "xl1",
+      "model": "gpt-5.6-luna",
+      "effort": "xhigh",
+      "display": "Luna 5.6 - Extra High"
+    },
+    {
+      "name": "xxl1",
+      "model": "gpt-5.6-luna",
+      "effort": "max",
+      "display": "Luna 5.6 - max"
+    },
+    {
+      "name": "ul1",
+      "model": "gpt-5.6-luna",
+      "effort": "ultra",
+      "display": "Luna 5.6 - ultra"
+    },
+    {
+      "name": "la",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "display": "Astra - low"
+    },
+    {
+      "name": "ma",
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "display": "Astra - medium"
+    },
+    {
+      "name": "ha",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "display": "Astra - high"
+    },
+    {
+      "name": "xa",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "display": "Astra - Extra High"
+    },
+    {
+      "name": "xxa",
+      "model": "gpt-6-astra",
+      "effort": "max",
+      "display": "Astra - max"
+    }
+  ]
+}

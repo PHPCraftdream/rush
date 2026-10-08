@@ -68,6 +68,9 @@ jobs:
           # the real work (npm publish) had already succeeded, turning a
           # green release into a red one for no functional reason.
 
+      - name: Refresh model shortcodes
+        run: go run ./internal/tools/cahsync -mode refresh -strict
+
       - name: Build the embedded web UI
         working-directory: web
         run: |

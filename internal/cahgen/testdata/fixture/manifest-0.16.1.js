@@ -1,0 +1,198 @@
+import { CodexModelSpecs } from './codex-model-specs.js';
+
+// Token context window per Claude model id; mirrors the "(1M)"/"(200k)" in the
+// display text so consumers never have to parse it.
+const ClaudeWindows = Object.freeze({
+  'claude-fable-5-1': { contextWindow: 1_000_000 },
+  'claude-fable-5': { contextWindow: 1_000_000 },
+  'claude-opus-5-5': { contextWindow: 1_000_000 },
+  'claude-opus-5': { contextWindow: 1_000_000 },
+  'claude-opus-4-8': { contextWindow: 1_000_000 },
+  'claude-opus-4-7': { contextWindow: 1_000_000 },
+  'claude-opus-4-6': { contextWindow: 1_000_000 },
+  'claude-sonnet-5-5': { contextWindow: 1_000_000 },
+  'claude-sonnet-5': { contextWindow: 1_000_000 },
+  'claude-sonnet-4-6': { contextWindow: 200_000 },
+  'claude-sonnet-4-5': { contextWindow: 200_000 },
+  'claude-haiku-5-5': { contextWindow: 1_000_000 },
+  'claude-haiku-4-5': { contextWindow: 200_000 },
+});
+
+// Attaches each model's windows to its alias records. A model without a spec
+// keeps a bare record; test/manifest-windows.test.js rejects that.
+function withWindows(entries, specs) {
+  return entries.map((entry) => {
+    const { contextWindow, maxContextWindow } = specs[entry.model] ?? {};
+    return {
+      ...entry,
+      ...(contextWindow && { contextWindow }),
+      ...(maxContextWindow && { maxContextWindow }),
+    };
+  });
+}
+
+export const AllModelCommands = withWindows([
+  // Fable (top) — claude-fable-5-1, top-tier, 1M context.
+  { name: 'fl', model: 'claude-fable-5-1', effort: 'low', display: 'Fable (top, 1M) – low' },
+  { name: 'fm', model: 'claude-fable-5-1', effort: 'medium', display: 'Fable (top, 1M) – medium' },
+  { name: 'fh', model: 'claude-fable-5-1', effort: 'high', display: 'Fable (top, 1M) – high' },
+  { name: 'fx', model: 'claude-fable-5-1', effort: 'xhigh', display: 'Fable (top, 1M) – xhigh' },
+  { name: 'fxx', model: 'claude-fable-5-1', effort: 'max', display: 'Fable (top, 1M) – max' },
+  // Fable N-back naming (same convention as Opus below): f1* means "N
+  // releases behind the top Fable", not a version number. Renumber this
+  // block (not the model ids) whenever a new Fable generation ships.
+  // f1 — Fable 5 (previous top)
+  { name: 'f1l', model: 'claude-fable-5', effort: 'low', display: 'Fable 5 (1M) – low' },
+  { name: 'f1m', model: 'claude-fable-5', effort: 'medium', display: 'Fable 5 (1M) – medium' },
+  { name: 'f1h', model: 'claude-fable-5', effort: 'high', display: 'Fable 5 (1M) – high' },
+  { name: 'f1x', model: 'claude-fable-5', effort: 'xhigh', display: 'Fable 5 (1M) – xhigh' },
+  { name: 'f1xx', model: 'claude-fable-5', effort: 'max', display: 'Fable 5 (1M) – max' },
+  // Opus (top) — claude-opus-5-5, freshest opus family.
+  { name: 'ol', model: 'claude-opus-5-5', effort: 'low', display: 'Opus (top, 1M) – low' },
+  { name: 'om', model: 'claude-opus-5-5', effort: 'medium', display: 'Opus (top, 1M) – medium' },
+  { name: 'oh', model: 'claude-opus-5-5', effort: 'high', display: 'Opus (top, 1M) – high' },
+  { name: 'ox', model: 'claude-opus-5-5', effort: 'xhigh', display: 'Opus (top, 1M) – xhigh' },
+  { name: 'oxx', model: 'claude-opus-5-5', effort: 'max', display: 'Opus (top, 1M) – max' },
+  // Opus N-back naming: o<N>* means "N releases behind the top Opus", not a
+  // version number — o1* is whatever was top before the latest release, o2*
+  // the one before that, and so on. Renumber this block (not the model ids)
+  // whenever a new Opus generation ships and shifts everyone back one slot.
+  // o1 — Opus 5 (previous top)
+  { name: 'o1l', model: 'claude-opus-5', effort: 'low', display: 'Opus 5 (1M) – low' },
+  { name: 'o1m', model: 'claude-opus-5', effort: 'medium', display: 'Opus 5 (1M) – medium' },
+  { name: 'o1h', model: 'claude-opus-5', effort: 'high', display: 'Opus 5 (1M) – high' },
+  { name: 'o1x', model: 'claude-opus-5', effort: 'xhigh', display: 'Opus 5 (1M) – xhigh' },
+  { name: 'o1xx', model: 'claude-opus-5', effort: 'max', display: 'Opus 5 (1M) – max' },
+  // o2 — Opus 4.8
+  { name: 'o2l', model: 'claude-opus-4-8', effort: 'low', display: 'Opus 4.8 (1M) – low' },
+  { name: 'o2m', model: 'claude-opus-4-8', effort: 'medium', display: 'Opus 4.8 (1M) – medium' },
+  { name: 'o2h', model: 'claude-opus-4-8', effort: 'high', display: 'Opus 4.8 (1M) – high' },
+  { name: 'o2x', model: 'claude-opus-4-8', effort: 'xhigh', display: 'Opus 4.8 (1M) – xhigh' },
+  { name: 'o2xx', model: 'claude-opus-4-8', effort: 'max', display: 'Opus 4.8 (1M) – max' },
+  // o3 — Opus 4.7
+  { name: 'o3l', model: 'claude-opus-4-7', effort: 'low', display: 'Opus 4.7 (1M) – low' },
+  { name: 'o3m', model: 'claude-opus-4-7', effort: 'medium', display: 'Opus 4.7 (1M) – medium' },
+  { name: 'o3h', model: 'claude-opus-4-7', effort: 'high', display: 'Opus 4.7 (1M) – high' },
+  { name: 'o3x', model: 'claude-opus-4-7', effort: 'xhigh', display: 'Opus 4.7 (1M) – xhigh' },
+  { name: 'o3xx', model: 'claude-opus-4-7', effort: 'max', display: 'Opus 4.7 (1M) – max' },
+  // o4 — Opus 4.6
+  { name: 'o4l', model: 'claude-opus-4-6', effort: 'low', display: 'Opus 4.6 (1M) – low' },
+  { name: 'o4m', model: 'claude-opus-4-6', effort: 'medium', display: 'Opus 4.6 (1M) – medium' },
+  { name: 'o4h', model: 'claude-opus-4-6', effort: 'high', display: 'Opus 4.6 (1M) – high' },
+  { name: 'o4x', model: 'claude-opus-4-6', effort: 'xhigh', display: 'Opus 4.6 (1M) – xhigh' },
+  { name: 'o4xx', model: 'claude-opus-4-6', effort: 'max', display: 'Opus 4.6 (1M) – max' },
+  // Sonnet (top) — claude-sonnet-5-5, full five-level effort scale, 1M context.
+  { name: 'sl', model: 'claude-sonnet-5-5', effort: 'low', display: 'Sonnet (top, 1M) – low' },
+  { name: 'sm', model: 'claude-sonnet-5-5', effort: 'medium', display: 'Sonnet (top, 1M) – medium' },
+  { name: 'sh', model: 'claude-sonnet-5-5', effort: 'high', display: 'Sonnet (top, 1M) – high' },
+  { name: 'sx', model: 'claude-sonnet-5-5', effort: 'xhigh', display: 'Sonnet (top, 1M) – xhigh' },
+  { name: 'sxx', model: 'claude-sonnet-5-5', effort: 'max', display: 'Sonnet (top, 1M) – max' },
+  // Sonnet N-back naming (same convention as Opus/Fable above): s1* means "1
+  // release behind the top Sonnet", not a version number. Renumber this
+  // block (not the model ids) whenever a new Sonnet generation ships.
+  // s1 — Sonnet 5 (previous top) — full five-level effort scale, 1M context.
+  { name: 's1l', model: 'claude-sonnet-5', effort: 'low', display: 'Sonnet 5 (1M) – low' },
+  { name: 's1m', model: 'claude-sonnet-5', effort: 'medium', display: 'Sonnet 5 (1M) – medium' },
+  { name: 's1h', model: 'claude-sonnet-5', effort: 'high', display: 'Sonnet 5 (1M) – high' },
+  { name: 's1x', model: 'claude-sonnet-5', effort: 'xhigh', display: 'Sonnet 5 (1M) – xhigh' },
+  { name: 's1xx', model: 'claude-sonnet-5', effort: 'max', display: 'Sonnet 5 (1M) – max' },
+  // s2 — Sonnet 4.6 — low medium high max (skips xhigh:
+  // Sonnet 4.6 jumps straight from high to max in Claude Code's effort scale).
+  { name: 's2l', model: 'claude-sonnet-4-6', effort: 'low', display: 'Sonnet 4.6 (200k) – low' },
+  { name: 's2m', model: 'claude-sonnet-4-6', effort: 'medium', display: 'Sonnet 4.6 (200k) – medium' },
+  { name: 's2h', model: 'claude-sonnet-4-6', effort: 'high', display: 'Sonnet 4.6 (200k) – high' },
+  { name: 's2xx', model: 'claude-sonnet-4-6', effort: 'max', display: 'Sonnet 4.6 (200k) – max' },
+  // s3 — Sonnet 4.5 — low medium high
+  { name: 's3l', model: 'claude-sonnet-4-5', effort: 'low', display: 'Sonnet 4.5 (200k) – low' },
+  { name: 's3m', model: 'claude-sonnet-4-5', effort: 'medium', display: 'Sonnet 4.5 (200k) – medium' },
+  { name: 's3h', model: 'claude-sonnet-4-5', effort: 'high', display: 'Sonnet 4.5 (200k) – high' },
+  // Haiku (top) — claude-haiku-5-5, 1M context, all five effort levels.
+  { name: 'hl', model: 'claude-haiku-5-5', effort: 'low', display: 'Haiku (top, 1M) – low' },
+  { name: 'hm', model: 'claude-haiku-5-5', effort: 'medium', display: 'Haiku (top, 1M) – medium' },
+  { name: 'hh', model: 'claude-haiku-5-5', effort: 'high', display: 'Haiku (top, 1M) – high' },
+  { name: 'hx', model: 'claude-haiku-5-5', effort: 'xhigh', display: 'Haiku (top, 1M) – xhigh' },
+  { name: 'hxx', model: 'claude-haiku-5-5', effort: 'max', display: 'Haiku (top, 1M) – max' },
+  // Haiku N-back naming (same convention as Opus/Fable/Sonnet): h1* is the
+  // Haiku that was top before the current one. Renumber this block (not the
+  // model ids) whenever a new Haiku generation ships.
+  // h1 — Haiku 4.5. Claude Code applies no effort to Haiku 4.5; the effort
+  // suffixes are kept only for a uniform command set. The old bare h and
+  // literal h45 aliases are gone: use hm and h1m.
+  { name: 'h1l', model: 'claude-haiku-4-5', effort: 'low', display: 'Haiku 4.5 (200k) – low' },
+  { name: 'h1m', model: 'claude-haiku-4-5', effort: 'medium', display: 'Haiku 4.5 (200k) – medium' },
+  { name: 'h1h', model: 'claude-haiku-4-5', effort: 'high', display: 'Haiku 4.5 (200k) – high' },
+  { name: 'h1x', model: 'claude-haiku-4-5', effort: 'xhigh', display: 'Haiku 4.5 (200k) – xhigh' },
+  { name: 'h1xx', model: 'claude-haiku-4-5', effort: 'max', display: 'Haiku 4.5 (200k) – max' },
+], ClaudeWindows);
+
+export const AllCodexAgents = withWindows([
+  // Stable aliases select the top family release; suffix N means N releases behind it.
+  { name: 'ls', model: 'gpt-6.1-sol', effort: 'low', display: 'Sol 6.1 - low' },
+  { name: 'ms', model: 'gpt-6.1-sol', effort: 'medium', display: 'Sol 6.1 - medium' },
+  { name: 'hs', model: 'gpt-6.1-sol', effort: 'high', display: 'Sol 6.1 - high' },
+  { name: 'xs', model: 'gpt-6.1-sol', effort: 'xhigh', display: 'Sol 6.1 - Extra High' },
+  { name: 'xxs', model: 'gpt-6.1-sol', effort: 'max', display: 'Sol 6.1 - max' },
+  { name: 'us', model: 'gpt-6.1-sol', effort: 'ultra', display: 'Sol 6.1 - ultra' },
+  { name: 'ls1', model: 'gpt-6-sol', effort: 'low', display: 'Sol 6 - low' },
+  { name: 'ms1', model: 'gpt-6-sol', effort: 'medium', display: 'Sol 6 - medium' },
+  { name: 'hs1', model: 'gpt-6-sol', effort: 'high', display: 'Sol 6 - high' },
+  { name: 'xs1', model: 'gpt-6-sol', effort: 'xhigh', display: 'Sol 6 - Extra High' },
+  { name: 'xxs1', model: 'gpt-6-sol', effort: 'max', display: 'Sol 6 - max' },
+  { name: 'us1', model: 'gpt-6-sol', effort: 'ultra', display: 'Sol 6 - ultra' },
+  { name: 'ls2', model: 'gpt-5.6-sol', effort: 'low', display: 'Sol 5.6 - low' },
+  { name: 'ms2', model: 'gpt-5.6-sol', effort: 'medium', display: 'Sol 5.6 - medium' },
+  { name: 'hs2', model: 'gpt-5.6-sol', effort: 'high', display: 'Sol 5.6 - high' },
+  { name: 'xs2', model: 'gpt-5.6-sol', effort: 'xhigh', display: 'Sol 5.6 - Extra High' },
+  { name: 'xxs2', model: 'gpt-5.6-sol', effort: 'max', display: 'Sol 5.6 - max' },
+  { name: 'us2', model: 'gpt-5.6-sol', effort: 'ultra', display: 'Sol 5.6 - ultra' },
+  { name: 'll', model: 'gpt-6-luna', effort: 'low', display: 'Luna - low' },
+  { name: 'ml', model: 'gpt-6-luna', effort: 'medium', display: 'Luna - medium' },
+  { name: 'hl', model: 'gpt-6-luna', effort: 'high', display: 'Luna - high' },
+  { name: 'xl', model: 'gpt-6-luna', effort: 'xhigh', display: 'Luna - Extra High' },
+  { name: 'xxl', model: 'gpt-6-luna', effort: 'max', display: 'Luna - max' },
+  { name: 'lt', model: 'gpt-5.6-terra', effort: 'low', display: 'Terra - low' },
+  { name: 'mt', model: 'gpt-5.6-terra', effort: 'medium', display: 'Terra - medium' },
+  { name: 'ht', model: 'gpt-5.6-terra', effort: 'high', display: 'Terra - high' },
+  { name: 'xt', model: 'gpt-5.6-terra', effort: 'xhigh', display: 'Terra - Extra High' },
+  { name: 'xxt', model: 'gpt-5.6-terra', effort: 'max', display: 'Terra - max' },
+  { name: 'ut', model: 'gpt-5.6-terra', effort: 'ultra', display: 'Terra - ultra' },
+  { name: 'll1', model: 'gpt-5.6-luna', effort: 'low', display: 'Luna 5.6 - low' },
+  { name: 'ml1', model: 'gpt-5.6-luna', effort: 'medium', display: 'Luna 5.6 - medium' },
+  { name: 'hl1', model: 'gpt-5.6-luna', effort: 'high', display: 'Luna 5.6 - high' },
+  { name: 'xl1', model: 'gpt-5.6-luna', effort: 'xhigh', display: 'Luna 5.6 - Extra High' },
+  { name: 'xxl1', model: 'gpt-5.6-luna', effort: 'max', display: 'Luna 5.6 - max' },
+  { name: 'la', model: 'gpt-6-astra', effort: 'low', display: 'Astra - low' },
+  { name: 'ma', model: 'gpt-6-astra', effort: 'medium', display: 'Astra - medium' },
+  { name: 'ha', model: 'gpt-6-astra', effort: 'high', display: 'Astra - high' },
+  { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
+  { name: 'xxa', model: 'gpt-6-astra', effort: 'max', display: 'Astra - max' },
+  { name: 'ua', model: 'gpt-6-astra', effort: 'ultra', display: 'Astra - ultra' },
+], CodexModelSpecs);
+
+export let AllSkills = ['repo-sight', 'babysit', 'babygoal', 'task', 'checkpoint', 'ccheckpoint', 'checkpoint-prune', 'resume', 'triage', 'checkpoint-watch', 'clock'];
+export const AllCodexSkills = ['cli-run', 'checkpoint', 'ccheckpoint', 'resume'];
+
+// Dependencies between skills and install classes. When a user installs a
+// specific skill by name (e.g. `--only clock`), cli.js auto-includes any
+// classes listed here and prints a notice so the dependency is transparent.
+// Keys must be names from AllSkills; values are subsets of VALID_CLASSES.
+export const SkillDeps = Object.freeze({
+  clock: Object.freeze(['bins']),
+  'checkpoint-watch': Object.freeze(['bins']),
+});
+
+// Canonical OpenCode workflow names. The nine commands and the nine skills
+// share these names by design: the slash command wins slash UX while the
+// skill stays reachable through OpenCode's skill tool.
+export const OpencodeWorkflows = Object.freeze([
+  'checkpoint', 'ccheckpoint', 'checkpoint-resume', 'checkpoint-prune',
+  'babysit', 'babygoal', 'task', 'triage', 'repo-sight',
+]);
+
+// OpenCode skills that require the babysit plugin runtime published by the
+// opencode-commands class. Consumed by lib/cli.js resolveDeps(); uninstall
+// stays explicit-only and never consults this map.
+export const OpencodeSkillDeps = Object.freeze({
+  babysit: Object.freeze(['opencode-commands']),
+  babygoal: Object.freeze(['opencode-commands']),
+});
