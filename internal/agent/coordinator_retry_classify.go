@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -179,11 +180,7 @@ func turnAttemptRefused(err error) bool {
 // the order of hours) rather than a momentary overload. The two share
 // status 429, so we discriminate on the provider's message text.
 func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
-	msg := strings.ToLower(providerErr.Title + " " + providerErr.Message)
-	return strings.Contains(msg, "usage limit") ||
-		strings.Contains(msg, "limit will reset") ||
-		strings.Contains(msg, "reset at") ||
-		strings.Contains(msg, "quota")
+	return classifyHardProviderLimit(providerErr, "", time.Now()) == providerLimitHard
 }
 
 // turnMadeProgress reports whether the assistant message carries any real

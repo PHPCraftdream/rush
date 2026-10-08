@@ -334,7 +334,9 @@ func TestStreamFailureMapsServerSideCodesToRetryableStatus(t *testing.T) {
 		{"overloaded in response.failed", `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded."}}}`, http.StatusServiceUnavailable, true},
 		{"server_error", `{"type":"error","error":{"code":"server_error","message":"boom"}}`, http.StatusInternalServerError, true},
 		{"rate_limit_exceeded", `{"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}`, http.StatusTooManyRequests, true},
-		{"usage limit stays terminal", `{"type":"error","error":{"code":"usage_limit_reached","message":"The usage limit has been reached"}}`, 0, false},
+		// Keep status 0 nonretryable; agent TestProviderLimit1282CodexHTTPAndSSE pins the hard latch.
+		// https://github.com/acmiyaguchi/fen/issues/583; not reproduced locally.
+		{"usage limit stays terminal", `{"type":"error","error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`, 0, false},
 		{"invalid prompt stays terminal", `{"type":"error","error":{"code":"invalid_prompt","message":"bad"}}`, 0, false},
 		{"no code stays terminal", `{"type":"error","error":{"message":"boom"}}`, 0, false},
 	}

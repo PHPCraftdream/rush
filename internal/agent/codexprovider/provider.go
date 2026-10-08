@@ -485,16 +485,10 @@ func readSSE(reader io.Reader, yield func([]byte) bool) error {
 func providerError(response *http.Response, requestBody, body []byte) error {
 	message := strings.TrimSpace(string(body))
 	var decoded struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    string `json:"code"`
-		} `json:"error"`
+		Error codexFailure `json:"error"`
 	}
 	if json.Unmarshal(body, &decoded) == nil && decoded.Error.Message != "" {
-		message = decoded.Error.Message
-		if decoded.Error.Code != "" {
-			message = decoded.Error.Code + ": " + message
-		}
+		message = codexFailureMessage(decoded.Error, message)
 	}
 	if message == "" {
 		message = response.Status
@@ -717,31 +711,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 		}
 		s.completed = true
 	case "response.failed", "error":
-		var failure struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-			} `json:"error"`
-			Response struct {
-				Error struct {
-					Message string `json:"message"`
-					Code    string `json:"code"`
-				} `json:"error"`
-			} `json:"response"`
-		}
-		_ = json.Unmarshal(data, &failure)
-		message, code := failure.Error.Message, failure.Error.Code
-		if message == "" {
-			message, code = failure.Response.Error.Message, failure.Response.Error.Code
-		}
-		if message == "" {
-			message = string(data)
-		}
-		status := streamFailureStatus(code)
-		if code != "" {
-			message = code + ": " + message
-		}
-		return &fantasy.ProviderError{Message: message, Title: "Codex response error", StatusCode: status}
+		return codexStreamFailure(data)
 	case "rush.stream_error":
 		return fmt.Errorf("read Codex event stream: %s", rawString(event["message"]))
 	}

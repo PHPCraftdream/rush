@@ -24,6 +24,9 @@ import (
 // so `rush run`'s quota-exceeded turn failure can reuse the exact same
 // parsing `rush ping` already relied on, instead of reimplementing it.
 func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
+	if err == nil {
+		return time.Time{}, false
+	}
 	// Last-resort string parse: even when fantasy didn't surface a
 	// ProviderError, the err.Error() text often still contains the
 	// z.ai-style "Your limit will reset at ..." hint (it's wrapped by
@@ -43,6 +46,9 @@ func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
 		}
 		if t, ok := parseZAIResetHint(err.Error()); ok {
 			return t, true
+		}
+		if reset, ok := structuredLimitReset(pe, now); ok {
+			return reset, true
 		}
 		return time.Time{}, false
 	}
@@ -118,7 +124,7 @@ func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
 		}
 	}
 
-	return time.Time{}, false
+	return structuredLimitReset(pe, now)
 }
 
 // zaiResetRe matches z.ai's "Your limit will reset at YYYY-MM-DD HH:MM:SS"
