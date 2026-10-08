@@ -115,9 +115,8 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 		// waited on.
 		gateA.release <- session.ErrCallQueuedNotExecuted
 
-		// Deterministically wait for A's release to have fully landed
-		// (done closed, map entry deleted) before admitting B, using
-		// entryA's own Done() channel rather than a sleep.
+		// Wait for A's release (done closed) using entryA's own Done()
+		// channel; the map removal that frees the slot follows it.
 		<-entryA.Done()
 
 		// Step 4: admit a REPLACEMENT entry B for the SAME session, before
@@ -128,8 +127,14 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 		// it will hang until ctx's own deadline instead of returning
 		// promptly, making misattribution observable as a hang/timeout
 		// rather than a silent pass.
-		_, admittedB := pump.AdmitSessionForTest(sessionID)
-		bAdmitted = admittedB
+		// entryA.Done() closes BEFORE the release removes A from the map, so
+		// the first attempts may still be refused; retry until the removal
+		// lands (bounded, so a real stuck entry still fails visibly).
+		for deadline := time.Now().Add(5 * time.Second); !bAdmitted && time.Now().Before(deadline); {
+			if _, bAdmitted = pump.AdmitSessionForTest(sessionID); !bAdmitted {
+				time.Sleep(time.Millisecond)
+			}
+		}
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

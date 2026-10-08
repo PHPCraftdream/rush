@@ -27,6 +27,11 @@ func newDelegatingCostHarness(t *testing.T) (h *loopHarness, release func()) {
 		switch {
 		case strings.Contains(lastUser, "Async job call-agent (agent)"):
 			loopText(w, "root-final", "R4-ROOT-DONE", 11, 3)
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// The child's title request quotes the worker prompt. It must not
+			// wait on the gate or spend: a second dollar landing apart from
+			// the work request made the run's exit reading race the total.
+			loopText(w, "child-title", "child title", 0, 0)
 		case strings.Contains(lastUser, "WORKER-MARKER"):
 			select {
 			case <-gate:
@@ -92,6 +97,7 @@ func TestRunNonInteractive_MaxCostExitEnvelopeReportsTheChildSpend(t *testing.T)
 	require.Equal(t, "error", res.ExitReason)
 	require.InDelta(t, h.sessionCost(t), res.Usage.DeltaCostUSD, 1e-9)
 	require.GreaterOrEqual(t, res.Usage.DeltaCostUSD, r4ChildCost)
+	require.Less(t, res.Usage.DeltaCostUSD, 1.5*r4ChildCost, "the child spends once; a second request would race the exit reading")
 }
 
 // Decision (R4C-2): a foreign human turn's spend on the root -- a web tab's
