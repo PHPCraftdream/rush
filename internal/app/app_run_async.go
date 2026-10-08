@@ -231,6 +231,7 @@ type cliLoop struct {
 	// the session; the loop's exit then leaves the row and its cancel flag alone.
 	refusedByOwner bool
 
+	quota        *cliQuotaStop
 	final        *RunResult    // the last COMPLETED turn's result (carries the answer)
 	runErr       error         // the last real turn's outcome
 	lastFailed   *RunResult    // the last real Drain's result, when it failed
@@ -588,12 +589,16 @@ func (l *cliLoop) firstTurnPhase() cliStepResult {
 		final, exitErr := l.exitCanceled()
 		return cliStepResult{ev: evFirstCanceled, final: final, err: exitErr}
 	}
+	l.latchQuota(err)
 	return cliStepResult{ev: evFirstContinue}
 }
 
 // decidePhase asks nextStep what to do and maps its answer onto an event; the
 // waits (paced retry, open work) block inside nextStep.
 func (l *cliLoop) decidePhase() cliStepResult {
+	if l.quota != nil {
+		return l.quotaPhase()
+	}
 	step, why, waitErr := l.nextStep()
 	switch {
 	case step == stepCanceled:
@@ -714,6 +719,7 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 		// exit carries its classification.
 		l.runErr, l.lastFailed = err, result
 		l.streak.failed = err
+		l.latchQuota(err)
 	}
 	return false, nil
 }

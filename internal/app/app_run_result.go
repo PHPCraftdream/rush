@@ -22,6 +22,7 @@ type RunResult struct {
 	SessionID string `json:"session_id"`
 	// ExitReason vocabulary:
 	//   "stop","end_turn","tool_use","max_tokens","unknown"  — model-level
+	//   "provider_limit"                                    — own hard quota
 	//   "error"                                              — generic
 	//   "canceled"                                           — caller-cancel
 	//   "stalled" (fork-only)                                — turn-stall abort
@@ -81,6 +82,11 @@ type RunResult struct {
 	// on the latest unfinished assistant row). Contains the partial text
 	// so the orchestrator can salvage it. Fork patch: batch 8.
 	RecoveredPartial *RecoveredPartial `json:"recovered_partial,omitempty"`
+	// Set only for exit_reason provider_limit.
+	ResumeCommand         string                 `json:"resume_command,omitempty"`
+	QuotaResetAt          string                 `json:"quota_reset_at,omitempty"`
+	FinishedWork          []FinishedWork         `json:"finished_work,omitempty"`
+	PendingChildQuestions []PendingChildQuestion `json:"pending_child_questions,omitempty"`
 
 	// finalTextWarnings is the subset of Warnings that describes THIS turn's
 	// final_text (empty, truncated, reduced). Not on the wire: the `rush run`
