@@ -599,9 +599,7 @@ func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
-	if httpClient != nil {
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
-	}
+	opts = append(opts, anthropic.WithHTTPClient(withoutEmptyAuthHeaders(httpClient)))
 	return anthropic.New(opts...)
 }
 

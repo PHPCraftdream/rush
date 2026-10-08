@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- The Anthropic HTTP provider no longer sends a blank `Authorization:` header next to `X-Api-Key` (or a blank `X-Api-Key` next to a Bearer token): the unused one was only blanked to keep the process environment out of the request, and the SDK put the empty header on the wire. Blank auth headers are now dropped by the provider's HTTP client.
+
 ## [0.2.0-alpha.12] - 2026-10-08
 
 - Delegated workers can use `await_tasks` too. For a worker the call blocks inside its own turn until its background jobs finish (`any`/`all`), so the delegation stays open and the worker continues with the results instead of handing the orchestrator a premature answer; every worker wait is capped at 40 minutes (or `max_wait_seconds`, if shorter), is never moved to the background by the stall detector, and ends at once on `stop_agent`, an interrupting `inject_agent` or Stop. Workers also get `job_output`, so they can read their own background jobs.

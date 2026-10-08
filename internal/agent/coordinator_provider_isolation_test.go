@@ -231,3 +231,50 @@ func TestBuildAnthropicProviderConcurrentHeterogeneousBuildsPreserveEnvironment(
 	assert.Equal(t, "sentinel-process-key", os.Getenv("ANTHROPIC_API_KEY"))
 	assert.Equal(t, "sentinel-process-token", os.Getenv("ANTHROPIC_AUTH_TOKEN"))
 }
+
+// Revert-check: drop withoutEmptyAuthHeaders from buildAnthropicProvider and
+// the blank Authorization / X-Api-Key headers reach the wire again.
+func TestBuildAnthropicProviderSendsNoBlankAuthHeaders(t *testing.T) {
+	var requestHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestHeaders = r.Header.Clone()
+		http.Error(w, "probe", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	store := config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())
+	coord := &coordinator{cfg: store}
+	custom := &http.Client{}
+	tests := []struct {
+		name       string
+		providerID string
+		apiKey     string
+		client     *http.Client
+		wantAuth   string
+		wantKey    string
+	}{
+		{"api key", "anthropic", "sk-ant-key", nil, "", "sk-ant-key"},
+		{"api key with a supplied client", "anthropic", "sk-ant-key", custom, "", "sk-ant-key"},
+		{"bearer", "anthropic", "Bearer tok", nil, "Bearer tok", ""},
+		{"minimax", string(catwalk.InferenceProviderMiniMax), "mm-key", nil, "Bearer mm-key", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestHeaders = nil
+			provider, err := coord.buildAnthropicProvider(server.URL, tc.apiKey, nil, tc.providerID, tc.client)
+			require.NoError(t, err)
+			model, err := provider.LanguageModel(context.Background(), "probe-model")
+			require.NoError(t, err)
+			_, err = model.Generate(context.Background(), fantasy.Call{})
+			require.Error(t, err)
+			require.NotNil(t, requestHeaders)
+			authVals, hasAuth := requestHeaders["Authorization"]
+			keyVals, hasKey := requestHeaders["X-Api-Key"]
+			assert.Equal(t, tc.wantAuth != "", hasAuth, "Authorization present: %v", authVals)
+			assert.Equal(t, tc.wantKey != "", hasKey, "X-Api-Key present: %v", keyVals)
+			assert.Equal(t, tc.wantAuth, requestHeaders.Get("Authorization"))
+			assert.Equal(t, tc.wantKey, requestHeaders.Get("X-Api-Key"))
+		})
+	}
+	assert.Nil(t, custom.Transport, "the caller's client must not be mutated")
+}
