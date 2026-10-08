@@ -13,7 +13,15 @@ import (
 // IsHardQuotaLimit identifies a provider's hard usage wall, not a retryable 429.
 func IsHardQuotaLimit(err error) bool {
 	var pe *fantasy.ProviderError
-	return errors.As(err, &pe) && pe.StatusCode == http.StatusTooManyRequests && isQuotaLimit(pe)
+	if !errors.As(err, &pe) {
+		return false
+	}
+	if pe.StatusCode == http.StatusTooManyRequests {
+		return isQuotaLimit(pe)
+	}
+	return !pe.IsContextTooLarge() &&
+		(pe.StatusCode == http.StatusBadRequest || pe.StatusCode == http.StatusPaymentRequired) &&
+		strings.Contains(strings.ToLower(pe.Title+" "+pe.Message), "your credit balance is too low to access the anthropic api")
 }
 
 // CLIActiveWorkSource reads real work without pulling notices or admitting turns.
