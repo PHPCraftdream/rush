@@ -29,6 +29,15 @@ const (
 	awaitTasksMaxWaitSeconds = 21600
 )
 
+// workerAwaitBlockCap bounds every worker in-tool wait, with or without
+// max_wait: it must stay under the 45m single-tool watchdog (agent.go
+// toolExecutionMaxDefault). A var so tests can shrink it.
+var workerAwaitBlockCap = 40 * time.Minute
+
+// awaitTasksWorkerPollInterval is the worker path's live-work re-read cadence;
+// a package var so tests can shrink it.
+var awaitTasksWorkerPollInterval = time.Second
+
 // AwaitTasks implements tools.AwaitControl. Refuses with a model-safe error
 // when nothing is running (open wake schedules do NOT count as work);
 // otherwise reports the live rows and, for "all", arms the arbiter's
@@ -42,6 +51,15 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 		return tools.AwaitTasksResult{}, fmt.Errorf(
 			"max_wait_seconds must be between %d and %d, or omitted",
 			awaitTasksMinWaitSeconds, awaitTasksMaxWaitSeconds)
+	}
+	// A delegated child gets BLOCKING semantics: its turn runs synchronously
+	// inside the orchestrator's agent tool call, so a StopTurn-shaped result
+	// would falsely report the delegation as finished. Workers block inside
+	// the tool call instead; the arbiter is not involved.
+	if c.sessions != nil {
+		if sess, err := c.sessions.Get(ctx, sessionID); err == nil && sess.ParentSessionID != "" {
+			return c.awaitTasksForWorker(ctx, sessionID, mode, maxWaitSeconds)
+		}
 	}
 	work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
 	waiting := make([]tools.AwaitTaskRef, 0, len(work.Own)+len(work.Descendants))
@@ -78,6 +96,65 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 		}
 	}
 	return res, nil
+}
+
+// awaitTasksForWorker is the delegated-worker half of AwaitTasks: it blocks
+// inside the tool call until the wake condition holds, the deadline expires,
+// or the generation context is cancelled. It never arms the arbiter's sleep
+// nor schedules wake schedules.
+func (c *coordinator) awaitTasksForWorker(ctx context.Context, sessionID, mode string, maxWaitSeconds int) (tools.AwaitTasksResult, error) {
+	count := func() (int, []tools.AwaitTaskRef, bool) {
+		work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		if work.OwnIncomplete || work.DescendantsIncomplete {
+			// A failed/cut-off read (e.g. a cancelled ctx) must never
+			// look like "the work finished".
+			return 0, nil, false
+		}
+		refs := make([]tools.AwaitTaskRef, 0, len(work.Own)+len(work.Descendants))
+		for _, job := range work.Own {
+			refs = append(refs, awaitTaskRef(job))
+		}
+		for _, job := range work.Descendants {
+			refs = append(refs, awaitTaskRef(job))
+		}
+		return len(refs), refs, true
+	}
+	initial, _, ok := count()
+	if !ok || initial == 0 {
+		return tools.AwaitTasksResult{}, errors.New("nothing is running; continue or finish")
+	}
+	waitCap := workerAwaitBlockCap
+	if maxWaitSeconds > 0 && time.Duration(maxWaitSeconds)*time.Second < waitCap {
+		waitCap = time.Duration(maxWaitSeconds) * time.Second
+	}
+	ticker := time.NewTicker(awaitTasksWorkerPollInterval)
+	defer ticker.Stop()
+	// Computed once: a deadline re-created per loop iteration would drift.
+	deadlineCh := time.After(waitCap)
+	for {
+		select {
+		case <-ctx.Done():
+			return tools.AwaitTasksResult{}, ctx.Err()
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				// Cancellation must win over a same-tick stale poll.
+				return tools.AwaitTasksResult{}, ctx.Err()
+			}
+			n, remaining, ok := count()
+			if !ok {
+				continue
+			}
+			if (mode == "all" && n == 0) || (mode == "any" && n < initial) {
+				return tools.AwaitTasksResult{Mode: mode, WaitingFor: remaining, Blocked: true, FinishedCount: initial - n}, nil
+			}
+		case <-deadlineCh:
+			n, remaining, ok := count()
+			if !ok {
+				n, remaining = initial, nil
+			}
+			return tools.AwaitTasksResult{Mode: mode, WaitingFor: remaining, Blocked: true, TimedOut: true, FinishedCount: initial - n}, nil
+		}
+	}
 }
 
 // awaitTaskRef maps a live-work row onto the tool's JSON shape.

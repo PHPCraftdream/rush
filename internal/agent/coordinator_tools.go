@@ -189,7 +189,13 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 // sub-session rather than starting a fresh one. See
 // docs/plans/2026-07-26-orchestrator-worker-e2e.md, phase 3, for the full
 // round-trip design and why a synchronous blocking version is impossible.
-var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "download", "fetch", tools.AskQuestionToolName}
+//
+// Includes "await_tasks" and "job_output": the worker's await_tasks BLOCKS
+// inside the turn (no StopTurn) and after its wake the worker must read the
+// finished jobs' outputs; and a worker that started a background shell had
+// no way to read it at all before. await_tasks.md already forbids looping
+// on job_output.
+var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "download", "fetch", tools.AskQuestionToolName, tools.AwaitTasksToolName, tools.JobOutputToolName}
 
 // orchestratorStrippedToolNames are REMOVED from the top-level coder's
 // AllowedTools when workerSubAgentActive(cfg) is true (worker configured AND

@@ -1,4 +1,4 @@
-End the turn and sleep until your live background work reports back.
+Wait for your live background work to finish before continuing.
 
 <usage>
 - Use ONLY while the session has live work: your own background jobs (bash,
@@ -11,14 +11,19 @@ End the turn and sleep until your live background work reports back.
 - `max_wait_seconds` (60..21600) is an optional safety deadline: a wake
   fires then even if the work is still running, so you can reassess. The
   schedule id comes back in the result.
-- The call SUCCEEDS and ends your turn immediately. The turn does not
-  continue past this result; do not call any other tool after this one.
+- As the TOP-LEVEL agent: the call SUCCEEDS and ends your turn immediately.
+  The turn does not continue past this result; do not call any other tool
+  after this one.
+- As a DELEGATED WORKER: the call BLOCKS inside this turn until the wake
+  (first completion for "any", all finished for "all", or the
+  max_wait_seconds deadline, capped below the tool watchdog) and returns
+  with the result. The delegation to you stays open the whole time: never
+  let your turn end while jobs you still need are running — call
+  await_tasks instead.
 </usage>
 
 <important>
-This is the correct way to wait for running work. It never suspends
-anything: each completion wakes the session and the run continues on its
-own, with the results arriving as new messages. Never wait by calling
+This is the correct way to wait for running work. Never wait by calling
 ask_question, and never poll inspect_agent/job_output in a loop — those
 spend tokens and wait for nothing.
 </important>

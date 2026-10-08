@@ -33,6 +33,8 @@ var stallDetachExcludedTools = map[string]bool{
 	tools.AgenticFetchToolName: true,
 	tools.BashToolName:         true,
 	tools.RunCommandToolName:   true,
+	// A worker's await_tasks blocks by design until its jobs finish.
+	tools.AwaitTasksToolName: true,
 }
 
 // stallDetachPending holds the in-flight (not yet detached) synchronous

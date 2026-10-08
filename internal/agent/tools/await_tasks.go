@@ -38,6 +38,14 @@ type AwaitTasksResult struct {
 	Mode              string         `json:"mode"`
 	MaxWaitScheduleID string         `json:"max_wait_schedule_id,omitempty"`
 	WaitingFor        []AwaitTaskRef `json:"waiting_for"`
+	// Blocked marks the delegated-worker path: the call blocked inside the
+	// turn and returned on its own; the turn does NOT end.
+	Blocked bool `json:"blocked,omitempty"`
+	// TimedOut marks a worker wake caused by the max_wait/wait-cap deadline.
+	TimedOut bool `json:"timed_out,omitempty"`
+	// FinishedCount (worker path only) is how many awaited tasks completed
+	// while the call blocked.
+	FinishedCount int `json:"finished_count,omitempty"`
 }
 
 // AwaitControl is the coordinator-side half of the await_tasks tool. Like
@@ -78,6 +86,29 @@ func NewAwaitTasksTool(control AwaitControl) fantasy.AgentTool {
 			res, err := control.AwaitTasks(ctx, sessionID, mode, params.MaxWaitSeconds)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			if res.Blocked {
+				// Worker (delegated child): the call blocked inside this turn;
+				// the turn continues so the delegation stays open.
+				lines := make([]string, 0, len(res.WaitingFor)+4)
+				lines = append(lines, fmt.Sprintf("Woke: %d task(s) finished.", res.FinishedCount))
+				if res.TimedOut {
+					lines = append(lines, "The max_wait_seconds deadline elapsed before the work finished.")
+				}
+				if len(res.WaitingFor) > 0 {
+					lines = append(lines, "Still running:")
+					for _, ref := range res.WaitingFor {
+						lines = append(lines, fmt.Sprintf("- %s (tool_call_id %s, running for %ds)",
+							ref.ToolName, ref.ToolCallID, ref.AgeSeconds))
+					}
+					lines = append(lines,
+						"Call await_tasks again to keep waiting; do not end your turn while jobs you still need are running.")
+				}
+				if strings.TrimSpace(params.Note) != "" {
+					lines = append(lines, "Note: "+strings.TrimSpace(params.Note))
+				}
+				return fantasy.WithResponseMetadata(
+					fantasy.NewTextResponse(strings.Join(lines, "\n")), res), nil
 			}
 			lines := make([]string, 0, len(res.WaitingFor)+4)
 			lines = append(lines, fmt.Sprintf("Sleeping (%s): waiting for %d task(s).",

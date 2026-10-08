@@ -387,6 +387,7 @@ func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
 		"glob", "grep", "ls", "sourcegraph", "view", // read-only base
 		"edit", "multiedit", "write", "bash", // hands-on
 		"todos", "download", "fetch", tools.AskQuestionToolName,
+		tools.AwaitTasksToolName, tools.JobOutputToolName, // #1271
 	}
 	for _, name := range expected {
 		assert.Contains(t, names, name, "worker must have %q in its resolved toolset", name)
