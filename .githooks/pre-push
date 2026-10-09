@@ -101,6 +101,11 @@ fi
 step "go build ./..."
 run_capped "$RUSH_BUILD_MEMORY" "$RUSH_BUILD_TIMEOUT" go build -p 2 ./... || fail "build failed"
 
+# build.yml runs `go mod tidy && git diff --exit-code`; -diff checks the same
+# without rewriting go.mod/go.sum, so unrelated dirty files cannot trip it.
+step "go.mod/go.sum are tidy (go mod tidy -diff)"
+go mod tidy -diff || fail "go.mod/go.sum not tidy -- run 'go mod tidy' and commit"
+
 gcl=""
 if command -v golangci-lint >/dev/null 2>&1; then
 	gcl="golangci-lint"
