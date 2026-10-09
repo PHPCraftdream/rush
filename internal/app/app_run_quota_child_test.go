@@ -117,6 +117,7 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 		application.Shutdown()
 		conn, e := db.Connect(ctx, dataDir)
 		require.NoError(t, e)
+		t.Cleanup(func() { _ = db.ReleaseConn(conn) })
 		fresh, e := New(ctx, conn, store)
 		require.NoError(t, e)
 		t.Cleanup(fresh.Shutdown)

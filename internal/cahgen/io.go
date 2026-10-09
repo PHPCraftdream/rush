@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 const (
@@ -207,8 +209,8 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 // runnerCommand resolves Windows npm's batch shim through the command processor.
-func runnerCommand(platform, name string, args []string, lookup func(string) (string, error)) (string, []string, error) {
-	if platform != "windows" || name != "npm" {
+func runnerCommand(goos, name string, args []string, lookup func(string) (string, error)) (string, []string, error) {
+	if goos != "windows" || name != "npm" {
 		return name, args, nil
 	}
 	shim, err := lookup("npm.cmd")
@@ -223,7 +225,7 @@ func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("%s resolution failed: %w", name, err)
 	}
-	c := exec.CommandContext(ctx, executable, argv...)
+	c := platform.Command(ctx, executable, argv...)
 	configureRunnerCommand(c, executable, argv)
 	c.Dir = dir
 	out := &boundedBuffer{limit: MaxFile}
