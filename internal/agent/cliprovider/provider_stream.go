@@ -787,6 +787,8 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 
 		var finalUsage fantasy.Usage
 		var diagnostics exitDiagnostics
+		var failure cliFailureEvidence
+		failureName := cliFailureName(m.spec)
 		scanDone := false
 		var scanErr error
 		var linesSeen int
@@ -834,6 +836,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				slog.Debug("cliprovider: raw line", "raw", string(raw))
 				line := bytes.TrimSpace(ansiEscape.ReplaceAll(raw, nil))
 				diagnostics.add(line)
+				failure.add(failureName, line)
 
 				// Capture CLI session ID from the system init event for --resume.
 				if m.spec.SupportsResume && cliSessionKey != "" {
@@ -911,18 +914,23 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			"linesSeen", linesSeen,
 		)
 		// If resume failed, clear the stale CLI session mapping so next call starts fresh.
-		if waitErr != nil && resuming && cliSessionKey != "" {
+		if (waitErr != nil || failure.seen) && resuming && cliSessionKey != "" {
 			m.cliSessions.Del(cliSessionKey)
 			slog.Warn("cliprovider: resume failed, cleared CLI session mapping", "key", cliSessionKey)
 		}
-		if waitErr != nil {
+		if waitErr != nil || failure.seen {
 			var exitErr error
-			if stderr != "" {
+			if waitErr == nil {
+				exitErr = fmt.Errorf("%s failed: CLI failure event", m.spec.Binary)
+			} else if stderr != "" {
 				exitErr = fmt.Errorf("%s failed: %w\nstderr: %s", m.spec.Binary, waitErr, stderr)
 			} else {
 				exitErr = fmt.Errorf("%s failed: %w", m.spec.Binary, waitErr)
 			}
-			exitErr = mapCLIExitError(exitErr, stderr, diagnostics)
+			if failure.text != "" {
+				exitErr = fmt.Errorf("%w\nfailure: %s", exitErr, failure.text)
+			}
+			exitErr = mapCLIExitError(exitErr, stderr, diagnostics, failure)
 			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: exitErr}) //nolint:errcheck
 			return
 		}

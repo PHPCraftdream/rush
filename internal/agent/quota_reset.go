@@ -23,7 +23,12 @@ import (
 // Moved from internal/cmd/ping.go's former pingRateLimitReset (task #979)
 // so `rush run`'s quota-exceeded turn failure can reuse the exact same
 // parsing `rush ping` already relied on, instead of reimplementing it.
-func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
+func QuotaLimitResetTime(err error, now time.Time) (reset time.Time, ok bool) {
+	defer func() {
+		if !ok && err != nil {
+			reset, ok = parseCLIResetText(err.Error(), now)
+		}
+	}()
 	if err == nil {
 		return time.Time{}, false
 	}

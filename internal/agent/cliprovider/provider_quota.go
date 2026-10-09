@@ -2,12 +2,11 @@ package cliprovider
 
 import (
 	"encoding/json"
-	"errors"
-	"os/exec"
 	"strings"
 	"unicode"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/limitwords"
 )
 
 // exitDiagnostics retains only bounded, sanitized non-JSON diagnostic lines.
@@ -55,20 +54,31 @@ func (e *cliQuotaExit) Error() string {
 }
 func (e *cliQuotaExit) Unwrap() []error { return []error{e.provider, e.original} }
 
-// mapCLIExitError uses only the existing generic HTTP-policy quota vocabulary.
-// It must be called only for failed exits, never successful output or events.
-func mapCLIExitError(original error, stderr string, merged exitDiagnostics) error {
-	var exit *exec.ExitError
-	if !errors.As(original, &exit) {
-		return original
+// cliLimitText keeps shared transient policy ahead of local hard keywords.
+func cliLimitText(text string) (hard, transient bool) {
+	class := limitwords.Classify(limitwords.Input{Status: 429, Message: text})
+	if class == limitwords.Transient {
+		return false, true
 	}
+	// Local vocabulary bridges the #1283 owner's shared-classifier work.
+	// Merge this list into limitwords later; do not edit that owner's files.
+	for _, word := range []string{"usage limit", "hit your limit", "hit your usage limit", "limit reached", "limit will reset", "reset at", "resets ", "try again at", "quota", "usage_limit_reached"} {
+		if strings.Contains(strings.ToLower(text), word) {
+			return true, false
+		}
+	}
+	return class == limitwords.Hard, false
+}
+
+// mapCLIExitError is called only for failed exits or explicit failure events.
+func mapCLIExitError(original error, stderr string, merged exitDiagnostics, failure cliFailureEvidence) error {
 	var separate exitDiagnostics
 	for _, line := range strings.Split(stderr, "\n") {
 		separate.add([]byte(line))
 	}
-	diagnostics := strings.TrimSpace(separate.text + merged.text)
-	lower := strings.ToLower(diagnostics)
-	if !strings.Contains(lower, "usage limit") && !strings.Contains(lower, "limit will reset") && !strings.Contains(lower, "reset at") && !strings.Contains(lower, "quota") {
+	diagnostics := strings.TrimSpace(failure.text + "\n" + separate.text + merged.text)
+	hard, transient := cliLimitText(diagnostics)
+	if transient || failure.transient || (!hard && !failure.hard) {
 		return original
 	}
 	pe := &fantasy.ProviderError{StatusCode: 429, Title: "Quota limit", Message: diagnostics, Cause: original}
