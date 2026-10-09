@@ -134,8 +134,11 @@ jobs:
       # covered by SOMETHING even if nobody remembers to give it its
       # own group (same philosophy as the test-agent job's dynamic
       # test-name extraction below).
+      # internal/app alone takes ~400-600s (596.8s of go test's 600s default on
+      # windows-latest, 2026-10-09), so it gets the same explicit -timeout as
+      # the other long suites rather than a wall-clock coin flip.
       - name: "test: internal/app"
-        run: go test -short -failfast -p 2 ./internal/app/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/app/...
         shell: bash
       - name: "test: internal/server, internal/session"
         run: go test -short -failfast -p 2 ./internal/server/... ./internal/session/...

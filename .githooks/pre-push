@@ -376,7 +376,9 @@ rm -f -- "$package_list" || :
 if [ "${#test_packages[@]}" -eq 0 ]; then
 	fail "Go package extraction produced no remainder packages; refusing a false pass"
 fi
-run_test_segment "./... (minus internal/agent)" "$RUSH_REMAINDER_MEMORY" "$RUSH_REMAINDER_TIMEOUT" "-p 2" "${test_packages[@]}"
+# -timeout 20m: internal/app alone runs ~10 minutes, past go test's 10m default
+# (same override as the internal/app step in build.yml).
+run_test_segment "./... (minus internal/agent)" "$RUSH_REMAINDER_MEMORY" "$RUSH_REMAINDER_TIMEOUT" "-p 2 -timeout 20m" "${test_packages[@]}"
 
 # The process-group and lock-fence suites, which -short deliberately skips
 # (they spawn real child processes). build.yml runs these on ubuntu; mirror
