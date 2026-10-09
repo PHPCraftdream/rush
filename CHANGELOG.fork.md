@@ -2398,3 +2398,18 @@ inject into a session that is NOT stopped is untouched and delivered as
 before (kill ≠ inject). The purge opens the DB with setupAppLite (no pump,
 no startup recovery) and is best-effort: when the DB cannot be opened the
 commands print a warning naming the consequence instead of failing.
+
+### Autonomous task tree and lock-free schema alias
+
+`internal/tasktree` and `cmd/tasklab` implement the standalone planning board,
+not an execution scheduler or a replacement registration for Rush `todos`.
+Keep the component stdlib-only and keep app/session/provider/MCP/DB adapters
+outside it. The implementation and later cutover gates are documented in
+`docs/plans/2026-10-08-task-tree-design.md`.
+
+Full-tree vet during that delivery found `csync.Map.JSONSchemaAlias` passing a
+lock-bearing Map by value. Simply changing it to a pointer receiver breaks
+invopop/jsonschema's discovery after pointer stripping. The method is instead
+promoted from a lock-free embedded `mapSchema` receiver, preserving value-type
+discovery and concurrent-map JSON representation. Retain the map-value schema
+regression when resolving upstream changes; a pointer-only alias fails it.

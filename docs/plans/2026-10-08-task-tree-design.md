@@ -1,9 +1,9 @@
 # Task tree — autonomous planning core and later Rush integration
 
-Status: design only, revision 1 (2026-10-08). No implementation, agent launches,
-commits, or changes to existing task behavior are authorized by this document.
-The first implementation deliverable is the autonomous component described
-below; integrating it into Rush is a separate gate.
+Status: autonomous A0-A2 implemented and exercised; A3-A5 remain a separate Rush
+integration gate. The design originated on 2026-10-08. Operator authorization
+for this implementation used `/wcrush`; existing Rush `todos`, WebUI, DB, and
+job-batch launch behavior are unchanged.
 
 ## 0. Decisions and scope
 
@@ -19,8 +19,8 @@ below; integrating it into Rush is a separate gate.
   independent of Rush's app, sessions, SQLite, Fantasy, providers, and MCP.
 - Use the same package in the development executable and eventual Rush adapters.
   No second implementation, isolated module, or copied model of the rules.
-- Develop four independent slices after one owner freezes the shared contract.
-  Do not launch agents until the operator explicitly requests implementation.
+- The autonomous implementation was written in four isolated parallel Rush
+  sessions after a shared-contract freeze, then verified by the orchestrator.
 
 The first delivery includes real state transitions, atomic mutations,
 idempotent retries, a working neutral agent API, serialization, and standalone
@@ -325,7 +325,7 @@ Store.Commit(ctx context.Context, key TreeKey, expected Revision,
     candidate Envelope) error
 memory.NewStore(limits Limits, seeds map[TreeKey]Envelope) (*memory.Store, error)
 
-protocol.New(service *Service) *protocol.API
+protocol.New(backend protocol.Backend) *protocol.API
 (*protocol.API).Definition(actorKind ActorKind) protocol.Definition
 (*protocol.API).Execute(ctx context.Context, invocation protocol.Invocation,
     payload json.RawMessage) (protocol.ToolResult, error)
@@ -513,17 +513,17 @@ state-transition validity remains the kernel's responsibility.
 
 ### 6.1 tasklab
 
-The lab is a consumer of the real service and neutral protocol. Planned commands:
+The lab consumes the real service and neutral protocol. Available commands:
 
 ```text
 go run ./cmd/tasklab run ./internal/tasktree/lab/testdata/basic.json
 go run ./cmd/tasklab run ./internal/tasktree/lab/testdata/retries.json
 go run ./cmd/tasklab run ./internal/tasktree/lab/testdata/operator-delete.json
-go run ./cmd/tasklab repl
+go run ./cmd/tasklab repl --tree-key lab
 go run ./cmd/tasklab inspect ./board.snapshot.json
 ```
 
-These are future acceptance commands, not commands already available or run.
+Runtime acceptance exercised a compiled `tasklab` executable on these paths.
 `run` executes a bounded JSON scenario; `repl` accepts JSONL commands on stdin
 against one in-memory board. Both exercise the same protocol used by adapters.
 The executable never loads rush.json, opens the Rush DB, starts LSP/MCP, calls a
@@ -621,12 +621,12 @@ package to avoid cycles. Protocol and lab have their own package namespaces.
 One owner retains shared contracts, this document, integration fixes, and
 cross-slice acceptance.
 
-Agents implement code and tests but skip builds, tests, lint, and formatters
-mid-flight. They hand off implemented symbols, changed files, unresolved
-contract issues, and scenarios needing verification. Checks run once after
-joint handoff; failures are fixed in that same implementation turn. This plan
-does not select or launch an agent; use only the operator's explicitly chosen
-registered agent names when implementation is requested.
+During `/wcrush`, agents wrote code/tests without executing them. Once real
+dependencies were synchronized, the same sessions resumed for static commands.
+Behavior tests, race checks, mutation overlays, and CLI acceptance were run
+sequentially by the integration owner. No temporary production stubs were used.
+Future implementation launches still require explicit operator authorization
+and must use the operator's selected registered agents when names are given.
 
 ### A2 — joint integration and autonomous acceptance
 
@@ -744,3 +744,96 @@ keep final state readable; specify CAS/replay/cancellation ownership; use exact
 fixture oracles and unique invocation labels; freeze real interfaces without
 placeholder implementations; centralize the later integrated authority. None
 requires importing the batch scheduler or refactoring it now.
+
+## 9. Implemented API, development runs, and verification
+
+Production code is in `internal/tasktree`, `memory`, `protocol`, and `lab`;
+the standalone executable is `cmd/tasklab`. Its only non-stdlib runtime imports
+are those tasktree packages. There is no Rush startup, provider/config lookup,
+MCP/LSP connection, SQLite database, or job scheduler in this dependency graph.
+The neutral definition is named `tasks`; it is **not registered in Rush yet**.
+
+### 9.1 Host API
+
+Create `memory.NewStore(limits, seeds)`, `tasktree.NewService(store, limits)`,
+then `protocol.New(service)`. Protocol accepts its small consuming `Backend`
+interface; the concrete service implements it. Bind `protocol.Invocation`
+with TreeKey, trusted Actor, and stable RequestID before calling Execute.
+Definition(agent/operator) exposes the corresponding operation schema.
+
+The kernel exports EmptySnapshot, Restore, ValidateSnapshot, ValidateLimits,
+CloneSnapshot, Apply, Snapshot, View, Summary, and Briefs. Service exposes
+CheckEnvelope and CloneEnvelope in addition to versioned read/mutate methods.
+Ownership transfer inside the service uses validated private kernel state;
+public inputs/outputs and Store boundaries remain detached.
+
+Positive-revision imports may contain baseline nodes/deletion guards and
+partial or empty invocation receipts. A snapshot does not need fabricated
+bootstrap calls to become a new board scope. Retained receipts are validated
+and conserved; each new Commit adds exactly one receipt at its new revision.
+An uninitialized imported board can retain legacy title guards and reports its
+actual revision, not an assumed zero.
+
+### 9.2 Standalone operator commands
+
+Flags precede positional arguments. Save and resume into the same file:
+
+```text
+go run ./cmd/tasklab run --snapshot board.json internal/tasktree/lab/testdata/export-save.json
+go run ./cmd/tasklab inspect board.json
+go run ./cmd/tasklab run --load board.json --snapshot board.json internal/tasktree/lab/testdata/export-resume.json
+go run ./cmd/tasklab repl --tree-key lab --actor agent --actor-id developer
+go run ./cmd/tasklab repl --tree-key lab --actor operator --actor-id operator
+go run ./cmd/tasklab --help
+```
+
+REPL input is a host wrapper, not extra fields in the model payload:
+
+```json
+{"request_id":"init-1","payload":{"op":"init","expected_revision":0,"items":["Implement core","Verify behavior"]}}
+```
+
+EOF/blank line ends REPL; malformed wrappers terminate with exit 1.
+Correctable task errors emit structured results and permit another command.
+Checkpoint publication uses a same-directory temporary file, Sync, Close,
+then rename. Failed validation/encoding/write/sync/close/rename preserves the
+previous destination; successful files satisfy the reader's size bound.
+
+Lab-only bounds, independent of caller-supplied domain limits:
+
+| Boundary | Limit |
+| --- | ---: |
+| Scenario/checkpoint encoded input, including whitespace | 4 MiB |
+| Scenario steps | 512 |
+| Retained report text | 256 KiB |
+| Retained view/created-node occurrences | 4096 |
+| JSON nesting | 128 |
+| REPL line bytes | 1 MiB |
+
+Codec rejects duplicate object members at every depth. Direct typed scenarios
+and checkpoints are preflighted before large avoidable encoding allocations.
+Overflow is an error, never truncation or an implicitly successful scenario.
+
+### 9.3 Observed autonomous acceptance
+
+- Focused build and vet of `internal/tasktree/...` and `cmd/tasklab` passed.
+- Normal and race suites passed for all five standalone packages and `csync`,
+  with `-p 1 -parallel 2 -count=1`; heavy runs were sequential and memory-capped.
+- Compiled CLI fulfilled basic, blocked-only, nested, retries, operator-delete,
+  boundaries, and export-save fixture oracles.
+- Export/inspect/resume advanced revision 4 to 6, preserved the original
+  receipt at revision 1, reported removed created ID `n5`, retained blocker
+  `waiting`, and continued the ID counter at 9.
+- Real agent REPL showed blocked-only unfinished work with no actionable task;
+  unblock left pending with no focus. Unicode labels remained readable.
+  Operator REPL explicitly reopened/removed work; forged actor wrapper exited 1.
+- Six throwaway compiler overlays produced expected behavioral failures:
+  unblock auto-focus, receipt/revision ordering, missing CAS, permissive decoder,
+  disabled fixture comparisons, and pointer-only map-schema alias. Unmodified
+  targeted runs passed afterwards; live production sources were never neutered.
+- `go list -deps` confirmed the standalone runtime isolation described above.
+
+Full-tree vet exposed an existing lock-copy receiver on csync.Map's schema
+alias. A lock-free embedded receiver preserves value-type schema discovery;
+the actual reflector/map-JSON smoke and its schema regression passed. This is
+a verification blocker fix, not task-tree integration into Rush.

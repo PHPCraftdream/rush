@@ -8,6 +8,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added the autonomous task-tree component and `tasklab` development CLI: nested groups, stable IDs, incremental agent/operator commands, versioned atomic updates, idempotent invocation receipts, deletion protection, and validated checkpoint export/resume. It is independently runnable without Rush app/model/MCP/DB initialization; existing Rush `todos` and WebUI behavior remain unchanged pending the separate integration gate.
+- Concurrent-map JSON-schema discovery retains map value types without a value receiver copying its mutex; this also fixes the full-tree `go vet` copy-lock failure.
+
 ## [0.2.0-alpha.13] - 2026-10-09
 
 - A billing wall that a provider serves as an HTTP 5xx (MiniMax answers `api_error: insufficient balance (1008)` with a 500) is no longer retried as a transient server error: it ends the turn at once and triggers the `provider_limit` drain. The match needs the provider's own host, so a look-alike host or an ordinary 5xx stays transient.
