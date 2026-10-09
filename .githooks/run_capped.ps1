@@ -1145,7 +1145,8 @@ function Invoke-AtomicLaunchSelfTest {
             throw "atomic launch self-test child ran before resume"
         }
         [RushJobObject]::Resume($threadHandle)
-        if (-not [RushJobObject]::Wait($processHandle, 5000)) {
+        # The child compiles C# via Add-Type (2.4-3.6s for x86 on an idle box), so 5s flaked under load.
+        if (-not [RushJobObject]::Wait($processHandle, 30000)) {
             throw "atomic launch self-test child did not exit"
         }
         if (-not (Test-Path -LiteralPath $markerPath)) {
