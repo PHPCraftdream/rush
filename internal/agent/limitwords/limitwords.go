@@ -59,7 +59,10 @@ func ErrorObject(body string) map[string]any {
 			return obj
 		}
 	}
-	return nil
+	if obj, ok := root["base_resp"].(map[string]any); ok {
+		return obj
+	}
+	return root
 }
 
 func Field(obj map[string]any, key string) string {
@@ -84,11 +87,27 @@ func Classify(input Input) Class {
 	if input.Status == 402 && provider == "stepfun" {
 		return Hard
 	}
+	ruleClass := providerRuleClass(input, obj)
+	if input.Status != http.StatusTooManyRequests && ruleClass != Unknown {
+		return ruleClass
+	}
 	codexWall := provider == "openai-codex" && (strings.EqualFold(Field(obj, "type"), "usage_limit_reached") || strings.EqualFold(Field(obj, "code"), "usage_limit_reached") || strings.Contains(text, "usage_limit_reached"))
 	if input.Status != http.StatusTooManyRequests && !(input.Status == 0 && codexWall) {
 		return Unknown
 	}
-	if input.ResetAfter >= 30*time.Minute {
+	resetAfter := input.ResetAfter
+	if provider == "groq" {
+		if delay := GroqRetryDelay(input.Message + " " + Field(obj, "message")); delay > resetAfter {
+			resetAfter = delay
+		}
+	}
+	if provider == "gemini" {
+		_, _, delay := GeminiDetails(obj)
+		if delay > resetAfter {
+			resetAfter = delay
+		}
+	}
+	if resetAfter >= 30*time.Minute {
 		return Hard
 	}
 	if provider == "stepfun" {
@@ -105,6 +124,9 @@ func Classify(input Input) Class {
 	}
 	if codexWall {
 		return Hard
+	}
+	if ruleClass != Unknown {
+		return ruleClass
 	}
 	failureText := normalizeLimitText(input.Message + " " + Field(obj, "message") + " " + Field(obj, "code") + " " + Field(obj, "type"))
 	for _, keyword := range transientLimitKeywords {

@@ -3,13 +3,13 @@ package agent
 import (
 	"encoding/json"
 	"errors"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/limitwords"
+	"google.golang.org/genai"
 )
 
 type providerLimitClass = limitwords.Class
@@ -30,15 +30,8 @@ func limitProvider(pe *fantasy.ProviderError, hint string, obj map[string]any) s
 	case "zai", "stepfun", "openai-codex":
 		return strings.ToLower(hint)
 	}
-	if parsed, err := url.Parse(pe.URL); err == nil {
-		switch strings.ToLower(parsed.Hostname()) {
-		case "api.stepfun.ai":
-			return "stepfun"
-		case "api.z.ai", "open.z.ai", "open.bigmodel.cn":
-			return "zai"
-		case "chatgpt.com":
-			return "openai-codex"
-		}
+	if provider := limitwords.ProviderIdentity(pe.URL, hint); provider != "" {
+		return provider
 	}
 	text := strings.ToLower(pe.Title + " " + pe.Message + " " + limitField(obj, "message"))
 	if strings.Contains(text, "stepfun") || strings.Contains(text, "step plan") {
@@ -108,6 +101,17 @@ func classifyHardProviderLimit(err error, hint string, now time.Time) providerLi
 	var pe *fantasy.ProviderError
 	if !errors.As(err, &pe) || pe == nil || pe.IsContextTooLarge() {
 		return providerLimitUnknown
+	}
+	// Fantasy retains Google RPC Details only in Cause; never mutate its error.
+	var googleError genai.APIError
+	if errors.As(pe.Cause, &googleError) {
+		copyError := *pe
+		body, marshalErr := json.Marshal(map[string]any{"error": googleError})
+		if marshalErr == nil {
+			copyError.ResponseBody = body
+			pe = &copyError
+			hint = "gemini"
+		}
 	}
 	obj := limitErrorObject(pe.ResponseBody)
 	provider := limitProvider(pe, hint, obj)
