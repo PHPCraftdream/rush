@@ -154,6 +154,14 @@ func TestRetryAfter_Table(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 30*time.Second, d)
 
+	// Revert-check: an exact-key lookup misses net/http's canonical header names.
+	d, ok = retryAfter(pe(map[string]string{"Retry-After": "30"}))
+	require.True(t, ok)
+	require.Equal(t, 30*time.Second, d)
+	d, ok = retryAfter(pe(map[string]string{"Retry-After-Ms": "1500", "Retry-After": "30"}))
+	require.True(t, ok)
+	require.Equal(t, 1500*time.Millisecond, d)
+
 	d, ok = retryAfter(pe(map[string]string{"retry-after-ms": "1500"}))
 	require.True(t, ok)
 	require.Equal(t, 1500*time.Millisecond, d)

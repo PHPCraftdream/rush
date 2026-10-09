@@ -45,9 +45,12 @@ func retryAfter(err error) (time.Duration, bool) {
 	if !errors.As(err, &pe) || pe.ResponseHeaders == nil {
 		return 0, false
 	}
+	// Headers arrive canonical ("Retry-After") from net/http; match any case.
 	get := func(name string) string {
-		if v, ok := pe.ResponseHeaders[name]; ok {
-			return strings.TrimSpace(v)
+		for k, v := range pe.ResponseHeaders {
+			if strings.EqualFold(k, name) {
+				return strings.TrimSpace(v)
+			}
 		}
 		return ""
 	}
