@@ -154,6 +154,10 @@ func TestClassifyProviderError(t *testing.T) {
 
 		{"500", providerErr(http.StatusInternalServerError, "boom"), classTransient},
 		{"503", providerErr(http.StatusServiceUnavailable, "down"), classTransient},
+		// Revert-check: dropping the hard-wall check on 5xx makes the MiniMax billing wall transient again.
+		{"500 minimax balance wall", &fantasy.ProviderError{URL: "https://api.minimax.io/anthropic/v1/messages", StatusCode: 500, Message: "api_error: insufficient balance (1008)"}, classTerminal},
+		{"500 minimax other", &fantasy.ProviderError{URL: "https://api.minimax.io/anthropic/v1/messages", StatusCode: 500, Message: "boom"}, classTransient},
+		{"500 look-alike host with the same text", &fantasy.ProviderError{URL: "https://api.minimax.io.evil.invalid/v1/messages", StatusCode: 500, Message: "api_error: insufficient balance (1008)"}, classTransient},
 
 		{"400", providerErr(http.StatusBadRequest, "bad"), classTerminal},
 		{"404", providerErr(http.StatusNotFound, "missing"), classTerminal},

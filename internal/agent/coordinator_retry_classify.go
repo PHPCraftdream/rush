@@ -115,6 +115,10 @@ func classifyProviderError(err error) retryClass {
 			return classTransient
 		}
 		if providerErr.StatusCode >= 500 {
+			// A billing wall some providers (MiniMax 1008) serve as a 5xx never clears.
+			if classifyHardProviderLimit(err, "", time.Now()) == providerLimitHard {
+				return classTerminal
+			}
 			return classTransient
 		}
 		if providerErr.StatusCode >= 400 {
