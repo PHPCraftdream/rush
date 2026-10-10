@@ -168,7 +168,7 @@ func kernelCommand(c Command) error {
 	case OpBlock, OpDrop:
 		bad = !target || drafts || parent || before || title || form || ids || strings.TrimSpace(c.Reason) == ""
 	case OpEdit:
-		bad = !target || drafts || parent || before || reason || ids
+		bad = !target || drafts || parent || before || reason || ids || (!title && !form)
 	case OpMove:
 		bad = !target || drafts || !parent || reason || title || form || ids
 	case OpRemove:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,31 @@ func TestKernelGuardedUninitializedImport(t *testing.T) {
 				kernelTestEqual(t, bad, before)
 			}
 		})
+	}
+}
+
+func TestKernelActiveFormSnapshotImport(t *testing.T) {
+	limits := kernelTestLimits()
+	limits.MaxTitleBytes = 8
+	base := kernelTestTree(t, limits, kernelTestTask("A")).Snapshot()
+	for _, form := range []string{"", " \t", "éééé", "ééééx", strings.Repeat("x", 1<<20)} {
+		s := CloneSnapshot(base)
+		n := s.Nodes["n1"]
+		n.ActiveForm = form
+		s.Nodes["n1"] = n
+		before := CloneSnapshot(s)
+		for _, validate := range []func() error{func() error { return ValidateSnapshot(s, limits) }, func() error { _, err := Restore(s, limits); return err }} {
+			err := validate()
+			if len(form) > limits.MaxTitleBytes {
+				var p *Problem
+				if !errors.As(err, &p) || p.Code != CodeInvalidSnapshot {
+					t.Fatalf("oversized import: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			kernelTestEqual(t, s, before)
+		}
 	}
 }
 

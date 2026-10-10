@@ -90,6 +90,9 @@ func ValidateSnapshot(s Snapshot, l Limits) error {
 				return invalid("groups cannot carry task state, reason, or active_form")
 			}
 		case KindTask:
+			if len(n.ActiveForm) > l.MaxTitleBytes {
+				return invalid("task active_form exceeds byte limit")
+			}
 			if len(n.Children) != 0 {
 				return invalid("tasks cannot have children")
 			}

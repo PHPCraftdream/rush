@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Task-tree active forms now obey the title byte limit (empty remains valid), and fieldless edits are rejected; explicitly unchanged edits remain no-ops.
+- Task protocol rejects payloads over 4 MiB or 128 structural container levels before decoding, returning `invalid_input` with the current summary and no writes.
+- `tasklab` top-level and subcommand help now use stdout with exit 0; usage remains stderr/exit 2 and output failures exit 1.
+
 - Added the autonomous task-tree component and `tasklab` development CLI: nested groups, stable IDs, incremental agent/operator commands, versioned atomic updates, idempotent invocation receipts, deletion protection, and validated checkpoint export/resume. It is independently runnable without Rush app/model/MCP/DB initialization; existing Rush `todos` and WebUI behavior remain unchanged pending the separate integration gate.
 - Concurrent-map JSON-schema discovery retains map value types without a value receiver copying its mutex; this also fixes the full-tree `go vet` copy-lock failure.
 

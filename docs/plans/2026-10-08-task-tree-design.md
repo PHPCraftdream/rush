@@ -40,7 +40,7 @@ inside a planning board.
 The inspected OMP implementation has **phases containing tasks**, not an
 arbitrary-depth domain tree:
 
-- `D:/dev/go/oh-my-pi/packages/coding-agent/src/tools/todo.ts`: incremental
+- `oh-my-pi: packages/coding-agent/src/tools/todo.ts`: incremental
   `init/start/done/rm/drop/block/unblock/append/view`; exact-content selectors;
   duplicate-content rejection; focus normalization; recoverable tool errors;
   successful mutations expose canonical phases in tool-result details.
@@ -231,7 +231,8 @@ error. Group block/unblock/drop act on the eligible leaves present **now**;
 there is no persistent blocked/abandoned latch on the group. Later additions
 start pending. A bulk operation with no eligible leaves is a no-op.
 Blocking a completed/abandoned leaf is an invalid transition; unblocking a
-nonblocked leaf is a no-op. An edit with no changed fields is a no-op. Before
+nonblocked leaf is a no-op. A fieldless edit is `invalid_input`; an edit explicitly
+supplying unchanged title and/or active form is a semantic no-op. Before
 init, only view/init are valid; other operations return `uninitialized`.
 
 
@@ -261,7 +262,9 @@ removed IDs are not resurrected. Legacy `DeletedTodos` become task-title guards.
 
 Kernel/service limits are positive caller-supplied values: maximum live nodes
 (including root), depth (root is depth zero), title/reason bytes, tombstones,
-and receipts. Limit violations reject the entire request. No silent truncation,
+and receipts. Task `ActiveForm` uses `MaxTitleBytes` for add, edit, and snapshot
+validation; empty active forms are allowed, including an explicit edit to clear
+one. Limit violations reject the entire request. No silent truncation,
 automatic receipt eviction, or ID recycling. A host can archive a board and
 select a new **TreeKey** when its retained-history limit is reached; it must not
 clear a live board behind the agent's back. Initial agent API has no reset or
@@ -296,7 +299,9 @@ JSON shapes, and error codes before parallel work:
 - `Envelope`: current revision, snapshot, and receipt map. Missing board is
   revision zero with no receipts; stored envelopes have positive revisions.
 - `Problem`: code, message, expected/current revisions when relevant, target
-  candidates when relevant. `MutationReply`: receipt, replayed flag, current
+  candidates when relevant. `Problem` does not contain a summary; protocol
+  `ToolResult` carries the current summary alongside the problem. `MutationReply`:
+  receipt, replayed flag, current
   summary, and created-node briefs from that same current revision. A brief
   contains ID, parent ID, kind, title, task status/reason, or a removed marker;
   it has no recursive children. Domain problems and infrastructure errors
@@ -364,8 +369,9 @@ For one command, in this order:
    actor and canonical payload return the original receipt with `replayed=true`
    and the current summary, without reapplying the action. A reused key with a
    different actor/payload returns `request_reused`.
-4. Check expected revision. A mismatch returns `conflict` with current revision
-   and actionable summary. Do not silently rebase intent onto a new snapshot.
+4. Check expected revision. A mismatch returns `conflict` with current revision;
+   protocol `ToolResult` adds the current actionable summary. Do not silently
+   rebase intent onto a new snapshot.
 5. Apply the command to privately owned state. Validate the complete mutation,
    including group targets and limits, before publishing any changes.
 6. Build candidate revision `expected + 1` and its receipt. Store commits state,
@@ -431,6 +437,16 @@ agent schema/description without Fantasy/MCP imports. `Invocation` holds the
 trusted TreeKey, actor, and stable request ID. Protocol validation errors are
 correctable tool results, not successful no-ops or fatal process failures.
 Infrastructure errors remain ordinary wrapped Go errors.
+
+`protocol.New(backend)` is unchanged. `Execute` preflights payloads before JSON
+object maps or recursive drafts are allocated: `MaxPayloadBytes = 4 * 1024 * 1024`
+bytes including whitespace and `MaxPayloadDepth = 128` simultaneous structural
+`{`/`[` containers. Quoted strings (including escaped quotes/backslashes) do not
+count as containers. This allocation-free scan bounds transport, not domain
+`MaxDepth`; the existing decoder still validates JSON syntax and fields. Either
+ceiling violation returns correctable `invalid_input` with the bound board's
+current summary and no writes. Hosts **MUST bound raw reads before allocating
+`json.RawMessage`**; this API cannot undo the caller's input allocation.
 
 All mutations require `expected_revision`; initial empty view reports zero.
 Responses always expose the current revision so the next command is compact.
@@ -549,9 +565,12 @@ validates and prints it. `run --load <path>` resumes from it using memory-store
 seeds, not a fabricated sequence of old commits. Loaded key/limits must match
 the scenario. Replay a previous request without duplicating nodes, then accept
 a new request: this proves restart behavior without SQLite/transcript recovery.
-Malformed or expectation-mismatching scenarios exit nonzero. Help/usage errors
-exit 2; scenario/validation failure exits 1; fulfilled expectations exit 0,
-including a scenario intentionally expecting a correctable tool error.
+Malformed or expectation-mismatching scenarios exit nonzero. Successful top-level
+and subcommand `-h`/`--help` write once to stdout and exit 0; usage errors write
+to stderr and exit 2. I/O (including help/usage output) and scenario/validation
+failures exit 1; fulfilled expectations exit 0, including a scenario intentionally
+expecting a correctable tool error. Flags must precede positional arguments;
+help after a positional argument does not bypass usage validation.
 
 ### 6.2 Behavioral acceptance matrix
 

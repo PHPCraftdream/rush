@@ -4,11 +4,45 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	tt "github.com/PHPCraftdream/rush/internal/tasktree"
 	"github.com/PHPCraftdream/rush/internal/tasktree/memory"
 )
+
+func TestServiceActiveFormImportRejectsUnchanged(t *testing.T) {
+	base := serviceTestStore(t)
+	serviceTestMutate(t, tt.NewService(base, serviceTestLimits()), serviceTestActor, "init", 0, serviceTestInit())
+	good := serviceTestLoad(t, base)
+	for _, form := range []string{strings.Repeat("x", serviceTestLimits().MaxTitleBytes+1), strings.Repeat("x", 1<<20)} {
+		bad := tt.CloneEnvelope(good)
+		n := bad.Snapshot.Nodes["n1"]
+		n.ActiveForm = form
+		bad.Snapshot.Nodes["n1"] = n
+		before := tt.CloneEnvelope(bad)
+		serviceTestCode(t, tt.CheckEnvelope(bad, serviceTestLimits()), tt.CodeInvalidSnapshot)
+		_, err := memory.NewStore(serviceTestLimits(), map[tt.TreeKey]tt.Envelope{"board": bad})
+		serviceTestCode(t, err, tt.CodeInvalidSnapshot)
+		corrupt := tt.NewService(&serviceTestCorruptStore{Store: base, envelope: bad}, serviceTestLimits())
+		for _, call := range []func() error{
+			func() error { _, err := corrupt.Summary(context.Background(), "board"); return err },
+			func() error { _, err := corrupt.View(context.Background(), "board", tt.Selector{}); return err },
+			func() error {
+				_, err := corrupt.Mutate(context.Background(), "board", serviceTestActor, "new", 1, tt.Command{Op: tt.OpDone, Target: tt.Selector{ID: "n1"}})
+				return err
+			},
+		} {
+			var infrastructure *tt.InfrastructureError
+			if err := call(); !errors.As(err, &infrastructure) {
+				t.Fatalf("invalid import not infrastructure: %v", err)
+			}
+		}
+		if !reflect.DeepEqual(bad, before) || !reflect.DeepEqual(good, serviceTestLoad(t, base)) {
+			t.Fatal("invalid import changed input or durable envelope")
+		}
+	}
+}
 
 func TestServiceOperatorReceiptReuseBeforeAuthorization(t *testing.T) {
 	for _, op := range []tt.Operation{tt.OpRemove, tt.OpReopen} {

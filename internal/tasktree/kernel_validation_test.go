@@ -22,6 +22,7 @@ func TestKernelInvalidCommandsActorsRootsAndTransitions(t *testing.T) {
 		{Op: OpReopen, Target: Selector{ID: "n2"}, ParentID: RootID},
 		{Op: OpBlock, Target: Selector{ID: "n2"}, Reason: " \t"},
 		{Op: OpDrop, Target: Selector{ID: "n2"}, Reason: "x", BeforeID: "n3"},
+		{Op: OpEdit, Target: Selector{ID: "n2"}},
 		{Op: OpEdit, Target: Selector{ID: "n2"}, RemoveIDs: []NodeID{}},
 		{Op: OpMove, Target: Selector{ID: "n2"}},
 		{Op: OpAdd, Target: Selector{ID: RootID}, Drafts: []Draft{kernelTestTask("x")}},
@@ -36,6 +37,9 @@ func TestKernelInvalidCommandsActorsRootsAndTransitions(t *testing.T) {
 	}
 	for _, op := range []Operation{OpStart, OpDone, OpEdit, OpMove, OpRemove, OpReopen} {
 		c := kernelTestTarget(op, RootID)
+		if op == OpEdit {
+			c.Title = kernelTestString("Tasks")
+		}
 		if op == OpMove {
 			c.ParentID = "n1"
 		}
@@ -102,11 +106,11 @@ func TestKernelExactLimitsAndLateDraftAtomicity(t *testing.T) {
 	kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpEdit, Target: Selector{ID: "n2"}, Title: kernelTestString(" \t")}, CodeInvalidInput)
 	kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpBlock, Target: Selector{ID: "n2"}, Reason: "é"})
 	kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpBlock, Target: Selector{ID: "n2"}, Reason: "éx"}, CodeLimitExceeded)
-	long := strings.Repeat("working ", 100)
-	kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpEdit, Target: Selector{ID: "n2"}, ActiveForm: &long})
-	kernelTestEqual(t, tree.Snapshot().Nodes["n2"].ActiveForm, long)
-	fresh := kernelTestTree(t, limits, Draft{Kind: KindTask, Title: "ok", ActiveForm: long})
-	kernelTestEqual(t, fresh.Snapshot().Nodes["n1"].ActiveForm, long)
+	kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpEdit, Target: Selector{ID: "n2"}, ActiveForm: kernelTestString("é")})
+	kernelTestEqual(t, tree.Snapshot().Nodes["n2"].ActiveForm, "é")
+	kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpEdit, Target: Selector{ID: "n2"}, ActiveForm: kernelTestString("éx")}, CodeLimitExceeded)
+	fresh := kernelTestTree(t, limits, Draft{Kind: KindTask, Title: "ok", ActiveForm: "é"})
+	kernelTestEqual(t, fresh.Snapshot().Nodes["n1"].ActiveForm, "é")
 	if _, err := Restore(fresh.Snapshot(), limits); err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +127,54 @@ func TestKernelExactLimitsAndLateDraftAtomicity(t *testing.T) {
 	uninitialized := kernelTestTree(t, kernelTestLimits())
 	kernelTestReject(t, uninitialized, kernelTestAgent, Command{Op: OpInit, Drafts: []Draft{kernelTestTask("ok"), kernelTestGroup("G", Draft{Kind: KindTask, Title: ""})}}, CodeInvalidInput)
 	kernelTestEqual(t, uninitialized.Snapshot(), EmptySnapshot())
+}
+
+func TestKernelActiveFormLimitsAndAtomicity(t *testing.T) {
+	limits := kernelTestLimits()
+	limits.MaxTitleBytes = 8
+	for _, form := range []string{"", " \t", "éééé"} {
+		t.Run("accepted/"+form, func(t *testing.T) {
+			tree := kernelTestTree(t, limits, Draft{Kind: KindTask, Title: "A", ActiveForm: form})
+			kernelTestEqual(t, tree.Snapshot().Nodes["n1"].ActiveForm, form)
+			c := Command{Op: OpEdit, Target: Selector{ID: "n1"}, Title: kernelTestString("A"), ActiveForm: &form}
+			before := tree.Snapshot()
+			kernelTestEqual(t, kernelTestApply(t, tree, kernelTestAgent, c), Delta{})
+			kernelTestEqual(t, tree.Snapshot(), before)
+			c.ActiveForm = kernelTestString("")
+			kernelTestApply(t, tree, kernelTestAgent, c)
+			kernelTestEqual(t, tree.Snapshot().Nodes["n1"].ActiveForm, "")
+			kernelTestEqual(t, tree.Summary().ActiveID, NodeID("n1"))
+			kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpAdd, Drafts: []Draft{{Kind: KindTask, Title: "B", ActiveForm: form}}})
+			kernelTestEqual(t, tree.Snapshot().Nodes["n2"].ActiveForm, form)
+		})
+	}
+	for _, form := range []string{"ééééx", strings.Repeat("x", 1<<20)} {
+		t.Run("rejected", func(t *testing.T) {
+			seed := EmptySnapshot()
+			seed.TitleGuards = []TitleGuard{{Kind: KindTask, Title: "guard"}}
+			tree, err := Restore(seed, limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			drafts := []Draft{kernelTestTask("guard"), kernelTestGroup("G", Draft{Kind: KindTask, Title: "bad", ActiveForm: form})}
+			kernelTestReject(t, tree, kernelTestOperator, Command{Op: OpInit, Drafts: drafts}, CodeLimitExceeded)
+			kernelTestEqual(t, tree.Summary().ActiveID, NodeID(""))
+			kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpInit, Drafts: []Draft{kernelTestTask("guard")}}, CodeRemovedByOperator)
+			kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpInit, Drafts: []Draft{kernelTestTask("A")}})
+			kernelTestReject(t, tree, kernelTestOperator, Command{Op: OpAdd, Drafts: drafts}, CodeLimitExceeded)
+			kernelTestReject(t, tree, kernelTestOperator, Command{Op: OpEdit, Target: Selector{ID: "n1"}, Title: kernelTestString("guard"), ActiveForm: &form}, CodeLimitExceeded)
+			kernelTestEqual(t, tree.Summary().ActiveID, NodeID("n1"))
+			kernelTestEqual(t, tree.Snapshot().NextID, uint64(2))
+			kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpAdd, Drafts: []Draft{kernelTestTask("guard")}}, CodeRemovedByOperator)
+		})
+	}
+	for _, form := range []string{"", " \t", strings.Repeat("x", 9)} {
+		tree := kernelTestTree(t, limits, kernelTestGroup("G"))
+		kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpEdit, Target: Selector{ID: "n1"}, ActiveForm: &form}, CodeInvalidTargetKind)
+		if form != "" {
+			kernelTestReject(t, tree, kernelTestAgent, Command{Op: OpAdd, Drafts: []Draft{{Kind: KindGroup, Title: "G", ActiveForm: form}}}, CodeInvalidInput)
+		}
+	}
 }
 
 func TestKernelIndependentHistoryLimits(t *testing.T) {

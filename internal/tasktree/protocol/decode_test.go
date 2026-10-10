@@ -1,10 +1,13 @@
 package protocol
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/tasktree"
+	"github.com/PHPCraftdream/rush/internal/tasktree/memory"
 )
 
 func TestDecodeBoundary(t *testing.T) {
@@ -38,10 +41,35 @@ func TestDecodeBoundary(t *testing.T) {
 		`{"op":"rm","expected_revision":1,"ids":["n1","n1"]}`,
 		`[]`, `null`,
 	}
+	limits := tasktree.Limits{MaxNodes: 100, MaxDepth: 10, MaxTitleBytes: 200, MaxReasonBytes: 200, MaxTombstones: 100, MaxReceipts: 100}
+	store, err := memory.NewStore(limits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := New(tasktree.NewService(store, limits))
+	ctx := context.Background()
+	invocation := Invocation{TreeKey: "boundary", Actor: tasktree.Actor{Kind: tasktree.ActorAgent, ID: "agent"}, RequestID: "init"}
+	initialized, err := api.Execute(ctx, invocation, json.RawMessage(`{"op":"init","expected_revision":0,"items":["A"]}`))
+	if err != nil || initialized.IsError {
+		t.Fatalf("init: %+v %v", initialized, err)
+	}
+	before, err := store.Load(ctx, invocation.TreeKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.RequestID = "invalid"
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
 			if _, _, err := decode(json.RawMessage(raw)); err == nil {
 				t.Fatal("accepted malformed/irrelevant payload")
+			}
+			result, err := api.Execute(ctx, invocation, json.RawMessage(raw))
+			if err != nil || !result.IsError || result.Details.Problem == nil || result.Details.Problem.Code != tasktree.CodeInvalidInput || !reflect.DeepEqual(result.Details.Summary, initialized.Details.Summary) {
+				t.Fatalf("invalid input/current summary: %+v %v", result, err)
+			}
+			after, err := store.Load(ctx, invocation.TreeKey)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("rejection changed envelope: %+v %v", after, err)
 			}
 		})
 	}

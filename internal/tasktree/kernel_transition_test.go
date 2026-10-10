@@ -201,7 +201,7 @@ func TestKernelFocusRewindAndNoNormalization(t *testing.T) {
 	tree.Summary()
 	tree.Briefs([]NodeID{"n1"})
 	kernelTestEqual(t, tree.Snapshot(), before)
-	for _, c := range []Command{kernelTestTarget(OpUnblock, "n1"), kernelTestTarget(OpDone, "n3"), kernelTestTarget(OpEdit, "n1"), {Op: OpMove, Target: Selector{ID: "n3"}, ParentID: RootID}} {
+	for _, c := range []Command{kernelTestTarget(OpUnblock, "n1"), kernelTestTarget(OpDone, "n3"), {Op: OpEdit, Target: Selector{ID: "n1"}, Title: kernelTestString("A"), ActiveForm: kernelTestString("")}, {Op: OpMove, Target: Selector{ID: "n3"}, ParentID: RootID}} {
 		kernelTestEqual(t, kernelTestApply(t, tree, kernelTestAgent, c), Delta{})
 		kernelTestEqual(t, tree.Snapshot(), before)
 	}

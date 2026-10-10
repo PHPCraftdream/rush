@@ -37,6 +37,9 @@ func (t *Tree) planAdd(p *kernelPlan, actor Actor, c Command) error {
 		if (d.Kind == KindTask && len(d.Children) != 0) || (d.Kind == KindGroup && d.ActiveForm != "") {
 			return kernelProblem(CodeInvalidInput, "tasks cannot have children and groups cannot have active_form")
 		}
+		if d.Kind == KindTask && len(d.ActiveForm) > t.limits.MaxTitleBytes {
+			return kernelProblem(CodeLimitExceeded, "active_form exceeds byte limit")
+		}
 		if x.depth > t.limits.MaxDepth || len(p.created) >= t.limits.MaxNodes-len(t.state.Nodes) {
 			return kernelProblem(CodeLimitExceeded, "addition exceeds node or depth limit")
 		}
@@ -193,6 +196,9 @@ func (t *Tree) planEdit(p *kernelPlan, actor Actor, n Node, c Command) error {
 	if c.ActiveForm != nil {
 		if n.Kind != KindTask {
 			return kernelProblem(CodeInvalidTargetKind, "only tasks have active_form")
+		}
+		if len(*c.ActiveForm) > t.limits.MaxTitleBytes {
+			return kernelProblem(CodeLimitExceeded, "active_form exceeds byte limit")
 		}
 		changed = changed || n.ActiveForm != *c.ActiveForm
 		n.ActiveForm = *c.ActiveForm

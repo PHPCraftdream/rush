@@ -123,7 +123,7 @@ func TestCLIRunSnapshotInspectResumeDurableEnvelope(t *testing.T) {
 func TestCLIUsageHelpAndFlagOrderingExits(t *testing.T) {
 	for _, args := range [][]string{
 		nil, {"unknown"}, {"run"}, {"inspect"}, {"inspect", "a", "b"},
-		{"run", "scenario", "--load", "checkpoint"}, {"run", "--unknown"},
+		{"run", "scenario", "--load", "checkpoint"}, {"run", "scenario", "--help"}, {"inspect", "checkpoint", "-h"}, {"repl", "positional", "--help"}, {"run", "--unknown"},
 		{"repl"}, {"repl", "--tree-key", "board", "extra"},
 		{"repl", "--tree-key", "board", "--actor", "model"},
 		{"repl", "--tree-key", "board", "--actor-id", " "},
@@ -133,14 +133,28 @@ func TestCLIUsageHelpAndFlagOrderingExits(t *testing.T) {
 		{"repl", "--tree-key", "board", "--max-title-bytes", "not-an-int"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			output := cliTestRun(t, args, "", 2)
-			if len(output) != 0 {
-				t.Fatal("usage executed a command")
+			var output, diagnostics bytes.Buffer
+			if code := runCLI(args, strings.NewReader(""), &output, &diagnostics); code != 2 || output.Len() != 0 || diagnostics.Len() == 0 {
+				t.Fatalf("usage routing: exit=%d stdout=%q stderr=%q", code, &output, &diagnostics)
+			}
+			if code := runCLI(args, strings.NewReader(""), io.Discard, cliTestFailWriter{}); code != 1 {
+				t.Fatalf("usage writer failure: exit=%d", code)
 			}
 		})
 	}
-	for _, args := range [][]string{{"help"}, {"--help"}, {"-h"}, {"run", "--help"}, {"inspect", "-h"}, {"repl", "--help"}} {
-		cliTestRun(t, args, "", 0)
+	for _, args := range [][]string{{"help"}, {"--help"}, {"-h"}, {"run", "-h"}, {"run", "--help"}, {"inspect", "-h"}, {"inspect", "--help"}, {"repl", "-h"}, {"repl", "--help"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var output, diagnostics bytes.Buffer
+			if code := runCLI(args, strings.NewReader(""), &output, &diagnostics); code != 0 || diagnostics.Len() != 0 || output.Len() == 0 {
+				t.Fatalf("help routing: exit=%d stdout=%q stderr=%q", code, &output, &diagnostics)
+			}
+			if code := runCLI(args, strings.NewReader(""), io.Discard, cliTestFailWriter{}); code != 0 {
+				t.Fatalf("successful help used diagnostics: exit=%d", code)
+			}
+			if code := runCLI(args, strings.NewReader(""), cliTestFailWriter{}, &diagnostics); code != 1 || diagnostics.Len() != 0 {
+				t.Fatalf("help output failure routing: exit=%d stderr=%q", code, &diagnostics)
+			}
+		})
 	}
 }
 
@@ -203,8 +217,8 @@ func TestCLIValidationExpectationAndIOExitsPreserveCheckpoint(t *testing.T) {
 	if code := runCLI([]string{"help"}, strings.NewReader(""), cliTestFailWriter{}, &diagnostics); code != 1 {
 		t.Fatalf("help writer failure exit=%d", code)
 	}
-	if code := runCLI([]string{"repl", "--help"}, strings.NewReader(""), io.Discard, cliTestFailWriter{}); code != 1 {
-		t.Fatalf("flag help writer failure exit=%d", code)
+	if code := runCLI([]string{"repl", "--help"}, strings.NewReader(""), io.Discard, cliTestFailWriter{}); code != 0 {
+		t.Fatalf("successful help used diagnostics: exit=%d", code)
 	}
 }
 

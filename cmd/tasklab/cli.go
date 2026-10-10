@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,7 +52,7 @@ func runCLI(args []string, input io.Reader, output, diagnostics io.Writer) int {
 		return 1
 	}
 	usage := func(code int) int {
-		if _, err := io.WriteString(diagnostics, cliSyntax); err != nil {
+		if n, err := io.WriteString(diagnostics, cliSyntax); err != nil || n != len(cliSyntax) {
 			return 1
 		}
 		return code
@@ -63,8 +64,8 @@ func runCLI(args []string, input io.Reader, output, diagnostics io.Writer) int {
 		if len(args) != 1 {
 			return usage(2)
 		}
-		if _, err := io.WriteString(output, cliSyntax); err != nil {
-			return fail(err)
+		if n, err := io.WriteString(output, cliSyntax); err != nil || n != len(cliSyntax) {
+			return 1
 		}
 		return 0
 	}
@@ -73,7 +74,8 @@ func runCLI(args []string, input io.Reader, output, diagnostics io.Writer) int {
 		return usage(2)
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	flagOutput := &cliOutput{writer: diagnostics}
+	var parseOutput bytes.Buffer
+	flagOutput := &cliOutput{writer: &parseOutput}
 	flags.SetOutput(flagOutput)
 	flags.Usage = func() {
 		io.WriteString(flagOutput, cliSyntax)
@@ -97,6 +99,18 @@ func runCLI(args []string, input io.Reader, output, diagnostics io.Writer) int {
 		flags.IntVar(&limits.MaxReceipts, "max-receipts", 1000, "lab-only durable receipt bound, no eviction (1..10000)")
 	}
 	parseErr := flags.Parse(args[1:])
+	// Parse first: flag stops at the first positional argument, even before help.
+	destination := diagnostics
+	if errors.Is(parseErr, flag.ErrHelp) {
+		destination = output
+	}
+	if parseOutput.Len() != 0 {
+		routed := &cliOutput{writer: destination}
+		if _, err := routed.Write(parseOutput.Bytes()); err != nil {
+			return 1
+		}
+	}
+	flagOutput.writer = diagnostics
 	if flagOutput.err != nil {
 		return fail(flagOutput.err)
 	}

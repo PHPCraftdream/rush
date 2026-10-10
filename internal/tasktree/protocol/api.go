@@ -48,6 +48,9 @@ func (a *API) Execute(ctx context.Context, invocation Invocation, payload json.R
 	if invocation.Actor.Kind != tasktree.ActorAgent && invocation.Actor.Kind != tasktree.ActorOperator {
 		return invalid("trusted actor kind must be agent or operator; host must repair the binding")
 	}
+	if message := preflightPayload(payload); message != "" {
+		return invalid(message)
+	}
 	command, expected, err := decode(payload)
 	if err != nil {
 		return invalid(err.Error())
