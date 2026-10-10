@@ -92,6 +92,7 @@ func TestProtocolPayloadQuotedContainers(t *testing.T) {
 	for i, title := range []string{
 		strings.Repeat("{[", protocol.MaxPayloadDepth+1),
 		`escaped quote " { [ and backslash \ } ]`,
+		`escaped quote " then ` + strings.Repeat("{[", protocol.MaxPayloadDepth+1),
 		`trailing backslash \`,
 	} {
 		// Use a selector on a persisted label to keep this a valid read-only request.
