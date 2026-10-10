@@ -20,6 +20,7 @@ func (s *serviceTestCancelLoadStore) Load(ctx context.Context, key tt.TreeKey) (
 	s.cancel()
 	return e, err
 }
+
 func TestServiceCancellationAfterLoadPreservesState(t *testing.T) {
 	base := serviceTestStore(t)
 	before := serviceTestLoad(t, base)

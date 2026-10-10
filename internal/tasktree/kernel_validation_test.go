@@ -11,11 +11,15 @@ func TestKernelInvalidCommandsActorsRootsAndTransitions(t *testing.T) {
 		kernelTestReject(t, tree, actor, kernelTestTarget(OpDone, "n2"), CodeInvalidInput)
 	}
 	for _, c := range []Command{
-		{Op: "unknown"}, {Op: OpInit}, {Op: OpAdd},
-		{Op: OpDone}, {Op: OpDone, Target: Selector{ID: "n2", Text: "A"}},
+		{Op: "unknown"},
+		{Op: OpInit},
+		{Op: OpAdd},
+		{Op: OpDone},
+		{Op: OpDone, Target: Selector{ID: "n2", Text: "A"}},
 		{Op: OpDone, Target: Selector{ID: "n2", WithinID: "n1"}},
 		{Op: OpDone, Target: Selector{WithinID: "n1"}},
-		{Op: OpView, Drafts: []Draft{}}, {Op: OpView, Reason: "x"},
+		{Op: OpView, Drafts: []Draft{}},
+		{Op: OpView, Reason: "x"},
 		{Op: OpStart, Target: Selector{ID: "n2"}, Title: kernelTestString("x")},
 		{Op: OpDone, Target: Selector{ID: "n2"}, ActiveForm: kernelTestString("x")},
 		{Op: OpUnblock, Target: Selector{ID: "n2"}, Reason: "x"},
@@ -78,10 +82,14 @@ func TestKernelMoveValidationAndDepthBoundaries(t *testing.T) {
 		id, parent, before NodeID
 		code               ProblemCode
 	}{
-		{"n1", "n1", "", CodeInvalidInput}, {"n1", "n2", "", CodeInvalidInput},
-		{"n3", "n2", "n3", CodeInvalidInput}, {"n3", "n4", "n2", CodeInvalidInput},
-		{"n3", "n4", "n9", CodeNotFound}, {"n3", "n9", "", CodeNotFound},
-		{"n3", "n5", "", CodeInvalidTargetKind}, {"n4", "n2", "", CodeLimitExceeded},
+		{"n1", "n1", "", CodeInvalidInput},
+		{"n1", "n2", "", CodeInvalidInput},
+		{"n3", "n2", "n3", CodeInvalidInput},
+		{"n3", "n4", "n2", CodeInvalidInput},
+		{"n3", "n4", "n9", CodeNotFound},
+		{"n3", "n9", "", CodeNotFound},
+		{"n3", "n5", "", CodeInvalidTargetKind},
+		{"n4", "n2", "", CodeLimitExceeded},
 	} {
 		if tc.id == "n4" {
 			kernelTestApply(t, tree, kernelTestAgent, Command{Op: OpAdd, ParentID: "n4", Drafts: []Draft{kernelTestTask("child")}})

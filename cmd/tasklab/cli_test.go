@@ -122,9 +122,18 @@ func TestCLIRunSnapshotInspectResumeDurableEnvelope(t *testing.T) {
 
 func TestCLIUsageHelpAndFlagOrderingExits(t *testing.T) {
 	for _, args := range [][]string{
-		nil, {"unknown"}, {"run"}, {"inspect"}, {"inspect", "a", "b"},
-		{"run", "scenario", "--load", "checkpoint"}, {"run", "scenario", "--help"}, {"inspect", "checkpoint", "-h"}, {"repl", "positional", "--help"}, {"run", "--unknown"},
-		{"repl"}, {"repl", "--tree-key", "board", "extra"},
+		nil,
+		{"unknown"},
+		{"run"},
+		{"inspect"},
+		{"inspect", "a", "b"},
+		{"run", "scenario", "--load", "checkpoint"},
+		{"run", "scenario", "--help"},
+		{"inspect", "checkpoint", "-h"},
+		{"repl", "positional", "--help"},
+		{"run", "--unknown"},
+		{"repl"},
+		{"repl", "--tree-key", "board", "extra"},
 		{"repl", "--tree-key", "board", "--actor", "model"},
 		{"repl", "--tree-key", "board", "--actor-id", " "},
 		{"repl", "--tree-key", "board", "--max-nodes", "0"},

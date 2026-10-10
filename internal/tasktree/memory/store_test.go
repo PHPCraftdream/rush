@@ -13,6 +13,7 @@ import (
 func serviceTestLimits() tt.Limits {
 	return tt.Limits{MaxNodes: 20, MaxDepth: 5, MaxTitleBytes: 100, MaxReasonBytes: 100, MaxTombstones: 20, MaxReceipts: 20}
 }
+
 func serviceTestStore(t *testing.T) *memory.Store {
 	t.Helper()
 	s, err := memory.NewStore(serviceTestLimits(), nil)
@@ -21,6 +22,7 @@ func serviceTestStore(t *testing.T) *memory.Store {
 	}
 	return s
 }
+
 func serviceTestCandidate(t *testing.T) tt.Envelope {
 	t.Helper()
 	s := serviceTestStore(t)
@@ -34,6 +36,7 @@ func serviceTestCandidate(t *testing.T) tt.Envelope {
 	}
 	return e
 }
+
 func serviceTestLoad(t *testing.T, s *memory.Store) tt.Envelope {
 	t.Helper()
 	e, err := s.Load(context.Background(), "board")

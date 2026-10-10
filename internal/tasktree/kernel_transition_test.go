@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
-var kernelTestAgent = Actor{Kind: ActorAgent, ID: "agent"}
-var kernelTestOperator = Actor{Kind: ActorOperator, ID: "operator"}
+var (
+	kernelTestAgent    = Actor{Kind: ActorAgent, ID: "agent"}
+	kernelTestOperator = Actor{Kind: ActorOperator, ID: "operator"}
+)
 
 func kernelTestLimits() Limits {
 	return Limits{MaxNodes: 100, MaxDepth: 12, MaxTitleBytes: 64, MaxReasonBytes: 64, MaxTombstones: 100, MaxReceipts: 100}
@@ -20,12 +22,14 @@ func kernelTestString(s string) *string { return &s }
 func kernelTestTarget(op Operation, id NodeID) Command {
 	return Command{Op: op, Target: Selector{ID: id}}
 }
+
 func kernelTestEqual(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v; want %#v", got, want)
 	}
 }
+
 func kernelTestTree(t *testing.T, limits Limits, drafts ...Draft) *Tree {
 	t.Helper()
 	tree, err := Restore(EmptySnapshot(), limits)
@@ -37,6 +41,7 @@ func kernelTestTree(t *testing.T, limits Limits, drafts ...Draft) *Tree {
 	}
 	return tree
 }
+
 func kernelTestApply(t *testing.T, tree *Tree, actor Actor, c Command) Delta {
 	t.Helper()
 	d, err := tree.Apply(actor, c)
@@ -73,6 +78,7 @@ func kernelTestApply(t *testing.T, tree *Tree, actor Actor, c Command) Delta {
 	}
 	return d
 }
+
 func kernelTestReject(t *testing.T, tree *Tree, actor Actor, c Command, code ProblemCode) {
 	t.Helper()
 	before := tree.Snapshot()
@@ -84,6 +90,7 @@ func kernelTestReject(t *testing.T, tree *Tree, actor Actor, c Command, code Pro
 	kernelTestEqual(t, d, Delta{})
 	kernelTestEqual(t, tree.Snapshot(), before)
 }
+
 func kernelTestStatus(t *testing.T, tree *Tree, id NodeID, status Status, reason string) {
 	t.Helper()
 	n := tree.Snapshot().Nodes[id]

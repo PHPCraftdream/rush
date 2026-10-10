@@ -14,12 +14,15 @@ func serviceTestLimits() tt.Limits {
 	return tt.Limits{MaxNodes: 50, MaxDepth: 10, MaxTitleBytes: 100, MaxReasonBytes: 100, MaxTombstones: 50, MaxReceipts: 100}
 }
 
-var serviceTestActor = tt.Actor{Kind: tt.ActorAgent, ID: "agent/session"}
-var serviceTestOperator = tt.Actor{Kind: tt.ActorOperator, ID: "operator/session"}
+var (
+	serviceTestActor    = tt.Actor{Kind: tt.ActorAgent, ID: "agent/session"}
+	serviceTestOperator = tt.Actor{Kind: tt.ActorOperator, ID: "operator/session"}
+)
 
 func serviceTestInit() tt.Command {
 	return tt.Command{Op: tt.OpInit, Drafts: []tt.Draft{{Kind: tt.KindTask, Title: "A"}, {Kind: tt.KindTask, Title: "B"}}}
 }
+
 func serviceTestStore(t *testing.T) *memory.Store {
 	t.Helper()
 	s, err := memory.NewStore(serviceTestLimits(), nil)
@@ -28,6 +31,7 @@ func serviceTestStore(t *testing.T) *memory.Store {
 	}
 	return s
 }
+
 func serviceTestMutate(t *testing.T, s *tt.Service, actor tt.Actor, id tt.RequestID, rev tt.Revision, cmd tt.Command) tt.MutationReply {
 	t.Helper()
 	r, err := s.Mutate(context.Background(), "board", actor, id, rev, cmd)
@@ -36,6 +40,7 @@ func serviceTestMutate(t *testing.T, s *tt.Service, actor tt.Actor, id tt.Reques
 	}
 	return r
 }
+
 func serviceTestCode(t *testing.T, err error, code tt.ProblemCode) {
 	t.Helper()
 	var p *tt.Problem
@@ -43,6 +48,7 @@ func serviceTestCode(t *testing.T, err error, code tt.ProblemCode) {
 		t.Fatalf("want %s, got %v", code, err)
 	}
 }
+
 func serviceTestLoad(t *testing.T, s tt.Store) tt.Envelope {
 	t.Helper()
 	e, err := s.Load(context.Background(), "board")
@@ -110,6 +116,7 @@ func (s *serviceTestBarrierStore) Load(ctx context.Context, key tt.TreeKey) (tt.
 	}
 	return e, err
 }
+
 func TestServiceConcurrentCASAndSameInvocation(t *testing.T) {
 	for _, same := range []bool{false, true} {
 		t.Run(map[bool]string{false: "distinct", true: "same"}[same], func(t *testing.T) {
@@ -188,6 +195,7 @@ func (s *serviceTestFaultStore) Commit(ctx context.Context, key tt.TreeKey, rev 
 	}
 	return nil
 }
+
 func TestServiceCommitFailuresAndCancellation(t *testing.T) {
 	for _, mode := range []string{"failure", "before", "after", "unknown"} {
 		t.Run(mode, func(t *testing.T) {

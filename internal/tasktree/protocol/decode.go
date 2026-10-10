@@ -181,9 +181,15 @@ func decode(raw json.RawMessage) (tasktree.Command, tasktree.Revision, error) {
 		name string
 		dst  any
 	}{
-		{"id", &command.Target.ID}, {"text", &command.Target.Text}, {"within_id", &command.Target.WithinID},
-		{"parent_id", &command.ParentID}, {"before_id", &command.BeforeID}, {"reason", &command.Reason},
-		{"title", &command.Title}, {"active_form", &command.ActiveForm}, {"ids", &command.RemoveIDs},
+		{"id", &command.Target.ID},
+		{"text", &command.Target.Text},
+		{"within_id", &command.Target.WithinID},
+		{"parent_id", &command.ParentID},
+		{"before_id", &command.BeforeID},
+		{"reason", &command.Reason},
+		{"title", &command.Title},
+		{"active_form", &command.ActiveForm},
+		{"ids", &command.RemoveIDs},
 	} {
 		if err := readField(fields, field.name, field.dst); err != nil {
 			return command, expected, err

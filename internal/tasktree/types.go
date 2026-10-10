@@ -2,13 +2,17 @@ package tasktree
 
 import "fmt"
 
-const SchemaVersion = 1
-const RootID NodeID = "n0"
+const (
+	SchemaVersion        = 1
+	RootID        NodeID = "n0"
+)
 
-type TreeKey string
-type NodeID string
-type RequestID string
-type Revision uint64
+type (
+	TreeKey   string
+	NodeID    string
+	RequestID string
+	Revision  uint64
+)
 
 type NodeKind string
 

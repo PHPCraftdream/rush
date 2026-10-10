@@ -115,6 +115,7 @@ type serviceTestCorruptStore struct {
 func (s *serviceTestCorruptStore) Load(context.Context, tt.TreeKey) (tt.Envelope, error) {
 	return tt.CloneEnvelope(s.envelope), s.loadErr
 }
+
 func TestServiceCorruptionIsInfrastructure(t *testing.T) {
 	base := serviceTestStore(t)
 	s := tt.NewService(base, serviceTestLimits())
