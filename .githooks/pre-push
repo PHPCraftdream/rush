@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # pre-push: mirror the CI gates so a red build never reaches origin.
+# Invoked by git, this hook runs .githooks/pre-push-fast.sh unless
+# RUSH_PREPUSH_FULL=1 is set. `RUSH_PREPUSH_FULL=1 git push` runs the full
+# mirror; a manual `bash .githooks/pre-push` is always the full mirror.
+# Fast mode does NOT run golangci-lint, cross-GOOS lint, web checks,
+# go test (except the spawn guard) or the run_capped self-test.
+# Exception: hook/config diffs run hook self-tests and run_capped self-test.
+# Fast's golangci-lint fmt --diff is formatting, not full lint.
+# The legacy CI-parity description below applies only to full mode.
 #
 # Runs the same checks as .github/workflows/{build,lint}.yml:
 #   1. go build ./...                 — compile + //go:embed all:dist
@@ -52,6 +60,9 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/pre-push-budgets.sh"
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
+if [ $# -ge 2 ] && [ "${RUSH_PREPUSH_FULL:-0}" != 1 ]; then
+	exec bash "$HOOK_DIR/pre-push-fast.sh" "$@"
+fi
 
 fail() { printf '\n\033[31m✗ pre-push: %s\033[0m\n' "$1" >&2; exit 1; }
 step() { printf '\033[36m▸ %s\033[0m\n' "$1"; }
