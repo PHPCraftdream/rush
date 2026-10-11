@@ -259,6 +259,9 @@ func recoveredDelegationText(ctx context.Context, messages message.Service, chil
 		if msg.Role != message.Assistant || !msg.IsFinished() {
 			continue
 		}
+		if text, ok := recoveredQuestionText(childSessionID, msg.FullText(), msg.FinishPart()); ok {
+			return text, nil
+		}
 		if text := strings.TrimSpace(msg.FullText()); text != "" {
 			return text, nil
 		}

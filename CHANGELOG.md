@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- A delegated child's held question is no longer lost when its host dies: recovery of an interrupted delegation now puts the question (with its suggested options and any preamble) into the interrupted result the parent receives, instead of the generic "finished with no textual response" text. The question notice itself is still voided with the delegation, so the parent gets it exactly once.
+
 ## [0.2.0-alpha.14] - 2026-10-11
 
 - OpenAI Codex requests now read the current OAuth token from memory before every send (nothing is copied when a client is built), so delegated children, pinned models and wake-ups keep working across a token rotation by this or another process; a 401 that arrives before any output is retried once after the token store refreshed (or adopted) the credentials, and a failed refresh still returns the original 401 to the existing turn-level recovery. Error responses are drained only up to a bound.
