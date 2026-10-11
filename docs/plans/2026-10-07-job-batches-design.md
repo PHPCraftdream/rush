@@ -874,6 +874,10 @@ kill timeout as `stop_timeout`, shell and delegation Disposer implementations,
 and `ErrDispose` logging/routing. These are forward dependencies, not changes
 to those sections.
 
+With section 9.2's Rush-only commit hook, a failed commit faults the Runner and
+it leaves this lifecycle at once: no HostClosing, F or Closed follows (section
+9.2). Without a hook nothing here changes.
+
 ## 4. Notifications, output, and injection
 
 Separate three concepts:
@@ -949,8 +953,11 @@ and cause, never mirrors C: Stop(root) keeps the root Cancelled with cause
 `stop` even over a Completed child.
 
 Apply elision per level: a one-child chain collapses to its outermost selected
-batch. `R(Each){R.1(Each){a,b}}` selects `a,b,R`. If Add appends R.2 before
-R.1 settles, selection is `R.1,R.2,R`. Batches with at least two direct
+batch. `R(Each){R.1(Each){a,b}}` selects `a,b,R`. For `R(Each){R.1}` with
+R.1 a task, if Add appends R.2 before R.1 settles, selection is `R.1,R.2,R`.
+For the nested tree, if Add appends task R.2 to R before either a or b settles
+and completion order is a,b,R.2, both batches have two children and selection is
+`a,b,R.1,R.2,R`. Batches with at least two direct
 children retain the last child's notice and the parent's notice as separate
 events, with descendants before ancestors and siblings by ordinal.
 
@@ -1605,8 +1612,11 @@ this is core-event cleanup, not synthetic execution termination.
     r2 Completed, await R Completed, then Close. Notices are R.1,R.2,R
     in that order: last child and parent remain separate events. Repeat with
     fresh refs r3-add-helper-R/r3-add-helper-second and raw-root Task ingress
-    through OneItem, selecting NotifyEach on the resulting ordinary batch
-    before Submit; retain all fences and the same notice oracle.
+    through OneItem, which yields Notify all: retain all fences, but the
+    notice oracle is [R] only, since NotifyAll suppresses R.1 and R.2. The
+    NotifyEach variant of a helper-created batch is a Runtime-API test
+    (Runner.Submit with OneItem's result changed to Notify each before
+    Submit), not a scenario script: scenario JSON has no policy knob (5.2).
 - **R4:** output A → pause → B → completion read by cursor without false EOF
   or busy polling; small retention truncates the beginning with an explicit
   gap and recovery point, then the rest and a real EOF; not-started,
@@ -2194,11 +2204,41 @@ not by autonomous A0; this document invents no signature.
 The writer commits transitions in sequence order. Submit/Add reserve all
 accepted node rows before dispatch; StopRequested projects the latched cause;
 Settled projects state and reported outcome together with selected notices'
-pending delivery and wake in ONE transaction. Transition s's effects dispatch,
-reply and Done publication occur ONLY after commit s. A commit failure is a
-host failure and leads to Close, not dispatch of uncommitted effects or a
-successful reply. The closing drain still requires confirmed termination;
-storage failure is not permission to synthesize a settlement.
+pending delivery and wake in ONE transaction.
+
+Effects split in two. OUTWARD effects of transition s - StartLeaf dispatch and
+its timer, request replies, feed records, Done closing and notice delivery -
+occur only after commit s. CONTAINMENT effects - StopLeaf dispatch,
+Start-context cancellation and Dispose - never wait for a commit: they only
+reduce running work, latch no cause and accept no event. Section 3.3 rule 3 is
+unaffected because the winner is the loop's acceptance order, not dispatch
+order. Confirmed termination is unaffected because a Stop is not a termination
+report.
+
+A failed commit, or one with an unknown outcome, is fatal and never retried; the
+Runner becomes faulted. It applies no further event, so no HostClosing, Final
+or F follows. It publishes no outward effect of the failed transition or of any
+later one. It contains running work: no undispatched StartLeaf runs; Start
+contexts are cancelled; every accepted execution with no physical Stop
+dispatched yet, including one returned by an in-flight Start, gets one under
+section 3.1.2's slot rules, never retrying a failed control; Dispose follows
+section 4.5. Every public call, Wait included, then returns an error wrapping
+`ErrCommitFailed`. That sentinel belongs to the later hook contract, not A0's
+list. Done stays open for roots whose settlement was not published, so readers
+lag toward live (I8); Done channels already closed and cached Summaries stay
+valid. Events serves retained records, then the error; Final stays 0. Close
+waits, bounded by its ctx, for termination reports and disposal results of
+contained executions, then returns an error wrapping `ErrCommitFailed`, never
+nil or `ErrCloseTimeout`. A caller whose request was in the failed transition
+gets that error instead of a committed reply (the exception to section 2.3).
+
+Rush then exits the process. Exit releases the OS host lock and ends in-process
+work, which is what makes section 9.3's dead-host sweep sound. Rush never
+releases that lock, or opens another writer for the host, while the process
+lives. Rows that were not committed terminal get the sweep's `host_lost`;
+whichever rows of the failed commit actually landed are reconciled by the same
+sweep. The live host never synthesizes a settlement, and no outward effect is
+ever published for an uncommitted transition.
 
 Stop follows Runner.Stop cause acceptance, then StopLeaf cancellation, then
 confirmed report/Settled. Section 3.3 rule 3 applies: the first accepted event
@@ -2220,7 +2260,10 @@ Acceptance uses ordinary node rows: delay root ack while two leaves finish,
 then observe only selected notices after ack; elect an inline result for a
 one-item root and observe no later completion turn; fail root ack while work
 is running and retain a controllable reserved identity until cleanup/recovery,
-without repeating side effects.
+without repeating side effects; fail a commit while a running leaf needs Stop:
+bounded Close returns an error wrapping `ErrCommitFailed`, the process exits,
+the sweep writes `host_lost`, and no Done or notice is published for the
+uncommitted settlement.
 
 **Results (I6).** `Result.Details` carries or references the full response
 envelope, including text/media and metadata. Denial or failure never becomes
@@ -2305,7 +2348,8 @@ without rerunning side effects. For an announced root, create one root notice,
 not a notice cascade for recovered descendants; preserve existing
 terminal state and already-selected delivery records. Delete unannounced
 roots and their subtree rows. Recovery is the dead-host path, not a second
-arbiter racing the owning event loop. Diagnostic replay is not execution
+arbiter racing the owning event loop. A commit-faulted host (section 9.2) is
+recovered here after its process exits. Diagnostic replay is not execution
 recovery.
 
 Durable pull/history and inline-close transactions own consumer delivery,
@@ -2470,6 +2514,7 @@ Report section numbers below refer to the named round-two report, not this plan.
 | Captured roots, derived later Add await units, selected debt after elision and corrected current worker row-key note | 6.7, 8, 9.2, A.1/A.2 | AW-a/AW-b, R3-one/R3-chain/R3-add |
 | Reduced pre-refactoring and deferred ownership; no caps/migration/count-bug backlog | 3.4, 7.2, 8, 9.1/9.2, Appendix A | AW-a/AW-b; policy/termination acceptance |
 | Revision header, 43-ID matrix, 37 closed / 5 deferred / 1 withdrawn, whole-plan reference and cleanup sweep | Header, 2.1, 6, 8, Appendix A | Existing IDs retained; bounded Close/drain rules apply |
+| Post-review P1 fixes: outward vs containment effects, fatal commit fault (`ErrCommitFailed`, no HostClosing/Final, process exit then dead-host sweep); nested Add example in sole-child elision; R3-add helper variant keeps NotifyAll and expects [R] | 3.4, 4.1, 6.2, 9.2/9.3 | R3-add, R3-chain; later commit-failure acceptance in 9.2 |
 
 ### A.2 Noticed coverage and deferred boundaries
 
