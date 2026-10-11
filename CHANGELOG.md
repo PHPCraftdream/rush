@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.14] - 2026-10-11
+
 - OpenAI Codex requests now read the current OAuth token from memory before every send (nothing is copied when a client is built), so delegated children, pinned models and wake-ups keep working across a token rotation by this or another process; a 401 that arrives before any output is retried once after the token store refreshed (or adopted) the credentials, and a failed refresh still returns the original 401 to the existing turn-level recovery. Error responses are drained only up to a bound.
 
 - Fix concurrent OpenAI Codex OAuth refreshes: one exchange per provider in-process and across processes (a separate sidecar lock, not the general config write lock), compare-and-refresh so a caller whose token was already rotated does not burn the new refresh token, the rotated token is published to memory first and then to a dedicated write-ahead journal next to the config (`<config>.oauth-pending-<hash>.json`, mode 0600), the config edit is retried without limit by a store-owned worker, and a crash or an unwritable/corrupt config no longer forces a re-login: the next process recovers the token from the journal before any exchange. A journal that cannot be written within a bounded time is handed to the worker so running agents are never blocked. Behaviour change: a corrupt journal is moved aside to `.corrupt-*` (at most five kept) and never blocks a refresh; logout and a later-expiring external token win over a pending rotation. Other providers keep the previous refresh path.
