@@ -401,29 +401,38 @@ Batch states:
 ```mermaid
 stateDiagram-v2
     Pending --> Running: a descendant leaf is admitted
-    Pending --> Completed: empty batch
+    Pending --> Completed: settled (reducer), incl. empty
     Pending --> Skipped: stop on failure before it started
-    Pending --> Cancelled: stopped before it started
+    Pending --> Cancelled: stopped before it started, or settled (reducer)
     Pending --> Interrupted: host closing before it started
     Running --> Cancelling: stop or host closing latched
-    Running --> Completed: all leaves terminal (reducer)
-    Running --> Failed: all leaves terminal (reducer)
-    Running --> Cancelled: all leaves terminal (reducer)
-    Cancelling --> Cancelled: all leaves terminal (cause stop)
-    Cancelling --> Interrupted: all leaves terminal (cause host_closing)
+    Running --> Completed: all direct children terminal (reducer)
+    Running --> Failed: all direct children terminal (reducer)
+    Running --> Cancelled: all direct children terminal (reducer)
+    Cancelling --> Cancelled: all direct children terminal (cause stop)
+    Cancelling --> Interrupted: all direct children terminal (cause host_closing)
 ```
 
-A batch that ran without a latched cause aggregates once all its leaves are
-terminal: any Failed/TimedOut/Interrupted ⇒ Failed; otherwise any Cancelled
-⇒ Cancelled; otherwise Completed. A batch with a latched cause ends with that
-cause; descendant outcomes stay visible in the counts. A Pending successor
+A nonterminal batch (Pending, Running or Cancelling) settles in the transition in which its last nonterminal direct child becomes terminal — by any path (Settled, a rejected start under a latched cause, Stop of a Pending leaf or batch, a skip, a nested batch settling) and whether or not any leaf was ever admitted. A batch created with no nonterminal direct child (empty, or holding only empty batches) settles in its creating transition. Outcome: its own latched cause wins (stop ⇒ Cancelled, host_closing ⇒ Interrupted, stop_on_fail ⇒ Skipped); otherwise the unchanged leaf-count reducer with an empty cause (zero leaves ⇒ Completed). A never-admitted batch can only reduce to Completed or Cancelled. Within one transition: latch the event's causes top-down (Stop: the addressed node and its nonterminal descendants; HostClosing: every nonterminal node), change leaf states, settle bottom-up to a fixpoint (a child that ends Failed under stop-on-fail skips its successors in the same pass), then admit (§3.2). Notices follow settlement order: descendants before ancestors, siblings by ordinal. Invariant after every transition: every nonterminal batch has a nonterminal direct child, and no terminal batch has a nonterminal descendant.
+
+The unchanged leaf-count reducer is: any Failed/TimedOut/Interrupted ⇒ Failed;
+otherwise any Cancelled ⇒ Cancelled; otherwise Completed, including zero leaves.
+Without the batch's own latch, its aggregate cause is empty; child causes do not
+climb to ancestors. Descendant outcomes stay visible in the counts. Using direct
+children rather than leaves avoids settling a parent atop a stuck nested batch
+and preserves the Sequential gate and Release requirements.
+
+A Pending successor
 that stop-on-fail never started becomes Skipped, and so do its Pending
-descendants; descendants that are already terminal keep their state, so an
+descendants; an already-terminal successor batch also keeps its state (an
+all-stopped successor remains Cancelled after a later predecessor failure,
+not Skipped). Descendants that are already terminal keep their state, so an
 empty batch that completed earlier is never renamed (S3). Skipped is produced
 only by stop-on-fail and never conceals a start error.
 
-Empty batches complete immediately, have zero task counts, and then reject
-Add. An item asking for input is not terminal and does not free capacity;
+Empty batches, including batches holding only empty nested batches, complete
+in their creating transition, have zero task counts, and then reject Add.
+An item asking for input is not terminal and does not free capacity;
 waiting/interaction details belong to its executor.
 
 #### 3.1.1 Errors by phase (S2, A2)
@@ -522,8 +531,10 @@ change.
 
 The event-loop acceptance order, not wall-clock callback order, decides:
 
-1. **Add vs last completion:** Add accepted first extends the batch;
-   completion accepted first makes it terminal and subsequent Add fails.
+1. **Add vs last direct child becoming terminal:** Add accepted first extends
+   the batch; the event that makes its last nonterminal direct child terminal
+   accepted first settles it, and subsequent Add returns `ErrTerminal`.
+   This includes Stop of a Pending leaf, not just an execution completion.
 2. **Stop vs dispatch:** stop cancels undispatched tasks. An already
    authorized Start may be in flight; its context is cancelled and the
    returned execution is stopped before waiting for its final report.
@@ -616,12 +627,18 @@ older than `Oldest` gets `ErrGap` together with `Oldest`; the consumer then
 recovers current state through Snapshot/Wait and must not treat the feed as
 complete. Slow consumers never block the loop, cancellation or admission.
 
-**Notice selection.** Root completion produces one selected root notice. For
-descendant completion, NotifyEach applies to direct children; an ancestor
+**Notice selection.** Root completion produces exactly one selected root notice.
+For descendant completion, NotifyEach applies to direct children; an ancestor
 NotifyAll suppresses ordinary notices inside its subtree. A nested aggregate,
 a Skipped batch included, may be announced by its NotifyEach parent without
-repeating descendant output. Question/input requests are not engine events
-(section 4.4) and are never suppressed by completion-notification policy.
+repeating descendant output. A settlement cascade selects notices in settlement
+order: descendants before ancestors, siblings by ordinal. Reducer notices have
+an empty cause absent the batch's own latch, even when its leaf counts include
+Cancelled; Notice/NodeView cause is separate from Summary, which has no cause
+field. For B{B.1}, NotifyAll suppresses the B.1 notice and selects B once;
+NotifyEach permits B.1 before the exactly-once B root notice. Question/input
+requests are not engine events (section 4.4) and are never suppressed by
+completion-notification policy.
 
 One-task ingress defaults to NotifyAll. Its adapter delivers either the
 synchronous result or the root completion notice, never both plus a leaf
@@ -896,6 +913,8 @@ Section 7.2 fixes which slice owns each ID.
   trigger StopOnFail; a skipped nested batch is Skipped (not Completed), its
   pending leaves never start, one Skipped notice is selected under a
   NotifyEach parent, and already-terminal descendants keep their state.
+  An already-Cancelled successor batch keeps Cancelled when its predecessor
+  later fails; it is not renamed Skipped.
 - **E4:** several roots/groups share budgets. With `MaxConcurrent = 1`, root
   B's never-started leaf starts when root A's leaf settles, without Add or
   CapacityAvailable for B, and at most one execution is ever accepted at
@@ -911,13 +930,20 @@ Section 7.2 fixes which slice owns each ID.
   before execution termination; a Stop error or panic keeps the leaf
   Cancelling with a visible control error and its slot held, and only the
   single confirmed report frees the slot; repeated Stop is safe and
-  re-issues a failed stop.
+  re-issues a failed stop. Stop of a never-admitted leaf or subtree produces
+  no execution command; stopping only a subset leaves its ancestor Pending
+  until the last nonterminal direct child settles, then ready ancestors settle
+  bottom-up in that same transition.
 - **E7:** Add ordering and returned IDs, atomic rejection of invalid
   subtrees, the Add/last-settle race in both orders, empty batch, duplicate
-  root ID, depth/node-limit boundaries.
+  root ID, depth/node-limit boundaries. Zero-leaf nesting (batches holding
+  only empty batches) completes bottom-up on Submit/Add with zero counts,
+  no StartLeaf and no Pending descendant under a terminal ancestor.
 - **E8:** terminal result/notice emitted once; stale tokens, stale deadlines,
   and duplicate or late reports cannot change the winner or release a slot
-  twice; late control reports do not revive a terminal leaf.
+  twice; late control reports do not revive a terminal leaf. After every
+  transition, each nonterminal batch has a nonterminal direct child and no
+  terminal batch has a nonterminal descendant.
 - **E9:** ownership: mutating each caller-owned value of section 2.2 after
   its hand-off point changes nothing accepted; snapshots cannot mutate
   state; diagnostics and journals contain none of the sentinel strings
@@ -955,7 +981,13 @@ Section 7.2 fixes which slice owns each ID.
   Failed root returns its Summary with a nil error; a Snapshot from only the
   root ID discovers every node after several nested Adds; a leaf added at
   depth greater than one receives exactly its own kind, group, timeout and
-  payload in Launch.
+  payload in Launch. For a settled never-admitted root, Done closes and Wait
+  returns its Summary with nil error; Add returns `ErrTerminal`; terminal
+  Stop adds no records and does not change Head. Before Release, Output of
+  its never-started leaf returns `ErrNotStarted` and Inject returns
+  `ErrTerminal`. Release returns nil with one release record and zero Dispose
+  calls (no execution handle); Wait remains cached afterwards. Apply section
+  4.5 without changing the Stop/Dispose invocation protocol.
 - **L1:** three real command items through the CLI, one with a nonzero exit,
   plus a variant with a missing program: correct per-leaf states and codes,
   Failed aggregate, exit 1 with matched expectations; no model/API needed.
@@ -966,7 +998,8 @@ Section 7.2 fixes which slice owns each ID.
   keep their output.
 - **L3:** a controlled multi-root scenario exercises Add, capacity release,
   failure policy, nested stop, and both notification modes against its
-  `expect` oracle.
+  `expect` oracle, including a stopped never-admitted root settling before
+  the unrelated held execution releases its slot.
 - **L4:** replay preserves structural final state, commands and notices and
   performs no side effects, even if the scenario includes a process that
   would write a file; a failed and a cancelled run replay to the same
@@ -982,9 +1015,64 @@ Section 7.2 fixes which slice owns each ID.
   5 with an incomplete journal that never replays as complete.
 
 Use channels/barriers or synctest for timing-sensitive unit tests. Property/
-fuzz tests check invariants after event sequences with reproducible seeds and
-publish failing sequences. Do not manufacture CPU/memory load to test limits;
-controlled held tasks demonstrate admission limits.
+fuzz tests use seeded Submit/Add/Stop/StartRejected/Settled/HostClosing sequences,
+check both section 3.1 invariants after every transition, and publish failing
+sequences. No StartLeaf may appear under a terminal batch; stopping the last
+Pending leaf settles a never-admitted root in the same transition. Do not
+manufacture CPU/memory load to test limits; controlled held tasks demonstrate
+admission limits.
+
+### 6.3 S-R2-1 concrete scenarios
+
+The rows use section 5.2 script actions and oracle vocabulary, not additional
+schema fields. Braces/name assignments below abbreviate Spec trees; each task
+uses a named controlled `payload_ref`, each submit/add has a distinct `ref`,
+and each run has a bounded wait. Errors, transition contents, cause, attempts,
+Done/Wait, Head, disposal and replay checks not expressible in the current
+`expect` schema are prose/public-API assertions. See section 5.2 for the
+schema/oracle follow-up dependency, including singleton policy; these rows do
+not extend that schema or change integration ingress.
+
+| ID | Controlled script / public-API actions | Acceptance |
+|---|---|---|
+| **R-a** | `max_concurrent:1`; `submit {ref:ra-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:ra-B,root:B,spec:raw task}` normalized at lab ingress to `B{B.1}` with NotifyAll (2.1/5.2); `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; public Add corresponding to `add {ref:ra-add-B,parent:B,items:[controlled task]}` returns `ErrTerminal`; `stop {node:B}`; `stop {node:B.1}`; perform the pre-Release public checks below; `release {root:B}`; `complete {attempt:a1,state:completed}`. | `roots` A completed, B cancelled; B counts cancelled=1, all other counts=0; A completed=1, all others=0. `nodes` B.1 starts=0, A.1 starts=1. `notices` B=[B cancelled]; `before:[["B:notice","A.1:settled"]]`; `max_active:1`; `exit_code:1`. |
+| **R-b** | `max_concurrent:2`; `submit {ref:rb-R,root:R,spec:Sequential/stop/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1,R.2.2},R.3}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `stop {node:R.2.1}`; `stop {node:R.2.2}`; `await_state {node:R.2,state:cancelled}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`. | R cancelled, completed=2, cancelled=2, all other counts=0; R.2 leaves starts=0. `notices` R=[R.2 cancelled,R.1 completed,R.3 completed,R cancelled]; `before:[["R.2.2:stop_requested","R.2:notice"],["R.2:notice","R.3:started"]]`. |
+| **R-c** | `submit {ref:rc-Z,root:Z,spec:Parallel/NotifyAll{Z.1=Sequential[],Z.2=Parallel{Z.2.1=Parallel[]}}}`; public Add corresponding to `add {ref:rc-add-Z2,parent:Z.2,items:[controlled task]}` returns `ErrTerminal`. Second part: `max_concurrent:1`; `submit {ref:rc-P,root:P,spec:Parallel/NotifyAll{P.1,P.2=Parallel{P.2.1}}}`; `await_start {node:P.1,bind:p1}`; `release_start {attempt:p1,decision:accept}`; `stop {node:P.2.1}`; `await_state {node:P.2,state:cancelled}`; `complete {attempt:p1,state:completed}`; `await_state {node:P,state:cancelled}`; `release {root:P}`. | Z and every nested batch complete entirely in Submit, zero leaf counts and no commands; default `notices` Z=[Z completed]. P.2 cancelled before P settles; P counts completed=1, cancelled=1, all others=0. Public Release(P) succeeds. |
+| **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`. Variant ii uses concurrent public Close and its request-acceptance barrier as described below, then `await_stop {attempt:a1}`; `complete {attempt:a1,state:interrupted}`; join Close with result ok. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
+| **R-e** | Seeded valid Submit/Add/Stop/StartRejected/Settled/HostClosing sequences; controlled attempt tokens and acceptance barriers, with reproducible seed and failing sequence retained. | After every transition, every nonterminal batch has a nonterminal direct child and no terminal batch has a nonterminal descendant. No StartLeaf under a terminal batch; stopping the last Pending leaf settles a never-admitted root in that transition, without fake Start/Running or slot use. |
+
+**R-a transition and runtime assertions.** StopRequested(B.1) changes the leaf
+to Cancelled with cause stop, no token and attempts=0, with no StopLeaf or
+command record. The reducer settles B with empty cause, newly settled roots
+[B], and sequence s: Done closes and Wait returns `Summary{B,cancelled,counts,s}`
+with nil error. The `stop_requested` B.1 record precedes selected notices:
+only B under NotifyAll; in the NotifyEach variant B.1 precedes B. The later
+terminal Stops return nil without records or Head change. A.1 receives no Stop.
+Before Release, Output(B.1) returns `ErrNotStarted`, Inject(B.1) returns
+`ErrTerminal`, and Add(B, nonempty items) returns `ErrTerminal`. Release(B)
+returns nil, creates one release record and causes zero Dispose calls; Wait
+still returns its cached Summary afterwards (4.5, no invocation-protocol change).
+Final roots include B cancelled and its counts, B is not unfinished, and B's
+last record is <= `last_cursor`. Replay rebuilds B settlement from
+StopRequested, without a synthetic Settled or new event; this assertion does
+not redefine final cursor/footer semantics.
+
+Repeat R-a with B in group h bounded by `h:1`, held by another accepted task,
+or with h capacity-blocked by another controlled attempt's
+`release_start {attempt:hprobe,decision:refuse_capacity}` before B is submitted
+and with no `capacity_available`. B.1 still has zero attempts; the same
+settlement occurs without a wake-up. Singleton/waiting-level consumers depend
+on this lifecycle rule (see 9.2); their accounting and integration are unchanged.
+
+**R-d Close ordering.** A literal sequential `close {expect:ok}` followed by
+`await_stop`/`complete` would deadlock: Close waits for the held A.1 report.
+Instead, a public-API fixture calls Close concurrently, observes acceptance of
+HostClosing through a request barrier, checks B's Interrupted notice while
+A.1 is still held, then awaits Stop and completes a1 Interrupted; the concurrent
+Close returns nil. The pure Engine equivalent applies HostClosing and then
+controlled drain events. No concurrent script action or new schema field is
+introduced. Closed-feed availability remains the separate follow-up dependency,
+not a change to Events/Closed here.
 
 ## 7. Parallel-agent execution plan
 
@@ -1099,9 +1187,9 @@ Fixed for autonomous implementation:
 - Notifications default to NotifyAll; callers may request NotifyEach.
   Selected notices are records in the public feed.
 - Cancelled does not trigger StopOnFail; aggregate still exposes
-  cancellation. A never-started successor batch under stop-on-fail is
-  Skipped.
-- Empty batches immediately complete; Add to terminal/cancelling batches fails.
+  cancellation. A nonterminal Pending successor batch under stop-on-fail is
+  Skipped; an already-terminal successor preserves its state.
+- A batch settles when its last direct child is terminal, admitted or not; so empty batches complete immediately; Add to terminal/cancelling batches fails.
 - No automatic task retries; typed pre-execution capacity refusal is
   different and cannot lose a wake-up (availability generation per group).
 - `MaxParallel = 0` adds no cap; `Sequential(1)` caps its whole subtree.
@@ -1345,6 +1433,7 @@ No integration phase is marked complete merely because batchlab passed.
 
 | Finding | Resolution |
 |---|---|
+| S-R2-1 never-admitted batch never settles | 3.1 settlement rule; E6-E8, R5, L3 |
 | S1 a late capacity refusal loses a wake-up | 3.2 availability generation; E5 |
 | S2 errors/panics vs control failures | 3.1.1; E6, R1 |
 | S3 skipped nested batch reported Completed | 3.1 batch lifecycle; E3 |
