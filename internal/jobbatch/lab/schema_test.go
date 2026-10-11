@@ -48,8 +48,8 @@ func TestSchemaFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := strings.Fields("c-a c-a-ii c-b c-b-mirror c-c c-d c-d-i c-d-ii c-d-iii c-e c-e-undeclared f-d r-a r-a-h-held r-a-h-blocked r-b r-c-empty r-c-pending r-d-i r-d-ii r3-add r3-add-helper r3-chain r3-one v-b v-c v-c-empty-code v-c-result-code v-c-kept-code v-e-task v-e-batch w-a w-b-i w-b-ii w-d")
-	if len(files) != len(want) {
-		t.Fatalf("fixtures: got %d want %d", len(files), len(want))
+	if len(files) == 0 {
+		t.Fatal("empty fixture inventory")
 	}
 	for _, name := range want {
 		if _, err := os.Stat(filepath.Join("testdata", "scenarios", name+".json")); err != nil {
@@ -68,15 +68,46 @@ func TestSchemaFixtures(t *testing.T) {
 			}
 			var copy Scenario
 			schemaTestRoundTrip(t, s, &copy)
-			if s.Version != 1 || s.WaitBoundMS != 10000 || s.Expect == nil {
+			// Only declared invalid loader inputs bypass valid-smoke assertions.
+			name := strings.TrimSuffix(filepath.Base(file), ".json")
+			invalid := strings.HasPrefix(name, "v-a-")
+			_, loadErr := LoadScenario(bytes.NewReader(data))
+			if invalid {
+				if s.Expect == nil || s.Expect.ExitCode == nil || *s.Expect.ExitCode != ExitInvalid {
+					t.Fatal("V-a invalid fixture must explicitly declare exit2")
+				}
+				if loadErr == nil {
+					t.Fatal("invalid fixture accepted")
+				}
+				t.Logf("invalid fixture: %s", ScenarioValidationRule(loadErr))
+				return
+			}
+			if loadErr != nil {
+				t.Fatalf("valid fixture rejected: %s", ScenarioValidationRule(loadErr))
+			}
+			if s.Version != 1 || s.WaitBoundMS <= 0 || s.Expect == nil {
 				t.Fatal("missing contract bound/oracle")
 			}
-			if s.Expect.Roots == nil || s.Expect.Nodes == nil || s.Expect.Notices == nil || s.Expect.ExitCode == nil {
+			if s.Expect.ExitCode == nil {
+				t.Fatal("missing declared exit")
+			}
+			// Preserve full smoke assertions for the original inventory. Added
+			// focused fixtures may intentionally use partial metadata oracles (§5.2).
+			full := false
+			for _, original := range want {
+				full = full || name == original
+			}
+			if full && s.WaitBoundMS != 10000 {
+				t.Fatal("smoke contract bound")
+			}
+			if full && (s.Expect.Roots == nil || s.Expect.Nodes == nil || s.Expect.Notices == nil) {
 				t.Fatal("smoke oracle requires roots, nodes, notices and exit_code")
 			}
-			for _, root := range *s.Expect.Roots {
-				if _, ok := (*s.Expect.Notices)[root.ID]; !ok {
-					t.Fatalf("missing notice oracle for root %s", root.ID)
+			if s.Expect.Roots != nil && s.Expect.Notices != nil {
+				for _, root := range *s.Expect.Roots {
+					if _, ok := (*s.Expect.Notices)[root.ID]; !ok {
+						t.Fatalf("missing notice oracle for root %s", root.ID)
+					}
 				}
 			}
 			refs := map[string]bool{}
@@ -102,7 +133,7 @@ func TestSchemaFixtures(t *testing.T) {
 					}
 					refs[*a.Ref] = true
 				}
-				if strings.HasPrefix(string(a.Action), "await_") && (a.TimeoutMS == nil || *a.TimeoutMS <= 0) {
+				if strings.HasPrefix(string(a.Action), "await_") && (full && a.TimeoutMS == nil || a.TimeoutMS != nil && *a.TimeoutMS <= 0 || a.TimeoutMS == nil && s.WaitBoundMS <= 0) {
 					t.Fatal("unbounded await")
 				}
 			}
