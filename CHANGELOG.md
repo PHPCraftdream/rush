@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.16] - 2026-10-11
+
 - `rush run` no longer stays alive after the agent has finished because of an orphaned `await_tasks` `max_wait` timer: the timer is now remembered and cancelled for `until: any` as well as `all`, and a run start cancels the session's leftover `max_wait` timers from an earlier process (for example one that hit the run timeout). Timers the model schedules itself (`wakein`, `wakeon`, loops) still hold the run open.
 - `await_tasks` called by a delegated worker now tracks the exact jobs that were live when it was called instead of counting them: a job finishing while another one is launched no longer hides the finish from `until: any`, and jobs launched later neither wake `any` nor extend `all`.
 - OAuth outbox recovery no longer replaces a newer unrelated live credential with an external journal token: an external journal record is adopted only when the live token equals it, equals the owned pending token, or is its proven predecessor, so a token another process rotated meanwhile is kept.
