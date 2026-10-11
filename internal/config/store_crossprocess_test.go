@@ -51,9 +51,13 @@ func TestSetConfigFields_TwoStoresSameFile_BothUpdatesSurvive(t *testing.T) {
 			<-releaseFirst
 		}
 	}
+	var acquireOrder sync.Mutex
 	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
+		// Allocate the id and publish it atomically so sends keep id order.
+		acquireOrder.Lock()
 		id := int(acquireCalls.Add(1))
 		acquireEntered <- id
+		acquireOrder.Unlock()
 		if id == 2 {
 			close(secondAcquireReady)
 			<-allowSecondProbe
