@@ -180,6 +180,10 @@ func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider strin
 		if !ok || live.OAuthToken == nil {
 			return errOAuthCredentialCAS
 		}
+		// Recovery lineage gates adoption; owned live was arbitrated above.
+		if !reflect.DeepEqual(live.OAuthToken, latest.Token) && !reflect.DeepEqual(live.OAuthToken, entry.record.Token) && !oauthJournalLivePredecessor(latest, live.OAuthToken) {
+			return errOAuthCredentialCAS
+		}
 		if err := s.applyOAuthTokenWithPendingPredecessor(provider, live.OAuthToken, latest.Token, live.OAuthToken, true, latest); err != nil {
 			return err
 		}

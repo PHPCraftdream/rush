@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- OAuth outbox recovery no longer replaces a newer unrelated live credential with an external journal token: an external journal record is adopted only when the live token equals it, equals the owned pending token, or is its proven predecessor, so a token another process rotated meanwhile is kept.
 - Every rush process now re-reads the global OAuth credentials from disk about every 5 seconds in the background (a cheap file-stat check first, a full read only when the file changed) and lifts a token rotated by another process into memory, so a long-running process, delegated child or web session no longer keeps an already burned token until its next 401. The adoption goes through the same single arbiter as a refresh preflight and never signs the account out or changes the provider set.
 
 ## [0.2.0-alpha.15] - 2026-10-11
