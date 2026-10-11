@@ -75,7 +75,8 @@ func oauthJournalLivePredecessor(record *oauthJournalRecord, live *oauth.Token) 
 	if record.PredecessorRefreshTokenSHA256 != "" {
 		return oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256
 	}
-	return record.Token != nil && live.RefreshToken != "" && live.RefreshToken == record.Token.RefreshToken
+	// Same-refresh generations are ordered only by the arbiter's expiry rule.
+	return record.Token != nil && live.RefreshToken != "" && live.RefreshToken == record.Token.RefreshToken && arbitrateOAuthJournal(record, nil, live, nil) == oauthJournalLater
 }
 
 // The legacy primary digest and optional additional digests form one set.
