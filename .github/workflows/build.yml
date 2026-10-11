@@ -448,6 +448,10 @@ jobs:
           go-version-file: go.mod
       - name: go test -race -short -failfast (internal/hooks, internal/session)
         run: go test -race -short -failfast -timeout 15m ./internal/hooks/ ./internal/session/
+      # The task tree and its concurrent CAS/service property tests are
+      # race-sensitive and cheap (seconds), so they run here too.
+      - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
+        run: go test -race -short -failfast -timeout 15m ./internal/tasktree/... ./cmd/tasklab/ ./internal/csync/
       # internal/agent -- the most concurrency-heavy package in the repo
       # (generation fences, stream watchdog, mailboxes, coordinator
       # background work) -- gets -race coverage via the batched split
