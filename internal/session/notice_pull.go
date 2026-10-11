@@ -258,11 +258,8 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
 }
 
-// sessionNoticeVoidCondition implements doc sec.3.4's two task-scoped void
-// checks, inside the SAME transaction as the pull CAS: wake_only voids if
-// its named job is no longer running; supervision voids if the owner's
-// scope (excluding supervision itself, which has no async_jobs row) has no
-// other running row. Every other kind has no condition and never voids.
+// sessionNoticeVoidCondition voids wake_only/child_question for missing,
+// non-running or void jobs, and supervision for no live, non-void running scope.
 func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
 	case NoticeKindWakeOnly, NoticeKindChildQuestion:

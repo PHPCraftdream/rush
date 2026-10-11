@@ -7,6 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // awaitingAnswerStoppedTitle is the finish title of a question-tool stop;
@@ -14,9 +15,9 @@ import (
 // its options) inside the finish details, so a sub-agent's question can be
 // read back from history (subAgentQuestionFromFinish).
 const (
-	awaitingAnswerStoppedTitle = "Stopped: agent asked a question and is awaiting an answer"
-	awaitingQuestionPrefix     = "QUESTION: "
-	awaitingGuidanceMarker     = "\n\nThis is not a crash"
+	awaitingAnswerStoppedTitle = session.AwaitingAnswerStoppedTitle
+	awaitingQuestionPrefix     = session.AwaitingQuestionPrefix
+	awaitingGuidanceMarker     = session.AwaitingGuidanceMarker
 )
 
 // AwaitingAnswerGuidance returns the orchestrator-facing instruction

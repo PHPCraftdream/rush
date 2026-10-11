@@ -235,10 +235,8 @@ func recoveredResultText(ctx context.Context, messages message.Service, row db.A
 	return interruptedBashText, true, nil
 }
 
-// recoveredDelegationText mirrors the "newest finished assistant message"
-// read package agent's refreshSubAgentCompletion/capturePartialDelegation
-// use, scoped to this package's own dependency (message.Service) so
-// recovery needs no import of package agent.
+// recoveredDelegationText reads the newest finished assistant message;
+// partial delegation capture also reads unfinished progress.
 //
 // A6: a TRANSIENT messages.List error is distinct from "no messages at all"
 // (nil messages.Service, or an empty/no-finished-assistant-message list) --

@@ -8,14 +8,14 @@ import (
 
 // Match agent.subAgentQuestionBlockFromFinish without a session -> agent import.
 func recoveredQuestionText(childSessionID, preamble string, fp *message.Finish) (string, bool) {
-	if fp == nil || fp.Reason != message.FinishReasonError || fp.Message != "Stopped: agent asked a question and is awaiting an answer" {
+	if fp == nil || fp.Reason != message.FinishReasonError || fp.Message != AwaitingAnswerStoppedTitle {
 		return "", false
 	}
-	_, rest, ok := strings.Cut(fp.Details, "QUESTION: ")
+	_, rest, ok := strings.Cut(fp.Details, AwaitingQuestionPrefix)
 	if !ok {
 		return "", false
 	}
-	block, _, ok := strings.Cut(rest, "\n\nThis is not a crash")
+	block, _, ok := strings.Cut(rest, AwaitingGuidanceMarker)
 	if !ok {
 		return "", false
 	}
