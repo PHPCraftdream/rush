@@ -29,12 +29,11 @@ type arbiterState struct {
 	chainLastLaunch string
 	// sleepAll is await_tasks' "until: all" sleep (#1270): armed by the
 	// tool, cleared by every allowed drain launch, a human message and
-	// Stop. sleepWakeID remembers the sleep's pending max_wait once
-	// schedule so the clear paths can cancel it (an uncancelled schedule
-	// keeps OnceWakeOpen set and holds the run open).
-	sleepAll    bool
-	sleepWakeID string
-	gate        GateFacts
+	// Stop. maxWaitWakeID independently remembers either mode's pending once
+	// schedule so clear paths can cancel it even when sleepAll is false.
+	sleepAll      bool
+	maxWaitWakeID string
+	gate          GateFacts
 }
 
 // arbiter owns every arbiterState. The zero value is ready to use.
@@ -150,17 +149,18 @@ func (a *arbiter) suspended(sid string) bool {
 	return s != nil && s.suspended
 }
 
-// setSleepAll arms await_tasks' "until: all" sleep for sid, remembering
-// the max_wait once schedule id (empty when none) so the clear paths can
-// cancel it.
-func (a *arbiter) setSleepAll(sid, wakeID string) {
+// setSleepAll arms await_tasks' "until: all" sleep independently of max_wait.
+func (a *arbiter) setSleepAll(sid string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := a.stateLocked(sid)
-	s.sleepAll = true
-	if wakeID != "" {
-		s.sleepWakeID = wakeID
-	}
+	a.stateLocked(sid).sleepAll = true
+}
+
+// setMaxWaitWake remembers either await mode's timer without arming sleepAll.
+func (a *arbiter) setMaxWaitWake(sid, wakeID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stateLocked(sid).maxWaitWakeID = wakeID
 }
 
 // clearSleepAll disarms the sleep and returns the pending max_wait schedule
@@ -172,9 +172,9 @@ func (a *arbiter) clearSleepAll(sid string) string {
 	if s == nil {
 		return ""
 	}
-	id := s.sleepWakeID
+	id := s.maxWaitWakeID
 	s.sleepAll = false
-	s.sleepWakeID = ""
+	s.maxWaitWakeID = ""
 	return id
 }
 
@@ -443,7 +443,7 @@ func (s *arbiterState) idle(now time.Time) bool {
 	pauseOver := s.gate.RetryAt.IsZero() || !s.gate.RetryAt.After(now)
 	return s.holds == 0 && !s.suspended && s.autoResumes == 0 &&
 		len(s.overCap) == 0 && s.chainLinks == 0 && len(s.chainClaims) == 0 &&
-		!s.sleepAll &&
+		!s.sleepAll && s.maxWaitWakeID == "" &&
 		pauseOver && s.gate.FreeStreak == 0 && s.gate.PaidStreak == 0
 }
 

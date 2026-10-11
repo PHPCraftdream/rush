@@ -76,11 +76,11 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 	if mode == "all" {
 		// Arm the sleep BEFORE the schedule so a clear racing this call
 		// always finds the flag it must lift.
-		c.arb.setSleepAll(sessionID, "")
+		c.arb.setSleepAll(sessionID)
 	}
 	if maxWaitSeconds > 0 {
 		view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
-			fmt.Sprintf("await_tasks max_wait elapsed: %d task(s) may still be running: %s",
+			fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
 				len(waiting), awaitTaskSummary(waiting)))
 		if err != nil {
 			// The call failed: do not leave the sleep armed behind it.
@@ -88,12 +88,8 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 			return tools.AwaitTasksResult{}, err
 		}
 		res.MaxWaitScheduleID = view.ScheduleID
-		if mode == "all" {
-			// Remember the schedule so every clear path cancels it; an
-			// uncancelled once schedule keeps OnceWakeOpen set and holds
-			// the run open after the sleep is over.
-			c.arb.setSleepAll(sessionID, view.ScheduleID)
-		}
+		// Both modes own the timer; only all owns the sleep flag.
+		c.arb.setMaxWaitWake(sessionID, view.ScheduleID)
 	}
 	return res, nil
 }
@@ -232,7 +228,15 @@ func (c *coordinator) clearSleepAll(sessionID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := c.CancelWakeSchedule(ctx, sessionID, id); err != nil {
+	sched, err := c.wakeSchedulerFor()
+	if err == nil {
+		// Internal cleanup is idempotent, unlike the model-facing tool.
+		err = sched.store.CancelSchedule(ctx, sessionID, id, sched.now())
+		if err == nil {
+			sched.Notify()
+		}
+	}
+	if err != nil {
 		slog.Warn("await_tasks: failed to cancel the max_wait schedule",
 			"session_id", sessionID, "schedule_id", id, "err", err)
 	}

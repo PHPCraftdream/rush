@@ -309,6 +309,21 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	// best-effort, per invocation (the 60s pass started by the driver claim
 	// repeats them while the loop waits).
 	source.RunMaintenanceSweep(ctx)
+	// Resolve once for continue/useLast/new before orphan cleanup. Pin the
+	// selected session so the first turn cannot resolve a different owner.
+	sess, err := app.resolveSession(agent.WithCallOrigin(ctx, overrides.Origin), continueSessionID, useLast)
+	if err != nil {
+		return nil, err
+	}
+	continueSessionID, useLast = sess.ID, false
+	if store := app.WakeScheduleStore(); store != nil {
+		if _, err := store.CancelAwaitTasksMaxWait(ctx, sess.ID, time.Now()); err != nil {
+			return nil, fmt.Errorf("run-start await_tasks cleanup: %w", err)
+		}
+		if n, ok := app.AgentCoordinator.(interface{ WakeSchedulerNotify() }); ok {
+			n.WakeSchedulerNotify()
+		}
+	}
 
 	started := time.Now()
 	turnOverrides := overrides
