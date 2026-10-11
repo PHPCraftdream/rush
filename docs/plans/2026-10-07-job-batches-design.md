@@ -1955,6 +1955,19 @@ Before fan-out:
    pushes, Rush integration, library bumps, or nested agent launches by
    implementers.
 
+**A0a as written (2026-10-11).** `internal/jobbatch/{types,events,executor,runtime_types,errors}.go`
+hold the section 2 data declarations. Additions beyond the section 2 listing,
+all owner decisions: the pure helpers `ValidCode`, `ReservedCode` and `ValidRef`
+(Core validation and Runtime `norm` must answer identically); `ErrInvalidEvent`
+for invalid, stale or out-of-order events; the typed carriers `DisposeError`
+and `CloseTimeoutError` behind `ErrDispose` and `ErrCloseTimeout`;
+`NodeView.Control` (none, pending, acked, failed) exposing the control gate the
+`control` oracle mirrors, with `ControlError` its code and `ControlPending`
+exactly `Control == pending`; `Transition.SettledRoots` carrying the `Summary`
+each newly settled root's `Wait` returns; `Event` is one flat struct whose
+`Type` selects the field set documented on it. `Engine`, `Runner` and `Batch`
+are declared by their owning slices, not A0 (no empty placeholder structs).
+
 Contract changes later belong only to the integration owner. An implementer
 reports the missing field/method and its consumer-visible reason; the owner
 updates the contract and informs all affected agents before they depend on it.
