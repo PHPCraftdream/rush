@@ -192,7 +192,7 @@ type Disposer interface {
 type RunnerConfig struct {
     Limits          Limits
     Executor        Executor
-    ControlTimeout  time.Duration // Bound for each Stop/Dispose call; positive.
+    ControlTimeout  time.Duration // Per physical Stop/Dispose call, from dispatch; positive.
     RecordRetention int           // Records kept for Events; positive.
 }
 type SubmitRequest struct {
@@ -251,6 +251,8 @@ Supporting types, also frozen in A0:
   op, code}, CapacityAvailable{group}, DeadlineExpired{node, token},
   HostClosing, Release{root}. Invalid, stale or out-of-order events produce
   an error, no mutation, no sequence increment and no commands.
+  `ControlReported{op: stop}` answers exactly one pending StopLeaf command
+  for that leaf/token (section 3.1.2); it is not an unsolicited status update.
 - `Command`: StartLeaf carries the full immutable `Launch` (identity, token,
   kind, group, timeout, payload), so the Runtime needs no lookup to start a
   leaf. StopLeaf carries node, token and cause.
@@ -271,7 +273,9 @@ Supporting types, also frozen in A0:
 - `NodeView`: id, root, parent, ordinal, kind; batch policy fields for
   batches and group for tasks; state, latched cause, current token, attempt
   count, reported outcome (state, code, summary — never details), control
-  error code. Payload is never a view field. Summary is for explicit
+  error code and `control_pending` (true exactly while a StopLeaf command
+  awaits its logical answer). Batch nodes have no control state. Payload is
+  never a view field. Summary is for explicit
   inspection; it never enters records.
 - `Counts`: leaf counts by pending, active (starting, running, cancelling),
   completed, failed, cancelled, timed_out, interrupted, skipped. A nested
@@ -297,8 +301,11 @@ Supporting types, also frozen in A0:
 - Errors: `ErrInvalidSpec`, `ErrDuplicateRoot`, `ErrUnknownNode`,
   `ErrTerminal`, `ErrNotTerminal`, `ErrNotStarted`, `ErrUnsupported`,
   `ErrReleased`, `ErrClosing`, `ErrClosed`, `ErrCloseTimeout`, `ErrGap`,
-  `ErrExecutorPanic`, `ErrExecutionDone`, and `ErrCapacity`, which an
+  `ErrExecutorPanic`, `ErrExecutionDone`, `ErrDispose`, and `ErrCapacity`, which an
   executor wraps in its Start error to signal a typed capacity refusal.
+  `ErrDispose` names each affected node/token and its safe disposal code:
+  `dispose_pending`, `dispose_failed`, `dispose_panic` or `dispose_timeout`.
+  It describes handle cleanup, never a task outcome (sections 3.1.2, 3.4 and 4.5).
 
 Do not add a mandatory Store interface or DB-style transaction to this scope.
 
@@ -363,11 +370,17 @@ clone the entire forest on every transition; report changed nodes only.
   waits for executors — and gets the committed result. There is no
   "maybe accepted" outcome; an accepted Add always reaches its caller with
   its IDs.
-- `Stop` returns nil once the stop intent is accepted, or at once if the
-  node is already terminal. It never waits for `Execution.Stop` or for
-  termination; the executor's answer appears as the node's control error
-  (section 3.1.1). Termination is awaited with `Batch.Wait` or by following
-  the node's records in `Events`.
+- `Stop` returns nil once the stop intent is accepted. Every accepted
+  nonterminal call, including a repeated no-op, records one `stop_requested`;
+  a terminal node returns nil without acceptance or a record. After F it
+  returns `ErrClosed`, including for terminal nodes. It never waits for
+  `Execution.Stop` or termination; the control protocol is section 3.1.2.
+  Termination is awaited with `Batch.Wait` or the node's `Events` records.
+- `Release(root)` of a terminal root in an open or draining Runner is accepted
+  and returns immediately, without waiting for pins or Dispose. It gives up
+  retained handles and records Release. A repeat returns `ErrReleased`
+  without a record; after F it returns `ErrClosed`. Nonterminal roots return
+  `ErrNotTerminal` (sections 3.1.2 and 4.5).
 - `Batch.Wait` returns the root `Summary` with a nil error for every
   terminal outcome, Failed and Cancelled included; its error describes only
   the wait itself. Cancelling Wait never stops work.
@@ -478,14 +491,15 @@ waiting/interaction details belong to its executor.
    `executor_contract` violation, not journaled: there is no accepted event
    or diagnostic record for it. After F, callbacks cannot journal anything.
 2. **Accepted execution.** Only the attempt's report settles it, and a
-   report means the execution has stopped. An error or panic from
-   `Execution.Stop`, or a Stop exceeding `ControlTimeout`, is a control
-   failure: the Runner applies `ControlReported` with code `stop_failed`,
-   `stop_panic` or `stop_timeout`, which sets the node's control error and
-   changes neither its state nor admission; the reservation stays held. A
-   nil Stop only acknowledges the request and clears the control error.
-   Calling `Runner.Stop` again on a node whose last control report failed
-   re-issues StopLeaf; otherwise repeated Stop is a no-op.
+   report means the execution has stopped. Stop error, panic, timeout and
+   acknowledgement follow the serialized command/result protocol in section
+   3.1.2; none settles work or releases its reservation. Executor concurrency:
+   Stop may overlap ReadOutput, Inject and the report callback, but never
+   another Stop on the same Execution. Stop may repeat after the earlier
+   physical Stop returned, including after the executor reported termination
+   but before the loop accepted that report. Dispose runs once only after
+   the report is accepted, retained ownership is given up, and all calls have
+   actually returned. It overlaps no call; nothing may be called after Dispose.
 3. **Inspection and input.** Errors from `ReadOutput`/`Inject` return to
    their callers, a panic as `ErrExecutorPanic`; neither changes state.
 4. **Executor goroutines.** A panic inside a goroutine the executor owns is
@@ -494,6 +508,41 @@ waiting/interaction details belong to its executor.
 5. **No synthetic termination.** No rule in this document turns an error, a
    panic, a timeout, or a Close deadline into Settled. Work an executor never
    confirms stays visible and nonterminal.
+
+#### 3.1.2 Stop and disposal protocol (R2-API-02/03/04/05)
+
+Engine control state is per leaf/current token: `none`, `pending`, `acked`
+or `failed(code)`. Emitting StopLeaf sets `pending`; `control_pending` exposes
+that gate. Commands and logical results alternate per token, without a public
+invocation ID. Runtime alone calls `Execution.Stop`; Engine never calls it.
+
+| Operation / condition | Engine acceptance and effects | Runtime / lifetime rule |
+|---|---|---|
+| Stop leaf: Pending | Latch first cause `stop`; settle Cancelled; no StopLeaf. | No execution or physical Stop. |
+| Stop leaf: Starting | Latch first cause and emit StopLeaf, setting pending. | Cancel Start context; physically Stop only if Start returns an accepted Execution. A rejected Start settles by the existing cause and drops the command without ControlReported. |
+| Stop leaf: Running | Latch first cause, enter Cancelling, emit StopLeaf and set pending. | Dispatch physical Stop, or queue at most one command behind an existing physical Stop. |
+| Stop leaf: Cancelling | Reissue StopLeaf only when control is failed and nothing is pending; keep the original cause. Otherwise accepted recorded no-op. | A retry can queue behind a timed-out but still physically running Stop; never overlap physical Stops. |
+| Stop leaf: Terminal / after F | Terminal returns nil without a record; after F return ErrClosed. | No command or call. |
+| Stop batch/root: never admitted | Preserve section 3.1's S-R2-1 top-down causes, leaf changes and bottom-up settlement fixpoint; settle existing Pending descendants, no physical Stop. | No batch control state. |
+| Stop batch/root: Running or Cancelling | One pre-order subtree traversal: latch only nodes without a cause, stop Starting/Running leaves, settle Pending leaves, and retry exactly Cancelling leaves with failed control and nothing pending, keeping their causes. Terminal descendants stay unchanged. | Commands are in pre-order; no batch control state or aggregate retry gate. |
+| Every accepted nonterminal Stop call | Exactly one `stop_requested` record, including no-op calls; no extra request record per descendant. | Return at intent acceptance, not at dispatch, acknowledgement or termination. |
+| DeadlineExpired / first HostClosing | Latch only where no cause exists; issue initial cancellation controls as appropriate. Never retry a failed control or replace a cause. | Cancel Starting context; no automatic retry, including on host cancellation. |
+| ControlReported, current pending StopLeaf | Only `op: stop` answers pending: empty code acknowledges nil, sets acked and clears control error; failure sets failed(code) and control error (`stop_failed`, `stop_panic`, `stop_timeout`). Neither changes state, reservation or generation. | At most one logical result per command: first physical return, panic or timeout wins a one-shot latch. |
+| ControlReported without pending / stale token / terminal / after F | Error, no mutation, sequence increment or record (ErrClosed after F). | Never publish an unsolicited or late result. |
+| Physical Stop dispatch and return | Logical pending is independent of the physical-call slot. | Per-handle lock stores all active-call pins, one physical Stop slot and at most one queued StopLeaf. Acquire the Stop pin in the loop at physical dispatch; start ControlTimeout then, not while queued. Release pin and slot ONLY at actual return, never at timeout, Settled or F. Dispatch queued work only if the leaf is still nonterminal. |
+| Timeout / late Stop return / leaf settlement | Timeout may answer the pending command once; settlement retires its control gate and drops any queued command. | Once the result latch fired or the leaf is terminal (even before F), late return is pin-only. No ControlReported if the leaf settles first, the queued command is dropped, or F has occurred. No automatic retry. |
+| Release(root), terminal and open/draining | Accepted, record Release, return immediately; repeat ErrReleased without record; after F ErrClosed. | Give up retained handles without waiting for pins or Dispose; reject new handle accesses (section 4.5). |
+| Dispose | Not an Engine event or task settlement; no feed/event. | Runner-only, once after accepted termination report, give-up by Release or F, pins=0, and optional Disposer present. Use detached context; ControlTimeout starts at physical dispatch. First nil / `dispose_failed` / `dispose_panic` / `dispose_timeout` latches cleanup result; no retry, late actual return ignored. No capability means no disposal call is required (sections 3.4 and 4.5). |
+| Close(ctx), including host cancellation | First HostClosing only, never retries controls; drain to authoritative Final/F unchanged. | Lifetime wait is bounded by ctx and includes disposal results after F: on ctx expiry before F return ErrCloseTimeout; after F return ErrDispose naming failed cleanup, or pending cleanup if ctx expires before results complete; nil only when all required disposals succeeded. F gives up unreleased handles; disposal waits for pins outside the loop. Repeated Close results are stable once cleanup results complete (sections 3.4 and 4.5). |
+
+ReadOutput and Inject also pin their physical calls. Pins and disposal neither
+free admission slots nor bump availability generations. Accepted execution
+termination and Start rejection handle reservations by sections 3.1/3.2;
+in particular capacity-refused attempts release their reservations without
+pretending to be accepted-execution settlements. Disposal results do not
+change Final, F, frozen task state, cached Wait or retained feed boundaries.
+The Release/Close/Dispose rows forward-reference the lifetime details in
+sections 3.4 and 4.5; feed drain never waits for cleanup or observers.
 
 ### 3.2 Admission and fairness
 
@@ -571,7 +620,10 @@ The event-loop acceptance order, not wall-clock callback order, decides:
    retain the executor's reported outcome as details, not as a second notice.
 4. **Repeated/late reports:** reports for terminal nodes or stale launch
    tokens cannot release capacity twice, restart work, or change the winner.
-   Late control reports cannot revive a terminal node.
+   Each StopLeaf command has at most one logical ControlReported (possibly
+   none if settlement, queue drop or F wins). Late physical Stop returns are
+   pin-only, including before F once terminal; they cannot clear or replace
+   a newer control error (section 3.1.2).
 5. **Timeout vs Stop:** the first accepted cancellation cause is retained.
    A later timer cannot relabel an operator stop or a completed task.
 6. **Timers are attempt-scoped:** the Runner arms an item's timeout when it
@@ -599,50 +651,78 @@ synchronous adapter will explicitly connect caller cancellation to Stop.
 
 Host shutdown is distinct from user Stop.
 
-- **Closing** starts at host-context cancellation or at the first `Close`
-  call, as one `HostClosing` event. New Submit, Add and Inject fail with
-  `ErrClosing`. Pending leaves become Interrupted. Starting and Running
-  leaves without a latched cause latch `host_closing` and receive StopLeaf.
-- **Draining.** The loop keeps running after closing begins. It accepts
-  Start results, reports and control results, and serves View, Snapshot,
-  Events, Output, Stop and Release. Executor calls made while draining
-  (`Stop`, `Dispose`) use a context detached from the cancelled host context
-  and bounded by `ControlTimeout`; a cancelled host or request context never
-  makes cleanup useless.
-- **Close(ctx)** waits for Closed, not merely terminal roots, or until ctx
-  ends. On expiry it returns an error wrapping `ErrCloseTimeout` that names
-  the unfinished nodes. Nothing is settled synthetically, reservations stay
-  held, and Close may be called again.
+- **Closing** starts at host-context cancellation or the first `Close` call.
+  Together they accept exactly one `HostClosing` event over the Runner's
+  lifetime; later calls/cancellation never reissue it or retry failed controls.
+  New Submit, Add and Inject fail with `ErrClosing`. Pending leaves become
+  Interrupted. Starting and Running leaves without a latched cause latch
+  `host_closing` and receive initial StopLeaf controls, preserving existing
+  causes (section 3.1.2).
+- **Draining.** The loop keeps accepting Start results, reports and control
+  results, and serves View, Snapshot, Events, Output, Stop and Release.
+  Physical Stop and Dispose use detached contexts bounded by `ControlTimeout`,
+  starting at dispatch, not queueing; cancelled host/request contexts do not
+  pre-cancel cleanup.
+- **Close(ctx)** waits for F and then the logical disposal result of EVERY
+  execution handle given up during the Runner's lifetime, including handles
+  given up by Release before F. Expiry before F returns an error wrapping
+  `ErrCloseTimeout` naming unfinished nodes. Nothing settles synthetically;
+  reservations stay held. Once closed, failed disposal results, or pending
+  results when ctx expires, return `ErrDispose` naming each affected node,
+  launch token and code (`dispose_failed`, `dispose_panic`, `dispose_timeout`
+  or `dispose_pending`). Nil requires all required disposal results to be nil;
+  no required disposals is vacuous success. Close can be called again: pending
+  cleanup can complete, but once all logical results are in, repeated calls
+  return the same success or failure, without retrying disposal.
 - **Closed** means closing AND every root terminal, witnessed by
-  Transition.Final. Terminal roots alone do not close an open Runner.
-  Runtime first appends the transition's event, commands and selected notices
-  in order, then ONE last `closed` record with sequence S_F and cursor F.
-  It sets EventPage.Final=F and wakes readers, closes Done for roots newly
-  settled in that transition, then enters Closed and exits the loop; pending
-  Close calls receive nil. All records of any transition precede its roots'
-  Done publication. Close never waits for a reader or observer acknowledgement.
-  A later Close returns nil. Events reads retained records through F, and
-  View/Snapshot read frozen final state (sections 1.2 and 4.1); released roots
-  return `ErrReleased`. Existing Batch handles answer Done/Wait from cached
-  Summary. Output, Inject, Stop, Submit, Add, Release and CapacityAvailable
-  return `ErrClosed`. Late executor callbacks after F append nothing and
-  cannot change Head, Final or frozen state.
-- An executor that never confirms keeps the Runner draining. That state is
-  visible through Snapshot and Close errors, never hidden.
+  Transition.Final. Terminal roots alone do not close an open Runner. The
+  exact publication order is: append Final's event, commands and selected
+  notices in order; append ONE last `closed` record with sequence S_F and
+  cursor F; set EventPage.Final=F and wake readers; close Done for roots newly
+  settled in that transition; enter Closed and exit the loop; THEN give up
+  unreleased handles, start eligible Dispose calls when pins=0, and resume
+  Close waiters into the cleanup wait. Handles already given up by Release
+  are never given up or disposed again at F. All transition records precede
+  their roots' Done publication. Closed is a feed/state boundary, not a
+  promise that pending or later Close calls return nil: Close has the separate
+  disposal barrier above and never waits for reader/observer acknowledgement.
+  Events reads retained records through F; View/Snapshot read frozen final
+  state (sections 1.2 and 4.1), or `ErrReleased` for released roots. Existing
+  Batch handles answer Done/Wait from cached Summary. Wait, Done, Events and
+  final View/Snapshot are independent of disposal. Output, Inject, Stop,
+  Submit, Add, Release and CapacityAvailable return `ErrClosed`. Late callbacks
+  append nothing and cannot change Head, Final or frozen state.
+- An executor that never confirms termination keeps the Runner draining,
+  visible through Snapshot and pre-F Close errors, never hidden.
 
-**See Stop/Dispose follow-up (R2-API-05, R2-API-02/03).** Dispose after F
-runs outside the loop and cannot create feed records. Its Close result and
-bounded-wait contract belongs to the Stop/Dispose task; reader drain remains
-independent. Late Stop completion after F is pin-only;
-`oneControlReported` must mean at most one, possibly none when terminal
-acceptance or F already won. This change does not decide the cleanup protocol.
+**Stop pins and the disposal barrier (R2-API-05, R2-API-02/03).** Each
+StopLeaf command has at most one logical ControlReported, possibly none if
+settlement, queue drop or F wins. After its timeout/result latch or terminal
+settlement, late physical Stop return is pin-only, before as well as after F;
+it cannot publish another result or replace a newer control error. Per-handle
+locks and pins survive loop exit. A Stop still physically executing after
+settlement allows Release to return nil immediately but prevents Dispose
+until actual return releases its pin. If it never returns, bounded Close
+returns `ErrDispose` with `dispose_pending` after F, even though the feed and
+cached task results are already final. Dispose's own `dispose_timeout` is a
+logical cleanup result, not confirmation of physical resource cleanup: Close
+must not wait forever for that timed-out physical Dispose to return (section
+4.5). Neither late Stop nor disposal creates feed records or Engine events.
 
-**See capacity follow-up (S-R2-2).** An independent capacity tail accepted
-before F is covered by the final boundary; after Closed CapacityAvailable
-returns `ErrClosed` without a generation change. The independent signal
-source remains the capacity task.
+**Accounting dependency.** See section 3.2, Waiting executions and budgets
+(S-R2-2). Failed or hung Stop on a still-Cancelling execution keeps its
+admission slot indefinitely until accepted execution termination; pins and
+disposal do not free slots or advance availability generations. An independent
+capacity tail accepted before F is covered by the final boundary; after Closed
+CapacityAvailable returns `ErrClosed` without a generation change. The
+independent signal source remains the capacity task.
 
-Restart/resumption and cross-process delivery are later work.
+**Integration dependencies (sections 9.1/9.2/9.4).** Rush wiring must cover
+singleton Stop at leaf/root, durable cause before cancellation, repeated
+`job_kill` reissue and ledger order, kill timeout as `stop_timeout`, shell and
+delegation Disposer implementations and shutdown `ErrDispose` logging, and
+cross-process routing. These are forward dependencies, not changes to those
+sections; restart/resumption and cross-process delivery remain later work.
 
 ## 4. Notifications, output, and injection
 
@@ -758,18 +838,55 @@ waiting for input stays nonterminal and keeps its slot.
 
 After settlement the Runner is the only owner of an execution handle. An
 executor must not keep its own registry of finished executions; the
-Execution value holds its retained output. Output and Inject take a lease on
-the handle through the loop and run outside it.
+Execution value holds its retained output. Output, Inject and physical Stop
+acquire active-call pins through the loop under a per-handle lock, then run
+outside it. The lock and pin bookkeeping survive loop exit. Pins are released
+ONLY when the physical call actually returns, including after timeout,
+settlement or F; a logical result never releases a pin. Physical Stop's slot
+and queued-command rules are in section 3.1.2. Pins and disposal have no
+admission-slot or availability-generation effect (section 3.2, Waiting
+executions and budgets, S-R2-2); failed/hung Stop keeps a still-Cancelling
+execution's reservation until accepted termination.
 
 `Release(root)` is refused with `ErrNotTerminal` while any node of the root
-is nonterminal, and only roots can be released. After Release, new Output,
-Inject, View and Snapshot calls on that root return `ErrReleased`; leases
-already taken finish safely; when the last lease ends, the Runner calls
-`Dispose` once (if the execution implements it) bounded by `ControlTimeout`.
-`Batch.Wait` keeps returning the Summary. A small root-ID tombstone is kept
-for the Runner lifetime so an old ID cannot launch new work; Runner memory
-therefore grows with the number of submitted roots — a documented limit, not
-a reason to add an eviction policy.
+is nonterminal, and only roots can be released. Before F, accepted Release
+records exactly one `release`, gives up retained handles and returns
+immediately, without waiting for pins or Dispose. Repeated Release returns
+`ErrReleased` without a record. New Output, Inject, View and Snapshot calls
+on that root return `ErrReleased`; already pinned calls finish safely. Dispose
+becomes eligible at give-up if pins=0, otherwise at the last pin's actual
+return, once accepted execution termination has been reported. At F, after
+Closed and loop exit, the Runner implicitly gives up every unreleased handle
+without a release record; handles already released are not given up again.
+Release after F returns `ErrClosed`.
+
+**Disposal protocol.** Runner alone calls the optional execution `Disposer`,
+exactly once per eligible handle, outside the loop with a detached context.
+`ControlTimeout` starts at physical dispatch. A one-shot latch records the
+first nil return, failure (`dispose_failed`), panic (`dispose_panic`) or
+timeout (`dispose_timeout`) as its logical result. No retry is permitted;
+a physical return after timeout is ignored. A disposal result need not await
+physical return: specifically, timeout is a logical result, NOT confirmation
+that physical resource cleanup completed. Close waits for that result, not
+forever for a timed-out Dispose call. A pin blocking dispatch instead leaves
+`dispose_pending` until the pin returns; it is not a dispatched Dispose
+timeout. Disposal never emits a feed record or Engine event, settles a task,
+or alters F, frozen state or cached Wait.
+
+No Dispose call is required for a stopped Pending leaf, Skipped leaf,
+Interrupted Pending leaf, capacity-refused or otherwise Start-rejected
+attempt, or accepted execution without Disposer: these have zero required
+disposals. Close owns the logical cleanup results of ALL handles given up
+before or after F, including earlier Release, and retains those results even
+when public handle access is gone. Its disposal barrier, bounded pending
+errors and stable completed results are specified in section 3.4.
+
+`Batch.Wait` keeps returning the cached Summary and Done remains usable.
+A small root-ID tombstone is kept for the Runner lifetime so an old ID cannot
+launch new work; Runner memory therefore grows with submitted roots — a
+documented limit, not a reason to add an eviction policy. See sections
+9.1/9.2/9.4 for the integration dependencies noted in section 3.4; this
+protocol does not change those headings or decide cross-process routing.
 
 ## 5. Batchlab: separate runnable verification
 
@@ -793,9 +910,9 @@ and tests check the exact code; the first matching row wins:
 | Code | Meaning |
 |---|---|
 | 2 | usage error, unreadable or invalid scenario/journal |
-| 3 | unfinished: invocation cancelled, wait bound expired, or Close timed out |
+| 3 | unfinished or cleanup unconfirmed/failed: invocation cancelled, wait bound expired, `ErrCloseTimeout`, or `ErrDispose` |
 | 5 | `--events` journal incomplete (gap or write error) |
-| 4 | the scenario's `expect` block did not match |
+| 4 | the scenario's `expect` block or declared action expectation did not match, or an action returned an undeclared error |
 | 1 | finished, expectations (if any) matched, some root not Completed |
 | 0 | finished, expectations (if any) matched, every root Completed |
 
@@ -806,7 +923,9 @@ when the leaf codes differ).
 ### 5.2 Scenario format (P2, P5)
 
 A0 freezes the scenario schema in `internal/jobbatch/lab/schema.go`; decoding
-rejects unknown fields.
+rejects unknown fields. The vocabulary below, including gate results and oracle
+additions, is part of that same pre-fan-out schema freeze (section 7.1), not a
+post-implementation schema deferral.
 
 - `version`; `limits`; `runner` (`control_timeout_ms`, `record_retention`);
   `wait_bound_ms` — a mandatory overall bound.
@@ -814,28 +933,63 @@ rejects unknown fields.
   or `{"kind": "controlled"}`; task specs reference them by `payload_ref`.
   `messages`: named inject messages.
 - `script`: ordered actions. Every await takes `timeout_ms` (default: the
-  remaining wait bound) and fails the run with exit 3 when it expires.
+  remaining wait bound); an undeclared await expiry exits 3.
   - `submit` {ref, root, spec}; `add` {ref, parent, items}; `stop` {node};
     `inject` {node, message_ref}; `capacity_available` {group};
-    `release` {root}; `close` {timeout_ms, expect: ok | timeout}.
-  - `await_start` {node, bind}: waits for the next not-yet-awaited start
-    attempt of a controlled node and binds its token to a name.
+    `release` {root}; `close` {timeout_ms, expect: ok | timeout | dispose}.
+    Close expectations match nil, `ErrCloseTimeout`, or `ErrDispose`
+    respectively; matching timeout/dispose still exits 3 under section 5.1.
+  - `await_start` {node, bind}: waits for the next not-yet-awaited registered
+    start attempt of a controlled node and binds its token to a name, once.
   - `release_start` {attempt, decision: accept | accept_complete |
-    refuse_capacity | fail, state, code}; `accept_complete` reports
-    completion from inside Start.
-  - `complete` {attempt, state, code}; `fail_stop` {attempt, code} arms an
-    error for the next Stop of that attempt; `await_stop` {attempt};
-    `await_inject` {attempt, message_ref}; `emit` {attempt, text} appends
-    controlled output.
+    refuse_capacity | fail, state, code}: registered only, one decision;
+    returns AFTER physical Start returns. `accept_complete` reports completion
+    inside Start and leaves the attempt reported, not accepted.
+  - `complete` {attempt, state, code}; `emit` {attempt, text};
+    `await_inject` {attempt, message_ref}: accepted only.
+  - `hold_stop` {attempt}; `fail_stop` {attempt, code}: registered through
+    reported, arm the NEXT physical Stop, never an already-entered call.
+    `await_stop` {attempt, call:k} observes physical entry of indexed call k;
+    `return_stop` {attempt, call:k, result: ok | error:<code> | panic}
+    releases only that held call. Indexes start at 1 and increment at physical
+    entry, not at a Stop command, logical timeout or queued request.
+  - `hold_dispose` {attempt}; `await_dispose` {attempt};
+    `return_dispose` {attempt, result: ok | error:<code> | panic}: disposal
+    gates, with phase rules in section 5.3. Await observes physical entry.
+  - `hold_read` {attempt}; `return_read` {attempt}: output pin gates; hold
+    arms the next physical ReadOutput, return releases only the held read.
   - `await_state` {node, state | "terminal"}; `expect_output` {node,
     contains | eof}.
+  - Optional `async:<name>` on `close` or `expect_output` launches that action
+    without blocking the script; names are unique. `join` {name} waits for
+    it and checks its returned errors and declared expectations. Every async
+    action must be joined within the overall bound; no silent error loss.
+  - `await_record` {type, node?, code?}: observes the public Events feed,
+    nonconsumingly. Match all supplied fields against retained history in
+    cursor order (earliest match), starting at cursor 1 for each action, or
+    await a future match; repeat observers
+    may see the same record. No observer consumes another's match. An ErrGap
+    is an error, never reconstructed history; frozen reads follow section 4.1.
+  - Optional `expect_error:<code>` on any action declares its expected typed
+    error (including an await error). An undeclared action error exits 4,
+    except the unfinished/cleanup conditions with section 5.1 precedence;
+    absent or wrong expected error is a mismatch, exit 4. A matched expected
+    error never queues a deferred side effect. For async actions this check
+    occurs at join. Do not combine conflicting Close/error expectations.
 - `expect` — the independent oracle, optional in general and required for
   named smoke scenarios: `roots` [{id, state, counts}], `nodes` [{id,
-  parent, state, starts}], `notices` (ordered per root), `max_active` (the
-  observed maximum of concurrently accepted executions), `before` (partial
-  order pairs such as `["A.1:settled", "B.1:started"]`), and `exit_code`.
-  For real processes the oracle checks invariants, never an OS completion
-  order.
+  parent, state, control, control_pending, starts, stops, disposes}], `notices` (ordered per root),
+  `max_active` (the observed maximum of concurrently accepted executions),
+  `before` (partial order pairs such as `["A.1:settled", "B.1:started"]`),
+  and `exit_code`. `control` mirrors the current leaf/token gate exactly:
+  `none`, `pending`, `acked`, or `failed(code)`; `control_pending` is the
+  boolean NodeView gate of section 2 (no batch roll-up). `starts` counts physical
+  fixture Start entries; `stops`/`disposes` count physical fixture/control entry,
+  not logical commands or results; zero is meaningful. Additional labels are
+  `<attempt>:stop_entered#k`, `<attempt>:stop_returned#k`,
+  `<attempt>:dispose_entered`, and `closed` (producer Final publication).
+  Fixture labels are observations, not synthetic feed records. For real
+  processes the oracle checks invariants, never an OS completion order.
 
 A standalone task in `submit.spec` is normalized at ingress to a one-task
 batch with the scenario's policy (E1). Named smoke scenarios with their
@@ -847,27 +1001,80 @@ A development/test fixture, not a production MCP/agent fallback. Frozen API;
 the bodies belong to the Laboratory slice:
 
 ```go
+// Data contract only: GateResult is "ok", "error:<code>", or "panic".
+// StartDecision uses decision/state/code as listed in section 5.2.
+type GateResult string
+
 func NewControlledExecutor() *ControlledExecutor
 func (c *ControlledExecutor) AwaitStart(ctx context.Context, id jobbatch.ID) (jobbatch.Launch, error)
 func (c *ControlledExecutor) ReleaseStart(ctx context.Context, token uint64, d StartDecision) error
 func (c *ControlledExecutor) Complete(ctx context.Context, token uint64, r jobbatch.Result) error
+func (c *ControlledExecutor) HoldStop(token uint64) error
 func (c *ControlledExecutor) FailNextStop(token uint64, code string) error
-func (c *ControlledExecutor) AwaitStop(ctx context.Context, token uint64) error
+func (c *ControlledExecutor) AwaitStop(ctx context.Context, token uint64, call uint64) error
+func (c *ControlledExecutor) ReturnStop(token uint64, call uint64, result GateResult) error
+func (c *ControlledExecutor) HoldDispose(token uint64) error
+func (c *ControlledExecutor) AwaitDispose(ctx context.Context, token uint64) error
+func (c *ControlledExecutor) ReturnDispose(token uint64, result GateResult) error
+func (c *ControlledExecutor) HoldRead(token uint64) error
+func (c *ControlledExecutor) ReturnRead(token uint64) error
 func (c *ControlledExecutor) AwaitInject(ctx context.Context, token uint64) (json.RawMessage, error)
 func (c *ControlledExecutor) Emit(token uint64, data []byte) error
 ```
 
-`Start` registers its attempt and blocks until `ReleaseStart` names its
-token, or until its context is cancelled — it then returns the context error
-with no side effects. `AwaitStart` returns the attempts of a node in start
-order, each once. Every other action names an attempt by token, so a late
-action for an old attempt can never touch a newer one; an unknown or
-already-settled token returns `ErrUnknownAttempt` and is never queued for a
-future attempt. `Stop` records the request (observable through `AwaitStop`)
-and returns nil, or the error armed by `FailNextStop`, but never completes
-the execution: only `Complete` confirms termination, which lets tests hold
-termination open. Controlled executions implement OutputReader (fed by
-`Emit`) and Messenger (observed by `AwaitInject`).
+**Attempt phases and decisions.** Start registers its token and blocks until
+ReleaseStart supplies the first decision or its context is cancelled. The
+observable progression is `registered -> release_start (once) -> accepted
+or retired`; accepted execution termination moves to `reported`, and physical
+Dispose return moves to `disposed`. There is no hidden `decided` phase.
+Refusal, start failure or cancellation without acceptance retires the attempt;
+cancellation returns a context error with no execution side effects.
+ReleaseStart acknowledges only after Start has returned; accept_complete
+reports inside Start and is already reported at that acknowledgement. A
+cancelled wait for acknowledgement never replaces the first decision.
+AwaitStart waits for registration, returning each node's attempts in start
+order exactly once; script binding names that token, not a future execution.
+
+**Phase errors.** ReleaseStart is registered only; Complete, Emit and
+AwaitInject are accepted only. Too-early operations and repeats return
+`ErrAttemptPhase` immediately. Retired, disposed or unregistered tokens return
+`ErrUnknownAttempt`; Complete after reported also returns `ErrUnknownAttempt`
+(preserving F-b). Errors never queue work, change the first decision or affect
+a newer attempt. An await validates phase first, then may wait only for its
+specified observation; it never queues a mutation for a future phase.
+
+**Physical gates.** HoldStop and FailNextStop may arm the next physical Stop
+from registered through reported. A duplicate arm of the same kind is a phase
+error. Ungated Stop returns nil or the armed error; if both gates are armed,
+entry consumes both arms and ReturnStop's explicit result chooses the held
+call's physical result. AwaitStop
+observes entry of call k, including historical entries, in those phases.
+ReturnStop targets only an entered, still-held call k; too early or repeated
+returns are phase errors. Stop entry increments the index and fixture counter;
+physical return publishes stop_returned#k and releases its pin even when a
+logical timeout already won. Stop never completes an execution: only its
+single accepted termination report does. In particular, a held Stop may be
+returned AFTER reported until disposal, so C-a can release its outstanding pin.
+
+HoldDispose is accepted/reported only and arms the one physical Dispose before
+entry; a duplicate or post-entry arm is a phase error. AwaitDispose is valid in
+accepted/reported and ALSO after physical disposal has entered or finished
+(including disposed), returning the retained entry observation. This is the
+explicit exception to the disposed-token error rule. ReturnDispose releases
+only the entered held call, in reported, with the declared result. A logical
+Dispose timeout does not end that physical hold; its later return may mark
+disposed but cannot change the Runner's latched result. Ungated Dispose returns
+nil; controlled accepted executions implement Disposer. Retired attempts have
+zero disposals.
+
+HoldRead is accepted only, arming the next physical output read; duplicate arms
+are phase errors. ReturnRead releases only an entered held read, in accepted or
+reported, until disposal; too early/repeated returns are phase errors. It then
+uses normal output bytes/EOF semantics, not an invented result. An entered read
+keeps its physical pin through settlement/Release/Closed until ReturnRead.
+Controlled executions implement OutputReader (fed by Emit) and Messenger
+(observed by AwaitInject). These gates hold physical calls independently of
+context/logical timeout and never release pins on a logical result.
 
 ### 5.4 Process executor (P7)
 
@@ -929,21 +1136,25 @@ Platform strategy — an A0 decision, not left to the slice:
   An intact unfinished prefix can have capture complete; it is not a closed
   or full-run replay.
 
-When bounded Close returns nil, regardless of invocation cancellation,
+When the authoritative public EventPage boundary has `Final != 0`, regardless
+of whether bounded Close returned nil or `ErrDispose`, invocation cancellation,
 wait-bound expiry or normal completion, `run` drains Events through F before
 writing a closed footer: final_cursor=F, final_sequence=S_F, outcome=closed,
 with capture determined by the records actually written. The drain uses a
 context independent of the invocation and a bounded cleanup budget. Process
 exit status follows section 5.1 independently: cancellation/wait-bound expiry
-still exits 3 even when Close returns nil. On ErrGap,
+still exits 3 even when Close returns nil; `ErrDispose` also exits 3 while
+outcome remains closed. Disposal failure/unconfirmed cleanup is not an
+unfinished Engine. On ErrGap,
 record `gap{first_missing,resumed_at}`, resume at the returned Oldest and
 capture through F; retain capture gap even after reading `closed`. A write
 failure gives capture write_error. Neither blocks cancellation/Close, and
 Snapshot cannot rebuild missing records. If the writer cannot drain within
 its cleanup budget, it cannot claim capture complete.
 
-Only when bounded Close times out, drain nonblocking through the current
-Head cut, not through a future F, and exit 3. Footer outcome is unfinished
+Only for `ErrCloseTimeout` while the authoritative `Final == 0`, drain
+nonblocking through the current Head cut, not through a future F, and exit 3.
+If Final is already nonzero, use the closed branch instead. Footer outcome is unfinished
 with the IDs and root state derived exclusively from records <= cut, never from a later
 Snapshot. Its final_sequence is the last accepted transition at the cut;
 final_cursor is absent because the producer was not Closed at that cut.
@@ -961,8 +1172,12 @@ A prefix before `closed` leaves Engine non-Final: missing tail is detected,
 even if all roots were already terminal before a stateless tail.
 Replay also compares reconstructed outcomes, root states/counts, notices and
 closed/Final facts against the scenario's optional `expect` block wherever
-expressible by section 5.2's existing fields; closed/Final boundary facts
-remain covered by the journal checks above, without new schema fields.
+expressible by section 5.2's metadata fields. Disposal results are deliberately
+outside the feed: replay cannot recover physical fixture Stop/Dispose counters,
+held-call return labels, disposal results or output expectations. Compare only
+expressible feed metadata; never invent events to satisfy fixture assertions.
+Closed/Final boundary facts remain covered by the journal checks above. This
+limitation does not add journal schema fields or widen the schema task.
 
 Reject structural mismatches with exit 2: missing footer, unknown version,
 changed scenario digest, unannounced cursor holes, closed outcome without
@@ -979,9 +1194,11 @@ Section 5.1's first-matching-row precedence is unchanged. Replay never
 constructs an executor or reruns processes; a scenario whose process would
 write a file leaves that file absent.
 
-**See scenario-schema follow-up (R2-API-01, P3-B).** Unique refs and split
-complete scenario/oracle semantics remain in that scope; only the requested
-footer capture/outcome split is fixed here.
+**A0 dependency ordering (R2-API-01, P3-B).** Unique refs and scenario/oracle
+schema additions share the SAME A0 schema freeze: see section 5.2 Scenario
+format and section 7.1. This is ordering before fan-out, not deferral of those
+contracts to a later schema task. This section fixes capture/outcome semantics;
+it does not resolve unrelated ref or singleton-policy issues.
 
 ### 5.6 Timeouts and cleanup (P6)
 
@@ -1045,7 +1262,12 @@ Section 7.2 fixes which slice owns each ID.
   before execution termination; a Stop error or panic keeps the leaf
   Cancelling with a visible control error and its slot held, and only the
   single confirmed report frees the slot; repeated Stop is safe and
-  re-issues a failed stop. Stop of a never-admitted leaf or subtree produces
+  re-issues only failed-descendant controls on repeated leaf/subtree/root Stop,
+  excluding pending, acknowledged and terminal leaves. Pending retries are
+  recorded no-ops; each command has at most one logical result, timeout wins
+  once and late physical returns are pin-only. Physical Stops serialize, with
+  at most one queued retry and ControlTimeout starting at dispatch, not queueing
+  (3.1.2; C-b/C-c). Stop of a never-admitted leaf or subtree produces
   no execution command; stopping only a subset leaves its ancestor Pending
   until the last nonterminal direct child settles, then ready ancestors settle
   bottom-up in that same transition.
@@ -1090,7 +1312,11 @@ Section 7.2 fixes which slice owns each ID.
   unsupported and released are distinct errors; a paused message-capable
   fixture resumed by Inject at nested depth; Inject vs settlement and
   terminal injection refusal; Release with a read in flight is safe and
-  Dispose runs once after the last lease.
+  Dispose runs once after the last active-call pin, including physical Stop
+  even after logical timeout. Release and Close/F both give up retained
+  ownership without disposing across a held call; Runtime owns the protocol,
+  Laboratory the controlled scenarios C-a..C-d (6.5), integration owner their
+  cross-slice proof.
 - **R5:** request semantics with barriers between enqueue, acceptance and
   reply: cancellation before acceptance leaves no trace, cancellation after
   acceptance still returns the committed Submit/Add result; Stop returns at
@@ -1144,13 +1370,14 @@ admission limits.
 
 ### 6.3 S-R2-1 concrete scenarios
 
-The rows use section 5.2 script actions and oracle vocabulary, not additional
-schema fields. Braces/name assignments below abbreviate Spec trees; each task
+The rows use only section 5.2's updated, A0-frozen script actions and oracle
+vocabulary; they add no schema fields beyond those frozen additions.
+Braces/name assignments below abbreviate Spec trees; each task
 uses a named controlled `payload_ref`, each submit/add has a distinct `ref`,
 and each run has a bounded wait. Errors, transition contents, cause, attempts,
 Done/Wait, Head, disposal and replay checks not expressible in the current
 `expect` schema are prose/public-API assertions. See section 5.2 for the
-schema/oracle follow-up dependency, including singleton policy; these rows do
+schema freeze dependency, including singleton policy; these rows do
 not extend that schema or change integration ingress.
 
 | ID | Controlled script / public-API actions | Acceptance |
@@ -1158,7 +1385,7 @@ not extend that schema or change integration ingress.
 | **R-a** | `max_concurrent:1`; `submit {ref:ra-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:ra-B,root:B,spec:raw task}` normalized at lab ingress to `B{B.1}` with NotifyAll (2.1/5.2); `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; public Add corresponding to `add {ref:ra-add-B,parent:B,items:[controlled task]}` returns `ErrTerminal`; `stop {node:B}`; `stop {node:B.1}`; perform the pre-Release public checks below; `release {root:B}`; `complete {attempt:a1,state:completed}`. | `roots` A completed, B cancelled; B counts cancelled=1, all other counts=0; A completed=1, all others=0. `nodes` B.1 starts=0, A.1 starts=1. `notices` B=[B cancelled]; `before:[["B:notice","A.1:settled"]]`; `max_active:1`; `exit_code:1`. |
 | **R-b** | `max_concurrent:2`; `submit {ref:rb-R,root:R,spec:Sequential/stop/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1,R.2.2},R.3}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `stop {node:R.2.1}`; `stop {node:R.2.2}`; `await_state {node:R.2,state:cancelled}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`. | R cancelled, completed=2, cancelled=2, all other counts=0; R.2 leaves starts=0. `notices` R=[R.2 cancelled,R.1 completed,R.3 completed,R cancelled]; `before:[["R.2.2:stop_requested","R.2:notice"],["R.2:notice","R.3:started"]]`. |
 | **R-c** | `submit {ref:rc-Z,root:Z,spec:Parallel/NotifyAll{Z.1=Sequential[],Z.2=Parallel{Z.2.1=Parallel[]}}}`; public Add corresponding to `add {ref:rc-add-Z2,parent:Z.2,items:[controlled task]}` returns `ErrTerminal`. Second part: `max_concurrent:1`; `submit {ref:rc-P,root:P,spec:Parallel/NotifyAll{P.1,P.2=Parallel{P.2.1}}}`; `await_start {node:P.1,bind:p1}`; `release_start {attempt:p1,decision:accept}`; `stop {node:P.2.1}`; `await_state {node:P.2,state:cancelled}`; `complete {attempt:p1,state:completed}`; `await_state {node:P,state:cancelled}`; `release {root:P}`. | Z and every nested batch complete entirely in Submit, zero leaf counts and no commands; default `notices` Z=[Z completed]. P.2 cancelled before P settles; P counts completed=1, cancelled=1, all others=0. Public Release(P) succeeds. |
-| **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`. Variant ii uses concurrent public Close and its request-acceptance barrier as described below, then `await_stop {attempt:a1}`; `complete {attempt:a1,state:interrupted}`; join Close with result ok. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
+| **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`. Variant ii: `close {async:c,expect:ok}`; `await_record {type:host_closing}`; check B's notice while A.1 is held; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:interrupted}`; `join {name:c}`. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
 | **R-e** | Seeded valid Submit/Add/Stop/StartRejected/Settled/HostClosing sequences; controlled attempt tokens and acceptance barriers, with reproducible seed and failing sequence retained. | After every transition, every nonterminal batch has a nonterminal direct child and no terminal batch has a nonterminal descendant. No StartLeaf under a terminal batch; stopping the last Pending leaf settles a never-admitted root in that transition, without fake Start/Running or slot use. |
 
 **R-a transition and runtime assertions.** StopRequested(B.1) changes the leaf
@@ -1186,29 +1413,66 @@ on this lifecycle rule (see 9.2); their accounting and integration are unchanged
 
 **R-d Close ordering.** A literal sequential `close {expect:ok}` followed by
 `await_stop`/`complete` would deadlock: Close waits for the held A.1 report.
-Instead, a public-API fixture calls Close concurrently, observes acceptance of
-HostClosing through a request barrier, checks B's Interrupted notice while
-A.1 is still held, then awaits Stop and completes a1 Interrupted; the concurrent
+Instead, `close {async:c,expect:ok}` launches Close, and
+`await_record {type:host_closing}` observes public acceptance; check B's
+Interrupted notice while A.1 is still held, then
+`await_stop {attempt:a1,call:1}`, complete a1 Interrupted, and `join {name:c}`.
 Close returns nil. The pure Engine equivalent applies HostClosing and then
-controlled drain events. No concurrent script action or new schema field is
-introduced. The retained final feed is read after Close as in section 6.4.
+controlled drain events. These are the already updated section 5.2 actions,
+not another schema extension. The retained final feed is read after Close
+as in section 6.4.
 
 ### 6.4 Final boundary and frozen-feed scenarios
 
 These rows use the section 6.3 tree abbreviations, section 5.2 actions and
-oracle vocabulary. Reader/writer holds, concurrent Close, cursor/footer and
-replay assertions are lab barriers/public-API checks, not new script fields.
+oracle vocabulary, including only the updated additions frozen in 5.2.
+Reader/writer holds and cursor/footer/replay assertions remain lab
+barriers/public-API checks, not further script fields; concurrent Close may
+use the existing async/await_record/join actions.
 Every await and cleanup is bounded; no sleeps, second scheduler, Snapshot
 history reconstruction or consumer-side Notify selection is allowed.
 
 | ID | Controlled script / public-API actions | Acceptance |
 |---|---|---|
-| **F-a** | `record_retention:64`; `max_concurrent:2`; `submit {ref:fa-R,root:R,spec:Parallel/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1}}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`. Reader consumes through Head=k, then is held. Concurrent public Close observes HostClosing acceptance through the R-d barrier; `await_stop {attempt:r1}`; `await_stop {attempt:r21}`; `complete {attempt:r1,state:interrupted}`; `complete {attempt:r21,state:interrupted}`; join Close with nil THEN resume reader at k+1. | Close precedes reader drain. Contiguous k+1..F contains `host_closing`, two stop command records, two `settled` records, notices R.1, R.2 (not R.2.1), R, then exactly one last `closed`. `notices` R=[R.1 interrupted,R.2 interrupted,R interrupted]; R interrupted=2, all other leaf counts=0. S_F=s_R; all transition records precede Done. Post-Closed pages Head=Final=F, no ErrGap; Events(F+1) immediately returns empty Next=F+1 with ErrClosed. |
+| **F-a** | `record_retention:64`; `max_concurrent:2`; `submit {ref:fa-R,root:R,spec:Parallel/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1}}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`. Reader consumes through Head=k, then is held. Concurrent public Close observes HostClosing acceptance through the R-d barrier; `await_stop {attempt:r1,call:1}`; `await_stop {attempt:r21,call:1}`; `complete {attempt:r1,state:interrupted}`; `complete {attempt:r21,state:interrupted}`; join Close with nil THEN resume reader at k+1. | Close precedes reader drain. Contiguous k+1..F contains `host_closing`, two stop command records, two `settled` records, notices R.1, R.2 (not R.2.1), R, then exactly one last `closed`. `notices` R=[R.1 interrupted,R.2 interrupted,R interrupted]; R interrupted=2, all other leaf counts=0. S_F=s_R; all transition records precede Done. Post-Closed pages Head=Final=F, no ErrGap; Events(F+1) immediately returns empty Next=F+1 with ErrClosed. |
 | **F-b** | After F-a Close, two concurrent readers independently drain `Events(1)` through F, then ask F+1; a third asks F+3. `complete {attempt:r1,state:completed}` is late; inspect Snapshot(R), Head/Final and public Output(R.1), plus all post-Closed mutations. | Identical nonconsuming feeds 1..F ending in `closed`, then ErrClosed; F+3 is immediate EOF with Next=F+1. Late controlled Complete returns `ErrUnknownAttempt`; late executor callbacks create no records. Head=Final=F forever, Snapshot(R).sequence=S_F; Output and Inject/Stop/Submit/Add/Release/CapacityAvailable return ErrClosed. |
 | **F-c** | F-a in a separate run with `record_retention:4`, `ref:fc-R`, `--events`; hold writer through Close with a lab barrier. Public Events(1), then Events(F-3); compare the retained final window when published and after Close returns. Resume writer at the gap's Oldest and drain through F. | Events(1) gives ErrGap, empty page Next=Oldest=F-3, Head=Final=F. Events(F-3) returns the four frozen records ending in `closed`; window is unchanged before/after Close completion and repeat reads. Footer capture=gap{first_missing:1,resumed_at:F-3}, final_cursor=F, outcome=closed, exit 5. Replay is not complete; no rebuilding missing notices/history from Snapshot. |
 | **F-d** | `submit {ref:fd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `capacity_available {group:g}`; `close {expect:ok}`; `--events` writer drains through F. L6 copies remove `closed`, remove HostClosing+closed with footer retained, change final_cursor to F-1, or declare outcome closed without `closed`. | HostClosing is Final; last records are `host_closing`, `closed`. Footer final_cursor=last_cursor=cursor(closed)=F, final_sequence=S_F=s_A+2, settled_sequence(A)=s_A<S_F; capture complete, outcome closed, exit 0. Replay reproduces stateless capacity/HostClosing tail and `closed`; every L6 corruption exits 2. Also check no-roots Close and all-roots-terminal Close are Final on HostClosing, and a release tail before Close has max(s_r)<S_F. |
-| **F-e** | Separate F-d tree (`ref:fe-A`) with a1 accepted but held. Concurrent Close latches HostClosing; `await_stop {attempt:a1}`; Close times out. Writer nonblocking-drains to current Head=cut and writes the unfinished footer; replay it. Later public `complete {attempt:a1,state:interrupted}` and second bounded Close return nil. | Initial exit 3, no `closed`, final_cursor absent, outcome=unfinished{A.1,A}, capture complete for intact records 1..cut; root/leaf Cancelling state comes only from records <=cut. Replay keeps admission held/Cancelling and exits 3, never complete-run success. Later Closed has F>cut and cannot change the journal or its footer through Snapshot. |
-| **F-f** | Separate F-d tree (`ref:ff-A`) with a1 accepted; invocation cancellation starts bounded Close. Observe HostClosing and `await_stop {attempt:a1}`; confirm `complete {attempt:a1,state:interrupted}` within the cleanup bound; Close returns nil and writer drains through F. | Capture complete, outcome=closed, final_cursor=last_cursor=F, final_sequence=S_F; process exits 3 for invocation cancellation. The intact closed journal validates/replays normally, not as an unfinished cut. |
+| **F-e** | Separate F-d tree (`ref:fe-A`) with a1 accepted but held. Concurrent Close latches HostClosing; `await_stop {attempt:a1,call:1}`; Close times out. Writer nonblocking-drains to current Head=cut and writes the unfinished footer; replay it. Later public `complete {attempt:a1,state:interrupted}` and second bounded Close return nil. | Initial exit 3, no `closed`, final_cursor absent, outcome=unfinished{A.1,A}, capture complete for intact records 1..cut; root/leaf Cancelling state comes only from records <=cut. Replay keeps admission held/Cancelling and exits 3, never complete-run success. Later Closed has F>cut and cannot change the journal or its footer through Snapshot. |
+| **F-f** | Separate F-d tree (`ref:ff-A`) with a1 accepted; invocation cancellation starts bounded Close. Observe HostClosing and `await_stop {attempt:a1,call:1}`; confirm `complete {attempt:a1,state:interrupted}` within the cleanup bound; Close returns nil and writer drains through F. | Capture complete, outcome=closed, final_cursor=last_cursor=F, final_sequence=S_F; process exits 3 for invocation cancellation. The intact closed journal validates/replays normally, not as an unfinished cut. |
+
+### 6.5 Control, physical pins and disposal scenarios
+
+These rows use only the A0-frozen additions in 5.2 and the tree abbreviations
+of 6.3. Each run has a sufficient overall bound, retained public feed and
+named controlled payloads. Runtime owns public lifetime/control assertions;
+Laboratory owns scripts/fixture counters; the integration owner owns their
+cross-slice acceptance. Variant replacements below specify complete changes
+to the main script, not extra schema or implicit scheduler actions.
+
+| ID | Controlled script / public-API actions | Acceptance |
+|---|---|---|
+| **C-a** | `control_timeout_ms:60000`; `submit {ref:ca-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:cancelled}`; `await_state {node:A,state:cancelled}`; public Snapshot(A)/Wait checks while Stop is held; `release {root:A}`; `return_stop {attempt:a1,call:1,result:ok}`; `await_dispose {attempt:a1}`; `close {expect:ok}`. Variant ii: timeout 50; insert `await_record {type:control,node:A.1,code:stop_timeout}` before complete. Variant iii: replace hold_stop/stop/await_stop with `hold_read {attempt:a1}`; `expect_output {node:A.1,eof:true,async:o}`; public read-entry barrier described below; keep complete cancelled independently of Stop, await_state/checks/release; replace return_stop with `return_read {attempt:a1}`; `join {name:o}`; then await_dispose/close. | Release returns nil with exactly one release record while the call is held; no disposal entry before actual return. `before:[["a1:stop_returned#1","a1:dispose_entered"]]` (read variant: observed read return before disposal). starts=1, stops=1, disposes=1; read variant stops=0. Main has zero control records because settlement wins; ii exactly one timeout, late nil creates none. Snapshot and cached Wait are served during the hold before Release; afterwards Snapshot returns ErrReleased, Wait remains cached. A cancelled=1, other counts=0; exit 1. |
+| **C-b** | `max_concurrent:1`; `control_timeout_ms:50`; `submit {ref:cb-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:cb-B,root:B,spec:Parallel/NotifyAll{B.1}}`; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; `await_record {type:control,node:A.1,code:stop_timeout}`; `stop {node:A.1}`; public queued-gate checks; `stop {node:A.1}`; `fail_stop {attempt:a1,code:busy}`; `return_stop {attempt:a1,call:1,result:ok}`; `await_stop {attempt:a1,call:2}`; `await_record {type:control,node:A.1,code:stop_failed}`; `complete {attempt:a1,state:cancelled}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept_complete,state:completed}`; `close {expect:ok}`. Mirror: omit fail_stop; return call 1 `error:x`; await call 2's control with empty code (nil acknowledgement), then same completions/Close. | A.1 filtered record order: stop_requested, command, control(stop_timeout), stop_requested, command, stop_requested, control(stop_failed), settled. Exactly two physical Stops; `before:[["a1:stop_returned#1","a1:stop_entered#2"],["A.1:settled","B.1:started"]]`; max_active=1; exit 1. After timeout control=failed(stop_timeout), control_pending=false; queued retry sets control=pending/control_pending=true while control error still stop_timeout. Third Stop is one request record, zero commands. ControlTimeout starts at dispatch, not queueing: hold call 1 across more than 50 virtual ms with no second timeout. Late nil does not clear timeout; mirror late error does not overwrite the latest cleared error after call 2 ack. |
+| **C-c** | `max_concurrent:3`; `control_timeout_ms:60000`; `submit {ref:cc-R,root:R,spec:Parallel/NotifyAll{R.1,R.2=Parallel{R.2.1},R.3}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`; `fail_stop {attempt:r1,code:boom}`; `stop {node:R}`; `await_record {type:control,node:R.1,code:stop_failed}`; `await_record {type:control,node:R.2.1}`; `stop {node:R}`; `stop {node:R.2}`; `await_stop {attempt:r1,call:2}`; `complete {attempt:r1,state:cancelled}`; `complete {attempt:r21,state:cancelled}`; `await_state {node:R,state:cancelled}`; `close {expect:ok}`. | Second Stop(R): exactly one stop_requested and one command, only R.1, cause stop; Stop(R.2): one request, zero commands (acked descendant). stops R.1=2, R.2.1=1, R.3=0. R has own cause stop and counts completed=1/cancelled=2, others=0; notices R=[R cancelled] only after both confirmations; exit 1. Public barrier checks pending/no-op retries before acknowledgements, and selective failed-descendant retry without batch control roll-up. |
+| **C-d** | `max_concurrent:1`; `control_timeout_ms:60000`; `submit {ref:cd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:cd-N,root:N,spec:Parallel/NotifyAll{N.1}}`; `stop {node:N.1}`; `complete {attempt:a1,state:completed}`; `hold_dispose {attempt:a1}`; `close {async:c,expect:dispose}`; `await_record {type:closed}`; `await_dispose {attempt:a1}`; `return_dispose {attempt:a1,result:error:leak}`; `join {name:c}`; `close {expect:dispose}`. Variant i: return_dispose ok and both Close expectations ok. Variant ii: first async Close uses a short caller timeout (expect dispose); join before return_dispose, verify dispose_pending, return_dispose ok, then second Close expect ok. Variant iii: before complete, hold_stop/stop A.1/await_stop call:1; complete cancelled; launch Close as above, observe closed with Stop pin still held and zero disposal entries; return_stop call:1 ok, then await_dispose/return_dispose/join/repeat Close. | No Release needed: `before:[["closed","a1:dispose_entered"]]`; Stop-pin variant also stop_returned#1 before dispose_entered. Main Close after return reports ErrDispose identifying A.1, token a1 and dispose_failed; repeat same completed result. Main A completed=1 unchanged, Wait cached; disposes A.1=1/N.1=0. Closed footer has final_cursor=F despite cleanup error, exit 3; ok variant exit 1 since N cancelled. Caller-bound variant reports pending, then nil after successful result, not permanent pending failure. Stop-pin variant A cancelled=1, unchanged by cleanup. Main timeout is long enough not to accidentally latch dispose_timeout. |
+| **C-e** | `submit {ref:ce-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `complete {attempt:a1,state:completed,expect_error:attempt_phase}`; `emit {attempt:a1,text:x,expect_error:attempt_phase}`; `release_start {attempt:a1,decision:accept}`; `release_start {attempt:a1,decision:fail,expect_error:attempt_phase}`; `complete {attempt:a1,state:completed}`; `complete {attempt:a1,state:failed,expect_error:unknown_attempt}`; `close {expect:ok}`. Variant: remove only the first expect_error; record the mismatch, then orderly public cleanup releases the still-registered Start with accept and completes it before Close, without a cancellation/await-bound expiry. | starts=1, exactly one started and one settled; no hidden early report, first Start decision stands, main exit 0. Variant exits 4 for the undeclared phase error once orderly cleanup succeeds; never let cancellation of a held registered attempt or a wait-bound expiry introduce exit-3 precedence and eclipse that mismatch. |
+
+**Read-entry barrier (C-a iii).** Launching async output alone is not proof of
+pin acquisition. Before complete/Release, the public-API fixture observes
+that the actual ReadOutput invocation entered its held gate (the invocation
+of the public Output action, not private Runner state). This is an explicit
+lab/public-call barrier, not an `await_read` action or new schema field.
+ReturnRead and join occur after Release and before await_dispose; no Stop is
+issued and the independent accepted report supplies Cancelled.
+
+**Static contract limits.** These scenarios are contract closure, not executed
+verification. AwaitDispose's retained disposed-token observation is the
+explicit 5.3 exception, not an unresolved phase contradiction. The supplied
+DESIGN wording “Dispose result only after physical return” contradicts timeout;
+4.5 already reconciles it: logical dispose_timeout is not proof of physical
+cleanup. No new scope, schema beyond 5.2's frozen additions, or integration
+work is introduced here.
 
 ## 7. Parallel-agent execution plan
 
@@ -1346,8 +1610,17 @@ Fixed for autonomous implementation:
   View/Snapshot remain readable after Close without waiting for readers.
   Footer separates capture from outcome; writer drains through F, replay
   reproduces `closed` and detects removed stateless tails (2, 3.4, 4.1,
-  5.5; R2/R3/L4/L6 and 6.4). Stop/Dispose and scenario-schema follow-ups
-  remain separate as noted under 3.4 and 5.5.
+  5.5; R2/R3/L4/L6 and 6.4). Scenario schema ordering is a shared A0
+  dependency (5.2/5.5), not a separate deferred Stop/Dispose follow-up.
+- Leaf control gates and selective subtree retries are fixed by 3.1.2:
+  pending retries are no-ops, physical Stops serialize, and one logical result
+  wins per command; late return only releases its physical pin.
+- Every physical capability/Stop call is pinned through actual return;
+  Release or F gives up ownership and optional Dispose runs once after the
+  last pin. Close owns cleanup results (`ErrDispose`), outside the feed and
+  without changing Final/task outcomes (3.4/4.5; C-a..C-d).
+- Controlled attempt phases, first Start decision, gate errors and the
+  disposed AwaitDispose exception are frozen in 5.2/5.3 (C-e).
 - No automatic execution resumption after host restart.
 - Scheduling limits are caller supplied and shared across roots in one Runner.
 - Opaque results and capability interfaces, not agent-text interpretation.
@@ -1590,12 +1863,16 @@ No integration phase is marked complete merely because batchlab passed.
 | A3 journal producer and correlation | `Ref`, command and notice records (4.1), 5.5; L4, L6 |
 | A4 StartLeaf without TaskSpec | StartLeaf carries Launch (2); R5 |
 | A5 acceptance and return of requests | 2.3; R5 |
-| A6 Release vs issued handles | 4.5; R4 |
+| A6 Release vs issued handles | 3.1.2, 4.5; R4; 6.5 C-a/C-d include physical Stop pins and Close ownership; STATIC contract closure, not executed verification. |
+| R2-API-02 physical Stop pin missing from lifetime protocol | 3.1.2, 4.5 Retention and Release; R4; 6.5 C-a/C-d. STATIC contract closure, not executed verification. |
+| R2-API-03 Stop timeout/retry invocation ordering | 3.1.2 Stop and disposal protocol, 3.3 Linearization rules; E6; 6.5 C-b (queued pending/no-op, dispatch timer, one-shot late results). STATIC contract closure, not executed verification. |
+| R2-API-04 selective repeated batch/root Stop | 3.1.2; E6; 6.5 C-c (failed descendant only). STATIC contract closure, not executed verification. |
+| R2-API-05 Closed disposal ownership and cleanup results | 3.4, 4.5; R4; 5.5 Journal and replay; 6.5 C-d (ErrDispose outside feed, F unchanged). STATIC contract closure, not executed verification. |
 | A7 ownership of mutable values | 2.2; E9 |
 | A8 tree discovery | 4.2, BatchView (2); R5 |
 | A9 output cursor semantics | 4.3; R4 |
 | P1 Go has no function prototypes | section 2 note, 7.1 |
-| P2 controlled gates and scenario vocabulary | 5.2, 5.3; E5, R1 |
+| P2 controlled gates and scenario vocabulary | 5.2 Scenario format, 5.3 Controlled executor; E5, R1; 6.5 C-e. Parallel-testing round2 section 3.1 P2 residual (phase/duplicate actions) maps to these actual headings and C-e; C-a..C-d cover physical gates. STATIC contract closure, not executed verification. |
 | P3 journal completeness and binding | Final-boundary residual: 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4. Unique refs (R2-API-01) and P3-B scenario-schema scope remain separate; see 5.5. |
 | P4 acceptance ownership | 7.2 table, A2 map (7.3) |
 | P5 independent oracle | `expect` (5.2); E4, L1, L3 |
