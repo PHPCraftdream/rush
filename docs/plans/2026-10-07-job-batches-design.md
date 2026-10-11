@@ -210,9 +210,49 @@ type AddRequest struct {
 Enum strings: State is `pending`, `starting`, `running`, `cancelling`,
 `completed`, `failed`, `cancelled`, `timed_out`, `interrupted`, `skipped`;
 StartRejected reasons are `capacity`, `failure`, `cancelled`. JSON tags are
-the snake_case of field names. `Ref` holds at most 128 bytes of
-`[A-Za-z0-9._:-]`; `Result.Code` at most 64 bytes of `[a-z0-9_.-]` — the
-Runner replaces an invalid code with `invalid_code` at the report boundary.
+the snake_case of field names. `Ref` is optional and holds at most 128 bytes
+of `[A-Za-z0-9._:-]`. Ordinary Runner refs need not be unique.
+
+**Machine codes.** Every code in an Event, NodeView, record, footer or
+`ErrDispose` is empty or 1-64 bytes of `[a-z0-9_.-]`. The closed set of
+reserved runtime codes is `start_failed`, `start_nil_execution`, `start_panic`,
+`executor_invalid_state`, `invalid_code`, `stop_failed`, `stop_panic`,
+`stop_timeout`, `dispose_failed`, `dispose_panic`, `dispose_timeout`, and
+`dispose_pending`.
+
+Before `Apply`, the Runtime uses `norm(raw, fallback)`: empty raw becomes the
+fallback; a grammar-valid, nonreserved raw code is retained; invalid,
+overlong or reserved raw becomes `invalid_code`. Rejected raw values are
+discarded, never logged or truncated. Code extraction and normalization run
+under recover; a panic while obtaining `Code()` becomes `invalid_code`.
+The only raw sources are `Result.Code` and `Code() string` from the first
+error matched by `errors.As` to an interface providing that method. Never
+read `Error()`, format an error with `%v`, or inspect panic values, Summary,
+Details, payload or argv to derive a code.
+
+Sources and event-specific allowed sets:
+
+- Report: `norm(Result.Code, "")`; an invalid reported state uses the fixed
+  runtime code `executor_invalid_state` (section 3.1). Settled permits empty,
+  valid nonreserved codes, `invalid_code`, or `executor_invalid_state`.
+- Start failure or cancelled rejection: `norm(Code(), "start_failed")`, using
+  empty raw if no matching error provides Code. A nil execution with nil
+  error uses fixed `start_nil_execution`; a Start panic uses fixed
+  `start_panic`, without inspecting the panic value. StartRejected failure
+  or cancelled requires a nonempty valid nonreserved code or one of
+  `start_failed`, `start_nil_execution`, `start_panic`, `invalid_code`.
+  A start failure's NodeView outcome is `{state: failed, code}`.
+- Capacity refusal: StartRejected code is empty; do not read `Code()`.
+- ControlReported permits only empty (Stop acknowledgement), `stop_failed`,
+  `stop_panic`, or `stop_timeout`. Never inspect a Stop error for a code or
+  text; a non-nil Stop error maps to fixed `stop_failed`.
+- Disposal keeps its existing fixed set: `dispose_failed`, `dispose_panic`,
+  `dispose_timeout`, `dispose_pending`; success has no error code.
+
+Engine does not normalize codes. It rejects invalid grammar or codes outside
+an event's allowed set through the invalid-event path, including nonempty
+capacity codes and empty failure/cancelled rejection codes: no mutation,
+sequence increment, commands or records.
 
 Public core API:
 
@@ -317,10 +357,11 @@ paths, such as `root.1.2`. Parent and ordinal are explicit view fields;
 consumers must not parse IDs for ownership. Duplicate root submission fails
 without executing anything. Rerunning work requires a new root ID.
 
-Root specs must be batches; the engine rejects a root task. A consumer
-normalizes a standalone task to a one-task batch once at ingress. This
-normalization preserves the caller's selected policy; it does not normalize
-every nested leaf.
+Root specs must be batches; the engine rejects a root task. Consumer ingress
+examines only the root: a raw Task becomes
+`Batch{Mode: parallel, OnFail: "", Notify: all, MaxParallel: 0, Items: [task]}`.
+Nested leaves and Add items are never wrapped. Callers wanting another
+policy submit an explicit batch.
 
 Validate a complete Submit/Add subtree before accepting any of it: exactly
 one node shape, known mode/policy, nonnegative timeout, valid limits, IDs and
@@ -347,7 +388,7 @@ subtree validation.
 
 | Value | Crosses | Rule |
 |---|---|---|
-| `RunnerConfig.Limits`, incl. `ByGroup` | caller → Runner | Copied by `NewRunner`; later caller edits have no effect. |
+| `Limits`, incl. `ByGroup` | caller → `NewEngine` | Copied once by `NewEngine`; later caller edits have no effect. `NewRunner` passes its Limits to `NewEngine` without making its own copy. |
 | Submit/Add specs and payloads | caller → Runner | Deep-copied before the request is queued. |
 | `Launch`, incl. `Task.Payload` | Runner → executor | Read-only shared data; the executor must not mutate it and need not copy it. |
 | `Result` | executor → Runner | Copied once by the report callback. |
@@ -355,16 +396,20 @@ subtree validation.
 | `OutputChunk.Data` | executor → caller | A detached copy owned by the caller; the Runner does not copy again. |
 | Views, snapshots, summaries, records | Runner → caller | Values that alias no internal state. |
 
-Direct Engine callers transfer ownership of their events to `Apply`. Do not
-clone the entire forest on every transition; report changed nodes only.
+Direct Engine consumers are the Runtime, replay (a fresh Engine), Core tests
+and fuzz tests. Production consumers use Runner only. Direct Engine callers
+transfer ownership of their events to `Apply`. Do not clone the entire forest
+on every transition; report changed nodes only.
 
 ### 2.3 Requests: acceptance and replies (A5)
 
 - Each public request is queued with a reply slot and an atomic state that
   moves from queued to either accepted (by the loop) or abandoned (by its
   caller). Exactly one of the two wins.
-- The loop skips abandoned requests. It applies an accepted request and
-  writes its reply without blocking.
+- The loop skips abandoned requests. For an accepted transition, it applies
+  the event and appends all transition records before writing the reply or
+  closing any Done channel; the reply is written without blocking. Rejected
+  and abandoned requests produce no records.
 - If the caller's context ends and abandonment wins, the request had no
   effect and the caller gets the context error. If acceptance already won,
   the caller waits for the reply — written promptly, because the loop never
@@ -479,12 +524,14 @@ waiting/interaction details belong to its executor.
 
 1. **Start rejected.** A non-nil error from `Start` is authoritative: no
    execution exists. `errors.Is(err, ErrCapacity)` is a capacity refusal
-   (section 3.2). Any other error is a start failure: the leaf becomes Failed
-   with the error's `Code() string` if it provides one, else `start_failed`.
-   A nil execution with a nil error fails with `start_nil_execution`. The
-   Runner recovers a panic inside `Start` as a start failure with code
-   `start_panic`. When cancellation was latched before the rejection, the
-   leaf settles with the latched cause instead.
+   (section 3.2), with empty code and without reading `Code()`. Other errors
+   use the Machine codes contract in section 2: failure/cancelled rejection
+   gets `norm(Code(), "start_failed")`; nil execution with nil error uses
+   `start_nil_execution`; a recovered Start panic uses `start_panic` without
+   inspecting its value. A start failure records NodeView outcome
+   `{state: failed, code}`. When cancellation was latched before rejection,
+   the leaf settles with the latched cause instead. No raw error text or
+   unnormalized code enters Apply, views or records.
    The executor, not the Runner, guarantees that a rejected or panicking
    Start leaves no running process, call or agent behind (executor-owned
    setup cleanup). The Runner cannot verify that and does not claim to. A
@@ -830,7 +877,7 @@ from, and a type:
   of Transition.Final, with sequence S_F and cursor F. No record follows it.
 
 Records never contain payloads, `Result.Summary`/`Details`, injected
-messages, output, or arguments. EventPage has `Records`, `Next`, `Oldest`,
+messages, output, arguments, or error text. EventPage has `Records`, `Next`, `Oldest`,
 `Head`, `Final` with the inclusive boundaries of section 2. Retention keeps
 only the last `RecordRetention` records; `RecordRetention >= 1` ensures the
 newest `closed` record is always retained. Older notices are lost, announced
@@ -1012,6 +1059,22 @@ rejects unknown fields. The vocabulary below, including gate results and oracle
 additions, is part of that same pre-fan-out schema freeze (section 7.1), not a
 post-implementation schema deferral.
 
+Every submit/add has a mandatory nonempty Ref matching section 2's grammar,
+unique among all submit/add actions in the scenario FILE. After decoding,
+the loader validates this and requires the script to end with a nonasync
+close or a join of an async close. Violations exit 2 before opening
+`--events`, writing its header, constructing factories or Runner, or launching
+anything. Stop, inject, capacity_available, release and close have no ref.
+Inject has no record; the others describe themselves in their records and
+need no scenario lookup during replay.
+
+Ref flows only through SubmitRequest/AddRequest → Submit/Add Event.ref →
+submit/add record. It never enters Spec, TaskSpec, Launch, Result, leaf
+records, views, a leaf or an executor. Ordinary hosts retain optional,
+nonunique Runner refs; their
+journals are not lab-replayable. Rejected/abandoned requests have no records,
+but their actually-run actions appear in the diagnostic footer inputs (§5.5).
+
 - `version`; `limits`; `runner` (`control_timeout_ms`, `record_retention`);
   `wait_bound_ms` — a mandatory overall bound.
 - `payloads`: named payloads, each `{"kind": "process", ...}` (section 5.4)
@@ -1029,7 +1092,12 @@ post-implementation schema deferral.
   - `release_start` {attempt, decision: accept | accept_complete |
     refuse_capacity | fail, state, code}: registered only, one decision;
     returns AFTER physical Start returns. `accept_complete` reports completion
-    inside Start and leaves the attempt reported, not accepted.
+    inside Start and leaves the fixture attempt in reported phase. It still
+    counts as an accepted Execution, not an accepted-phase fixture.
+    `release_start.code` and `complete.code` are RAW: the loader does not
+    validate them; Runtime applies section 2's Machine codes contract.
+    A controlled fail error's Error text contains literal
+    `batchlab-error-sentinel`, never a journal code.
   - `complete` {attempt, state, code}; `emit` {attempt, text};
     `await_inject` {attempt, message_ref}: accepted only.
   - `hold_stop` {attempt}; `fail_stop` {attempt, code}: registered through
@@ -1063,22 +1131,34 @@ post-implementation schema deferral.
     occurs at join. Do not combine conflicting Close/error expectations.
 - `expect` — the independent oracle, optional in general and required for
   named smoke scenarios: `roots` [{id, state, counts}], `nodes` [{id,
-  parent, state, control, control_pending, starts, stops, disposes}], `notices` (ordered per root),
-  `max_active` (the observed maximum of concurrently accepted executions),
-  `before` (partial order pairs such as `["A.1:settled", "B.1:started"]`),
-  and `exit_code`. `control` mirrors the current leaf/token gate exactly:
-  `none`, `pending`, `acked`, or `failed(code)`; `control_pending` is the
-  boolean NodeView gate of section 2 (no batch roll-up). `starts` counts physical
-  fixture Start entries; `stops`/`disposes` count physical fixture/control entry,
-  not logical commands or results; zero is meaningful. Additional labels are
+  parent, state, cause, outcome: {state, code}, control, control_pending,
+  attempts, starts, accepted, stops, disposes}], `notices` (ordered per root),
+  `max_active` (maximum overlap of accepted attempts' Start-entry-to-report
+  intervals), `before` (partial order pairs such as
+  `["A.1:settled", "B.1:started"]`), and `exit_code`. Absent oracle fields
+  are unchecked; present fields match exactly, including zero and empty.
+  `cause` is empty for no cause; outcome state is empty for no outcome.
+  `attempts` counts issued tokens. `control` mirrors the current leaf/token
+  gate exactly: `none`, `pending`, `acked`, or `failed(code)`;
+  `control_pending` is the NodeView gate (no batch roll-up).
+  A lab-owned delegating wrapper around controlled/process executors makes
+  no scheduling decisions: it measures `starts` (physical Start entries),
+  `accepted` (Start returned an accepted Execution, including accept_complete),
+  and `max_active` over [Start entry, report] across accepted attempts,
+  retaining observations until acceptance is known even for an inside-Start
+  report. These are not Engine/Runner counters. Fixture reported phase does
+  not erase acceptance. `stops`/`disposes` count physical control entries,
+  not logical commands or results. Additional labels are
   `<attempt>:stop_entered#k`, `<attempt>:stop_returned#k`,
   `<attempt>:dispose_entered`, and `closed` (producer Final publication).
   Fixture labels are observations, not synthetic feed records. For real
   processes the oracle checks invariants, never an OS completion order.
 
-A standalone task in `submit.spec` is normalized at ingress to a one-task
-batch with the scenario's policy (E1). Named smoke scenarios with their
-acceptance IDs live in `internal/jobbatch/lab/testdata/scenarios/`.
+Run and replay share one ingress-normalization function implementing the
+fixed raw-root Task wrapper of section 2.1 (E1); nested/Add items are never
+wrapped. Policy/singleton fields are unknown and rejected, not additional
+scenario knobs. Named smoke scenarios with their acceptance IDs live in
+`internal/jobbatch/lab/testdata/scenarios/`.
 
 ### 5.3 Controlled executor (P2)
 
@@ -1195,10 +1275,28 @@ Platform strategy — an A0 decision, not left to the slice:
 - Codes: a missing program is a start failure `missing_program`; a nonzero
   exit settles Failed with `exit_<n>`; a stopped process settles with its
   latched cause.
-- A portable helper program (`lab/testdata/process/helper`, standard library
-  only), built once per test run, provides modes for printing, exiting with
-  a code, waiting until stdin closes, and spawning a descendant that reports
-  readiness through a pipe — the rendezvous for L2 and L5 without sleeps.
+- The portable helper `lab/testdata/process/helper` imports only the standard
+  library and `internal/platform` (on Windows, `golang.org/x/sys`), never
+  agent, session, app or DB packages. Modes: print, exit with code n, hold,
+  and spawn. Hold writes `ready <pid>` and blocks until killed; it never reads
+  stdin. The process executor leaves Stdin nil (the null device).
+- Spawn starts exactly one `os.Executable()` hold descendant through
+  `platform.Command`, reads that child's `ready <pid>` from its stdout pipe,
+  prints `descendant-ready <pid>`, then holds. This is the L2/L5 rendezvous,
+  without sleeps. The helper never modifies returned SysProcAttr: no Setpgid,
+  Setsid, breakaway or extra creation flags; the descendant inherits the
+  executor's isolation. Direct `exec.Command`, `exec.CommandContext`,
+  `exec.Cmd` literals, `os.StartProcess`, `syscall.StartProcess` and
+  `syscall.ForkExec` are forbidden. The last two bypass the selector AST
+  check at spawn_guard_test.go:78–99 but are contractually prohibited.
+- Build the helper once per test run into a temporary directory outside the
+  repo, invoking `go build` through `platform.Command` under the heavy-command
+  wrapper. Populate L1/L2/L5 scenarios with the absolute helper path before
+  run; there is no variable expansion. Unrelated sentinels are started through
+  `platform.Command` and cleaned up by their own PID, never a broad tree kill.
+- No spawn exemptions or shared platform edits are authorized. The relevant
+  guard is `TestNoUnhardenedProcessSpawns` plus this section's owner-decision
+  boundary, not agentguard; agentguard belongs to later Rush wiring (§9.1).
 
 ### 5.5 Journal and replay (A3, P3)
 
@@ -1208,8 +1306,9 @@ Platform strategy — an A0 decision, not left to the slice:
   scenario decoded into the schema types and re-encoded by `encoding/json`:
   fixed field order, sorted map keys), limits and runner settings.
 - **Records:** the public feed of section 4.1 with cursors contiguous from 1.
-  The `ref` of submit/add records binds them to the scenario action that
-  supplied their specs.
+  The `ref` of submit/add records binds them to the UNIQUE scenario action
+  of the same action type and root/parent. Run and replay use the same ingress
+  normalization; other record types need no scenario lookup.
 - **Footer:** `final_cursor` (absent if never Closed), `final_sequence`,
   `last_cursor`; `capture: complete | gap{first_missing,resumed_at} |
   write_error`; `outcome: closed | unfinished{IDs}`; each root's state,
@@ -1220,6 +1319,15 @@ Platform strategy — an A0 decision, not left to the slice:
   outcome closed, the last record is `closed` and last_cursor=final_cursor.
   An intact unfinished prefix can have capture complete; it is not a closed
   or full-run replay.
+- **Diagnostic footer inputs:** after the F/cut drain, run writes
+  `inputs: [{ref, action, result: accepted | rejected | abandoned, ids?, error?}]`,
+  one entry per actually-run submit/add in script order, including requests
+  with no records. IDs are actual replies: [root] for Submit, direct added
+  children for Add. Error is the typed expect_error name (for example
+  `terminal`), never error text. `request_counts: {capacity_available, release}`
+  counts those actions returning nil. Replay checks these diagnostics; they
+  do not change capture, outcome, final_cursor or final_sequence. Stop is
+  intentionally uncounted: terminal Stop can return nil without a record.
 
 When the authoritative public EventPage boundary has `Final != 0`, regardless
 of whether bounded Close returned nil or `ErrDispose`, invocation cancellation,
@@ -1246,8 +1354,31 @@ final_cursor is absent because the producer was not Closed at that cut.
 A later public completion/second Close may produce F>cut without altering
 this journal.
 
+Before rebuilding, replay checks diagnostic inputs and present records:
+
+- **I1:** inputs are a prefix of the scenario's submit/add actions, with the
+  same refs, action types and order (including rejected/abandoned actions).
+- **I2:** cursor-ordered submit/add records are bijective with accepted inputs
+  by ref/type/root-parent. After these structural preliminaries, during fresh
+  Engine rebuild compare input IDs to reproduced replies ([root] or direct
+  Add children) and record-created IDs to the reproduced transition.
+- **I3:** no empty, unknown or repeated record refs, and no records for rejected
+  or abandoned inputs. Present submit/add records preserve scenario order.
+- **I4:** capacity_available/release record counts equal request_counts.
+
+For intact closed or unfinished-prefix captures I1-I4 apply to records through
+F or the cut, respectively: records precede replies (§2.3), so completed
+accepted inputs are covered at the cut. Transition sequence checks catch an
+applied event whose record was dropped; I2/I4 catch a nil reply that was never
+applied. For gap/write_error captures perform only I1/I3 and order checks on
+present records; never fill missing history or enforce a missing bijection.
+Structural invalidity exits 2 before incomplete-capture exit 5; F-c's valid
+gap behavior is unchanged.
+
 `replay` validates header version/digest, cursor continuity and footer. It
-rebuilds accepted events in order — specs from scenario by `ref`, executor
+rebuilds accepted events in order — specs from the unique scenario action
+with that ref, same action type and root/parent, normalized through the same
+ingress as run; executor
 results from journal — in a fresh Engine, reproducing event, command, notice
 and `closed` records with the same cursors and sequences. Replay uses
 Transition.Final to reproduce `closed` at the same boundary; no records may
@@ -1278,12 +1409,6 @@ unfinished exit 3 takes precedence. A structurally invalid journal exits 2.
 Section 5.1's first-matching-row precedence is unchanged. Replay never
 constructs an executor or reruns processes; a scenario whose process would
 write a file leaves that file absent.
-
-**A0 dependency ordering (R2-API-01, P3-B).** Unique refs and scenario/oracle
-schema additions share the SAME A0 schema freeze: see section 5.2 Scenario
-format and section 7.1. This is ordering before fan-out, not deferral of those
-contracts to a later schema task. This section fixes capture/outcome semantics;
-it does not resolve unrelated ref or singleton-policy issues.
 
 ### 5.6 Timeouts and cleanup (P6)
 
@@ -1371,8 +1496,9 @@ Section 7.2 fixes which slice owns each ID.
   across the forest; for every set ByGroup entry, `active[g] <= ByGroup[g]`,
   and `sum_g active[g] <= MaxConcurrent`.
 - **E9:** ownership: mutating each caller-owned value of section 2.2 after
-  its hand-off point changes nothing accepted; snapshots cannot mutate
-  state; diagnostics and journals contain none of the sentinel strings
+  its hand-off point changes nothing accepted; mutate ByGroup after either
+  NewEngine or NewRunner returns and verify budgets are unchanged. Snapshots
+  cannot mutate state; diagnostics and journals contain none of the sentinel strings
   planted in argv, payloads, injected messages, summaries, and details.
 
 ### 6.2 Runtime and laboratory
@@ -1420,9 +1546,11 @@ Section 7.2 fixes which slice owns each ID.
   `ErrTerminal`. Release returns nil with one release record and zero Dispose
   calls (no execution handle); Wait remains cached afterwards. Apply section
   4.5 without changing the Stop/Dispose invocation protocol.
-- **L1:** three real command items through the CLI, one with a nonzero exit,
-  plus a variant with a missing program: correct per-leaf states and codes,
-  Failed aggregate, exit 1 with matched expectations; no model/API needed.
+- **L1:** three real command items through the CLI, one exiting 7 with oracle
+  outcome `{state:failed,code:exit_7}`, plus a missing-program variant with
+  outcome `{state:failed,code:missing_program}` and accepted=0 for that leaf.
+  Failed aggregate, exit 1 with matched expectations; a wrong code exits 4.
+  No model/API needed.
 - **L2:** real command cancellation with partial-output inspection: a child,
   its descendant, and an unrelated sentinel, all ready by pipe handshake.
   Stop terminates only the child's tree, confirmed by termination rather
@@ -1463,18 +1591,18 @@ The rows use only section 5.2's updated, A0-frozen script actions and oracle
 vocabulary; they add no schema fields beyond those frozen additions.
 Braces/name assignments below abbreviate Spec trees; each task
 uses a named controlled `payload_ref`, each submit/add has a distinct `ref`,
-and each run has a bounded wait. Errors, transition contents, cause, attempts,
-Done/Wait, Head, disposal and replay checks not expressible in the current
-`expect` schema are prose/public-API assertions. See section 5.2 for the
-schema freeze dependency, including singleton policy; these rows do
-not extend that schema or change integration ingress.
+and each run has a bounded wait. Cause, outcome and attempts are expressible
+in section 5.2's oracle. Other API facts — transition contents, Done/Wait,
+Head, disposal and replay boundaries — remain prose/public-API assertions
+where not expressible. These rows neither extend that schema nor change
+integration ingress.
 
 | ID | Controlled script / public-API actions | Acceptance |
 |---|---|---|
-| **R-a** | `max_concurrent:1`; `submit {ref:ra-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:ra-B,root:B,spec:raw task}` normalized at lab ingress to `B{B.1}` with NotifyAll (2.1/5.2); `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; public Add corresponding to `add {ref:ra-add-B,parent:B,items:[controlled task]}` returns `ErrTerminal`; `stop {node:B}`; `stop {node:B.1}`; perform the pre-Release public checks below; `release {root:B}`; `complete {attempt:a1,state:completed}`. | `roots` A completed, B cancelled; B counts cancelled=1, all other counts=0; A completed=1, all others=0. `nodes` B.1 starts=0, A.1 starts=1. `notices` B=[B cancelled]; `before:[["B:notice","A.1:settled"]]`; `max_active:1`; `exit_code:1`. |
-| **R-b** | `max_concurrent:2`; `submit {ref:rb-R,root:R,spec:Sequential/stop/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1,R.2.2},R.3}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `stop {node:R.2.1}`; `stop {node:R.2.2}`; `await_state {node:R.2,state:cancelled}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`. | R cancelled, completed=2, cancelled=2, all other counts=0; R.2 leaves starts=0. `notices` R=[R.2 cancelled,R.1 completed,R.3 completed,R cancelled]; `before:[["R.2.2:stop_requested","R.2:notice"],["R.2:notice","R.3:started"]]`. |
-| **R-c** | `submit {ref:rc-Z,root:Z,spec:Parallel/NotifyAll{Z.1=Sequential[],Z.2=Parallel{Z.2.1=Parallel[]}}}`; public Add corresponding to `add {ref:rc-add-Z2,parent:Z.2,items:[controlled task]}` returns `ErrTerminal`. Second part: `max_concurrent:1`; `submit {ref:rc-P,root:P,spec:Parallel/NotifyAll{P.1,P.2=Parallel{P.2.1}}}`; `await_start {node:P.1,bind:p1}`; `release_start {attempt:p1,decision:accept}`; `stop {node:P.2.1}`; `await_state {node:P.2,state:cancelled}`; `complete {attempt:p1,state:completed}`; `await_state {node:P,state:cancelled}`; `release {root:P}`. | Z and every nested batch complete entirely in Submit, zero leaf counts and no commands; default `notices` Z=[Z completed]. P.2 cancelled before P settles; P counts completed=1, cancelled=1, all others=0. Public Release(P) succeeds. |
-| **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`. Variant ii: `close {async:c,expect:ok}`; `await_record {type:host_closing}`; check B's notice while A.1 is held; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:interrupted}`; `join {name:c}`. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
+| **R-a** | `max_concurrent:1`; `submit {ref:ra-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:ra-B,root:B,spec:raw task}` normalized at lab ingress to `B{B.1}` with NotifyAll (2.1/5.2); `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; `add {ref:ra-add-B,parent:B,items:[controlled task],expect_error:terminal}`; `stop {node:B}`; `stop {node:B.1}`; perform the pre-Release public checks below; `release {root:B}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | `roots` A completed, B cancelled; B counts cancelled=1, all other counts=0; A completed=1, all others=0. `nodes` B.1 starts=0, A.1 starts=1. `notices` B=[B cancelled]; `before:[["B:notice","A.1:settled"]]`; `max_active:1`; `exit_code:1`. |
+| **R-b** | `max_concurrent:2`; `submit {ref:rb-R,root:R,spec:Sequential/stop/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1,R.2.2},R.3}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `stop {node:R.2.1}`; `stop {node:R.2.2}`; `await_state {node:R.2,state:cancelled}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`; `await_state {node:R,state:cancelled}`; `close {expect:ok}`. | R cancelled, completed=2, cancelled=2, all other counts=0; R.2 leaves starts=0. `notices` R=[R.2 cancelled,R.1 completed,R.3 completed,R cancelled]; `before:[["R.2.2:stop_requested","R.2:notice"],["R.2:notice","R.3:started"]]`. |
+| **R-c** | `submit {ref:rc-Z,root:Z,spec:Parallel/NotifyAll{Z.1=Sequential[],Z.2=Parallel{Z.2.1=Parallel[]}}}`; `add {ref:rc-add-Z2,parent:Z.2,items:[controlled task],expect_error:terminal}`; `close {expect:ok}`. Independent second part: `max_concurrent:1`; `submit {ref:rc-P,root:P,spec:Parallel/NotifyAll{P.1,P.2=Parallel{P.2.1}}}`; `await_start {node:P.1,bind:p1}`; `release_start {attempt:p1,decision:accept}`; `stop {node:P.2.1}`; `await_state {node:P.2,state:cancelled}`; `complete {attempt:p1,state:completed}`; `await_state {node:P,state:cancelled}`; `release {root:P}`; `close {expect:ok}`. | Z and every nested batch complete entirely in Submit, zero leaf counts and no commands; default `notices` Z=[Z completed]. P.2 cancelled before P settles; P counts completed=1, cancelled=1, all others=0. Public Release(P) succeeds. |
+| **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. Variant ii: `close {async:c,expect:ok}`; `await_record {type:host_closing}`; `await_record {type:notice,node:B}` while A.1 is held; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:interrupted}`; `join {name:c}`. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
 | **R-e** | Seeded valid Submit/Add/Stop/StartRejected/Settled/HostClosing sequences; controlled attempt tokens and acceptance barriers, with reproducible seed and failing sequence retained. | After every transition, every nonterminal batch has a nonterminal direct child and no terminal batch has a nonterminal descendant; `active[g]` equals the forest's Starting/Running/Cancelling leaf count in g, `active[g] <= ByGroup[g]` for every set entry, and `sum_g active[g] <= MaxConcurrent`. No StartLeaf under a terminal batch; stopping the last Pending leaf settles a never-admitted root in that transition, without fake Start/Running or slot use. |
 
 **R-a transition and runtime assertions.** StopRequested(B.1) changes the leaf
@@ -1493,18 +1621,36 @@ notice cursor is <= F=`final_cursor` after Close and writer drain. Replay
 rebuilds B settlement from StopRequested with its settled_sequence, without
 a synthetic Settled or new event.
 
-Repeat R-a with B in group h bounded by `h:1`, held by another accepted task,
-or with h capacity-blocked by another controlled attempt's
-`release_start {attempt:hprobe,decision:refuse_capacity}` before B is submitted
-and with no `capacity_available`. B.1 still has zero attempts; the same
-settlement occurs without a wake-up. Singleton/waiting-level consumers depend
-on this lifecycle rule (see 9.2); their accounting and integration are unchanged.
+R-a variants replace the main script with these full deltas, retaining all
+other actions and closing only after the added cleanup:
+
+- **h-held:** limits `{max_concurrent:3,by_group:{h:1}}`; before A's Submit,
+  insert `submit {ref:ra-G,root:G,spec:Parallel/NotifyAll{G.1@h}}`,
+  `await_start {node:G.1,bind:g1}`, `release_start {attempt:g1,decision:accept}`,
+  `await_state {node:G.1,state:running}`. Set B.1's Group to h. Before Close,
+  insert `complete {attempt:g1,state:completed}` and
+  `await_state {node:G,state:completed}`. B.1 attempts=0/starts=0; G Completed;
+  max_active=2, exit 1.
+- **h-blocked:** max_concurrent=2; before A's Submit insert
+  `submit {ref:ra-H,root:H,spec:Parallel/NotifyAll{H.1@h}}`,
+  `await_start {node:H.1,bind:hprobe}`,
+  `release_start {attempt:hprobe,decision:refuse_capacity}`,
+  `await_record {type:start_rejected,node:H.1}`. Set B.1's Group to h. Before
+  Close insert `stop {node:H}`, `await_state {node:H,state:cancelled}`,
+  `release_start {attempt:hprobe,decision:accept,expect_error:unknown_attempt}`.
+  B.1 attempts=0/starts=0; H.1 attempts=1/starts=1/accepted=0/cause=stop;
+  no capacity_available; max_active=1, exit 1.
+
+The same never-admitted settlement occurs without a wake-up. Singleton and
+waiting-level consumers depend on this lifecycle rule (9.2); integration
+accounting is unchanged.
 
 **R-d Close ordering.** A literal sequential `close {expect:ok}` followed by
 `await_stop`/`complete` would deadlock: Close waits for the held A.1 report.
 Instead, `close {async:c,expect:ok}` launches Close, and
-`await_record {type:host_closing}` observes public acceptance; check B's
-Interrupted notice while A.1 is still held, then
+`await_record {type:host_closing}` observes public acceptance;
+`await_record {type:notice,node:B}` observes B's Interrupted notice while
+A.1 is still held, then
 `await_stop {attempt:a1,call:1}`, complete a1 Interrupted, and `join {name:c}`.
 Close returns nil. The pure Engine equivalent applies HostClosing and then
 controlled drain events. These are the already updated section 5.2 actions,
@@ -1526,7 +1672,7 @@ history reconstruction or consumer-side Notify selection is allowed.
 | **F-a** | `record_retention:64`; `max_concurrent:2`; `submit {ref:fa-R,root:R,spec:Parallel/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1}}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`. Reader consumes through Head=k, then is held. Concurrent public Close observes HostClosing acceptance through the R-d barrier; `await_stop {attempt:r1,call:1}`; `await_stop {attempt:r21,call:1}`; `complete {attempt:r1,state:interrupted}`; `complete {attempt:r21,state:interrupted}`; join Close with nil THEN resume reader at k+1. | Close precedes reader drain. Contiguous k+1..F contains `host_closing`, two stop command records, two `settled` records, notices R.1, R.2 (not R.2.1), R, then exactly one last `closed`. `notices` R=[R.1 interrupted,R.2 interrupted,R interrupted]; R interrupted=2, all other leaf counts=0. S_F=s_R; all transition records precede Done. Post-Closed pages Head=Final=F, no ErrGap; Events(F+1) immediately returns empty Next=F+1 with ErrClosed. |
 | **F-b** | After F-a Close, two concurrent readers independently drain `Events(1)` through F, then ask F+1; a third asks F+3. `complete {attempt:r1,state:completed}` is late; inspect Snapshot(R), Head/Final and public Output(R.1), plus all post-Closed mutations. | Identical nonconsuming feeds 1..F ending in `closed`, then ErrClosed; F+3 is immediate EOF with Next=F+1. Late controlled Complete returns `ErrUnknownAttempt`; late executor callbacks create no records. Head=Final=F forever, Snapshot(R).sequence=S_F; Output and Inject/Stop/Submit/Add/Release/CapacityAvailable return ErrClosed. |
 | **F-c** | F-a in a separate run with `record_retention:4`, `ref:fc-R`, `--events`; hold writer through Close with a lab barrier. Public Events(1), then Events(F-3); compare the retained final window when published and after Close returns. Resume writer at the gap's Oldest and drain through F. | Events(1) gives ErrGap, empty page Next=Oldest=F-3, Head=Final=F. Events(F-3) returns the four frozen records ending in `closed`; window is unchanged before/after Close completion and repeat reads. Footer capture=gap{first_missing:1,resumed_at:F-3}, final_cursor=F, outcome=closed, exit 5. Replay is not complete; no rebuilding missing notices/history from Snapshot. |
-| **F-d** | `submit {ref:fd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `capacity_available {group:g}`; `close {expect:ok}`; `--events` writer drains through F. L6 copies remove `closed`, remove HostClosing+closed with footer retained, change final_cursor to F-1, or declare outcome closed without `closed`. | HostClosing is Final; last records are `host_closing`, `closed`. Footer final_cursor=last_cursor=cursor(closed)=F, final_sequence=S_F=s_A+2, settled_sequence(A)=s_A<S_F; capture complete, outcome closed, exit 0. Replay reproduces stateless capacity/HostClosing tail and `closed`; every L6 corruption exits 2. Also check no-roots Close and all-roots-terminal Close are Final on HostClosing, and a release tail before Close has max(s_r)<S_F. |
+| **F-d** | `submit {ref:fd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `capacity_available {group:g}`; `close {expect:ok}`; `--events` writer drains through F. L6 copies remove `closed`, remove HostClosing+closed with footer retained, change final_cursor to F-1, or declare outcome closed without `closed`. | HostClosing is Final; last records are `host_closing`, `closed`. Footer final_cursor=last_cursor=cursor(closed)=F, final_sequence=S_F=s_A+2, settled_sequence(A)=s_A<S_F; capture complete, outcome closed, exit 0. Footer inputs=[{ref:fd-A,action:submit,result:accepted,ids:[A]}], request_counts={capacity_available:1,release:0}. Replay reproduces stateless capacity/HostClosing tail and `closed`; every L6 corruption exits 2. Also check no-roots Close and all-roots-terminal Close are Final on HostClosing, and a release tail before Close has max(s_r)<S_F. |
 | **F-e** | Separate F-d tree (`ref:fe-A`) with a1 accepted but held. Concurrent Close latches HostClosing; `await_stop {attempt:a1,call:1}`; Close times out. Writer nonblocking-drains to current Head=cut and writes the unfinished footer; replay it. Later public `complete {attempt:a1,state:interrupted}` and second bounded Close return nil. | Initial exit 3, no `closed`, final_cursor absent, outcome=unfinished{A.1,A}, capture complete for intact records 1..cut; root/leaf Cancelling state comes only from records <=cut. Replay keeps admission held/Cancelling and exits 3, never complete-run success. Later Closed has F>cut and cannot change the journal or its footer through Snapshot. |
 | **F-f** | Separate F-d tree (`ref:ff-A`) with a1 accepted; invocation cancellation starts bounded Close. Observe HostClosing and `await_stop {attempt:a1,call:1}`; confirm `complete {attempt:a1,state:interrupted}` within the cleanup bound; Close returns nil and writer drains through F. | Capture complete, outcome=closed, final_cursor=last_cursor=F, final_sequence=S_F; process exits 3 for invocation cancellation. The intact closed journal validates/replays normally, not as an unfinished cut. |
 
@@ -1543,8 +1689,8 @@ to the main script, not extra schema or implicit scheduler actions.
 |---|---|---|
 | **C-a** | `control_timeout_ms:60000`; `submit {ref:ca-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:cancelled}`; `await_state {node:A,state:cancelled}`; public Snapshot(A)/Wait checks while Stop is held; `release {root:A}`; `return_stop {attempt:a1,call:1,result:ok}`; `await_dispose {attempt:a1}`; `close {expect:ok}`. Variant ii: timeout 50; insert `await_record {type:control,node:A.1,code:stop_timeout}` before complete. Variant iii: replace hold_stop/stop/await_stop with `hold_read {attempt:a1}`; `expect_output {node:A.1,eof:true,async:o}`; public read-entry barrier described below; keep complete cancelled independently of Stop, await_state/checks/release; replace return_stop with `return_read {attempt:a1}`; `join {name:o}`; then await_dispose/close. | Release returns nil with exactly one release record while the call is held; no disposal entry before actual return. `before:[["a1:stop_returned#1","a1:dispose_entered"]]` (read variant: observed read return before disposal). starts=1, stops=1, disposes=1; read variant stops=0. Main has zero control records because settlement wins; ii exactly one timeout, late nil creates none. Snapshot and cached Wait are served during the hold before Release; afterwards Snapshot returns ErrReleased, Wait remains cached. A cancelled=1, other counts=0; exit 1. |
 | **C-b** | `max_concurrent:1`; `control_timeout_ms:50`; `submit {ref:cb-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:cb-B,root:B,spec:Parallel/NotifyAll{B.1}}`; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; `await_record {type:control,node:A.1,code:stop_timeout}`; `stop {node:A.1}`; public queued-gate checks; `stop {node:A.1}`; `fail_stop {attempt:a1,code:busy}`; `return_stop {attempt:a1,call:1,result:ok}`; `await_stop {attempt:a1,call:2}`; `await_record {type:control,node:A.1,code:stop_failed}`; `complete {attempt:a1,state:cancelled}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept_complete,state:completed}`; `close {expect:ok}`. Mirror: omit fail_stop; return call 1 `error:x`; await call 2's control with empty code (nil acknowledgement), then same completions/Close. | A.1 filtered record order: stop_requested, command, control(stop_timeout), stop_requested, command, stop_requested, control(stop_failed), settled. Exactly two physical Stops; `before:[["a1:stop_returned#1","a1:stop_entered#2"],["A.1:settled","B.1:started"]]`; max_active=1; exit 1. After timeout control=failed(stop_timeout), control_pending=false; queued retry sets control=pending/control_pending=true while control error still stop_timeout. Third Stop is one request record, zero commands. ControlTimeout starts at dispatch, not queueing: hold call 1 across more than 50 virtual ms with no second timeout. Late nil does not clear timeout; mirror late error does not overwrite the latest cleared error after call 2 ack. |
-| **C-c** | `max_concurrent:3`; `control_timeout_ms:60000`; `submit {ref:cc-R,root:R,spec:Parallel/NotifyAll{R.1,R.2=Parallel{R.2.1},R.3}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`; `fail_stop {attempt:r1,code:boom}`; `stop {node:R}`; `await_record {type:control,node:R.1,code:stop_failed}`; `await_record {type:control,node:R.2.1}`; `stop {node:R}`; `stop {node:R.2}`; `await_stop {attempt:r1,call:2}`; `complete {attempt:r1,state:cancelled}`; `complete {attempt:r21,state:cancelled}`; `await_state {node:R,state:cancelled}`; `close {expect:ok}`. | Second Stop(R): exactly one stop_requested and one command, only R.1, cause stop; Stop(R.2): one request, zero commands (acked descendant). stops R.1=2, R.2.1=1, R.3=0. R has own cause stop and counts completed=1/cancelled=2, others=0; notices R=[R cancelled] only after both confirmations; exit 1. Public barrier checks pending/no-op retries before acknowledgements, and selective failed-descendant retry without batch control roll-up. |
-| **C-d** | `max_concurrent:1`; `control_timeout_ms:60000`; `submit {ref:cd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:cd-N,root:N,spec:Parallel/NotifyAll{N.1}}`; `stop {node:N.1}`; `complete {attempt:a1,state:completed}`; `hold_dispose {attempt:a1}`; `close {async:c,expect:dispose}`; `await_record {type:closed}`; `await_dispose {attempt:a1}`; `return_dispose {attempt:a1,result:error:leak}`; `join {name:c}`; `close {expect:dispose}`. Variant i: return_dispose ok and both Close expectations ok. Variant ii: first async Close uses a short caller timeout (expect dispose); join before return_dispose, verify dispose_pending, return_dispose ok, then second Close expect ok. Variant iii: before complete, hold_stop/stop A.1/await_stop call:1; complete cancelled; launch Close as above, observe closed with Stop pin still held and zero disposal entries; return_stop call:1 ok, then await_dispose/return_dispose/join/repeat Close. | No Release needed: `before:[["closed","a1:dispose_entered"]]`; Stop-pin variant also stop_returned#1 before dispose_entered. Main Close after return reports ErrDispose identifying A.1, token a1 and dispose_failed; repeat same completed result. Main A completed=1 unchanged, Wait cached; disposes A.1=1/N.1=0. Closed footer has final_cursor=F despite cleanup error, exit 3; ok variant exit 1 since N cancelled. Caller-bound variant reports pending, then nil after successful result, not permanent pending failure. Stop-pin variant A cancelled=1, unchanged by cleanup. Main timeout is long enough not to accidentally latch dispose_timeout. |
+| **C-c** | `max_concurrent:3`; `control_timeout_ms:60000`; `submit {ref:cc-R,root:R,spec:Parallel/NotifyAll{R.1,R.2=Parallel{R.2.1},R.3}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`; `await_state {node:R.3,state:completed}`; `fail_stop {attempt:r1,code:boom}`; `stop {node:R}`; `await_record {type:control,node:R.1,code:stop_failed}`; `await_record {type:control,node:R.2.1,code:""}`; `stop {node:R}`; `stop {node:R.2}`; `await_stop {attempt:r1,call:2}`; `await_record {type:control,node:R.1,code:""}`; `complete {attempt:r1,state:cancelled}`; `complete {attempt:r21,state:cancelled}`; `await_state {node:R,state:cancelled}`; `close {expect:ok}`. | Second Stop(R): exactly one stop_requested and one command, only R.1, cause stop; Stop(R.2): one request, zero commands (acked descendant). stops R.1=2, R.2.1=1, R.3=0. R has own cause stop and counts completed=1/cancelled=2, others=0; notices R=[R cancelled] only after both confirmations; exit 1. Public barrier checks pending/no-op retries before acknowledgements, and selective failed-descendant retry without batch control roll-up. |
+| **C-d** | `max_concurrent:1`; `control_timeout_ms:60000`; `submit {ref:cd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:cd-N,root:N,spec:Parallel/NotifyAll{N.1}}`; `stop {node:N.1}`; `await_state {node:N,state:cancelled}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `hold_dispose {attempt:a1}`; `close {async:c,expect:dispose}`; `await_record {type:closed}`; `await_dispose {attempt:a1}`; `return_dispose {attempt:a1,result:error:leak}`; `join {name:c}`; `close {expect:dispose}`. Variant i: return_dispose ok and both Close expectations ok. Variant ii: replace first Close with `close {async:c,timeout_ms:50,expect:dispose}`; join before return_dispose, verify dispose_pending, return_dispose ok, then second Close expect ok. Variant iii: before complete, hold_stop/stop A.1/await_stop call:1; replace complete/await with `complete {attempt:a1,state:cancelled}`; `await_state {node:A,state:cancelled}`; launch Close as above, observe closed with Stop pin still held and zero disposal entries; return_stop call:1 ok, then await_dispose/return_dispose/join/repeat Close. | No Release needed: `before:[["closed","a1:dispose_entered"]]`; Stop-pin variant also stop_returned#1 before dispose_entered. Main Close after return reports ErrDispose identifying A.1, token a1 and dispose_failed; repeat same completed result. Main A completed=1 unchanged, Wait cached; disposes A.1=1/N.1=0. Closed footer has final_cursor=F despite cleanup error, exit 3; ok variant exit 1 since N cancelled. Caller-bound variant reports pending, then nil after successful result, not permanent pending failure. Stop-pin variant A cancelled=1, unchanged by cleanup. Main timeout is long enough not to accidentally latch dispose_timeout. |
 | **C-e** | `submit {ref:ce-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `complete {attempt:a1,state:completed,expect_error:attempt_phase}`; `emit {attempt:a1,text:x,expect_error:attempt_phase}`; `release_start {attempt:a1,decision:accept}`; `release_start {attempt:a1,decision:fail,expect_error:attempt_phase}`; `complete {attempt:a1,state:completed}`; `complete {attempt:a1,state:failed,expect_error:unknown_attempt}`; `close {expect:ok}`. Variant: remove only the first expect_error; record the mismatch, then orderly public cleanup releases the still-registered Start with accept and completes it before Close, without a cancellation/await-bound expiry. | starts=1, exactly one started and one settled; no hidden early report, first Start decision stands, main exit 0. Variant exits 4 for the undeclared phase error once orderly cleanup succeeds; never let cancellation of a held registered attempt or a wait-bound expiry introduce exit-3 precedence and eclipse that mismatch. |
 
 **Read-entry barrier (C-a iii).** Launching async output alone is not proof of
@@ -1618,15 +1764,16 @@ that an unranked co-resident worker can progress at global=1.
 | **SR-b** | `max_concurrent:1`; `submit {ref:sb-A,root:A,spec:task}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:sb-B,root:B,spec:task}`; public Snapshot(B.1) Pending/attempts=0 [fence]; rush: job_kill CAS Won, delivery done [fence]; `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; rush: second job_kill terminal/idempotent answer and zero Stop dispatch [fence]; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | B starts=0, stops=0, disposes=0; B leaf/root settle in the stop_requested transition with Done closed, no synthetic report or admission release. No Runner.Stop before commit; second job_kill causes no Stop. B has zero completion debt and no later duplicate notice delivery. A Completed. |
 | **SR-c** | `submit {ref:sc-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; rush: read owner/current claim c1 [fence]; rush: P2 stop request async:p2, request row keyed c1 committed [fence]; rush: owning H CAS Won [fence]; `stop {node:R.1}`; `await_stop {attempt:r1,call:1}`; `complete {attempt:r1,state:cancelled}`; `await_state {node:R,state:cancelled}`; rush: ack c1 committed winner [fence]; `join {name:p2}`; rush: stale claim request rejected with zero additional stops [fence]; `close {expect:ok}`. Dead-H variant uses fresh ref sc-dead-R and the same full start/bind/accept/running setup and async:p2 request fence, then rush: H confirmed dead before CAS [fence], RecoverDeadHost announced row interrupted [fence], recovery ack [fence], join p2, restart observation [fence]; no local Stop/complete is invented for a dead Runner. | Live H: row/leaf/root Cancelled, cancellation strictly after commit; P2 writes a request, NEVER an execution outcome or cancellation. Stale request stops=0. Dead H: recovery row Interrupted, not Cancelled; no execution Stop by P2 and restart reruns nothing. Unknown host status permits no outcome write. |
 | **AW-a** | `submit {ref:wa-R,root:R,spec:Parallel/NotifyAll{R.1,R.2}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `await_start {node:R.2,bind:r2}`; `release_start {attempt:r2,decision:accept}`; `await_state {node:R.2,state:running}`; rush: worker await_tasks any async:w, captured target set {R} [fence]; `complete {attempt:r1,state:completed}`; `await_state {node:R.1,state:completed}`; rush: w blocked, zero selected completion debt [fence]; rush: hold root delivery D [fence]; `complete {attempt:r2,state:completed}`; `await_state {node:R,state:completed}`; rush: root debt committed, D still held [fence]; `join {name:w}`; rush: release D and observe one R delivery [fence]; `close {expect:ok}`. Top-level any variant repeats with fresh ref wa-top-R, replacing worker entry/join with StopTurn acceptance and arbiter fences: no launch after R.1, one eligible launch after root debt (delivery hold does not suppress durable debt). All/S variants are specified below. | Worker finished=1 BEFORE D; only R is counted, no leaf delivery or double count. Zero debt after R.1 is not zero debt after R settles: root debt exists while D is held. Top-level any has no leaf-triggered launch and one root-triggered launch, subject to other arbiter gates. All remains deferred with S live; child_question from S breaks sleep without completing S. |
-| **AW-b** | Tested command `max_concurrent:1`, separate ranked waiter budget as above; `submit {ref:wb-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `hold_stop {attempt:r1}`; rush: worker await_tasks all async:w, captured targets {R} [fence]; rush: top-level all SleepAll armed for R [fence]; rush: job_kill CAS Won, delivery done [fence]; `stop {node:R.1}`; `await_stop {attempt:r1,call:1}`; `submit {ref:wb-B,root:B,spec:task}`; public Snapshot(B.1) Pending [fence]; rush: 4b remains deferred, guard sees live R, worker all blocked, B Pending [fence]; `return_stop {attempt:r1,call:1,result:ok}`; rush: actual Stop return and R still live/B Pending [fence]; `complete {attempt:r1,state:cancelled}`; `await_state {node:R,state:cancelled}`; `join {name:w}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; rush: public live/debt/4b evaluation [fence]; `close {expect:ok}`. | R's slot frees only at confirmed complete, never CAS or Stop return; B starts only after R settles. Worker returns once R Done closes (B was not in its entry set). Job_kill creates no wake and zero duplicate completion debt. Top-level 4b continues deferring while later B is live and lifts only once all root units settle; R exit alone cannot lift it if B is already live. Guard clears R only after real exit. |
+| **AW-b** | Tested command `max_concurrent:1`, separate ranked waiter budget as above; `submit {ref:wb-D,root:D,spec:task}`; `await_start {node:D.1,bind:d1}`; `release_start {attempt:d1,decision:accept}`; `complete {attempt:d1,state:completed}`; `await_state {node:D,state:completed}`; rush: D root debt committed, delivery held [fence]; `submit {ref:wb-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `hold_stop {attempt:r1}`; rush: worker await_tasks all async:w, captured targets {R} [fence]; rush: top-level all SleepAll armed for R [fence]; rush: job_kill CAS Won, delivery done [fence]; `stop {node:R.1}`; `await_stop {attempt:r1,call:1}`; `submit {ref:wb-B,root:B,spec:task}`; public Snapshot(B.1) Pending [fence]; rush: with D’s debt pending, rule 4b defers on live R, no launch [fence]; rush: guard sees live R, worker all blocked, B Pending [fence]; `return_stop {attempt:r1,call:1,result:ok}`; rush: actual Stop return and R still live/B Pending [fence]; `complete {attempt:r1,state:cancelled}`; `await_state {node:R,state:cancelled}`; `join {name:w}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; rush: R and B settled, D’s debt pending: 4b lifts, exactly one eligible launch; release D, one D delivery [fence]; `close {expect:ok}`. | R's slot frees only at confirmed complete, never CAS or Stop return; B starts only after R settles. Worker returns once R Done closes (B was not in its entry set). Job_kill creates no wake and zero duplicate completion debt. D's completion debt remains pending throughout live R and B. Top-level 4b continues deferring while later B is live and lifts only once R/B settle, permitting exactly one eligible launch before one D delivery; R exit alone cannot lift it if B is already live. Guard clears R only after real exit. |
 
-**AW-b arbiter fence.** “4b deferred” observes the live-root sleep predicate
-when completion-class debt exists; with job_kill's zero debt, rule 1 instead
-returns no launch. The harness must inspect both cases explicitly, not claim
-a 4b verdict from an empty debt set. “4b lifts” means its live-work predicate
-clears, not an unconditional turn launch without debt. B, submitted after
-worker entry, is not captured by w but is live work for top-level 4b, so that
-predicate clears only after B settles.
+**AW-b arbiter fence.** D supplies independent completion-class debt, held
+pending throughout live R and B. With that debt, rule 4b defers until both
+settle; then exactly one eligible launch and one D delivery are observed.
+B, submitted after worker entry, is not captured by w but remains live work
+for top-level 4b. Independent debt-free variant: remove the entire D fixture
+and all D fences, use fresh refs wb-free-R/wb-free-B, and replace arbiter
+fences/acceptance with rule 1 no launch and no 4b verdict. Job_kill's zero
+debt alone is never evidence of a 4b decision.
 
 **AW-a all/S fences.** In a fresh run, use refs wa-all-R and wa-all-S;
 repeat AW-a's explicit R starts/binds/accepts/running awaits, then
@@ -1647,6 +1794,30 @@ setup; after the 4b-deferred fence, rush: S child_question debt committed
 [fence], answer/inject accepted [fence]; complete s1/await S Completed,
 then close ok. Questions are non-completion wakes, not suppressed leaf
 completion or evidence that the root ended.
+
+### 6.8 Validation, correlation and privacy closure
+
+STATIC contract closure, not executed verification. Valid runs use
+`wait_bound_ms:10000`, sufficient record retention and named controlled
+payloads (pa/pb where shown); run with `--events`, then replay intact journals.
+Invalid-loader files have zero Start entries and no header, hence no replay.
+Tree/task abbreviations follow 6.3; every await is bounded.
+
+| ID | Controlled script / corruption | Acceptance |
+|---|---|---|
+| **V-a** | Separate files: two adds both ref va-x; submit and add sharing va-x; empty ref; missing ref; ref va/x. Each otherwise valid file ends `close {expect:ok}` to isolate ref validation. | Each exits 2 before factories/Runner/Start or events header; starts=0; no replay. |
+| **V-b** | `max_concurrent:2`; `submit {ref:vb-R,root:R,spec:Parallel/NotifyAll{R.1}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `add {ref:vb-g,parent:R,items:[task@g payload_ref:pa]}`; `await_start {node:R.2,bind:r2}`; `release_start {attempt:r2,decision:accept}`; `complete {attempt:r2,state:completed,code:ok_a}`; `await_state {node:R.2,state:completed}`; `add {ref:vb-h,parent:R,items:[task@h payload_ref:pb]}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:failed,code:exit_7}`; `await_state {node:R,state:failed}`; `add {ref:vb-late,parent:R,items:[task],expect_error:terminal}`; `close {expect:ok}`. | R.2 outcome completed/ok_a, R.3 failed/exit_7; each attempts=starts=accepted=1. Inputs in order: vb-R accepted [R], vb-g accepted [R.2], vb-h accepted [R.3], vb-late rejected error terminal, no vb-late record. Replay retains groups g/h and those outcomes; run/replay exit 1. |
+| **V-c** | `max_concurrent:4`; `submit {ref:vc-R,root:R,spec:Parallel/NotifyAll{R.1,R.2,R.3,R.4}}`; bind r1/r2/r3/r4 with await_start for the corresponding leaves; release_start each with decision fail and respective RAW codes `missing_program`, `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (exactly 65 ASCII a bytes), `PRIVATE_SENTINEL/argv=x`, `stop_timeout`; `await_record {type:start_rejected,node:R.2,code:invalid_code}`; `await_state {node:R,state:failed}`; `close {expect:ok}`. | Outcomes failed/missing_program, then failed/invalid_code for three leaves; each starts=1, accepted=0. Run/replay exit 1. Empty-code variant replaces r1's fail code with empty: start_failed. Result-code variant replaces r1's fail release with accept, then `complete {attempt:r1,state:failed,code:PRIVATE_SENTINEL/argv=x}`: invalid_code, accepted=1. Kept-code variant makes that same accept/complete replacement with code exit_7: failed/exit_7, accepted=1. All variants use fresh refs; other leaves/actions unchanged. |
+| **V-d** | Independently corrupt V-b/F-d journals: drop vb-h input; change vb-late result to accepted; swap vb-g/vb-h inputs; replace one submit/add record ref with vb-zz; set F-d request_counts.capacity_available to 2. | Each replay exits 2 via I1-I4; original V-b replays normally with exit 1, original F-d with exit 0. No synthetic missing events. |
+| **V-e** | Independent E1 runs: `submit {ref:e1-T,root:T,spec:task}`, bind T.1 as t1, `release_start {attempt:t1,decision:accept_complete,state:completed}`, `await_state {node:T,state:completed}`, `close {expect:ok}`; versus `submit {ref:e1-E,root:E,spec:Parallel/NotifyAll{E.1}}`, bind E.1 as e1, accept_complete completed, await E completed, close ok. | Under identity relabeling, equal normalized trees/policy, one launch and starts=accepted=1 each; run/replay exit 0. Separate raw-task file with a policy field exits 2 before header/Start; singleton is likewise an unknown scenario field, not a lab knob. |
+
+V-c extends E9 privacy: neither `PRIVATE_SENTINEL` nor
+`batchlab-error-sentinel` appears in feed, journal, views or Close errors.
+Only normalized machine codes survive. Footer inputs are diagnostic checks,
+not a durable input ledger or an exactly-once guarantee. Loader validation
+never sanitizes RAW fixture codes, and ordinary Runner refs remain optional
+and nonunique; stop/inject do not acquire refs. No variable expansion or lab
+agentguard wiring is introduced; Rush policy remains in 9.1.
 
 ## 7. Parallel-agent execution plan
 
@@ -1757,6 +1928,23 @@ mock-only program, or pending integration gate is not completion.
 ## 8. Decisions fixed now and decisions deferred
 
 Fixed for autonomous implementation:
+
+- Lab Submit/Add refs are mandatory and file-unique, validated before header
+  or launch; ordinary Runner refs remain optional/nonunique. Diagnostic footer
+  inputs and capacity/release counts enforce replay I1-I4, not durable or
+  exactly-once delivery (5.2/5.5; 6.8 V-a/V-b/V-d).
+- Machine codes use section 2's private normalization and reserved runtime
+  set; raw error text and rejected codes never reach records (V-c).
+- NewEngine alone copies Limits/ByGroup; production uses Runner. Raw-root
+  ingress uses the fixed parallel/all/no-cap wrapper shared by run/replay,
+  with no nested/Add wrapping or scenario policy knob (2.1/2.2; E9/V-e).
+- Helper spawns use platform.Command without isolation escape, no exemptions
+  or shared platform edits; absolute fixture paths have no variable expansion
+  (5.4). Agentguard is later Rush wiring, not the lab spawn guard.
+- The lab-owned delegating oracle distinguishes tokens, physical starts and
+  accepted executions, including accept_complete; barriers and independent
+  pending debt make R/C/AW scenarios reproducible (5.2; 6.3/6.5/6.7/6.8).
+  These are STATIC closures, not executed results.
 
 - Notifications default to NotifyAll; callers may request NotifyEach.
   Selected notices are records in the public feed.
@@ -1954,17 +2142,24 @@ remove an explicit batch's independent group intent.
 | running | Closing; root/leaf Interrupted locally after termination | No durable write: ledger close leaves running for recovery. Natural CAS won before suppression wins; local Interrupted is not a synthetic durable outcome. |
 | any | Cross-process requester P2 | Durable request keyed by claim; owning host H runs the first applicable row above and acks the winner. P2 never CASes or cancels. Reject stale claims; dead H goes through recovery (interrupted, not cancelled); unknown host status writes nothing. |
 
-**Singleton-policy needs (later task, schema deferred).** The bridge needs an
-ingress-only, immutable policy visible in the view, submit record and journal:
-exactly one task, Add refused, Notify fixed to all, one root notice and no
-leaf notice. The root NEVER owns an independent latched cause: its own
-cause latch stays empty, while its view/notice mirrors the authoritative
-leaf's cause. Stop(root) and HostClosing latch only its leaf; the root settles
-in the SAME leaf transition with identical state/cause identity, NOT the count
-reducer (otherwise timeout yields a Failed singleton root and closing can
-diverge). Never apply this policy to `batch_run`. This specifies integration
-needs only: a later singleton-policy
-task chooses the schema and mirror mechanism; no A0 or lab changes here.
+**Singleton-policy RESERVED SHAPE (later implementation only).** Reserve
+`SubmitRequest.Singleton bool` → `Submit{..., singleton}` → submit record
+`singleton` → root NodeView policy `singleton`. This text adds no A0
+declaration or current scenario schema. Later raw-task ingress alone sets it;
+never batch_run, Add, nested nodes or scenario JSON. Validate the fixed 2.1
+wrapper with exactly one Task, otherwise ErrInvalidSpec. Policy is immutable,
+including frozen views. Add to its root returns ErrUnsupported without a
+record. Notify is all: one root notice, no leaf notice.
+
+Stop(root) records one stop_requested for the root but latches only the leaf;
+HostClosing likewise latches only the leaf. The root's own cause latch stays
+empty. It settles in the same leaf transition with identical leaf state,
+including TimedOut, and mirrors leaf cause in view/notice. Summary.state is
+the leaf state; the count reducer is not used. Later lab normalization sets
+Singleton=true and E1 is updated then, not in autonomous A0/lab now.
+Implementation and mirror mechanics remain deferred; SR-a's additive
+Settled.Authoritative and ledger/CAS authority remain unchanged.
+`claim_gone` is an ordinary adapter code, not a reserved runtime code.
 
 `job_kill` resolves owner/job_id to the current claim, then its derived leaf
 ID. Its stall-controller check runs first (`job_kill.go:61–65`), but cannot
@@ -2157,7 +2352,14 @@ No integration phase is marked complete merely because batchlab passed.
 | S5 Runner lifecycle after a Close deadline | 3.4; R2 |
 | A1 selected notices unreachable by consumers | 4.1; R3 |
 | A2 no engine event for a Stop result | ControlReported (2, 3.1.1); E6 |
-| A3 journal producer and correlation | `Ref`, command and notice records (4.1), 5.5; L4, L6 |
+| A3 journal producer and correlation | 2.3, 4.1, 5.2/5.5 unique lab action refs, diagnostic inputs and I1-I4; L4/L6, V-a/V-b/V-d. STATIC closure, not executed verification. |
+| R2-API-01 unambiguous replay refs | 2 ordinary optional/nonunique refs; 5.2 file-unique lab refs and early loader validation; 5.5 I1-I4; V-a/V-b/V-d. STATIC closure only. |
+| R2-API-07 code privacy and reserved runtime codes | 2 Machine codes, 3.1.1, 4.1; V-c and E9. STATIC closure only. |
+| R2-API-08 constructor Limits ownership | 2.2 NewEngine copies once, NewRunner delegates; E9. STATIC closure only. |
+| Parallel-testing 3.2 correlation/oracle residuals | 5.2/5.5, 6.8 V-a..V-e; reproducible request, code and replay oracles. STATIC closure only. |
+| N1 singleton ingress references absent policy | 2.1 fixed raw-root policy, 5.2 shared normalization with no policy knob, V-e; 9.2 singleton shape reserved for later integration, implementation deferred. STATIC closure only. |
+| N2 helper spawn wrapper and owner boundary | 5.4 platform.Command, inherited descendant isolation, forbidden bypass APIs, no exemptions/shared helper edits; L1/L2/L5. STATIC closure only. |
+| R/C/AW scenario-fence residuals | 6.3 R-a..R-d settlement/Close; 6.5 C-c/C-d acknowledgement and disposal barriers; 6.7 AW-b independent pending debt. STATIC closure only. |
 | A4 StartLeaf without TaskSpec | StartLeaf carries Launch (2); R5 |
 | A5 acceptance and return of requests | 2.3; R5 |
 | A6 Release vs issued handles | 3.1.2, 4.5; R4; 6.5 C-a/C-d include physical Stop pins and Close ownership; STATIC contract closure, not executed verification. |
@@ -2170,9 +2372,9 @@ No integration phase is marked complete merely because batchlab passed.
 | A9 output cursor semantics | 4.3; R4 |
 | P1 Go has no function prototypes | section 2 note, 7.1 |
 | P2 controlled gates and scenario vocabulary | 5.2 Scenario format, 5.3 Controlled executor; E5, R1; 6.5 C-e. Parallel-testing round2 section 3.1 P2 residual (phase/duplicate actions) maps to these actual headings and C-e; C-a..C-d cover physical gates. STATIC contract closure, not executed verification. |
-| P3 journal completeness and binding | Final-boundary residual: 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4. Unique refs (R2-API-01) and P3-B scenario-schema scope remain separate; see 5.5. |
+| P3 journal completeness and binding | 2.3, 5.2/5.5 diagnostics and I1-I4, 6.4/6.8; unique refs and scenario/oracle schema are fixed before fan-out, not separate residuals. STATIC closure, not executed verification. |
 | P4 acceptance ownership | 7.2 table, A2 map (7.3) |
-| P5 independent oracle | `expect` (5.2); E4, L1, L3 |
+| P5 independent oracle | 5.2 presence-exact cause/outcome/attempts and lab-owned starts/accepted/max_active observations; E4/L1/L3, V-b/V-c/V-e. STATIC closure, not executed verification. |
 | P6 cleanup on cancellation and wait bound | 5.6; L5 |
 | P7 process isolation strategy | 5.4; L2 |
 | P8 test-helper name collisions | 7.2 prefixes and fixture directories |
