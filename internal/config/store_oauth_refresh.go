@@ -262,7 +262,11 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 			}
 		}
 	}
-	refreshed, err := codexRefreshTokenFn(ctx, client, pc.OAuthToken.RefreshToken)
+	descriptor, ok := oauthProvider(pc.ID)
+	if !ok || !descriptor.rotating {
+		return fmt.Errorf("rotating OAuth refresh not supported for provider %s", pc.ID)
+	}
+	refreshed, err := descriptor.exchange(ctx, client, pc.OAuthToken.RefreshToken)
 	if err != nil {
 		var rejected *oauth.TokenExchangeError
 		if errors.As(err, &rejected) {
@@ -273,13 +277,9 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	if !validCodexToken(refreshed) {
 		return fmt.Errorf("OAuth refresh for provider %s returned no valid token", pc.ID)
 	}
-	copyToken := *refreshed
-	if copyToken.AccountID == "" {
-		copyToken.AccountID = pc.OAuthToken.AccountID
-	}
-	refreshed = &copyToken
+	refreshed = normalizeOAuthRefresh(descriptor, pc.OAuthToken, refreshed)
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
-	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(pc.OAuthToken), Token: refreshed}
+	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)
 	if known == nil {
 		known = pending

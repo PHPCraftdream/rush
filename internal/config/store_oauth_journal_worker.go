@@ -110,7 +110,7 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 				return nil, &entry.record, errOAuthCredentialCAS
 			}
 			if !reflect.DeepEqual(live.OAuthToken, entry.record.Token) {
-				if oauthRefreshTokenSHA256(live.OAuthToken) != entry.record.PredecessorRefreshTokenSHA256 {
+				if !oauthJournalLivePredecessor(&entry.record, live.OAuthToken) {
 					return nil, &entry.record, errOAuthCredentialCAS
 				}
 				if err := s.applyOAuthTokenWithPendingPredecessor(provider, live.OAuthToken, entry.record.Token, live.OAuthToken, true, &entry.record); err != nil {
@@ -161,7 +161,7 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 		pc, _ := current.config.Providers.Get(provider)
 		live = pc.OAuthToken
 	}
-	if decision != oauthJournalLogout && live != nil && !reflect.DeepEqual(live, record.Token) && !reflect.DeepEqual(live, disk) && oauthRefreshTokenSHA256(live) != record.PredecessorRefreshTokenSHA256 {
+	if decision != oauthJournalLogout && live != nil && !reflect.DeepEqual(live, record.Token) && !reflect.DeepEqual(live, disk) && !oauthJournalLivePredecessor(record, live) {
 		return nil, record, errOAuthCredentialCAS
 	}
 	if decision == oauthJournalError || err != nil {
@@ -169,9 +169,9 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 			return nil, record, errOAuthJournalDisk
 		}
 		// Config uncertainty preserves B only in its matching live lineage.
-		if live != nil && (reflect.DeepEqual(live, record.Token) || oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256) {
+		if live != nil && (reflect.DeepEqual(live, record.Token) || oauthJournalLivePredecessor(record, live)) {
 			var predecessor *oauth.Token
-			if oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256 {
+			if oauthJournalLivePredecessor(record, live) {
 				predecessor = live
 			}
 			if applyErr := s.applyOAuthTokenWithPendingPredecessor(provider, live, record.Token, predecessor, true, record); applyErr != nil {
@@ -241,29 +241,34 @@ func (s *ConfigStore) withOAuthJournalRecoveryWriteLock(parent context.Context, 
 }
 
 func (s *ConfigStore) recoverOAuthJournalsAtLoad() {
-	for _, scope := range []Scope{ScopeGlobal, ScopeWorkspace} {
-		path, err := s.configPath(scope)
-		if err != nil {
+	for _, descriptor := range oauthProviderDescriptors() {
+		if !descriptor.rotating {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), codexRefreshLockWait)
-		record, readErr := readOAuthJournalWithRetry(ctx, oauthJournalPath(path, "openai-codex"))
-		if readErr == nil && record == nil {
-			cancel()
-			continue
-		}
-		lockPath := oauthRefreshLockPath(path, "openai-codex")
-		lock, err := acquireConfigFileLock(ctx, lockPath)
-		if err == nil {
-			_, record, recoveryErr := s.recoverCodexOAuthJournal(ctx, scope, "openai-codex")
-			_ = releaseConfigFileLock(lockPath, lock)
-			if record != nil || recoveryErr != nil {
-				s.startOAuthJournalWorker(scope, "openai-codex")
+		for _, scope := range []Scope{ScopeGlobal, ScopeWorkspace} {
+			path, err := s.configPath(scope)
+			if err != nil {
+				continue
 			}
-		} else {
-			s.startOAuthJournalWorker(scope, "openai-codex")
+			ctx, cancel := context.WithTimeout(context.Background(), codexRefreshLockWait)
+			record, readErr := readOAuthJournalWithRetry(ctx, oauthJournalPath(path, descriptor.id))
+			if readErr == nil && record == nil {
+				cancel()
+				continue
+			}
+			lockPath := oauthRefreshLockPath(path, descriptor.id)
+			lock, err := acquireConfigFileLock(ctx, lockPath)
+			if err == nil {
+				_, record, recoveryErr := s.recoverCodexOAuthJournal(ctx, scope, descriptor.id)
+				_ = releaseConfigFileLock(lockPath, lock)
+				if record != nil || recoveryErr != nil {
+					s.startOAuthJournalWorker(scope, descriptor.id)
+				}
+			} else {
+				s.startOAuthJournalWorker(scope, descriptor.id)
+			}
+			cancel()
 		}
-		cancel()
 	}
 }
 

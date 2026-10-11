@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- OAuth token refreshes of GitHub Copilot and Hyper are now serialized per provider, in-process and across rush processes (the same refresh sidecar lock the Codex refresh uses): concurrent refreshes run one at a time and a waiter adopts the winner's token from disk instead of making a second exchange. Their refresh semantics are otherwise unchanged. The Codex journal engine is now descriptor-driven (a provider opts in with `rotating`; only Codex does), a predecessor digest is recorded only when the refresh token actually changed, and startup journal recovery covers every rotating provider.
 - A delegated child's held question is no longer lost when its host dies: recovery of an interrupted delegation now puts the question (with its suggested options and any preamble) into the interrupted result the parent receives, instead of the generic "finished with no textual response" text. The question notice itself is still voided with the delegation, so the parent gets it exactly once.
 
 ## [0.2.0-alpha.14] - 2026-10-11

@@ -60,12 +60,34 @@ func oauthRefreshTokenSHA256(token *oauth.Token) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func oauthRotationDigest(previous, token *oauth.Token) string {
+	if previous == nil || token == nil || previous.RefreshToken == "" || token.RefreshToken == "" || previous.RefreshToken == token.RefreshToken {
+		return ""
+	}
+	return oauthRefreshTokenSHA256(previous)
+}
+
+// Unchanged credentials establish lineage without claiming a burned token.
+func oauthJournalLivePredecessor(record *oauthJournalRecord, live *oauth.Token) bool {
+	if record == nil || live == nil {
+		return false
+	}
+	if record.PredecessorRefreshTokenSHA256 != "" {
+		return oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256
+	}
+	return record.Token != nil && live.RefreshToken != "" && live.RefreshToken == record.Token.RefreshToken
+}
+
 // The legacy primary digest and optional additional digests form one set.
 func oauthJournalWithBurned(record *oauthJournalRecord, digests ...string) oauthJournalRecord {
 	copyRecord := *record
+	successor := oauthRefreshTokenSHA256(record.Token)
+	if copyRecord.PredecessorRefreshTokenSHA256 == successor {
+		copyRecord.PredecessorRefreshTokenSHA256 = ""
+	}
 	copyRecord.BurnedRefreshTokenSHA256 = nil
 	for _, digest := range append(append([]string(nil), record.BurnedRefreshTokenSHA256...), digests...) {
-		if digest != "" && digest != record.PredecessorRefreshTokenSHA256 && !slices.Contains(copyRecord.BurnedRefreshTokenSHA256, digest) {
+		if digest != "" && digest != successor && digest != copyRecord.PredecessorRefreshTokenSHA256 && !slices.Contains(copyRecord.BurnedRefreshTokenSHA256, digest) {
 			copyRecord.BurnedRefreshTokenSHA256 = append(copyRecord.BurnedRefreshTokenSHA256, digest)
 		}
 	}
@@ -79,12 +101,14 @@ func oauthJournalPath(configPath, providerID string) string {
 }
 
 func validOAuthJournal(record *oauthJournalRecord) bool {
-	if record == nil || len(record.PredecessorRefreshTokenSHA256) != sha256.Size*2 || record.Token == nil || record.Token.AccessToken == "" || record.Token.RefreshToken == "" || record.Token.ExpiresAt <= 0 {
+	if record == nil || record.Token == nil || record.Token.AccessToken == "" || record.Token.RefreshToken == "" || record.Token.ExpiresAt <= 0 {
 		return false
 	}
-	digest, err := hex.DecodeString(record.PredecessorRefreshTokenSHA256)
-	if err != nil || len(digest) != sha256.Size {
-		return false
+	if record.PredecessorRefreshTokenSHA256 != "" {
+		digest, err := hex.DecodeString(record.PredecessorRefreshTokenSHA256)
+		if err != nil || len(digest) != sha256.Size {
+			return false
+		}
 	}
 	for _, burned := range record.BurnedRefreshTokenSHA256 {
 		digest, err := hex.DecodeString(burned)
@@ -234,7 +258,7 @@ func arbitrateOAuthJournal(record *oauthJournalRecord, predecessor, disk *oauth.
 	if reflect.DeepEqual(disk, reference) {
 		return oauthJournalEqual
 	}
-	if predecessor != nil && reflect.DeepEqual(disk, predecessor) ||
+	if predecessor != nil && oauthRotationDigest(predecessor, reference) != "" && reflect.DeepEqual(disk, predecessor) ||
 		record != nil && (record.PredecessorRefreshTokenSHA256 != "" && oauthRefreshTokenSHA256(disk) == record.PredecessorRefreshTokenSHA256 || slices.Contains(record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(disk))) {
 		return oauthJournalPredecessor
 	}

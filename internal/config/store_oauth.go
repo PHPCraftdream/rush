@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/oauth/codex"
@@ -243,10 +242,13 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 // refresh token), the disk is re-checked to recover the other session's
 // token.
 //
-// openai-codex is routed to refreshCodexOAuthToken (store_oauth_refresh.go): one
+// A provider whose descriptor is rotating (openai-codex; store_oauth_provider.go)
+// is routed to refreshCodexOAuthToken (store_oauth_refresh.go): one
 // refresh at a time per provider, in-process and across processes; the rotated
 // token is published to memory before disk; after a rejected exchange the disk
 // is polled for a bounded time. A different valid current token skips the exchange.
+// The other providers (copilot, hyper) keep this legacy path, serialized the same
+// way (in-process and across processes) by refreshLegacyOAuthToken.
 func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
 	if providerConfig.ID == "" {
 		return fmt.Errorf("provider config for OAuth refresh has no ID")
@@ -256,10 +258,19 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	if providerConfig.OAuthToken == nil {
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)
 	}
-	expectedToken := providerConfig.OAuthToken
-	if providerID == "openai-codex" {
+	descriptor, ok := oauthProvider(providerID)
+	if !ok {
+		return fmt.Errorf("OAuth refresh not supported for provider %s", providerID)
+	}
+	if descriptor.rotating {
 		return s.refreshCodexOAuthToken(ctx, scope, providerConfig, client)
 	}
+	return s.refreshLegacyOAuthToken(ctx, scope, providerConfig, client)
+}
+
+func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
+	providerID := providerConfig.ID
+	expectedToken := providerConfig.OAuthToken
 
 	// Check if another session refreshed the token recently by reading
 	// the current token from the config file on disk.
@@ -273,18 +284,8 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 		return s.applyToken(providerConfig, newToken, providerID)
 	}
 
-	var refreshedToken *oauth.Token
-	var refreshErr error
-	switch providerID {
-	case string(catwalk.InferenceProviderCopilot):
-		refreshedToken, refreshErr = copilotRefreshTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
-	case "openai-codex":
-		refreshedToken, refreshErr = codexRefreshTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
-	case hyperp.Name:
-		refreshedToken, refreshErr = hyperExchangeTokenFn(ctx, client, providerConfig.OAuthToken.RefreshToken)
-	default:
-		return fmt.Errorf("OAuth refresh not supported for provider %s", providerID)
-	}
+	descriptor, _ := oauthProvider(providerID)
+	refreshedToken, refreshErr := descriptor.exchange(ctx, client, expectedToken.RefreshToken)
 	if refreshErr != nil {
 		// The exchange may have failed because another session already
 		// rotated the refresh token. Re-read the config file and use the
@@ -301,11 +302,6 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	}
 	if refreshedToken == nil {
 		return fmt.Errorf("OAuth refresh for provider %s returned no token", providerID)
-	}
-	if providerID == "openai-codex" && refreshedToken.AccountID == "" {
-		refreshedTokenCopy := *refreshedToken
-		refreshedTokenCopy.AccountID = expectedToken.AccountID
-		refreshedToken = &refreshedTokenCopy
 	}
 
 	slog.Info("Successfully refreshed OAuth token", "provider", providerID)
@@ -366,7 +362,7 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	if err != nil {
 		return false, err
 	}
-	isCodex := providerID == "openai-codex"
+	isCodex := rotatingOAuthProvider(providerID)
 	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
 	if !isCodex {
 		keys = append(keys, fmt.Sprintf("providers.%s.api_key", providerID))
@@ -450,7 +446,7 @@ func (s *ConfigStore) applyOAuthTokenWithPendingPredecessor(providerID string, e
 	}
 	providerConfig, exists := cur.config.Providers.Get(providerID)
 	apiKeyMatches := providerConfig.APIKey == token.AccessToken
-	if providerID == "openai-codex" {
+	if rotatingOAuthProvider(providerID) {
 		apiKeyMatches = true
 	}
 	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && apiKeyMatches {
@@ -463,7 +459,7 @@ func (s *ConfigStore) applyOAuthTokenWithPendingPredecessor(providerID string, e
 		return nil
 	}
 	expectedAPIKeyMatches := expected != nil && providerConfig.APIKey == expected.AccessToken
-	if providerID == "openai-codex" {
+	if rotatingOAuthProvider(providerID) {
 		expectedAPIKeyMatches = true
 	}
 	if !exists || providerConfig.OAuthToken == nil || expected == nil || !expectedAPIKeyMatches || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
@@ -478,7 +474,7 @@ func (s *ConfigStore) applyOAuthTokenWithPendingPredecessor(providerID string, e
 	next.config = &cfgCopy
 	if pending && predecessor != nil {
 		if len(records) > 0 && records[0] != nil {
-			copyRecord := oauthJournalWithBurned(records[0], oauthRefreshTokenSHA256(expected))
+			copyRecord := oauthJournalWithBurned(records[0], oauthRotationDigest(expected, token))
 			records = []*oauthJournalRecord{&copyRecord}
 		}
 		s.recordPendingOAuthLocked(providerID, predecessor, token, records...)

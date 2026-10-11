@@ -16,7 +16,7 @@ type pendingOAuthRotation struct {
 
 func oauthTokenProviderConfig(providerID string, pc ProviderConfig, token *oauth.Token) ProviderConfig {
 	pc.OAuthToken = token
-	if providerID == "openai-codex" {
+	if rotatingOAuthProvider(providerID) {
 		pc.APIKey = ""
 	} else {
 		pc.APIKey = token.AccessToken
@@ -31,7 +31,7 @@ func (s *ConfigStore) recordPendingOAuthLocked(providerID string, predecessor, t
 	if s.pendingOAuth == nil {
 		s.pendingOAuth = make(map[string]pendingOAuthRotation)
 	}
-	record := oauthJournalRecord{Token: token, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(predecessor)}
+	record := oauthJournalRecord{Token: token, PredecessorRefreshTokenSHA256: oauthRotationDigest(predecessor, token)}
 	if len(records) > 0 && records[0] != nil {
 		record = *records[0]
 	}
@@ -46,7 +46,7 @@ func (s *ConfigStore) recordPendingOAuthLocked(providerID string, predecessor, t
 			digests = append(digests, owned.record.BurnedRefreshTokenSHA256...)
 		}
 	}
-	digests = append(digests, oauthRefreshTokenSHA256(predecessor))
+	digests = append(digests, oauthRotationDigest(predecessor, token))
 	record = oauthJournalWithBurned(&record, digests...)
 	copyToken := *token
 	record.Token = &copyToken

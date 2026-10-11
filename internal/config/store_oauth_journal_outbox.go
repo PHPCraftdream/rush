@@ -99,7 +99,7 @@ func (s *ConfigStore) settleOAuthOutbox(ctx context.Context, path, provider stri
 	}
 	cur := s.loadSnapshot()
 	pc, ok := cur.config.Providers.Get(provider)
-	if ok && (reflect.DeepEqual(pc.OAuthToken, entry.record.Token) || reflect.DeepEqual(pc.OAuthToken, disk) || oauthRefreshTokenSHA256(pc.OAuthToken) == entry.record.PredecessorRefreshTokenSHA256) {
+	if ok && (reflect.DeepEqual(pc.OAuthToken, entry.record.Token) || reflect.DeepEqual(pc.OAuthToken, disk) || oauthJournalLivePredecessor(&entry.record, pc.OAuthToken)) {
 		next := cur.clone()
 		cfg := *cur.config
 		providers := cur.config.Providers.Copy()
