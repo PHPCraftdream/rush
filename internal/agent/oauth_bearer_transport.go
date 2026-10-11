@@ -30,9 +30,11 @@ func (t *oauthBearerTransport) RoundTrip(request *http.Request) (*http.Response,
 	}
 	ctx := request.Context()
 	if err := ctx.Err(); err != nil {
+		closeRequestBody(request)
 		return nil, err
 	}
 	unavailable := func() (*http.Response, error) {
+		closeRequestBody(request)
 		body, _ := json.Marshal(map[string]any{"error": map[string]string{
 			"message": t.providerID + " OAuth credentials unavailable: provider removed or logged out",
 			"type":    "authentication_error",
@@ -57,6 +59,7 @@ func (t *oauthBearerTransport) RoundTrip(request *http.Request) (*http.Response,
 			return base.RoundTrip(r)
 		}
 		if err := ctx.Err(); err != nil {
+			closeRequestBody(r)
 			return nil, err
 		}
 		cloned := r.Clone(ctx)
@@ -115,9 +118,7 @@ func (t *oauthBearerTransport) RoundTrip(request *http.Request) (*http.Response,
 		retry.Body = body
 	}
 	if err := cancelled(); err != nil {
-		if retry.Body != nil {
-			_ = retry.Body.Close()
-		}
+		closeRequestBody(retry)
 		return nil, err
 	}
 	if response.Body != nil {
@@ -127,12 +128,16 @@ func (t *oauthBearerTransport) RoundTrip(request *http.Request) (*http.Response,
 		_ = response.Body.Close()
 	}
 	if err := ctx.Err(); err != nil {
-		if retry.Body != nil {
-			_ = retry.Body.Close()
-		}
+		closeRequestBody(retry)
 		return nil, err
 	}
 	return send(retry, current.AccessToken)
+}
+
+func closeRequestBody(request *http.Request) {
+	if request.Body != nil && request.Body != http.NoBody {
+		_ = request.Body.Close()
+	}
 }
 
 func (t *oauthBearerTransport) CloseIdleConnections() {

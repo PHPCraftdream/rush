@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 
+	"charm.land/catwalk/pkg/catwalk"
+
+	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 )
@@ -80,7 +83,7 @@ func copyOAuthToken(token oauth.Token) oauth.Token {
 
 // withOAuthBearerClient leaves SDK/static credentials alone unless a live OAuth store is available.
 func (c *coordinator) withOAuthBearerClient(pc config.ProviderConfig, client *http.Client) *http.Client {
-	if c == nil || c.cfg == nil || pc.OAuthToken == nil || (pc.ID != "copilot" && pc.ID != "hyper") {
+	if c == nil || c.cfg == nil || pc.OAuthToken == nil || (pc.ID != string(catwalk.InferenceProviderCopilot) && pc.ID != hyper.Name) {
 		return client
 	}
 	if client == nil {
