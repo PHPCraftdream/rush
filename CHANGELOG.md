@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Every rush process now re-reads the global OAuth credentials from disk about every 5 seconds in the background (a cheap file-stat check first, a full read only when the file changed) and lifts a token rotated by another process into memory, so a long-running process, delegated child or web session no longer keeps an already burned token until its next 401. The adoption goes through the same single arbiter as a refresh preflight and never signs the account out or changes the provider set.
+
 ## [0.2.0-alpha.15] - 2026-10-11
 
 - Recovery of an OAuth token journal record that carries no predecessor digest (a refresh that returned an unchanged refresh token) no longer replaces an equal-expiry or newer live token with the older journalled one: a live token sharing the refresh token is treated as the journal token's predecessor only when it is strictly older. Not reachable with the current providers (only Codex uses the journal and its refresh token changes on every exchange), but required before any other provider opts in.

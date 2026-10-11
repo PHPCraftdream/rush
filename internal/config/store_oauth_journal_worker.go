@@ -33,7 +33,7 @@ func oauthRefreshLockPath(path, provider string) string {
 	return fmt.Sprintf("%s.oauth-refresh-%x.lock", normalizeReloadPath(path), digest[:8])
 }
 
-// Test cleanup cancels and joins this store only; cancellation is permanent.
+// Cleanup also cancels and joins the OAuth disk sync worker.
 func (s *ConfigStore) stopOAuthJournalWorkers() {
 	s.oauthWorkerMu.Lock()
 	if s.oauthWorkerCtx == nil {

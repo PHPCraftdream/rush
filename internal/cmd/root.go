@@ -454,6 +454,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 	if err != nil {
 		return nil, err
 	}
+	store.StartOAuthDiskSync()
 	if err := checkAppPassword(cmd, store); err != nil {
 		return nil, err
 	}

@@ -109,14 +109,22 @@ func (s *ConfigStore) preflightCodexDiskAuthority(ctx context.Context, scope Sco
 		return false, nil
 	}
 	disk, err := readOAuthJournalDiskToken(path, provider)
-	if err != nil {
+	return s.adoptCodexDiskAuthority(ctx, path, provider, used, live.OAuthToken, disk, err, true)
+}
+
+// Adopt sampled disk authority without rereading configuration.
+func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provider string, used, expected, disk *oauth.Token, readErr error, logoutAllowed bool) (bool, error) {
+	if readErr != nil {
 		// Uncertain disk must not block an available different live token.
 		return false, nil
 	}
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
-	decision := arbitrateOAuthJournal(record, predecessor, disk, nil, live.OAuthToken)
+	decision := arbitrateOAuthJournal(record, predecessor, disk, nil, expected)
 	if decision == oauthJournalLogout {
-		return true, s.applyCodexDiskLogout(provider, live.OAuthToken)
+		if !logoutAllowed {
+			return false, nil
+		}
+		return true, s.applyCodexDiskLogout(provider, expected)
 	}
 	if !validCodexToken(disk) || decision != oauthJournalDiskLaterOrTie {
 		return false, nil
@@ -131,11 +139,11 @@ func (s *ConfigStore) preflightCodexDiskAuthority(ctx context.Context, scope Sco
 		if journalErr != nil && !errors.Is(journalErr, errOAuthJournalInvalid) {
 			return false, nil
 		}
-		if journal != nil && arbitrateOAuthJournal(journal, nil, disk, nil, live.OAuthToken) != oauthJournalDiskLaterOrTie {
+		if journal != nil && arbitrateOAuthJournal(journal, nil, disk, nil, expected) != oauthJournalDiskLaterOrTie {
 			return false, nil
 		}
 	}
-	if err := s.applyOAuthToken(provider, live.OAuthToken, disk); err != nil {
+	if err := s.applyOAuthToken(provider, expected, disk); err != nil {
 		return true, err
 	}
 	return !reflect.DeepEqual(disk, used), nil

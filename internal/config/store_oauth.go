@@ -277,9 +277,7 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 	newToken, err := s.loadTokenFromDisk(scope, providerID)
 	if err != nil {
 		slog.Warn("Failed to read token from config file, proceeding with refresh", "provider", providerID, "error", err)
-	} else if newToken != nil && !newToken.IsExpired() &&
-		(newToken.AccessToken != expectedToken.AccessToken ||
-			providerID == "openai-codex" && !reflect.DeepEqual(newToken, expectedToken)) {
+	} else if legacyDiskTokenAdoptable(providerID, expectedToken, newToken) {
 		slog.Info("Using token refreshed by another session", "provider", providerID)
 		return s.applyToken(providerConfig, newToken, providerID)
 	}
@@ -291,10 +289,7 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 		// rotated the refresh token. Re-read the config file and use the
 		// other session's token if available.
 		if diskToken, diskErr := s.loadTokenFromDisk(scope, providerID); diskErr == nil &&
-			diskToken != nil &&
-			!diskToken.IsExpired() &&
-			(diskToken.AccessToken != expectedToken.AccessToken ||
-				providerID == "openai-codex" && !reflect.DeepEqual(diskToken, expectedToken)) {
+			legacyDiskTokenAdoptable(providerID, expectedToken, diskToken) {
 			slog.Info("Using token refreshed by another session after exchange failure", "provider", providerID)
 			return s.applyToken(providerConfig, diskToken, providerID)
 		}
@@ -348,6 +343,12 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 	}
 
 	return nil
+}
+
+func legacyDiskTokenAdoptable(provider string, expected, disk *oauth.Token) bool {
+	return disk != nil && !disk.IsExpired() &&
+		(disk.AccessToken != expected.AccessToken ||
+			provider == "openai-codex" && !reflect.DeepEqual(disk, expected))
 }
 
 var errOAuthCredentialCAS = errors.New("OAuth credentials changed on disk")

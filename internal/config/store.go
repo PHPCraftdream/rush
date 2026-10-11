@@ -140,11 +140,12 @@ type ConfigStore struct {
 	oauthOutbox  map[oauthOutboxKey]*oauthOutboxEntry // Guarded by publishMu.
 
 	// OAuth workers belong to this store, independently of refresh callers.
-	oauthWorkerMu     sync.Mutex
-	oauthWorkerCtx    context.Context
-	oauthWorkerCancel context.CancelFunc
-	oauthWorkers      map[string]*oauthJournalWorker
-	oauthWorkerWG     sync.WaitGroup
+	oauthWorkerMu        sync.Mutex
+	oauthWorkerCtx       context.Context
+	oauthWorkerCancel    context.CancelFunc
+	oauthWorkers         map[string]*oauthJournalWorker
+	oauthWorkerWG        sync.WaitGroup
+	oauthDiskSyncStarted bool // Guarded by oauthWorkerMu.
 
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
