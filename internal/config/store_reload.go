@@ -570,6 +570,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		} else {
 			candidate.resolverRevision = cur.resolverRevision
 		}
+		s.overlayPendingOAuthLocked(candidate)
 		s.publishLocked(candidate)
 		return nil
 	}(); publishErr != nil {

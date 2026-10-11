@@ -242,6 +242,11 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 // the exchange fails (e.g. because another session already rotated the
 // refresh token), the disk is re-checked to recover the other session's
 // token.
+//
+// openai-codex is routed to refreshCodexOAuthToken (store_oauth_refresh.go): one
+// refresh at a time per provider, in-process and across processes; the rotated
+// token is published to memory before disk; after a rejected exchange the disk
+// is polled for a bounded time. A different valid current token skips the exchange.
 func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
 	if providerConfig.ID == "" {
 		return fmt.Errorf("provider config for OAuth refresh has no ID")
@@ -252,6 +257,9 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)
 	}
 	expectedToken := providerConfig.OAuthToken
+	if providerID == "openai-codex" {
+		return s.refreshCodexOAuthToken(ctx, scope, providerConfig, client)
+	}
 
 	// Check if another session refreshed the token recently by reading
 	// the current token from the config file on disk.
@@ -350,6 +358,10 @@ var errOAuthCredentialCAS = errors.New("OAuth credentials changed on disk")
 
 // Settings-lock exempt: this CAS writer only touches providers.<id>.oauth/api_key.
 func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, expected, token *oauth.Token) (bool, error) {
+	return s.setOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, s.withConfigWriteLock)
+}
+
+func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID string, expected, token *oauth.Token, withLock func(string, func(configWriteTarget) error) error) (bool, error) {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return false, err
@@ -361,7 +373,7 @@ func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, exp
 	}
 	slices.Sort(keys)
 	var committedErr error
-	err = s.withConfigWriteLock(path, func(target configWriteTarget) error {
+	err = withLock(path, func(target configWriteTarget) error {
 		data, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if readErr != nil {
 			return fmt.Errorf("failed to read config file: %w", readErr)
@@ -421,6 +433,15 @@ func (s *ConfigStore) applyToken(providerConfig ProviderConfig, token *oauth.Tok
 }
 
 func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, token *oauth.Token) error {
+	return s.applyOAuthTokenWithPending(providerID, expected, token, false)
+}
+
+func (s *ConfigStore) applyOAuthTokenWithPending(providerID string, expected, token *oauth.Token, pending bool) error {
+	return s.applyOAuthTokenWithPendingPredecessor(providerID, expected, token, expected, pending)
+}
+
+// Memory CAS and pending predecessor selection share one publication lock.
+func (s *ConfigStore) applyOAuthTokenWithPendingPredecessor(providerID string, expected, token, predecessor *oauth.Token, pending bool, records ...*oauthJournalRecord) error {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
 	cur := s.loadSnapshot()
@@ -433,6 +454,12 @@ func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, 
 		apiKeyMatches = true
 	}
 	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && apiKeyMatches {
+		if pending && predecessor != nil {
+			entry, ok := s.pendingOAuth[providerID]
+			if !ok || !reflect.DeepEqual(&entry.token, token) {
+				s.recordPendingOAuthLocked(providerID, predecessor, token, records...)
+			}
+		}
 		return nil
 	}
 	expectedAPIKeyMatches := expected != nil && providerConfig.APIKey == expected.AccessToken
@@ -442,21 +469,20 @@ func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, 
 	if !exists || providerConfig.OAuthToken == nil || expected == nil || !expectedAPIKeyMatches || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
 		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
 	}
-	providerConfig.OAuthToken = token
-	if providerID == "openai-codex" {
-		providerConfig.APIKey = ""
-	} else {
-		providerConfig.APIKey = token.AccessToken
-	}
-	if providerID == string(catwalk.InferenceProviderCopilot) {
-		providerConfig.SetupGitHubCopilot()
-	}
+	providerConfig = oauthTokenProviderConfig(providerID, providerConfig, token)
 	next := cur.clone()
 	cfgCopy := *cur.config
 	providersCopy := cur.config.Providers.Copy()
 	providersCopy[providerID] = providerConfig
 	cfgCopy.Providers = csync.NewMapFrom(providersCopy)
 	next.config = &cfgCopy
+	if pending && predecessor != nil {
+		if len(records) > 0 && records[0] != nil {
+			copyRecord := oauthJournalWithBurned(records[0], oauthRefreshTokenSHA256(expected))
+			records = []*oauthJournalRecord{&copyRecord}
+		}
+		s.recordPendingOAuthLocked(providerID, predecessor, token, records...)
+	}
 	s.publishLocked(next)
 	return nil
 }

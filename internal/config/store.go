@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -134,6 +135,16 @@ type ConfigStore struct {
 	// RemoveConfigField/SetConfigFields (which do call autoReload) from a
 	// path that runs under a held publishMu.
 	publishMu sync.Mutex
+
+	pendingOAuth map[string]pendingOAuthRotation      // Guarded by publishMu.
+	oauthOutbox  map[oauthOutboxKey]*oauthOutboxEntry // Guarded by publishMu.
+
+	// OAuth workers belong to this store, independently of refresh callers.
+	oauthWorkerMu     sync.Mutex
+	oauthWorkerCtx    context.Context
+	oauthWorkerCancel context.CancelFunc
+	oauthWorkers      map[string]*oauthJournalWorker
+	oauthWorkerWG     sync.WaitGroup
 
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in

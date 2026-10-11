@@ -46,6 +46,8 @@ func TestRefreshOAuthToken_CodexRotatesAndPreservesAccountWithoutAPIKey(t *testi
 		}, nil
 	}
 	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	trackOAuthJournalTestStore(t, store)
+	idle := hookOAuthJournalIdle(t, store)
 
 	require.NoError(t, store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, ProviderConfig{
 		ID:         "openai-codex",
@@ -59,6 +61,7 @@ func TestRefreshOAuthToken_CodexRotatesAndPreservesAccountWithoutAPIKey(t *testi
 	require.Equal(t, "account-bound-id", current.OAuthToken.AccountID)
 	require.Empty(t, current.APIKey)
 
+	waitOAuthJournalIdle(t, idle)
 	data, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	var persisted struct {

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Fix concurrent OpenAI Codex OAuth refreshes: one exchange per provider in-process and across processes (a separate sidecar lock, not the general config write lock), compare-and-refresh so a caller whose token was already rotated does not burn the new refresh token, the rotated token is published to memory first and then to a dedicated write-ahead journal next to the config (`<config>.oauth-pending-<hash>.json`, mode 0600), the config edit is retried without limit by a store-owned worker, and a crash or an unwritable/corrupt config no longer forces a re-login: the next process recovers the token from the journal before any exchange. A journal that cannot be written within a bounded time is handed to the worker so running agents are never blocked. Behaviour change: a corrupt journal is moved aside to `.corrupt-*` (at most five kept) and never blocks a refresh; logout and a later-expiring external token win over a pending rotation. Other providers keep the previous refresh path.
+
 - Task-tree active forms now obey the title byte limit (empty remains valid), and fieldless edits are rejected; explicitly unchanged edits remain no-ops.
 - Task protocol rejects payloads over 4 MiB or 128 structural container levels before decoding, returning `invalid_input` with the current summary and no writes.
 - `tasklab` top-level and subcommand help now use stdout with exit 0; usage remains stderr/exit 2 and output failures exit 1.

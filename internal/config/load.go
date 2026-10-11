@@ -46,6 +46,9 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
 		store, err := loadOnce(workingDir, dataDir, debug)
 		if !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
+			if err == nil {
+				store.recoverOAuthJournalsAtLoad()
+			}
 			return store, err
 		}
 		lastErr = err
