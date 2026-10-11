@@ -831,6 +831,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 		}
 		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}
+	httpClient = c.withOAuthBearerClient(providerCfg, httpClient)
 
 	switch providerCfg.Type {
 	case openai.Name:
