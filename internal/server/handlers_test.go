@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -40,6 +41,8 @@ func isolateAllGlobalConfigPaths(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
+	// The process-wide heartbeat writer must not inherit a real output dir.
+	t.Setenv("RUSH_HEARTBEAT_DIR", "")
 
 	// Without this, provider discovery makes a real network call to Catwalk
 	// (and Hyper) the first time it runs against a fresh, cache-empty
@@ -119,6 +122,16 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	a, err := appPkg.New(t.Context(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(a.Shutdown)
+	original := a.AgentCoordinator
+	// Retain startup ownership even when a test replaces the coordinator.
+	t.Cleanup(func() {
+		if original != nil {
+			original.CancelAll()
+			if ctrl, ok := original.(agent.WakeScheduleController); ok {
+				ctrl.StopWakeScheduler()
+			}
+		}
+	})
 
 	return a
 }
