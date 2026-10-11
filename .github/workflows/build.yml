@@ -452,6 +452,10 @@ jobs:
       # race-sensitive and cheap (seconds), so they run here too.
       - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
         run: go test -race -short -failfast -timeout 15m ./internal/tasktree/... ./cmd/tasklab/ ./internal/csync/
+      # The job-batch engine, Runner and batchlab are single-loop concurrent
+      # code with real process trees in the lab tests; -race is the point.
+      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+        run: go test -race -short -failfast -timeout 15m ./internal/jobbatch/... ./cmd/batchlab/
       # internal/agent -- the most concurrency-heavy package in the repo
       # (generation fences, stream watchdog, mailboxes, coordinator
       # background work) -- gets -race coverage via the batched split

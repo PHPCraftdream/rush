@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- New standalone job-batch engine (`internal/jobbatch`: pure engine, single-loop Runner, process executor) and its development laboratory `cmd/batchlab` (`batchlab run|replay scenario.json`, JSONL journal, fixed exit codes). Nothing in rush uses it yet; the Rush cutover is later work.
+
 ## [0.2.0-alpha.16] - 2026-10-11
 
 - `rush run` no longer stays alive after the agent has finished because of an orphaned `await_tasks` `max_wait` timer: the timer is now remembered and cancelled for `until: any` as well as `all`, and a run start cancels the session's leftover `max_wait` timers from an earlier process (for example one that hit the run timeout). Timers the model schedules itself (`wakein`, `wakeon`, loops) still hold the run open.
