@@ -78,8 +78,12 @@ in core.
 
 One `Runner` owns one engine, potentially serving many root batches. It
 serializes public requests and executor reports through one event loop.
-Snapshots are requested through that loop, not by reading the engine from
-another goroutine.
+Snapshots are requested through that loop while it is live, not by reading
+the engine from another goroutine. At Closed the Runtime freezes the final
+views and snapshots for read-only access without the exited loop: BatchView's
+sequence is S_F, including roots settled earlier; released roots still return
+`ErrReleased`. Events reads the frozen retained ring under its own lock
+(section 4.1). Existing Batch.Done/Wait remain cached.
 
 The loop applies events and schedules effects in transition order. Blocking
 executor work happens outside it. Merely unlocking a mutex before calling an
@@ -251,7 +255,17 @@ Supporting types, also frozen in A0:
   kind, group, timeout, payload), so the Runtime needs no lookup to start a
   leaf. StopLeaf carries node, token and cause.
 - `Transition`: monotonic sequence of accepted events, the accepted event,
-  changed node views, commands, selected notices, newly settled roots.
+  changed node views, commands, selected notices, newly settled roots, and
+  `Final bool`. Final is true exactly once: HostClosing has been applied and
+  all roots are terminal after this transition. HostClosing itself is Final
+  iff no nonterminal roots remain after it: this includes already-terminal
+  or no roots and pending-only roots/subtrees interrupted and settled in that
+  same transition. Otherwise Final is the later last-root drain `settled` or
+  `start_rejected` under latched `host_closing`. Newly settled roots includes
+  roots settled by HostClosing. The supplied design's enumeration wording is
+  also corrected here.
+  After Final, Engine.Apply rejects every event with `ErrClosed`, without
+  mutation, sequence increment, commands, notices or records.
 - `Notice`: root, node, node kind (task, batch, root), state, cause, leaf
   counts. Metadata only.
 - `NodeView`: id, root, parent, ordinal, kind; batch policy fields for
@@ -267,7 +281,19 @@ Supporting types, also frozen in A0:
   counts, sequence — the small immutable aggregate returned by Wait.
 - `OutputChunk`: data (a caller-owned copy), next cursor, oldest retained
   cursor, EOF, truncated (section 4.3).
-- `Record`/`EventPage`: the public feed (section 4.1).
+- `Record`: cursor, transition sequence and type with the metadata of
+  section 4.1; `closed` is the one last in-band record, with sequence S_F.
+  `EventPage{Records, Next, Oldest, Head, Final}`: cursors start at 1;
+  Head is inclusive newest (0 when empty), Oldest is oldest retained
+  (Head+1 when empty), Next is last returned+1. Final is 0 until Closed,
+  then F=Head forever; Closed iff Final != 0. Gap and EOF pages have the
+  explicit Next values of section 4.1. S_F is the final transition sequence;
+  records of sequences <= S_F have exactly cursors 1..F. Each root's
+  `settled_sequence` s_r <= S_F, with equality only for roots settled in
+  Final. An accepted stateless tail `capacity_available`, `release` or
+  HostClosing after the last settlement gives max(s_r) < S_F. Footer
+  `final_cursor=F` and `final_sequence=S_F` are producer boundaries;
+  `last_cursor` is writer progress only.
 - Errors: `ErrInvalidSpec`, `ErrDuplicateRoot`, `ErrUnknownNode`,
   `ErrTerminal`, `ErrNotTerminal`, `ErrNotStarted`, `ErrUnsupported`,
   `ErrReleased`, `ErrClosing`, `ErrClosed`, `ErrCloseTimeout`, `ErrGap`,
@@ -448,8 +474,9 @@ waiting/interaction details belong to its executor.
    The executor, not the Runner, guarantees that a rejected or panicking
    Start leaves no running process, call or agent behind (executor-owned
    setup cleanup). The Runner cannot verify that and does not claim to. A
-   report made by a rejected attempt is ignored and journaled as
-   `executor_contract`.
+   report made by a rejected attempt is ignored as an
+   `executor_contract` violation, not journaled: there is no accepted event
+   or diagnostic record for it. After F, callbacks cannot journal anything.
 2. **Accepted execution.** Only the attempt's report settles it, and a
    report means the execution has stopped. An error or panic from
    `Execution.Stop`, or a Stop exceeding `ControlTimeout`, is a control
@@ -582,15 +609,38 @@ Host shutdown is distinct from user Stop.
   (`Stop`, `Dispose`) use a context detached from the cancelled host context
   and bounded by `ControlTimeout`; a cancelled host or request context never
   makes cleanup useless.
-- **Close(ctx)** waits until every root is terminal or ctx ends. On expiry it
-  returns an error wrapping `ErrCloseTimeout` that names the unfinished
-  nodes. Nothing is settled synthetically, reservations stay held, and Close
-  may be called again.
-- **Closed.** When every root is terminal the loop exits. A later Close
-  returns nil, the other Runner methods return `ErrClosed`, and existing
-  `Batch` handles still answer `Done`/`Wait` from their cached Summary.
+- **Close(ctx)** waits for Closed, not merely terminal roots, or until ctx
+  ends. On expiry it returns an error wrapping `ErrCloseTimeout` that names
+  the unfinished nodes. Nothing is settled synthetically, reservations stay
+  held, and Close may be called again.
+- **Closed** means closing AND every root terminal, witnessed by
+  Transition.Final. Terminal roots alone do not close an open Runner.
+  Runtime first appends the transition's event, commands and selected notices
+  in order, then ONE last `closed` record with sequence S_F and cursor F.
+  It sets EventPage.Final=F and wakes readers, closes Done for roots newly
+  settled in that transition, then enters Closed and exits the loop; pending
+  Close calls receive nil. All records of any transition precede its roots'
+  Done publication. Close never waits for a reader or observer acknowledgement.
+  A later Close returns nil. Events reads retained records through F, and
+  View/Snapshot read frozen final state (sections 1.2 and 4.1); released roots
+  return `ErrReleased`. Existing Batch handles answer Done/Wait from cached
+  Summary. Output, Inject, Stop, Submit, Add, Release and CapacityAvailable
+  return `ErrClosed`. Late executor callbacks after F append nothing and
+  cannot change Head, Final or frozen state.
 - An executor that never confirms keeps the Runner draining. That state is
   visible through Snapshot and Close errors, never hidden.
+
+**See Stop/Dispose follow-up (R2-API-05, R2-API-02/03).** Dispose after F
+runs outside the loop and cannot create feed records. Its Close result and
+bounded-wait contract belongs to the Stop/Dispose task; reader drain remains
+independent. Late Stop completion after F is pin-only;
+`oneControlReported` must mean at most one, possibly none when terminal
+acceptance or F already won. This change does not decide the cleanup protocol.
+
+**See capacity follow-up (S-R2-2).** An independent capacity tail accepted
+before F is covered by the final boundary; after Closed CapacityAvailable
+returns `ErrClosed` without a generation change. The independent signal
+source remains the capacity task.
 
 Restart/resumption and cross-process delivery are later work.
 
@@ -616,16 +666,36 @@ from, and a type:
 - one `command` record per engine command, in transition order: start or
   stop, node, token, cause — never the payload;
 - one `notice` record per selected notice; one transition may select
-  several.
+  several;
+- exactly one last `closed` record, after all event/command/notice records
+  of Transition.Final, with sequence S_F and cursor F. No record follows it.
 
 Records never contain payloads, `Result.Summary`/`Details`, injected
-messages, output, or arguments. `EventPage` carries the records and the
-`Next`, `Oldest` and `Head` cursors. `Events(ctx, cursor)` waits until a
-record at or after the cursor exists, the context ends, or the Runner is
-closed. Retention is a bounded ring of `RecordRetention` records. A cursor
-older than `Oldest` gets `ErrGap` together with `Oldest`; the consumer then
-recovers current state through Snapshot/Wait and must not treat the feed as
-complete. Slow consumers never block the loop, cancellation or admission.
+messages, output, or arguments. EventPage has `Records`, `Next`, `Oldest`,
+`Head`, `Final` with the inclusive boundaries of section 2. Retention keeps
+only the last `RecordRetention` records; `RecordRetention >= 1` ensures the
+newest `closed` record is always retained. Older notices are lost, announced
+by `ErrGap`; consumers must not reconstruct them by reapplying Notify.
+
+`Events(ctx, c)` has these ordered read rules:
+
+- If c < Oldest, return an empty EventPage with Next=Oldest and current
+  Oldest, Head, Final, and an error wrapping `ErrGap`; never silently skip.
+- If Oldest <= c <= Head, immediately return a bounded page of retained
+  records starting at c, Next=last returned+1, and current boundaries, even
+  with an already-cancelled ctx. Check context only before waiting.
+- If c=Head+1 while not Closed, wait for append or context cancellation.
+  Closing always appends `closed`, so the final append wakes waiters.
+- If Closed and c>F, return an immediate empty page with Next=F+1,
+  Head=Final=F, frozen Oldest, and `ErrClosed` as EOF, even if c>F+1.
+
+After Closed the retention window [Oldest_F,F] is immutable and served under
+its own ring lock, not through the exited loop. Reads are nonconsuming, have
+no ack, and concurrent identical reads return identical pages. Close never
+waits for readers. Post-Closed Events(1) returns the full feed if Oldest=1,
+otherwise ErrGap; restarting at Oldest reaches `closed`. Snapshot/Wait may
+inspect final state, but never repair a lost journal or recover lost notices.
+Slow consumers never block the loop, cancellation or admission.
 
 **Notice selection.** Root completion produces exactly one selected root notice.
 For descendant completion, NotifyEach applies to direct children; an ancestor
@@ -848,25 +918,70 @@ Platform strategy — an A0 decision, not left to the slice:
 - **Records:** the public feed of section 4.1 with cursors contiguous from 1.
   The `ref` of submit/add records binds them to the scenario action that
   supplied their specs.
-- **Footer:** `last_cursor`, `complete`, final root states and leaf counts,
-  unfinished node IDs.
+- **Footer:** `final_cursor` (absent if never Closed), `final_sequence`,
+  `last_cursor`; `capture: complete | gap{first_missing,resumed_at} |
+  write_error`; `outcome: closed | unfinished{IDs}`; each root's state,
+  counts and `settled_sequence` s_r (absent for an unsettled root).
+  `final_cursor=F`, `final_sequence=S_F` for closed outcome, not writer
+  guesses or max(s_r). `last_cursor` is the last successfully written cursor.
+  Capture is complete iff every record 1..last_cursor was written and, for
+  outcome closed, the last record is `closed` and last_cursor=final_cursor.
+  An intact unfinished prefix can have capture complete; it is not a closed
+  or full-run replay.
 
-`run` reads Events continuously. A gap or a write failure marks the journal
-incomplete (footer `complete: false`, exit 5) without blocking the loop or
-cancellation. A run that ends unfinished writes `complete: false` with its
-unfinished nodes and never a terminal summary it did not observe.
+When bounded Close returns nil, regardless of invocation cancellation,
+wait-bound expiry or normal completion, `run` drains Events through F before
+writing a closed footer: final_cursor=F, final_sequence=S_F, outcome=closed,
+with capture determined by the records actually written. The drain uses a
+context independent of the invocation and a bounded cleanup budget. Process
+exit status follows section 5.1 independently: cancellation/wait-bound expiry
+still exits 3 even when Close returns nil. On ErrGap,
+record `gap{first_missing,resumed_at}`, resume at the returned Oldest and
+capture through F; retain capture gap even after reading `closed`. A write
+failure gives capture write_error. Neither blocks cancellation/Close, and
+Snapshot cannot rebuild missing records. If the writer cannot drain within
+its cleanup budget, it cannot claim capture complete.
 
-`replay` validates the header version and digest, contiguous cursors, and the
-footer. It then rebuilds every accepted event in order — specs from the
-scenario by `ref`, executor results from the journal — applies them to a
-fresh Engine, and compares the produced commands and notices with the
-recorded ones record by record, the final states with the footer, and the
-scenario's `expect` block if present. A missing footer, a gap, a removed tail
-record, an unknown version, or scenario content changed under the same refs
-is rejected. An incomplete journal replays up to its last record and exits
-3; it is never reported as a full replay. Replay never instantiates an
-executor or reruns processes, so a scenario whose process would write a file
-leaves that file absent.
+Only when bounded Close times out, drain nonblocking through the current
+Head cut, not through a future F, and exit 3. Footer outcome is unfinished
+with the IDs and root state derived exclusively from records <= cut, never from a later
+Snapshot. Its final_sequence is the last accepted transition at the cut;
+final_cursor is absent because the producer was not Closed at that cut.
+A later public completion/second Close may produce F>cut without altering
+this journal.
+
+`replay` validates header version/digest, cursor continuity and footer. It
+rebuilds accepted events in order — specs from scenario by `ref`, executor
+results from journal — in a fresh Engine, reproducing event, command, notice
+and `closed` records with the same cursors and sequences. Replay uses
+Transition.Final to reproduce `closed` at the same boundary; no records may
+follow it. Compare root states,
+counts and s_r, including equality to S_F only for roots settled in Final.
+A prefix before `closed` leaves Engine non-Final: missing tail is detected,
+even if all roots were already terminal before a stateless tail.
+Replay also compares reconstructed outcomes, root states/counts, notices and
+closed/Final facts against the scenario's optional `expect` block wherever
+expressible by section 5.2's existing fields; closed/Final boundary facts
+remain covered by the journal checks above, without new schema fields.
+
+Reject structural mismatches with exit 2: missing footer, unknown version,
+changed scenario digest, unannounced cursor holes, closed outcome without
+`closed`, `closed` not last, wrong final_cursor, or removed HostClosing and
+`closed` with authoritative footer retained. Announced gaps/write errors
+are incomplete captures, not valid full replays: validate their structure
+but never fill missing history or invent Engine events. A closed intact
+journal from a process that exited 3 validates and replays
+normally; that process status does not make its closed outcome unfinished.
+An intact unfinished
+journal replays its prefix and exits 3; capture != complete exits 5 unless
+unfinished exit 3 takes precedence. A structurally invalid journal exits 2.
+Section 5.1's first-matching-row precedence is unchanged. Replay never
+constructs an executor or reruns processes; a scenario whose process would
+write a file leaves that file absent.
+
+**See scenario-schema follow-up (R2-API-01, P3-B).** Unique refs and split
+complete scenario/oracle semantics remain in that scope; only the requested
+footer capture/outcome split is fixed here.
 
 ### 5.6 Timeouts and cleanup (P6)
 
@@ -961,12 +1076,14 @@ Section 7.2 fixes which slice owns each ID.
   is distinct; after a Close deadline the loop keeps draining — the late
   confirmation settles Interrupted once, Done closes, and a second bounded
   Close succeeds; a Start that returns after the first Close deadline is
-  handled the same way.
+  handled the same way. Close success precedes resumed reader drain, not
+  the reverse; records precede Done. F-a/F-b in section 6.4 check this boundary.
 - **R3:** notices through the public feed: a NotifyEach root with a
   NotifyAll child, and a NotifyAll root, expose exactly the selected notices
   of section 4.1 with no consumer-side policy; blocked or failed observers
-  do not freeze scheduling or cancellation; gaps are explicit and final
-  snapshots remain correct.
+  do not freeze scheduling or cancellation; gaps are explicit and frozen
+  final snapshots remain correct. F-a/F-b in section 6.4 read selected
+  notices through F after Close and check concurrent nonconsuming readers.
 - **R4:** output A → pause → B → completion read by cursor without false EOF
   or busy polling; small retention truncates the beginning with an explicit
   gap and recovery point, then the rest and a real EOF; not-started,
@@ -1000,19 +1117,22 @@ Section 7.2 fixes which slice owns each ID.
   failure policy, nested stop, and both notification modes against its
   `expect` oracle, including a stopped never-admitted root settling before
   the unrelated held execution releases its slot.
-- **L4:** replay preserves structural final state, commands and notices and
-  performs no side effects, even if the scenario includes a process that
-  would write a file; a failed and a cancelled run replay to the same
-  outcome.
+- **L4:** replay preserves structural final state, root settled_sequence,
+  commands, notices and the last `closed` record at identical cursors and
+  sequences, with no records afterwards; it performs no side effects even if
+  a scenario includes a process that would write a file. Failed/cancelled
+  closed runs replay to the same outcome, distinct from unfinished prefixes.
 - **L5:** invocation cancellation and wait-bound expiry each run Close with a
   fresh bounded cleanup context, exit 3, terminate the run's own process
   trees, and leave an unrelated process alive; a controlled execution that
   withholds confirmation past the bound yields a Close timeout, held
   admission and exit 3.
-- **L6:** journal integrity: a removed footer or last record, an internal
-  gap, an unknown version, or changed scenario content under the same refs
-  is rejected; overflowing the record retention during `run --events` exits
-  5 with an incomplete journal that never replays as complete.
+- **L6:** journal integrity: a removed footer or last record, an unannounced
+  internal gap, unknown version or changed scenario content under the same
+  refs is rejected with exit 2. F-c/F-d in section 6.4 cover frozen retention
+  overflow (capture gap, closed outcome, exit 5), dropped `closed`, dropped
+  HostClosing+closed with footer retained, wrong final_cursor, and closed
+  outcome without `closed`. Never replay such captures as complete.
 
 Use channels/barriers or synctest for timing-sensitive unit tests. Property/
 fuzz tests use seeded Submit/Add/Stop/StartRejected/Settled/HostClosing sequences,
@@ -1053,9 +1173,9 @@ Before Release, Output(B.1) returns `ErrNotStarted`, Inject(B.1) returns
 returns nil, creates one release record and causes zero Dispose calls; Wait
 still returns its cached Summary afterwards (4.5, no invocation-protocol change).
 Final roots include B cancelled and its counts, B is not unfinished, and B's
-last record is <= `last_cursor`. Replay rebuilds B settlement from
-StopRequested, without a synthetic Settled or new event; this assertion does
-not redefine final cursor/footer semantics.
+notice cursor is <= F=`final_cursor` after Close and writer drain. Replay
+rebuilds B settlement from StopRequested with its settled_sequence, without
+a synthetic Settled or new event.
 
 Repeat R-a with B in group h bounded by `h:1`, held by another accepted task,
 or with h capacity-blocked by another controlled attempt's
@@ -1071,8 +1191,24 @@ HostClosing through a request barrier, checks B's Interrupted notice while
 A.1 is still held, then awaits Stop and completes a1 Interrupted; the concurrent
 Close returns nil. The pure Engine equivalent applies HostClosing and then
 controlled drain events. No concurrent script action or new schema field is
-introduced. Closed-feed availability remains the separate follow-up dependency,
-not a change to Events/Closed here.
+introduced. The retained final feed is read after Close as in section 6.4.
+
+### 6.4 Final boundary and frozen-feed scenarios
+
+These rows use the section 6.3 tree abbreviations, section 5.2 actions and
+oracle vocabulary. Reader/writer holds, concurrent Close, cursor/footer and
+replay assertions are lab barriers/public-API checks, not new script fields.
+Every await and cleanup is bounded; no sleeps, second scheduler, Snapshot
+history reconstruction or consumer-side Notify selection is allowed.
+
+| ID | Controlled script / public-API actions | Acceptance |
+|---|---|---|
+| **F-a** | `record_retention:64`; `max_concurrent:2`; `submit {ref:fa-R,root:R,spec:Parallel/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1}}}`; `await_start {node:R.1,bind:r1}`; `await_start {node:R.2.1,bind:r21}`; `release_start {attempt:r1,decision:accept}`; `release_start {attempt:r21,decision:accept}`. Reader consumes through Head=k, then is held. Concurrent public Close observes HostClosing acceptance through the R-d barrier; `await_stop {attempt:r1}`; `await_stop {attempt:r21}`; `complete {attempt:r1,state:interrupted}`; `complete {attempt:r21,state:interrupted}`; join Close with nil THEN resume reader at k+1. | Close precedes reader drain. Contiguous k+1..F contains `host_closing`, two stop command records, two `settled` records, notices R.1, R.2 (not R.2.1), R, then exactly one last `closed`. `notices` R=[R.1 interrupted,R.2 interrupted,R interrupted]; R interrupted=2, all other leaf counts=0. S_F=s_R; all transition records precede Done. Post-Closed pages Head=Final=F, no ErrGap; Events(F+1) immediately returns empty Next=F+1 with ErrClosed. |
+| **F-b** | After F-a Close, two concurrent readers independently drain `Events(1)` through F, then ask F+1; a third asks F+3. `complete {attempt:r1,state:completed}` is late; inspect Snapshot(R), Head/Final and public Output(R.1), plus all post-Closed mutations. | Identical nonconsuming feeds 1..F ending in `closed`, then ErrClosed; F+3 is immediate EOF with Next=F+1. Late controlled Complete returns `ErrUnknownAttempt`; late executor callbacks create no records. Head=Final=F forever, Snapshot(R).sequence=S_F; Output and Inject/Stop/Submit/Add/Release/CapacityAvailable return ErrClosed. |
+| **F-c** | F-a in a separate run with `record_retention:4`, `ref:fc-R`, `--events`; hold writer through Close with a lab barrier. Public Events(1), then Events(F-3); compare the retained final window when published and after Close returns. Resume writer at the gap's Oldest and drain through F. | Events(1) gives ErrGap, empty page Next=Oldest=F-3, Head=Final=F. Events(F-3) returns the four frozen records ending in `closed`; window is unchanged before/after Close completion and repeat reads. Footer capture=gap{first_missing:1,resumed_at:F-3}, final_cursor=F, outcome=closed, exit 5. Replay is not complete; no rebuilding missing notices/history from Snapshot. |
+| **F-d** | `submit {ref:fd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `capacity_available {group:g}`; `close {expect:ok}`; `--events` writer drains through F. L6 copies remove `closed`, remove HostClosing+closed with footer retained, change final_cursor to F-1, or declare outcome closed without `closed`. | HostClosing is Final; last records are `host_closing`, `closed`. Footer final_cursor=last_cursor=cursor(closed)=F, final_sequence=S_F=s_A+2, settled_sequence(A)=s_A<S_F; capture complete, outcome closed, exit 0. Replay reproduces stateless capacity/HostClosing tail and `closed`; every L6 corruption exits 2. Also check no-roots Close and all-roots-terminal Close are Final on HostClosing, and a release tail before Close has max(s_r)<S_F. |
+| **F-e** | Separate F-d tree (`ref:fe-A`) with a1 accepted but held. Concurrent Close latches HostClosing; `await_stop {attempt:a1}`; Close times out. Writer nonblocking-drains to current Head=cut and writes the unfinished footer; replay it. Later public `complete {attempt:a1,state:interrupted}` and second bounded Close return nil. | Initial exit 3, no `closed`, final_cursor absent, outcome=unfinished{A.1,A}, capture complete for intact records 1..cut; root/leaf Cancelling state comes only from records <=cut. Replay keeps admission held/Cancelling and exits 3, never complete-run success. Later Closed has F>cut and cannot change the journal or its footer through Snapshot. |
+| **F-f** | Separate F-d tree (`ref:ff-A`) with a1 accepted; invocation cancellation starts bounded Close. Observe HostClosing and `await_stop {attempt:a1}`; confirm `complete {attempt:a1,state:interrupted}` within the cleanup bound; Close returns nil and writer drains through F. | Capture complete, outcome=closed, final_cursor=last_cursor=F, final_sequence=S_F; process exits 3 for invocation cancellation. The intact closed journal validates/replays normally, not as an unfinished cut. |
 
 ## 7. Parallel-agent execution plan
 
@@ -1204,6 +1340,14 @@ Fixed for autonomous implementation:
 - Process isolation per platform as in section 5.4.
 - Waiting levels use distinct groups; no lending primitive in this scope.
 - batchlab exit codes as in section 5.1.
+- Exactly one Engine Transition.Final at closing plus all-terminal;
+  event/command/notice records then one last in-band `closed` precede Done.
+  Frozen F=Head and S_F bound producer history, retained Events and frozen
+  View/Snapshot remain readable after Close without waiting for readers.
+  Footer separates capture from outcome; writer drains through F, replay
+  reproduces `closed` and detects removed stateless tails (2, 3.4, 4.1,
+  5.5; R2/R3/L4/L6 and 6.4). Stop/Dispose and scenario-schema follow-ups
+  remain separate as noted under 3.4 and 5.5.
 - No automatic execution resumption after host restart.
 - Scheduling limits are caller supplied and shared across roots in one Runner.
 - Opaque results and capability interfaces, not agent-text interpretation.
@@ -1434,6 +1578,8 @@ No integration phase is marked complete merely because batchlab passed.
 | Finding | Resolution |
 |---|---|
 | S-R2-1 never-admitted batch never settles | 3.1 settlement rule; E6-E8, R5, L3 |
+| R2-API-06 producer-owned final boundary and closed journal drain | 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4 F-a-F-e |
+| S-R2-3 retained final notices cut off by Closed | 1.2, 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4 F-a-F-e |
 | S1 a late capacity refusal loses a wake-up | 3.2 availability generation; E5 |
 | S2 errors/panics vs control failures | 3.1.1; E6, R1 |
 | S3 skipped nested batch reported Completed | 3.1 batch lifecycle; E3 |
@@ -1450,7 +1596,7 @@ No integration phase is marked complete merely because batchlab passed.
 | A9 output cursor semantics | 4.3; R4 |
 | P1 Go has no function prototypes | section 2 note, 7.1 |
 | P2 controlled gates and scenario vocabulary | 5.2, 5.3; E5, R1 |
-| P3 journal completeness and binding | 5.5; L6 |
+| P3 journal completeness and binding | Final-boundary residual: 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4. Unique refs (R2-API-01) and P3-B scenario-schema scope remain separate; see 5.5. |
 | P4 acceptance ownership | 7.2 table, A2 map (7.3) |
 | P5 independent oracle | `expect` (5.2); E4, L1, L3 |
 | P6 cleanup on cancellation and wait bound | 5.6; L5 |
