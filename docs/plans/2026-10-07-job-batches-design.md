@@ -139,7 +139,7 @@ type Cause string  // "stop", "timeout", "host_closing", "stop_on_fail".
 
 type TaskSpec struct {
     Kind    string
-    Group   string          // Empty: the default group, bounded globally only.
+    Group   string          // Empty: the default group ""; capped by ByGroup[""] if set, else globally only.
     Payload json.RawMessage // Opaque to the engine; read-only once accepted.
     Timeout time.Duration   // Zero means no item timeout.
 }
@@ -331,6 +331,7 @@ input order.
 
 Require positive global, depth, and node limits. Group limits, when supplied,
 must be positive; a group without a limit is bounded only globally.
+The key `""` caps the default group.
 `MaxParallel` is validated as written and never normalized into a number:
 0 adds no cap of its own, a positive value caps every active leaf beneath the
 batch (section 3.2). Sequential accepts only 0 or 1. Numeric
@@ -573,8 +574,11 @@ cap of 1 from `g`.
 until none is left. It walks roots round-robin from a cursor that persists
 across transitions and, within a root, picks the eligible leaf with the
 lowest pre-order position. A leaf blocked by its group is skipped, not
-waited behind, so a blocked group never holds back another group or another
-root. Releasing a slot reconsiders waiting work across the forest, including
+waited behind; this avoids head-of-line selection blocking, not a global
+capacity shortage.
+Under an open profile, units stuck in one group can still block clause 2
+for all groups.
+Releasing a slot reconsiders waiting work across the forest, including
 a root that has never started a leaf.
 
 **Capacity refusal without lost wake-ups (S1).** Each group g has an
@@ -593,15 +597,87 @@ never spin. Do not busy-loop or wait only for the same tree to settle.
 Operational start failure is Failed, not a capacity refusal. Automatic
 retries of failed tasks are out of scope.
 
-**Waiting executions and budgets (I1).** An execution that waits for work it
-launched — an agent waiting for its commands — must never have to draw that
-work's slot from a budget it holds itself, or a full budget deadlocks. The
-engine does not detect such waits and adds no lending primitive in this
-scope. Callers put waiting levels in distinct groups whose limits are not
-jointly bound by a smaller `MaxConcurrent` (`MaxConcurrent` at least the sum
-of those groups' limits); section 9.2 applies this to Rush. A future lending
-primitive would be an additive field on `SubmitRequest`, not a breaking
-change.
+**Waiting executions and budgets (I1, S-R2-2).** Accounting here is Engine
+state only. An admission unit is one leaf in Starting, Running or Cancelling:
+`active[g]` equals that leaf count
+for group g across the forest, and global active is `sum_g active[g]`.
+StartLeaf alone acquires a unit. An accepted StartRejected or Settled with
+the current token releases that attempt's unit exactly once. StopRequested,
+DeadlineExpired, ControlReported (any code, including `stop_timeout`),
+HostClosing, Release, pins, Dispose, Close deadlines and Final/F neither
+acquire nor release units nor advance `gen[g]` by themselves. A transition's
+emitted StartLeaf commands and accepted rejection/settlement effects are
+accounted separately; a terminal Pending leaf never releases a unit.
+The only generation advances are the CapacityAvailable and
+accepted-execution settlement events defined above;
+a Settled that releases a unit also advances its group's generation.
+Pending leaves (including capacity-refused attempts), terminal leaves and
+batch nodes hold no unit. Capacity-blocked is generation state, not a unit.
+Failed or hung Stop holds the execution's unit until its termination report
+is accepted (section 3.1.2). Capacity outside Runner is visible only through
+`ErrCapacity`, not counted as Runner units.
+
+A **closed profile** requires every accepted leaf's group to have a ByGroup
+entry, including `""` if default work is accepted, and `MaxConcurrent >=
+sum_g ByGroup[g]` over **all** entries, not just waiting groups. If clause 3
+holds for h, `sum_{g != h} active[g] + active[h] < sum_g ByGroup[g] <=
+MaxConcurrent`; hence clause 2 never fails alone. A level's budget is the
+sum of its group caps, not a separate limit.
+
+Execution X **depends on** Y if X's termination waits for Y's admission,
+result or a message Y sends, including input/Inject waits. The consumer
+assigns one rank per group: dependencies may target strictly lower ranks
+only, never the execution's own group. Waiter and dependency use separate
+roots, sharing no Sequential gate or ancestor with `MaxParallel > 0`.
+
+The progress guarantee requires an open Runner, a closed profile, ranked
+separate-root dependencies, finitely many Submit/Add requests, and these
+executor/consumer premises: **(a)** once its dependencies settle, an execution
+eventually reports; **(b)** a stopped execution reports without waiting for
+dependency admission; **(c)** after `ErrCapacity` in g, the consumer later
+sends `CapacityAvailable(g)` unless an accepted execution in g is active
+(and its eventual settlement supplies the generation advance). Under these
+premises every uncaused Pending leaf is admitted and roots settle. Engine
+detects neither waits, profiles nor ranks; a consumer promising this guarantee
+validates them before Submit (section 9.2), including work later accepted by
+Add. An **open profile** remains legal, but promises only the admission
+predicate, not this liveness guarantee. No lending is added in this scope;
+future lending would be an additive field on `SubmitRequest`.
+
+**I1 explanatory example.** With
+`{max_concurrent:2,by_group:{agents:1,commands:1}}`, A.1 in agents and C.1
+in the default group are accepted. C waits for Inject from A, which A sends
+only after B's commands result. B is a separate root; commands has 0/1
+active units, but global active is 2, so B remains Pending: deadlock.
+A consumer promising progress rejects this unclosed default-group mapping.
+Adding `"":1` and setting MaxConcurrent to 3 fixes the accounting shortage
+(W-a); C(default) → A(agents) → B(commands) can then have strictly descending
+ranks. Moving C to commands instead closes accounting, but C → A → B
+requires commands > agents > commands, impossible ranks, so that dependency
+profile is still rejected. The alternative of capping only waiting ranks,
+using global > their sum and leaving rank 0 uncapped is rejected: k hung
+default leaves can consume every spare slot (section 3.1.2), whereas the
+closed sum contains that loss within the affected group's cap.
+
+**Liveness argument and failure boundary:**
+1. Closed accounting removes independent clause-2 competition; free group
+   capacity is not stolen by other groups.
+2. Rank 0 has no dependencies, so accepted executions report by (a);
+   settlements free their own units and rerun persistent round-robin, which
+   reaches a root with eligible group work within a rotation; (c) supplies
+   capacity-refusal wake-ups.
+3. Inductively, rank r's dependencies in lower groups are not held by
+   rank >= r's units; they settle, then (a) makes the rank-r execution report.
+4. Queued stopped dependencies settle in the same transition without units
+   (section 3.1, S-R2-1); Done/Wait/notice wake the waiter, and a stopped waiter
+   reports by (b).
+5. A never-reporting execution after failed/hung Stop loses a unit to its
+   group and dependent ranks may hang, visibly Cancelling with control error
+   and pre-F `ErrCloseTimeout`; other groups' capacity remains safe. This
+   violates (b), not a synthetic-settlement exception.
+6. HostClosing promises no admission progress: Pending leaves become
+   Interrupted and wake dependencies. Final needs (b) for stopped accepted
+   work; reports, not HostClosing, free its units.
 
 ### 3.3 Linearization rules
 
@@ -714,8 +790,10 @@ must not wait forever for that timed-out physical Dispose to return (section
 admission slot indefinitely until accepted execution termination; pins and
 disposal do not free slots or advance availability generations. An independent
 capacity tail accepted before F is covered by the final boundary; after Closed
-CapacityAvailable returns `ErrClosed` without a generation change. The
-independent signal source remains the capacity task.
+CapacityAvailable returns `ErrClosed` without a generation change.
+Premise (c) of section 3.2 requires the consumer, after `ErrCapacity` in g,
+to later send `CapacityAvailable(g)` unless an accepted execution in g is
+active and its eventual settlement supplies the generation advance.
 
 **Integration dependencies (sections 9.1/9.2/9.4).** Rush wiring must cover
 singleton Stop at leaf/root, durable cause before cancellation, repeated
@@ -1251,8 +1329,9 @@ Section 7.2 fixes which slice owns each ID.
   B's never-started leaf starts when root A's leaf settles, without Add or
   CapacityAvailable for B, and at most one execution is ever accepted at
   once. No eligible group starves behind a blocked one. A leaf gated on work
-  of another group, submitted as a separate root, makes progress when
-  MaxConcurrent covers both groups' limits (section 3.2, waiting levels).
+  of another group makes progress under the closed profile, ranked
+  separate-root dependencies and premises (a)-(c) of section 3.2; section
+  6.6 W-a..W-e defines the accounting and failure-boundary scenarios.
 - **E5:** capacity refusal performs no execution and queues without
   spinning; a CapacityAvailable or relevant settlement accepted before a late
   refusal still yields exactly one retry with a new token; the reverse order
@@ -1280,7 +1359,10 @@ Section 7.2 fixes which slice owns each ID.
   and duplicate or late reports cannot change the winner or release a slot
   twice; late control reports do not revive a terminal leaf. After every
   transition, each nonterminal batch has a nonterminal direct child and no
-  terminal batch has a nonterminal descendant.
+  terminal batch has a nonterminal descendant. Also after every transition,
+  `active[g]` equals the number of Starting/Running/Cancelling leaves in g
+  across the forest; for every set ByGroup entry, `active[g] <= ByGroup[g]`,
+  and `sum_g active[g] <= MaxConcurrent`.
 - **E9:** ownership: mutating each caller-owned value of section 2.2 after
   its hand-off point changes nothing accepted; snapshots cannot mutate
   state; diagnostics and journals contain none of the sentinel strings
@@ -1386,7 +1468,7 @@ not extend that schema or change integration ingress.
 | **R-b** | `max_concurrent:2`; `submit {ref:rb-R,root:R,spec:Sequential/stop/NotifyEach{R.1,R.2=Parallel/NotifyAll{R.2.1,R.2.2},R.3}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `stop {node:R.2.1}`; `stop {node:R.2.2}`; `await_state {node:R.2,state:cancelled}`; `complete {attempt:r1,state:completed}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `complete {attempt:r3,state:completed}`. | R cancelled, completed=2, cancelled=2, all other counts=0; R.2 leaves starts=0. `notices` R=[R.2 cancelled,R.1 completed,R.3 completed,R cancelled]; `before:[["R.2.2:stop_requested","R.2:notice"],["R.2:notice","R.3:started"]]`. |
 | **R-c** | `submit {ref:rc-Z,root:Z,spec:Parallel/NotifyAll{Z.1=Sequential[],Z.2=Parallel{Z.2.1=Parallel[]}}}`; public Add corresponding to `add {ref:rc-add-Z2,parent:Z.2,items:[controlled task]}` returns `ErrTerminal`. Second part: `max_concurrent:1`; `submit {ref:rc-P,root:P,spec:Parallel/NotifyAll{P.1,P.2=Parallel{P.2.1}}}`; `await_start {node:P.1,bind:p1}`; `release_start {attempt:p1,decision:accept}`; `stop {node:P.2.1}`; `await_state {node:P.2,state:cancelled}`; `complete {attempt:p1,state:completed}`; `await_state {node:P,state:cancelled}`; `release {root:P}`. | Z and every nested batch complete entirely in Submit, zero leaf counts and no commands; default `notices` Z=[Z completed]. P.2 cancelled before P settles; P counts completed=1, cancelled=1, all others=0. Public Release(P) succeeds. |
 | **R-d** | Independent runs, `max_concurrent:1`: `submit {ref:rd-A,root:A,spec:Parallel/NotifyAll{A.1}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `submit {ref:rd-B,root:B,spec:Parallel/NotifyAll{B.1=Parallel{B.1.1},B.2}}`; `stop {node:B.1}`; `await_state {node:B.1,state:cancelled}`. Variant i: `stop {node:B.2}`; `await_state {node:B,state:cancelled}`; `complete {attempt:a1,state:completed}`. Variant ii: `close {async:c,expect:ok}`; `await_record {type:host_closing}`; check B's notice while A.1 is held; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:interrupted}`; `join {name:c}`. | After Stop(B.1), B.1 cancelled with own cause stop, B still Pending. Variant i: B cancelled with empty cause (child cause does not climb), cancelled=2, all other counts=0. Variant ii: B.2 interrupted and B interrupted with own cause host_closing, not Failed; B cancelled=1, interrupted=1, all other counts=0; B notice before A.1:settled. |
-| **R-e** | Seeded valid Submit/Add/Stop/StartRejected/Settled/HostClosing sequences; controlled attempt tokens and acceptance barriers, with reproducible seed and failing sequence retained. | After every transition, every nonterminal batch has a nonterminal direct child and no terminal batch has a nonterminal descendant. No StartLeaf under a terminal batch; stopping the last Pending leaf settles a never-admitted root in that transition, without fake Start/Running or slot use. |
+| **R-e** | Seeded valid Submit/Add/Stop/StartRejected/Settled/HostClosing sequences; controlled attempt tokens and acceptance barriers, with reproducible seed and failing sequence retained. | After every transition, every nonterminal batch has a nonterminal direct child and no terminal batch has a nonterminal descendant; `active[g]` equals the forest's Starting/Running/Cancelling leaf count in g, `active[g] <= ByGroup[g]` for every set entry, and `sum_g active[g] <= MaxConcurrent`. No StartLeaf under a terminal batch; stopping the last Pending leaf settles a never-admitted root in that transition, without fake Start/Running or slot use. |
 
 **R-a transition and runtime assertions.** StopRequested(B.1) changes the leaf
 to Cancelled with cause stop, no token and attempts=0, with no StopLeaf or
@@ -1474,6 +1556,33 @@ DESIGN wording “Dispose result only after physical return” contradicts timeo
 cleanup. No new scope, schema beyond 5.2's frozen additions, or integration
 work is introduced here.
 
+### 6.6 Closed-profile accounting and ranked-wait scenarios (S-R2-2, I1-R2)
+
+STATIC scenario contracts only, not executed results. Every run has
+`wait_bound_ms:10000`, bounded awaits, unique Submit refs and explicit
+Parallel/NotifyAll roots with MaxParallel=0. `X.1@g` names a controlled task
+with Group g; it adds no schema or ID parsing. `go` is a declared message.
+Every dependent action follows the shown await or public acceptance fence.
+Snapshot assertions are Runtime public-API checks, not new script actions.
+
+The W-c return-to-retry barrier observes the existing fixture label
+`x1:stop_returned#1` (5.2) within the run bound, then public View(X.1)
+confirms Cancelling/failed(stop_timeout)/control_pending=false before retry.
+ReturnStop only releases the gate; public View alone cannot prove physical
+return. Existing script actions cannot await a fixture return label, so this
+is an explicit Runtime/Laboratory harness observation barrier, like C-a's
+read-entry barrier, not a new action or schema field.
+
+| ID | Explicit actions and acceptance fences | Independent expected oracle |
+|---|---|---|
+| **W-a** | Closed `{max_concurrent:3,by_group:{agents:1,commands:1,"":1}}`; `messages:{go}`; ranks default=2, agents=1, commands=0. `submit {ref:wa-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wa-C,root:C,spec:Parallel/NotifyAll{C.1@""}}`; `await_start {node:C.1,bind:c1}`; `release_start {attempt:c1,decision:accept}`; `await_state {node:C.1,state:running}`; `submit {ref:wa-B,root:B,spec:Parallel/NotifyAll{B.1@commands}}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; `await_record {type:notice,node:B}`; `inject {node:C.1,message_ref:go}`; `await_inject {attempt:c1,message_ref:go}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `complete {attempt:c1,state:completed}`; `await_state {node:C,state:completed}`; `close {expect:ok}`. | B.1:started before A.1:settled and C.1:settled; B:notice before A.1:settled. max_active=3; each leaf starts=1, stops=0; A/B/C Completed, one aggregate notice each; exit 0. |
+| **W-b i** | Unsafe open `{max_concurrent:2,by_group:{agents:1,commands:1}}`. `submit {ref:wb-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wb-C,root:C,spec:Parallel/NotifyAll{C.1@""}}`; `await_start {node:C.1,bind:c1}`; `release_start {attempt:c1,decision:accept}`; `await_state {node:C.1,state:running}`; `submit {ref:wb-B,root:B,spec:Parallel/NotifyAll{B.1@commands}}`; after accepted Submit reply, public Snapshot(B) shows B.1 Pending, attempts=0; forest public snapshots show commands active=0. `stop {node:C.1}`; `await_stop {attempt:c1,call:1}`; `await_record {type:control,node:C.1,code:""}` (nil ack); public Snapshot(B) still Pending; `complete {attempt:c1,state:cancelled}`; `await_state {node:C,state:cancelled}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | C.1:settled before B.1:started; max_active=2; A/B Completed, C Cancelled; C stops=1; exit 1. A promising consumer rejects the unclosed mapping; raw Runner legally demonstrates only its predicate. |
+| **W-b ii** | Closed but unrankable `{max_concurrent:2,by_group:{agents:1,commands:1}}`: C(commands) → A(agents) → B(commands). `submit {ref:wb2-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wb2-C,root:C,spec:Parallel/NotifyAll{C.1@commands}}`; `await_start {node:C.1,bind:c1}`; `release_start {attempt:c1,decision:accept}`; `await_state {node:C.1,state:running}`; `submit {ref:wb2-B,root:B,spec:Parallel/NotifyAll{B.1@commands}}`; after accepted Submit reply, public Snapshot(B) shows B.1 Pending, attempts=0; forest public snapshots show commands active=1/1, clause 3 blocked. `stop {node:C.1}`; `await_stop {attempt:c1,call:1}`; `await_record {type:control,node:C.1,code:""}`; public Snapshot(B) still Pending; `complete {attempt:c1,state:cancelled}`; `await_state {node:C,state:cancelled}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | C.1:settled before B.1:started; max_active=2; A/B Completed, C Cancelled; C stops=1; exit 1. A promising consumer rejects the impossible ranks; raw Runner permits this predicate demonstration. |
+| **W-c i** | Closed `{max_concurrent:3,by_group:{agents:1,commands:1,tools:1}}`, `control_timeout_ms:50`. `submit {ref:wc-X,root:X,spec:Parallel/NotifyAll{X.1@commands}}`; `await_start {node:X.1,bind:x1}`; `release_start {attempt:x1,decision:accept}`; `await_state {node:X.1,state:running}`; `hold_stop {attempt:x1}`; `stop {node:X.1}`; `await_stop {attempt:x1,call:1}`; `await_record {type:control,node:X.1,code:stop_timeout}`; `submit {ref:wc-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wc-B,root:B,spec:Parallel/NotifyAll{B.1@commands}}`; after Submit reply public Snapshot(B) shows Pending/attempts=0; `submit {ref:wc-T,root:T,spec:Parallel/NotifyAll{T.1@tools}}`; `await_start {node:T.1,bind:t1}`; `release_start {attempt:t1,decision:accept}`; `await_state {node:T.1,state:running}`; `complete {attempt:t1,state:completed}`; `await_state {node:T,state:completed}`; public Snapshot(B) still Pending; `return_stop {attempt:x1,call:1,result:ok}`; actual-return harness barrier and public failed-gate check described above; `fail_stop {attempt:x1,code:busy}`; `stop {node:X.1}`; `await_stop {attempt:x1,call:2}`; `await_record {type:control,node:X.1,code:stop_failed}`; public Snapshot(B) still Pending; `complete {attempt:x1,state:cancelled}`; `await_state {node:X,state:cancelled}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_state {node:B,state:completed}`; `complete {attempt:a1,state:completed}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | T.1:started before X.1:settled; x1:stop_returned#1 before x1:stop_entered#2; X.1:settled before B.1:started. X Cancelled, stops=2, control=failed(stop_failed); A/B/T Completed; max_active=3; exit 1. Loss stays within commands until report. |
+| **W-c ii** | Closed `{max_concurrent:3,by_group:{agents:1,commands:1,tools:1}}`, `control_timeout_ms:50`. `submit {ref:wc2-X,root:X,spec:Parallel/NotifyAll{X.1@commands}}`; `await_start {node:X.1,bind:x1}`; `release_start {attempt:x1,decision:accept}`; `await_state {node:X.1,state:running}`; `hold_stop {attempt:x1}`; `stop {node:X.1}`; `await_stop {attempt:x1,call:1}`; `await_record {type:control,node:X.1,code:stop_timeout}`; `submit {ref:wc2-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wc2-B,root:B,spec:Parallel/NotifyAll{B.1@commands}}`; after Submit reply public Snapshot(B) shows Pending/attempts=0; `submit {ref:wc2-T,root:T,spec:Parallel/NotifyAll{T.1@tools}}`; `await_start {node:T.1,bind:t1}`; `release_start {attempt:t1,decision:accept}`; `await_state {node:T.1,state:running}`; `complete {attempt:t1,state:completed}`; `await_state {node:T,state:completed}`; public Snapshot(B) still Pending; `close {async:c,timeout_ms:500,expect:timeout}`; `await_record {type:host_closing}`; `await_state {node:B,state:interrupted}`; `await_stop {attempt:a1,call:1}`; `complete {attempt:a1,state:interrupted}`; `await_state {node:A,state:interrupted}`; `join {name:c}` asserts ErrCloseTimeout naming only X.1/X; `return_stop {attempt:x1,call:1,result:ok}`; bounded harness observes actual x1:stop_returned#1; `complete {attempt:x1,state:cancelled}`; `await_state {node:X,state:cancelled}`; `close {expect:ok}`. | T Completed, A/B Interrupted, X Cancelled with original stop cause. B starts=0; X stops=1; first Close unfinished only X.1/X, second Close nil; max_active=3; exit 3 despite later successful drain. |
+| **W-d** | Closed `{max_concurrent:2,by_group:{agents:1,commands:1}}`. `submit {ref:wd-X,root:X,spec:Parallel/NotifyAll{X.1@commands}}`; `await_start {node:X.1,bind:x1}`; `release_start {attempt:x1,decision:accept}`; `await_state {node:X.1,state:running}`; `submit {ref:wd-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wd-B,root:B,spec:Parallel/NotifyAll{B.1@commands,B.2@commands}}`; `submit {ref:wd-D,root:D,spec:Parallel/NotifyAll{D.1@agents}}`; after accepted Submit replies public Snapshots show all B/D leaves Pending, attempts=0; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; public Snapshot(B) confirms Stop(A.1) alone left B's Pending leaves/empty causes unchanged before stopping B; `stop {node:B}`; `await_state {node:B,state:cancelled}`; `await_record {type:notice,node:B}`; public Snapshot(D) still Pending; `return_stop {attempt:a1,call:1,result:ok}`; `complete {attempt:a1,state:cancelled}`; `await_state {node:A,state:cancelled}`; `await_start {node:D.1,bind:d1}`; `release_start {attempt:d1,decision:accept}`; `await_state {node:D.1,state:running}`; `complete {attempt:d1,state:completed}`; `await_state {node:D,state:completed}`; `complete {attempt:x1,state:completed}`; `await_state {node:X,state:completed}`; public Snapshot(B) confirms Cancelled leaves/attempts=0 even after commands cap frees; `close {expect:ok}`. | B Cancelled, cancelled=2, own cause=stop; B leaves starts=0; A Cancelled, X/D Completed. B:notice before A.1:settled; A.1:settled before D.1:started; D.1:started before X.1:settled. A stops=1; no B physical Stops; max_active=2; exit 1. |
+| **W-e** | Core seeded valid Submit/Add/Stop/StartRejected (ALL reasons: capacity, failure, cancelled)/Settled/ControlReported/DeadlineExpired/CapacityAvailable/HostClosing sequences, current tokens, appropriate causes/control gates, bounded event counts, retained failing seeds/sequences. Closed `{max_concurrent:3,by_group:{a:1,b:1,"":1}}` and open `{max_concurrent:2,by_group:{a:1,b:1,"":1}}`; mapped groups, explicit Parallel/NotifyAll roots. | EVERY transition: active[g] equals Starting/Running/Cancelling leaf count; each set cap bounds its group; global sum <= MaxConcurrent. Units acquired only by emitted StartLeaf, released only by accepted current-token StartRejected/Settled. gen[g] advances only on accepted-execution Settled in g or accepted CapacityAvailable(g); StartLeaf/StartRejected do not advance gen. Excluded events neither acquire nor release units nor advance gen; admission commands emitted by their transitions are accounted separately. In closed profile while Runner open, no uncaused Pending leaf passing clauses 1,3,4,5,6 remains after admission. Open generator must produce a leaf blocked solely by clause 2. Include E8/R-e invariants and bottom-up settlement. No execution result asserted. |
+
 ## 7. Parallel-agent execution plan
 
 The orchestrator owns decomposition, contract approval, shared-file edits,
@@ -1521,10 +1630,10 @@ flowchart LR
 
 | Slice | Owned files | Acceptance it proves | Test helpers / fixtures |
 |---|---|---|---|
-| Core | `internal/jobbatch/engine.go`, `tree.go`, `tree_apply.go`, `admission.go`, `view.go`, `notice.go` and their tests | E2-E8 at the pure-event level; the engine side of E1 (root task rejected) | `coreTest*`; `internal/jobbatch/testdata/core/` |
-| Runtime | `internal/jobbatch/runner.go`, `runner_dispatch.go`, `runner_control.go`, `runner_observe.go`, `runner_requests.go` and their tests | R1-R5; the public-API parts of E8/E9 | `runtimeTest*`; `internal/jobbatch/testdata/runtime/` |
+| Core | `internal/jobbatch/engine.go`, `tree.go`, `tree_apply.go`, `admission.go`, `view.go`, `notice.go` and their tests | E2-E8 at the pure-event level; W-e (6.6); the engine side of E1 (root task rejected) | `coreTest*`; `internal/jobbatch/testdata/core/` |
+| Runtime | `internal/jobbatch/runner.go`, `runner_dispatch.go`, `runner_control.go`, `runner_observe.go`, `runner_requests.go` and their tests | R1-R5; the public-API parts of E8/E9; W-a..W-d public acceptance/Snapshot checks and physical-return barriers (6.6) | `runtimeTest*`; `internal/jobbatch/testdata/runtime/` |
 | Process executor | `internal/jobbatch/lab/process*.go`, the helper program and process tests | process-level L1/L2: codes, output cap, tree termination, sentinel isolation — not the CLI aggregate | `processTest*`; `internal/jobbatch/lab/testdata/process/` |
-| Laboratory | `internal/jobbatch/lab/scenario.go`, `controlled.go`, `journal.go`, `replay.go`, `cmd/batchlab/*.go`, scenario testdata and tests | E1 through the real ingress; L1-L6 through the CLI; the journal-privacy part of E9 | `labTest*`; `internal/jobbatch/lab/testdata/scenarios/` |
+| Laboratory | `internal/jobbatch/lab/scenario.go`, `controlled.go`, `journal.go`, `replay.go`, `cmd/batchlab/*.go`, scenario testdata and tests | E1 through the real ingress; L1-L6 through the CLI; W-a..W-d controlled scenarios (6.6); the journal-privacy part of E9 | `labTest*`; `internal/jobbatch/lab/testdata/scenarios/` |
 
 Runtime may write against the frozen Engine API while Core is unfinished;
 Laboratory may do the same against Runner and the process factory. Shared
@@ -1602,7 +1711,8 @@ Fixed for autonomous implementation:
 - The Runner is the only owner of settled execution handles; `Disposer` is
   optional.
 - Process isolation per platform as in section 5.4.
-- Waiting levels use distinct groups; no lending primitive in this scope.
+- Waiting levels use distinct ranked groups under a closed profile (section
+  3.2); no lending primitive in this scope.
 - batchlab exit codes as in section 5.1.
 - Exactly one Engine Transition.Final at closing plus all-terminal;
   event/command/notice records then one last in-band `closed` precede Done.
@@ -1703,16 +1813,21 @@ Preserve existing response/cancellation semantics:
   termination: hold Runner admission until the corresponding executor has
   actually finished. Test that a stopped leaf cannot free capacity early.
 
-**Waiting levels (I1).** Rush delegation is two levels deep by construction —
-workers have no `agent` tool — and each level waits only on the levels below
-it. Map delegated agents and leaf commands/MCP calls to distinct groups and
-require `MaxConcurrent` to be at least the sum of those groups' limits, so
-the work an agent waits for can always be admitted; the adapter rejects
-configurations that violate this. Child launches are accounted by group, not
-by the agent leaf's structural ancestors, and never create a second executor
-for an existing leaf. Acceptance: with each group limited to 1, an agent that
-launches one command and then finishes completes; with N agents each
-launching dependent work, progress holds without raising any limit.
+**Waiting levels (I1).** A consumer promising admission progress uses a
+closed profile (section 3.2) covering every group the adapter maps, ranked
+separate-root dependencies and premises (a)-(c). The consumer validates
+these preconditions before Submit, including later Add work. Child launches
+are accounted by group, not by the agent leaf's structural ancestors, and
+never create a second executor for an existing leaf.
+
+Section 9 / task #1310 owns kind→group→rank mapping, numeric caps and
+validator code; none is selected here. It also owns per-owner
+`maxAsyncJobsPerSession` and legacy migration: legacy work must be Runner
+units or an external `ErrCapacity` pool with real `CapacityAvailable`
+signals, and legacy waiters add ranked dependency edges. An I8 worker
+`await_tasks` rank-1 waiter is admission-safe under this rule when it waits
+only on rank-0 work; its actual await targets remain task #1310 work.
+I2 terminal authority is unrelated and unchanged.
 
 **One terminal authority (I2).** For integrated leaves the durable ledger CAS
 stays the single authority for the terminal outcome. Runner Stop and timeout
@@ -1850,6 +1965,7 @@ No integration phase is marked complete merely because batchlab passed.
 
 | Finding | Resolution |
 |---|---|
+| S-R2-2 / I1-R2 closed accounting domain and ranked waits | 2, 2.1, 3.2, 3.4, 8, 9.2; E4; 6.6 W-a..W-e. STATIC contract closure, not executed verification; task #1310 retains mappings, caps, validator and integration acceptance. |
 | S-R2-1 never-admitted batch never settles | 3.1 settlement rule; E6-E8, R5, L3 |
 | R2-API-06 producer-owned final boundary and closed journal drain | 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4 F-a-F-e |
 | S-R2-3 retained final notices cut off by Closed | 1.2, 2, 3.4, 4.1, 5.5; R2/R3/L4/L6, 6.4 F-a-F-e |
@@ -1879,7 +1995,7 @@ No integration phase is marked complete merely because batchlab passed.
 | P6 cleanup on cancellation and wait bound | 5.6; L5 |
 | P7 process isolation strategy | 5.4; L2 |
 | P8 test-helper name collisions | 7.2 prefixes and fixture directories |
-| I1 agent slot deadlock | 3.2 waiting levels, 9.2; E4 |
+| I1 agent slot deadlock | 3.2 closed profile/ranked separate-root dependencies and premises; 9.2; E4, 6.6 W-a..W-e. STATIC autonomous contract closure only, not blanket integration resolution or executed verification; task #1310 owns concrete integration. |
 | I2 two linearization points | 9.2 one terminal authority |
 | I3 physical termination seam | 9.1 |
 | I4 stall-detach wrapper and MCP | 9.1 |
