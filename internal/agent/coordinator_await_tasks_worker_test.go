@@ -225,3 +225,151 @@ func TestAwaitTasksWorkerCapAppliesWithoutMaxWait(t *testing.T) {
 func TestAwaitTasksNeverStallDetached(t *testing.T) {
 	require.True(t, stallDetachExcludedTools[tools.AwaitTasksToolName])
 }
+
+// runAwaitSequence advances one poll per read, then expires the deadline.
+// No wall-clock sleeps or shared hooks are needed.
+func runAwaitSequence(t *testing.T, mode string, maxWait int, sequence ...session.RootLiveWork) (tools.AwaitTasksResult, int, error) {
+	t.Helper()
+	poll := make(chan time.Time, 1)
+	deadline := make(chan time.Time, 1)
+	reads := 0
+	res, err := awaitTasksWorker(context.Background(), mode, maxWait, func() session.RootLiveWork {
+		require.Less(t, reads, len(sequence), "unexpected extra read")
+		work := sequence[reads]
+		reads++
+		if reads < len(sequence)-1 {
+			poll <- time.Time{}
+		} else if reads == len(sequence)-1 {
+			deadline <- time.Time{}
+		}
+		return work
+	}, func(cap time.Duration) (<-chan time.Time, <-chan time.Time, func()) {
+		want := workerAwaitBlockCap
+		if maxWait > 0 && time.Duration(maxWait)*time.Second < want {
+			want = time.Duration(maxWait) * time.Second
+		}
+		require.Equal(t, want, cap)
+		return poll, deadline, func() {}
+	})
+	return res, reads, err
+}
+
+func awaitWork(ids ...string) session.RootLiveWork {
+	work := session.RootLiveWork{}
+	for _, id := range ids {
+		work.Own = append(work.Own, session.LiveJob{SessionID: "worker", ToolCallID: id, ToolName: "bash"})
+	}
+	return work
+}
+
+func TestAwaitTasksWorkerIdentityAnyReplacement(t *testing.T) {
+	t.Parallel()
+	res, reads, err := runAwaitSequence(t, "any", 0, awaitWork("A", "B"), awaitWork("B", "C"), awaitWork("B", "C"))
+	require.NoError(t, err)
+	require.Equal(t, 2, reads, "A disappeared even though C replaced its count")
+	require.True(t, res.Blocked)
+	require.False(t, res.TimedOut)
+	require.Equal(t, 1, res.FinishedCount)
+	require.Len(t, res.WaitingFor, 1)
+}
+
+func TestAwaitTasksWorkerIdentityAllIgnoresLateLaunches(t *testing.T) {
+	t.Parallel()
+	res, reads, err := runAwaitSequence(t, "all", 0,
+		awaitWork("A", "B"), awaitWork("B", "C"), awaitWork("C", "D"), awaitWork("C", "D"))
+	require.NoError(t, err)
+	require.Equal(t, 3, reads, "wait only for A and B, not late C and D")
+	require.False(t, res.TimedOut)
+	require.Equal(t, 2, res.FinishedCount)
+	require.Empty(t, res.WaitingFor)
+}
+
+func TestAwaitTasksWorkerIdentityAllOriginalsGone(t *testing.T) {
+	t.Parallel()
+	res, reads, err := runAwaitSequence(t, "all", 0, awaitWork("A", "B"), awaitWork(), awaitWork())
+	require.NoError(t, err)
+	require.Equal(t, 2, reads)
+	require.True(t, res.Blocked)
+	require.False(t, res.TimedOut)
+	require.Equal(t, 2, res.FinishedCount)
+	require.Empty(t, res.WaitingFor)
+}
+
+func TestAwaitTasksWorkerIdentityEmptyEntry(t *testing.T) {
+	t.Parallel()
+	_, reads, err := runAwaitSequence(t, "all", 0, awaitWork())
+	require.EqualError(t, err, "nothing is running; continue or finish")
+	require.Equal(t, 1, reads)
+}
+
+func TestAwaitTasksWorkerIdentityReappearanceStaysFinished(t *testing.T) {
+	t.Parallel()
+	res, reads, err := runAwaitSequence(t, "all", 0,
+		awaitWork("A", "B"), awaitWork("B"), awaitWork("A"), awaitWork("A"))
+	require.NoError(t, err)
+	require.Equal(t, 3, reads, "A's observed disappearance is latched, not undone")
+	require.False(t, res.TimedOut)
+	require.Equal(t, 2, res.FinishedCount)
+	require.Empty(t, res.WaitingFor)
+}
+
+func TestAwaitTasksWorkerIdentityOwnerAndDuplicates(t *testing.T) {
+	t.Parallel()
+	entry := awaitWork("same")
+	entry.Descendants = []session.LiveJob{{SessionID: "child", ToolCallID: "same", ToolName: "agent", ChildSessionID: "grandchild"}, entry.Own[0]}
+	next := session.RootLiveWork{Descendants: entry.Descendants[:1]}
+	res, reads, err := runAwaitSequence(t, "any", 0, entry, next, next)
+	require.NoError(t, err)
+	require.Equal(t, 2, reads)
+	require.Equal(t, 1, res.FinishedCount)
+	require.Len(t, res.WaitingFor, 1)
+	require.Equal(t, "grandchild", res.WaitingFor[0].ChildSessionID)
+}
+
+func TestAwaitTasksWorkerIdentityIncompleteRead(t *testing.T) {
+	t.Parallel()
+	for _, incomplete := range []session.RootLiveWork{{OwnIncomplete: true}, {DescendantsIncomplete: true}} {
+		res, reads, err := runAwaitSequence(t, "all", 0,
+			awaitWork("A"), incomplete, awaitWork("A"), awaitWork())
+		require.NoError(t, err)
+		require.Equal(t, 4, reads, "incomplete read must not finish A")
+		require.True(t, res.TimedOut)
+		require.Equal(t, 1, res.FinishedCount)
+	}
+}
+
+func TestAwaitTasksWorkerIdentityCapAndMaxWait(t *testing.T) {
+	t.Parallel()
+	for _, maxWait := range []int{0, 60, 21600} {
+		res, reads, err := runAwaitSequence(t, "all", maxWait,
+			awaitWork("A", "B"), awaitWork("B", "C"), awaitWork("B", "C", "D"))
+		require.NoError(t, err)
+		require.Equal(t, 3, reads)
+		require.True(t, res.Blocked)
+		require.True(t, res.TimedOut)
+		require.Equal(t, 1, res.FinishedCount)
+		require.Len(t, res.WaitingFor, 1)
+		require.Equal(t, "B", res.WaitingFor[0].ToolCallID)
+	}
+}
+
+func TestAwaitTasksWorkerIdentityCancellation(t *testing.T) {
+	t.Parallel()
+	for _, readyPoll := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		poll := make(chan time.Time, 1)
+		reads := 0
+		_, err := awaitTasksWorker(ctx, "all", 0, func() session.RootLiveWork {
+			reads++
+			return awaitWork("A")
+		}, func(time.Duration) (<-chan time.Time, <-chan time.Time, func()) {
+			cancel()
+			if readyPoll {
+				poll <- time.Time{}
+			}
+			return poll, nil, func() {}
+		})
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, 1, reads, "cancellation wins over a same-tick poll")
+	}
+}

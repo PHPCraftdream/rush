@@ -103,18 +103,53 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 // or the generation context is cancelled. It never arms the arbiter's sleep
 // nor schedules wake schedules.
 func (c *coordinator) awaitTasksForWorker(ctx context.Context, sessionID, mode string, maxWaitSeconds int) (tools.AwaitTasksResult, error) {
+	return awaitTasksWorker(ctx, mode, maxWaitSeconds, func() session.RootLiveWork {
+		return c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+	}, func(cap time.Duration) (<-chan time.Time, <-chan time.Time, func()) {
+		ticker := time.NewTicker(awaitTasksWorkerPollInterval)
+		return ticker.C, time.After(cap), ticker.Stop
+	})
+}
+
+// awaitTasksWorker accepts per-call reads and timers for deterministic tests.
+func awaitTasksWorker(ctx context.Context, mode string, maxWaitSeconds int, read func() session.RootLiveWork, wait func(time.Duration) (<-chan time.Time, <-chan time.Time, func())) (tools.AwaitTasksResult, error) {
+	// LiveJob exposes the durable row key, not claim_id. Snapshot owner/call
+	// pairs at entry; once absent from a complete read, a pair stays finished
+	// for this wait even if it reappears. Incomplete reads never remove it.
+	type identity struct{ owner, call string }
+	var pending map[identity]struct{}
 	count := func() (int, []tools.AwaitTaskRef, bool) {
-		work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		work := read()
 		if work.OwnIncomplete || work.DescendantsIncomplete {
 			// A failed/cut-off read (e.g. a cancelled ctx) must never
 			// look like "the work finished".
 			return 0, nil, false
 		}
-		refs := make([]tools.AwaitTaskRef, 0, len(work.Own)+len(work.Descendants))
-		for _, job := range work.Own {
-			refs = append(refs, awaitTaskRef(job))
+		jobs := append(append([]session.LiveJob(nil), work.Own...), work.Descendants...)
+		live := make(map[identity]struct{}, len(jobs))
+		for _, job := range jobs {
+			live[identity{job.SessionID, job.ToolCallID}] = struct{}{}
 		}
-		for _, job := range work.Descendants {
+		if pending == nil {
+			pending = live
+		} else {
+			for id := range pending {
+				if _, exists := live[id]; !exists {
+					delete(pending, id)
+				}
+			}
+		}
+		refs := make([]tools.AwaitTaskRef, 0, len(pending))
+		seen := make(map[identity]struct{}, len(pending))
+		for _, job := range jobs {
+			id := identity{job.SessionID, job.ToolCallID}
+			if _, awaited := pending[id]; !awaited {
+				continue
+			}
+			if _, duplicate := seen[id]; duplicate {
+				continue
+			}
+			seen[id] = struct{}{}
 			refs = append(refs, awaitTaskRef(job))
 		}
 		return len(refs), refs, true
@@ -127,15 +162,14 @@ func (c *coordinator) awaitTasksForWorker(ctx context.Context, sessionID, mode s
 	if maxWaitSeconds > 0 && time.Duration(maxWaitSeconds)*time.Second < waitCap {
 		waitCap = time.Duration(maxWaitSeconds) * time.Second
 	}
-	ticker := time.NewTicker(awaitTasksWorkerPollInterval)
-	defer ticker.Stop()
+	pollCh, deadlineCh, stop := wait(waitCap)
+	defer stop()
 	// Computed once: a deadline re-created per loop iteration would drift.
-	deadlineCh := time.After(waitCap)
 	for {
 		select {
 		case <-ctx.Done():
 			return tools.AwaitTasksResult{}, ctx.Err()
-		case <-ticker.C:
+		case <-pollCh:
 			if ctx.Err() != nil {
 				// Cancellation must win over a same-tick stale poll.
 				return tools.AwaitTasksResult{}, ctx.Err()
