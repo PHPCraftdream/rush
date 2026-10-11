@@ -73,6 +73,9 @@ func oauthJournalLivePredecessor(record *oauthJournalRecord, live *oauth.Token) 
 		return false
 	}
 	if record.PredecessorRefreshTokenSHA256 != "" {
+		// A digest equal to the record token's own refresh digest could only come from an
+		// untagged build between 15ef615e and 9e62125f and is cleared by any later recovery,
+		// so it is not normalized on read.
 		return oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256
 	}
 	// Same-refresh generations are ordered only by the arbiter's expiry rule.

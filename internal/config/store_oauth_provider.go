@@ -61,6 +61,9 @@ func rotatingOAuthProvider(id string) bool {
 	return ok && descriptor.rotating
 }
 
+// An unchanged or empty refresh token is success without a digest: the server burned
+// nothing, so a journal record carries a predecessor digest iff the refresh token changed
+// (oauthRotationDigest). Rejecting it would discard a valid access token.
 func normalizeOAuthRefresh(descriptor oauthProviderDescriptor, previous, token *oauth.Token) *oauth.Token {
 	if token == nil {
 		return nil

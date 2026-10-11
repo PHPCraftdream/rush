@@ -209,6 +209,10 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 		s.publishMu.Unlock()
 		return disk, nil, nil
 	default:
+		// WAL-only recovery adds the disk predecessor's digest to the in-memory pending
+		// record only; the journal file is not rewritten, so burned digests a former pending
+		// record carried are not recovered here. Harm needs a distinct later-expiring token
+		// that reuses the overwritten token's refresh token, which single-use rotation rules out.
 		if live != nil {
 			if err := s.applyOAuthTokenWithPendingPredecessor(provider, live, record.Token, disk, true, record); err != nil {
 				return nil, record, err
