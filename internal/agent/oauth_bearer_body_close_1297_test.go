@@ -212,7 +212,7 @@ func TestOAuthBearerRequestBodyOwnership1297(t *testing.T) {
 }
 
 func TestOAuthCloseRequestBodyEmpty1297(t *testing.T) {
-	// Revert-check: closeRequestBody skips nil and http.NoBody.
+	// Closing a request with nil or http.NoBody does not panic.
 	for _, body := range []io.ReadCloser{nil, http.NoBody} {
 		require.NotPanics(t, func() { closeRequestBody(&http.Request{Body: body}) })
 	}

@@ -110,6 +110,7 @@ func (t *oauthBearerTransport) RoundTrip(request *http.Request) (*http.Response,
 		}
 		body, err := request.GetBody()
 		if err != nil {
+			closeRequestBody(&http.Request{Body: body})
 			if err := cancelled(); err != nil {
 				return nil, err
 			}

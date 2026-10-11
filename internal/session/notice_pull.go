@@ -258,8 +258,8 @@ func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages messa
 	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
 }
 
-// sessionNoticeVoidCondition voids wake_only/child_question for missing,
-// non-running or void jobs, and supervision for no live, non-void running scope.
+// sessionNoticeVoidCondition voids invalid wake_only/child_question jobs and supervision
+// without a non-void running job on a nonempty host not definitely dead.
 func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
 	case NoticeKindWakeOnly, NoticeKindChildQuestion:
