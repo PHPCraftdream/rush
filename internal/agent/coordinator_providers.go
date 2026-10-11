@@ -826,6 +826,9 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 		}
 	}
 	if providerCfg.ID == "openai-codex" {
+		if c != nil && c.cfg != nil {
+			return newCodexTokenProvider(httpClient, &codexTokenSource{store: c.cfg, resolve: c.resolveProviderHTTPClient})
+		}
 		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}
 

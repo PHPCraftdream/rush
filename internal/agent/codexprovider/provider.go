@@ -32,7 +32,7 @@ const (
 
 type provider struct {
 	client *http.Client
-	token  oauth.Token
+	source TokenSource
 }
 
 // New creates a provider that authenticates only with a ChatGPT OAuth token.
@@ -40,10 +40,7 @@ func New(client *http.Client, token *oauth.Token) (fantasy.Provider, error) {
 	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
 		return nil, errors.New("openai-codex requires an OAuth access token")
 	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &provider{client: client, token: *token}, nil
+	return NewWithSource(client, staticTokenSource{token: *token})
 }
 
 func (p *provider) Name() string { return providerID }
@@ -359,49 +356,12 @@ func sanitizeCallID(raw string) string {
 }
 
 func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesURL, bytes.NewReader(payload))
+	response, err := m.acquireResponse(ctx, payload, userAgent)
 	if err != nil {
-		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
-		return
-	}
-	request.Header.Set("Authorization", "Bearer "+m.provider.token.AccessToken)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("OpenAI-Beta", "responses=experimental")
-	request.Header.Set("originator", "omp")
-	request.Header.Set("version", codexVersion)
-	if strings.TrimSpace(userAgent) == "" {
-		userAgent = "rush"
-	}
-	request.Header.Set("User-Agent", userAgent)
-	request.Header.Set("x-codex-routing-hint", "model="+m.modelID)
-	if accountID := strings.TrimSpace(m.provider.token.AccountID); accountID != "" {
-		request.Header.Set("chatgpt-account-id", accountID)
-	}
-	if sessionID, ok := ctx.Value(cliprovider.SessionIDContextKey).(string); ok && sessionID != "" {
-		request.Header.Set("conversation_id", sessionID)
-		request.Header.Set("session_id", sessionID)
-		request.Header.Set("x-client-request-id", sessionID)
-	}
-
-	response, err := m.provider.client.Do(request)
-	if err != nil {
-		if ctx.Err() != nil {
-			err = ctx.Err()
-		}
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorBody))
-		if readErr != nil {
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: readErr})
-			return
-		}
-		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: providerError(response, payload, body)})
-		return
-	}
 
 	state := newStreamState()
 	readErr := readSSE(response.Body, func(data []byte) bool {
