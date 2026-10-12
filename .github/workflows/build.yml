@@ -86,6 +86,12 @@ jobs:
       - name: self-test db release pairing guard
         if: matrix.os == 'ubuntu-latest'
         run: bash .githooks/check_db_release_pairing_selftest.sh
+      - name: no hand-written source file over 1000 lines (ratchet allowlist)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size.sh
+      - name: self-test file-size guard
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size_selftest.sh
       # Regenerate the sqlc output and fail if it drifts from what's
       # committed. Pinned to v1.30.0 — the exact version this repo's own
       # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
