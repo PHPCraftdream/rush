@@ -169,7 +169,7 @@ test("covered flat rows are replaced by structured nodes; structured-only nodes 
   // uncovered flat agent tcX survives.
   assert.deepEqual(
     merged.agents.map((r) => [r.toolCallID, r.childSessionID]),
-    [["tc2", "child-2"], ["tcX", undefined]],
+    [["tcX", undefined], ["tc2", "child-2"]],
   );
   // Empty toolCallIDs: uncovered, so kept.
   const withEmpty = {
