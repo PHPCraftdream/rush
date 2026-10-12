@@ -20,6 +20,7 @@ type Tool = mcp.Tool
 
 // ToolResult represents the result of running an MCP tool.
 type ToolResult struct {
+	IsError   bool
 	Type      string
 	Content   string
 	Data      []byte
@@ -94,7 +95,7 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 	}
 
 	if len(result.Content) == 0 {
-		return ToolResult{Type: "text", Content: ""}, nil
+		return ToolResult{Type: "text", Content: "", IsError: result.IsError}, nil
 	}
 
 	var textParts []string
@@ -128,6 +129,7 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 	// when using something like docker + playwright the data was not returned correctly.
 	if imageData != nil {
 		return ToolResult{
+			IsError:   result.IsError,
 			Type:      "image",
 			Content:   textContent,
 			Data:      ensureRawBytes(imageData),
@@ -137,6 +139,7 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 
 	if audioData != nil {
 		return ToolResult{
+			IsError:   result.IsError,
 			Type:      "media",
 			Content:   textContent,
 			Data:      ensureRawBytes(audioData),
@@ -145,6 +148,7 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 	}
 
 	return ToolResult{
+		IsError: result.IsError,
 		Type:    "text",
 		Content: textContent,
 	}, nil
@@ -177,7 +181,7 @@ func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, tool
 	}
 
 	if len(result.Content) == 0 {
-		return ToolResult{Type: "text", Content: ""}, nil
+		return ToolResult{Type: "text", Content: "", IsError: result.IsError}, nil
 	}
 
 	var textParts []string
@@ -209,6 +213,7 @@ func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, tool
 
 	if imageData != nil {
 		return ToolResult{
+			IsError:   result.IsError,
 			Type:      "image",
 			Content:   textContent,
 			Data:      ensureRawBytes(imageData),
@@ -218,6 +223,7 @@ func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, tool
 
 	if audioData != nil {
 		return ToolResult{
+			IsError:   result.IsError,
 			Type:      "media",
 			Content:   textContent,
 			Data:      ensureRawBytes(audioData),
@@ -226,6 +232,7 @@ func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, tool
 	}
 
 	return ToolResult{
+		IsError: result.IsError,
 		Type:    "text",
 		Content: textContent,
 	}, nil

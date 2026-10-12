@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -60,6 +61,19 @@ func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd str
 		}
 	}
 	return result
+}
+
+type batchManagedCallKey struct{}
+
+// WithBatchManagedCall marks calls whose lifetime is owned by a batch execution.
+func WithBatchManagedCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, batchManagedCallKey{}, true)
+}
+
+// IsBatchManagedCall reports whether cancellation must reach the batch owner.
+func IsBatchManagedCall(ctx context.Context) bool {
+	managed, _ := ctx.Value(batchManagedCallKey{}).(bool)
+	return managed
 }
 
 // Tool is a tool from a MCP.
@@ -160,7 +174,11 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 
 	result, err := m.owner.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
+		response := fantasy.NewTextErrorResponse(err.Error())
+		if IsBatchManagedCall(ctx) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return response, err
+		}
+		return response, nil
 	}
 
 	switch result.Type {
@@ -177,8 +195,11 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 			response = fantasy.NewMediaResponse(result.Data, result.MediaType)
 		}
 		response.Content = result.Content
+		response.IsError = result.IsError
 		return response, nil
 	default:
-		return fantasy.NewTextResponse(result.Content), nil
+		response := fantasy.NewTextResponse(result.Content)
+		response.IsError = result.IsError
+		return response, nil
 	}
 }
