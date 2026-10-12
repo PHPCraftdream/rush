@@ -14,14 +14,23 @@ func OneItem(task TaskSpec) Spec {
 }
 
 func (r *Runner) Submit(ctx context.Context, req SubmitRequest) (*Batch, error) {
+	if err := r.FaultErr(); err != nil {
+		return nil, err
+	}
 	if r.isClosed() {
 		return nil, ErrClosed
 	}
 	if req.Spec.Batch == nil || req.Spec.Task != nil {
+		if r.commitHook != nil {
+			return nil, r.request(ctx, &runnerRequest{validationErr: ErrInvalidSpec}).err
+		}
 		return nil, ErrInvalidSpec
 	}
 	items, err := r.cloneSpecs([]Spec{req.Spec})
 	if err != nil {
+		if r.commitHook != nil {
+			return nil, r.request(ctx, &runnerRequest{validationErr: err}).err
+		}
 		return nil, err
 	}
 	a := r.request(ctx, &runnerRequest{event: Event{Type: EventSubmit, Root: req.Root, Spec: items[0], Ref: req.Ref}})
@@ -29,11 +38,17 @@ func (r *Runner) Submit(ctx context.Context, req SubmitRequest) (*Batch, error) 
 }
 
 func (r *Runner) Add(ctx context.Context, req AddRequest) ([]ID, error) {
+	if err := r.FaultErr(); err != nil {
+		return nil, err
+	}
 	if r.isClosed() {
 		return nil, ErrClosed
 	}
 	items, err := r.cloneSpecs(req.Items)
 	if err != nil {
+		if r.commitHook != nil {
+			return nil, r.request(ctx, &runnerRequest{validationErr: err}).err
+		}
 		return nil, err
 	}
 	a := r.request(ctx, &runnerRequest{event: Event{Type: EventAdd, Parent: req.Parent, Items: items, Ref: req.Ref}})
@@ -93,6 +108,15 @@ func (r *Runner) Inject(ctx context.Context, id ID, msg json.RawMessage) (err er
 }
 
 func (r *Runner) handleRequest(q *runnerRequest) runnerAnswer {
+	if q.validationErr != nil {
+		return runnerAnswer{err: q.validationErr}
+	}
+	if r.finalApplied {
+		if q.op == runnerRequestView || q.op == runnerRequestSnapshot {
+			return r.publishedRead(q)
+		}
+		return runnerAnswer{err: ErrClosed}
+	}
 	if q.op == runnerRequestClose {
 		if !r.closing {
 			r.closing = true
@@ -123,7 +147,7 @@ func (r *Runner) handleRequest(q *runnerRequest) runnerAnswer {
 		if _, exists := r.batches[e.Root]; exists {
 			return runnerAnswer{err: ErrDuplicateRoot}
 		}
-		batch = &Batch{id: e.Root, done: make(chan struct{})}
+		batch = &Batch{runner: r, id: e.Root, done: make(chan struct{})}
 		r.batches[e.Root] = batch
 	}
 	// New direct children have append-only ordinals beyond the prior maximum.
@@ -174,6 +198,13 @@ func (r *Runner) releasedNode(id ID) bool {
 }
 
 func (r *Runner) lookup(id ID) (NodeView, error) {
+	if r.commitHook != nil {
+		for root := range r.speculativeReleased {
+			if id == root || strings.HasPrefix(string(id), string(root)+".") {
+				return NodeView{}, ErrReleased
+			}
+		}
+	}
 	if r.releasedNode(id) {
 		return NodeView{}, ErrReleased
 	}
@@ -188,7 +219,20 @@ func (r *Runner) lookup(id ID) (NodeView, error) {
 }
 
 func (r *Runner) inspectRequest(q *runnerRequest) runnerAnswer {
+	if r.commitHook != nil && (q.op == runnerRequestView || q.op == runnerRequestSnapshot) {
+		return r.publishedRead(q)
+	}
 	v, err := r.lookup(q.node)
+	if r.commitHook != nil && q.op == runnerRequestOutput && err == nil {
+		published := r.publishedRead(&runnerRequest{op: runnerRequestView, node: q.node})
+		if published.err != nil {
+			return published
+		}
+		v = published.view
+		if v.Kind == KindTask && v.State == StateStarting {
+			return runnerAnswer{err: ErrNotStarted}
+		}
+	}
 	if err != nil {
 		return runnerAnswer{err: err}
 	}
@@ -300,11 +344,16 @@ func (r *Runner) Close(ctx context.Context) error {
 	// when it is already cancelled, without an abandonable request.
 	r.closeOnce.Do(func() { r.enqueue(runnerMessage{kind: runnerClosingIntent}) })
 	select {
+	case <-r.faulted:
+		return r.closeFault(ctx)
 	case <-r.final:
 	case <-ctx.Done():
 		select {
 		case <-r.final:
 		default:
+			if r.FaultErr() != nil {
+				return r.closeFault(ctx)
+			}
 			// Final is the public boundary, not the later implicit give-up.
 			// Hold the feed lock so timeout cannot race Final publication.
 			r.feed.mu.Lock()

@@ -20,6 +20,11 @@ func (r *Runner) appendTransition(t Transition) {
 	if r.requestHooks != nil && r.requestHooks.beforeAppend != nil {
 		r.requestHooks.beforeAppend(t)
 	}
+	r.appendRecords(r.captureRecords(t), t.Final)
+}
+
+// captureRecords is owner-only; publication never consults the live Engine.
+func (r *Runner) captureRecords(t Transition) []Record {
 	e := t.Event
 	rec := Record{Sequence: t.Sequence, Type: RecordType(e.Type), Root: e.Root, Node: e.Node, Token: e.Token, Reason: e.Reason, Op: e.Op, Code: e.Code, Group: e.Group, Ref: e.Ref}
 	if e.Type == EventSubmit {
@@ -76,6 +81,11 @@ func (r *Runner) appendTransition(t Transition) {
 	if t.Final {
 		records = append(records, Record{Sequence: t.Sequence, Type: RecordClosed})
 	}
+	return records
+}
+
+func (r *Runner) appendRecords(records []Record, final bool) {
+	f := &r.feed
 	f.mu.Lock()
 	for _, record := range records {
 		f.head++
@@ -87,7 +97,7 @@ func (r *Runner) appendTransition(t Transition) {
 			f.records = append(f.records, record)
 		}
 	}
-	if t.Final {
+	if final {
 		f.final = f.head
 	}
 	close(f.changed)
@@ -132,6 +142,11 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 			page.Next = f.final + 1
 			f.mu.Unlock()
 			return page, ErrClosed
+		}
+		if err := r.FaultErr(); err != nil {
+			page.Next = f.head + 1
+			f.mu.Unlock()
+			return page, err
 		}
 		changed := f.changed
 		f.mu.Unlock()

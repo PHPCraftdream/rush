@@ -9,24 +9,37 @@ import (
 
 // Runner serializes engine inputs; physical executor calls never run on its loop.
 type Runner struct {
-	engine             *Engine
-	executor           Executor
-	controlTimeout     time.Duration
-	maxDepth, maxNodes int
-	clock              runnerClock
-	requests           chan *runnerRequest
-	wake               chan struct{}
-	inboxMu            sync.Mutex
-	inbox              []runnerMessage
-	exited             chan struct{}
-	final              chan struct{}
-	host               context.Context
-	attempts           map[uint64]*runnerAttempt
-	batches            map[ID]*Batch
-	released           map[ID]bool
-	closing            bool
-	closeOnce          sync.Once
-	requestHooks       *runnerRequestHooks
+	commitHook          func(context.Context, Transition) error
+	commitTimeout       time.Duration
+	faulted             chan struct{}
+	faultErr            error
+	faultHandled        bool
+	publicationQueue    []*runnerPublication
+	commitInput         chan *runnerPublication
+	commitResults       chan runnerCommitResult
+	commitBusy          bool
+	finalApplied        bool
+	speculativeReleased map[ID]bool
+	currentPublication  *runnerPublication
+	engine              *Engine
+	executor            Executor
+	controlTimeout      time.Duration
+	maxDepth, maxNodes  int
+	clock               runnerClock
+	containmentRequests chan *runnerRequest
+	requests            chan *runnerRequest
+	wake                chan struct{}
+	inboxMu             sync.Mutex
+	inbox               []runnerMessage
+	exited              chan struct{}
+	final               chan struct{}
+	host                context.Context
+	attempts            map[uint64]*runnerAttempt
+	batches             map[ID]*Batch
+	released            map[ID]bool
+	closing             bool
+	closeOnce           sync.Once
+	requestHooks        *runnerRequestHooks
 
 	// Published state and lifetime cleanup survive the engine loop.
 	mu             sync.Mutex
@@ -40,6 +53,7 @@ type Runner struct {
 
 // Batch retains its immutable settlement even after Release or Runner closure.
 type Batch struct {
+	runner  *Runner
 	id      ID
 	done    chan struct{}
 	summary Summary // written before done closes, then immutable
@@ -69,6 +83,10 @@ type runnerRequestHooks struct {
 	donePublished   func(*Batch, Transition)
 	beforeAppend    func(Transition)
 	committed       func(*runnerRequest)
+	commitReturned  func()
+	beforeMessage   func(runnerMessage)
+	afterMessage    func(runnerMessage)
+	transitioned    func(Transition)
 }
 
 func (r *Runner) cancelControlTimeout(cancel context.CancelFunc) {
@@ -90,7 +108,7 @@ func newRunnerWithClock(ctx context.Context, cfg RunnerConfig, clock runnerClock
 }
 
 func newRunnerWithClockAndHooks(ctx context.Context, cfg RunnerConfig, clock runnerClock, hooks *runnerRequestHooks) (*Runner, error) {
-	if ctx == nil || cfg.Executor == nil || cfg.ControlTimeout <= 0 || cfg.RecordRetention <= 0 || clock == nil {
+	if ctx == nil || cfg.Executor == nil || cfg.ControlTimeout <= 0 || cfg.RecordRetention <= 0 || clock == nil || (cfg.CommitHook != nil && cfg.CommitTimeout <= 0) {
 		return nil, ErrInvalidSpec
 	}
 	// The Engine alone owns copying/validating Limits, including ByGroup.
@@ -104,11 +122,18 @@ func newRunnerWithClockAndHooks(ctx context.Context, cfg RunnerConfig, clock run
 		hooks = &copyHooks
 	}
 	r := &Runner{
+		commitHook: cfg.CommitHook, commitTimeout: cfg.CommitTimeout, faulted: make(chan struct{}),
 		engine: engine, executor: cfg.Executor, controlTimeout: cfg.ControlTimeout, requestHooks: hooks,
 		maxDepth: cfg.Limits.MaxDepth, maxNodes: cfg.Limits.MaxNodes, clock: clock,
-		requests: make(chan *runnerRequest), wake: make(chan struct{}, 1), exited: make(chan struct{}), final: make(chan struct{}), host: ctx,
+		containmentRequests: make(chan *runnerRequest), requests: make(chan *runnerRequest), wake: make(chan struct{}, 1), exited: make(chan struct{}), final: make(chan struct{}), host: ctx,
 		attempts: make(map[uint64]*runnerAttempt), batches: make(map[ID]*Batch), released: make(map[ID]bool),
 		views: make(map[ID]NodeView), snapshots: make(map[ID]BatchView), cleanupChanged: make(chan struct{}),
+	}
+	if cfg.CommitHook != nil {
+		r.commitInput = make(chan *runnerPublication)
+		r.commitResults = make(chan runnerCommitResult, 1)
+		r.speculativeReleased = make(map[ID]bool)
+		go r.committer()
 	}
 	r.feed = runnerFeed{retention: cfg.RecordRetention, changed: make(chan struct{})}
 	go r.loop()
@@ -126,6 +151,13 @@ func (b *Batch) Wait(ctx context.Context) (Summary, error) {
 	select {
 	case <-b.done:
 		return b.summary, nil
+	case <-b.runner.faulted:
+		select {
+		case <-b.done:
+			return b.summary, nil
+		default:
+			return Summary{}, b.runner.FaultErr()
+		}
 	case <-ctx.Done():
 		select {
 		case <-b.done:
@@ -161,43 +193,75 @@ func (r *Runner) enqueue(m runnerMessage) {
 func (r *Runner) loop() {
 	hostDone := r.host.Done()
 	for {
+		var cleanup <-chan struct{}
+		if r.FaultErr() != nil {
+			if !r.faultHandled {
+				r.faultHandled = true
+				r.failCommit("error")
+			}
+			drained, changed := r.faultDrained()
+			cleanup = changed
+			if drained {
+				close(r.exited)
+				r.cleanupNotify()
+				return
+			}
+		}
+		var send chan *runnerPublication
+		var next *runnerPublication
+		if r.FaultErr() == nil && r.commitHook != nil && !r.commitBusy && len(r.publicationQueue) > 0 {
+			send = r.commitInput
+			next = r.publicationQueue[0]
+		}
+		requests := r.requests
+		if r.commitHook != nil && len(r.publicationQueue) >= runnerPublicationLimit {
+			requests = nil
+		}
 		select {
+		case <-cleanup:
 		case <-hostDone:
 			hostDone = nil
 			if !r.closing {
 				r.closing = true
 				r.apply(Event{Type: EventHostClosing})
 			}
-		case q := <-r.requests:
-			if r.requestHooks != nil && r.requestHooks.queued != nil {
-				r.requestHooks.queued(q)
+		case send <- next:
+			r.commitBusy = true
+		case result := <-r.commitResults:
+			r.commitBusy = false
+			if result.err != "" {
+				if !r.faultHandled {
+					r.faultHandled = true
+					r.failCommit(result.err)
+				}
+				continue
 			}
-			if q.state.CompareAndSwap(runnerQueued, runnerAccepted) {
-				if r.requestHooks != nil && r.requestHooks.accepted != nil {
-					r.requestHooks.accepted(q)
-				}
-				answer := r.handleRequest(q)
-				if r.requestHooks != nil && r.requestHooks.reply != nil {
-					r.requestHooks.reply(q)
-				}
-				q.reply <- answer // a private capacity-one committed reply slot
-				if r.requestHooks != nil && r.requestHooks.committed != nil {
-					r.requestHooks.committed(q)
-				}
-			}
+			r.publicationQueue = r.publicationQueue[1:]
+			r.publish(result.item)
+		case q := <-r.containmentRequests:
+			r.acceptRequest(q)
+		case q := <-requests:
+			r.acceptRequest(q)
 		case <-r.wake:
 			r.inboxMu.Lock()
 			messages := r.inbox
 			r.inbox = nil
 			r.inboxMu.Unlock()
 			for _, m := range messages {
+				if r.requestHooks != nil && r.requestHooks.beforeMessage != nil {
+					r.requestHooks.beforeMessage(m)
+				}
 				r.handleMessage(m)
+				if r.requestHooks != nil && r.requestHooks.afterMessage != nil {
+					r.requestHooks.afterMessage(m)
+				}
+
 				if r.isClosed() {
 					break
 				}
 			}
 		}
-		if r.isClosed() {
+		if r.isClosed() && len(r.publicationQueue) == 0 {
 			// §3.4 preserves frozen views, not attempts or Launch payloads.
 			clear(r.attempts)
 			clear(r.batches)
@@ -223,10 +287,25 @@ func (r *Runner) isClosed() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.cl
 
 // apply publishes records before settlement channels or committed replies.
 func (r *Runner) apply(e Event) (Transition, error) {
+	r.mu.Lock()
+	if r.faultErr != nil {
+		err := r.faultErr
+		r.mu.Unlock()
+		return Transition{}, err
+	}
+	if r.finalApplied {
+		r.mu.Unlock()
+		return Transition{}, ErrClosed
+	}
 	t, err := r.engine.Apply(e)
+	r.mu.Unlock()
 	if err != nil {
 		return Transition{}, err
 	}
+	if r.commitHook != nil {
+		return r.applyDurable(t)
+	}
+
 	r.mu.Lock()
 	for _, v := range t.Changed {
 		r.views[v.ID] = v
@@ -297,7 +376,9 @@ func (r *Runner) apply(e Event) (Transition, error) {
 		case CommandStartLeaf:
 			r.dispatchStart(cmd.Launch)
 		case CommandStopLeaf:
-			r.dispatchStopCommand(cmd)
+			if r.commitHook == nil {
+				r.dispatchStopCommand(cmd, t.Sequence)
+			}
 		}
 	}
 	if t.Final {
@@ -315,11 +396,12 @@ const (
 )
 
 type runnerRequest struct {
-	state atomic.Uint32
-	op    runnerRequestOp
-	event Event
-	node  ID
-	reply chan runnerAnswer
+	validationErr error
+	state         atomic.Uint32
+	op            runnerRequestOp
+	event         Event
+	node          ID
+	reply         chan runnerAnswer
 }
 type runnerRequestOp uint8
 
@@ -342,6 +424,9 @@ type runnerAnswer struct {
 }
 
 func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
+	if err := r.FaultErr(); err != nil {
+		return runnerAnswer{err: err}
+	}
 	q.reply = make(chan runnerAnswer, 1)
 	if r.isClosed() {
 		return r.afterClosed(q)
@@ -349,15 +434,28 @@ func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
 	if err := ctx.Err(); err != nil {
 		return runnerAnswer{err: err}
 	}
+	requests := r.requests
+	if r.commitHook != nil && q.event.Type == EventStopRequested {
+		requests = r.containmentRequests
+	}
 	select {
-	case r.requests <- q:
+	case requests <- q:
 	case <-ctx.Done():
 		q.state.CompareAndSwap(runnerQueued, runnerAbandoned)
 		return runnerAnswer{err: ctx.Err()}
+	case <-r.faulted:
+		return runnerAnswer{err: r.FaultErr()}
 	case <-r.exited:
 		return r.afterClosed(q)
 	}
 	select {
+	case <-r.faulted:
+		select {
+		case answer := <-q.reply:
+			return answer
+		default:
+			return runnerAnswer{err: r.FaultErr()}
+		}
 	case a := <-q.reply:
 		return a
 	case <-ctx.Done():

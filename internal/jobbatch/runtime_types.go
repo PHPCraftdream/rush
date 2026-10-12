@@ -1,9 +1,14 @@
 package jobbatch
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // RunnerConfig configures one Runner.
 type RunnerConfig struct {
+	CommitHook      func(context.Context, Transition) error
+	CommitTimeout   time.Duration // Positive when CommitHook is set.
 	Limits          Limits
 	Executor        Executor
 	ControlTimeout  time.Duration // Per physical Stop/Dispose call, from dispatch; positive.

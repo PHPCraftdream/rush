@@ -17,6 +17,7 @@ var (
 	ErrUnsupported   = errors.New("jobbatch: unsupported for this node or execution")
 	ErrReleased      = errors.New("jobbatch: root released")
 	ErrClosing       = errors.New("jobbatch: runner closing")
+	ErrCommitFailed  = errors.New("jobbatch: commit failed")
 	ErrClosed        = errors.New("jobbatch: runner closed")
 	ErrCloseTimeout  = errors.New("jobbatch: close timed out before final")
 	ErrGap           = errors.New("jobbatch: feed gap")

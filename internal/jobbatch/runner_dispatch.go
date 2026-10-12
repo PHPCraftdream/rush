@@ -8,16 +8,24 @@ import (
 )
 
 type runnerAttempt struct {
-	launch        Launch
-	cancel        context.CancelFunc
-	timer         runnerTimer
-	resultReady   bool
-	result        Result
-	startReturned bool
-	accepted      bool
-	retired       bool
-	stopWaiting   bool
-	handle        *runnerHandle
+	ctx                    context.Context
+	dispatched             bool
+	root                   ID
+	launch                 Launch
+	cancel                 context.CancelFunc
+	timer                  runnerTimer
+	resultReady            bool
+	result                 Result
+	startReturned          bool
+	accepted               bool
+	retired                bool
+	physicalReturn         bool
+	physicalReport         bool
+	contain                bool
+	stopWaiting            bool
+	stopCommandSequence    uint64
+	stopDispatchedSequence uint64
+	handle                 *runnerHandle
 }
 
 type runnerMessageKind uint8
@@ -29,6 +37,7 @@ const (
 	runnerStopResult
 	runnerStopReturned
 	runnerClosingIntent
+	runnerFaultSignal
 )
 
 type runnerMessage struct {
@@ -42,9 +51,23 @@ type runnerMessage struct {
 }
 
 func (r *Runner) dispatchStart(l Launch) {
-	ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
-	a := &runnerAttempt{launch: l, cancel: cancel}
-	r.attempts[l.Token] = a
+	a := r.attempts[l.Token]
+	if a == nil {
+		ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
+		v, _ := r.engine.View(l.ID)
+		a = &runnerAttempt{ctx: ctx, root: v.Root, launch: l, cancel: cancel}
+		r.attempts[l.Token] = a
+	}
+	if a.dispatched || a.retired {
+		return
+	}
+	if r.commitHook != nil && a.ctx.Err() != nil {
+		a.physicalReturn = true
+		r.apply(Event{Type: EventStartRejected, Node: l.ID, Token: l.Token, Reason: RejectCancelled, Code: CodeStartFailed})
+		return
+	}
+	a.dispatched = true
+	ctx := a.ctx
 	token := l.Token
 	reported := &atomic.Bool{}
 	if l.Task.Timeout > 0 {
@@ -127,7 +150,14 @@ func runnerNorm(raw, fallback string) (code string) {
 }
 
 func (r *Runner) handleMessage(m runnerMessage) {
+	fault := r.FaultErr() != nil
+	if m.kind == runnerFaultSignal {
+		return
+	}
 	if m.kind == runnerClosingIntent {
+		if fault || r.finalApplied {
+			return
+		}
 		if !r.closing {
 			r.closing = true
 			r.apply(Event{Type: EventHostClosing})
@@ -135,7 +165,7 @@ func (r *Runner) handleMessage(m runnerMessage) {
 		return
 	}
 	a := r.attempts[m.token]
-	if a == nil || a.retired {
+	if a == nil || (a.retired && !fault) {
 		return
 	}
 	switch m.kind {
@@ -144,6 +174,13 @@ func (r *Runner) handleMessage(m runnerMessage) {
 			return
 		}
 		a.startReturned = true
+		a.physicalReturn = true
+		if fault {
+			if m.execution != nil {
+				r.registerHandle(a, m.execution)
+			}
+			return
+		}
 		if m.execution == nil {
 			reason := m.reason
 			if v, ok := r.engine.View(a.launch.ID); ok && v.Cause != CauseNone && reason != RejectCapacity {
@@ -158,35 +195,43 @@ func (r *Runner) handleMessage(m runnerMessage) {
 			return
 		}
 		a.accepted = true
-		v, _ := r.engine.View(a.launch.ID)
-		h := &runnerHandle{runner: r, node: a.launch.ID, root: v.Root, token: m.token, execution: m.execution}
-		_, h.disposeRequired = m.execution.(Disposer)
-		a.handle = h
-		r.mu.Lock()
-		r.handles = append(r.handles, h)
-		r.mu.Unlock()
+		r.registerHandle(a, m.execution)
 		if _, err := r.apply(Event{Type: EventStarted, Node: a.launch.ID, Token: m.token}); err != nil {
 			return
 		}
 		if a.stopWaiting {
-			a.stopWaiting = false
-			r.startOrQueueStop(h)
+			r.dispatchWaitingStop(a)
 		}
 		if a.resultReady {
 			r.acceptCompletion(a)
 		}
 	case runnerCompletion:
+		if fault {
+			a.physicalReport = true
+			if a.handle != nil {
+				a.handle.terminate()
+			}
+			return
+		}
 		if a.resultReady {
 			return
 		}
+		a.physicalReport = true
 		a.result = m.result
 		a.resultReady = true
 		if a.accepted {
 			r.acceptCompletion(a)
 		}
 	case runnerDeadline:
+		if fault {
+			a.cancel()
+			return
+		}
 		r.apply(Event{Type: EventDeadlineExpired, Node: a.launch.ID, Token: m.token})
 	case runnerStopResult:
+		if fault {
+			return
+		}
 		if m.control != nil && a.handle != nil {
 			a.handle.mu.Lock()
 			terminal := a.handle.terminated

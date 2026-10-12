@@ -28,16 +28,28 @@ type runnerHandle struct {
 }
 type runnerStopCall struct{ once sync.Once }
 
-func (r *Runner) dispatchStopCommand(cmd Command) {
+func (r *Runner) dispatchStopCommand(cmd Command, sequence uint64) {
 	a := r.attempts[cmd.Token]
-	if a == nil || a.retired {
+	if a == nil || a.retired || a.stopCommandSequence == sequence {
 		return
 	}
 	a.cancel()
-	if a.handle == nil {
-		a.stopWaiting = true
+	a.stopCommandSequence = sequence
+	a.stopWaiting = true
+	if a.handle != nil {
+		r.dispatchWaitingStop(a)
+	}
+}
+
+// Dispatch identity belongs to the authorized command, not the handle's
+// historical Stop slot. Only an initial containment Stop can be adopted.
+func (r *Runner) dispatchWaitingStop(a *runnerAttempt) {
+	if !a.stopWaiting || a.handle == nil || a.stopDispatchedSequence == a.stopCommandSequence {
 		return
 	}
+	a.stopWaiting = false
+	a.stopDispatchedSequence = a.stopCommandSequence
+
 	r.startOrQueueStop(a.handle)
 }
 

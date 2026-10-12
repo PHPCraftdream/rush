@@ -26,6 +26,36 @@ changing them. Slice ownership and prefixes remain Core `coreTest*`, Runtime
 `runtimeTest*`, Process `processTest*`, Laboratory `labTest*`; acceptance uses
 `acceptanceTest*`. Do not independently redesign the API or add Rush dependencies.
 
+## Optional transition commit hook
+
+`RunnerConfig.CommitHook func(context.Context, Transition) error` requires a
+positive `CommitTimeout`. Nil preserves the autonomous runtime. Hooks execute
+serially in transition order; Starts/timers, replies, views, feed, notices and
+Done publish only after success. Cancellation, Stop and disposal containment
+do not wait for the hook.
+
+The Engine owner accepts speculative state ahead of durable publication and
+never calls or waits for the hook. One serial committer receives immutable FIFO
+items captured at acceptance (records, views, snapshots, summaries and reply
+fences); it never reads Engine state. The owner publishes successful items in
+order and dispatches their authorized Starts, while cancellation, timers,
+termination reports and physical Stop slots continue independently. Noncontainment
+public acceptance pauses at 1024 outstanding publication items; Stop, host
+closing and executor lifetime messages remain serviceable. View/Snapshot/feed
+and Wait expose only the published projection; Add/Stop/Inject/Release eligibility
+uses speculative state. Recordless replies are fenced behind earlier items.
+Nil hooks retain the original inline path.
+
+Error, panic or timeout faults the Runner: `Faulted()` closes and `FaultErr()`
+wraps `ErrCommitFailed`. No further Engine event or Final is accepted. Public
+calls and unpublished Wait return the fault; previously published summaries
+remain valid. Events drains retained records then returns the fault, with
+Final zero. Close waits for containment termination/disposal, bounded by its
+caller context, and always returns the fault. Unpublished Done stays open.
+A timed-out hook may still execute: the owner must not reopen the writer or
+retry it and must retain ownership until process exit. Production persistence
+and process-exit wiring are intentionally not included here.
+
 ## Command interface
 
 Actual syntax from `cmd/batchlab/main.go`:
