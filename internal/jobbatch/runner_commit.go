@@ -26,6 +26,18 @@ type runnerCommitResult struct {
 func (r *Runner) Faulted() <-chan struct{} { return r.faulted }
 func (r *Runner) FaultErr() error          { r.mu.Lock(); defer r.mu.Unlock(); return r.faultErr }
 
+// resultAfterFault arbitrates uncommitted public results against a recorded
+// fatal outcome. Published summaries, retained records and written reply slots
+// are checked by their callers before using this helper.
+func (r *Runner) resultAfterFault(err error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.faultErr != nil {
+		return r.faultErr
+	}
+	return err
+}
+
 // The committer owns no Engine or execution bookkeeping. It returns ordered
 // acknowledgements to the owner, which alone publishes and dispatches effects.
 func (r *Runner) committer() {

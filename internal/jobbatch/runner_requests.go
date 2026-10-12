@@ -19,7 +19,7 @@ func (r *Runner) Submit(ctx context.Context, req SubmitRequest) (*Batch, error) 
 		return nil, err
 	}
 	if r.isClosed() {
-		return nil, ErrClosed
+		return nil, r.resultAfterFault(ErrClosed)
 	}
 	if req.Spec.Batch == nil || req.Spec.Task != nil {
 		if r.commitHook != nil {
@@ -43,7 +43,7 @@ func (r *Runner) Add(ctx context.Context, req AddRequest) ([]ID, error) {
 		return nil, err
 	}
 	if r.isClosed() {
-		return nil, ErrClosed
+		return nil, r.resultAfterFault(ErrClosed)
 	}
 	items, err := r.cloneSpecs(req.Items)
 	if err != nil {
@@ -85,6 +85,12 @@ func (r *Runner) Output(ctx context.Context, id ID, cursor uint64) (chunk Output
 	}
 	defer a.handle.unpin()
 	defer func() {
+		if fault := r.resultAfterFault(nil); fault != nil {
+			err = fault
+			chunk = OutputChunk{}
+		}
+	}()
+	defer func() {
 		if recover() != nil {
 			chunk = OutputChunk{}
 			err = ErrExecutorPanic
@@ -100,6 +106,7 @@ func (r *Runner) Inject(ctx context.Context, id ID, msg json.RawMessage) (err er
 		return a.err
 	}
 	defer a.handle.unpin()
+	defer func() { err = r.resultAfterFault(err) }()
 	defer func() {
 		if recover() != nil {
 			err = ErrExecutorPanic
@@ -367,7 +374,7 @@ func (r *Runner) Close(ctx context.Context) error {
 				if errors.Is(err, ErrCommitFailed) {
 					return r.closeFault(ctx)
 				}
-				return err
+				return r.resultAfterFault(err)
 			}
 			r.feed.mu.Unlock()
 		}
@@ -376,18 +383,18 @@ func (r *Runner) Close(ctx context.Context) error {
 		failures, pending, changed := r.cleanupStatus()
 		if !pending {
 			if len(failures) > 0 {
-				return &DisposeError{Failures: failures}
+				return r.resultAfterFault(&DisposeError{Failures: failures})
 			}
-			return nil
+			return r.resultAfterFault(nil)
 		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
 			failures, _, _ = r.cleanupStatus()
 			if len(failures) == 0 {
-				return nil
+				return r.resultAfterFault(nil)
 			}
-			return &DisposeError{Failures: failures}
+			return r.resultAfterFault(&DisposeError{Failures: failures})
 		}
 	}
 }

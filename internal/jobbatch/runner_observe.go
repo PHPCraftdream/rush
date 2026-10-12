@@ -126,7 +126,7 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 		if cursor < oldest {
 			page.Next = oldest
 			f.mu.Unlock()
-			return page, ErrGap
+			return page, r.resultAfterFault(ErrGap)
 		}
 		if cursor <= f.head {
 			for _, rec := range f.records {
@@ -141,7 +141,7 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 		if f.final != 0 {
 			page.Next = f.final + 1
 			f.mu.Unlock()
-			return page, ErrClosed
+			return page, r.resultAfterFault(ErrClosed)
 		}
 		if err := r.FaultErr(); err != nil {
 			page.Next = f.head + 1
@@ -150,14 +150,29 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 		}
 		changed := f.changed
 		f.mu.Unlock()
+		if r.requestHooks != nil && r.requestHooks.beforeEventsContext != nil {
+			r.requestHooks.beforeEventsContext()
+		}
 		// Future cursors wait for producer progress as well; no polling or skipping.
 		if err := ctx.Err(); err != nil {
-			return page, err
+			f.mu.Lock()
+			progress := cursor <= f.head
+			f.mu.Unlock()
+			if progress && r.FaultErr() != nil {
+				continue
+			}
+			return page, r.resultAfterFault(err)
 		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			return page, ctx.Err()
+			f.mu.Lock()
+			progress := cursor <= f.head
+			f.mu.Unlock()
+			if progress && r.FaultErr() != nil {
+				continue
+			}
+			return page, r.resultAfterFault(ctx.Err())
 		}
 	}
 }

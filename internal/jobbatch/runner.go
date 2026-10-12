@@ -76,6 +76,8 @@ func NewRunner(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
 }
 
 type runnerRequestHooks struct {
+	beforeRequestSubmit     func()
+	beforeEventsContext     func()
 	queued, accepted, reply func(*runnerRequest)
 	// Instance-local scheduling seams; copied before goroutine publication.
 	timeoutCancel         func(context.CancelFunc)
@@ -166,7 +168,7 @@ func (b *Batch) Wait(ctx context.Context) (Summary, error) {
 		case <-b.done:
 			return b.summary, nil
 		default:
-			return Summary{}, ctx.Err()
+			return Summary{}, b.runner.resultAfterFault(ctx.Err())
 		}
 	}
 }
@@ -430,12 +432,15 @@ func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
 	if err := r.FaultErr(); err != nil {
 		return runnerAnswer{err: err}
 	}
+	if r.requestHooks != nil && r.requestHooks.beforeRequestSubmit != nil {
+		r.requestHooks.beforeRequestSubmit()
+	}
 	q.reply = make(chan runnerAnswer, 1)
 	if r.isClosed() {
 		return r.afterClosed(q)
 	}
 	if err := ctx.Err(); err != nil {
-		return runnerAnswer{err: err}
+		return runnerAnswer{err: r.resultAfterFault(err)}
 	}
 	requests := r.requests
 	if r.commitHook != nil && q.event.Type == EventStopRequested {
@@ -445,7 +450,7 @@ func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
 	case requests <- q:
 	case <-ctx.Done():
 		q.state.CompareAndSwap(runnerQueued, runnerAbandoned)
-		return runnerAnswer{err: ctx.Err()}
+		return runnerAnswer{err: r.resultAfterFault(ctx.Err())}
 	case <-r.faulted:
 		return runnerAnswer{err: r.FaultErr()}
 	case <-r.exited:
@@ -463,7 +468,7 @@ func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
 		return a
 	case <-ctx.Done():
 		if q.state.CompareAndSwap(runnerQueued, runnerAbandoned) {
-			return runnerAnswer{err: ctx.Err()}
+			return runnerAnswer{err: r.resultAfterFault(ctx.Err())}
 		}
 		return <-q.reply
 	case <-r.exited:
@@ -474,7 +479,12 @@ func (r *Runner) request(ctx context.Context, q *runnerRequest) runnerAnswer {
 	}
 }
 
-func (r *Runner) afterClosed(q *runnerRequest) runnerAnswer {
+func (r *Runner) afterClosed(q *runnerRequest) (answer runnerAnswer) {
+	defer func() {
+		if err := r.resultAfterFault(answer.err); err != nil {
+			answer = runnerAnswer{err: err}
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if q.op != runnerRequestView && q.op != runnerRequestSnapshot {
