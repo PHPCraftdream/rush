@@ -399,6 +399,16 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 		return
 	}
 	p.h.Broadcast(EventSessionLiveWork, snap)
+	// R15a: the same coalescing window also carries the structured
+	// batch-node snapshot (handlers_batch.go). Additive only: flag off this
+	// is a no-op and the live-work push above is unchanged. No new
+	// goroutines, no new channels -- the read happens inline in this
+	// already-off-hot-path worker.
+	if batchRuntimeEnabled() {
+		if bsnap := buildBatchWorkSnapshot(p.ctx, p.a, sessionID); bsnap.SessionID != "" {
+			p.h.Broadcast(EventSessionBatchWork, bsnap)
+		}
+	}
 	// Stage 5b: the same coalescing window also carries the wake-schedule
 	// snapshot — a schedule's create/fire/cancel always arrives as a notice
 	// or tool message, so the existing marks cover it with no extra
