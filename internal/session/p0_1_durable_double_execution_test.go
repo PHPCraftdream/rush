@@ -68,7 +68,16 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 	c.mu.Unlock()
 
 	if allow {
-		close(ch)
+		// A second execution (the bug this test guards, or a lease stolen by
+		// a >1s scheduling stall) must fail the executions==1 assertion, not
+		// panic the whole package run with a double close.
+		c.mu.Lock()
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+		c.mu.Unlock()
 	}
 
 	var result any = "executed"
