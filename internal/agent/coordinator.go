@@ -262,6 +262,9 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	// notifyWG joins the async-completion wake goroutines, so a caller (a
+	// test, a shutdown) can wait for their last store access.
+	notifyWG sync.WaitGroup
 	// asyncJobs is the single in-memory work ledger: plain async jobs
 	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
 	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.

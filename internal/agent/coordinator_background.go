@@ -76,7 +76,9 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	// influence either.
 	// Supervision progress is recorded when the notice moves into history
 	// (agent_notice_pull.go), not here.
+	c.notifyWG.Add(1)
 	go func() {
+		defer c.notifyWG.Done()
 		// Re-check trigger (ii)/(iv): this goroutine IS the delivery that
 		// the completed job woke -- either directly (mailbox was idle) or
 		// merged into an already-live/queued generation (mailbox was busy).

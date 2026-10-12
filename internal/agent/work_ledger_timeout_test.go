@@ -191,6 +191,9 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 	case <-time.After(2 * time.Second):
 		t.Fatal("notifyAsyncCompletion's wake never reached agent.Run")
 	}
+	// The wake goroutine still touches the store after Run returns; join it
+	// before the temp dir (rush.db) is removed.
+	coord.notifyWG.Wait()
 }
 
 // TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind: handleTimeout's
