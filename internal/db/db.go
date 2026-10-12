@@ -93,6 +93,27 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.batchOutboxWakeZeroStmt, err = db.PrepareContext(ctx, batchOutboxWakeZero); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchOutboxWakeZero: %w", err)
 	}
+	if q.batchRecoveryCloseControlsStmt, err = db.PrepareContext(ctx, batchRecoveryCloseControls); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryCloseControls: %w", err)
+	}
+	if q.batchRecoveryElectStmt, err = db.PrepareContext(ctx, batchRecoveryElect); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryElect: %w", err)
+	}
+	if q.batchRecoveryInterruptStmt, err = db.PrepareContext(ctx, batchRecoveryInterrupt); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryInterrupt: %w", err)
+	}
+	if q.batchRecoveryNoticeStmt, err = db.PrepareContext(ctx, batchRecoveryNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryNotice: %w", err)
+	}
+	if q.batchRecoveryRootsStmt, err = db.PrepareContext(ctx, batchRecoveryRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryRoots: %w", err)
+	}
+	if q.batchRetentionRootsStmt, err = db.PrepareContext(ctx, batchRetentionRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRetentionRoots: %w", err)
+	}
+	if q.batchRetentionWriterStmt, err = db.PrepareContext(ctx, batchRetentionWriter); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRetentionWriter: %w", err)
+	}
 	if q.cancelAllWakeSchedulesForOwnerStmt, err = db.PrepareContext(ctx, cancelAllWakeSchedulesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query CancelAllWakeSchedulesForOwner: %w", err)
 	}
@@ -760,6 +781,41 @@ func (q *Queries) Close() error {
 	if q.batchOutboxWakeZeroStmt != nil {
 		if cerr := q.batchOutboxWakeZeroStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing batchOutboxWakeZeroStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryCloseControlsStmt != nil {
+		if cerr := q.batchRecoveryCloseControlsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryCloseControlsStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryElectStmt != nil {
+		if cerr := q.batchRecoveryElectStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryElectStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryInterruptStmt != nil {
+		if cerr := q.batchRecoveryInterruptStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryInterruptStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryNoticeStmt != nil {
+		if cerr := q.batchRecoveryNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryNoticeStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryRootsStmt != nil {
+		if cerr := q.batchRecoveryRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRetentionRootsStmt != nil {
+		if cerr := q.batchRetentionRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRetentionRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRetentionWriterStmt != nil {
+		if cerr := q.batchRetentionWriterStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRetentionWriterStmt: %w", cerr)
 		}
 	}
 	if q.cancelAllWakeSchedulesForOwnerStmt != nil {
@@ -1739,6 +1795,13 @@ type Queries struct {
 	batchOutboxReactNodesStmt                            *sql.Stmt
 	batchOutboxSetAnnouncementMessageStmt                *sql.Stmt
 	batchOutboxWakeZeroStmt                              *sql.Stmt
+	batchRecoveryCloseControlsStmt                       *sql.Stmt
+	batchRecoveryElectStmt                               *sql.Stmt
+	batchRecoveryInterruptStmt                           *sql.Stmt
+	batchRecoveryNoticeStmt                              *sql.Stmt
+	batchRecoveryRootsStmt                               *sql.Stmt
+	batchRetentionRootsStmt                              *sql.Stmt
+	batchRetentionWriterStmt                             *sql.Stmt
 	cancelAllWakeSchedulesForOwnerStmt                   *sql.Stmt
 	cancelWakeScheduleStmt                               *sql.Stmt
 	claimAsyncJobStmt                                    *sql.Stmt
@@ -1951,6 +2014,13 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		batchOutboxReactNodesStmt:                            q.batchOutboxReactNodesStmt,
 		batchOutboxSetAnnouncementMessageStmt:                q.batchOutboxSetAnnouncementMessageStmt,
 		batchOutboxWakeZeroStmt:                              q.batchOutboxWakeZeroStmt,
+		batchRecoveryCloseControlsStmt:                       q.batchRecoveryCloseControlsStmt,
+		batchRecoveryElectStmt:                               q.batchRecoveryElectStmt,
+		batchRecoveryInterruptStmt:                           q.batchRecoveryInterruptStmt,
+		batchRecoveryNoticeStmt:                              q.batchRecoveryNoticeStmt,
+		batchRecoveryRootsStmt:                               q.batchRecoveryRootsStmt,
+		batchRetentionRootsStmt:                              q.batchRetentionRootsStmt,
+		batchRetentionWriterStmt:                             q.batchRetentionWriterStmt,
 		cancelAllWakeSchedulesForOwnerStmt:                   q.cancelAllWakeSchedulesForOwnerStmt,
 		cancelWakeScheduleStmt:                               q.cancelWakeScheduleStmt,
 		claimAsyncJobStmt:                                    q.claimAsyncJobStmt,

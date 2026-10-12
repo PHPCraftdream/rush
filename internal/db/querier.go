@@ -93,6 +93,19 @@ type Querier interface {
 	BatchOutboxReactNodes(ctx context.Context, arg BatchOutboxReactNodesParams) (int64, error)
 	BatchOutboxSetAnnouncementMessage(ctx context.Context, arg BatchOutboxSetAnnouncementMessageParams) (int64, error)
 	BatchOutboxWakeZero(ctx context.Context, arg BatchOutboxWakeZeroParams) (int64, error)
+	BatchRecoveryCloseControls(ctx context.Context, arg BatchRecoveryCloseControlsParams) (int64, error)
+	// Obtain the writer BEFORE snapshot reads; independent stores serialize here.
+	BatchRecoveryElect(ctx context.Context, arg BatchRecoveryElectParams) (BatchNode, error)
+	// Preserve latched causes, terminal outcomes and all existing outbox columns.
+	BatchRecoveryInterrupt(ctx context.Context, arg BatchRecoveryInterruptParams) (int64, error)
+	// No descendant cascade and no replacement of a preselected root notice.
+	BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoticeParams) (int64, error)
+	// Include terminal ancestors with live descendants and terminal unannounced leaks.
+	BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error)
+	// Count and purge both consume this exact whole-root predicate.
+	BatchRetentionRoots(ctx context.Context, cutoff int64) ([]BatchNode, error)
+	// Acquire write ownership before evaluating retention; no history is deleted.
+	BatchRetentionWriter(ctx context.Context) error
 	// `sessions reset` (R8A-3 sibling): no active schedule may survive a wiped
 	// history. Done/cancelled rows are history and stay.
 	CancelAllWakeSchedulesForOwner(ctx context.Context, arg CancelAllWakeSchedulesForOwnerParams) (int64, error)
