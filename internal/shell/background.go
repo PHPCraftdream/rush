@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"slices"
@@ -470,6 +471,11 @@ func (m *BackgroundShellManager) startWithRetention(ctx context.Context, session
 	})
 
 	shellCtx, cancel := context.WithCancel(ctx)
+	if retained {
+		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+			stops.cancel = cancel
+		}
+	}
 
 	bgShell := &BackgroundShell{
 		ID:          id,
@@ -505,7 +511,14 @@ func (m *BackgroundShellManager) startWithRetention(ctx context.Context, session
 			}
 		}()
 
-		err := shell.ExecStream(shellCtx, command, bgShell.stdout, bgShell.stderr)
+		var stdout, stderr io.Writer = bgShell.stdout, bgShell.stderr
+		if retained {
+			if stops, ok := shellCtx.Value(retainedStopKey{}).(*retainedStops); ok {
+				stdout = retainedWriter{bgShell.stdout, stops.output}
+				stderr = retainedWriter{bgShell.stderr, stops.output}
+			}
+		}
+		err := shell.ExecStream(shellCtx, command, stdout, stderr)
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())

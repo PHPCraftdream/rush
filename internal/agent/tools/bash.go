@@ -196,6 +196,11 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 			}
 
+			if leaf, ok := ctx.Value(shellLeafKey{}).(ShellLeaf); ok {
+				params.RunInBackground = false
+				return runBashLeaf(ctx, leaf, bgManager, sessionID, execWorkingDir, params)
+			}
+
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
@@ -349,30 +354,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				// Don't call Kill() as it cancels the context and corrupts the exit code
 				bgManager.RemoveOwned(sessionID, bgShell.ID)
 
-				interrupted := shell.IsInterrupt(execErr)
-				exitCode := shell.ExitCode(execErr)
-				if exitCode == 0 && !interrupted && execErr != nil {
-					return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
-				}
-
-				stdout = formatOutput(stdout, stderr, execErr)
-				if isSecurityBlockError(execErr) {
-					return fantasy.NewTextErrorResponse(stdout), nil
-				}
-
-				metadata := BashResponseMetadata{
-					StartTime:        startTime.UnixMilli(),
-					EndTime:          time.Now().UnixMilli(),
-					Output:           stdout,
-					Description:      params.Description,
-					Background:       params.RunInBackground,
-					WorkingDirectory: bgShell.WorkingDir,
-				}
-				if stdout == "" {
-					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
-				}
-				stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", normalizeWorkingDir(bgShell.WorkingDir))
-				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stdout), metadata), nil
+				return bashForegroundResponse(startTime, bgShell.ID, bgShell.WorkingDir, params, stdout, stderr, execErr)
 			}
 
 			// Still running - keep as background job

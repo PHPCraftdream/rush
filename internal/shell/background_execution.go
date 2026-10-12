@@ -21,6 +21,7 @@ type BackgroundExecution struct {
 	mu       sync.RWMutex
 	disposed bool
 	stopSlot chan struct{}
+	physical *retainedStops
 }
 
 // StartRetainedOwned starts opt-in retained execution. Legacy launches keep
@@ -29,11 +30,15 @@ func (m *BackgroundShellManager) StartRetainedOwned(ctx context.Context, session
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID is required for background shell ownership")
 	}
+	physical := &retainedStops{entries: make(map[*retainedProcess]struct{}), output: newRetainedOutput(maxStreamBufferBytes)}
+	ctx = context.WithValue(ctx, retainedStopKey{}, physical)
 	bs, err := m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, true)
 	if err != nil {
 		return nil, err
 	}
-	return newBackgroundExecution(bs), nil
+	execution := newBackgroundExecution(bs)
+	execution.physical = physical
+	return execution, nil
 }
 
 func newBackgroundExecution(bs *BackgroundShell) *BackgroundExecution {
@@ -46,14 +51,15 @@ func (e *BackgroundExecution) ID() string { return e.shell.ID }
 // Done is the original ExecStream completion channel; control never closes it.
 func (e *BackgroundExecution) Done() <-chan struct{} { return e.shell.done }
 
-// Stop requests cancellation and waits for completion within ctx after cancel
-// returns. Context also bounds acquisition of the serialized dispatch slot.
-// It cannot interrupt a cancel function that itself blocks. A timeout
-// leaves Done open and permits another serialized Stop. The existing cancel
-// function dispatches process cancellation once via the execution context;
-// repeated calls do not launch overlapping physical cancellation callbacks.
-// The process handlers do not expose kill errors through context.CancelFunc.
+// Stop acknowledges physical kill dispatch for retained launches, without
+// waiting for Done. Physical errors are returned separately from control-context
+// errors while acquiring the dispatch slot. A dispatched kill runs to actual
+// return; it is not abandoned at a control deadline. Hand-built legacy handles
+// retain their cancellation-and-wait behavior.
 func (e *BackgroundExecution) Stop(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case e.stopSlot <- struct{}{}:
 		defer func() { <-e.stopSlot }()
@@ -67,6 +73,11 @@ func (e *BackgroundExecution) Stop(ctx context.Context) error {
 	}
 	if e.shell.IsDone() {
 		return nil
+	}
+	if e.physical != nil {
+		// Serialize physical kills with cancellation callbacks before cancelling
+		// the interpreter. Neither acknowledgment nor error closes Done.
+		return e.physical.stop()
 	}
 	e.shell.cancel()
 	select {
@@ -132,6 +143,11 @@ func (e *BackgroundExecution) Dispose(ctx context.Context) error {
 		return ErrExecutionNotDone
 	}
 	e.disposed = true
+	if e.physical != nil && e.physical.output != nil {
+		e.physical.output.mu.Lock()
+		e.physical.output.data = nil
+		e.physical.output.mu.Unlock()
+	}
 	e.shell.retentionMu.Lock()
 	e.shell.retained = false
 	retentionTimer := e.shell.retentionTimer
