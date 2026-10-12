@@ -165,7 +165,9 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 
 func killRetainedProcess(pid int) error {
 	err := syscall.Kill(-pid, syscall.SIGKILL)
-	if err == syscall.ESRCH {
+	// ESRCH: the group is gone. EPERM: macOS refuses to signal a group whose
+	// members have all exited but are not reaped yet (the group is ours).
+	if err == syscall.ESRCH || err == syscall.EPERM {
 		return nil
 	}
 	return err
