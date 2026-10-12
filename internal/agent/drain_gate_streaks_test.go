@@ -42,19 +42,19 @@ func (f *attemptFixture) markerTexts(ctx context.Context) []string {
 // are made, nothing closes and this test goes red.
 func TestDrainGate_PullFailureDoesNotShortenThePaidBudget(t *testing.T) {
 	ctx := context.Background()
-	const retry = 100 * time.Millisecond
+	const retry = time.Hour
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "gate-mixed-streak", attemptFixtureOpts{handler: emptyReplyResponse})
+	f := newAttemptFixture(t, "gate-mixed-streak", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-1", false)
 	f.exec(ctx, blockPullTrigger)
 
 	require.NoError(t, f.wake(ctx, true)) // a no-turn Drain: the pull fails
 	require.Zero(t, f.requests.Load())
 	f.exec(ctx, `DROP TRIGGER fx_block_pull`)
-
 	for want := int32(1); want <= 3; want++ {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.elapseDrainPause(ctx)
 		f.pass(ctx)
+		f.coord.afterRelease(f.sessID)
 		require.Equal(t, want, f.requests.Load(), "paid attempt %d must be allowed", want)
 	}
 	row := f.row(ctx, "call-1")

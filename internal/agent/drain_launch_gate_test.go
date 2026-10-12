@@ -45,6 +45,26 @@ func shrinkDrainRetry(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { drainRetryAfterNS.Store(old) })
 }
 
+// elapseDrainPause checks both sides of the exact recorded pacing boundary
+// with the arbiter's input clock, then expires only RetryAt for the real pass.
+// Streaks and hint state survive; resetting the gate would erase the budget.
+func (f *attemptFixture) elapseDrainPause(ctx context.Context) {
+	f.t.Helper()
+	facts, err := f.coord.readTurnFacts(ctx, f.sessID, siteTick)
+	require.NoError(f.t, err)
+	require.True(f.t, facts.Gate.Paced)
+	facts.Now = facts.Gate.RetryAt.Add(-time.Nanosecond)
+	v, shut := gateShut(facts)
+	require.True(f.t, shut)
+	require.Equal(f.t, VDefer, v.Kind)
+	facts.Now = facts.Gate.RetryAt
+	_, shut = gateShut(facts)
+	require.False(f.t, shut, "the pause ends at RetryAt, not later")
+	f.coord.arb.mu.Lock()
+	f.coord.arb.stateLocked(f.sessID).gate.RetryAt = time.Unix(1, 0)
+	f.coord.arb.mu.Unlock()
+}
+
 // countingAgent counts the Run calls (Drain launches) a session's driver gets.
 type countingAgent struct {
 	SessionAgent
@@ -71,19 +91,20 @@ func (f *attemptFixture) countRuns() *countingAgent {
 // first attempt exceeds 1 and this test goes red.
 func TestDrainAttempt_EmptyStreamPacedThenSettledAtK(t *testing.T) {
 	ctx := context.Background()
-	const retry = 300 * time.Millisecond
+	const retry = time.Hour
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "attempt-paced", attemptFixtureOpts{handler: emptyReplyResponse})
+	f := newAttemptFixture(t, "attempt-paced", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-1", false)
 
 	require.NoError(t, f.wake(ctx, true))
 	require.EqualValues(t, 1, f.row(ctx, "call-1").WakeAttempts)
-	time.Sleep(retry / 2)
+	f.coord.afterRelease(f.sessID)
 	require.EqualValues(t, 1, f.requests.Load(), "the release of an unreacted attempt must not relaunch a paid turn")
 
 	for want := int32(2); want <= 3; want++ {
-		time.Sleep(retry)
+		f.elapseDrainPause(ctx)
 		f.pass(ctx)
+		f.coord.afterRelease(f.sessID)
 		require.Equal(t, want, f.requests.Load(), "the gate reopens for one attempt per pause")
 	}
 	row := f.row(ctx, "call-1")
@@ -92,7 +113,6 @@ func TestDrainAttempt_EmptyStreamPacedThenSettledAtK(t *testing.T) {
 	require.EqualValues(t, 1, row.ReactedFailed)
 	require.Equal(t, 1, f.markers(ctx))
 
-	time.Sleep(retry)
 	f.pass(ctx)
 	require.EqualValues(t, 3, f.requests.Load(), "a closed debt launches nothing")
 }
