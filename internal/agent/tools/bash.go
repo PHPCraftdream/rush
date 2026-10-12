@@ -201,7 +201,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				startTime := time.Now()
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
+				bgShell, err := startBashShell(bgManager, sessionID, execWorkingDir, params)
 				if err != nil {
 					// Start's only failure mode today is the MaxBackgroundJobs
 					// cap (internal/shell/background.go). That cap is session
@@ -274,7 +274,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 
 			// Start with detached context so it can survive if moved to background
 			bgManager.Cleanup()
-			bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
+			bgShell, err := startBashShell(bgManager, sessionID, execWorkingDir, params)
 			if err != nil {
 				// Same MaxBackgroundJobs cap as the explicit-background
 				// branch above, here hit by a plain foreground command: the
@@ -393,6 +393,18 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 		},
 	)
+}
+
+// startBashShell is the legacy detached launch, after guards and permission.
+func startBashShell(manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundShell, error) {
+	return manager.StartOwned(context.Background(), sessionID, workingDir, blockFuncs(), params.Command, params.Description)
+}
+
+// startRetainedBashShell is an inert lifetime seam for a future policy-approved
+// caller. It does not perform policy checks or activate batch ingress. The
+// caller must use the same guards and permission boundary as NewBashTool.
+func startRetainedBashShell(ctx context.Context, manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundExecution, error) {
+	return manager.StartRetainedOwned(ctx, sessionID, workingDir, blockFuncs(), params.Command, params.Description)
 }
 
 func isSecurityBlockError(err error) bool {

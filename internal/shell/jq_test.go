@@ -133,6 +133,10 @@ func TestJQ_CtxCancel_MidReadAll(t *testing.T) {
 		readN:      make(chan struct{}),
 	}
 
+	// Captured before the reader goroutine starts: Read nils the field after
+	// closing it, so the test must never touch reader.readN afterwards.
+	readN := reader.readN
+
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -145,7 +149,7 @@ func TestJQ_CtxCancel_MidReadAll(t *testing.T) {
 
 	// Cancel at the known mid-stream point.
 	select {
-	case <-reader.readN:
+	case <-readN:
 	case <-time.After(10 * time.Second):
 		t.Fatal("reader never served its third chunk; the test harness is stuck")
 	}

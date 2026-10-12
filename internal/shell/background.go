@@ -304,6 +304,7 @@ type BackgroundShell struct {
 
 	// retentionMu serializes attached retention, detached callback release,
 	// callback registration/completion, and the detached transition.
+	retained             bool
 	retentionMu          sync.Mutex
 	retentionTimer       *time.Timer
 	detachedReleaseTimer *time.Timer
@@ -426,6 +427,10 @@ func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, work
 }
 
 func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, false)
+}
+
+func (m *BackgroundShellManager) startWithRetention(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string, retained bool) (*BackgroundShell, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
 	if m.closed {
@@ -479,6 +484,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		cancel:      cancel,
 		stdout:      newBoundedBuffer(maxStreamBufferBytes),
 		stderr:      newBoundedBuffer(maxStreamBufferBytes),
+		retained:    retained,
 		done:        make(chan struct{}),
 	}
 

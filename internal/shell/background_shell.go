@@ -47,8 +47,15 @@ func (bs *BackgroundShell) snapshotOutput() (stdout string, stderr string) {
 // Automatically scheduled via time.AfterFunc from the job's completion
 // goroutine (Start) after bufferRetention, and also reachable from Cleanup
 // when a subsequent bash task triggers it — whichever fires first performs
-// the release, the second is a no-op.
+// the release, the second is a no-op. Opt-in retained execution skips every
+// automatic release and installs no release timers; Dispose gives up that
+// ownership before performing the one-shot release.
 func (bs *BackgroundShell) releaseBuffers() {
+	bs.retentionMu.Lock()
+	defer bs.retentionMu.Unlock()
+	if bs.retained {
+		return
+	}
 	// sync.Once makes concurrent timer, cleanup, and removal callers wait for
 	// the first release to finish instead of merely observing a flag while the
 	// buffers are still being reset.
@@ -64,6 +71,10 @@ func (bs *BackgroundShell) releaseBuffers() {
 // immediately instead of installing a timer for a detached job.
 func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 	bs.retentionMu.Lock()
+	if bs.retained {
+		bs.retentionMu.Unlock()
+		return
+	}
 	if bs.detached {
 		// A callback registered before completion owns the final output until
 		// it has had a chance to read it. A tracked detached timer performs the
@@ -104,7 +115,7 @@ func (bs *BackgroundShell) armBufferReleaseTimer(retention time.Duration) {
 // consume final output after detachment. Exactly one tracked timer may exist.
 // Caller must hold retentionMu.
 func (bs *BackgroundShell) armDetachedReleaseTimerLocked() {
-	if bs.detachedReleaseTimer != nil || bs.bufReleased.Load() {
+	if bs.retained || bs.detachedReleaseTimer != nil || bs.bufReleased.Load() {
 		return
 	}
 	bs.detachedReleaseTimer = time.AfterFunc(detachedCallbackReleaseGrace, func() {
