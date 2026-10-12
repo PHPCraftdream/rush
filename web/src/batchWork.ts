@@ -57,11 +57,31 @@ export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
 
 /** Merges incoming incomplete roots into the previous roots by rootID:
  * incoming roots overwrite their own ID, previously live roots without an
- * incoming counterpart are kept. */
+ * incoming counterpart are kept. Within a shared root, nodes merge by
+ * nodeID -- only a complete read can remove a previously live node. */
 function mergeRoots(prev: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWorkRoot[] {
-  const byID = new Map(prev.map((r) => [r.rootID, r]));
-  for (const r of incoming) byID.set(r.rootID, r);
-  return [...byID.values()];
+  const out: BatchWorkRoot[] = [];
+  const seen = new Set<string>();
+  const prevByID = new Map(prev.map((r) => [r.rootID, r]));
+  const incomingByID = new Map(incoming.map((r) => [r.rootID, r]));
+  for (const p of prev) {
+    const inc = incomingByID.get(p.rootID);
+    if (!inc) {
+      // Root only in prev: keep as-is.
+      out.push(p);
+      continue;
+    }
+    seen.add(inc.rootID);
+    const nodes = [...inc.nodes];
+    for (const pn of p.nodes) {
+      if (!inc.nodes.some((n) => n.nodeID === pn.nodeID)) nodes.push(pn);
+    }
+    out.push({ ...inc, nodes });
+  }
+  for (const r of incoming) {
+    if (!seen.has(r.rootID)) out.push(r);
+  }
+  return out;
 }
 
 /** Merge selector for the live-work panel: the old flat rows (commands +

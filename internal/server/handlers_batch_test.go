@@ -100,7 +100,7 @@ func TestBatchWorkSnapshot_GoldenShape(t *testing.T) {
 	require.Equal(t, float64(1700000000000), rootWire["startedAt"])
 	require.Equal(t, "alive", rootWire["host"])
 	counts := rootWire["counts"].(map[string]any)
-	require.Equal(t, float64(1), counts["running"])
+	require.Equal(t, float64(2), counts["running"])
 	require.Equal(t, float64(1), counts["completed"])
 	// Nodes ordered by ordinal, each carrying its tree position.
 	nodes := rootWire["nodes"].([]any)

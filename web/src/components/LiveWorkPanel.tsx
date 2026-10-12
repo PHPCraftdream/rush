@@ -12,14 +12,16 @@ import { TodoList } from "./TodoList";
 import { LiveWorkTabBar, type LiveWorkTabKey } from "./LiveWorkTabBar";
 import { LiveWorkList } from "./LiveWorkList";
 import { WakeScheduleList } from "./WakeScheduleList";
-import { $liveWorkBySession, pickLiveWork, $wakeSchedulesBySession, pickWakeSchedules } from "../store_livework";
+import { $liveWorkBySession, $wakeSchedulesBySession, pickWakeSchedules } from "../store_livework";
+import { $batchWorkBySession, pickMergedLiveWork } from "../batchWork";
 
 export function LiveWorkPanel({ sessionID, todos }: { sessionID: string; todos: Todo[] }) {
   // Read via useStore's OWN return value, not a side-channel .get()
   // call -- see pickLiveWork's doc comment: the React Compiler can't see through
   // the latter and will memoize stale JSX across atom updates it doesn't track.
   const liveWorkMap = useStore($liveWorkBySession);
-  const work = pickLiveWork(liveWorkMap, sessionID);
+  const batchWorkMap = useStore($batchWorkBySession);
+  const work = pickMergedLiveWork(liveWorkMap, batchWorkMap, sessionID);
   const hasCommands = work.commands.length > 0;
   const hasAgents = work.agents.length > 0;
   const schedulesMap = useStore($wakeSchedulesBySession);

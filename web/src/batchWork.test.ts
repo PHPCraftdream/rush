@@ -96,6 +96,36 @@ test("incomplete snapshot merges by rootID and never drops live roots", () => {
   );
 });
 
+test("incomplete snapshot never drops previously live nodes within a root", () => {
+  const r1 = root("r1", "tc1");
+  r1.nodes.push({
+    nodeID: "nB",
+    parentID: "r1",
+    kind: "task",
+    taskKind: "run",
+    toolCallID: "tcB",
+    state: "running",
+    cause: "",
+    ordinal: 1,
+    depth: 1,
+    childSessionID: "",
+    host: "alive",
+    outcomeCode: "",
+    outcomeSummary: "",
+    outcomeRef: "",
+  });
+  applyBatchWorkSnapshot(snap({ roots: [r1] }));
+  // Incomplete snapshot carries only nA (the root node).
+  applyBatchWorkSnapshot(snap({ complete: false, roots: [root("r1", "tc1")] }));
+  const state = pickBatchWork($batchWorkBySession.get(), "s1");
+  const merged = state.lastGood.roots.find((r) => r.rootID === "r1");
+  assert.deepEqual(
+    merged.nodes.map((n) => n.nodeID),
+    ["r1", "nB"],
+  );
+  assert.equal(merged.nodes[0].toolCallID, "tc1");
+});
+
 test("dedupe hides flat rows whose toolCallID a snapshot node covers", () => {
   const live = new Map<string, SessionLiveWork>([
     [
