@@ -19,10 +19,14 @@ type Querier interface {
 	// under a pathological scheduling stall) could Ack a row a DIFFERENT,
 	// currently-live executor now owns, deleting work out from under it.
 	AckRunQueueEntry(ctx context.Context, arg AckRunQueueEntryParams) (string, error)
+	// Engine sequences can skip for a root; advance atomically with all projections.
+	AdvanceBatchRootSequence(ctx context.Context, arg AdvanceBatchRootSequenceParams) (int64, error)
 	// loop: occurrence advances and next_run_at moves to the FIRST schedule
 	// boundary strictly after the fired one that is >= the fire time (computed
 	// by the caller from the SCHEDULED time, never from the fire time -- SCHED-3).
 	AdvanceLoopWakeOccurrence(ctx context.Context, arg AdvanceLoopWakeOccurrenceParams) (int64, error)
+	// Compose with the owning loop's projection; an answer is not termination.
+	AnswerBatchControlRequest(ctx context.Context, arg AnswerBatchControlRequestParams) (int64, error)
 	// B14/A14b fix: a (owner_session_id, tool_call_id) key whose row is already
 	// HISTORY (state != 'running' AND delivery IN ('done', 'void')) is renamed
 	// out of the active key namespace so a REUSED tool_call_id (a provider that
@@ -139,6 +143,8 @@ type Querier interface {
 	// computed over a fraction of it.
 	CountMessagesMissingUsageInRange(ctx context.Context, arg CountMessagesMissingUsageInRangeParams) (int64, error)
 	CountSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error)
+	// The FK binds the request to the node's owner, host and root incarnation.
+	CreateBatchControlRequest(ctx context.Context, arg CreateBatchControlRequestParams) (BatchControlRequest, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	// pending_injects is the cross-process inject queue for `rush sessions
@@ -179,6 +185,8 @@ type Querier interface {
 	// table's own column needs only ONE real parameter and sidesteps the bug
 	// entirely.
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
+	// Same-incarnation parent/root FKs cascade descendants and controls.
+	DeleteBatchSubtree(ctx context.Context, arg DeleteBatchSubtreeParams) (int64, error)
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error
 	// task #595 (P1-1 of the 2026-08-19 static follow-up review): plain
@@ -290,6 +298,9 @@ type Querier interface {
 	// identity of its own, so those keep matching by tool_call_id too.
 	GetAsyncJobByClaimID(ctx context.Context, arg GetAsyncJobByClaimIDParams) (AsyncJob, error)
 	GetAverageResponseTime(ctx context.Context) (int64, error)
+	GetBatchControlRequest(ctx context.Context, arg GetBatchControlRequestParams) (BatchControlRequest, error)
+	GetBatchNode(ctx context.Context, arg GetBatchNodeParams) (BatchNode, error)
+	GetBatchRoot(ctx context.Context, arg GetBatchRootParams) (BatchNode, error)
 	// call_tree_activity.sql: freshest message activity across a session's whole
 	// descendant call tree (root + every sub-agent session reachable via
 	// parent_session_id), in ONE recursive-CTE query per root.
@@ -319,6 +330,8 @@ type Querier interface {
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
 	GetFileRead(ctx context.Context, arg GetFileReadParams) (ReadFile, error)
 	GetHourDayHeatmap(ctx context.Context) ([]GetHourDayHeatmapRow, error)
+	// Hash comparison belongs to the caller; mismatches must not start new work.
+	GetLiveBatchRoot(ctx context.Context, arg GetLiveBatchRootParams) (BatchNode, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	// Get the oldest pending entry for a session (for transactional lease).
 	GetOldestPendingRunQueueEntryForSession(ctx context.Context, sessionID string) (SessionRunQueue, error)
@@ -459,6 +472,8 @@ type Querier interface {
 	ListAsyncHostsWithNoJobs(ctx context.Context) ([]AsyncHost, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
+	ListBatchChildren(ctx context.Context, arg ListBatchChildrenParams) ([]BatchNode, error)
+	ListBatchNodes(ctx context.Context, arg ListBatchNodesParams) ([]BatchNode, error)
 	// task #774: startup recovery (app.recoverInterruptedTurns) used to call
 	// Sessions.ListAll then, for EVERY session, Messages.List (the full message
 	// history) just to find the last assistant message. Measured on a real dev
@@ -525,6 +540,8 @@ type Querier interface {
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
+	ListLiveBatchRootsForHost(ctx context.Context, hostID string) ([]BatchNode, error)
+	ListLiveBatchRootsForOwner(ctx context.Context, ownerSessionID string) ([]BatchNode, error)
 	// rowid is the tie-breaker: created_at is stored in SECONDS, so a single agent
 	// turn produces dozens of rows with an identical created_at. Without a total
 	// order SQLite does not guarantee a stable order among those ties. This is the
@@ -583,6 +600,7 @@ type Querier interface {
 	// Candidates for the drain's pull (doc sec.3.3): announced=1 is required --
 	// an unannounced job never produces a notice (DUR-7).
 	ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
+	ListPendingBatchControlRequests(ctx context.Context, arg ListPendingBatchControlRequestsParams) ([]BatchControlRequest, error)
 	ListPendingInjectsBySession(ctx context.Context, sessionID string) ([]PendingInject, error)
 	// Get all pending outbox entries for recovery (scanned by pump).
 	ListPendingOrphanOutboxEntries(ctx context.Context) ([]OrphanCallOutbox, error)
@@ -697,6 +715,8 @@ type Querier interface {
 	// must not make an active schedule vanish from the timer, and must not send
 	// a linked process to a due moment it can never claim either.
 	NextDueWakeScheduleAt(ctx context.Context, arg NextDueWakeScheduleAtParams) (interface{}, error)
+	// Projects the loop's accepted view, not a competing terminal-state decision.
+	ProjectBatchNode(ctx context.Context, arg ProjectBatchNodeParams) (int64, error)
 	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
 	// caller does this, then INSERTs the history message, then stores
 	// notice_message_id via SetAsyncJobNoticeMessageID, all in the SAME tx. 0
@@ -808,6 +828,10 @@ type Querier interface {
 	// one. Runs in the archive's own transaction, before the fresh claim
 	// inserts, so every notice matching the old text belongs to the old row.
 	RepointSessionNoticesJobToolCallID(ctx context.Context, arg RepointSessionNoticesJobToolCallIDParams) (int64, error)
+	// Reserve every accepted node in one caller-owned transaction before dispatch.
+	ReserveBatchNode(ctx context.Context, arg ReserveBatchNodeParams) (BatchNode, error)
+	// Same transaction as settlement; announcement/history is deferred to R8.
+	SelectBatchNodeNotice(ctx context.Context, arg SelectBatchNodeNoticeParams) (int64, error)
 	// The session_notices half (AsyncReactionDebtExists' second branch; the
 	// table has no announced concept, doc sec.3.2).
 	SessionNoticeDebtOwners(ctx context.Context, ownerIds []string) ([]string, error)
