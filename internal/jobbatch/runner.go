@@ -87,6 +87,7 @@ type runnerRequestHooks struct {
 	beforeMessage         func(runnerMessage)
 	afterMessage          func(runnerMessage)
 	transitioned          func(Transition)
+	closeBeforeFeedLock   func()
 	beforeSettlementApply func()
 	beforeStartedApply    func()
 }

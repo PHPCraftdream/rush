@@ -3,6 +3,7 @@ package jobbatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 )
@@ -354,12 +355,18 @@ func (r *Runner) Close(ctx context.Context) error {
 			if r.FaultErr() != nil {
 				return r.closeFault(ctx)
 			}
+			if r.requestHooks != nil && r.requestHooks.closeBeforeFeedLock != nil {
+				r.requestHooks.closeBeforeFeedLock()
+			}
 			// Final is the public boundary, not the later implicit give-up.
 			// Hold the feed lock so timeout cannot race Final publication.
 			r.feed.mu.Lock()
 			if r.feed.final == 0 {
 				err := r.closeTimeout()
 				r.feed.mu.Unlock()
+				if errors.Is(err, ErrCommitFailed) {
+					return r.closeFault(ctx)
+				}
 				return err
 			}
 			r.feed.mu.Unlock()
@@ -388,6 +395,9 @@ func (r *Runner) Close(ctx context.Context) error {
 func (r *Runner) closeTimeout() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.faultErr != nil {
+		return r.faultErr
+	}
 	var nodes []ID
 	for id, v := range r.views {
 		if !v.State.Terminal() {
