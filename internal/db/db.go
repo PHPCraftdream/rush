@@ -45,6 +45,48 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.asyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, asyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query AsyncReactionDebtExists: %w", err)
 	}
+	if q.batchOutboxAccountNodeStmt, err = db.PrepareContext(ctx, batchOutboxAccountNode); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAccountNode: %w", err)
+	}
+	if q.batchOutboxAccountNoticeStmt, err = db.PrepareContext(ctx, batchOutboxAccountNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAccountNotice: %w", err)
+	}
+	if q.batchOutboxAnnounceStmt, err = db.PrepareContext(ctx, batchOutboxAnnounce); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAnnounce: %w", err)
+	}
+	if q.batchOutboxClearFailureStmt, err = db.PrepareContext(ctx, batchOutboxClearFailure); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxClearFailure: %w", err)
+	}
+	if q.batchOutboxDebtNodesStmt, err = db.PrepareContext(ctx, batchOutboxDebtNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxDebtNodes: %w", err)
+	}
+	if q.batchOutboxDebtNoticesStmt, err = db.PrepareContext(ctx, batchOutboxDebtNotices); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxDebtNotices: %w", err)
+	}
+	if q.batchOutboxFailedNodesStmt, err = db.PrepareContext(ctx, batchOutboxFailedNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxFailedNodes: %w", err)
+	}
+	if q.batchOutboxInlineElectStmt, err = db.PrepareContext(ctx, batchOutboxInlineElect); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxInlineElect: %w", err)
+	}
+	if q.batchOutboxNameMessageStmt, err = db.PrepareContext(ctx, batchOutboxNameMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxNameMessage: %w", err)
+	}
+	if q.batchOutboxPendingStmt, err = db.PrepareContext(ctx, batchOutboxPending); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxPending: %w", err)
+	}
+	if q.batchOutboxPullStmt, err = db.PrepareContext(ctx, batchOutboxPull); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxPull: %w", err)
+	}
+	if q.batchOutboxReactNodesStmt, err = db.PrepareContext(ctx, batchOutboxReactNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxReactNodes: %w", err)
+	}
+	if q.batchOutboxSetAnnouncementMessageStmt, err = db.PrepareContext(ctx, batchOutboxSetAnnouncementMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxSetAnnouncementMessage: %w", err)
+	}
+	if q.batchOutboxWakeZeroStmt, err = db.PrepareContext(ctx, batchOutboxWakeZero); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxWakeZero: %w", err)
+	}
 	if q.cancelAllWakeSchedulesForOwnerStmt, err = db.PrepareContext(ctx, cancelAllWakeSchedulesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query CancelAllWakeSchedulesForOwner: %w", err)
 	}
@@ -632,6 +674,76 @@ func (q *Queries) Close() error {
 	if q.asyncReactionDebtExistsStmt != nil {
 		if cerr := q.asyncReactionDebtExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing asyncReactionDebtExistsStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAccountNodeStmt != nil {
+		if cerr := q.batchOutboxAccountNodeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAccountNodeStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAccountNoticeStmt != nil {
+		if cerr := q.batchOutboxAccountNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAccountNoticeStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAnnounceStmt != nil {
+		if cerr := q.batchOutboxAnnounceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAnnounceStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxClearFailureStmt != nil {
+		if cerr := q.batchOutboxClearFailureStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxClearFailureStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxDebtNodesStmt != nil {
+		if cerr := q.batchOutboxDebtNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxDebtNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxDebtNoticesStmt != nil {
+		if cerr := q.batchOutboxDebtNoticesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxDebtNoticesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxFailedNodesStmt != nil {
+		if cerr := q.batchOutboxFailedNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxFailedNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxInlineElectStmt != nil {
+		if cerr := q.batchOutboxInlineElectStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxInlineElectStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxNameMessageStmt != nil {
+		if cerr := q.batchOutboxNameMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxNameMessageStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxPendingStmt != nil {
+		if cerr := q.batchOutboxPendingStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxPendingStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxPullStmt != nil {
+		if cerr := q.batchOutboxPullStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxPullStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxReactNodesStmt != nil {
+		if cerr := q.batchOutboxReactNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxReactNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxSetAnnouncementMessageStmt != nil {
+		if cerr := q.batchOutboxSetAnnouncementMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxSetAnnouncementMessageStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxWakeZeroStmt != nil {
+		if cerr := q.batchOutboxWakeZeroStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxWakeZeroStmt: %w", cerr)
 		}
 	}
 	if q.cancelAllWakeSchedulesForOwnerStmt != nil {
@@ -1595,6 +1707,20 @@ type Queries struct {
 	archiveAsyncJobToolCallIDStmt                        *sql.Stmt
 	asyncJobDebtOwnersStmt                               *sql.Stmt
 	asyncReactionDebtExistsStmt                          *sql.Stmt
+	batchOutboxAccountNodeStmt                           *sql.Stmt
+	batchOutboxAccountNoticeStmt                         *sql.Stmt
+	batchOutboxAnnounceStmt                              *sql.Stmt
+	batchOutboxClearFailureStmt                          *sql.Stmt
+	batchOutboxDebtNodesStmt                             *sql.Stmt
+	batchOutboxDebtNoticesStmt                           *sql.Stmt
+	batchOutboxFailedNodesStmt                           *sql.Stmt
+	batchOutboxInlineElectStmt                           *sql.Stmt
+	batchOutboxNameMessageStmt                           *sql.Stmt
+	batchOutboxPendingStmt                               *sql.Stmt
+	batchOutboxPullStmt                                  *sql.Stmt
+	batchOutboxReactNodesStmt                            *sql.Stmt
+	batchOutboxSetAnnouncementMessageStmt                *sql.Stmt
+	batchOutboxWakeZeroStmt                              *sql.Stmt
 	cancelAllWakeSchedulesForOwnerStmt                   *sql.Stmt
 	cancelWakeScheduleStmt                               *sql.Stmt
 	claimAsyncJobStmt                                    *sql.Stmt
@@ -1791,6 +1917,20 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		archiveAsyncJobToolCallIDStmt:                        q.archiveAsyncJobToolCallIDStmt,
 		asyncJobDebtOwnersStmt:                               q.asyncJobDebtOwnersStmt,
 		asyncReactionDebtExistsStmt:                          q.asyncReactionDebtExistsStmt,
+		batchOutboxAccountNodeStmt:                           q.batchOutboxAccountNodeStmt,
+		batchOutboxAccountNoticeStmt:                         q.batchOutboxAccountNoticeStmt,
+		batchOutboxAnnounceStmt:                              q.batchOutboxAnnounceStmt,
+		batchOutboxClearFailureStmt:                          q.batchOutboxClearFailureStmt,
+		batchOutboxDebtNodesStmt:                             q.batchOutboxDebtNodesStmt,
+		batchOutboxDebtNoticesStmt:                           q.batchOutboxDebtNoticesStmt,
+		batchOutboxFailedNodesStmt:                           q.batchOutboxFailedNodesStmt,
+		batchOutboxInlineElectStmt:                           q.batchOutboxInlineElectStmt,
+		batchOutboxNameMessageStmt:                           q.batchOutboxNameMessageStmt,
+		batchOutboxPendingStmt:                               q.batchOutboxPendingStmt,
+		batchOutboxPullStmt:                                  q.batchOutboxPullStmt,
+		batchOutboxReactNodesStmt:                            q.batchOutboxReactNodesStmt,
+		batchOutboxSetAnnouncementMessageStmt:                q.batchOutboxSetAnnouncementMessageStmt,
+		batchOutboxWakeZeroStmt:                              q.batchOutboxWakeZeroStmt,
 		cancelAllWakeSchedulesForOwnerStmt:                   q.cancelAllWakeSchedulesForOwnerStmt,
 		cancelWakeScheduleStmt:                               q.cancelWakeScheduleStmt,
 		claimAsyncJobStmt:                                    q.claimAsyncJobStmt,

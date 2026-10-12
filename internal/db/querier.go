@@ -71,6 +71,24 @@ type Querier interface {
 	// was wasted for nothing. session_notices carries no announced concept
 	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// Shared snapshot guard for attempt increments and failure closure.
+	BatchOutboxAccountNode(ctx context.Context, arg BatchOutboxAccountNodeParams) (int64, error)
+	BatchOutboxAccountNotice(ctx context.Context, arg BatchOutboxAccountNoticeParams) (int64, error)
+	// Ack election is independent of execution state; both fields change together.
+	BatchOutboxAnnounce(ctx context.Context, arg BatchOutboxAnnounceParams) (int64, error)
+	BatchOutboxClearFailure(ctx context.Context, arg BatchOutboxClearFailureParams) (int64, error)
+	BatchOutboxDebtNodes(ctx context.Context, owner string) ([]BatchNode, error)
+	BatchOutboxDebtNotices(ctx context.Context, owner string) ([]SessionNotice, error)
+	BatchOutboxFailedNodes(ctx context.Context, owner string) ([]BatchNode, error)
+	// Only an unannounced one-task root can elect its result as completion.
+	BatchOutboxInlineElect(ctx context.Context, arg BatchOutboxInlineElectParams) (BatchNode, error)
+	BatchOutboxNameMessage(ctx context.Context, arg BatchOutboxNameMessageParams) (int64, error)
+	BatchOutboxPending(ctx context.Context, owner string) ([]BatchNode, error)
+	// Recheck the root gate and oldest outstanding notice under the writer lock.
+	BatchOutboxPull(ctx context.Context, arg BatchOutboxPullParams) (BatchNode, error)
+	BatchOutboxReactNodes(ctx context.Context, arg BatchOutboxReactNodesParams) (int64, error)
+	BatchOutboxSetAnnouncementMessage(ctx context.Context, arg BatchOutboxSetAnnouncementMessageParams) (int64, error)
+	BatchOutboxWakeZero(ctx context.Context, arg BatchOutboxWakeZeroParams) (int64, error)
 	// `sessions reset` (R8A-3 sibling): no active schedule may survive a wiped
 	// history. Done/cancelled rows are history and stay.
 	CancelAllWakeSchedulesForOwner(ctx context.Context, arg CancelAllWakeSchedulesForOwnerParams) (int64, error)
