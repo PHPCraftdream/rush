@@ -71,8 +71,26 @@ type Querier interface {
 	// was wasted for nothing. session_notices carries no announced concept
 	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// Dispose legacy bound session_notices superseded by a selected node notice:
+	// void exactly once (delivery IN ('pending','done') makes a second call a
+	// no-op) and drop the wake so the debt reader cannot count them again.
+	BatchDisposeBoundNoticesByToolCallID(ctx context.Context, arg BatchDisposeBoundNoticesByToolCallIDParams) (int64, error)
+	// Delivery reconciliation (R10c, D-R10c-3): every selected node whose notice
+	// message was deleted leaves 'done' and 'pending' as a fresh pending with the
+	// dead message reference and attempt counters cleared, so the next pull
+	// delivers against surviving history and debt accounting cannot key a deleted
+	// message id. 'none' (never selected) and 'void' are untouched by design.
+	BatchHistoryRependNodesByDeletedNoticeMessages(ctx context.Context, arg BatchHistoryRependNodesByDeletedNoticeMessagesParams) (int64, error)
+	// Activity snapshot input (R10c): every root incarnation of an owner,
+	// terminal included, oldest first. Delivery/debt columns stay on the root
+	// rows for the readers; node bodies come from BatchLevelNodes (batch_read.sql).
+	BatchHistoryRootsForOwner(ctx context.Context, owner string) ([]BatchNode, error)
+	// sessions audit/jobs counts over all incarnations of an owner, tasks only.
+	BatchHistoryStateCounts(ctx context.Context, owner string) ([]BatchHistoryStateCountsRow, error)
 	// One statement observes the root and its entire incarnation consistently.
 	BatchLevelNodes(ctx context.Context, arg BatchLevelNodesParams) ([]BatchNode, error)
+	// Legacy bound session_notices for one root's tool call, for disposal reads.
+	BatchListBoundNoticesByToolCallID(ctx context.Context, arg BatchListBoundNoticesByToolCallIDParams) ([]SessionNotice, error)
 	// Return all nodes of nonterminal roots, including settled delegation links.
 	BatchLiveNodesForOwners(ctx context.Context, owners []string) ([]BatchNode, error)
 	// Shared snapshot guard for attempt increments and failure closure.
@@ -102,6 +120,31 @@ type Querier interface {
 	BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoticeParams) (int64, error)
 	// Include terminal ancestors with live descendants and terminal unannounced leaks.
 	BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error)
+	// Selected-node delivery reconciliation: a done node whose own notice
+	// message was deleted goes back to pending so the next turn pulls it again.
+	// The delivery='done' guard keeps a retried rerun from resurrecting a void.
+	BatchRerunRependNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunRependNodesByNoticeMessageIDsParams) (int64, error)
+	// Void every selected node whose notice message was deleted; runs AFTER the
+	// repend so a node matching both ends void. Void is written once: the
+	// delivery != 'void' predicate keeps a second pass a 0-row no-op.
+	BatchRerunVoidNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunVoidNodesByNoticeMessageIDsParams) (int64, error)
+	// Nodes of roots the rerun voided (announce or legacy arm): their notice
+	// messages were deleted too, but unlike a surviving root's nodes they must
+	// never re-pend into the fresh history. Runs AFTER the repend and only
+	// inside voided roots, so a node whose root survived keeps its re-pend.
+	BatchRerunVoidNodesOfVoidedRoots(ctx context.Context, arg BatchRerunVoidNodesOfVoidedRootsParams) (int64, error)
+	// Roots whose "started" tool-result message was deleted are voided before
+	// their pending/done notice can surface; still-nonterminal rows are returned
+	// so the caller stops their executors only after this transaction commits.
+	BatchRerunVoidRootsByAnnounceMessageIDs(ctx context.Context, arg BatchRerunVoidRootsByAnnounceMessageIDsParams) ([]BatchNode, error)
+	// Legacy arm: roots with no announce message yet (never acked), matched by
+	// the deleted tail's tool_call_id. The IS NULL guard means a root that named
+	// its announce message is never matched by a provider-reused call id.
+	BatchRerunVoidRootsByToolCallIDs(ctx context.Context, arg BatchRerunVoidRootsByToolCallIDsParams) ([]BatchNode, error)
+	// Atomic reset (R10c): the refusal check lives in the same caller
+	// transaction; once it passes, this removes every incarnation of the owner.
+	// Self/parent root FKs and batch_control_requests cascade.
+	BatchResetDeleteOwnerNodes(ctx context.Context, ownerSessionID string) (int64, error)
 	// Count and purge both consume this exact whole-root predicate.
 	BatchRetentionRoots(ctx context.Context, cutoff int64) ([]BatchNode, error)
 	// Acquire write ownership before evaluating retention; no history is deleted.
