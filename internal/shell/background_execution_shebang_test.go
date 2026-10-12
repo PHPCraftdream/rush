@@ -90,7 +90,11 @@ func TestRetainedShebangCancellationRegistersAndCompletes(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("SHEBANG_STOP_ACK_WITHOUT_DONE")
 	}
-	require.False(t, session.IsProcessAlive(pid), "SHEBANG_CHILD_SURVIVED_ACK")
+	// SIGKILL to the process group is posted by the ack, but the grandchild's
+	// exit (and its reaping by init) is asynchronous: bound the wait instead of
+	// sampling a zombie that is about to disappear.
+	require.Eventually(t, func() bool { return !session.IsProcessAlive(pid) },
+		10*time.Second, 10*time.Millisecond, "SHEBANG_CHILD_SURVIVED_ACK")
 }
 
 func TestRetainedShebangPhysicalKillError(t *testing.T) {
