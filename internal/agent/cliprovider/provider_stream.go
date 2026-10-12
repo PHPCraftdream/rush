@@ -118,7 +118,8 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// Write / Task tools, bypassing agentguard (batch 16) and the MCP permission
 	// dialog. yolo only controls whether claude needs the bypass-permissions flag,
 	// not whether our MCP bridge sits in the loop.
-	if m.spec.UseRushMCP && m.perms != nil {
+	bridge := invocationToolBridge(ctx)
+	if m.spec.UseRushMCP && (m.perms != nil || bridge != nil) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -180,7 +181,12 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			"Agent",
 		}
 		// Include external MCP tools registered on the rush MCP bridge.
-		if m.mcpProxy != nil {
+		if bridge != nil {
+			allowed = nil
+			for _, tool := range bridge.Tools() {
+				allowed = append(allowed, "mcp__rush__"+tool.WireName)
+			}
+		} else if m.mcpProxy != nil {
 			for _, ext := range m.mcpProxy.ListTools() {
 				allowed = append(allowed, "mcp__rush__"+ext.ServerName+"__"+ext.Name)
 			}
@@ -200,7 +206,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// The Authorization: Bearer header is stored in the settings (qwen CLI
 	// supports custom headers for httpUrl transports); the server is
 	// localhost-only with a random port.
-	if m.spec.QwenMCPIntegration && m.perms != nil {
+	if m.spec.QwenMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := qwenMCPID(m.workingDir)
 		if idErr != nil {
 			slog.Warn("cliprovider: failed to get qwen MCP ID", "err", idErr)
@@ -228,18 +234,26 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 					// permission system.
 					// Also block the native todo_write so the model uses
 					// mcp__rush__todos which persists tasks to the rush session.
-					args = append(
-						args,
-						"--allowed-tools",
-						"mcp__"+id+"__Bash",
-						"mcp__"+id+"__Read",
-						"mcp__"+id+"__Write",
-						"mcp__"+id+"__Glob",
-						"mcp__"+id+"__Grep",
-						"mcp__"+id+"__todos",
-						"--exclude-tools",
-						"todo_write",
-					)
+					if bridge != nil {
+						args = append(args, "--allowed-tools")
+						for _, tool := range bridge.Tools() {
+							args = append(args, "mcp__"+id+"__"+tool.WireName)
+						}
+						args = append(args, "--exclude-tools", "todo_write")
+					} else {
+						args = append(
+							args,
+							"--allowed-tools",
+							"mcp__"+id+"__Bash",
+							"mcp__"+id+"__Read",
+							"mcp__"+id+"__Write",
+							"mcp__"+id+"__Glob",
+							"mcp__"+id+"__Grep",
+							"mcp__"+id+"__todos",
+							"--exclude-tools",
+							"todo_write",
+						)
+					}
 				}
 			}
 		}
@@ -249,7 +263,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// using a stable per-project ID. Gemini supports Authorization: Bearer headers and
 	// a trust:true flag to bypass its own confirmation prompts, so tool calls go
 	// directly to our MCP server which shows rush's permission dialog.
-	if m.spec.GeminiMCPIntegration && m.perms != nil {
+	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
 			slog.Warn("cliprovider: failed to get gemini MCP ID", "err", idErr)
@@ -282,7 +296,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// (inline config override). No persistent changes to ~/.codex/config.toml.
 	// The token is passed via environment variable and Authorization: Bearer header
 	// to avoid leaking secrets in process lists (query params are visible in /proc/<pid>/cmdline).
-	if m.spec.CodexMCPIntegration && m.perms != nil {
+	if m.spec.CodexMCPIntegration && (m.perms != nil || bridge != nil) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -291,6 +305,13 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			args = append(args, codexMCPConfigArgs(mcpSrv.addr)...)
 			slog.Info("cliprovider: codex MCP configured", "addr", mcpSrv.addr)
 		}
+	}
+
+	if bridge != nil && mcpSrv == nil {
+		if attachTmpDir != "" {
+			_ = os.RemoveAll(attachTmpDir)
+		}
+		return nil, fmt.Errorf("cliprovider: configured tool bridge is unavailable for %s", m.spec.ModelID)
 	}
 
 	noPTY := m.spec.NoPTY || testDisablePTY

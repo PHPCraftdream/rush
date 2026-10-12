@@ -182,7 +182,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				tools.NewViewTool(c.permissions, c.filetracker, nil, tmpDir),
 			}
 
-			fetchTools = decoratePolicyTools(fetchTools, restrictedRunAuthorizer(c.permissions), nil, true)
+			fetchBuild := buildPrivateFetchTools(ctx, fetchTools, restrictedRunAuthorizer(c.permissions))
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's
@@ -209,7 +209,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				Sessions:       c.sessions,
 				Messages:       c.messages,
 				Config:         c.cfg,
-				Tools:          fetchTools,
+				Tools:          fetchBuild.tools,
 				RestrictedRuns: restrictedRunAuthorizer(c.permissions),
 			})
 

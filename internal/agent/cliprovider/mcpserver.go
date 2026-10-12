@@ -86,7 +86,7 @@ func (s *rushMCPServer) mcpURL() string {
 // If token is empty a cryptographically random one is generated.
 // sessions and sessionID are used by the todos tool to persist task updates.
 func newRushMCPServer(ctx context.Context, perms permission.Service, sessions session.Service, sessionID string, workingDir string, token string, mcpProxy ExternalMCPProxy) (*rushMCPServer, error) {
-	if perms != nil && sessionID == "" {
+	if invocationToolBridge(ctx) == nil && perms != nil && sessionID == "" {
 		return nil, fmt.Errorf("cliprovider: MCP server requires a session ID when permissions are enabled")
 	}
 
@@ -106,9 +106,16 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	}, nil)
 
 	toolCh := make(chan mcpToolEvent, 32)
-	registerMCPTools(srv, perms, sessions, sessionID, workingDir, toolCh)
-	if mcpProxy != nil {
-		registerExternalMCPTools(ctx, srv, perms, sessionID, workingDir, mcpProxy, toolCh)
+	bridge := invocationToolBridge(ctx)
+	if bridge != nil {
+		if err := registerBridgeTools(ctx, srv, bridge, toolCh); err != nil {
+			return nil, err
+		}
+	} else {
+		registerMCPTools(srv, perms, sessions, sessionID, workingDir, toolCh)
+		if mcpProxy != nil {
+			registerExternalMCPTools(ctx, srv, perms, sessionID, workingDir, mcpProxy, toolCh)
+		}
 	}
 
 	rawHandler := mcp.NewStreamableHTTPHandler(
