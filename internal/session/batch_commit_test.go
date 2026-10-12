@@ -140,7 +140,35 @@ func commitHookAccept(t *testing.T, ctx context.Context, r *jobbatch.Runner, e *
 	stop func(context.Context) error,
 ) *commitHookAttempt {
 	t.Helper()
+	// Single-start tests: the only delivery is the expected leaf.
 	a := commitHookReceive(t, ctx, e.starts)
+	return commitHookAcceptReady(t, ctx, r, a, stop)
+}
+
+// commitHookAcceptPair accepts the starts of a two-leaf batch and returns the
+// attempts in the requested node-ID order. The Runner dispatches one start
+// goroutine per leaf in ordinal order, but channel delivery order races with
+// spawn order, so arrival order must never be assumed: a swapped pairing
+// settles the other leaf while a later by-ID feed scan waits forever.
+func commitHookAcceptPair(t *testing.T, ctx context.Context, r *jobbatch.Runner, e *commitHookExecutor,
+	stopFirst, stopSecond func(context.Context) error, first, second jobbatch.ID,
+) (*commitHookAttempt, *commitHookAttempt) {
+	t.Helper()
+	byID := make(map[jobbatch.ID]*commitHookAttempt, 2)
+	for len(byID) < 2 {
+		a := commitHookReceive(t, ctx, e.starts)
+		require.NotContains(t, byID, a.launch.ID, "duplicate start for %s", a.launch.ID)
+		byID[a.launch.ID] = a
+	}
+	a1 := commitHookAcceptReady(t, ctx, r, byID[first], stopFirst)
+	a2 := commitHookAcceptReady(t, ctx, r, byID[second], stopSecond)
+	return a1, a2
+}
+
+func commitHookAcceptReady(t *testing.T, ctx context.Context, r *jobbatch.Runner, a *commitHookAttempt,
+	stop func(context.Context) error,
+) *commitHookAttempt {
+	t.Helper()
 	// Exactly-once reporting shared by commitHookFinish and execution.Stop.
 	var once sync.Once
 	raw := a.report
@@ -312,7 +340,7 @@ func TestBatchCommitNoticeOrdinalIsSlicePosition(t *testing.T) {
 	r, e, ctx := commitHookRunner(t, env.adapter())
 	b := commitHookSubmit(t, ctx, r, "r",
 		commitHookBatch(jobbatch.NotifyEach, commitHookTask(), commitHookTask()), "call-r")
-	a1 := commitHookAccept(t, ctx, r, e, nil)
+	a1, a2 := commitHookAcceptPair(t, ctx, r, e, nil, nil, "r.1", "r.2")
 	commitHookFinish(t, ctx, r, a1, jobbatch.Result{State: jobbatch.StateCompleted})
 	// The root is not yet settled (r.2 still running), so this transition
 	// selects exactly one notice: leaf r.1, structural ordinal 1.
@@ -324,7 +352,6 @@ func TestBatchCommitNoticeOrdinalIsSlicePosition(t *testing.T) {
 		"unsettled root is not notified")
 	// Finishing r.2 settles r.2 AND the root in one transition; Notices walk
 	// descendants before ancestors: [r.2, r].
-	a2 := commitHookAccept(t, ctx, r, e, nil)
 	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateCompleted})
 	commitHookWait(t, ctx, b)
 	root := commitHookReadNode(t, env.conn, "r")

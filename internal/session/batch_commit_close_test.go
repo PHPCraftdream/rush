@@ -23,8 +23,7 @@ func TestBatchCommitNotifyEachPerChildNotices(t *testing.T) {
 	r, e, ctx := commitHookRunner(t, env.adapter())
 	b := commitHookSubmit(t, ctx, r, "r",
 		commitHookBatch(jobbatch.NotifyEach, commitHookTask(), commitHookTask()), "call-r")
-	a1 := commitHookAccept(t, ctx, r, e, nil)
-	a2 := commitHookAccept(t, ctx, r, e, nil)
+	a1, a2 := commitHookAcceptPair(t, ctx, r, e, nil, nil, "r.1", "r.2")
 	commitHookFinish(t, ctx, r, a1, jobbatch.Result{State: jobbatch.StateCompleted})
 	settledSeq := commitHookRecord(t, ctx, r, jobbatch.RecordSettled, "r.1").Sequence
 	leaf1 := commitHookReadNode(t, env.conn, "r.1")
@@ -37,7 +36,7 @@ func TestBatchCommitNotifyEachPerChildNotices(t *testing.T) {
 	root := commitHookReadNode(t, env.conn, "r")
 	require.Equal(t, int64(1), leaf2.NoticeSelected)
 	require.Equal(t, int64(1), leaf2.Wake, "each child notice wakes")
-	require.Equal(t, 1, commitHookCount(t, env.conn,
+	require.Equal(t, int64(1), commitHookCount(t, env.conn,
 		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND notice_state = 'failed'"))
 	require.Equal(t, int64(1), root.NoticeSelected, "root settlement notified once")
 	require.Equal(t, int64(1), commitHookCount(t, env.conn,
@@ -68,12 +67,11 @@ func TestBatchCommitHostClosingWakeZeroLatchedCause(t *testing.T) {
 	r, e, ctx := commitHookRunner(t, env.adapter())
 	b := commitHookSubmit(t, ctx, r, "r",
 		commitHookBatch(jobbatch.NotifyEach, commitHookTask(), commitHookTask()), "call-r")
-	a1 := commitHookAccept(t, ctx, r, e, nil)
 	stop1 := make(chan struct{})
-	a2 := commitHookAccept(t, ctx, r, e, func(context.Context) error {
+	a1, a2 := commitHookAcceptPair(t, ctx, r, e, nil, func(context.Context) error {
 		close(stop1)
 		return nil
-	})
+	}, "r.1", "r.2")
 	// Latch cause=stop on r.1 and settle it cancelled.
 	require.NoError(t, r.Stop(ctx, "r.1"))
 	commitHookFinish(t, ctx, r, a1, jobbatch.Result{State: jobbatch.StateCancelled})
@@ -116,8 +114,7 @@ func TestBatchCommitFinalNoSyntheticSettlements(t *testing.T) {
 	r, e, ctx := commitHookRunner(t, env.adapter())
 	b := commitHookSubmit(t, ctx, r, "r",
 		commitHookBatch(jobbatch.NotifyAll, commitHookTask(), commitHookTask()), "call-r")
-	a1 := commitHookAccept(t, ctx, r, e, nil)
-	a2 := commitHookAccept(t, ctx, r, e, nil)
+	a1, a2 := commitHookAcceptPair(t, ctx, r, e, nil, nil, "r.1", "r.2")
 	commitHookFinish(t, ctx, r, a1, jobbatch.Result{State: jobbatch.StateCompleted})
 	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateCompleted})
 	commitHookWait(t, ctx, b)
