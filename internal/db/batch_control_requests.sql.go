@@ -14,7 +14,8 @@ const answerBatchControlRequest = `-- name: AnswerBatchControlRequest :execrows
 UPDATE batch_control_requests SET status = 'answered', answer_code = ?1,
     answer_sequence = ?2, answered_at = ?3
 WHERE request_id = ?4 AND root_id = ?5 AND node_id = ?6
-  AND host_id = ?7 AND owner_session_id = ?8 AND status = 'pending'
+  AND host_id = ?7 AND runner_id = ?8
+  AND owner_session_id = ?9 AND status = 'pending'
 `
 
 type AnswerBatchControlRequestParams struct {
@@ -25,6 +26,7 @@ type AnswerBatchControlRequestParams struct {
 	RootID         string        `json:"root_id"`
 	NodeID         string        `json:"node_id"`
 	HostID         string        `json:"host_id"`
+	RunnerID       string        `json:"runner_id"`
 	OwnerSessionID string        `json:"owner_session_id"`
 }
 
@@ -38,6 +40,7 @@ func (q *Queries) AnswerBatchControlRequest(ctx context.Context, arg AnswerBatch
 		arg.RootID,
 		arg.NodeID,
 		arg.HostID,
+		arg.RunnerID,
 		arg.OwnerSessionID,
 	)
 	if err != nil {
@@ -48,9 +51,13 @@ func (q *Queries) AnswerBatchControlRequest(ctx context.Context, arg AnswerBatch
 
 const createBatchControlRequest = `-- name: CreateBatchControlRequest :one
 INSERT INTO batch_control_requests (
-    request_id, owner_session_id, root_id, node_id, host_id, created_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at
+    request_id, owner_session_id, root_id, node_id, host_id, runner_id, created_at
+) VALUES (
+    ?1, ?2, ?3, ?4, ?5,
+    (SELECT runner_id FROM batch_nodes WHERE root_id = ?3 AND node_id = ?4
+       AND owner_session_id = ?2 AND host_id = ?5), ?6
+)
+RETURNING request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at, runner_id
 `
 
 type CreateBatchControlRequestParams struct {
@@ -62,7 +69,8 @@ type CreateBatchControlRequestParams struct {
 	CreatedAt      int64  `json:"created_at"`
 }
 
-// The FK binds the request to the node's owner, host and root incarnation.
+// The FK binds the request to the node's owner, host and root incarnation;
+// runner_id copies the owning node's incarnation so answers are fenced.
 func (q *Queries) CreateBatchControlRequest(ctx context.Context, arg CreateBatchControlRequestParams) (BatchControlRequest, error) {
 	row := q.queryRow(ctx, q.createBatchControlRequestStmt, createBatchControlRequest,
 		arg.RequestID,
@@ -85,12 +93,13 @@ func (q *Queries) CreateBatchControlRequest(ctx context.Context, arg CreateBatch
 		&i.AnswerSequence,
 		&i.CreatedAt,
 		&i.AnsweredAt,
+		&i.RunnerID,
 	)
 	return i, err
 }
 
 const getBatchControlRequest = `-- name: GetBatchControlRequest :one
-SELECT request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at FROM batch_control_requests
+SELECT request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at, runner_id FROM batch_control_requests
 WHERE request_id = ?1 AND root_id = ?2 AND host_id = ?3
   AND owner_session_id = ?4
 `
@@ -122,12 +131,13 @@ func (q *Queries) GetBatchControlRequest(ctx context.Context, arg GetBatchContro
 		&i.AnswerSequence,
 		&i.CreatedAt,
 		&i.AnsweredAt,
+		&i.RunnerID,
 	)
 	return i, err
 }
 
 const listPendingBatchControlRequests = `-- name: ListPendingBatchControlRequests :many
-SELECT request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at FROM batch_control_requests
+SELECT request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at, runner_id FROM batch_control_requests
 WHERE host_id = ?1 AND root_id = ?2 AND owner_session_id = ?3
   AND status = 'pending'
 ORDER BY created_at, request_id
@@ -160,6 +170,7 @@ func (q *Queries) ListPendingBatchControlRequests(ctx context.Context, arg ListP
 			&i.AnswerSequence,
 			&i.CreatedAt,
 			&i.AnsweredAt,
+			&i.RunnerID,
 		); err != nil {
 			return nil, err
 		}

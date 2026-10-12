@@ -46,7 +46,7 @@ const batchRecoveryElect = `-- name: BatchRecoveryElect :one
 UPDATE batch_nodes SET root_sequence = root_sequence
 WHERE node_id = ?1 AND root_id = ?1
   AND owner_session_id = ?2 AND host_id = ?3
-RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type BatchRecoveryElectParams struct {
@@ -116,6 +116,8 @@ func (q *Queries) BatchRecoveryElect(ctx context.Context, arg BatchRecoveryElect
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
@@ -188,7 +190,7 @@ func (q *Queries) BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoti
 }
 
 const batchRecoveryRoots = `-- name: BatchRecoveryRoots :many
-SELECT r.node_id, r.root_id, r.owner_session_id, r.host_id, r.parent_id, r.ordinal, r.kind, r.tool_call_id, r.input_hash, r.announced, r.announce_message_id, r.origin_cli, r.mode, r.on_fail, r.notify, r.max_parallel, r.task_kind, r.task_group, r.task_payload, r.timeout_ns, r.child_session_id, r.state, r.cause, r.token, r.attempts, r.control_state, r.control_error, r.control_pending, r.outcome_state, r.outcome_code, r.outcome_summary, r.response_envelope_ref, r.root_sequence, r.projection_sequence, r.notice_selected, r.notice_kind, r.notice_state, r.notice_cause, r.notice_sequence, r.notice_ordinal, r.notice_pending, r.notice_active, r.notice_completed, r.notice_failed, r.notice_cancelled, r.notice_timed_out, r.notice_interrupted, r.notice_skipped, r.delivery, r.notice_message_id, r.wake, r.reacted, r.wake_attempts, r.reacted_failed, r.created_at, r.updated_at FROM batch_nodes r
+SELECT r.node_id, r.root_id, r.owner_session_id, r.host_id, r.parent_id, r.ordinal, r.kind, r.tool_call_id, r.input_hash, r.announced, r.announce_message_id, r.origin_cli, r.mode, r.on_fail, r.notify, r.max_parallel, r.task_kind, r.task_group, r.task_payload, r.timeout_ns, r.child_session_id, r.state, r.cause, r.token, r.attempts, r.control_state, r.control_error, r.control_pending, r.outcome_state, r.outcome_code, r.outcome_summary, r.response_envelope_ref, r.root_sequence, r.projection_sequence, r.notice_selected, r.notice_kind, r.notice_state, r.notice_cause, r.notice_sequence, r.notice_ordinal, r.notice_pending, r.notice_active, r.notice_completed, r.notice_failed, r.notice_cancelled, r.notice_timed_out, r.notice_interrupted, r.notice_skipped, r.delivery, r.notice_message_id, r.wake, r.reacted, r.wake_attempts, r.reacted_failed, r.created_at, r.updated_at, r.runner_id, r.response_envelope FROM batch_nodes r
 WHERE r.node_id = r.root_id
   AND (r.announced = 0 OR EXISTS (
     SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
@@ -264,6 +266,8 @@ func (q *Queries) BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error) {
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -279,7 +283,7 @@ func (q *Queries) BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error) {
 }
 
 const batchRetentionRoots = `-- name: BatchRetentionRoots :many
-SELECT r.node_id, r.root_id, r.owner_session_id, r.host_id, r.parent_id, r.ordinal, r.kind, r.tool_call_id, r.input_hash, r.announced, r.announce_message_id, r.origin_cli, r.mode, r.on_fail, r.notify, r.max_parallel, r.task_kind, r.task_group, r.task_payload, r.timeout_ns, r.child_session_id, r.state, r.cause, r.token, r.attempts, r.control_state, r.control_error, r.control_pending, r.outcome_state, r.outcome_code, r.outcome_summary, r.response_envelope_ref, r.root_sequence, r.projection_sequence, r.notice_selected, r.notice_kind, r.notice_state, r.notice_cause, r.notice_sequence, r.notice_ordinal, r.notice_pending, r.notice_active, r.notice_completed, r.notice_failed, r.notice_cancelled, r.notice_timed_out, r.notice_interrupted, r.notice_skipped, r.delivery, r.notice_message_id, r.wake, r.reacted, r.wake_attempts, r.reacted_failed, r.created_at, r.updated_at FROM batch_nodes r
+SELECT r.node_id, r.root_id, r.owner_session_id, r.host_id, r.parent_id, r.ordinal, r.kind, r.tool_call_id, r.input_hash, r.announced, r.announce_message_id, r.origin_cli, r.mode, r.on_fail, r.notify, r.max_parallel, r.task_kind, r.task_group, r.task_payload, r.timeout_ns, r.child_session_id, r.state, r.cause, r.token, r.attempts, r.control_state, r.control_error, r.control_pending, r.outcome_state, r.outcome_code, r.outcome_summary, r.response_envelope_ref, r.root_sequence, r.projection_sequence, r.notice_selected, r.notice_kind, r.notice_state, r.notice_cause, r.notice_sequence, r.notice_ordinal, r.notice_pending, r.notice_active, r.notice_completed, r.notice_failed, r.notice_cancelled, r.notice_timed_out, r.notice_interrupted, r.notice_skipped, r.delivery, r.notice_message_id, r.wake, r.reacted, r.wake_attempts, r.reacted_failed, r.created_at, r.updated_at, r.runner_id, r.response_envelope FROM batch_nodes r
 WHERE r.node_id = r.root_id AND r.updated_at < ?1
   AND NOT EXISTS (SELECT 1 FROM batch_control_requests c WHERE c.root_id = r.root_id AND c.status = 'pending')
   AND NOT EXISTS (SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
@@ -366,6 +370,8 @@ func (q *Queries) BatchRetentionRoots(ctx context.Context, cutoff int64) ([]Batc
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}

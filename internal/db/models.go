@@ -56,6 +56,7 @@ type BatchControlRequest struct {
 	AnswerSequence sql.NullInt64 `json:"answer_sequence"`
 	CreatedAt      int64         `json:"created_at"`
 	AnsweredAt     sql.NullInt64 `json:"answered_at"`
+	RunnerID       string        `json:"runner_id"`
 }
 
 type BatchNode struct {
@@ -115,6 +116,18 @@ type BatchNode struct {
 	ReactedFailed       int64          `json:"reacted_failed"`
 	CreatedAt           int64          `json:"created_at"`
 	UpdatedAt           int64          `json:"updated_at"`
+	RunnerID            string         `json:"runner_id"`
+	ResponseEnvelope    sql.NullString `json:"response_envelope"`
+}
+
+type BatchRunnerCheckpoint struct {
+	HostID    string `json:"host_id"`
+	RunnerID  string `json:"runner_id"`
+	Sequence  int64  `json:"sequence"`
+	EventType string `json:"event_type"`
+	Final     int64  `json:"final"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 type File struct {
