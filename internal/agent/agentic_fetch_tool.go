@@ -182,6 +182,8 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				tools.NewViewTool(c.permissions, c.filetracker, nil, tmpDir),
 			}
 
+			fetchTools = decoratePolicyTools(fetchTools, restrictedRunAuthorizer(c.permissions), nil, true)
+
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's
 			// side; firing hooks again for every inner tool call would run

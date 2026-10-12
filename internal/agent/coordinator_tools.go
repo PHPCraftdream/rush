@@ -572,6 +572,11 @@ var nestedAgentToolWarnOnce sync.Once
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
 // first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
+	return built.tools, err
+}
+
+func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 	agent = c.applyCallFolderScope(ctx, agent)
@@ -647,7 +652,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		} else {
 			agentTool, err := c.agentTool(ctx)
 			if err != nil {
-				return nil, err
+				return policyToolBuild{}, err
 			}
 			allTools = append(allTools, agentTool)
 		}
@@ -656,7 +661,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := c.agenticFetchTool(ctx, fetchClient(30*time.Second))
 		if err != nil {
-			return nil, err
+			return policyToolBuild{}, err
 		}
 		allTools = append(allTools, agenticFetchTool)
 	}
@@ -812,13 +817,12 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
 	// applied outside this wrapper below so PreToolUse runs first.
-	filteredTools = wrapToolsWithRestrictedRun(filteredTools, restrictedRunAuthorizer(c.permissions))
+	filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
 	// Wrap tools with hook interception for the top-level agent only.
 	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
 	// without hook interception to avoid firing the user's hook N times
 	// per delegated turn. The top-level invocation of the sub-agent tool
 	// itself is still wrapped from the coder's side.
-	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
 	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
 	// turn any blocked synchronous Run into an immediate job-id result.
 	filteredTools = wrapToolsWithStallDetach(filteredTools)
@@ -829,5 +833,5 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	// SetTools wrap instead — every slice reaches the agent through one of
 	// them, and the wrapper still ends up outermost, since what they wrap
 	// is the already-hooked slice returned here. See logged_tool.go.
-	return filteredTools, nil
+	return newPolicyToolBuild(filteredTools), nil
 }
