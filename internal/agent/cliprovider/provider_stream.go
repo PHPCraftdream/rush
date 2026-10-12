@@ -530,12 +530,8 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				return nil, fmt.Errorf("start %s: %w", m.spec.Binary, startErr)
 			}
 			pr, pw := io.Pipe()
-			var copyWg sync.WaitGroup
-			copyWg.Add(2)
-			drained = copyWg.Wait
-			go func() { _, _ = io.Copy(pw, stdoutPipe); copyWg.Done() }()
-			go func() { _, _ = io.Copy(pw, stderrPipe); copyWg.Done() }()
-			go func() { copyWg.Wait(); pw.Close() }()
+			drained = mergeLines(pw, stdoutPipe, stderrPipe)
+			go func() { drained(); pw.Close() }()
 			reader = pr
 		} else {
 			cmd.Stderr = &stderrBuf
