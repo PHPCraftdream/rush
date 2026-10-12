@@ -243,6 +243,8 @@ func TestBatchReadChunkBoundariesAndSelectiveFailure(t *testing.T) {
 	r := batchReadTestReader(t, conn)
 	for _, size := range []int{499, 500, 501} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			t.Parallel()
+			r := batchReadTestReader(t, conn)
 			source := &batchReadTestSource{BatchLiveSource: db.New(conn)}
 			r.Source = source
 			got := r.BatchLiveForSessions(ctx, owners[:size])
