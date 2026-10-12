@@ -138,10 +138,16 @@ test("covered flat rows are replaced by structured nodes; structured-only nodes 
         ],
         agents: [
           { toolCallID: "tc2", toolName: "agent", title: "flat agent", startedAt: 1 },
+          { toolCallID: "tcX", toolName: "agent", title: "uncovered agent", startedAt: 1 },
         ],
       },
     ],
   ]);
+  // Structured-only node: no flat counterpart anywhere.
+  const r3 = root("r3", "tc3");
+  const r2 = root("r2", "tc2");
+  // r2 is a delegation: its node lands in agents instead of commands.
+  r2.nodes[0].childSessionID = "child-2";
   const batch = new Map<string, BatchWorkState>();
   // Flag off: no snapshot state -> flat rows unchanged.
   const flatOnly = pickMergedLiveWork(live, batch, "s1");
@@ -149,16 +155,22 @@ test("covered flat rows are replaced by structured nodes; structured-only nodes 
     flatOnly.commands.map((r) => r.toolCallID),
     ["tc1", "tc9"],
   );
-  applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1"), root("r2", "tc2")] }));
+  applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1"), r2, r3] }));
   const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
   const tc1 = merged.commands.find((r) => r.toolCallID === "tc1");
   assert.equal(tc1.status, "running");
+  // Flat tc1 covered and replaced by the structured node (appended after
+  // the kept flat tc9); structured-only tc3 appended at the end.
   assert.deepEqual(
     merged.commands.map((r) => r.toolCallID),
-    ["tc1", "tc9"],
+    ["tc9", "tc1", "tc3"],
   );
-  assert.equal(merged.agents.length, 1);
-  assert.equal(merged.agents[0].toolCallID, "tc2");
+  // Flat tc2 covered and replaced by the structured delegation node;
+  // uncovered flat agent tcX survives.
+  assert.deepEqual(
+    merged.agents.map((r) => [r.toolCallID, r.childSessionID]),
+    [["tc2", "child-2"], ["tcX", undefined]],
+  );
   // Empty toolCallIDs: uncovered, so kept.
   const withEmpty = {
     ...live.get("s1"),
