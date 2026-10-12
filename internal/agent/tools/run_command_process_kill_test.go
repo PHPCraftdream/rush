@@ -28,6 +28,9 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if runArgvLeafHelper() {
+		return
+	}
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case runCommandHelperLevel1Arg:
