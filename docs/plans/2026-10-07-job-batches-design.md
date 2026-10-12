@@ -1,7 +1,10 @@
 # Job batches — standalone engine and later Rush integration
 
-Status: design only; this document does not authorize implementation or agent
-launches. Revision 4 (2026-10-11) withdraws singleton root and legacy-contract
+Status: the autonomous deliverable (sections 0-8: `internal/jobbatch`, `lab`,
+`cmd/batchlab`) was implemented on the operator's command on 2026-10-12; see
+`docs/jobbatch.md`, `docs/jobbatch-acceptance.md` and the implementation notes at
+the end of Appendix A. Section 9 (Rush integration) is refined by
+`2026-10-12-job-batches-rush-integration.md`. Revision 4 (2026-10-11) withdraws singleton root and legacy-contract
 preservation (operator decisions 2026-10-11) and adds sole-child notice elision.
 Revision 3 (2026-10-11) reconciles contract references, acceptance fences and the closure matrix in Appendix A.
 Revision 2 (2026-10-08) addressed four independent reviews of revision 1
@@ -2555,3 +2558,30 @@ Report section numbers below refer to the named round-two report, not this plan.
   new executable implementation. Structural process/ownership gates use §7.3;
   no scenario beyond the listed Revision 4 cases, schema field, executable,
   or new review cycle is introduced.
+
+### A.3 Implementation notes (2026-10-12)
+
+Facts found while implementing sections 0-8; none changes the operator's
+decisions.
+
+- **W-c ii.** The acceptance row says the stopped never-admitted root X ends
+  Cancelled. Under sections 3.1/3.1.2 a root's own latched cause wins and the
+  leaf cause is separate: with HostClosing latched first, X settles Interrupted
+  with cause `host_closing` and X.1 Cancelled with cause `stop`. The fixture
+  `w-c-ii.json` follows the lifecycle rules. W-c i likewise expects the final
+  control state `none`, because settlement retires the control gate.
+- **Contract additions at A0** are listed in section 7.1 (`ErrInvalidEvent`,
+  `DisposeError`/`CloseTimeoutError`, `NodeView.Control`,
+  `Transition.SettledRoots`, `ValidCode`/`ReservedCode`/`ValidRef`).
+- **Process executor choices.** Windows resumes the suspended, job-assigned
+  child with `NtResumeProcess` (Go closes the primary thread handle); Unix
+  SIGTERM grace is 100 ms bounded by the Stop context; stdout and stderr share
+  one OS pipe. Unix behavior is cross-vetted only and is first exercised by CI.
+- **Backlog (P2, not fixed in this cycle).** After Final the Runner still holds
+  the Engine, so task payloads of unreleased terminal roots stay reachable from
+  a closed Runner; released-descendant lookup in the Runtime classifies by ID
+  prefix although consumers must not parse IDs for ownership (Core does the
+  same); the Unix process-test child observer is a stub; the replay
+  side-effect test uses a nonexistent program; F-c lacks a complete-capture
+  counterpart; L6 lacks the compound HostClosing+closed deletion case
+  (`docs/jobbatch-acceptance.md`).
