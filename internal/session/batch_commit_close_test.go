@@ -30,20 +30,9 @@ func TestBatchCommitNotifyEachPerChildNotices(t *testing.T) {
 	require.Equal(t, int64(1), leaf1.NoticeSelected)
 	require.Equal(t, int64(1), leaf1.Wake)
 	require.Equal(t, "pending", leaf1.Delivery)
-	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateFailed, Code: "boom"})
-	commitHookWait(t, ctx, b)
-	leaf2 := commitHookReadNode(t, env.conn, "r.2")
-	root := commitHookReadNode(t, env.conn, "r")
-	require.Equal(t, int64(1), leaf2.NoticeSelected)
-	require.Equal(t, int64(1), leaf2.Wake, "each child notice wakes")
-	require.Equal(t, int64(1), commitHookCount(t, env.conn,
-		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND notice_state = 'failed'"))
-	require.Equal(t, int64(1), root.NoticeSelected, "root settlement notified once")
-	require.Equal(t, int64(1), commitHookCount(t, env.conn,
-		"SELECT count(*) FROM batch_nodes WHERE root_id = 'r' AND notice_selected = 1"),
-		"exactly leaf, leaf and root notified")
-	// Duplicate selection at the same sequence is refused and never rewrites
-	// the latched notice (notice_selected guard; projection_sequence fence).
+	// Duplicate selection while the root is still live: the projection_sequence
+	// fence matches (settled sequence on r.1) but the notice_selected guard
+	// refuses, so the replay never rewrites the latched notice.
 	_, err := env.store.ReserveIdentity(ctx, BatchReservation{
 		Owner: env.id.Owner, Host: env.id.Host, RunnerID: env.id.Runner,
 		ToolCallID: "call-r", InputHash: batchCommitSpecHash(
@@ -58,6 +47,18 @@ func TestBatchCommitNotifyEachPerChildNotices(t *testing.T) {
 	require.ErrorIs(t, err, ErrBatchProjectionConflict, "duplicate notice selection refused")
 	require.Equal(t, "0", commitHookReadNode(t, env.conn, "r.1").NoticeOrdinal,
 		"latched notice not rewritten by the duplicate selection")
+	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateFailed, Code: "boom"})
+	commitHookWait(t, ctx, b)
+	leaf2 := commitHookReadNode(t, env.conn, "r.2")
+	root := commitHookReadNode(t, env.conn, "r")
+	require.Equal(t, int64(1), leaf2.NoticeSelected)
+	require.Equal(t, int64(1), leaf2.Wake, "each child notice wakes")
+	require.Equal(t, int64(1), commitHookCount(t, env.conn,
+		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND notice_state = 'failed'"))
+	require.Equal(t, int64(1), root.NoticeSelected, "root settlement notified once")
+	require.Equal(t, int64(3), commitHookCount(t, env.conn,
+		"SELECT count(*) FROM batch_nodes WHERE root_id = 'r' AND notice_selected = 1"),
+		"leaf r.1, leaf r.2 and root notified")
 }
 
 // Scenario 10 (M09, M10): HostClosing notices wake=0; already-latched causes
