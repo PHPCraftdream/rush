@@ -17,7 +17,8 @@ import { $batchWorkBySession, pickMergedLiveWork } from "../batchWork";
 
 export function LiveWorkPanel({ sessionID, todos }: { sessionID: string; todos: Todo[] }) {
   // Read via useStore's OWN return value, not a side-channel .get()
-  // call -- see pickLiveWork's doc comment: the React Compiler can't see through
+  // call -- see pickMergedLiveWork/pickBatchWork's doc comment in ../batchWork:
+  // the React Compiler can't see through
   // the latter and will memoize stale JSX across atom updates it doesn't track.
   const liveWorkMap = useStore($liveWorkBySession);
   const batchWorkMap = useStore($batchWorkBySession);

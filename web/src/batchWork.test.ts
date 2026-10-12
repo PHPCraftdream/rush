@@ -126,7 +126,7 @@ test("incomplete snapshot never drops previously live nodes within a root", () =
   assert.equal(merged.nodes[0].toolCallID, "tc1");
 });
 
-test("dedupe hides flat rows whose toolCallID a snapshot node covers", () => {
+test("covered flat rows are replaced by structured nodes; structured-only nodes appear", () => {
   const live = new Map<string, SessionLiveWork>([
     [
       "s1",
@@ -151,19 +151,26 @@ test("dedupe hides flat rows whose toolCallID a snapshot node covers", () => {
   );
   applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1"), root("r2", "tc2")] }));
   const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
+  const tc1 = merged.commands.find((r) => r.toolCallID === "tc1");
+  assert.equal(tc1.status, "running");
   assert.deepEqual(
     merged.commands.map((r) => r.toolCallID),
-    ["tc9"],
+    ["tc1", "tc9"],
   );
-  assert.deepEqual(merged.agents, []);
-  // Empty toolCallIDs never dedupe.
+  assert.equal(merged.agents.length, 1);
+  assert.equal(merged.agents[0].toolCallID, "tc2");
+  // Empty toolCallIDs: uncovered, so kept.
   const withEmpty = {
     ...live.get("s1"),
-    commands: [{ toolCallID: "", toolName: "bash", title: "anon", startedAt: 1 }],
+    commands: [
+      ...live.get("s1").commands,
+      { toolCallID: "", toolName: "bash", title: "anon", startedAt: 1 },
+    ],
   };
   const live2 = new Map<string, SessionLiveWork>([["s1", withEmpty]]);
   const merged2 = pickMergedLiveWork(live2, $batchWorkBySession.get(), "s1");
-  assert.equal(merged2.commands.length, 1);
+  const emptyRows = merged2.commands.filter((r) => r.toolCallID === "");
+  assert.equal(emptyRows.length, 1);
 });
 
 test("unknown session picks nothing and merged view falls back to flat rows", () => {

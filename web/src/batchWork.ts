@@ -3,8 +3,8 @@ import type {
   BatchWorkRoot,
   BatchWorkSnapshot,
   LiveWorkItem,
-  SessionLiveWorkPayload,
 } from "./types";
+import type { SessionLiveWork } from "./store_livework";
 
 // Batch-work store slice (R15a, internal/server/handlers_batch.go): the
 // structured batch_nodes tree for the active session, delivered as full
@@ -62,7 +62,6 @@ export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
 function mergeRoots(prev: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWorkRoot[] {
   const out: BatchWorkRoot[] = [];
   const seen = new Set<string>();
-  const prevByID = new Map(prev.map((r) => [r.rootID, r]));
   const incomingByID = new Map(incoming.map((r) => [r.rootID, r]));
   for (const p of prev) {
     const inc = incomingByID.get(p.rootID);
@@ -85,12 +84,15 @@ function mergeRoots(prev: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWork
 }
 
 /** Merge selector for the live-work panel: the old flat rows (commands +
- * agents) MINUS any row whose toolCallID matches a snapshot node's
- * toolCallID (empty toolCallIDs never dedupe). Both maps are explicit
- * arguments -- same React Compiler rule as pickBatchWork above. Flag off
- * (no snapshot state for the session) returns the flat rows unchanged. */
+ * agents) with any row whose toolCallID matches a snapshot node's
+ * toolCallID REPLACED by that node's structured entry, and structured-only
+ * nodes (no covered flat row) APPENDED in root/node order -- nothing is
+ * dropped. Empty toolCallIDs never dedupe or render as appended rows.
+ * Both maps are explicit arguments -- same React Compiler rule as
+ * pickBatchWork above. Flag off (no snapshot state for the session) returns
+ * the flat rows unchanged. */
 export function pickMergedLiveWork(
-  liveWorkMap: Map<string, SessionLiveWorkPayload>,
+  liveWorkMap: Map<string, SessionLiveWork>,
   batchMap: Map<string, BatchWorkState>,
   sessionID: string | null,
 ): { commands: LiveWorkItem[]; agents: LiveWorkItem[] } {
@@ -105,5 +107,23 @@ export function pickMergedLiveWork(
   }
   const keep = (rows: LiveWorkItem[]) =>
     rows.filter((r) => !r.toolCallID || !covered.has(r.toolCallID));
-  return { commands: keep(flat.commands), agents: keep(flat.agents) };
+  const commands = keep(flat.commands);
+  const agents = keep(flat.agents);
+  for (const root of snap.roots) {
+    for (const node of root.nodes) {
+      if (!node.toolCallID) continue;
+      const item: LiveWorkItem = {
+        toolCallID: node.toolCallID,
+        toolName: node.kind === "task" ? node.taskKind || node.kind : node.kind,
+        title: node.outcomeSummary || node.taskKind || node.kind,
+        childSessionID: node.childSessionID || undefined,
+        startedAt: root.startedAt,
+        status: node.state,
+        reason: node.cause || undefined,
+        lastActivityAt: undefined,
+      };
+      (node.childSessionID ? agents : commands).push(item);
+    }
+  }
+  return { commands, agents };
 }
