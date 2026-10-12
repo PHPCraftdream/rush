@@ -78,15 +78,17 @@ func NewRunner(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
 type runnerRequestHooks struct {
 	queued, accepted, reply func(*runnerRequest)
 	// Instance-local scheduling seams; copied before goroutine publication.
-	timeoutCancel   func(context.CancelFunc)
-	controlReturned func()
-	donePublished   func(*Batch, Transition)
-	beforeAppend    func(Transition)
-	committed       func(*runnerRequest)
-	commitReturned  func()
-	beforeMessage   func(runnerMessage)
-	afterMessage    func(runnerMessage)
-	transitioned    func(Transition)
+	timeoutCancel         func(context.CancelFunc)
+	controlReturned       func()
+	donePublished         func(*Batch, Transition)
+	beforeAppend          func(Transition)
+	committed             func(*runnerRequest)
+	commitReturned        func()
+	beforeMessage         func(runnerMessage)
+	afterMessage          func(runnerMessage)
+	transitioned          func(Transition)
+	beforeSettlementApply func()
+	beforeStartedApply    func()
 }
 
 func (r *Runner) cancelControlTimeout(cancel context.CancelFunc) {

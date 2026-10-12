@@ -196,7 +196,13 @@ func (r *Runner) handleMessage(m runnerMessage) {
 		}
 		a.accepted = true
 		r.registerHandle(a, m.execution)
+		if r.requestHooks != nil && r.requestHooks.beforeStartedApply != nil {
+			r.requestHooks.beforeStartedApply()
+		}
 		if _, err := r.apply(Event{Type: EventStarted, Node: a.launch.ID, Token: m.token}); err != nil {
+			if errors.Is(err, ErrCommitFailed) && a.physicalReport {
+				a.handle.terminate()
+			}
 			return
 		}
 		if a.stopWaiting {
@@ -261,8 +267,15 @@ func (r *Runner) handleMessage(m runnerMessage) {
 }
 
 func (r *Runner) acceptCompletion(a *runnerAttempt) {
+	if r.requestHooks != nil && r.requestHooks.beforeSettlementApply != nil {
+		r.requestHooks.beforeSettlementApply()
+	}
 	if _, err := r.apply(Event{Type: EventSettled, Node: a.launch.ID, Token: a.launch.Token, Result: a.result}); err == nil {
 		// Details have crossed Apply's ownership boundary; retain no extra copy.
 		a.result = Result{}
+	} else if errors.Is(err, ErrCommitFailed) && a.handle != nil {
+		// The report is a physical termination fact even when its Engine
+		// transition cannot be accepted across the concurrent fault boundary.
+		a.handle.terminate()
 	}
 }
