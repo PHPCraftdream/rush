@@ -71,6 +71,10 @@ type Querier interface {
 	// was wasted for nothing. session_notices carries no announced concept
 	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// One statement observes the root and its entire incarnation consistently.
+	BatchLevelNodes(ctx context.Context, arg BatchLevelNodesParams) ([]BatchNode, error)
+	// Return all nodes of nonterminal roots, including settled delegation links.
+	BatchLiveNodesForOwners(ctx context.Context, owners []string) ([]BatchNode, error)
 	// Shared snapshot guard for attempt increments and failure closure.
 	BatchOutboxAccountNode(ctx context.Context, arg BatchOutboxAccountNodeParams) (int64, error)
 	BatchOutboxAccountNotice(ctx context.Context, arg BatchOutboxAccountNoticeParams) (int64, error)

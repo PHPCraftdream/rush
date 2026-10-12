@@ -45,6 +45,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.asyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, asyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query AsyncReactionDebtExists: %w", err)
 	}
+	if q.batchLevelNodesStmt, err = db.PrepareContext(ctx, batchLevelNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchLevelNodes: %w", err)
+	}
+	if q.batchLiveNodesForOwnersStmt, err = db.PrepareContext(ctx, batchLiveNodesForOwners); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchLiveNodesForOwners: %w", err)
+	}
 	if q.batchOutboxAccountNodeStmt, err = db.PrepareContext(ctx, batchOutboxAccountNode); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchOutboxAccountNode: %w", err)
 	}
@@ -674,6 +680,16 @@ func (q *Queries) Close() error {
 	if q.asyncReactionDebtExistsStmt != nil {
 		if cerr := q.asyncReactionDebtExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing asyncReactionDebtExistsStmt: %w", cerr)
+		}
+	}
+	if q.batchLevelNodesStmt != nil {
+		if cerr := q.batchLevelNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchLevelNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchLiveNodesForOwnersStmt != nil {
+		if cerr := q.batchLiveNodesForOwnersStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchLiveNodesForOwnersStmt: %w", cerr)
 		}
 	}
 	if q.batchOutboxAccountNodeStmt != nil {
@@ -1707,6 +1723,8 @@ type Queries struct {
 	archiveAsyncJobToolCallIDStmt                        *sql.Stmt
 	asyncJobDebtOwnersStmt                               *sql.Stmt
 	asyncReactionDebtExistsStmt                          *sql.Stmt
+	batchLevelNodesStmt                                  *sql.Stmt
+	batchLiveNodesForOwnersStmt                          *sql.Stmt
 	batchOutboxAccountNodeStmt                           *sql.Stmt
 	batchOutboxAccountNoticeStmt                         *sql.Stmt
 	batchOutboxAnnounceStmt                              *sql.Stmt
@@ -1917,6 +1935,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		archiveAsyncJobToolCallIDStmt:                        q.archiveAsyncJobToolCallIDStmt,
 		asyncJobDebtOwnersStmt:                               q.asyncJobDebtOwnersStmt,
 		asyncReactionDebtExistsStmt:                          q.asyncReactionDebtExistsStmt,
+		batchLevelNodesStmt:                                  q.batchLevelNodesStmt,
+		batchLiveNodesForOwnersStmt:                          q.batchLiveNodesForOwnersStmt,
 		batchOutboxAccountNodeStmt:                           q.batchOutboxAccountNodeStmt,
 		batchOutboxAccountNoticeStmt:                         q.batchOutboxAccountNoticeStmt,
 		batchOutboxAnnounceStmt:                              q.batchOutboxAnnounceStmt,
