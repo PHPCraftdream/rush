@@ -155,24 +155,36 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 		}
 		// Future cursors wait for producer progress as well; no polling or skipping.
 		if err := ctx.Err(); err != nil {
-			f.mu.Lock()
-			progress := cursor <= f.head
-			f.mu.Unlock()
-			if progress && r.FaultErr() != nil {
-				continue
+			if r.requestHooks != nil && r.requestHooks.beforeEventsFault != nil {
+				r.requestHooks.beforeEventsFault()
 			}
-			return page, r.resultAfterFault(err)
+			if fault := r.FaultErr(); fault != nil {
+				f.mu.Lock()
+				progress := cursor <= f.head
+				f.mu.Unlock()
+				if progress {
+					continue
+				}
+				return page, fault
+			}
+			return page, err
 		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			f.mu.Lock()
-			progress := cursor <= f.head
-			f.mu.Unlock()
-			if progress && r.FaultErr() != nil {
-				continue
+			if r.requestHooks != nil && r.requestHooks.beforeEventsFault != nil {
+				r.requestHooks.beforeEventsFault()
 			}
-			return page, r.resultAfterFault(ctx.Err())
+			if fault := r.FaultErr(); fault != nil {
+				f.mu.Lock()
+				progress := cursor <= f.head
+				f.mu.Unlock()
+				if progress {
+					continue
+				}
+				return page, fault
+			}
+			return page, ctx.Err()
 		}
 	}
 }

@@ -78,6 +78,7 @@ func NewRunner(ctx context.Context, cfg RunnerConfig) (*Runner, error) {
 type runnerRequestHooks struct {
 	beforeRequestSubmit     func()
 	beforeEventsContext     func()
+	beforeEventsFault       func()
 	queued, accepted, reply func(*runnerRequest)
 	// Instance-local scheduling seams; copied before goroutine publication.
 	timeoutCancel         func(context.CancelFunc)
