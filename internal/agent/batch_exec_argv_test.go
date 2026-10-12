@@ -43,7 +43,7 @@ func TestBatchArgvHelper(t *testing.T) {
 	case "exit":
 		fmt.Print("failed argv\n")
 		os.Exit(7)
-	case "large":
+	case "bulk":
 		fmt.Print(strings.Repeat("x", (1<<20)+123))
 	case "tree", "hold":
 		if mode == "tree" {
@@ -143,7 +143,7 @@ func batchArgvNoReport(t *testing.T, reports <-chan jobbatch.Result) {
 }
 
 func TestBatchArgvResponseAndOutput(t *testing.T) {
-	for _, mode := range []string{"output", "exit", "large"} {
+	for _, mode := range []string{"output", "exit", "bulk"} {
 		t.Run(mode, func(t *testing.T) {
 			tool := batchArgvTool(t, true)
 			p := batchArgvPayload(t, mode)
@@ -173,7 +173,7 @@ func TestBatchArgvResponseAndOutput(t *testing.T) {
 				c, err := e.ReadOutput(t.Context(), cursor)
 				require.NoError(t, err)
 				require.True(t, c.EOF)
-				if mode == "large" {
+				if mode == "bulk" {
 					require.True(t, c.Truncated)
 					require.EqualValues(t, 123, c.Oldest)
 					require.EqualValues(t, (1<<20)+123, c.Next)
