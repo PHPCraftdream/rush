@@ -93,6 +93,12 @@ func TestBatchHistoryRootViewsOldestFirstAllIncarnations(t *testing.T) {
 	second, err := s.Reserve(ctx, p)
 	require.NoError(t, err)
 	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 5, Roots: []BatchRootProjection{{Owner: "owner", Root: first.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(first.Root.NodeID, "completed")}}}}))
+	// BatchHistoryRootsForOwner orders by created_at,root_id; same-second
+	// inserts tiebreak on a random uuid root_id, so pin the ordering.
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET created_at=100 WHERE root_id=?`, first.Root.RootID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET created_at=200 WHERE root_id=?`, second.Snapshot.Root.RootID)
+	require.NoError(t, err)
 	r := batchReadTestReader(t, conn)
 	views, err := s.BatchHistoryRootViews(ctx, r, "owner")
 	require.NoError(t, err)

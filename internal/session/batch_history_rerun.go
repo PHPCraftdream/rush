@@ -10,6 +10,16 @@
 // nonterminal roots are stopped only after commit, from the Voided set
 // returned here; every entry carries its exact root_id so the stop stays
 // incarnation-scoped.
+//
+// D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' on a
+// notice_selected=0 row, and ordinary live roots (pending/starting/running/
+// cancelling) have no selected terminal notice — a void WRITE to them is a
+// schema violation. Live old incarnations are therefore collected with pure
+// SELECTs (BatchRerunLiveRootsBy{AnnounceMessage,ToolCall}IDs) and included
+// in the Voided set with their exact root_id, retiring them via post-commit
+// stop routing instead of delivery (mirrors legacy TruncateForRerun, which
+// voids running rows regardless of state). Entries are kept distinct by
+// root_id: a root matching both arms appears once.
 package session
 
 import (
@@ -92,7 +102,20 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void roots by announce message: %w", err)
 		}
 		for _, r := range rows {
-			voided = append(voided, batchRerunVoidedNode(r))
+			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
+		}
+	}
+	// Live old incarnations (D-R10c-live): a void WRITE is impossible for
+	// unselected rows (schema CHECK), so they retire via stop routing only.
+	for _, chunk := range chunkStrings(deletedIDs, rerunChunk) {
+		rows, err := q.BatchRerunLiveRootsByAnnounceMessageIDs(ctx, db.BatchRerunLiveRootsByAnnounceMessageIDsParams{
+			Owner: p.Owner, MessageIds: nullStrings(chunk),
+		})
+		if err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: live roots by announce message: %w", err)
+		}
+		for _, r := range rows {
+			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
 	}
 	// Legacy arm: never-acked roots only, so a reused tool_call_id cannot
@@ -105,7 +128,16 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void roots by tool call: %w", err)
 		}
 		for _, r := range rows {
-			voided = append(voided, batchRerunVoidedNode(r))
+			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
+		}
+		rows, err = q.BatchRerunLiveRootsByToolCallIDs(ctx, db.BatchRerunLiveRootsByToolCallIDsParams{
+			Owner: p.Owner, ToolCallIds: nullStrings(chunk),
+		})
+		if err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: live roots by tool call: %w", err)
+		}
+		for _, r := range rows {
+			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
 	}
 	// Re-pend BEFORE the voided-root pass: a node whose own notice message
@@ -128,6 +160,17 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 	}
 	publish()
 	return BatchRerunTruncation{Deleted: deleted, Voided: voided}, nil
+}
+
+// batchRerunAddDistinct appends n unless a root_id entry already exists: a
+// root matching both arms appears once in the stop-routing set.
+func batchRerunAddDistinct(set []BatchRerunVoidedNode, n BatchRerunVoidedNode) []BatchRerunVoidedNode {
+	for _, v := range set {
+		if v.RootID == n.RootID {
+			return set
+		}
+	}
+	return append(set, n)
 }
 
 // BatchRerunVoidedRoots returns the exact incarnations a committed rerun

@@ -245,6 +245,21 @@ func TestBatchRerunRependSurvivingRootVoidsVoidedRoot(t *testing.T) {
 	require.Equal(t, "pending", f.node(b.Root.RootID, b.Nodes[1].NodeID).Delivery)
 	require.Equal(t, "done", f.root(c.Root.RootID).Delivery, "an untouched root stays done")
 	require.Equal(t, "done", f.node(c.Root.RootID, c.Nodes[1].NodeID).Delivery)
+	// Fix 2: the repend cleared the dead message reference, so the next pull
+	// of the owner delivers B's outstanding notices -- the repend is
+	// deliverable, never stuck pending behind a dead message id.
+	// Revert-check (mutation m14_repend_keeps_dead_ref.py: remove
+	// `notice_message_id = NULL,` from
+	// BatchRerunRependNodesByNoticeMessageIDs): BatchOutboxNameMessage's
+	// notice_message_id IS NULL CAS then matches 0 rows forever and the pull
+	// below FAILS with ErrBatchProjectionConflict.
+	pulled, err := f.store.BatchPullNotices(f.ctx, f.messages, batchRerunOwner, func(row BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "re:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Len(t, pulled, 2, "both repended notices of root B deliver")
+	require.Equal(t, "done", f.node(b.Root.RootID, b.Nodes[1].NodeID).Delivery)
+	require.NotEmpty(t, f.node(b.Root.RootID, b.Nodes[1].NodeID).NoticeMessageID.String)
 }
 
 // Revert-check: dropping the target-present check deletes the tail and voids
@@ -284,4 +299,50 @@ func TestBatchRerunLegacyArmVoidsNeverAckedRoot(t *testing.T) {
 	require.Equal(t, old.Root.RootID, res.Voided[0].RootID, "the legacy arm is incarnation-scoped too")
 	require.Equal(t, "completed", res.Voided[0].State)
 	require.Equal(t, "void", f.root(old.Root.RootID).Delivery)
+}
+
+// D-R10c-live: still-nonterminal roots the rerun deleted history for cannot
+// take a void WRITE (the batch_nodes CHECK constraint forbids delivery='void'
+// on notice_selected=0 rows), so they appear in res.Voided with their exact
+// root_id for post-commit stop routing while their rows stay live.
+// Revert-check (mutation m13_live_rerun_unreachable.py: restrict the
+// BatchRerunLiveRootsBy{AnnounceMessage,ToolCall}IDs SELECTs, e.g.
+// `AND 1=0` on the live arms): the live roots drop out of Voided -- the
+// Voided and Reserve-attach assertions below fail.
+func TestBatchRerunVoidedIncludesLiveRootsForStopRouting(t *testing.T) {
+	t.Parallel()
+	f := newBatchRerunFx(t)
+	target := f.add(message.User, message.TextContent{Text: "rerun"})
+
+	// Announce arm: RUNNING, acked, no notice selected.
+	asst := f.assistantCall("call-1")
+	live := f.reserve("call-1")
+	f.start(live)
+	announce := f.ack(live)
+	// Legacy arm: live never-acked root matched by the deleted tail's call id.
+	legacyCall := f.assistantCall("call-2")
+	legacy := f.reserve("call-2")
+	f.start(legacy)
+
+	res, err := f.reconcile(target.ID, asst.ID, announce.ID, legacyCall.ID)
+	require.NoError(t, err)
+	got := map[string]BatchRerunVoidedNode{}
+	for _, v := range res.Voided {
+		got[v.RootID] = v
+	}
+	require.Len(t, got, 2, "both live roots are routed for stop: %v", res.Voided)
+	require.Contains(t, got, live.Root.RootID)
+	require.Contains(t, got, legacy.Root.RootID)
+	lr := f.root(live.Root.RootID)
+	require.Equal(t, "none", lr.Delivery, "live rows keep delivery='none': a void write would violate the schema CHECK")
+	require.Equal(t, "running", lr.State, "the row stays live; only stop routing retires it")
+	lg := f.root(legacy.Root.RootID)
+	require.Equal(t, "none", lg.Delivery)
+	require.Equal(t, "running", lg.State)
+	// Until the executor confirms the stop, Reserve under the same
+	// tool_call_id still attaches to the OLD live root (mirrors legacy:
+	// attach was also keyed on the running row until it stopped). Stop
+	// routing, not a fresh incarnation, is asserted here.
+	re := f.reserve("call-1")
+	require.Equal(t, live.Root.RootID, re.Root.RootID, "attach still keys the old live root before its stop is confirmed")
 }

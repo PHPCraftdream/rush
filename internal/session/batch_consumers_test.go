@@ -131,18 +131,30 @@ func TestBatchOwnerDeleteCascade(t *testing.T) {
 	require.EqualValues(t, 3, out.NodesDeleted)
 	require.EqualValues(t, 1, out.NoticesVoided)
 	require.EqualValues(t, 1, out.SchedulesCancelled)
-	for _, table := range []string{"batch_nodes", "batch_control_requests", "session_notices", "messages", "wake_schedules"} {
+	// batch_nodes, batch_control_requests and messages are DELETED; legacy
+	// session_notices are voided and wake schedules cancelled BY DESIGN (rows
+	// remain, mirroring VoidUndeliveredSessionNoticesForOwner /
+	// CancelAllWakeSchedulesForOwner; the session row itself goes later via
+	// session.Service.Delete's FKs).
+	for _, table := range []string{"batch_nodes", "batch_control_requests", "messages"} {
 		var count int
 		require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count), table)
 		require.Zero(t, count, table+" is gone after the owner delete")
 	}
+	var notices int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM session_notices WHERE delivery='void'`).Scan(&notices))
+	require.Equal(t, 1, notices, "session_notices are voided in place, not deleted")
+	var schedules int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM wake_schedules WHERE state='cancelled'`).Scan(&schedules))
+	require.Equal(t, 1, schedules, "wake_schedules are cancelled in place, not deleted")
 	// A later projection of the dead incarnation is contained by conflict.
 	require.ErrorIs(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 3, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(snap.Nodes[1].NodeID, "completed")}}}}), ErrBatchProjectionConflict)
 }
 
-// Revert-check (mutation "disposal guard missing": dropping the
-// delivery IN ('pending','done') guard lets a second dispose re-void reacted
-// history or re-zero an already-void row; the count assertions below fail).
+// Revert-check (mutation "disposal guard missing", m12): dropping the
+// delivery IN ('pending','done') AND wake = 1 guards (reacted = 0 kept) lets
+// a second dispose re-void an already-void row; the exactly-once assertions
+// below fail.
 func TestBatchDisposeLegacyBoundNoticesExactlyOnce(t *testing.T) {
 	t.Parallel()
 	s, conn, ctx := batchStoreTestDB(t)
@@ -150,7 +162,9 @@ func TestBatchDisposeLegacyBoundNoticesExactlyOnce(t *testing.T) {
 		delivery      string
 		wake, reacted int64
 	}{
-		{"pending", 1, 0}, {"done", 1, 0}, {"pending", 1, 1}, {"void", 1, 0}, {"pending", 0, 0},
+		// pending woken unreacted, done woken unreacted, done woken reacted,
+		// done unwoken unreacted, void woken unreacted.
+		{"pending", 1, 0}, {"done", 1, 0}, {"done", 1, 1}, {"done", 0, 0}, {"void", 1, 0},
 	}
 	for i, r := range rows {
 		_, err := conn.ExecContext(ctx, `INSERT INTO session_notices (owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at) VALUES ('owner','supervision',?,?,?,?,?,?,?)`,
@@ -163,19 +177,24 @@ func TestBatchDisposeLegacyBoundNoticesExactlyOnce(t *testing.T) {
 	notices, err := db.New(conn).BatchListBoundNoticesByToolCallID(ctx, db.BatchListBoundNoticesByToolCallIDParams{Owner: "owner", ToolCallID: sql.NullString{String: "call", Valid: true}})
 	require.NoError(t, err)
 	require.Len(t, notices, 5)
+	byText := map[string]db.SessionNotice{}
 	for _, notice := range notices {
-		if notice.Reacted == 1 {
-			require.Equal(t, "pending", notice.Delivery, "a reacted notice is left as history")
-		} else {
-			require.Equal(t, "void", notice.Delivery)
-			require.Zero(t, notice.Wake, "wake zeroed so debt readers cannot double-count")
-		}
+		byText[notice.Text] = notice
 	}
-	// Debt reader consistency: no disposed row is outstanding.
+	for _, text := range []string{"n0", "n1"} {
+		require.Equal(t, "void", byText[text].Delivery, text+" is disposed")
+		require.Zero(t, byText[text].Wake, "wake zeroed so debt readers cannot double-count")
+	}
+	require.Equal(t, "done", byText["n2"].Delivery, "a reacted notice is left as history")
+	require.Equal(t, "done", byText["n3"].Delivery, "an unwoken notice is untouched")
+	require.Equal(t, "void", byText["n4"].Delivery, "an already-void notice is untouched")
+	require.EqualValues(t, 1, byText["n4"].Wake, "the pre-void notice keeps its wake")
+	// Debt reader consistency: BatchOutboxDebtNotices requires reacted=0, so
+	// after disposal NO row is outstanding (the reacted row is excluded by
+	// design, the disposed rows by their zeroed wake).
 	debt, err := db.New(conn).BatchOutboxDebtNotices(ctx, "owner")
 	require.NoError(t, err)
-	require.Len(t, debt, 1, "only the reacted notice still carries its history debt shape")
-	require.EqualValues(t, 1, debt[0].Reacted)
+	require.Empty(t, debt, "no disposed or reacted row is outstanding debt")
 	// Double-dispose is a no-op.
 	again, err := s.BatchDisposeLegacyBoundNotices(ctx, "owner", "call")
 	require.NoError(t, err)

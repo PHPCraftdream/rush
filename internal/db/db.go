@@ -123,6 +123,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.batchRecoveryRootsStmt, err = db.PrepareContext(ctx, batchRecoveryRoots); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchRecoveryRoots: %w", err)
 	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByAnnounceMessageIDs: %w", err)
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByToolCallIDs: %w", err)
+	}
 	if q.batchRerunRependNodesByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunRependNodesByNoticeMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchRerunRependNodesByNoticeMessageIDs: %w", err)
 	}
@@ -864,6 +870,16 @@ func (q *Queries) Close() error {
 	if q.batchRecoveryRootsStmt != nil {
 		if cerr := q.batchRecoveryRootsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing batchRecoveryRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByToolCallIDsStmt: %w", cerr)
 		}
 	}
 	if q.batchRerunRependNodesByNoticeMessageIDsStmt != nil {
@@ -1893,6 +1909,8 @@ type Queries struct {
 	batchRecoveryInterruptStmt                           *sql.Stmt
 	batchRecoveryNoticeStmt                              *sql.Stmt
 	batchRecoveryRootsStmt                               *sql.Stmt
+	batchRerunLiveRootsByAnnounceMessageIDsStmt          *sql.Stmt
+	batchRerunLiveRootsByToolCallIDsStmt                 *sql.Stmt
 	batchRerunRependNodesByNoticeMessageIDsStmt          *sql.Stmt
 	batchRerunVoidNodesByNoticeMessageIDsStmt            *sql.Stmt
 	batchRerunVoidNodesOfVoidedRootsStmt                 *sql.Stmt
@@ -2123,6 +2141,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		batchRecoveryInterruptStmt:                           q.batchRecoveryInterruptStmt,
 		batchRecoveryNoticeStmt:                              q.batchRecoveryNoticeStmt,
 		batchRecoveryRootsStmt:                               q.batchRecoveryRootsStmt,
+		batchRerunLiveRootsByAnnounceMessageIDsStmt:          q.batchRerunLiveRootsByAnnounceMessageIDsStmt,
+		batchRerunLiveRootsByToolCallIDsStmt:                 q.batchRerunLiveRootsByToolCallIDsStmt,
 		batchRerunRependNodesByNoticeMessageIDsStmt:          q.batchRerunRependNodesByNoticeMessageIDsStmt,
 		batchRerunVoidNodesByNoticeMessageIDsStmt:            q.batchRerunVoidNodesByNoticeMessageIDsStmt,
 		batchRerunVoidNodesOfVoidedRootsStmt:                 q.batchRerunVoidNodesOfVoidedRootsStmt,

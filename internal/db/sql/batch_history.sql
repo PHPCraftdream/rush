@@ -21,9 +21,12 @@ DELETE FROM batch_nodes WHERE owner_session_id = @owner_session_id;
 -- name: BatchRerunRependNodesByNoticeMessageIDs :execrows
 -- Selected-node delivery reconciliation: a done node whose own notice
 -- message was deleted goes back to pending so the next turn pulls it again.
+-- The dead message reference is cleared and the attempt counters reset
+-- (mirrors BatchHistoryRependNodesByDeletedNoticeMessages), so the next
+-- pull names a FRESH message and can never fail its CAS forever.
 -- The delivery='done' guard keeps a retried rerun from resurrecting a void.
-UPDATE batch_nodes SET delivery = 'pending', wake_attempts = 0,
-    reacted_failed = 0, updated_at = @updated_at
+UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
+    wake_attempts = 0, reacted_failed = 0, updated_at = @updated_at
 WHERE owner_session_id = @owner AND notice_selected = 1 AND delivery = 'done'
   AND notice_message_id IN (sqlc.slice('message_ids'));
 
@@ -66,6 +69,30 @@ WHERE owner_session_id = @owner AND node_id = root_id
   AND notice_selected = 1 AND delivery != 'void' AND announce_message_id IS NULL
   AND tool_call_id IN (sqlc.slice('tool_call_ids'))
 RETURNING *;
+
+-- name: BatchRerunLiveRootsByAnnounceMessageIDs :many
+-- D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' (and
+-- wake=1) on a notice_selected=0 row, so an ordinary live root has NO selected
+-- terminal notice and a void WRITE here would violate the schema. Pure
+-- SELECT instead: still-nonterminal announced roots whose announce message
+-- the rerun deleted are returned so the caller retires them via post-commit
+-- stop routing (mirrors legacy TruncateForRerun, which voids running rows
+-- regardless of state). Kept distinct by root_id from the void-write arm.
+SELECT * FROM batch_nodes
+WHERE owner_session_id = @owner AND node_id = root_id
+  AND state IN ('pending', 'starting', 'running', 'cancelling')
+  AND announce_message_id IN (sqlc.slice('message_ids'));
+
+-- name: BatchRerunLiveRootsByToolCallIDs :many
+-- Legacy-arm counterpart: never-acked live roots (announce_message_id IS
+-- NULL, the same I5 guard) matched by the deleted tail's tool_call_id,
+-- returned for stop routing only -- no void write (see
+-- BatchRerunLiveRootsByAnnounceMessageIDs).
+SELECT * FROM batch_nodes
+WHERE owner_session_id = @owner AND node_id = root_id
+  AND state IN ('pending', 'starting', 'running', 'cancelling')
+  AND announce_message_id IS NULL
+  AND tool_call_id IN (sqlc.slice('tool_call_ids'));
 
 -- name: BatchRerunVoidNodesOfVoidedRoots :execrows
 -- Nodes of roots the rerun voided (announce or legacy arm): their notice

@@ -10,7 +10,8 @@ package session
 // batch_nodes/outbox/read/recovery/control query files.
 
 // GREP INVENTORY (exact commands, run 2026-10-12 in this worktree; counts =
-// matching non-test, non-internal/db-generated lines):
+// matching non-test, non-internal/db-generated lines; batch_history.sql
+// carries 11 queries, not the 10 once inventoried):
 //
 //   grep -rn "AsyncJob\|async_jobs\|session_notices" --include="*.go" internal cmd \
 //     | grep -v _test.go | grep -v "^internal/db" | awk -F: '{print $1}' | sort | uniq -c
@@ -69,6 +70,11 @@ package session
 // | tools/job_output.go, tools/job_kill.go | controller tools | dropped at R12 (D6): replaced by batch_status/output/stop [R13] | R13 tests |
 // | supervision.go / delegation_question.go / work_ledger_timeout.go question+wake-only notices | supervision notices, held input | retained session_notices infrastructure until cutover; node question delivery is R8 reaction + R7c adapter scope — needs production rewiring at R12/R7c | R7c/R8 tests |
 // | app.go / app_accessors.go / app_session_activity.go / app_run_async*.go / app_recovery.go / app_agent_setup.go / app_session_drivers.go | store accessors, activity, recovery wiring | composition roots; rewired to Batch* stores at R11/R12 — needs production rewiring at R11/R12 | R11 wiring tests |
+// | internal/cmd/sessions_watch.go (~457, watch tick via App.SessionActivity) | periodic activity tick | needs production rewiring at R11F/R12: App.SessionActivity / classifier input switches to BatchLiveReader + BatchHistorySnapshot | R11F wiring tests |
+// | internal/cmd/sessions_tail.go (~194) | live tail reader | needs production rewiring at R11F/R12: App.SessionActivity / classifier input switches to BatchLiveReader + BatchHistorySnapshot | R11F wiring tests |
+// | internal/cmd/sessions_inject.go (~108) | live-work gate before inject | needs production rewiring at R11F/R12: App.SessionActivity / classifier input switches to BatchLiveReader + BatchHistorySnapshot | R11F wiring tests |
+// | internal/cmd/sessions_cancel.go (~128, sessionHasLiveWork) | live-work refusal gate | needs production rewiring at R11F/R12: App.SessionActivity / classifier input switches to BatchLiveReader + BatchHistorySnapshot | R11F wiring tests |
+// | internal/cmd/sessions_locks.go (~262, SessionActivityBatch) | batched activity for lock listing | needs production rewiring at R11F/R12: App.SessionActivity / classifier input switches to BatchLiveReader + BatchHistorySnapshot | R11F wiring tests |
 
 // DECISIONS (smallest conservative choice; marked where old behavior was
 // ambiguous):
@@ -187,8 +193,13 @@ package session
 //       owner string) (map[string]int64, error)
 //     BatchHistoryStateCounts for sessions audit/jobs summaries.
 //
-// SCHEMA NOTES: every query above is expressible on the R5 tables; no schema
-// gap was found. batch_control_requests cascades from batch_nodes root rows
+// SCHEMA NOTES: every query above is expressible on the R5 tables, EXCEPT
+// the recorded D-R10c-live decision: the batch_nodes CHECK constraint
+// (20261012000001_batch_projection.sql) forbids delivery='void' (and wake=1)
+// on notice_selected=0 rows, so a void WRITE to an ordinary live root is a
+// schema violation; live old incarnations retire via post-commit stop
+// routing (BatchRerunLiveRootsBy{AnnounceMessage,ToolCall}IDs), not via
+// delivery. batch_control_requests cascades from batch_nodes root rows
 // and from sessions; session_notices.job_tool_call_id is textual (no FK), so
 // disposal matching is by tool_call_id equality — same weakness as the old
 // repoint logic, recorded, not fixed here.

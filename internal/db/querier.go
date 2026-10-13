@@ -120,8 +120,24 @@ type Querier interface {
 	BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoticeParams) (int64, error)
 	// Include terminal ancestors with live descendants and terminal unannounced leaks.
 	BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error)
+	// D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' (and
+	// wake=1) on a notice_selected=0 row, so an ordinary live root has NO selected
+	// terminal notice and a void WRITE here would violate the schema. Pure
+	// SELECT instead: still-nonterminal announced roots whose announce message
+	// the rerun deleted are returned so the caller retires them via post-commit
+	// stop routing (mirrors legacy TruncateForRerun, which voids running rows
+	// regardless of state). Kept distinct by root_id from the void-write arm.
+	BatchRerunLiveRootsByAnnounceMessageIDs(ctx context.Context, arg BatchRerunLiveRootsByAnnounceMessageIDsParams) ([]BatchNode, error)
+	// Legacy-arm counterpart: never-acked live roots (announce_message_id IS
+	// NULL, the same I5 guard) matched by the deleted tail's tool_call_id,
+	// returned for stop routing only -- no void write (see
+	// BatchRerunLiveRootsByAnnounceMessageIDs).
+	BatchRerunLiveRootsByToolCallIDs(ctx context.Context, arg BatchRerunLiveRootsByToolCallIDsParams) ([]BatchNode, error)
 	// Selected-node delivery reconciliation: a done node whose own notice
 	// message was deleted goes back to pending so the next turn pulls it again.
+	// The dead message reference is cleared and the attempt counters reset
+	// (mirrors BatchHistoryRependNodesByDeletedNoticeMessages), so the next
+	// pull names a FRESH message and can never fail its CAS forever.
 	// The delivery='done' guard keeps a retried rerun from resurrecting a void.
 	BatchRerunRependNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunRependNodesByNoticeMessageIDsParams) (int64, error)
 	// Void every selected node whose notice message was deleted; runs AFTER the

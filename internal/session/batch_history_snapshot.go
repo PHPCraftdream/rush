@@ -18,7 +18,9 @@ import (
 // R10a live facts per node plus delivery/debt columns, the task counts, the
 // host verdict for the root's host and the outstanding debt total (nodes
 // with wake = 1, reacted = 0, delivery != 'void'). Disappeared mirrors the
-// R10a level result: the root was deleted between capture and read.
+// R10a level result: the root was deleted between capture and read. Complete
+// mirrors level.Complete: an incomplete walk must never read as a finished
+// or empty verdict (conservative-read rule).
 type BatchHistorySnapshot struct {
 	Owner, RootID string
 	Root          BatchHistoryNodeView
@@ -27,6 +29,7 @@ type BatchHistorySnapshot struct {
 	Debt          int64
 	Host          HostLockStatus
 	Disappeared   bool
+	Complete      bool
 }
 
 func batchHistoryNodeView(fact BatchLiveNode, n db.BatchNode) BatchHistoryNodeView {
@@ -55,7 +58,10 @@ func (s *BatchStore) BatchHistorySnapshot(ctx context.Context, reader *BatchLive
 		return BatchHistorySnapshot{}, fmt.Errorf("batch snapshot: level nodes: %w", err)
 	}
 	level := reader.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: owner, RootID: root}, "")
-	out := BatchHistorySnapshot{Owner: owner, RootID: root, Disappeared: level.Disappeared}
+	if level.Err != nil {
+		return BatchHistorySnapshot{}, fmt.Errorf("batch snapshot: level: %w", level.Err)
+	}
+	out := BatchHistorySnapshot{Owner: owner, RootID: root, Disappeared: level.Disappeared, Complete: level.Complete}
 	byID := make(map[string]db.BatchNode, len(rows))
 	for _, n := range rows {
 		if n.OwnerSessionID == owner && n.RootID == root {

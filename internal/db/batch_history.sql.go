@@ -246,9 +246,227 @@ func (q *Queries) BatchListBoundNoticesByToolCallID(ctx context.Context, arg Bat
 	return items, nil
 }
 
+const batchRerunLiveRootsByAnnounceMessageIDs = `-- name: BatchRerunLiveRootsByAnnounceMessageIDs :many
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+WHERE owner_session_id = ?1 AND node_id = root_id
+  AND state IN ('pending', 'starting', 'running', 'cancelling')
+  AND announce_message_id IN (/*SLICE:message_ids*/?)
+`
+
+type BatchRerunLiveRootsByAnnounceMessageIDsParams struct {
+	Owner      string           `json:"owner"`
+	MessageIds []sql.NullString `json:"message_ids"`
+}
+
+// D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' (and
+// wake=1) on a notice_selected=0 row, so an ordinary live root has NO selected
+// terminal notice and a void WRITE here would violate the schema. Pure
+// SELECT instead: still-nonterminal announced roots whose announce message
+// the rerun deleted are returned so the caller retires them via post-commit
+// stop routing (mirrors legacy TruncateForRerun, which voids running rows
+// regardless of state). Kept distinct by root_id from the void-write arm.
+func (q *Queries) BatchRerunLiveRootsByAnnounceMessageIDs(ctx context.Context, arg BatchRerunLiveRootsByAnnounceMessageIDsParams) ([]BatchNode, error) {
+	query := batchRerunLiveRootsByAnnounceMessageIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Owner)
+	if len(arg.MessageIds) > 0 {
+		for _, v := range arg.MessageIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", strings.Repeat(",?", len(arg.MessageIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:message_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BatchNode{}
+	for rows.Next() {
+		var i BatchNode
+		if err := rows.Scan(
+			&i.NodeID,
+			&i.RootID,
+			&i.OwnerSessionID,
+			&i.HostID,
+			&i.ParentID,
+			&i.Ordinal,
+			&i.Kind,
+			&i.ToolCallID,
+			&i.InputHash,
+			&i.Announced,
+			&i.AnnounceMessageID,
+			&i.OriginCli,
+			&i.Mode,
+			&i.OnFail,
+			&i.Notify,
+			&i.MaxParallel,
+			&i.TaskKind,
+			&i.TaskGroup,
+			&i.TaskPayload,
+			&i.TimeoutNs,
+			&i.ChildSessionID,
+			&i.State,
+			&i.Cause,
+			&i.Token,
+			&i.Attempts,
+			&i.ControlState,
+			&i.ControlError,
+			&i.ControlPending,
+			&i.OutcomeState,
+			&i.OutcomeCode,
+			&i.OutcomeSummary,
+			&i.ResponseEnvelopeRef,
+			&i.RootSequence,
+			&i.ProjectionSequence,
+			&i.NoticeSelected,
+			&i.NoticeKind,
+			&i.NoticeState,
+			&i.NoticeCause,
+			&i.NoticeSequence,
+			&i.NoticeOrdinal,
+			&i.NoticePending,
+			&i.NoticeActive,
+			&i.NoticeCompleted,
+			&i.NoticeFailed,
+			&i.NoticeCancelled,
+			&i.NoticeTimedOut,
+			&i.NoticeInterrupted,
+			&i.NoticeSkipped,
+			&i.Delivery,
+			&i.NoticeMessageID,
+			&i.Wake,
+			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const batchRerunLiveRootsByToolCallIDs = `-- name: BatchRerunLiveRootsByToolCallIDs :many
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+WHERE owner_session_id = ?1 AND node_id = root_id
+  AND state IN ('pending', 'starting', 'running', 'cancelling')
+  AND announce_message_id IS NULL
+  AND tool_call_id IN (/*SLICE:tool_call_ids*/?)
+`
+
+type BatchRerunLiveRootsByToolCallIDsParams struct {
+	Owner       string           `json:"owner"`
+	ToolCallIds []sql.NullString `json:"tool_call_ids"`
+}
+
+// Legacy-arm counterpart: never-acked live roots (announce_message_id IS
+// NULL, the same I5 guard) matched by the deleted tail's tool_call_id,
+// returned for stop routing only -- no void write (see
+// BatchRerunLiveRootsByAnnounceMessageIDs).
+func (q *Queries) BatchRerunLiveRootsByToolCallIDs(ctx context.Context, arg BatchRerunLiveRootsByToolCallIDsParams) ([]BatchNode, error) {
+	query := batchRerunLiveRootsByToolCallIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Owner)
+	if len(arg.ToolCallIds) > 0 {
+		for _, v := range arg.ToolCallIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", strings.Repeat(",?", len(arg.ToolCallIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:tool_call_ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BatchNode{}
+	for rows.Next() {
+		var i BatchNode
+		if err := rows.Scan(
+			&i.NodeID,
+			&i.RootID,
+			&i.OwnerSessionID,
+			&i.HostID,
+			&i.ParentID,
+			&i.Ordinal,
+			&i.Kind,
+			&i.ToolCallID,
+			&i.InputHash,
+			&i.Announced,
+			&i.AnnounceMessageID,
+			&i.OriginCli,
+			&i.Mode,
+			&i.OnFail,
+			&i.Notify,
+			&i.MaxParallel,
+			&i.TaskKind,
+			&i.TaskGroup,
+			&i.TaskPayload,
+			&i.TimeoutNs,
+			&i.ChildSessionID,
+			&i.State,
+			&i.Cause,
+			&i.Token,
+			&i.Attempts,
+			&i.ControlState,
+			&i.ControlError,
+			&i.ControlPending,
+			&i.OutcomeState,
+			&i.OutcomeCode,
+			&i.OutcomeSummary,
+			&i.ResponseEnvelopeRef,
+			&i.RootSequence,
+			&i.ProjectionSequence,
+			&i.NoticeSelected,
+			&i.NoticeKind,
+			&i.NoticeState,
+			&i.NoticeCause,
+			&i.NoticeSequence,
+			&i.NoticeOrdinal,
+			&i.NoticePending,
+			&i.NoticeActive,
+			&i.NoticeCompleted,
+			&i.NoticeFailed,
+			&i.NoticeCancelled,
+			&i.NoticeTimedOut,
+			&i.NoticeInterrupted,
+			&i.NoticeSkipped,
+			&i.Delivery,
+			&i.NoticeMessageID,
+			&i.Wake,
+			&i.Reacted,
+			&i.WakeAttempts,
+			&i.ReactedFailed,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const batchRerunRependNodesByNoticeMessageIDs = `-- name: BatchRerunRependNodesByNoticeMessageIDs :execrows
-UPDATE batch_nodes SET delivery = 'pending', wake_attempts = 0,
-    reacted_failed = 0, updated_at = ?1
+UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
+    wake_attempts = 0, reacted_failed = 0, updated_at = ?1
 WHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'
   AND notice_message_id IN (/*SLICE:message_ids*/?)
 `
@@ -261,6 +479,9 @@ type BatchRerunRependNodesByNoticeMessageIDsParams struct {
 
 // Selected-node delivery reconciliation: a done node whose own notice
 // message was deleted goes back to pending so the next turn pulls it again.
+// The dead message reference is cleared and the attempt counters reset
+// (mirrors BatchHistoryRependNodesByDeletedNoticeMessages), so the next
+// pull names a FRESH message and can never fail its CAS forever.
 // The delivery='done' guard keeps a retried rerun from resurrecting a void.
 func (q *Queries) BatchRerunRependNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunRependNodesByNoticeMessageIDsParams) (int64, error) {
 	query := batchRerunRependNodesByNoticeMessageIDs
