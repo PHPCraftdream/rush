@@ -417,10 +417,10 @@ func TestBatchCommitEnvelopeDurabilityAndRollback(t *testing.T) {
 // committed sequence the projection equals the Runner's published view.
 func TestBatchCommitZeroPublicationBeforeCommit(t *testing.T) {
 	env := newCommitHookEnv(t)
-	// Token gate: the wrapper takes one token per gated transition and blocks
-	// while the gate is empty; refill to let the next gated commit proceed.
+	// Token gate: starts EMPTY — each gated hook signals `gated` and then
+	// blocks on <-gate until the test asserts its pre-commit condition and
+	// refills the token.
 	gate := make(chan struct{}, 1)
-	gate <- struct{}{}
 	gated := make(chan jobbatch.Transition, 8) // signals a gated commit is at the gate
 	adapter := env.adapter()
 	r, e, ctx := commitHookRunner(t, func(ctx context.Context, tr jobbatch.Transition) error {
