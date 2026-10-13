@@ -29,9 +29,8 @@ func installFakeStallNow(t *testing.T) func(time.Time) {
 	t.Helper()
 	var current atomic.Int64
 	current.Store(time.Now().UnixNano())
-	prev := stallNow
-	stallNow = func() time.Time { return time.Unix(0, current.Load()) }
-	t.Cleanup(func() { stallNow = prev })
+	prev := swapStallNow(func() time.Time { return time.Unix(0, current.Load()) })
+	t.Cleanup(func() { swapStallNow(prev) })
 	return func(at time.Time) { current.Store(at.UnixNano()) }
 }
 
