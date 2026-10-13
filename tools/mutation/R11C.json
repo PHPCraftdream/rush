@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "task": "R11C",
+  "mutations": [
+    {
+      "id": "M1-singleflight-drop",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "r.calls[key] = e",
+      "replacement": "r.calls[\"\u0000dropped\"+key] = e",
+      "package": "internal/agent",
+      "test": "TestInvokeConcurrentMatchingRetriesExecuteOnce",
+      "purpose": "Concurrent matching retries must register the singleflight entry and execute once.",
+      "expected_assertion": "invalid memory address or nil pointer dereference"
+    },
+    {
+      "id": "M3-controls-allowed",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "if batchControlTarget(call.Name) {",
+      "replacement": "if false && batchControlTarget(call.Name) {",
+      "package": "internal/agent",
+      "test": "TestInvokeRefusesControlToolLeaves",
+      "purpose": "D1 control tools must be refused at the ingress gate before admission.",
+      "expected_assertion": "Should be false"
+    },
+    {
+      "id": "M4-attach-resubmit",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "if !attached {",
+      "replacement": "if true || !attached {",
+      "package": "internal/agent",
+      "test": "TestInvokeAttachesLiveRoot",
+      "purpose": "A live attached root must never be submitted a second time.",
+      "expected_assertion": "an attached retry never submits"
+    },
+    {
+      "id": "M5-admission-swallow",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "return \"\", fmt.Errorf(\"%w: %w\", errBatchSubmitBeforeInvalid, err)",
+      "replacement": "return root, nil",
+      "package": "internal/agent",
+      "test": "TestInvokeValidateSubmitFailsBeforeRunnerCall",
+      "purpose": "ValidateSubmit failure must surface as an error before any Runner call.",
+      "expected_assertion": "An error is expected but got nil."
+    },
+    {
+      "id": "M6-notwired-fallthrough",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "if r.cfg.Delivery == nil {",
+      "replacement": "if false && r.cfg.Delivery == nil {",
+      "package": "internal/agent",
+      "test": "TestInvokeDeliveryNotWired",
+      "purpose": "A nil delivery seam must return the typed not-wired error before any store or engine call.",
+      "expected_assertion": "Target error should be in err chain:"
+    },
+    {
+      "id": "M7-identity-session",
+      "file": "internal/agent/batch_invocation.go",
+      "file_sha256": "2a7b7a97897c06194734d20ef41b030a89caa7a26981fc858bbc5655e4540b1d",
+      "needle": "if inv.SessionID == \"\" {",
+      "replacement": "if len(inv.SessionID) > 1<<30 {",
+      "package": "internal/agent",
+      "test": "TestBatchInvocationValidateFailsClosed",
+      "purpose": "Validate must fail closed on a missing owner session identity. Schema adaptation: the runner requires a top-level ^Test\\w+$ name, so the parent test is named; its missing_session subtest runs under it and descendant output still classifies the kill.",
+      "expected_assertion": "An error is expected but got nil."
+    },
+    {
+      "id": "M8-policy-scope-drop",
+      "file": "internal/agent/batch_invocation.go",
+      "file_sha256": "2a7b7a97897c06194734d20ef41b030a89caa7a26981fc858bbc5655e4540b1d",
+      "needle": "ctx = context.WithValue(ctx, batchFolderScopeContextKey{}, p.Policy.FolderScope)",
+      "replacement": "ctx = context.WithValue(ctx, batchFolderScopeContextKey{}, (*permission.FolderScopeSpec)(nil))",
+      "package": "internal/agent",
+      "test": "TestConcurrentInvocationsNoPolicyCollision",
+      "purpose": "The executor run context must carry the invocation's own folder scope, not a dropped value.",
+      "expected_assertion": "Not equal:"
+    },
+    {
+      "id": "M9-construct-probe",
+      "file": "internal/agent/batch_runtime.go",
+      "file_sha256": "1f1b661b6dd55fd7aaa3cf6c5418709997d8df0bf9a524fce4c10cc2eb037ca7",
+      "needle": "return &batchRuntime{cfg: cfg, calls: make(map[string]*batchCallEntry)}, nil",
+      "replacement": "r := &batchRuntime{cfg: cfg, calls: make(map[string]*batchCallEntry)}; _, _, _ = cfg.Attach.ProbeLive(context.Background(), batchAttachProbe{Owner: \"m\", Host: cfg.Host, RunnerID: cfg.RunnerID, InputHash: \"m\"}); return r, nil",
+      "package": "internal/agent",
+      "test": "TestNewBatchRuntimeNoSideEffects",
+      "purpose": "Construction must have no side effects: no store probe, no goroutine, no registration.",
+      "expected_assertion": "construction must not probe"
+    },
+    {
+      "id": "M10-finish-no-evict",
+      "file": "internal/agent/batch_runtime.go",
+      "file_sha256": "1f1b661b6dd55fd7aaa3cf6c5418709997d8df0bf9a524fce4c10cc2eb037ca7",
+      "needle": "if r.calls[key] == e {",
+      "replacement": "if false && r.calls[key] == e {",
+      "package": "internal/agent",
+      "test": "TestInvokeEvictsEntryAfterCompletion",
+      "purpose": "finishCall must evict the singleflight entry; entries are never cached for the process lifetime.",
+      "expected_assertion": "a failed call leaves the singleflight map"
+    },
+    {
+      "id": "M11-waiter-poison-replay",
+      "file": "internal/agent/batch_ingress.go",
+      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
+      "needle": "if ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {",
+      "replacement": "if false {",
+      "package": "internal/agent",
+      "test": "TestInvokeWaiterNotPoisonedByFirstCancel",
+      "purpose": "A waiter whose own ctx is alive must not inherit the first caller's cancellation.",
+      "expected_assertion": "Received unexpected error"
+    }
+  ],
+  "requires_merge": [
+    "#29"
+  ]
+}

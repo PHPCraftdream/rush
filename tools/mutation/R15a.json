@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "task": "R15a",
+  "mutations": [
+    {
+      "id": "mut1_incomplete_treated_complete",
+      "file": "internal/server/handlers_batch.go",
+      "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
+      "needle": "snap.Complete = walkComplete && !missingRoot",
+      "replacement": "snap.Complete = true\n\t\t_ = walkComplete\n\t\t_ = missingRoot",
+      "package": "internal/server",
+      "test": "TestBatchWorkSnapshot_IncompleteKeepsRoots",
+      "purpose": "Treat failed child fetch as complete while keeping walkComplete/missingRoot used so the mutant compiles: blank assignments discard both variables and the constant true forces the completeness expression. False assertion's explicit message is in handlers_batch_test.go. Additional advertised test: TestBatchWorkSnapshot_UnknownHostIsConservative.",
+      "expected_assertion": "a failed fetch must make the scope incomplete"
+    },
+    {
+      "id": "mut3_text_parsing_reintroduced",
+      "file": "internal/server/handlers_batch.go",
+      "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
+      "needle": "\t\t\t\t\tOutcomeCode: n.OutcomeCode,",
+      "replacement": "\t\t\t\t\tOutcomeCode: func(summary string) string { for i := 0; i+4 <= len(summary); i++ { if summary[i:i+4] == \"fail\" { return \"failed\" } }; return \"\" }(n.OutcomeSummary),",
+      "package": "internal/server",
+      "test": "TestBatchWorkSnapshot_StructuredCompletions",
+      "purpose": "Semantic single-needle conversion of the emitted three-edit mutation: its batchParseOutcomeText helper returns failed iff strings.Contains(summary, 'fail'), else empty. Inline the identical byte-substring parser to avoid extra helper/import edits under schema v1, preserving the emitted OutcomeSummary-to-OutcomeCode behavior. Test compares BatchCompletionWire with OutcomeCode 'ok' to the parsed empty code; structured diff contains this field.",
+      "expected_assertion": "OutcomeCode:"
+    },
+    {
+      "id": "mut4_flag_ignored",
+      "file": "internal/server/handlers_batch.go",
+      "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
+      "needle": "return err == nil && on",
+      "replacement": "return true || (err == nil && on)",
+      "package": "internal/server",
+      "test": "TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand",
+      "purpose": "Ignore runtime flag. First require.False(batchRuntimeEnabled()) fails before dispatch assertions in handlers_batch_test.go; this standard False assertion text is the actual failure rather than the later unknown-command message.",
+      "expected_assertion": "Should be false"
+    },
+    {
+      "id": "mut6_host_unknown_dead",
+      "file": "internal/server/handlers_batch.go",
+      "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
+      "needle": "default:\n\t\treturn \"unknown\"",
+      "replacement": "default:\n\t\treturn \"dead\"",
+      "package": "internal/server",
+      "test": "TestBatchWorkSnapshot_UnknownHostIsConservative",
+      "purpose": "Map unknown host to dead. Per-node HostStatusUnknown still sets rootComplete false, so the first actual differing assertion is root.Host = unknown, not the preceding completeness assertion.",
+      "expected_assertion": "expected: \"unknown\""
+    },
+    {
+      "id": "mut8_route_flag_off",
+      "file": "internal/server/handlers.go",
+      "file_sha256": "e32d76be8ba0bc2a7ccb1c8392c52635f2f661af28463861c12ccbc542fa6714",
+      "needle": "\t\tif batchRuntimeEnabled() {\n\t\t\tc.dispatch(\"handleGetSessionBatchWork\", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })\n\t\t} else {\n\t\t\tslog.Debug(\"ws: unknown command\", \"type\", msg.Type)\n\t\t\tc.reply(msg.ID, EventError, nil, \"unknown command: \"+msg.Type)\n\t\t}",
+      "replacement": "\t\tc.dispatch(\"handleGetSessionBatchWork\", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })",
+      "package": "internal/server",
+      "test": "TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand",
+      "purpose": "Dispatch the batch-work route unconditionally; Contains(text, unknown-command string) in handlers_batch_test.go fails on the session-not-found error.",
+      "expected_assertion": "unknown command: get_session_batch_work"
+    },
+    {
+      "id": "mut5_ordinal_order",
+      "file": "internal/server/handlers_batch.go",
+      "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
+      "needle": "return nodes[i].Ordinal < nodes[j].Ordinal",
+      "replacement": "return nodes[i].NodeID < nodes[j].NodeID",
+      "package": "internal/server",
+      "test": "TestBatchWorkSnapshot_NodesOrderedByOrdinal",
+      "purpose": "Snapshot nodes are ordered by ordinal, which differs from both NodeID lexical order and arrival order in the fixture.",
+      "expected_assertion": "nodes must be ordered by ordinal, not arrival or NodeID"
+    }
+  ]
+}

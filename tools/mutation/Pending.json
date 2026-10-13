@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "task": "pending",
+  "mutations": [
+    {
+      "id": "m08_reconstruct_notices",
+      "file": "internal/session/batch_commit.go",
+      "file_sha256": "50a2d070790745ef9448ff438b76e7c5eda075cd17ac03d49e50be0444233447",
+      "needle": "\tfor i, n := range t.Notices {\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
+      "replacement": "\tfor i, v := range t.Changed {\n\t\tif !v.State.Terminal() {\n\t\t\tcontinue\n\t\t}\n\t\tn := jobbatch.Notice{Root: v.Root, Node: v.ID, Kind: v.Kind, State: v.State, Cause: v.Cause}\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
+      "package": "internal/session",
+      "test": "TestBatchCommitNoticeOrdinalIsSlicePosition",
+      "purpose": "Reconstruct selection from terminal Changed rows. Survived proof run 38457733623 (commit c18c9cbd): in the TestBatchCommitNoticeOrdinalIsSlicePosition fixture the terminal rows of t.Changed appear in the same order and positions as t.Notices, so the mutant index into t.Changed yields the same ordinals (\"0\" for r.1/r.2, \"1\" for the root) as the slice position \u2014 the fixture does not make the two orderings diverge. Test strengthening must construct a transition where the terminal Changed row order/positions differ from the Notices slice order (e.g. descendants before ancestors plus an out-of-position terminal row). Catching assertion (require.Equal message): \"ordinal is the slice position, not the structural ordinal\".",
+      "expected_assertion": "ordinal is the slice position, not the structural ordinal"
+    },
+    {
+      "id": "setrunner-wake-dropped",
+      "file": "internal/app/app_batch_runtime.go",
+      "file_sha256": "4ccb81009608dc27c2530aa26a739a3199838963412a5f12e4798dd879794dd0",
+      "needle": "\t\tcase <-rt.runnerSet:",
+      "replacement": "\t\tcase <-make(chan struct{}):",
+      "package": "internal/app",
+      "test": "TestWatcherWakesOnSetRunnerAfterStart",
+      "purpose": "Drop the runnerSet wake case from the dormant watcher select. Survived proof run 38457733623 (commit c18c9cbd): TestWatcherWakesOnSetRunnerAfterStart calls SetRunner immediately after Start, so the watcher goroutine usually performs its first top-of-loop re-read of rt.runner AFTER the runner is stored and takes the live branch; the dormant select (whose runnerSet case the mutant removed) is then never reached, and the exit-70 path still happens. The test never forces the watcher to be parked in the dormant select before SetRunner, so the wake is unobserved. Strengthening must deterministically park the watcher in the dormant branch (e.g. start the watcher with a runner-set barrier/hook before calling SetRunner). Catching assertion (require.Eventually message): \"watcher must wake on SetRunner and exit once\".",
+      "expected_assertion": "watcher must wake on SetRunner and exit once"
+    }
+  ]
+}
