@@ -315,9 +315,11 @@ func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":4,"text":"because"}`)))
 	r := batchAgentTestReport(t, reports)
 	require.Equal(t, jobbatch.StateCompleted, r.State)
+	// The report can arrive before the asker goroutine is scheduled again:
+	// wait for its exit instead of sampling the channel once.
 	select {
 	case <-done:
-	default:
+	case <-time.After(5 * time.Second):
 		t.Fatal("asker goroutine did not exit after the answer")
 	}
 }
