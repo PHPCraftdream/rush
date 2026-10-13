@@ -1,0 +1,459 @@
+# ci-windows-shards — REUSABLE SHADOW workflow (Phase 2b).
+#
+# Splits the sequential Windows full-suite of .github/workflows/build.yml
+# into 4 parallel shards (A-D) plus the isolated internal/agent job, as a
+# reusable workflow validated on demand. build.yml is NOT touched; this
+# workflow is validated by pushing a branch to `ci-shadow/**` or calling it
+# via workflow_call. Cutover (replacing build.yml's Windows leg) is a
+# separate, later task.
+#
+# Conventions mirrored from build.yml: pinned action SHAs, -short policy
+# (-short skips VCR/network integration tests), shell: bash, one named step
+# per logical package group so the failing step NAME is the diagnosis.
+#
+# Caching: there is NO pinned actions/cache anywhere in this repo, so we do
+# NOT add one. We rely on actions/setup-go's built-in module + build cache
+# (cache defaults to true). Cache hit/miss is visible only in setup-go's
+# step log; the summary job instead reports setup-go step duration so cold
+# vs warm runs can be compared over time.
+#
+# Artifact actions: no workflow in this repo pins actions/upload-artifact or
+# actions/download-artifact by SHA. They are used here pinned to the v4 tag,
+# flagged as THE ONLY UNPINNED ACTIONS; a SHA pin is required at cutover
+# review. Everything else is copied exactly from build.yml.
+name: ci-windows-shards
+
+on:
+  workflow_call:
+  push:
+    branches: ["ci-shadow/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-windows-shards-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Fixed convention for the per-group package files and -json logs; each
+  # named test step reads its package list from here (keeps this YAML free
+  # of package lists — the plan job computes them).
+  SHARD_DIR: ${{ runner.temp }}/shards
+  LOG_DIR: ${{ runner.temp }}/logs
+
+jobs:
+  # Compute the shard assignment on ubuntu (cheap): every package from
+  # `go list ./...` must be assigned exactly once or this job fails — that
+  # IS the "not run" assertion for package coverage.
+  plan-shards:
+    runs-on: ubuntu-latest
+    outputs:
+      assignment: ${{ steps.plan.outputs.assignment }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: list packages and assign shards
+        id: plan
+        run: |
+          go list ./... > packages.txt
+          # Nonzero exit (unassigned / double-assigned / bad prefix) fails the run.
+          python3 .github/ci-shards/assign_shards.py \
+            --shards .github/ci-shards/shards.toml --input packages.txt > assignment.json
+          # Coverage of build.yml's Windows-leg named steps (the other half
+          # of the "not run" assertion): every step name must be mapped in
+          # [windows_leg] to a group that exists in the assignment.
+          python3 .github/ci-shards/assign_shards.py \
+            --shards .github/ci-shards/shards.toml \
+            --check-coverage \
+            --build-yml .github/workflows/build.yml \
+            --assignment assignment.json
+          # Job outputs must be single-line: emit compact JSON verbatim
+          # (json.dump already emits no newlines).
+          echo "assignment=$(cat assignment.json)" >> "$GITHUB_OUTPUT"
+      - name: upload assignment
+        # UNPINNED (tag only) — see header comment.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shard-assignment
+          path: assignment.json
+
+  windows-shard:
+    needs: plan-shards
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [A, B, C, D]
+    runs-on: windows-latest
+    # Runaway backstop only — shards are expected to finish well under this.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: setup-go (start timing)
+        id: setup_start
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+        # Built-in module+build cache only; no actions/cache (see header).
+      - name: record setup-go timing
+        shell: bash
+        run: |
+          mkdir -p "$LOG_DIR"
+          echo "shard-${{ matrix.shard }}|setup-go (includes built-in cache restore)|${{ steps.setup_start.outputs.epoch }}|$(date +%s)" >> "$LOG_DIR/timings.txt"
+      - name: Resolve shard groups
+        shell: bash
+        env:
+          ASSIGNMENT: ${{ needs.plan-shards.outputs.assignment }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$SHARD_DIR" "$LOG_DIR"
+          python - "$ASSIGNMENT" "${{ matrix.shard }}" "$SHARD_DIR" <<'PY'
+          import json, re, sys
+          assignment, shard, outdir = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+          groups = assignment["shards"][shard]["groups"]
+          def slug(name):
+              return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+          with open(f"{outdir}/manifest.txt", "w") as m:
+              for g in groups:
+                  m.write(slug(g["name"]) + "\n")
+                  with open(f"{outdir}/{slug(g['name'])}.txt", "w") as f:
+                      f.write("\n".join(g["packages"]))
+          print(f"resolved {len(groups)} groups for shard {shard}")
+          PY
+          cat "$SHARD_DIR/manifest.txt"
+
+      # ---- named group steps (order matches shards.toml) ----
+      # Each step: absent/empty group file = genuinely no packages = ok.
+      # `set -o pipefail` preserves go test's exit code through tee, and the
+      # -json output is captured to $LOG_DIR for the summary job's artifact.
+
+      - name: "test: internal/app"
+        if: matrix.shard == 'A'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-app.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -timeout 20m -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-app.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/app|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/server, internal/session"
+        if: matrix.shard == 'A'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-server-internal-session.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-server-internal-session.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/server, internal/session|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: sdk"
+        if: matrix.shard == 'A'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-sdk.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-sdk.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: sdk|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: npm wrapper cache logic"
+        if: matrix.shard == 'A'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: "test: npm wrapper cache logic"
+        if: matrix.shard == 'A'
+        shell: bash
+        run: |
+          t0=$(date +%s)
+          node npm/crush/bin/crush.cache.test.js
+          node npm/rush/bin/rush.cache.test.js
+          echo "${{ matrix.shard }}|test: npm wrapper cache logic|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+
+      - name: go mod tidy produces no diff
+        if: matrix.shard == 'A'
+        shell: bash
+        run: |
+          t0=$(date +%s)
+          go mod tidy
+          git diff --exit-code
+          echo "${{ matrix.shard }}|go mod tidy produces no diff|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+
+      - name: "test: internal/cmd, internal/commands"
+        if: matrix.shard == 'B'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-cmd-internal-commands.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-cmd-internal-commands.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/cmd, internal/commands|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/agent subpackages"
+        if: matrix.shard == 'C'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-agent-subpackages.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-agent-subpackages.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/agent subpackages|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/shell"
+        if: matrix.shard == 'C'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-shell.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-shell.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/shell|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/jobbatch, cmd/batchlab"
+        if: matrix.shard == 'C'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-jobbatch-cmd-batchlab.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-jobbatch-cmd-batchlab.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/jobbatch, cmd/batchlab|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/permission, internal/config, internal/csync"
+        if: matrix.shard == 'D'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-permission-internal-config-internal-csync.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/permission, internal/config, internal/csync|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+        if: matrix.shard == 'D'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-db-internal-message-internal-queue-internal-pubsub-internal-history.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-db-internal-message-internal-queue-internal-pubsub-internal-history.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+        if: matrix.shard == 'D'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: internal/oauth, internal/deploy, internal/update, internal/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: "test: everything else (computed catch-all)"
+        if: matrix.shard == 'D'
+        shell: bash
+        run: |
+          f="$SHARD_DIR/test-everything-else-computed-catch-all.txt"
+          [ -s "$f" ] || exit 0
+          set -o pipefail
+          t0=$(date +%s)
+          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-everything-else-computed-catch-all.json"
+          rc=$?
+          echo "${{ matrix.shard }}|test: everything else (computed catch-all)|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          exit $rc
+
+      - name: upload go test -json logs (even on failure)
+        if: always()
+        # UNPINNED (tag only) — see header comment.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-json-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: ignore
+
+  # internal/agent alone (exact package, NOT subpackages): dedicated job,
+  # must not compete with anything else on windows-latest — genuine OOM
+  # history (VirtualAlloc errno=1455), see build.yml's test-agent job for
+  # the full investigation and rationale of batches/parallel/GOMEMLIMIT.
+  windows-agent:
+    runs-on: windows-latest
+    # Runaway backstop only — the Windows branch of build.yml's test-agent.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: setup-go (start timing)
+        id: setup_start
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: record setup-go timing
+        shell: bash
+        run: |
+          mkdir -p "$LOG_DIR"
+          echo "agent|setup-go (includes built-in cache restore)|${{ steps.setup_start.outputs.epoch }}|$(date +%s)" >> "$LOG_DIR/timings.txt"
+      - name: go test ./internal/agent/ split into sequential batches
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Windows branch of build.yml's test-agent job (hardcoded here;
+          # see that job for the full history — bash 3.2-compatible name
+          # extraction, why batches=8/-parallel 1/GOMEMLIMIT=1500MiB).
+          names=()
+          if ! name_list="$(mktemp)"; then
+            echo "::error::could not create a temporary test-name list"
+            exit 1
+          fi
+          cleanup_name_list() { rm -f -- "${name_list:-}" || :; }
+          trap cleanup_name_list EXIT
+          if ! grep -h -E '^func Test[A-Za-z0-9_]+\(' internal/agent/*_test.go \
+            | sed -n -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' \
+            | sed '/^TestMain$/d' \
+            | LC_ALL=C sort -u >"$name_list"; then
+            echo "::error::failed to extract internal/agent test names"
+            exit 1
+          fi
+          if [ ! -s "$name_list" ]; then
+            echo "::error::no internal/agent tests were extracted"
+            exit 1
+          fi
+          while IFS= read -r name; do
+            [ -n "$name" ] && names+=("$name")
+          done <"$name_list"
+          total=${#names[@]}
+          [ "$total" -gt 0 ] || { echo "::error::internal/agent test-name list is empty"; exit 1; }
+          batches=8
+          parallel=1
+          # errno=1455 (ERROR_COMMITMENT_LIMIT): GC sheds heap proactively
+          # instead of asking the OS to commit more (see build.yml).
+          export GOMEMLIMIT=1500MiB
+          size=$(( (total + batches - 1) / batches ))
+          status=0
+          for ((i = 0; i < batches; i++)); do
+            start=$((i * size))
+            chunk=("${names[@]:start:size}")
+            [ ${#chunk[@]} -eq 0 ] && continue
+            pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
+            log="$LOG_DIR/agent-batch-$((i + 1)).json"
+            echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
+            t0=$(date +%s)
+            go test -short -failfast -parallel "$parallel" -json -run "$pattern" ./internal/agent/ 2>&1 | tee "$log"
+            rc=$?
+            echo "::endgroup::"
+            echo "agent|agent batch $((i + 1))/${batches}|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+            if [ "$rc" -ne 0 ]; then
+              status=$rc
+              break
+            fi
+          done
+          exit $status
+      - name: upload go test -json logs (even on failure)
+        if: always()
+        # UNPINNED (tag only) — see header comment.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-json-agent
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: ignore
+
+  # Asserts the "not run" list is ZERO (both directions): every go-list
+  # package lands in exactly one shard/agent (re-run of the planner against
+  # a fresh `go list`), and every build.yml Windows-leg step name maps to a
+  # live group. Then renders the timing table.
+  shards-summary:
+    needs: [plan-shards, windows-shard, windows-agent]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: download test-json artifacts
+        # UNPINNED (tag only) — see header comment.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+      - name: assert total coverage (no package left unrun)
+        run: |
+          go list ./... > packages.txt
+          python3 .github/ci-shards/assign_shards.py \
+            --shards .github/ci-shards/shards.toml --input packages.txt > recomputed.json
+          python3 .github/ci-shards/assign_shards.py \
+            --shards .github/ci-shards/shards.toml \
+            --check-coverage --build-yml .github/workflows/build.yml \
+            --assignment artifacts/shard-assignment/assignment.json
+          # The recomputed assignment IS the assignment the jobs ran with
+          # (same deterministic input + rules); byte-compare to be sure the
+          # shards that just ran covered the full current package list.
+          diff <(python3 -c "import json,sys;print(json.dumps(json.load(open('recomputed.json')),sort_keys=True))") \
+               <(python3 -c "import json,sys;print(json.dumps(json.load(open('artifacts/shard-assignment/assignment.json')),sort_keys=True))")
+      - name: render timing summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, os
+          rows = []
+          for path in glob.glob("artifacts/*/timings.txt"):
+              for line in open(path):
+                  parts = line.strip().split("|")
+                  if len(parts) == 4:
+                      rows.append(parts)
+          rows.sort(key=lambda r: int(r[2]))
+          print("## ci-windows-shards timing summary\n")
+          print("| job/step | step | wall (s) |")
+          print("|---|---|---|")
+          for job, step, s, e in rows:
+              print(f"| {job} | {step} | {int(e) - int(s)} |")
+          test_rows = [r for r in rows if r[1].startswith(("test:", "go mod tidy", "agent batch"))]
+          if test_rows:
+              total = max(int(r[3]) for r in test_rows) - min(int(r[2]) for r in test_rows)
+              print(f"\n**Approx total wall (test steps span): {total}s**")
+          print("\nCache: setup-go's built-in module+build cache status is only visible")
+          print("in each setup-go step log; compare setup-go durations across runs for")
+          print("cold-vs-warm restore time (see .github/ci-shards/README.md).")
+          PY
