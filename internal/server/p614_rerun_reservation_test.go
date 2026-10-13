@@ -447,7 +447,7 @@ func TestHandleRerunMessage_HeldReservationBlocksConcurrentSend(t *testing.T) {
 func TestRunWithReservedOwnership_ModelResolutionFailureReleasesReservation(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
-	dataDir := t.TempDir()
+	dataDir := diagDataDir(t)
 	// Make coordinator construction independent of whether the machine
 	// running this test has a local CLI on PATH — see the helper's doc.
 	forceLocalCLIProviderForTest(t)
