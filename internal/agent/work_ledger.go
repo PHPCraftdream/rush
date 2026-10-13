@@ -553,6 +553,12 @@ func (l *workLedger) abort(job *asyncJob) {
 func (l *workLedger) awaitSync(ctx context.Context, job *asyncJob) (jobResult, error) {
 	select {
 	case <-job.done:
+		// A cancelled caller always gets the context error: when the
+		// cancellation also ended the executor, both channels are ready and
+		// select would otherwise pick between them at random.
+		if err := ctx.Err(); err != nil {
+			return jobResult{}, err
+		}
 		l.mu.Lock()
 		res := job.result
 		l.mu.Unlock()
