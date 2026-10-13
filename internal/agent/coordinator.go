@@ -265,6 +265,18 @@ type coordinator struct {
 	// notifyWG joins the async-completion wake goroutines, so a caller (a
 	// test, a shutdown) can wait for their last store access.
 	notifyWG sync.WaitGroup
+	// callbackMu fences release/notification registration against shutdown Wait.
+	// The context is lazy so bare coordinator fixtures retain the same lifecycle.
+	callbackMu      sync.Mutex
+	callbackClosing bool
+	callbackCtx     context.Context
+	callbackCancel  context.CancelFunc
+	releaseWG       sync.WaitGroup
+	// Signal-only lifecycle seams; nil in production, installed before use.
+	releaseCallbackHook   func(context.Context)
+	notifyCallbackHook    func(context.Context)
+	callbackAfterWaitHook func()
+	callbackJoinTimeout   func() <-chan time.Time
 	// asyncJobs is the single in-memory work ledger: plain async jobs
 	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
 	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.
