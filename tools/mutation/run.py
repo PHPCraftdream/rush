@@ -266,11 +266,16 @@ def assign_shard(mutations: Sequence[Mutation], i: int, n: int) -> list[Mutation
         shards[idx % n].extend(groups[pkg])
     return shards[i - 1]
 # go test -json stream handling
+# The go command prints module-fetch progress to stderr, which the runner
+# merges into the stream on a cold module cache (the first run of a job).
+GO_NOISE_PREFIXES = ("go: downloading ", "go: finding ", "go: extracting ")
 def parse_go_test_events(raw: bytes) -> list[dict]:
     events: list[dict] = []
     text = raw.decode("utf-8", "strict") if isinstance(raw, bytes) else raw
     for line in text.splitlines():
         if not line.strip():
+            continue
+        if line.startswith(GO_NOISE_PREFIXES):
             continue
         obj = json.loads(line)
         if not isinstance(obj, dict) or not isinstance(obj.get("Action"), str):
@@ -895,6 +900,9 @@ def _selftest_classifier() -> list[tuple[str, bool]]:
         e = named_event(events("run", "fail").encode() + suffix, pkg, test)
         cases.append((f"malformed stream {suffix!r} fails closed",
                       classify_result(1, e) == "EXECUTION_ERROR"))
+    noisy = b"go: downloading example.com/m v1.0.0\n" + events("run", "pass").encode()
+    e = named_event(noisy, pkg, test)
+    cases.append(("go module download noise is skipped", baseline_ok(0, e)))
     e = named_event(events("run", "pass").encode(), "internal/agent", test)
     cases.append(("short JSON package does not match module package", not baseline_ok(0, e)))
     cases.append(("Go command uses ./internal/agent",
