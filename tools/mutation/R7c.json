@@ -77,7 +77,7 @@
       "package": "internal/agent",
       "test": "TestBatchAgentStopAckDoesNotSettle",
       "purpose": "Bypass closure wait; first NoReport assertion catches premature settlement before Stop.",
-      "expected_assertion": "scope reported while descendants are live before the stop"
+      "expected_assertion": "scope reported while descendants are still live after the ack"
     },
     {
       "id": "rc7_wrong_depth",

@@ -11,7 +11,7 @@
       "package": "internal/agent",
       "test": "TestBatchDeliveryInlineVsStartedRace",
       "purpose": "Drop the exactly-once guard: the started-election loser performs a second inline election attempt.",
-      "expected_assertion": "exactly one completion delivery"
+      "expected_assertion": "the started loser returns the envelope read-only"
     },
     {
       "id": "r11d-sync-collapse-envelope",
@@ -55,7 +55,7 @@
       "package": "internal/agent",
       "test": "TestBatchDeliverySyncCallerCancelSubmitsStopOnce",
       "purpose": "Acceptance item not wired: a cancelled sync caller returns WITHOUT submitting Stop, leaving the root running with no cancellation request.",
-      "expected_assertion": "the caller gets its own ctx error, never an envelope"
+      "expected_assertion": "exactly one Stop on caller cancellation"
     },
     {
       "id": "r11d-escape-auto-detached-shortcircuit",
@@ -77,7 +77,7 @@
       "package": "internal/agent",
       "test": "TestBatchDeliveryEscapeWindowTypedErrors",
       "purpose": "Silently default an empty escape=auto window instead of failing with the typed required-window error.",
-      "expected_assertion": "batch delivery: escape=auto requires an explicit delivery window"
+      "expected_assertion": "Expected error with \"batch delivery: escape=auto requires an explicit delivery window\" in chain but got nil."
     },
     {
       "id": "r11d-drain-block-on-root",
@@ -99,7 +99,7 @@
       "package": "internal/agent",
       "test": "TestBatchDeliveryInlineFailedAckExhausted",
       "purpose": "Silently swallow a persistently failed ack, hiding a lost completion behind a fake success.",
-      "expected_assertion": "batch delivery: inline election retries exhausted"
+      "expected_assertion": "An error is expected but got nil."
     },
     {
       "id": "r11d-detached-no-started-election",

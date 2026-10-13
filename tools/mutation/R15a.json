@@ -44,7 +44,7 @@
       "package": "internal/server",
       "test": "TestBatchWorkSnapshot_UnknownHostIsConservative",
       "purpose": "Map unknown host to dead. Per-node HostStatusUnknown still sets rootComplete false, so the first actual differing assertion is root.Host = unknown, not the preceding completeness assertion.",
-      "expected_assertion": "expected: \"unknown\""
+      "expected_assertion": "Should be false"
     },
     {
       "id": "mut8_route_flag_off",

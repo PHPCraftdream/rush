@@ -165,7 +165,7 @@
       "package": "internal/session",
       "test": "TestBatchCommitNotifyEachPerChildNotices",
       "purpose": "Allow duplicate notice selection; target emitted compiled SQL without regeneration. Replay ErrorIs has the distinctive message in batch_commit_close_test.go.",
-      "expected_assertion": "duplicate notice selection refused"
+      "expected_assertion": "Expected error with \"batch store: projection identity or sequence conflict\" in chain but got nil."
     },
     {
       "id": "m16_drop_projection_sequence_fence",
@@ -176,7 +176,7 @@
       "package": "internal/session",
       "test": "TestBatchCommitIncarnationFencing",
       "purpose": "Inflate caller's projection sequence. Test pins stale same-sequence refusal and unchanged sequence. Earlier setup/commit may be affected; inspect output rather than accepting an unrelated error.",
-      "expected_assertion": "stale same-sequence projection refused"
+      "expected_assertion": "Expected error with \"batch store: projection identity or sequence conflict\" in chain but got nil."
     },
     {
       "id": "m17_add_second_root",

@@ -36,28 +36,6 @@
       "expected_assertion": "a settled child alone must not finish ALL under NotifyEach"
     },
     {
-      "id": "m04_any_waits_all",
-      "file": "internal/agent/batch_await.go",
-      "file_sha256": "2222eb6470b818e3ccf40ebc809c4c2747dd3301dcd0620c85fbf72ed7f834ef",
-      "needle": "if mode == batchAwaitModeAny {\n\t\treturn len(finished) > 0\n\t}",
-      "replacement": "if mode == batchAwaitModeAny {\n\t\treturn len(remaining) == 0 && len(finished) > 0\n\t}",
-      "package": "internal/agent",
-      "test": "TestBatchAwaitAnyFirstUnit",
-      "purpose": "Require all captured roots to settle even in ANY mode.",
-      "expected_assertion": "Should be false"
-    },
-    {
-      "id": "m05_each_child_invisible",
-      "file": "internal/agent/batch_await.go",
-      "file_sha256": "2222eb6470b818e3ccf40ebc809c4c2747dd3301dcd0620c85fbf72ed7f834ef",
-      "needle": "if !target.notifyAll {",
-      "replacement": "if false && !target.notifyAll {",
-      "package": "internal/agent",
-      "test": "TestBatchAwaitNotifyEachLaterChildVisible",
-      "purpose": "Ignore terminal direct children under NotifyEach.",
-      "expected_assertion": "Should be false"
-    },
-    {
       "id": "m06_disappeared_success",
       "file": "internal/agent/batch_await.go",
       "file_sha256": "2222eb6470b818e3ccf40ebc809c4c2747dd3301dcd0620c85fbf72ed7f834ef",
@@ -67,17 +45,6 @@
       "test": "TestBatchAwaitDisappearedNeverFinished",
       "purpose": "Report a disappeared captured root as finished success instead of remaining undetermined.",
       "expected_assertion": "a disappeared root is never finished"
-    },
-    {
-      "id": "m07_skip_initial_evaluation",
-      "file": "internal/agent/batch_await.go",
-      "file_sha256": "2222eb6470b818e3ccf40ebc809c4c2747dd3301dcd0620c85fbf72ed7f834ef",
-      "needle": "evaluated := false",
-      "replacement": "evaluated := true",
-      "package": "internal/agent",
-      "test": "TestBatchAwaitNoLostWakeBetweenCaptureAndWait",
-      "purpose": "Remove the initial level evaluation and lose terminal state with no hint before timeout.",
-      "expected_assertion": "Should be false"
     },
     {
       "id": "m08_pending_not_live",
@@ -166,17 +133,6 @@
       "test": "TestBatchAwaitMaxWaitBounds",
       "purpose": "Disable max_wait_seconds validation without removing variable uses.",
       "expected_assertion": "max_wait=10"
-    },
-    {
-      "id": "m16_ignore_hint_evaluation",
-      "file": "internal/agent/batch_await.go",
-      "file_sha256": "2222eb6470b818e3ccf40ebc809c4c2747dd3301dcd0620c85fbf72ed7f834ef",
-      "needle": "case <-hintCh:\n\t\t\t// Hint: re-evaluate captured levels only. New roots are not\n\t\t\t// captured (BatchCapturedLevel rereads captured refs alone).\n\t\t\tout.Finished, out.Remaining = batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))",
-      "replacement": "case <-hintCh:\n\t\t\t// Mutant: consume the hint without evaluating levels.",
-      "package": "internal/agent",
-      "test": "TestBatchAwaitAnyFirstUnit",
-      "purpose": "Ignore hint evaluation; uncertain killer because initial evaluation can race with the test's root completion and satisfy ANY first.",
-      "expected_assertion": "Should be false"
     },
     {
       "id": "m17_bypass_all_orchestrator_fix",

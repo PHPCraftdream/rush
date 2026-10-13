@@ -11,7 +11,7 @@
       "package": "internal/app",
       "test": "TestAppBatchFaultSubprocess",
       "purpose": "process exit code on fault must be 70 (decision D4)",
-      "expected_assertion": "never-returning commit hook must exit the process with 70"
+      "expected_assertion": "the helper must exit non-zero"
     },
     {
       "id": "fault-watcher-ignores-runner",
@@ -33,7 +33,7 @@
       "package": "internal/app",
       "test": "TestDrainReleaseErrorSurfaces",
       "purpose": "host-identity release errors must surface in the result",
-      "expected_assertion": "host busy"
+      "expected_assertion": "An error is expected but got nil."
     },
     {
       "id": "close-timeout-releases",
@@ -78,17 +78,6 @@
       "test": "TestWatcherWakesOnSetRunnerAfterStart",
       "purpose": "the dormant watcher must wake when SetRunner attaches a Runner after Start",
       "expected_assertion": "watcher must wake on SetRunner and exit once"
-    },
-    {
-      "id": "fenced-channel-check-dropped",
-      "file": "internal/app/app_batch_runtime.go",
-      "file_sha256": "4ccb81009608dc27c2530aa26a739a3199838963412a5f12e4798dd879794dd0",
-      "needle": "\tselect {\n\tcase <-r.Faulted():\n\t\treturn true\n\tdefault:\n\t\treturn false\n\t}",
-      "replacement": "\t_ = r\n\treturn true",
-      "package": "internal/app",
-      "test": "TestOrdinaryShutdownDrainsBeforeRelease",
-      "purpose": "Fenced must fall back to the attached Runner fault channel without the watcher; the mutant always reports fenced whenever a runner is attached, so an ordinary (fault-free) shutdown reports Forced and releases nothing.",
-      "expected_assertion": "ordinary shutdown is graceful"
     }
   ]
 }

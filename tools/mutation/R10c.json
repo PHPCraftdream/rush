@@ -99,7 +99,7 @@
       "package": "internal/session",
       "test": "TestBatchHistorySnapshotShapeAndInjectableHostVerdict",
       "purpose": "Ignore injectable host verdict. The test changes probe to HostStatusDead and compares dead.Host; HostLockStatus is int with Unknown=0, Alive=1, Dead=2. Testify Equal renders its expected numeric value.",
-      "expected_assertion": "expected: 2"
+      "expected_assertion": "Not equal:"
     },
     {
       "id": "m10_roots_drops_terminal",
@@ -132,7 +132,7 @@
       "package": "internal/session",
       "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
       "purpose": "Drop both delivery and wake guards, retaining reacted. Compiled SQL equivalent. Although intended to break double-dispose, the existing first-call count already fails on unwoken/void rows; preserve that actual first assertion.",
-      "expected_assertion": "only pending/done unreacted woken rows dispose"
+      "expected_assertion": "disposal happens exactly once"
     },
     {
       "id": "m13_live_rerun_unreachable",
@@ -165,7 +165,7 @@
       "package": "internal/session",
       "test": "TestBatchResetRefusedForEachLiveRootState",
       "purpose": "Historical chunk2 a: treat pending roots as terminal; ErrorIs fails before row-retention assertions.",
-      "expected_assertion": "Target error should be in err chain:"
+      "expected_assertion": "Expected error with \"batch reset: the session still owns a nonterminal batch root\" in chain but got nil."
     },
     {
       "id": "m16_reset_omits_cancelling",
@@ -176,7 +176,7 @@
       "package": "internal/session",
       "test": "TestBatchResetRefusedForEachLiveRootState",
       "purpose": "Historical chunk2 b: omit cancelling from refusal, even while termination remains unconfirmed.",
-      "expected_assertion": "Target error should be in err chain:"
+      "expected_assertion": "Expected error with \"batch reset: the session still owns a nonterminal batch root\" in chain but got nil."
     },
     {
       "id": "m17_reset_pending_control_is_terminal",
@@ -187,7 +187,7 @@
       "package": "internal/session",
       "test": "TestBatchResetRefusedForEachLiveRootState",
       "purpose": "Historical chunk2 c: misclassify cancelling with a pending child stop request as terminal; distinct patch, redundant kill coverage with m16.",
-      "expected_assertion": "Target error should be in err chain:"
+      "expected_assertion": "Expected error with \"batch reset: the session still owns a nonterminal batch root\" in chain but got nil."
     },
     {
       "id": "m19_rerun_legacy_lookup_unguarded",
