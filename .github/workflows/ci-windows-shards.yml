@@ -3,7 +3,7 @@
 # Splits the sequential Windows full-suite of .github/workflows/build.yml
 # into 4 parallel shards (A-D) plus the isolated internal/agent job, as a
 # reusable workflow validated on demand. build.yml is NOT touched; this
-# workflow is validated by pushing a branch to `ci-shadow/**` or calling it
+# workflow is validated by pushing a branch to `ci-shards-shadow/**` or calling it
 # via workflow_call. Cutover (replacing build.yml's Windows leg) is a
 # separate, later task.
 #
@@ -26,7 +26,7 @@ name: ci-windows-shards
 on:
   workflow_call:
   push:
-    branches: ["ci-shadow/**"]
+    branches: ["ci-shards-shadow/**"]
 
 permissions:
   contents: read

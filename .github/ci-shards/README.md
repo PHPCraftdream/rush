@@ -1,7 +1,7 @@
 # ci-windows-shards (shadow workflow, Phase 2b)
 
 Parallel-shard shadow of `.github/workflows/build.yml`'s Windows full suite.
-build.yml is untouched; this workflow runs only on `ci-shadow/**` pushes or
+build.yml is untouched; this workflow runs only on `ci-shards-shadow/**` pushes or
 via `workflow_call`.
 
 ## Shard map
@@ -25,7 +25,7 @@ timing table (per-step wall seconds + approx total span) from the
 ## Validate
 
 ```
-git push origin <branch>:ci-shadow/<name>
+git push origin <branch>:ci-shards-shadow/<name>
 ```
 
 Then watch the run; the summary job's step summary has the timing table.
