@@ -1,149 +1,226 @@
 {
- "schema_version": 1,
- "task": "R10c",
- "mutations": [
-  {
-   "id": "m01_reconcile_drops_done",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
-   "replacement": "AND delivery = 'pending'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
-   "package": "internal/session",
-   "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
-   "purpose": "Exclude done reconciliation. Translate the legacy SQL needle to its compiled sqlc query without regeneration. The done subtest first requires repended = 1; testify's EqualValues failure supplies the expected/actual values.",
-   "expected_assertion": "expected: int(1)"
-  },
-  {
-   "id": "m02_reconcile_drops_pending",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
-   "replacement": "AND delivery = 'done'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
-   "package": "internal/session",
-   "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
-   "purpose": "Exclude pending reconciliation; compiled equivalent of emitted SQL. The pending subtest first requires repended = 1.",
-   "expected_assertion": "expected: int(1)"
-  },
-  {
-   "id": "m03_reconcile_missing",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
-   "replacement": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending') AND 1 = 0",
-   "package": "internal/session",
-   "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
-   "purpose": "Disable reconciliation entirely; compiled SQL equivalent. Both pending and done first require repended = 1.",
-   "expected_assertion": "expected: int(1)"
-  },
-  {
-   "id": "m04_reconcile_keeps_counters",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
-   "replacement": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = wake_attempts, reacted_failed = reacted_failed, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
-   "package": "internal/session",
-   "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
-   "purpose": "Keep retry counters when repending; compiled SQL equivalent. Test's first changed assertion is require.Zero(got.WakeAttempts), whose seeded pending/done values are 2/3.",
-   "expected_assertion": "Should be zero, but was"
-  },
-  {
-   "id": "m05_owner_delete_leaves_controls",
-   "file": "internal/session/batch_consumers.go",
-   "file_sha256": "7e9dd9b55a663b64a21dddc3d7df6cad9f9daec846157a46b216698bae78b376",
-   "needle": "if out.NodesDeleted, err = q.BatchResetDeleteOwnerNodes(ctx, owner); err != nil {",
-   "replacement": "if out.NodesDeleted, err = q.BatchResetDeleteOwnerNodes(ctx, \"r10c-mutation-no-such-owner\"); err != nil {",
-   "package": "internal/session",
-   "test": "TestBatchOwnerDeleteCascade",
-   "purpose": "Leave owner nodes and control requests. First changed assertion requires out.NodesDeleted = 1 (EqualValues), before later cascade checks.",
-   "expected_assertion": "expected: int(1)"
-  },
-  {
-   "id": "m06_owner_delete_refuses_live",
-   "file": "internal/session/batch_consumers.go",
-   "file_sha256": "7e9dd9b55a663b64a21dddc3d7df6cad9f9daec846157a46b216698bae78b376",
-   "needle": "\tq := db.New(tx)\n\tids, err := sessionMessageIDsTx(ctx, tx, owner)",
-   "replacement": "\tq := db.New(tx)\n\tif live, _ := batchResetLiveRoots(ctx, q, owner); len(live) > 0 {\n\t\treturn BatchOwnerDeleteOutcome{}, &BatchResetRefusal{Owner: owner, RootID: live[0].RootID, State: live[0].State}\n\t}\n\tids, err := sessionMessageIDsTx(ctx, tx, owner)",
-   "package": "internal/session",
-   "test": "TestBatchOwnerDeleteCascade",
-   "purpose": "Wrongly refuse deletion of a live root. NoError's explicit assertion message is in batch_consumers_test.go.",
-   "expected_assertion": "deletion refuses nothing, live root included"
-  },
-  {
-   "id": "m07_dispose_guard_missing",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n",
-   "replacement": "  AND wake = 1\n",
-   "package": "internal/session",
-   "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
-   "purpose": "Remove delivery/reacted guards; compiled SQL equivalent, with the SQL terminator represented by the query-ending newline. Test first checks the disposal count, not the later double-dispose assertion.",
-   "expected_assertion": "only pending/done unreacted woken rows dispose"
-  },
-  {
-   "id": "m08_dispose_wake_not_zeroed",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ?1",
-   "replacement": "UPDATE session_notices SET delivery = 'void', updated_at = ?1",
-   "package": "internal/session",
-   "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
-   "purpose": "Leave disposed notice wake set; compiled SQL equivalent. Zero(wake) has this explicit message.",
-   "expected_assertion": "wake zeroed so debt readers cannot double-count"
-  },
-  {
-   "id": "m09_snapshot_probe_bypassed",
-   "file": "internal/session/batch_history_snapshot.go",
-   "file_sha256": "4cd4228a6ecee107f5a98fe1429fa8b0059ba704cd8b5afadf44868620d8ad33",
-   "needle": "out.Host = level.Node.HostStatus",
-   "replacement": "out.Host = HostStatusAlive",
-   "package": "internal/session",
-   "test": "TestBatchHistorySnapshotShapeAndInjectableHostVerdict",
-   "purpose": "Ignore injectable host verdict. The test changes probe to HostStatusDead and compares dead.Host; HostLockStatus is int with Unknown=0, Alive=1, Dead=2. Testify Equal renders its expected numeric value.",
-   "expected_assertion": "expected: 2"
-  },
-  {
-   "id": "m10_roots_drops_terminal",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "WHERE owner_session_id = ?1 AND node_id = root_id\nORDER BY created_at, root_id\n",
-   "replacement": "WHERE owner_session_id = ?1 AND node_id = root_id\n  AND state IN ('pending', 'starting', 'running', 'cancelling')\nORDER BY created_at, root_id\n",
-   "package": "internal/session",
-   "test": "TestBatchHistoryRootViewsOldestFirstAllIncarnations",
-   "purpose": "Filter terminal incarnations from the root list; compiled SQL equivalent. First changed require.Len(views, 2) stops before the later terminal visibility message.",
-   "expected_assertion": "should have 2 item(s), but has 1"
-  },
-  {
-   "id": "m12_dispose_second_call_voids_again",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n",
-   "replacement": "  AND reacted = 0\n",
-   "package": "internal/session",
-   "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
-   "purpose": "Drop both delivery and wake guards, retaining reacted. Compiled SQL equivalent. Although intended to break double-dispose, the existing first-call count already fails on unwoken/void rows; preserve that actual first assertion.",
-   "expected_assertion": "only pending/done unreacted woken rows dispose"
-  },
-  {
-   "id": "m13_live_rerun_unreachable",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "  AND state IN ('pending', 'starting', 'running', 'cancelling')\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
-   "replacement": "  AND state IN ('pending', 'starting', 'running', 'cancelling') AND 1=0\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
-   "package": "internal/session",
-   "test": "TestBatchRerunVoidedIncludesLiveRootsForStopRouting",
-   "purpose": "Make the emitted announce live arm unreachable; do not also mutate the legacy arm merely because the script header describes both. Compiled SQL equivalent. Additional advertised test: TestBatchRerunRependSurvivingRootVoidsVoidedRoot. Primary Len assertion has this message.",
-   "expected_assertion": "both live roots are routed for stop"
-  },
-  {
-   "id": "m14_repend_keeps_dead_ref",
-   "file": "internal/db/batch_history.sql.go",
-   "file_sha256": "302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683",
-   "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
-   "replacement": "UPDATE batch_nodes SET delivery = 'pending',\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
-   "package": "internal/session",
-   "test": "TestBatchRerunRependSurvivingRootVoidsVoidedRoot",
-   "purpose": "Keep dead message reference on rerun repend; compiled SQL equivalent. BatchPullNotices NoError fails when the naming CAS finds zero rows; ErrBatchProjectionConflict text is defined by the store.",
-   "expected_assertion": "batch store: projection identity or sequence conflict"
-  }
- ]
+  "schema_version": 1,
+  "task": "R10c",
+  "mutations": [
+    {
+      "id": "m01_reconcile_drops_done",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
+      "replacement": "AND delivery = 'pending'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
+      "package": "internal/session",
+      "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
+      "purpose": "Exclude done reconciliation. Translate the legacy SQL needle to its compiled sqlc query without regeneration. The done subtest first requires repended = 1; testify's EqualValues failure supplies the expected/actual values.",
+      "expected_assertion": "expected: int(1)"
+    },
+    {
+      "id": "m02_reconcile_drops_pending",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
+      "replacement": "AND delivery = 'done'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
+      "package": "internal/session",
+      "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
+      "purpose": "Exclude pending reconciliation; compiled equivalent of emitted SQL. The pending subtest first requires repended = 1.",
+      "expected_assertion": "expected: int(1)"
+    },
+    {
+      "id": "m03_reconcile_missing",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
+      "replacement": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending') AND 1 = 0",
+      "package": "internal/session",
+      "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
+      "purpose": "Disable reconciliation entirely; compiled SQL equivalent. Both pending and done first require repended = 1.",
+      "expected_assertion": "expected: int(1)"
+    },
+    {
+      "id": "m04_reconcile_keeps_counters",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
+      "replacement": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = wake_attempts, reacted_failed = reacted_failed, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
+      "package": "internal/session",
+      "test": "TestBatchHistoryReconcileDeletedHistoryPerDeliveryState",
+      "purpose": "Keep retry counters when repending; compiled SQL equivalent. Test's first changed assertion is require.Zero(got.WakeAttempts), whose seeded pending/done values are 2/3.",
+      "expected_assertion": "Should be zero, but was"
+    },
+    {
+      "id": "m05_owner_delete_leaves_controls",
+      "file": "internal/session/batch_consumers.go",
+      "file_sha256": "7e9dd9b55a663b64a21dddc3d7df6cad9f9daec846157a46b216698bae78b376",
+      "needle": "if out.NodesDeleted, err = q.BatchResetDeleteOwnerNodes(ctx, owner); err != nil {",
+      "replacement": "if out.NodesDeleted, err = q.BatchResetDeleteOwnerNodes(ctx, \"r10c-mutation-no-such-owner\"); err != nil {",
+      "package": "internal/session",
+      "test": "TestBatchOwnerDeleteCascade",
+      "purpose": "Leave owner nodes and control requests. First changed assertion requires out.NodesDeleted = 1 (EqualValues), before later cascade checks.",
+      "expected_assertion": "expected: int(1)"
+    },
+    {
+      "id": "m06_owner_delete_refuses_live",
+      "file": "internal/session/batch_consumers.go",
+      "file_sha256": "7e9dd9b55a663b64a21dddc3d7df6cad9f9daec846157a46b216698bae78b376",
+      "needle": "\tq := db.New(tx)\n\tids, err := sessionMessageIDsTx(ctx, tx, owner)",
+      "replacement": "\tq := db.New(tx)\n\tif live, _ := batchResetLiveRoots(ctx, q, owner); len(live) > 0 {\n\t\treturn BatchOwnerDeleteOutcome{}, &BatchResetRefusal{Owner: owner, RootID: live[0].RootID, State: live[0].State}\n\t}\n\tids, err := sessionMessageIDsTx(ctx, tx, owner)",
+      "package": "internal/session",
+      "test": "TestBatchOwnerDeleteCascade",
+      "purpose": "Wrongly refuse deletion of a live root. NoError's explicit assertion message is in batch_consumers_test.go.",
+      "expected_assertion": "deletion refuses nothing, live root included"
+    },
+    {
+      "id": "m07_dispose_guard_missing",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n`",
+      "replacement": "  AND wake = 1\n`",
+      "package": "internal/session",
+      "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
+      "purpose": "Remove delivery/reacted guards; compiled SQL equivalent, with the SQL terminator represented by the query-ending newline. Test first checks the disposal count, not the later double-dispose assertion.",
+      "expected_assertion": "only pending/done unreacted woken rows dispose"
+    },
+    {
+      "id": "m08_dispose_wake_not_zeroed",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ?1",
+      "replacement": "UPDATE session_notices SET delivery = 'void', updated_at = ?1",
+      "package": "internal/session",
+      "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
+      "purpose": "Leave disposed notice wake set; compiled SQL equivalent. Zero(wake) has this explicit message.",
+      "expected_assertion": "wake zeroed so debt readers cannot double-count"
+    },
+    {
+      "id": "m09_snapshot_probe_bypassed",
+      "file": "internal/session/batch_history_snapshot.go",
+      "file_sha256": "4cd4228a6ecee107f5a98fe1429fa8b0059ba704cd8b5afadf44868620d8ad33",
+      "needle": "out.Host = level.Node.HostStatus",
+      "replacement": "out.Host = HostStatusAlive",
+      "package": "internal/session",
+      "test": "TestBatchHistorySnapshotShapeAndInjectableHostVerdict",
+      "purpose": "Ignore injectable host verdict. The test changes probe to HostStatusDead and compares dead.Host; HostLockStatus is int with Unknown=0, Alive=1, Dead=2. Testify Equal renders its expected numeric value.",
+      "expected_assertion": "expected: 2"
+    },
+    {
+      "id": "m10_roots_drops_terminal",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "WHERE owner_session_id = ?1 AND node_id = root_id\nORDER BY created_at, root_id",
+      "replacement": "WHERE owner_session_id = ?1 AND node_id = root_id\n  AND state IN ('pending', 'starting', 'running', 'cancelling')\nORDER BY created_at, root_id",
+      "package": "internal/session",
+      "test": "TestBatchHistoryRootViewsOldestFirstAllIncarnations",
+      "purpose": "Filter terminal incarnations from the root list; compiled SQL equivalent. First changed require.Len(views, 2) stops before the later terminal visibility message.",
+      "expected_assertion": "should have 2 item(s), but has 1"
+    },
+    {
+      "id": "m11_snapshot_debt_counts_void",
+      "file": "internal/session/batch_history_snapshot.go",
+      "file_sha256": "4cd4228a6ecee107f5a98fe1429fa8b0059ba704cd8b5afadf44868620d8ad33",
+      "needle": "return n.NoticeSelected == 1 && n.Wake == 1 && n.Reacted == 0 && n.Delivery != \"void\"",
+      "replacement": "return n.NoticeSelected == 1 && n.Wake == 1 && n.Reacted == 0",
+      "package": "internal/session",
+      "test": "TestBatchHistorySnapshotShapeAndInjectableHostVerdict",
+      "purpose": "A settled, woken, unreacted row whose delivery is void is history, never debt; the test seeds such a row next to counted ones.",
+      "expected_assertion": "settled unreacted woken nodes are debt; a voided delivery row never counts"
+    },
+    {
+      "id": "m12_dispose_second_call_voids_again",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n`",
+      "replacement": "  AND reacted = 0\n`",
+      "package": "internal/session",
+      "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
+      "purpose": "Drop both delivery and wake guards, retaining reacted. Compiled SQL equivalent. Although intended to break double-dispose, the existing first-call count already fails on unwoken/void rows; preserve that actual first assertion.",
+      "expected_assertion": "only pending/done unreacted woken rows dispose"
+    },
+    {
+      "id": "m13_live_rerun_unreachable",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "  AND state IN ('pending', 'starting', 'running', 'cancelling')\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
+      "replacement": "  AND state IN ('pending', 'starting', 'running', 'cancelling') AND 1=0\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
+      "package": "internal/session",
+      "test": "TestBatchRerunVoidedIncludesLiveRootsForStopRouting",
+      "purpose": "Make the emitted announce live arm unreachable; do not also mutate the legacy arm merely because the script header describes both. Compiled SQL equivalent. Additional advertised test: TestBatchRerunRependSurvivingRootVoidsVoidedRoot. Primary Len assertion has this message.",
+      "expected_assertion": "both live roots are routed for stop"
+    },
+    {
+      "id": "m14_repend_keeps_dead_ref",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
+      "replacement": "UPDATE batch_nodes SET delivery = 'pending',\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
+      "package": "internal/session",
+      "test": "TestBatchRerunRependSurvivingRootVoidsVoidedRoot",
+      "purpose": "Keep dead message reference on rerun repend; compiled SQL equivalent. BatchPullNotices NoError fails when the naming CAS finds zero rows; ErrBatchProjectionConflict text is defined by the store.",
+      "expected_assertion": "batch store: projection identity or sequence conflict"
+    },
+    {
+      "id": "m15_reset_omits_pending",
+      "file": "internal/session/batch_history_reset.go",
+      "file_sha256": "9b811b1c0b003e2888fff15d6388dc6d6ec3131dd0836ed55c1ce5ed5982357f",
+      "needle": "if batchReadTerminal(n.State) {",
+      "replacement": "if n.State == \"pending\" || batchReadTerminal(n.State) {",
+      "package": "internal/session",
+      "test": "TestBatchResetRefusedForEachLiveRootState",
+      "purpose": "Historical chunk2 a: treat pending roots as terminal; ErrorIs fails before row-retention assertions.",
+      "expected_assertion": "Target error should be in err chain:"
+    },
+    {
+      "id": "m16_reset_omits_cancelling",
+      "file": "internal/session/batch_history_reset.go",
+      "file_sha256": "9b811b1c0b003e2888fff15d6388dc6d6ec3131dd0836ed55c1ce5ed5982357f",
+      "needle": "if batchReadTerminal(n.State) {",
+      "replacement": "if n.State == \"cancelling\" || batchReadTerminal(n.State) {",
+      "package": "internal/session",
+      "test": "TestBatchResetRefusedForEachLiveRootState",
+      "purpose": "Historical chunk2 b: omit cancelling from refusal, even while termination remains unconfirmed.",
+      "expected_assertion": "Target error should be in err chain:"
+    },
+    {
+      "id": "m17_reset_pending_control_is_terminal",
+      "file": "internal/session/batch_history_reset.go",
+      "file_sha256": "9b811b1c0b003e2888fff15d6388dc6d6ec3131dd0836ed55c1ce5ed5982357f",
+      "needle": "\tfor _, r := range roots {\n\t\tif _, non := batchResetRefusalState(r); non {",
+      "replacement": "\tfor _, r := range roots {\n\t\tif r.State == \"cancelling\" {\n\t\t\tcontrols, err := q.ListPendingBatchControlRequests(ctx, db.ListPendingBatchControlRequestsParams{OwnerSessionID: owner, HostID: r.HostID, RootID: r.RootID})\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tif len(controls) > 0 {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\t\tif _, non := batchResetRefusalState(r); non {",
+      "package": "internal/session",
+      "test": "TestBatchResetRefusedForEachLiveRootState",
+      "purpose": "Historical chunk2 c: misclassify cancelling with a pending child stop request as terminal; distinct patch, redundant kill coverage with m16.",
+      "expected_assertion": "Target error should be in err chain:"
+    },
+    {
+      "id": "m19_rerun_legacy_lookup_unguarded",
+      "file": "internal/db/batch_history.sql.go",
+      "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
+      "needle": "  AND notice_selected = 1 AND delivery != 'void' AND announce_message_id IS NULL",
+      "replacement": "  AND notice_selected = 1 AND delivery != 'void'",
+      "package": "internal/session",
+      "test": "TestBatchRerunNewIncarnationFencedFromLateOldIncarnation",
+      "purpose": "Historical chunk2 e: legacy void lookup reaches an acked new incarnation in rerun two; root dedup does not prevent its inclusion.",
+      "expected_assertion": "a reused call id must not void the acked new incarnation:"
+    },
+    {
+      "id": "m20_reserve_reuses_terminal_root",
+      "file": "internal/db/batch_nodes.sql.go",
+      "file_sha256": "0a9e19cdd7ba0e2a428d38153cc973f2068478d05b5778ca67d4d02a2d83b542",
+      "needle": "  AND node_id = root_id AND state IN ('pending', 'starting', 'running', 'cancelling')",
+      "replacement": "  AND node_id = root_id",
+      "package": "internal/session",
+      "test": "TestBatchRerunNewIncarnationFencedFromLateOldIncarnation",
+      "purpose": "Historical chunk2 f: GetLiveBatchRoot attaches Reserve to the completed old root rather than a fresh incarnation.",
+      "expected_assertion": "a rerun gets a fresh incarnation"
+    },
+    {
+      "id": "m21_rerun_stop_routing_by_call_id",
+      "file": "internal/session/batch_history_rerun.go",
+      "file_sha256": "8f3821a6020b8e508465256a557bbb628c51ef55d1ca0bd789b7ac96e2047362",
+      "needle": "\t\trows, err = q.BatchRerunLiveRootsByToolCallIDs(ctx, db.BatchRerunLiveRootsByToolCallIDsParams{\n\t\t\tOwner: p.Owner, ToolCallIds: nullStrings(chunk),\n\t\t})",
+      "replacement": "\t\trows, err = q.BatchHistoryRootsForOwner(ctx, p.Owner)\n\t\tif err == nil {\n\t\t\tmatched := rows[:0]\n\t\t\tfor _, r := range rows {\n\t\t\t\tfor _, callID := range chunk {\n\t\t\t\t\tif r.ToolCallID.Valid && r.ToolCallID.String == callID {\n\t\t\t\t\t\tmatched = append(matched, r)\n\t\t\t\t\t\tbreak\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\trows = matched\n\t\t}",
+      "package": "internal/session",
+      "test": "TestBatchRerunNewIncarnationFencedFromLateOldIncarnation",
+      "purpose": "Historical chunk2 g adapted to current dedup: widen stop SELECT to all incarnations matching tail call IDs; first-rerun duplicates dedup, but rerun two includes the acked new root.",
+      "expected_assertion": "a reused call id must not void the acked new incarnation:"
+    }
+  ]
 }

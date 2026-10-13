@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "task": "R11D",
+  "mutations": [
+    {
+      "id": "r11d-inline-duplicate-delivery",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "Lost started election: another caller owns the started history\n\t\t// and the delivery; wait for the real completion and return it\n\t\t// read-only.\n\t\tenvelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)",
+      "replacement": "Lost started election: another caller owns the started history\n\t\t// and the delivery; wait for the real completion and return it\n\t\t// read-only.\n\t\tif _, e := b.deps.Elect.ElectInline(ctx, b.deps.Owner, root, fantasy.NewTextResponse(\"dup\")); e != nil {\n\t\t\treturn fantasy.ToolResponse{}, e\n\t\t}\n\t\tenvelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)",
+      "package": "internal/agent",
+      "test": "TestBatchDeliveryInlineVsStartedRace",
+      "purpose": "Drop the exactly-once guard: the started-election loser performs a second inline election attempt.",
+      "expected_assertion": "exactly one completion delivery"
+    },
+    {
+      "id": "r11d-sync-collapse-envelope",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "return envelope, nil\n}\n\n// deliverInline",
+      "replacement": "return fantasy.ToolResponse{Type: \"text\", Content: envelope.Content}, nil\n}\n\n// deliverInline",
+      "package": "internal/agent",
+      "test": "TestBatchDeliverySyncPreservesEnvelope",
+      "purpose": "Collapse the sync envelope to text-only, dropping image/audio data, media type, metadata and IsError.",
+      "expected_assertion": "sync must forward the full executor envelope"
+    },
+    {
+      "id": "r11d-cancel-caller-ctx",
+      "file": "internal/agent/batch_cancel.go",
+      "file_sha256": "038905b9fbb6d66979d83249bece8c94929dde5885ecef769e624d3a398b7023",
+      "needle": "ctl := context.WithoutCancel(caller)",
+      "replacement": "ctl := caller",
+      "package": "internal/agent",
+      "test": "TestBatchCancelControlContextSurvivesCallerCancel",
+      "purpose": "Submit Stop under the caller's already-cancelled context so the cancellation never lands.",
+      "expected_assertion": "control context must NOT be the cancelled caller ctx"
+    },
+    {
+      "id": "r11d-cancel-false-settlement",
+      "file": "internal/agent/batch_cancel.go",
+      "file_sha256": "038905b9fbb6d66979d83249bece8c94929dde5885ecef769e624d3a398b7023",
+      "needle": "return batchCancelOutcome{Submitted: err == nil, Err: err, Settled: false}",
+      "replacement": "return batchCancelOutcome{Submitted: err == nil, Err: err, Settled: true}",
+      "package": "internal/agent",
+      "test": "TestBatchCancelHeldTerminationDoesNotSettle",
+      "purpose": "Treat the Stop acknowledgement as a settlement, releasing admission despite held termination.",
+      "expected_assertion": "held termination keeps the admission unit occupied"
+    },
+    {
+      "id": "r11d-sync-cancel-skips-stop",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "\t\t\tout := cancelBatchCall(ctx, b.deps.Runner, root)",
+      "replacement": "\t\t\tout := batchCancelOutcome{Submitted: true}",
+      "package": "internal/agent",
+      "test": "TestBatchDeliverySyncCallerCancelSubmitsStopOnce",
+      "purpose": "Acceptance item not wired: a cancelled sync caller returns WITHOUT submitting Stop, leaving the root running with no cancellation request.",
+      "expected_assertion": "the caller gets its own ctx error, never an envelope"
+    },
+    {
+      "id": "r11d-escape-auto-detached-shortcircuit",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "if inv.BackgroundEscape == batchEscapeAuto && mode != batchDeliveryDetached {",
+      "replacement": "if inv.BackgroundEscape == batchEscapeAuto {\n\t\tmode = batchDeliveryDetached\n\t}",
+      "package": "internal/agent",
+      "test": "TestBatchDeliveryEscapeCompletesWithinWindow",
+      "purpose": "Regression to the old always-detached shortcut: escape=auto switches to detached immediately, ignoring the window, so even a 10 ms command reports started.",
+      "expected_assertion": "completion inside the window returns the full envelope"
+    },
+    {
+      "id": "r11d-escape-window-defaulted",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "if window == \"\" {\n\t\treturn 0, fmt.Errorf(\"%w\", errBatchEscapeWindowRequired)\n\t}",
+      "replacement": "if window == \"\" {\n\t\treturn 30 * time.Second, nil\n\t}",
+      "package": "internal/agent",
+      "test": "TestBatchDeliveryEscapeWindowTypedErrors",
+      "purpose": "Silently default an empty escape=auto window instead of failing with the typed required-window error.",
+      "expected_assertion": "batch delivery: escape=auto requires an explicit delivery window"
+    },
+    {
+      "id": "r11d-drain-block-on-root",
+      "file": "internal/agent/batch_delivery_drain.go",
+      "file_sha256": "33bb1bba71808878ea87b86f221776373a722366552da9f06d716c95dd8983f9",
+      "needle": "case <-ctx.Done():\n\t\t// Caller gone: stop waiting. The pull keeps its own bound.\n\t\treturn 0, ctx.Err()",
+      "replacement": "case <-ctx.Done():\n\t\to := <-done\n\t\treturn o.n, o.err",
+      "package": "internal/agent",
+      "test": "TestBatchWebDrainReturnsWhenCallerCancels",
+      "purpose": "Block Drain on running batch work: a cancelled caller now waits for the wedged pull.",
+      "expected_assertion": "Drain ignored the caller's cancellation"
+    },
+    {
+      "id": "r11d-inline-no-retry-on-failed-ack",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "return fantasy.ToolResponse{}, fmt.Errorf(\"%w: root %s: %w\", errBatchInlineElectionFailed, root, lastErr)",
+      "replacement": "return envelope, nil",
+      "package": "internal/agent",
+      "test": "TestBatchDeliveryInlineFailedAckExhausted",
+      "purpose": "Silently swallow a persistently failed ack, hiding a lost completion behind a fake success.",
+      "expected_assertion": "batch delivery: inline election retries exhausted"
+    },
+    {
+      "id": "r11d-detached-no-started-election",
+      "file": "internal/agent/batch_delivery.go",
+      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
+      "needle": "if _, err := b.deps.Elect.ElectStarted(ctx, b.deps.Owner, root); err != nil {\n\t\treturn fantasy.ToolResponse{}, err\n\t}\n\treturn batchStartedResponse(root), nil",
+      "replacement": "return batchStartedResponse(root), nil",
+      "package": "internal/agent",
+      "test": "TestBatchDeliveryDetachedNeverBlocks",
+      "purpose": "Skip the durable started-history election on detached delivery, so later selected notices have no elected anchor.",
+      "expected_assertion": "expected: 1"
+    },
+    {
+      "id": "r11d-store-inline-lost-loses-error",
+      "file": "internal/session/batch_delivery_store.go",
+      "file_sha256": "45807e27bbff3e75eb62ea2128d20238e251c438818827dc090f79faec815c8a",
+      "needle": "if errors.Is(err, ErrBatchAnnouncementLost) {\n\t\treturn BatchInlineAnnouncement{}, false, nil\n\t}",
+      "replacement": "if errors.Is(err, ErrBatchAnnouncementLost) {\n\t\treturn BatchInlineAnnouncement{}, true, nil\n\t}",
+      "package": "internal/session",
+      "test": "TestBatchDeliveryElectInlineOnce",
+      "purpose": "Report a lost inline election as won, letting the caller believe it delivered a duplicate completion.",
+      "expected_assertion": "the second inline election must lose"
+    },
+    {
+      "id": "r11d-store-envelope-ignores-missing",
+      "file": "internal/session/batch_delivery_store.go",
+      "file_sha256": "45807e27bbff3e75eb62ea2128d20238e251c438818827dc090f79faec815c8a",
+      "needle": "if !n.ResponseEnvelope.Valid || n.ResponseEnvelope.String == \"\" {\n\t\treturn BatchDeliveryEnvelope{}, false, nil\n\t}",
+      "replacement": "if !n.ResponseEnvelope.Valid || n.ResponseEnvelope.String == \"\" {\n\t\treturn BatchDeliveryEnvelope{State: \"completed\"}, true, nil\n\t}",
+      "package": "internal/session",
+      "test": "TestBatchDeliveryRootEnvelope",
+      "purpose": "Fabricate a completion envelope for an unsettled root (a synthetic settlement).",
+      "expected_assertion": "unsettled root has no envelope"
+    }
+  ],
+  "requires_merge": [
+    "#29",
+    "R11D PR"
+  ]
+}
