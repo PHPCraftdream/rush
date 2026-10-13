@@ -172,7 +172,8 @@ func TestBatchDeliverySyncCallerCancelSubmitsStopOnce(t *testing.T) {
 		_, err := impl.DeliverBatch(ctx, "root-1", inv)
 		results <- err
 	}()
-	cancel() // Caller gone while the root is still running: Stop must land.
+	<-done.entered // AwaitDone ran: past the entry guard, now in the await.
+	cancel()       // Caller gone while the root is still running: Stop must land.
 	require.ErrorIs(t, <-results, context.Canceled, "the caller gets its own ctx error, never an envelope")
 	require.Equal(t, int64(1), runner.stops.Load(), "exactly one Stop on caller cancellation")
 	require.Equal(t, jobbatch.ID("root-1"), <-runner.stopRoot)
@@ -199,6 +200,7 @@ func TestBatchDeliveryInlineCallerCancelNeverStops(t *testing.T) {
 		_, err := impl.DeliverBatch(ctx, "root-1", inv)
 		results <- err
 	}()
+	<-done.entered // Inline reaches AwaitDone via the started-winner path.
 	cancel()
 	require.ErrorIs(t, <-results, context.Canceled)
 	require.Zero(t, runner.stops.Load(), "inline never submits Stop")
@@ -254,6 +256,7 @@ func TestBatchDeliverySyncCancelStopErrorJoined(t *testing.T) {
 		_, err := impl.DeliverBatch(ctx, "root-1", inv)
 		results <- err
 	}()
+	<-done.entered // AwaitDone ran: past the entry guard, now in the await.
 	cancel()
 	err := <-results
 	require.ErrorIs(t, err, context.Canceled)

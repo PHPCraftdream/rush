@@ -22,7 +22,10 @@ type fakeDoneSource struct {
 	done     bool
 	envelope fantasy.ToolResponse
 	// release gates AwaitDone; closed after done flips in tests that wait.
-	release    chan struct{}
+	release chan struct{}
+	// entered receives a signal each time AwaitDone is entered (non-blocking
+	// send): lets tests gate on "the await actually ran" without sleeps.
+	entered    chan struct{}
 	awaitCalls atomic.Int64
 	loadCalls  atomic.Int64
 	awaitOK    bool
@@ -30,7 +33,7 @@ type fakeDoneSource struct {
 }
 
 func newFakeDone(envelope fantasy.ToolResponse) *fakeDoneSource {
-	return &fakeDoneSource{envelope: envelope, release: make(chan struct{})}
+	return &fakeDoneSource{envelope: envelope, release: make(chan struct{}), entered: make(chan struct{}, 16)}
 }
 
 func (f *fakeDoneSource) finish(env fantasy.ToolResponse) {
@@ -43,6 +46,10 @@ func (f *fakeDoneSource) finish(env fantasy.ToolResponse) {
 
 func (f *fakeDoneSource) AwaitDone(ctx context.Context, _ string, _ jobbatch.ID) (fantasy.ToolResponse, bool, error) {
 	f.awaitCalls.Add(1)
+	select {
+	case f.entered <- struct{}{}:
+	default:
+	}
 	select {
 	case <-f.release:
 	case <-ctx.Done():
@@ -233,8 +240,11 @@ func TestBatchDeliveryInlineVsStartedRace(t *testing.T) {
 	}
 	entering.Wait()
 	close(launch)
-	// The started winner awaits; settle the root after both callers passed
-	// their election step (guaranteed: AwaitDone blocks on release).
+	// Both callers entered AwaitDone: each passed LoadDone-false, elected
+	// (one started CAS winner, one loser) and is awaiting the release gate.
+	// Settling only now makes the outcome deterministic.
+	<-done.entered
+	<-done.entered
 	done.finish(envelope)
 	for i := 0; i < callers; i++ {
 		r := <-results
@@ -289,12 +299,17 @@ func TestBatchDeliveryEscapeWindowElapsed(t *testing.T) {
 	require.NoError(t, err)
 	submitted := runner.submitCalls()
 	done := newFakeDone(fantasy.NewTextResponse("later")) // never finishes
+	t.Cleanup(func() { close(done.release) })
 	elector := fakeElector{}
-	fired := make(chan time.Time, 1)
-	fired <- time.Now()
 	impl, err := newBatchDelivery(batchDeliveryDeps{
 		Owner: "owner-1", Done: done, Elect: &elector, Runner: fakeStopOnlyRunner{newFakeCancelRunner()},
-		Timer: func(time.Duration) <-chan time.Time { return fired },
+		// The window may only elapse AFTER AwaitDone was entered: the timer
+		// fires once the await goroutine actually ran.
+		Timer: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			go func() { <-done.entered; ch <- time.Now() }()
+			return ch
+		},
 	})
 	require.NoError(t, err)
 	inv := deliveryTestInvocation(batchDeliverySync)
