@@ -1,0 +1,77 @@
+# CI shard definitions for the Windows full test suite (Phase 2b shadow).
+# Package prefixes are module-relative (module = github.com/PHPCraftdream/rush).
+# This file mirrors the named-step grouping of .github/workflows/build.yml so
+# the failing step's NAME stays the diagnosis. See .github/ci-shards/README.md.
+module = "github.com/PHPCraftdream/rush"
+
+# Exact-match only: "internal/agent" itself is isolated in its own
+# windows-agent job (see build.yml's test-agent job history comments).
+# No shard group may list the bare prefix "internal/agent" — assign_shards.py
+# rejects that so agent/* subpackages can never be swallowed here.
+[agent_isolated]
+packages = ["internal/agent"]
+
+[shards.A]
+groups = [
+  { name = "test: internal/app", type = "go", packages = ["internal/app"], timeout = "20m" },
+  { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
+  { name = "test: sdk", type = "go", packages = ["sdk"] },
+  { name = "test: npm wrapper cache logic", type = "npm" },
+  { name = "go mod tidy produces no diff", type = "tidy" },
+]
+
+[shards.B]
+groups = [
+  { name = "test: internal/cmd, internal/commands", type = "go", packages = ["internal/cmd", "internal/commands"] },
+]
+
+[shards.C]
+groups = [
+  # Prefixes only — tools/mcp and mcp/internal/contextlock are covered by
+  # the internal/agent/tools prefix. "internal/agent" itself is NOT here.
+  { name = "test: internal/agent subpackages", type = "go", packages = [
+    "internal/agent/agentguard",
+    "internal/agent/cliprovider",
+    "internal/agent/codexprovider",
+    "internal/agent/hyper",
+    "internal/agent/limitwords",
+    "internal/agent/notify",
+    "internal/agent/prompt",
+    "internal/agent/tools",
+  ] },
+  { name = "test: internal/shell", type = "go", packages = ["internal/shell"] },
+  { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
+]
+
+# Shard D keeps build.yml's named-step diagnosis for the groups that were
+# never promoted to A/B/C, plus the dynamic computed catch-all (same
+# philosophy as build.yml's last step: a newly added package is always
+# covered by SOMETHING).
+[shards.D]
+groups = [
+  { name = "test: internal/permission, internal/config, internal/csync", type = "go", packages = ["internal/permission", "internal/config", "internal/csync"] },
+  { name = "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history", type = "go", packages = ["internal/db", "internal/message", "internal/queue", "internal/pubsub", "internal/history"] },
+  { name = "test: internal/oauth, internal/deploy, internal/update, internal/version", type = "go", packages = ["internal/oauth", "internal/deploy", "internal/update", "internal/version"] },
+  # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
+  { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
+]
+
+# Coverage map: every Windows-leg test step name in build.yml -> the
+# shard/group (or special target) that now covers it. Verified by
+# `assign_shards.py --check-coverage --build-yml .github/workflows/build.yml
+# --assignment <json>` in the shards-summary job; any missing key is a hard
+# failure so a "not run" gap cannot slip in silently.
+[windows_leg]
+"test: internal/app" = "A/test: internal/app"
+"test: internal/server, internal/session" = "A/test: internal/server, internal/session"
+"test: internal/permission, internal/config, internal/csync" = "D/test: internal/permission, internal/config, internal/csync"
+"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
+"test: sdk" = "A/test: sdk"
+"test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)" = "C/test: internal/agent subpackages"
+"test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history" = "D/test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+"test: internal/oauth, internal/deploy, internal/update, internal/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/version"
+"test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
+"go mod tidy" = "A/go mod tidy produces no diff"
+"git diff --exit-code" = "A/go mod tidy produces no diff"
+"Test npm wrapper cache logic (crush, legacy package)" = "A/test: npm wrapper cache logic"
+"Test npm wrapper cache logic (rush)" = "A/test: npm wrapper cache logic"
