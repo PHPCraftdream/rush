@@ -165,16 +165,40 @@ func TestBatchRuntimeConstructionHasNoGoroutines(t *testing.T) {
 	require.Nil(t, rt.cfg.ReleaseWriter, "construction must not invent release hooks")
 }
 
-// watcherGoroutines counts goroutines currently inside the fault watcher.
-func watcherGoroutines() int {
+// allStacks returns a full process goroutine stack dump, growing the buffer
+// until the whole dump fits.
+func allStacks() string {
 	buf := make([]byte, 1<<20)
 	for {
 		n := runtime.Stack(buf, true)
 		if n < len(buf) {
-			buf = buf[:n]
-			break
+			return string(buf[:n])
 		}
 		buf = make([]byte, 2*len(buf))
 	}
-	return strings.Count(string(buf), "BatchRuntime).watchFaults")
+}
+
+// watcherGoroutines counts goroutines currently inside the fault watcher.
+func watcherGoroutines() int {
+	return strings.Count(allStacks(), "BatchRuntime).watchFaults")
+}
+
+// watcherParkedInSelect reports whether the watcher goroutine is currently
+// blocked in a select. While no Runner is attached the live fault select is
+// unreachable (rt.runner is nil), so a parked watcher is necessarily in the
+// dormant runnerSet select.
+func watcherParkedInSelect() bool {
+	// runtime.Stack hides runtime-internal frames (selectgo), but each
+	// goroutine block header carries its wait state: "goroutine N [select]:".
+	for _, block := range strings.Split(allStacks(), "\n\n") {
+		if strings.Contains(block, "BatchRuntime).watchFaults") && strings.Contains(firstLine(block), "[select") {
+			return true
+		}
+	}
+	return false
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }

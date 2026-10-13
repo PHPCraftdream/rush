@@ -169,6 +169,18 @@ func commitHookAcceptPair(t *testing.T, ctx context.Context, r *jobbatch.Runner,
 	return a1, a2
 }
 
+// commitHookAcceptStart accepts the start of one expected leaf, asserting
+// the delivery by node ID: with MaxParallel the admissions arrive one at a
+// time, so there is no pair to order.
+func commitHookAcceptStart(t *testing.T, ctx context.Context, r *jobbatch.Runner,
+	e *commitHookExecutor, id jobbatch.ID, stop func(context.Context) error,
+) *commitHookAttempt {
+	t.Helper()
+	a := commitHookReceive(t, ctx, e.starts)
+	require.Equal(t, id, a.launch.ID, "unexpected start delivery")
+	return commitHookAcceptReady(t, ctx, r, a, stop)
+}
+
 func commitHookAcceptReady(t *testing.T, ctx context.Context, r *jobbatch.Runner, a *commitHookAttempt,
 	stop func(context.Context) error,
 ) *commitHookAttempt {
@@ -339,24 +351,32 @@ func TestBatchCommitAddAppendsInsideProject(t *testing.T) {
 }
 
 // Scenario 4 (M07): the notice ordinal is the Notice's position in
-// Transition.Notices, never the structural node ordinal.
+// Transition.Notices, never the structural node ordinal and never a
+// position among terminal Changed rows. MaxParallel 1 keeps r.2 pending at
+// submit, so the transition finishing r.1 also admits r.2: Changed is
+// [r.2 starting, r.1 completed] while Notices is [r.1] — the terminal row
+// sits at Changed index 1, the notice ordinal is still 0.
 func TestBatchCommitNoticeOrdinalIsSlicePosition(t *testing.T) {
 	env := newCommitHookEnv(t)
 	r, e, ctx := commitHookRunner(t, env.adapter())
-	b := commitHookSubmit(t, ctx, r, "r",
-		commitHookBatch(jobbatch.NotifyEach, commitHookTask(), commitHookTask()), "call-r")
-	a1, a2 := commitHookAcceptPair(t, ctx, r, e, nil, nil, "r.1", "r.2")
+	b := commitHookSubmit(t, ctx, r, "r", jobbatch.Spec{Batch: &jobbatch.BatchSpec{
+		Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyEach, MaxParallel: 1,
+		Items: []jobbatch.Spec{commitHookTask(), commitHookTask()},
+	}}, "call-r")
+	a1 := commitHookAcceptStart(t, ctx, r, e, "r.1", nil)
 	commitHookFinish(t, ctx, r, a1, jobbatch.Result{State: jobbatch.StateCompleted})
-	// The root is not yet settled (r.2 still running), so this transition
-	// selects exactly one notice: leaf r.1, structural ordinal 1.
+	// The root is not yet settled (r.2 just admitted, still starting), so
+	// this transition selects exactly one notice: leaf r.1, ordinal 0.
 	leaf := commitHookReadNode(t, env.conn, "r.1")
 	require.Equal(t, int64(1), leaf.NoticeSelected)
 	require.Equal(t, "0", leaf.NoticeOrdinal, "ordinal is the slice position, not the structural ordinal")
 	require.Equal(t, int64(1), leaf.Ordinal, "structural ordinal differs from the notice ordinal")
 	require.Equal(t, int64(0), commitHookReadNode(t, env.conn, "r").NoticeSelected,
 		"unsettled root is not notified")
-	// Finishing r.2 settles r.2 AND the root in one transition; Notices walk
-	// descendants before ancestors: [r.2, r].
+	// r.2 was admitted by the same transition; finishing it settles r.2 AND
+	// the root in one transition; Notices walk descendants before
+	// ancestors: [r.2, r].
+	a2 := commitHookAcceptStart(t, ctx, r, e, "r.2", nil)
 	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateCompleted})
 	commitHookWait(t, ctx, b)
 	root := commitHookReadNode(t, env.conn, "r")
