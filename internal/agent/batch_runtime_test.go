@@ -204,9 +204,13 @@ func TestInvokeValidateSubmitFailsBeforeRunnerCall(t *testing.T) {
 	cfg.MaxNodes = 1
 	rt, err := newBatchRuntime(cfg)
 	require.NoError(t, err)
-	// An unclassifiable leaf name fails admission before any Submit.
+	// An unclassifiable leaf name fails admission before any Submit
+	// (classifyBatchLeaf returns errBatchUnknownTool). Leaf and call name
+	// must agree, since the spec payload carries the call name.
+	call := newTestCall("call-1", `{"a":1}`)
+	call.Name = "mystery_tool"
 	_, err = rt.Invoke(context.Background(), testInvocation(), newTestLeaf("mystery_tool"),
-		newTestCall("call-1", `{"a":1}`))
+		call)
 	require.ErrorIs(t, err, errBatchSubmitBeforeInvalid)
 	require.True(t, errors.Is(err, errBatchUnknownTool))
 	require.Zero(t, runner.submitCalls(), "runner must not be called after admission failure")
