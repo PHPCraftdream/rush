@@ -207,12 +207,14 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 		// not an acknowledgement.
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), poll)
 		live, complete := e.deps.Descendants.DescendantsLive(dctx, e.req)
-		cancel()
 		e.scope.descendants(live, complete)
 		if e.scope.closedNow() {
+			cancel()
 			break
 		}
+		// Bounded by the poll interval; a change signal wakes it earlier.
 		e.scope.waitChange(dctx)
+		cancel()
 	}
 	// The scope facts are the confirmed termination; the driver's own exit
 	// (late kill) may lag and is waited for by Dispose.
