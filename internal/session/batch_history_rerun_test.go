@@ -210,9 +210,12 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	require.Equal(t, before, after, "the new incarnation is untouched by rerun #2")
 }
 
-// Revert-check: voiding nodes without the voided-root restriction (the
-// unscoped BatchRerunVoidNodesByNoticeMessageIDs) turns every deleted-notice
-// row void -- the surviving root's re-pend assertions fail.
+// Revert-check: voiding nodes without the voided-root restriction (dropping
+// the root_id IN subquery from BatchRerunVoidNodesOfVoidedRoots) turns every
+// selected deleted-notice row void -- the surviving root's re-pend assertions
+// fail. Conversely, keying the pass by notice_message_id (the pre-fix shape)
+// misses a re-pended node of a voided root: the repend clears the message id,
+// so the node stayed pending and an old-branch notice could surface again.
 func TestBatchRerunRependSurvivingRootVoidsVoidedRoot(t *testing.T) {
 	t.Parallel()
 	f := newBatchRerunFx(t)

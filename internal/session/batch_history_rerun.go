@@ -4,7 +4,9 @@
 // deleted: roots whose announce message was deleted void (plus the legacy
 // arm: roots that never named an announce message void by the tail's
 // tool_call_id), a done node whose notice message was deleted re-pends, and
-// nodes of VOIDED roots void instead (a node matching both ends void). The
+// afterwards EVERY selected non-void node inside a voided root ends void —
+// including a node the repend just re-pended (the void pass keys off the
+// root_id, not the cleared message id). The
 // IS NULL guard on the legacy arm keeps a provider-reused call id from
 // ever reaching an incarnation that already acked (I5). Executors of voided
 // nonterminal roots are stopped only after commit, from the Voided set
@@ -140,20 +142,22 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
 	}
-	// Re-pend BEFORE the voided-root pass: a node whose own notice message
-	// was deleted re-pends, unless its ROOT was voided (D-R10c-3: a matching
-	// node ends void; a surviving root's node stays re-pended).
+	// Re-pend: a node whose own notice message was deleted re-pends, unless
+	// its ROOT was voided — the void pass below then voids it again, keyed by
+	// root_id (D-R10c-3: a surviving root's node stays re-pended).
 	for _, chunk := range chunkStrings(deletedIDs, rerunChunk) {
 		if _, err = q.BatchRerunRependNodesByNoticeMessageIDs(ctx, db.BatchRerunRependNodesByNoticeMessageIDsParams{
 			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
 		}); err != nil {
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: repend nodes: %w", err)
 		}
-		if _, err = q.BatchRerunVoidNodesOfVoidedRoots(ctx, db.BatchRerunVoidNodesOfVoidedRootsParams{
-			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
-		}); err != nil {
-			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void nodes of voided roots: %w", err)
-		}
+	}
+	// Voided roots ONCE, after the repend loop: void every selected, not-yet-
+	// void node inside a voided root regardless of its (cleared) message id.
+	if _, err = q.BatchRerunVoidNodesOfVoidedRoots(ctx, db.BatchRerunVoidNodesOfVoidedRootsParams{
+		UpdatedAt: now, Owner: p.Owner,
+	}); err != nil {
+		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void nodes of voided roots: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
 		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: commit: %w", err)

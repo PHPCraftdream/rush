@@ -144,10 +144,13 @@ type Querier interface {
 	// repend so a node matching both ends void. Void is written once: the
 	// delivery != 'void' predicate keeps a second pass a 0-row no-op.
 	BatchRerunVoidNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunVoidNodesByNoticeMessageIDsParams) (int64, error)
-	// Nodes of roots the rerun voided (announce or legacy arm): their notice
-	// messages were deleted too, but unlike a surviving root's nodes they must
-	// never re-pend into the fresh history. Runs AFTER the repend and only
-	// inside voided roots, so a node whose root survived keeps its re-pend.
+	// Nodes of roots the rerun voided (announce or legacy arm) end void -- ALL of
+	// them, not only those whose message id matches the deleted set: the repend
+	// above clears notice_message_id, so a message-id match would miss a
+	// re-pended node of a voided root and leave an old-branch notice pending.
+	// Void is written once: delivery != 'void' keeps a second pass a no-op. The
+	// notice_selected = 1 guard keeps the write inside the schema CHECK (an
+	// unselected row cannot take delivery='void').
 	BatchRerunVoidNodesOfVoidedRoots(ctx context.Context, arg BatchRerunVoidNodesOfVoidedRootsParams) (int64, error)
 	// Roots whose "started" tool-result message was deleted are voided before
 	// their pending/done notice can surface; still-nonterminal rows are returned

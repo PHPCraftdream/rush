@@ -128,7 +128,10 @@ func TestBatchOwnerDeleteCascade(t *testing.T) {
 	out, err := s.BatchOwnerDeleteHistory(ctx, m, "owner")
 	require.NoError(t, err, "deletion refuses nothing, live root included")
 	require.Equal(t, 1, out.MessagesDeleted)
-	require.EqualValues(t, 3, out.NodesDeleted)
+	// 1: RowsAffected counts only the directly-matched root row; the task
+	// children go via FK cascade and are not counted (same semantics as the
+	// reset test).
+	require.EqualValues(t, 1, out.NodesDeleted)
 	require.EqualValues(t, 1, out.NoticesVoided)
 	require.EqualValues(t, 1, out.SchedulesCancelled)
 	// batch_nodes, batch_control_requests and messages are DELETED; legacy

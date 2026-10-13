@@ -95,14 +95,16 @@ WHERE owner_session_id = @owner AND node_id = root_id
   AND tool_call_id IN (sqlc.slice('tool_call_ids'));
 
 -- name: BatchRerunVoidNodesOfVoidedRoots :execrows
--- Nodes of roots the rerun voided (announce or legacy arm): their notice
--- messages were deleted too, but unlike a surviving root's nodes they must
--- never re-pend into the fresh history. Runs AFTER the repend and only
--- inside voided roots, so a node whose root survived keeps its re-pend.
+-- Nodes of roots the rerun voided (announce or legacy arm) end void -- ALL of
+-- them, not only those whose message id matches the deleted set: the repend
+-- above clears notice_message_id, so a message-id match would miss a
+-- re-pended node of a voided root and leave an old-branch notice pending.
+-- Void is written once: delivery != 'void' keeps a second pass a no-op. The
+-- notice_selected = 1 guard keeps the write inside the schema CHECK (an
+-- unselected row cannot take delivery='void').
 UPDATE batch_nodes SET delivery = 'void', wake = 0, updated_at = @updated_at
 WHERE batch_nodes.owner_session_id = @owner AND batch_nodes.notice_selected = 1
   AND batch_nodes.delivery != 'void'
-  AND batch_nodes.notice_message_id IN (sqlc.slice('message_ids'))
   AND batch_nodes.root_id IN (SELECT v.root_id FROM batch_nodes AS v
                               WHERE v.owner_session_id = @owner
                                 AND v.node_id = v.root_id AND v.delivery = 'void');

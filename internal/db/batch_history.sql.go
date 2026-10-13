@@ -542,36 +542,25 @@ const batchRerunVoidNodesOfVoidedRoots = `-- name: BatchRerunVoidNodesOfVoidedRo
 UPDATE batch_nodes SET delivery = 'void', wake = 0, updated_at = ?1
 WHERE batch_nodes.owner_session_id = ?2 AND batch_nodes.notice_selected = 1
   AND batch_nodes.delivery != 'void'
-  AND batch_nodes.notice_message_id IN (/*SLICE:message_ids*/?)
   AND batch_nodes.root_id IN (SELECT v.root_id FROM batch_nodes AS v
                               WHERE v.owner_session_id = ?2
                                 AND v.node_id = v.root_id AND v.delivery = 'void')
 `
 
 type BatchRerunVoidNodesOfVoidedRootsParams struct {
-	UpdatedAt  int64            `json:"updated_at"`
-	Owner      string           `json:"owner"`
-	MessageIds []sql.NullString `json:"message_ids"`
+	UpdatedAt int64  `json:"updated_at"`
+	Owner     string `json:"owner"`
 }
 
-// Nodes of roots the rerun voided (announce or legacy arm): their notice
-// messages were deleted too, but unlike a surviving root's nodes they must
-// never re-pend into the fresh history. Runs AFTER the repend and only
-// inside voided roots, so a node whose root survived keeps its re-pend.
+// Nodes of roots the rerun voided (announce or legacy arm) end void -- ALL of
+// them, not only those whose message id matches the deleted set: the repend
+// above clears notice_message_id, so a message-id match would miss a
+// re-pended node of a voided root and leave an old-branch notice pending.
+// Void is written once: delivery != 'void' keeps a second pass a no-op. The
+// notice_selected = 1 guard keeps the write inside the schema CHECK (an
+// unselected row cannot take delivery='void').
 func (q *Queries) BatchRerunVoidNodesOfVoidedRoots(ctx context.Context, arg BatchRerunVoidNodesOfVoidedRootsParams) (int64, error) {
-	query := batchRerunVoidNodesOfVoidedRoots
-	var queryParams []interface{}
-	queryParams = append(queryParams, arg.UpdatedAt)
-	queryParams = append(queryParams, arg.Owner)
-	if len(arg.MessageIds) > 0 {
-		for _, v := range arg.MessageIds {
-			queryParams = append(queryParams, v)
-		}
-		query = strings.Replace(query, "/*SLICE:message_ids*/?", strings.Repeat(",?", len(arg.MessageIds))[1:], 1)
-	} else {
-		query = strings.Replace(query, "/*SLICE:message_ids*/?", "NULL", 1)
-	}
-	result, err := q.exec(ctx, nil, query, queryParams...)
+	result, err := q.exec(ctx, q.batchRerunVoidNodesOfVoidedRootsStmt, batchRerunVoidNodesOfVoidedRoots, arg.UpdatedAt, arg.Owner)
 	if err != nil {
 		return 0, err
 	}
