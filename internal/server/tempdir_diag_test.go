@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,8 @@ func diagDataDir(t *testing.T) string {
 		if err == nil {
 			return
 		}
-		t.Errorf("remove data dir: %v; left behind:\n%s", err, listLeftovers(dir))
+		t.Errorf("remove data dir: %v; left behind:\n%s\nDB-touching goroutines:\n%s",
+			err, listLeftovers(dir), dbGoroutines())
 	})
 	return dir
 }
@@ -46,5 +48,24 @@ func listLeftovers(dir string) string {
 		fmt.Fprintf(&b, "  %s size=%d mtime=%s\n", rel, info.Size(), info.ModTime().Format("15:04:05.000"))
 		return nil
 	})
+	return b.String()
+}
+
+// dbGoroutines returns the stacks of goroutines that sit in the SQL driver or
+// the db package, i.e. whoever still holds the data dir's file handle.
+func dbGoroutines() string {
+	var all strings.Builder
+	_ = pprof.Lookup("goroutine").WriteTo(&all, 2)
+	var b strings.Builder
+	for _, g := range strings.Split(all.String(), "\n\n") {
+		if strings.Contains(g, "modernc.org/sqlite") || strings.Contains(g, "database/sql.") ||
+			strings.Contains(g, "/internal/db.") {
+			b.WriteString(g)
+			b.WriteString("\n\n")
+		}
+	}
+	if b.Len() == 0 {
+		return "  (none)\n"
+	}
 	return b.String()
 }
