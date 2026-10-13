@@ -113,14 +113,11 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{})
 	leafA := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {}}}
 	leafB := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {}}}
-	resolved := make(map[string]*policyLeafRegistry)
 	cfg.Leaves = func(registryID string) (*policyLeafRegistry, error) {
 		if registryID == "reg-a" {
-			resolved[registryID] = leafA
 			return leafA, nil
 		}
 		if registryID == "reg-b" {
-			resolved[registryID] = leafB
 			return leafB, nil
 		}
 		return nil, errors.New("unknown registry")
@@ -175,16 +172,24 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	}
 	require.Contains(t, seen, "reg-a")
 	require.Contains(t, seen, "reg-b")
-	// Leaf resolution is keyed by registry identity, never by session.
-	require.Same(t, leafA, resolved["reg-a"])
-	require.Same(t, leafB, resolved["reg-b"])
-	require.NotSame(t, leafA, leafB)
+	// Leaf resolution is keyed by registry identity, never by session: the
+	// executor's own lookup path resolves through LeafEnv per payload
+	// registry and fails closed for a session-keyed probe.
 	env := rt.LeafEnv()
+	require.NotSame(t, leafA, leafB)
 	gotA, err := env.Leaves("reg-a")
 	require.NoError(t, err)
 	require.Same(t, leafA, gotA)
+	gotB, err := env.Leaves("reg-b")
+	require.NoError(t, err)
+	require.Same(t, leafB, gotB)
 	_, err = env.Leaves("sess-1")
 	require.Error(t, err, "session-keyed lookup must fail closed")
+	toolA, err := env.resolveLeaf(batchLeafPayload{Tool: "view", RegistryID: "reg-a", SessionID: "sess-1"})
+	require.NoError(t, err)
+	toolB, err := env.resolveLeaf(batchLeafPayload{Tool: "view", RegistryID: "reg-b", SessionID: "sess-1"})
+	require.NoError(t, err)
+	require.NotSame(t, toolA, toolB, "executor lookup keys on the payload registry")
 }
 
 func TestInvokeValidateSubmitFailsBeforeRunnerCall(t *testing.T) {
