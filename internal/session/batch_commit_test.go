@@ -314,7 +314,8 @@ func TestBatchCommitExactRunnerIDs(t *testing.T) {
 	require.Equal(t, int64(0), root.Ordinal)
 	require.Equal(t, int64(1), leaf.Ordinal, "descendants use deterministic ordinal paths")
 	require.Equal(t, int64(2), commitHookReadNode(t, env.conn, "r.2").Ordinal)
-	require.Equal(t, "pending", leaf.State, "initial view projected by the reservation insert")
+	require.Equal(t, "starting", leaf.State,
+		"initial view projected by the reservation insert; the leaf was admitted in the submit transition")
 	require.Equal(t, int64(1), leaf.ProjectionSequence)
 }
 
