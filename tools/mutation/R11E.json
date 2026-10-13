@@ -67,6 +67,17 @@
       "test": "TestFaultRacingShutdownFaultDuringDrain",
       "purpose": "a fault observed during the drain must resolve the race in favour of the fault (Forced, no release)",
       "expected_assertion": "fault during drain forces the result"
+    },
+    {
+      "id": "setrunner-wake-dropped",
+      "file": "internal/app/app_batch_runtime.go",
+      "file_sha256": "4ccb81009608dc27c2530aa26a739a3199838963412a5f12e4798dd879794dd0",
+      "needle": "\t\tcase <-rt.runnerSet:",
+      "replacement": "\t\tcase <-make(chan struct{}):",
+      "package": "internal/app",
+      "test": "TestWatcherWakesOnSetRunnerAfterStart",
+      "purpose": "Drop the runnerSet wake case from the dormant watcher select. Strengthened by PR #39 (test now parks the watcher / diverges Changed from Notices); proven by the next mutation run.",
+      "expected_assertion": "watcher must wake on SetRunner and exit once"
     }
   ]
 }

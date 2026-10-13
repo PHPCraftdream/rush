@@ -125,13 +125,12 @@ compile failure, fixed this round; still unproven until the next run),
 | R7c | 15/15 | 2 assertions corrected to observed literals (rc1, rc6) |
 | R10b | 13/13 | |
 | R10c | 20/20 | 1 assertion corrected to observed literal (m12) |
-| R11B | 16/16 enforced + 1 pending (m08 in Pending.json) | m15/m16 assertions corrected to observed literals |
-| R11E | 6/6 enforced + 1 pending (setrunner in Pending.json) | |
+| R11B | 16/16 proven + m08 (returned after PR #39, unproven until the next run) | m15/m16 assertions corrected to observed literals |
+| R11E | 6/6 proven + setrunner (returned after PR #39, unproven until the next run) | |
 | R15a | 5/6 proven; mut1 compile-fixed, unproven until next run | mut6 assertion corrected to observed literal |
 | Teardown | 5/5 | |
 | R11C | not proven | excluded from matrix pending #29 |
 | R11D | not proven | excluded from matrix pending #29 + R11D PR |
-| Pending.json | excluded from enforcement | 2 records awaiting test strengthening |
 
 KILLED_UNEXPECTED records re-anchored to the observed failing output (raw
 go-test text, verified verbatim in the per-record mutated logs):
@@ -161,34 +160,15 @@ statement position, so the mutant compiles, and the forced `true` still makes
 fail at its `a failed fetch must make the scope incomplete` assertion
 (handlers_batch_test.go:127).
 
-## Known gaps / pending test strengthening
+## Known gaps / formerly pending test strengthening
 
-`tools/mutation/Pending.json` (schema_version 1, task `pending`) holds the two
-survived records; they are NOT in the workflow matrix and are excluded from
-enforcement until their tests are strengthened:
-
-- **setrunner-wake-dropped** (from R11E; internal/app/app_batch_runtime.go,
-  test TestWatcherWakesOnSetRunnerAfterStart): the mutant removes the
-  `<-rt.runnerSet` case from the dormant watcher select. The test calls
-  SetRunner immediately after Start, so the watcher goroutine usually performs
-  its first top-of-loop re-read of `rt.runner` AFTER the runner is stored and
-  takes the live branch — the dormant select is then never reached, the exit-70
-  path still happens, and the test passes (observed PASS in the mutated log).
-  The test never forces the watcher to be parked in the dormant branch before
-  SetRunner. Strengthening: deterministically park the watcher in the dormant
-  select (barrier/hook) before SetRunner. Catching assertion if it did:
-  `watcher must wake on SetRunner and exit once` (require.Eventually message,
-  app_batch_watch_test.go:30).
-- **m08_reconstruct_notices** (from R11B; internal/session/batch_commit.go,
-  test TestBatchCommitNoticeOrdinalIsSlicePosition): the mutant reconstructs
-  the notice selection from terminal `t.Changed` rows with the Changed index as
-  ordinal. In this fixture the terminal Changed rows coincide in order and
-  position with `t.Notices` (leaf r.1 at index 0, then r.2 and root), so the
-  mutant produces the same ordinals ("0"/"0"/"1") and the test passes (observed
-  PASS in the mutated log). Strengthening: make the terminal Changed order
-  differ from the Notices slice order. Catching assertion if it did:
-  `ordinal is the slice position, not the structural ordinal`
-  (batch_commit_test.go:351, require.Equal message — printed on failure).
+Proof run 38457733623 (commit c18c9cbd) found two surviving mutants:
+`setrunner-wake-dropped` (R11E) and `m08_reconstruct_notices` (R11B). Their
+tests were strengthened in PR #39 (the watcher test parks the watcher in the
+dormant select before `SetRunner`; the notice-ordinal fixture uses
+`MaxParallel: 1` so `Changed` and `Notices` diverge). Both records are back in
+`R11E.json` / `R11B.json` and are enforced by the workflow; their kill is
+confirmed by the next mutation run after PR #39 (not before).
 
 ## Known gaps
 
@@ -259,7 +239,6 @@ python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R1
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R11E.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/Teardown.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R15a.json
-python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/Pending.json
 python -I tools/mutation/run.py --validate --root <r11c-sibling> --manifest tools/mutation/R11C.json
 python -I tools/mutation/run.py --validate --root <r11d-sibling> --manifest tools/mutation/R11D.json
 ```
@@ -440,7 +419,7 @@ test file:line where the first failing assertion prints it.
 | R11B | m05_accept_overflow | batch commit: uint64 value exceeds sql int64 range | batch_commit_test.go:521 (ErrorIs quoted target) |
 | R11B | m06_skip_envelope | Input ('') needs to be valid json | batch_commit_test.go:383 |
 | R11B | m07_notice_structural_ordinal | expected: "0" | batch_commit_test.go:357 |
-| R11B | m08_reconstruct_notices | ordinal is the slice position, not the structural ordinal | batch_commit_test.go:351 — MOVED to Pending.json (survived run 38457733623) |
+| R11B | m08_reconstruct_notices | ordinal is the slice position, not the structural ordinal | batch_commit_test.go:351 (survived run 38457733623; returned after PR #39) |
 | R11B | m09_closing_wake_one | host-closing notices never wake | batch_commit_close_test.go:90 |
 | R11B | m10_rewrite_latched_cause | already-latched cause not rewritten by host closing | batch_commit_close_test.go:85 |
 | R11B | m11_finalize_settlements | interruption facts persisted | batch_commit_close_test.go:88 |
@@ -462,7 +441,7 @@ test file:line where the first failing assertion prints it.
 | R11E | close-timeout-releases | Close timeout reports Forced | app_batch_drain_test.go:55 |
 | R11E | writer-release-dropped | drain precedes release; host identity precedes writer | app_batch_drain_test.go:36 |
 | R11E | fault-during-drain-not-forced | fault during drain forces the result | app_batch_fault_test.go:106 |
-| R11E | setrunner-wake-dropped | watcher must wake on SetRunner and exit once | app_batch_watch_test.go:30 (Eventually msg) — MOVED to Pending.json (survived run 38457733623) |
+| R11E | setrunner-wake-dropped | watcher must wake on SetRunner and exit once | app_batch_watch_test.go:30 (Eventually msg) (survived run 38457733623; returned after PR #39) |
 | Teardown | release-join-omitted | release join reached after-waits seam before callback exit | release_callback_join_test.go:97 |
 | Teardown | callback-admission-reopened | refused callback must not enter the seam | release_callback_join_test.go:144 |
 | Teardown | shutdown-context-not-cancelled | cooperative callback should join gracefully | release_callback_join_test.go:167 |

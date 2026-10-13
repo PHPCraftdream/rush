@@ -177,6 +177,17 @@
       "test": "TestBatchCommitAddAppendsInsideProject",
       "purpose": "Insert added node with another root UUID, exactly as emitted; node_id remains r.2, not a second root. Migration 20261012000001_batch_projection.sql:66-69 requires the new root and parent under that UUID, so the insert fails its foreign key; batchStoreTestDB uses db.Connect with foreign_keys ON. Runner converts the hook error to ErrCommitFailed plus error (runner_commit.go:88,110,298), failing the primary Add require.NoError at batch_commit_test.go:330 before its root-count assertion. Stable error substring chosen by source inspection, not executed proof.",
       "expected_assertion": "jobbatch: commit failed: error"
+    },
+    {
+      "id": "m08_reconstruct_notices",
+      "file": "internal/session/batch_commit.go",
+      "file_sha256": "50a2d070790745ef9448ff438b76e7c5eda075cd17ac03d49e50be0444233447",
+      "needle": "\tfor i, n := range t.Notices {\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
+      "replacement": "\tfor i, v := range t.Changed {\n\t\tif !v.State.Terminal() {\n\t\t\tcontinue\n\t\t}\n\t\tn := jobbatch.Notice{Root: v.Root, Node: v.ID, Kind: v.Kind, State: v.State, Cause: v.Cause}\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
+      "package": "internal/session",
+      "test": "TestBatchCommitNoticeOrdinalIsSlicePosition",
+      "purpose": "Reconstruct selection from terminal Changed rows. Strengthened by PR #39 (test now parks the watcher / diverges Changed from Notices); proven by the next mutation run.",
+      "expected_assertion": "ordinal is the slice position, not the structural ordinal"
     }
   ]
 }
