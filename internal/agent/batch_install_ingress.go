@@ -81,31 +81,17 @@ func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, erro
 	return b.registries.Resolve(registryID)
 }
 
-// batchCoordinatorBinding is one coordinator's flag-on binding: the ingress
-// plus the identity of the LATEST pinned build registry (the CLI bridge and
-// the agent family resolve through it).
+// batchCoordinatorBinding is one coordinator's flag-on binding. R11F P1-4:
+// it carries NO "latest pinned registry" — the CLI bridge binds to the
+// TRUSTED ENCLOSING INVOCATION through a typed context value stamped by the
+// agent-family driver (batchBridgeInvocation), so two concurrent invocations
+// with different pinned registries can never cross-contaminate.
 type batchCoordinatorBinding struct {
 	ingress BatchWorkIngress
-
-	mu     sync.Mutex
-	latest string
 }
 
 func (b *batchCoordinatorBinding) pin(registry *policyLeafRegistry) (string, error) {
-	id, err := b.ingress.PinLeafRegistry(registry)
-	if err != nil {
-		return "", err
-	}
-	b.mu.Lock()
-	b.latest = id
-	b.mu.Unlock()
-	return id, nil
-}
-
-func (b *batchCoordinatorBinding) latestRegistryID() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.latest
+	return b.ingress.PinLeafRegistry(registry)
 }
 
 var (

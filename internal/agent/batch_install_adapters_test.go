@@ -52,11 +52,17 @@ func installTestDeps(t *testing.T, store *session.BatchStore, conn *sql.DB, cont
 		Profile: profile, Registries: NewBatchLeafRegistryStore(),
 		Store: store, Messages: message.NewService(db.New(conn)),
 		Executor: installFakeExecutor{content: content}, DonePoll: time.Millisecond,
+		// R11F round-2 (P1-7 item 6): jobbatch.NewRunner fails closed on zero
+		// budgets (runner.go newRunnerWithClockAndHooks), so every adapter
+		// test needs positive budgets or it aborts before its assertions.
+		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	}
 }
 
 func installOneItemSpec(t *testing.T, content string) jobbatch.Spec {
-	payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-1", SessionID: "owner", Input: json.RawMessage(`{"path":"x"}`), RegistryID: "reg-1"})
+	// The content rides in the canonical input so two specs with different
+	// contents carry different hashes (the mismatch probes rely on that).
+	payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-1", SessionID: "owner", Input: json.RawMessage(`{"path":"` + content + `"}`), RegistryID: "reg-1"})
 	require.NoError(t, err)
 	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}
 }
@@ -229,9 +235,11 @@ func TestInstallBatchRuntimeFailsClosed(t *testing.T) {
 	store, conn, ctx := newTestBatchStore(t)
 	deps := installTestDeps(t, store, conn, "ok")
 	for name, mutate := range map[string]func(*BatchInstallDeps){
-		"missing host":     func(d *BatchInstallDeps) { d.Host = "" },
-		"missing runner":   func(d *BatchInstallDeps) { d.RunnerID = "" },
-		"missing owner":    func(d *BatchInstallDeps) { d.Owner = "" },
+		"missing host":   func(d *BatchInstallDeps) { d.Host = "" },
+		"missing runner": func(d *BatchInstallDeps) { d.RunnerID = "" },
+		// R11F P1-1: a missing Owner is NO LONGER an error — the dormant
+		// default owner (batchDormantInstallOwner) applies and the commit
+		// hook resolves per-invocation owners, so that case is gone here.
 		"missing profile":  func(d *BatchInstallDeps) { d.Profile = nil },
 		"missing registry": func(d *BatchInstallDeps) { d.Registries = nil },
 		"missing store":    func(d *BatchInstallDeps) { d.Store = nil },

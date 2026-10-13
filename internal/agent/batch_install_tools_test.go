@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -108,8 +109,12 @@ func batchCallCtx(sessionID string) context.Context {
 }
 
 // TestBatchWorkInventoryPerFamilyFlagOn is acceptance item (b): every work
-// family is armed through exactly ONE authority; the D1 control set is not
-// batch-wrapped; no async/stall wrapper is installed; hooks run exactly once.
+// family is armed through the batch ingress and NO async/stall wrapper is
+// installed; the D1 control set is not batch-wrapped. The per-call
+// single-authority / single-root / zero-async-ledger / one-envelope proofs
+// against the REAL ingress live in batch_install_inventory_test.go
+// (TestBatchWorkInventoryRealFamilies) — a fake ingress here would prove
+// nothing about the installed system.
 func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	fake := &fakeBatchIngress{}
 	bind := &batchCoordinatorBinding{ingress: fake}
@@ -117,6 +122,9 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		"bash", "run_command", "agent", "agentic_fetch",
 		"mcp_files__read", "view", "edit", "write", "glob", "grep", "ls",
 		"fs_read", "fs_write", "fetch", "download",
+		// R11F round-2 completeness hunk: todos MUTATES session state, so it
+		// is a WORK tool and must be armed through the ONE authority.
+		"todos",
 	}
 	controls := []string{
 		"ask_question", "await_tasks", "batch_run", "batch_add",
@@ -163,49 +171,9 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		}
 	}
 
-	// Leaf registry layers: no execution wrappers survive pinning.
-	for name, entry := range fake.reg.entries {
-		for _, layer := range entry.layers {
-			if layer == "async" || layer == "stall" {
-				t.Fatalf("leaf %s retains execution layer %q", name, layer)
-			}
-		}
-	}
-
-	// Per family: exactly one authority crossing and exactly one leaf
-	// execution per call.
-	for _, name := range work {
-		leaf := seen[name].(*batchIngressTool)
-		before := fake.invokes
-		resp, err := leaf.Run(batchCallCtx("sess-1"), fantasy.ToolCall{ID: "call-" + name, Name: name, Input: `{"a":1}`})
-		if err != nil {
-			t.Fatalf("%s: Run: %v", name, err)
-		}
-		if resp.Content != "ok" {
-			t.Fatalf("%s: unexpected response %q", name, resp.Content)
-		}
-		if fake.invokes != before+1 {
-			t.Fatalf("%s: %d authority crossings for one call", name, fake.invokes-before)
-		}
-		if fake.origin != "coordinator" {
-			t.Fatalf("%s: origin %q", name, fake.origin)
-		}
-		if fake.inv.SessionID != "sess-1" || fake.inv.MessageID != "msg-1" {
-			t.Fatalf("%s: invocation identity not bound from the run context: %+v", name, fake.inv)
-		}
-		if fake.inv.RegistryID != "reg-1" || fake.inv.Policy.RegistryID != "reg-1" {
-			t.Fatalf("%s: pinned registry identity not carried: %+v", name, fake.inv.Policy)
-		}
-		if fake.inv.Policy.RestrictedToolset == "" {
-			t.Fatalf("%s: restricted toolset fingerprint missing", name)
-		}
-		if fake.leafRunCount(name) != 1 {
-			t.Fatalf("%s: leaf executed %d times, want exactly 1", name, fake.leafRunCount(name))
-		}
-	}
-
 	// Delivery choice per family: bash keeps its auto-background window;
-	// every other family is sync with escape never.
+	// every other family is sync with escape never. (Per-call authority,
+	// root and ledger counts: batch_install_inventory_test.go.)
 	for name, want := range map[string]struct{ escape, window string }{
 		"bash":            {batchEscapeAuto, inlineWindow.String()},
 		"run_command":     {batchEscapeNever, ""},
@@ -278,25 +246,42 @@ func batchLayersContain(layers []string, want string) bool {
 	return false
 }
 
-// TestNoRawAgentFamilyFactory is acceptance item (d): the flagged install
-// cannot reach the zero-dep (raw) agent family, and the zero-dep shape is
-// the fail-closed default.
+// TestNoRawAgentFamilyFactory is acceptance item (d), R11F round-2 P1-7
+// item 5: a NO-BYPASS proof, not a non-nil-deps assertion. By inspection of
+// the production (non _test) sources of this package: the literal zero-deps
+// family constructor `batchAgentDeps{}` appears in NO production file, and
+// every production call site of newBatchExecutorFamilies derives its
+// argument from BatchInstallDeps.AgentDeps / CoordinatorBatchAgentDeps (the
+// flagged wiring) — the raw zero-deps family exists only for the M1
+// fail-closed default inside newBatchExecutorFamilies itself and in tests.
+// The behavioral counterpart (the flagged install resolves the agent leaf
+// through the pinned registry) is TestBatchWorkInventoryRealFamilies and
+// TestBatchAgentRouterDispatchesByRecordedTask.
 func TestNoRawAgentFamilyFactory(t *testing.T) {
-	wired := newBatchExecutorFamilies(CoordinatorBatchAgentDeps())
-	family, ok := wired[batchKindAgent].(batchAgentFamily)
-	if !ok {
-		t.Fatalf("agent family type %T", wired[batchKindAgent])
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
 	}
-	if family.deps.Runs == nil || family.deps.Descendants == nil {
-		t.Fatalf("flagged agent family seams are zero: %+v", family.deps)
-	}
-	zero := newBatchExecutorFamilies(batchAgentDeps{})
-	zeroFamily, ok := zero[batchKindAgent].(batchAgentFamily)
-	if !ok {
-		t.Fatalf("zero agent family type %T", zero[batchKindAgent])
-	}
-	if zeroFamily.deps.Runs != nil || zeroFamily.deps.Descendants != nil {
-		t.Fatalf("zero agent family deps must stay zero: %+v", zeroFamily.deps)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.Contains(string(src), "batchAgentDeps{}") {
+			t.Fatalf("%s: production code constructs a zero-deps (raw) batch agent family", name)
+		}
+		for _, line := range strings.Split(string(src), "\n") {
+			if !strings.Contains(line, "newBatchExecutorFamilies(") {
+				continue
+			}
+			if !strings.Contains(line, "AgentDeps") && !strings.Contains(line, "CoordinatorBatchAgentDeps") {
+				t.Fatalf("%s: newBatchExecutorFamilies call site does not derive its deps from the flagged wiring: %s", name, strings.TrimSpace(line))
+			}
+		}
 	}
 }
 

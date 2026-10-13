@@ -138,7 +138,7 @@ func TestBatchDeliverySyncPreservesEnvelope(t *testing.T) {
 	done := newFakeDone(envelope)
 	done.finish(envelope)
 	impl := deliveryImpl(t, done, &fakeElector{})
-	got, err := impl.deliverSync(context.Background(), "root-1")
+	got, err := impl.deliverSync(context.Background(), "owner-1", "root-1")
 	require.NoError(t, err)
 	require.Equal(t, envelope, got, "sync must forward the full executor envelope")
 }
@@ -151,7 +151,7 @@ func TestBatchDeliverySyncUnavailableEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	// Never released: close with no completion -> unavailable, never settled.
 	close(done.release)
-	_, err = impl.deliverSync(context.Background(), "root-1")
+	_, err = impl.deliverSync(context.Background(), "owner-1", "root-1")
 	require.ErrorIs(t, err, errBatchDoneUnavailable)
 }
 

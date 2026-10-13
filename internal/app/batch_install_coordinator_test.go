@@ -14,10 +14,13 @@ import (
 
 func TestBatchWorkIngressFlagOffNil(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	// Flag off: the install guard in New never fires, so no ingress seam is
-	// ever built (the M2 golden test pins the same for the runtime object).
-	a := batchFactoryApp(t)
-	require.Nil(t, a.batchWorkIngress, "flag off: no ingress seam")
+	// R11F round-2 P1-7 item 3: build the App through the REAL New entry
+	// point (no SkipAgentSetup, no hand-assembled &App{}), so the assertion
+	// is about the installed system: with the flag off the install guard in
+	// New never fires and no ingress seam is ever built.
+	app := newFullNewApp(t)
+	require.Nil(t, app.batchWorkIngress, "flag off: New never builds the one-authority ingress seam")
+	require.Nil(t, app.batchRuntime, "flag off: no batch runtime object either")
 }
 
 func TestBatchWorkIngressFlagOnInstalled(t *testing.T) {

@@ -22,6 +22,34 @@ import (
 // every family (todos, job_output, rush_info, ...) keep their direct pinned
 // leaf — forcing them through the ingress would only convert every call
 // into errBatchUnknownTool.
+// Completeness inventory (R11F round-2), per non-wrapped tool of the D1
+// complement:
+//
+//   - todos: (iii) WORK — it MUTATES session state (writes the session's
+//     todo list that the worker turns read back). It IS wrapped below: it
+//     is batch-admissible (batchIOTools), so its invocation enters the ONE
+//     authority like any other state-changing leaf. The admission validator
+//     classifies it in the io group.
+//   - job_output, job_kill: (i) D1-ADJACENT LEGACY CONTROLS — the legacy
+//     async-ledger read/kill surfaces slated for removal in R12/D6; they
+//     are control-plane (batchControlTarget/BatchNonWorkTarget) and are
+//     never batch-wrapped. Anchor: the legacy workLedger
+//     (async_job_bgshell.go / coordinator recheck loop) they operate on.
+//   - rush_info, rush_logs: (ii) NOT WORK — pure read-only host/process
+//     introspection with no external effect and no session-state mutation;
+//     direct pinned leaf.
+//   - read_delegation_transcript: (ii) NOT WORK — read-only transcript
+//     inspection; direct pinned leaf.
+//   - list_mcp_resources, read_mcp_resource: (ii) NOT WORK — read-only MCP
+//     resource listing/reading (no execution, no external mutation); direct
+//     pinned leaf.
+//   - ask-adjacent (ask_question and every wake/loop/inspect/inject
+//     control): (i) D1 control (batchControlTarget) — never wrapped.
+//
+// Every category-(iii) tool above is covered by the batchIOTools /
+// agent / agentic_fetch / mcp_ admission below; if a future WORK tool is
+// added, it MUST join one of those families or it silently keeps a direct
+// pinned leaf (this comment is the review anchor).
 func batchWorkTarget(name string) bool {
 	if batchControlTarget(name) {
 		return false

@@ -40,6 +40,11 @@ var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
 // Submit starts the caller-supplied root. The returned ID is always the
 // requested root (ingress contract: runner root must equal requested root).
 func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error) {
+	// R11F P1-6: a deferred install binds the real Runner at Start. An
+	// Invoke that races ahead of Start has no Runner and fails closed.
+	if a.runner == nil {
+		return "", errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
+	}
 	if req.Spec.Task == nil {
 		return "", fmt.Errorf("%w: direct calls submit one task", jobbatch.ErrInvalidSpec)
 	}
@@ -133,12 +138,15 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 	}
 }
 
-// LoadDone reads an already-persisted completion without waiting. Envelope
+// LoadDone reads an already-persisted completion without waiting (R11F
+// P1-2): the one-item completion read — the root envelope when present, else
+// the settled single task child's envelope (the Settled commit hook writes
+// the envelope on the settled NODE, root.1, not the root). Envelope
 // details carry the executor's full ToolResponse (batchEnvelope); a settled
 // row without details is projected honestly from its stored summary and
 // outcome state (state failed => IsError), never fabricated.
 func (d *batchStoreDoneSource) LoadDone(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, bool, error) {
-	e, ok, err := d.store.BatchDeliveryRootEnvelope(ctx, owner, string(root))
+	e, ok, err := d.store.BatchDeliveryOneItemCompletion(ctx, owner, string(root))
 	if err != nil || !ok {
 		return fantasy.ToolResponse{}, false, err
 	}
@@ -363,6 +371,9 @@ type BatchInstallDeps struct {
 
 // BatchInstall is one fully adapted, still-dormant installation.
 type BatchInstall struct {
+	mu        sync.Mutex
+	runnerCfg jobbatch.RunnerConfig
+
 	Runner       *jobbatch.Runner
 	CommitHook   func(context.Context, jobbatch.Transition) error
 	Runtime      *batchRuntime
@@ -379,9 +390,59 @@ type BatchInstall struct {
 // The Runner's engine loop starts here (inert until Submit); the app fault
 // watcher does NOT start until its own Start is called.
 func InstallBatchRuntime(ctx context.Context, deps BatchInstallDeps) (*BatchInstall, error) {
+	install, err := newBatchInstall(ctx, deps, true)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := install.BuildRunner(ctx)
+	if err != nil {
+		return nil, err
+	}
+	install.Runner = runner
+	return install, nil
+}
+
+// batchDormantInstallOwner is the dormant DEFAULT commit-hook/delivery owner
+// used when an install carries no fixed owner (R11F P1-1: the flagged app
+// install no longer pins the host UUID as owner). It is NEVER written as an
+// owner_session_id: the commit hook resolves every Submit's owner from the
+// spec payload (BatchCommitIdentity.OwnerFor) and every delivery fences by
+// the invocation's session (batchDeliveryImpl.owner).
+const batchDormantInstallOwner = "batch-install:per-invocation-owner"
+
+// batchCommitOwnerFor is the P1-1 OwnerFor resolver: the INVOKING session
+// carried in the one-item spec payload (batchLeafPayload.SessionID). An
+// unparseable spec keeps the dormant default (the commit hook falls back).
+func batchCommitOwnerFor(spec jobbatch.Spec) string {
+	if spec.Task == nil {
+		return ""
+	}
+	var p batchLeafPayload
+	if err := json.Unmarshal(spec.Task.Payload, &p); err != nil {
+		return ""
+	}
+	return p.SessionID
+}
+
+// InstallBatchRuntimeDeferred builds everything InstallBatchRuntime builds
+// EXCEPT the Runner (R11F P1-6: no engine goroutines until BatchRuntime.Start
+// constructs the Runner through BatchInstall.BuildRunner via the runtime's
+// RunnerFactory). The runner handle adapter is wired into the runtime
+// immediately; it fails closed on Submit until BuildRunner attaches the real
+// Runner.
+func InstallBatchRuntimeDeferred(ctx context.Context, deps BatchInstallDeps) (*BatchInstall, error) {
+	return newBatchInstall(ctx, deps, false)
+}
+
+// newBatchInstall is the shared construction core. withRunner=false keeps
+// the Runner unconstructed (dormant install).
+func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) (*BatchInstall, error) {
+	// R11F P1-1: Owner is no longer required — the flagged install resolves
+	// the per-invocation owner from the spec payload; a fixed Owner is only
+	// the dormant default.
 	switch {
-	case deps.Host == "" || deps.RunnerID == "" || deps.Owner == "":
-		return nil, errors.New("batch install: host, runner id and owner are required")
+	case deps.Host == "" || deps.RunnerID == "":
+		return nil, errors.New("batch install: host and runner id are required")
 	case deps.Profile == nil:
 		return nil, errors.New("batch install: profile is required")
 	case deps.Registries == nil:
@@ -391,10 +452,14 @@ func InstallBatchRuntime(ctx context.Context, deps BatchInstallDeps) (*BatchInst
 	case deps.Messages == nil:
 		return nil, errors.New("batch install: message service is required")
 	}
+	owner := deps.Owner
+	if owner == "" {
+		owner = batchDormantInstallOwner
+	}
 	runnerAdapter := &batchRunnerAdapter{started: make(map[jobbatch.ID]*jobbatch.Batch)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
-	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: deps.Owner, Done: done, Elect: elector, Runner: runnerAdapter})
+	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter})
 	if err != nil {
 		return nil, err
 	}
@@ -403,16 +468,23 @@ func InstallBatchRuntime(ctx context.Context, deps BatchInstallDeps) (*BatchInst
 	if executor == nil {
 		executor = newBatchExecutor(env, newBatchExecutorFamilies(deps.AgentDeps))
 	}
-	commitHook := session.NewBatchCommitHook(deps.Store, session.BatchCommitIdentity{Host: deps.Host, Runner: deps.RunnerID, Owner: deps.Owner})
-	runner, err := jobbatch.NewRunner(ctx, jobbatch.RunnerConfig{
+	// R11F P1-1: the commit hook reserves every Submit under the INVOKING
+	// session (OwnerFor); the fixed Owner stays the dormant default.
+	commitHook := session.NewBatchCommitHook(deps.Store, session.BatchCommitIdentity{
+		Host: deps.Host, Runner: deps.RunnerID, Owner: owner, OwnerFor: batchCommitOwnerFor,
+	})
+	runnerCfg := jobbatch.RunnerConfig{
 		CommitHook: commitHook, CommitTimeout: deps.CommitTimeout,
 		Limits: deps.Limits, Executor: executor,
 		ControlTimeout: deps.ControlTimeout, RecordRetention: deps.RecordRetention,
-	})
-	if err != nil {
-		return nil, err
 	}
-	runnerAdapter.runner = runner
+	if withRunner {
+		runner, err := jobbatch.NewRunner(context.Background(), runnerCfg)
+		if err != nil {
+			return nil, err
+		}
+		runnerAdapter.runner = runner
+	}
 	runtime, err := newBatchRuntime(batchRuntimeConfig{
 		Host: deps.Host, RunnerID: deps.RunnerID, Profile: deps.Profile,
 		Resolver: deps.Resolver,
@@ -422,10 +494,37 @@ func InstallBatchRuntime(ctx context.Context, deps BatchInstallDeps) (*BatchInst
 	if err != nil {
 		return nil, err
 	}
-	return &BatchInstall{
-		Runner: runner, CommitHook: commitHook, Runtime: runtime,
+	install := &BatchInstall{
+		CommitHook: commitHook, Runtime: runtime,
 		RunnerHandle: runnerAdapter, Attach: batchAttachAdapter{store: deps.Store},
 		Delivery: delivery, Done: done, Elector: elector,
-		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: deps.Owner},
-	}, nil
+		// R11F P1-5(d): the notice-pull drain adapter has NO production
+		// consumer yet — it is consumed by the web drain surface in
+		// R12/R15b; wired inertly until then. Do not invent a consumer.
+		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
+		runnerCfg:  runnerCfg,
+	}
+	if withRunner {
+		install.Runner = runnerAdapter.runner
+	}
+	return install, nil
+}
+
+// BuildRunner constructs the real Runner for a deferred install (R11F P1-6)
+// and attaches it to the runner handle (making the ingress live). Idempotent
+// per install: the first construction wins; later calls return the same
+// Runner.
+func (i *BatchInstall) BuildRunner(ctx context.Context) (*jobbatch.Runner, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.Runner != nil {
+		return i.Runner, nil
+	}
+	runner, err := jobbatch.NewRunner(ctx, i.runnerCfg)
+	if err != nil {
+		return nil, err
+	}
+	i.Runner = runner
+	i.RunnerHandle.runner = runner
+	return runner, nil
 }

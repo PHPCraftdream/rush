@@ -7,19 +7,66 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
 
-// TestBatchRuntimeFlagOffGolden: with RUSH_BATCH_RUNTIME unset, "false" or
-// unparseable, the install guard never fires: an App built through New has
-// no batch runtime object (hence no watcher goroutine), and the database
-// carries no batch rows. This is the flag-off equivalence pin for the M2
-// wiring — the flag-off branch of New is exactly the pre-R11F code.
+// newFullNewApp builds an App through the REAL New entry point — NO
+// SkipAgentSetup — with the same offline isolation the other New callers in
+// this package use (isolateAppNewTestEnv + a config-only openaicompat probe
+// provider that is never called). R11F round-2 P1-7 items 2 and 3: a
+// flag-off golden built through SkipAgentSetup or a hand-assembled &App{}
+// proves nothing about the installed system.
+func newFullNewApp(t *testing.T) *App {
+	t.Helper()
+	isolateAppNewTestEnv(t)
+	// The provider probe never needs to be called; its existence satisfies
+	// config validation without a network endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	dataDir := t.TempDir()
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+	store.Config().Providers.Set("openaicompat", config.ProviderConfig{
+		ID: "openaicompat", Type: openaicompat.Name, BaseURL: srv.URL, APIKey: "probe",
+		Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}},
+	})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetupAgents()
+
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	application, err := New(context.Background(), conn, store)
+	if err != nil {
+		err = fmt.Errorf("New: %w", err)
+		_ = db.ReleaseConn(conn)
+	}
+	require.NoError(t, err)
+	t.Cleanup(application.Shutdown)
+	return application
+}
+
+// TestBatchRuntimeFlagOffGolden (R11F round-2 P1-7 item 2): with
+// RUSH_BATCH_RUNTIME unset, "false" or unparseable, an App built through the
+// REAL New entry point (NO SkipAgentSetup) has no batch runtime object, no
+// ingress seam, and the database carries NO batch rows at all — counted over
+// every owner, never through an owner=” query. This is the flag-off
+// equivalence pin for the M2 wiring.
 func TestBatchRuntimeFlagOffGolden(t *testing.T) {
 	for _, tc := range []struct {
 		name, value string
@@ -36,30 +83,15 @@ func TestBatchRuntimeFlagOffGolden(t *testing.T) {
 			}
 			require.False(t, config.BatchRuntimeEnabled())
 
-			isolateAppNewTestEnv(t)
-			dataDir := t.TempDir()
-			store, err := config.Init(dataDir, dataDir, false)
-			require.NoError(t, err)
-			conn, err := db.Connect(context.Background(), dataDir)
-			require.NoError(t, err)
-
-			app, err := New(context.Background(), conn, store, SkipAgentSetup())
-			require.NoError(t, err)
+			app := newFullNewApp(t)
 			require.Nil(t, app.batchRuntime, "flag off: no batch runtime object is built")
+			require.Nil(t, app.batchWorkIngress, "flag off: no ingress seam is built")
 
-			// No DB write from any batch surface: no live batch root exists.
-			q := db.New(app.DB())
-			roots, err := q.ListLiveBatchRootsForOwner(context.Background(), "")
-			require.NoError(t, err)
-			require.Empty(t, roots, "flag off: no batch root row is written")
-			t.Cleanup(func() {
-				// Release every pooled reference the App took at New, so the
-				// TempDir cleanup can unlink rush.db on Windows.
-				for i := 0; i < app.dbReleasesNeeded+2; i++ {
-					_ = db.Release(dataDir)
-				}
-				_ = db.ReleaseConn(conn)
-			})
+			// No batch surface wrote anything: zero rows over ALL owners.
+			var count int
+			require.NoError(t, app.DB().QueryRowContext(context.Background(),
+				`SELECT COUNT(*) FROM batch_nodes`).Scan(&count))
+			require.Zero(t, count, "flag off: no batch_nodes row is written for any owner")
 		})
 	}
 }
@@ -118,44 +150,58 @@ func TestBatchRuntimeFlagOnInstallFailsClosed(t *testing.T) {
 	require.Nil(t, a.batchRuntime, "fail closed: no partially-installed runtime")
 }
 
-// TestAppShutdownGateDrainsBeforeRelease: the app-level shutdown gate runs
-// DrainAndRelease — Runner drain first, then host identity, then writer.
-func TestAppShutdownGateDrainsBeforeRelease(t *testing.T) {
+// TestAppReleaseResourcesDrainsBeforeRelease (R11F round-2 P1-7 item 4):
+// the flag-on SHUTDOWN goes through app.releaseResources — not the gate
+// helper directly — and runs DrainAndRelease in order: Runner drain first,
+// then host identity, then writer, and the DB block never re-releases the
+// writer the gate already released.
+func TestAppReleaseResourcesDrainsBeforeRelease(t *testing.T) {
 	t.Parallel()
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, _, _ := wireTestBatchRuntimeFull(t, app, runner)
+	// Make the DB block observable: under the guard mutation the block
+	// re-releases the pooled reference and closes the DB out from under the
+	// App even though the gate already released the writer.
+	app.dbConns = []*sql.DB{app.DB()}
 
-	result := make(chan bool, 1)
-	go func() { result <- app.releaseBatchRuntimeGate(context.Background(), false, func(error) {}) }()
+	result := make(chan ShutdownResult, 1)
+	go func() { result <- app.releaseResources(false) }()
 	<-runner.closeEntered
 	require.Empty(t, rec.snapshot(), "nothing releases while the Runner drains")
 
 	runner.finishClose(nil)
-	require.False(t, <-result, "graceful drain keeps stillBusy false")
+	res := <-result
+	require.False(t, res.Forced, "graceful drain keeps the shutdown graceful")
 	require.Equal(t, []string{"release-host", "release-writer"}, rec.snapshot(),
 		"drain precedes release; host identity precedes writer")
+	require.Empty(t, res.CleanupErrors)
+	// Exactly-once writer release: the gate released it (the fake seam), so
+	// the DB block must have skipped the release on the flag-on graceful path.
+	require.NoError(t, app.DB().PingContext(context.Background()),
+		"flag-on graceful shutdown releases the writer exactly once (no double release)")
 }
 
-// TestAppShutdownGateCloseTimeoutForced: a Close timeout through the app
-// wiring retains the still-draining resources (only retention runs, the
-// writer is never released) and promotes the shutdown to Forced.
-func TestAppShutdownGateCloseTimeoutForced(t *testing.T) {
+// TestAppReleaseResourcesCloseTimeoutForced: a Close timeout observed
+// through releaseResources retains the still-draining resources (only
+// retention runs, the writer is never released) and promotes the shutdown
+// verdict to Forced.
+func TestAppReleaseResourcesCloseTimeoutForced(t *testing.T) {
 	t.Parallel()
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, _, _ := wireTestBatchRuntimeFull(t, app, runner)
 
-	busy := app.releaseBatchRuntimeGate(context.Background(), false, func(error) {})
-	require.True(t, busy, "Close timeout promotes the shutdown to Forced")
+	res := app.releaseResources(false)
+	require.True(t, res.Forced, "Close timeout must promote the shutdown to Forced")
 	require.Equal(t, []string{"retain-host"}, rec.snapshot(),
 		"host identity and writer retained on the forced path")
 }
 
-// TestAppShutdownGateFaultFenceRetains: a fault fence observed through the
-// app wiring retains everything until exit 70 — no host release, no writer
-// release, Forced verdict.
-func TestAppShutdownGateFaultFenceRetains(t *testing.T) {
+// TestAppReleaseResourcesFaultFenceRetains: a fault fence observed through
+// releaseResources retains everything until exit 70 — no host release, no
+// writer release, Forced verdict.
+func TestAppReleaseResourcesFaultFenceRetains(t *testing.T) {
 	t.Parallel()
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
@@ -163,23 +209,24 @@ func TestAppShutdownGateFaultFenceRetains(t *testing.T) {
 	rt.handleFault(nil)
 	require.NotEmpty(t, exits.called(), "fault path exits the process (exit 70)")
 
-	busy := app.releaseBatchRuntimeGate(context.Background(), false, func(error) {})
-	require.True(t, busy, "fenced shutdown is Forced")
+	res := app.releaseResources(false)
+	require.True(t, res.Forced, "fenced shutdown is Forced")
 	require.Empty(t, rec.snapshot(),
 		"fault fence retains host identity and writer until exit 70")
 }
 
-// TestAppShutdownGateForcedAgentsBusy: when agent work already made the
-// shutdown forced, the gate keeps the flag-off forced retention policy —
-// watcher disarmed, host lock kept (CloseKeepLock), writer untouched.
-func TestAppShutdownGateForcedAgentsBusy(t *testing.T) {
+// TestAppReleaseResourcesForcedAgentsBusy: when agent work already made the
+// shutdown forced, releaseResources keeps the forced retention policy through
+// the gate — watcher disarmed, host lock kept (CloseKeepLock), writer
+// untouched.
+func TestAppReleaseResourcesForcedAgentsBusy(t *testing.T) {
 	t.Parallel()
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, _, _ := wireTestBatchRuntimeFull(t, app, runner)
 
-	busy := app.releaseBatchRuntimeGate(context.Background(), true, func(error) {})
-	require.True(t, busy)
+	res := app.releaseResources(true)
+	require.True(t, res.Forced)
 	require.Empty(t, rec.snapshot(), "forced shutdown never releases through the gate")
 }
 

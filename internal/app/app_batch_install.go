@@ -50,19 +50,19 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		return err
 	}
 	factory, err := newBatchRuntimeFactory(app, agent.BatchInstallDeps{
-		// R11F (M3) decision — delivery ownership: the commit-hook identity
-		// (Host/RunnerID/Owner) stays HOST-scoped, one Runner and one owner
-		// per process (session.BatchCommitIdentity contract). The ingress
-		// rebinds per-invocation ownership at the boundary:
-		// BatchInvocation.SessionID is the CALLING session (attach fence +
-		// singleflight key) while durable elections and deliveries remain
-		// fenced by the install Owner (the delivery seam's fixed deps.Owner).
-		Host: host, RunnerID: uuid.NewString(), Owner: host,
-		// R11F (M3) coordinator seams: the agent executor family resolves
-		// its pinned leaf through the process binding; MCP leaves admit as
-		// non-reentrant (reentrant ones fail closed).
-		AgentDeps: agent.CoordinatorBatchAgentDeps(),
-		Resolver:  agent.BatchNonReentrantMCPResolver(),
+		// R11F round-2 (P1-1) decision — delivery ownership: the install
+		// carries NO fixed owner. Owner=host was an FK violation on the
+		// first Submit (batch_nodes.owner_session_id REFERENCES
+		// sessions(id); async_hosts rows are not sessions). The commit hook
+		// resolves every Submit's owner from the INVOKING session carried
+		// in the spec payload (BatchCommitIdentity.OwnerFor); deliveries
+		// and elections fence by the invocation's session
+		// (batchDeliveryImpl.owner); Host stays ONLY the fence identity.
+		Host: host, RunnerID: uuid.NewString(),
+		// R11F (M3) coordinator seams — AgentDeps (with the P1-5b
+		// store-backed descendant reader) and the non-reentrant MCP resolver
+		// are wired by the factory defaults above, so the reader is built
+		// from the App's own writer pool and data directory.
 	})
 	if err != nil {
 		return err

@@ -50,6 +50,13 @@ func privateFetchIngressFor(ctx context.Context) BatchWorkIngress {
 // armPrivateFetchIngress pins the build's leaf registry and wraps every
 // private tool so its Run enters the ONE authority. A pin failure fails
 // closed: the tools refuse rather than fall back to the old path.
+// armPrivateFetchIngress pins the build's leaf registry and wraps every
+// private tool so its Run enters the ONE authority. A pin failure fails
+// closed: the tools refuse rather than fall back to the old path.
+// R11F round-2 (P1-5c): the invocation Policy template carries the pinned
+// RegistryID/RestrictedToolset identity; see batchArmingPolicyNote (batch_
+// install_policy.go) for the documented contract on FolderScope/RunAllowlist/
+// CustomDisk at this arming point.
 func armPrivateFetchIngress(built policyToolBuild, ingress BatchWorkIngress) policyToolBuild {
 	registryID, err := ingress.PinLeafRegistry(built.leaves)
 	if err != nil {

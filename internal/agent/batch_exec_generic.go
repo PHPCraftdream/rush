@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -29,11 +28,12 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatc
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	// Copy only leaf policy inputs; do not retain the Start context.
-	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, tools.GetMessageFromContext(ctx))
-	runCtx = context.WithValue(runCtx, tools.SupportsImagesContextKey, tools.GetSupportsImagesFromContext(ctx))
-	runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
-	runCtx = withBatchManagedCall(context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID))
+	// R11F round-2 (P1-5c): the PINNED policy wins. The run context is
+	// rebuilt EXCLUSIVELY from the payload's immutable policy transport
+	// (batchLeafRunContext: message id, image support, model name, session
+	// id, folder scope, run allowlist, custom disk) — never from the Start
+	// context's session-keyed lookups.
+	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
 	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{})}
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
 	go e.run(runCtx, leaf, call, report)

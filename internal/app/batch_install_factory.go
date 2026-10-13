@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -61,7 +62,12 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		deps.Registries = agent.NewBatchLeafRegistryStore()
 	}
 	if deps.AgentDeps.Runs == nil {
-		deps.AgentDeps = agent.CoordinatorBatchAgentDeps()
+		// R11F round-2 (P1-5b): the flagged install wires the R10a
+		// store-backed live-descendant reader over the same writer pool the
+		// batch store uses; a nil reader would report an incomplete read
+		// forever (scope never closes).
+		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithLive(
+			session.NewBatchLiveReader(db.New(writer), a.dataDir))
 	}
 	if deps.Resolver == nil {
 		deps.Resolver = agent.BatchNonReentrantMCPResolver()
@@ -84,17 +90,25 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	return &batchRuntimeFactory{deps: deps}, nil
 }
 
-// build constructs the adapted install and attaches its Runner to a new
-// BatchRuntime. It has NO side effects beyond the Runner's own inert engine
-// loop: the fault watcher stays disarmed until BatchRuntime.Start, no store
-// row is written and no notice is pulled. Runner construction is idempotent
-// per factory use; a faulted or closed App must not call build.
+// build constructs the adapted install and a new DORMANT BatchRuntime
+// without a Runner (R11F P1-6): the Runner is constructed by
+// BatchRuntime.Start through the wired RunnerFactory, so build has NO side
+// effects at all — no engine goroutines, no store row, no notice pull, and
+// the fault watcher stays disarmed until Start. The install's ingress stays
+// fail-closed until Start constructs the Runner (the runner handle adapter
+// refuses Submit until then). Runner construction is idempotent per install
+// (BuildRunner first-wins); a faulted or closed App must not call build.
 func (f *batchRuntimeFactory) build(ctx context.Context) (rt *BatchRuntime, install *agent.BatchInstall, err error) {
-	install, err = agent.InstallBatchRuntime(ctx, f.deps)
+	install, err = agent.InstallBatchRuntimeDeferred(ctx, f.deps)
 	if err != nil {
 		return nil, nil, fmt.Errorf("batch runtime factory: %w", err)
 	}
 	rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook})
-	rt.SetRunner(install.Runner)
+	// R11F P1-6: Start constructs the Runner from the install's deps before
+	// any Invoke can run (Start happens at New-time install; Invoke only
+	// after the App is built).
+	rt.cfg.RunnerFactory = func() (batchRunner, error) {
+		return install.BuildRunner(context.Background())
+	}
 	return rt, install, nil
 }
