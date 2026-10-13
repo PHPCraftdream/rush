@@ -811,8 +811,21 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	filteredTools = c.wrapAsyncTools(filteredTools)
+	return c.finishToolAssembly(filteredTools, hookRunner, isSubAgent)
+}
 
+// finishToolAssembly is the final construction boundary. Flag OFF (no batch
+// binding): the historical branch, byte-for-byte — async wrappers, then
+// hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
+// restrictions run once here, then every batch-admissible work tool is
+// re-armed through the ONE authority (batchRuntime.Invoke) and the old
+// async/stall wrappers are NOT installed.
+func (c *coordinator) finishToolAssembly(filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool) (policyToolBuild, error) {
+	if bind := coordinatorBatchBindingFor(c); bind != nil {
+		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
+		return newBatchWorkToolBuild(bind, filteredTools)
+	}
+	filteredTools = c.wrapAsyncTools(filteredTools)
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
@@ -826,12 +839,5 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
 	// turn any blocked synchronous Run into an immediate job-id result.
 	filteredTools = wrapToolsWithStallDetach(filteredTools)
-
-	// Error logging is NOT applied here. It used to be, and that was the
-	// bug: this function is only one of the places a tool slice is built,
-	// so agentic_fetch's own tools were never covered. NewSessionAgent and
-	// SetTools wrap instead — every slice reaches the agent through one of
-	// them, and the wrapper still ends up outermost, since what they wrap
-	// is the already-hooked slice returned here. See logged_tool.go.
 	return newPolicyToolBuild(filteredTools), nil
 }

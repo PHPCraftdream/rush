@@ -66,6 +66,16 @@ type BatchRuntimeConfig struct {
 	// ReleaseWriter releases the database writer (db.ReleaseConn/Release
 	// convention). Nil means no writer.
 	ReleaseWriter func(context.Context) error
+
+	// R11F (P1-6), minimal additive hunk: RunnerFactory constructs the
+	// Runner LAZILY at Start, so a factory-built runtime has NO side
+	// effects (no engine goroutines) until Start runs. When set, Start
+	// calls it exactly once and attaches the result with the first-wins
+	// SetRunner policy; a construction error is logged and the runtime
+	// stays runnerless — the ingress then fails closed on Invoke. Mutually
+	// exclusive with constructing the Runner before NewBatchRuntime (an
+	// eager SetRunner still wins).
+	RunnerFactory func() (batchRunner, error)
 }
 
 // DefaultBatchFaultContainment is the bounded containment wait the fault
@@ -167,10 +177,23 @@ func (rt *BatchRuntime) Fenced() bool {
 	}
 }
 
-// Start arms the fault watcher goroutine. It is idempotent; the watcher
-// exits on Stop or on handling a fault. Dormant (no Runner yet) it waits.
+// Start arms the fault watcher goroutine and — R11F P1-6 — constructs the
+// Runner through cfg.RunnerFactory when one is wired, so no factory-built
+// runtime starts engine goroutines before this point. It is idempotent; the
+// watcher exits on Stop or on handling a fault. Dormant (no Runner yet) it
+// waits.
 func (rt *BatchRuntime) Start() {
 	rt.watch.Do(func() {
+		if rt.cfg.RunnerFactory != nil {
+			r, err := rt.cfg.RunnerFactory()
+			if err != nil {
+				// Fail closed: no Runner attached, the ingress refuses
+				// every Invoke; the watcher still runs for Stop/Drain.
+				slog.Error("batch runtime: runner construction failed; runtime stays runnerless", "err", err)
+			} else if r != nil {
+				rt.SetRunner(r)
+			}
+		}
 		go rt.watchFaults()
 	})
 }

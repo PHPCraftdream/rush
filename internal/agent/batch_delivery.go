@@ -68,7 +68,9 @@ type batchElector interface {
 
 // batchDeliveryDeps carries the delivery dependencies; both are required.
 type batchDeliveryDeps struct {
-	// Owner is the owner session id every election and load is fenced by.
+	// Owner is the DORMANT DEFAULT delivery fence (R11F P1-1): used only
+	// when an invocation carries no per-invocation owner. Flagged installs
+	// always deliver under the invoking session (batchDeliveryImpl.owner).
 	Owner string
 	Done  batchDoneSource
 	Elect batchElector
@@ -88,6 +90,18 @@ type batchDeliveryImpl struct {
 
 // newBatchDelivery builds the R11D delivery seam. Construction fails closed
 // on missing deps; nothing is wired into any runtime here (R11F installs).
+// owner is the delivery fence of ONE invocation (R11F P1-1): the
+// PER-INVOCATION owner — the invoking session (inv.SessionID) — so elections,
+// loads and attach agree on one identity. deps.Owner is only the dormant
+// default for installs without a per-invocation owner; an invocation without
+// one fails closed in Validate before delivery ever runs.
+func (b *batchDeliveryImpl) owner(inv BatchInvocation) string {
+	if inv.SessionID != "" {
+		return inv.SessionID
+	}
+	return b.deps.Owner
+}
+
 func newBatchDelivery(d batchDeliveryDeps) (*batchDeliveryImpl, error) {
 	if d.Done == nil || d.Elect == nil || d.Runner == nil {
 		return nil, fmt.Errorf("%w", errBatchDeliveryDeps)
@@ -118,15 +132,15 @@ func (b *batchDeliveryImpl) DeliverBatch(ctx context.Context, root jobbatch.ID, 
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
-		return b.deliverWithEscapeWindow(ctx, root, window)
+		return b.deliverWithEscapeWindow(ctx, b.owner(inv), root, window)
 	}
 	switch mode {
 	case batchDeliverySync:
-		return b.deliverSync(ctx, root)
+		return b.deliverSync(ctx, b.owner(inv), root)
 	case batchDeliveryInline:
-		return b.deliverInline(ctx, root)
+		return b.deliverInline(ctx, b.owner(inv), root)
 	case batchDeliveryDetached:
-		return b.deliverDetached(ctx, root)
+		return b.deliverDetached(ctx, b.owner(inv), root)
 	default:
 		return fantasy.ToolResponse{}, fmt.Errorf("%w: %q", errBatchDeliveryUnknownMode, mode)
 	}
@@ -141,8 +155,8 @@ func (b *batchDeliveryImpl) DeliverBatch(ctx context.Context, root jobbatch.ID, 
 // control context and the caller's ctx error is returned promptly — never a
 // Stop-derived envelope, and Settled stays false. ONLY sync does this: an
 // inline or detached caller leaving never cancels the root.
-func (b *batchDeliveryImpl) deliverSync(ctx context.Context, root jobbatch.ID) (fantasy.ToolResponse, error) {
-	envelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)
+func (b *batchDeliveryImpl) deliverSync(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
+	envelope, ok, err := b.deps.Done.AwaitDone(ctx, owner, root)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Caller gone before completion: one Stop, prompt return.
@@ -171,18 +185,18 @@ func (b *batchDeliveryImpl) deliverSync(ctx context.Context, root jobbatch.ID) (
 //     elects the started history; the completion election is CAS, so exactly
 //     one delivery commits. A loser returns the envelope as a READ, never a
 //     second election.
-func (b *batchDeliveryImpl) deliverInline(ctx context.Context, root jobbatch.ID) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) deliverInline(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
-	envelope, done, err := b.deps.Done.LoadDone(ctx, b.deps.Owner, root)
+	envelope, done, err := b.deps.Done.LoadDone(ctx, owner, root)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	if done {
-		return b.electCompletion(ctx, root, envelope)
+		return b.electCompletion(ctx, owner, root, envelope)
 	}
-	started, err := b.deps.Elect.ElectStarted(ctx, b.deps.Owner, root)
+	started, err := b.deps.Elect.ElectStarted(ctx, owner, root)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -190,7 +204,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, root jobbatch.ID)
 		// Lost started election: another caller owns the started history
 		// and the delivery; wait for the real completion and return it
 		// read-only.
-		envelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)
+		envelope, ok, err := b.deps.Done.AwaitDone(ctx, owner, root)
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
@@ -199,7 +213,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, root jobbatch.ID)
 		}
 		return envelope, nil
 	}
-	envelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)
+	envelope, ok, err := b.deps.Done.AwaitDone(ctx, owner, root)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -208,7 +222,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, root jobbatch.ID)
 		// elected started history; the completion stays with the outbox.
 		return batchStartedResponse(root), nil
 	}
-	return b.electCompletion(ctx, root, envelope)
+	return b.electCompletion(ctx, owner, root, envelope)
 }
 
 // deliverWithEscapeWindow implements the windowed escape: race the REAL
@@ -218,7 +232,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, root jobbatch.ID)
 // second Submit and without a second executor — the waiter keeps waiting for
 // the real Done and completion arrives via selected notices. If both resolve
 // together the select commits to exactly ONE outcome.
-func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, root jobbatch.ID, window time.Duration) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner string, root jobbatch.ID, window time.Duration) (fantasy.ToolResponse, error) {
 	type awaited struct {
 		envelope fantasy.ToolResponse
 		ok       bool
@@ -226,7 +240,7 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, root jo
 	}
 	done := make(chan awaited, 1)
 	go func() {
-		envelope, ok, err := b.deps.Done.AwaitDone(ctx, b.deps.Owner, root)
+		envelope, ok, err := b.deps.Done.AwaitDone(ctx, owner, root)
 		done <- awaited{envelope, ok, err}
 	}()
 	select {
@@ -239,7 +253,7 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, root jo
 		}
 		return a.envelope, nil
 	case <-b.after(window):
-		if _, err := b.deps.Elect.ElectStarted(ctx, b.deps.Owner, root); err != nil {
+		if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
 			return fantasy.ToolResponse{}, err
 		}
 		return batchStartedResponse(root), nil
@@ -272,10 +286,10 @@ func batchEscapeWindow(window string) (time.Duration, error) {
 // electCompletion elects the completion envelope inline with bounded retries
 // on FAILED ACKS only. Won: this caller delivered the single completion. Lost:
 // the single delivery already happened elsewhere and this return is a read.
-func (b *batchDeliveryImpl) electCompletion(ctx context.Context, root jobbatch.ID, envelope fantasy.ToolResponse) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) electCompletion(ctx context.Context, owner string, root jobbatch.ID, envelope fantasy.ToolResponse) (fantasy.ToolResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < batchInlineElectionAttempts; attempt++ {
-		won, err := b.deps.Elect.ElectInline(ctx, b.deps.Owner, root, envelope)
+		won, err := b.deps.Elect.ElectInline(ctx, owner, root, envelope)
 		if err == nil {
 			// Won or lost, the completion was delivered exactly once; the
 			// caller's own tool response is the envelope (a loser's return
@@ -290,8 +304,8 @@ func (b *batchDeliveryImpl) electCompletion(ctx context.Context, root jobbatch.I
 
 // deliverDetached returns the started response immediately. Later completions
 // arrive ONLY through selected notices (R8), never as a second launch.
-func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, root jobbatch.ID) (fantasy.ToolResponse, error) {
-	if _, err := b.deps.Elect.ElectStarted(ctx, b.deps.Owner, root); err != nil {
+func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
+	if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	return batchStartedResponse(root), nil

@@ -19,6 +19,15 @@ type batchAgentRunRequest struct {
 	SessionID  string
 	ToolCallID string
 	Input      json.RawMessage
+	// R11F (M3): the invocation's pinned registry identity (leaf resolution
+	// through the ingress) and enclosing message id (child-session creation).
+	RegistryID string
+	MessageID  string
+	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
+	// Dispatch resolves the pinned leaf by this name and names the call
+	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
+	// the "agent" leaf. Empty fails closed in the driver.
+	Tool string
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
@@ -86,12 +95,19 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	messageID := ""
+	if p.Policy != nil {
+		messageID = p.Policy.MessageID
+	}
 	req := batchAgentRunRequest{
 		NodeID:     l.ID,
 		Token:      l.Token,
 		SessionID:  p.SessionID,
 		ToolCallID: p.ToolCallID,
 		Input:      p.Input,
+		RegistryID: p.RegistryID,
+		MessageID:  messageID,
+		Tool:       p.Tool,
 	}
 	e := &batchAgentExecution{
 		deps:        f.deps,
