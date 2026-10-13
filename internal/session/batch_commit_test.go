@@ -382,28 +382,34 @@ func TestBatchCommitEnvelopeDurabilityAndRollback(t *testing.T) {
 	leaf := commitHookReadNode(t, env.conn, "r.1")
 	require.JSONEq(t, `{"state":"completed","code":"ok","summary":"sum","details":{"k":[1,2]}}`, leaf.Envelope)
 	require.Equal(t, "r.1#"+itoa(rec.Sequence), leaf.EnvelopeRef)
-	// Forced failure on the notice insert (nonterminal notice target) after
-	// the node update inside one Project transaction rolls back both.
-	before := commitHookReadNode(t, env.conn, "r.1")
+	// Forced failure on the notice insert after the node update inside one
+	// Project transaction rolls back both. The notice targets q.1, a still
+	// RUNNING (nonterminal) node on a second live root "q": the terminal-state
+	// predicate in SelectBatchNodeNotice matches 0 rows, so Project fails with
+	// ErrBatchProjectionConflict instead of inserting a notice row.
+	commitHookSubmit(t, ctx, r, "q", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"}), "call-q")
+	commitHookAccept(t, ctx, r, e, nil)
+	before := commitHookReadNode(t, env.conn, "q.1")
 	p := BatchProjection{
 		Host: env.id.Host, RunnerID: env.id.Runner, Sequence: 100,
 		Roots: []BatchRootProjection{{
-			Owner: env.id.Owner, Root: "r",
+			Owner: env.id.Owner, Root: "q",
 			Updates: []db.ProjectBatchNodeParams{{
-				NodeID: "r.1", State: "failed", Cause: "stop", ControlState: "none", Token: 9, Attempts: 7,
-				ResponseEnvelope: sql.NullString{String: `{"state":"failed"}`, Valid: true},
+				NodeID: "q.1", State: "running", ControlState: "none",
+				ResponseEnvelope: sql.NullString{String: `{"state":"running"}`, Valid: true},
 			}},
 			Notices: []db.SelectBatchNodeNoticeParams{{
-				NodeID:        "r.1", // running node: SelectBatchNodeNotice matches 0 rows
-				NoticeKind:    sql.NullString{String: "task", Valid: true},
-				NoticeState:   sql.NullString{String: "failed", Valid: true},
+				NodeID:        "q.1", // nonterminal node: SelectBatchNodeNotice matches 0 rows
+				NoticeKind:    batchStoreTestString("task"),
+				NoticeState:   batchStoreTestString("failed"),
+				NoticeCause:   batchStoreTestString("stop"),
 				NoticeOrdinal: sql.NullInt64{Int64: 0, Valid: true}, Wake: 1,
 			}},
 		}},
 	}
 	err := env.store.Project(env.ctx, p)
 	require.ErrorIs(t, err, ErrBatchProjectionConflict)
-	after := commitHookReadNode(t, env.conn, "r.1")
+	after := commitHookReadNode(t, env.conn, "q.1")
 	require.Equal(t, before, after, "node view and envelope both rolled back")
 }
 
