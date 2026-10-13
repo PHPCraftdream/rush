@@ -182,5 +182,15 @@ func batchLeafKind(tool string) string {
 	case "agent", "agentic_fetch":
 		return batchKindAgent
 	}
+	// R11F (M3) flag-on hook: MCP leaves registered by the binding resolve
+	// through the MCP kind; nil (flag-off) keeps the generic default.
+	if batchLeafKindOverride != nil {
+		if kind, ok := batchLeafKindOverride(tool); ok {
+			return kind
+		}
+	}
 	return batchKindGeneric
 }
+
+// batchLeafKindOverride is set only by the flag-on coordinator binding.
+var batchLeafKindOverride func(tool string) (kind string, ok bool)

@@ -287,13 +287,25 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// process that has actually exited). Keep the lock held until the
 	// process itself exits, exactly like DB close is already skipped on this
 	// same path below -- CloseKeepLock only forgets the in-memory handle.
-	if app.asyncJobStore != nil {
+	if app.batchRuntime != nil {
+		// R11F (M2) flag-on path: the drain gate replaces the host-identity
+		// release below — Runner drain, then host identity, then writer, all
+		// inside DrainAndRelease. A Close timeout or fault fence promotes the
+		// shutdown to Forced (resources retained).
+		stillBusy = app.releaseBatchRuntimeGate(shutdownCtx, stillBusy, recordCleanupError)
+	} else if app.asyncJobStore != nil {
 		if stillBusy {
 			app.asyncJobStore.CloseKeepLock()
 		} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
 			slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
 			recordCleanupError(err)
 		}
+	}
+	if stillBusy {
+		// The drain gate may promote a graceful shutdown to Forced (Close
+		// timeout or fault fence); result.Forced was snapshotted before the
+		// gate ran, so re-publish the verdict here.
+		result.Forced = true
 	}
 
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
@@ -342,7 +354,11 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// - Graceful shutdown (stillBusy=false): Close the DB synchronously.
 	// - Forced shutdown (stillBusy=true): Skip DB close to avoid corrupting
 	//   live writers; the OS will reclaim file descriptors on process exit.
-	if app.dataDir != "" {
+	// R11F (M2): on the flag-on graceful path the writer was already released
+	// by the drain gate (ReleaseWriter), so the DB block runs only for flag-off
+	// Apps (unchanged) or flag-on forced shutdowns (which skip the release via
+	// stillBusy, exactly as before).
+	if app.dataDir != "" && (app.batchRuntime == nil || stillBusy) {
 		if !stillBusy {
 			// Graceful shutdown: wait synchronously for generation-safe releases.
 			slog.Debug("Shutdown: closing database (graceful shutdown)")

@@ -14,11 +14,10 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"sort"
-	"strconv"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -27,8 +26,7 @@ import (
 // on. Same idiom as the keepalive cache flag (internal/agent/
 // agent_cache_keepalive.go): unset or unparseable means OFF.
 func batchRuntimeEnabled() bool {
-	on, err := strconv.ParseBool(os.Getenv("RUSH_BATCH_RUNTIME"))
-	return err == nil && on
+	return config.BatchRuntimeEnabled()
 }
 
 // ── Wire (v: 1) ──────────────────────────────────────────────────────────────

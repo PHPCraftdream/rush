@@ -19,6 +19,10 @@ type batchAgentRunRequest struct {
 	SessionID  string
 	ToolCallID string
 	Input      json.RawMessage
+	// R11F (M3): the invocation's pinned registry identity (leaf resolution
+	// through the ingress) and enclosing message id (child-session creation).
+	RegistryID string
+	MessageID  string
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
@@ -86,12 +90,18 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	messageID := ""
+	if p.Policy != nil {
+		messageID = p.Policy.MessageID
+	}
 	req := batchAgentRunRequest{
 		NodeID:     l.ID,
 		Token:      l.Token,
 		SessionID:  p.SessionID,
 		ToolCallID: p.ToolCallID,
 		Input:      p.Input,
+		RegistryID: p.RegistryID,
+		MessageID:  messageID,
 	}
 	e := &batchAgentExecution{
 		deps:        f.deps,

@@ -173,6 +173,16 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	// R11F (M3): bind the coordinator to the flag-on batch runtime. After
+	// this every tool build re-arms its work tools through the ONE ingress
+	// authority and the old async/stall wrappers are not installed; flag-off
+	// Apps carry a nil ingress and never bind.
+	if app.batchWorkIngress != nil {
+		if err := agent.BindCoordinatorBatchRuntime(app.AgentCoordinator, app.batchWorkIngress); err != nil {
+			slog.Error("Failed to bind batch runtime", "err", err)
+			return err
+		}
+	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
 	// store. Optional-interface assertion (agent.WakeScheduleController):
 	// the Coordinator interface is not grown for it, so existing test

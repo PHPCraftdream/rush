@@ -112,6 +112,17 @@ type App struct {
 	// InitCoderAgent. Nil under SkipAgentSetup or when dataDir=="".
 	wakeScheduleStore *session.WakeScheduleStore
 
+	// batchRuntime is the R11F app-owned batch runtime owner (R11E gate).
+	// Nil unless RUSH_BATCH_RUNTIME parsed true at New AND the App built its
+	// agent job store; flag-off Apps never touch it (M2 golden test pins
+	// this).
+	batchRuntime *BatchRuntime
+
+	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
+	// installed batch runtime. Nil on flag-off Apps; set together with
+	// batchRuntime and bound to the coordinator in InitCoderAgent.
+	batchWorkIngress agent.BatchWorkIngress
+
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
 	RunQueuePump *session.RunQueuePump
@@ -384,6 +395,29 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		// SetReadConn no-ops and readers keep using the writer, exactly like
 		// before this fix.
 		app.asyncJobStore.SetReadConn(readConn)
+	}
+
+	// R11F (M2): flagged install of the batch runtime. Flag off (unset or
+	// unparseable): this block is skipped entirely — no runtime object, no
+	// watcher goroutine, no store write; every line below is inert. Flag on:
+	// the M1 factory fails closed, so a missing App resource aborts New
+	// instead of silently continuing with a half-installed runtime (mirror
+	// of the InitCoderAgent failure path: release the reader reference New
+	// owns, close the MCP owner, return no App).
+	if app.asyncJobStore != nil && config.BatchRuntimeEnabled() {
+		if err := app.installBatchRuntime(ctx); err != nil {
+			if app.mcpOwner != nil {
+				if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
+					slog.Error("Failed to close MCP owner after batch runtime install failure", "error", closeErr)
+				}
+			}
+			if readConn != nil {
+				if relErr := db.ReleaseConn(readConn); relErr != nil {
+					slog.Error("app: failed to release read-only DB reference after batch install failure", "error", relErr)
+				}
+			}
+			return nil, fmt.Errorf("failed to install batch runtime: %w", err)
+		}
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.
