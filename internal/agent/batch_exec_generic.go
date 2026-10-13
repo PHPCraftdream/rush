@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -33,6 +34,13 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatc
 	// (batchLeafRunContext: message id, image support, model name, session
 	// id, folder scope, run allowlist, custom disk) — never from the Start
 	// context's session-keyed lookups.
+	if p.Policy == nil {
+		// No pinned transport on the payload (older records, tests): keep
+		// the Start context's leaf policy inputs, without retaining ctx.
+		runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, tools.GetMessageFromContext(ctx))
+		runCtx = context.WithValue(runCtx, tools.SupportsImagesContextKey, tools.GetSupportsImagesFromContext(ctx))
+		runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
+	}
 	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
 	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{})}
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
