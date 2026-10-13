@@ -21,20 +21,28 @@ type fakePull struct {
 	// wrapper's own bound must be the single exit (avoids ctx races).
 	ignoreCtx  bool
 	release    chan struct{}
-	pullCtxs   chan context.Context
+	pullObs    chan pullObservation
 	calls      chan struct{}
 	cancelled  chan struct{}
 	cancelOnce chan struct{}
 }
 
+// pullObservation is the state of the pull's context at the moment Pull ran.
+type pullObservation struct {
+	err         error
+	hasDeadline bool
+}
+
 func newFakePull(n int, err error) *fakePull {
-	return &fakePull{n: n, err: err, rootDone: make(chan struct{}), pullCtxs: make(chan context.Context, 1), calls: make(chan struct{}, 8)}
+	return &fakePull{n: n, err: err, rootDone: make(chan struct{}), pullObs: make(chan pullObservation, 1), calls: make(chan struct{}, 8)}
 }
 
 func (f *fakePull) Pull(ctx context.Context) (int, error) {
 	f.calls <- struct{}{}
+	// Observe the context NOW: the wrapper cancels it when it returns.
+	_, hasDeadline := ctx.Deadline()
 	select {
-	case f.pullCtxs <- ctx:
+	case f.pullObs <- pullObservation{err: ctx.Err(), hasDeadline: hasDeadline}:
 	default:
 	}
 	if f.blocked {
@@ -129,10 +137,9 @@ func TestBatchWebDrainPullContextNotCallerCancelled(t *testing.T) {
 	n, err := batchWebDrain(caller, pull, time.Second)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
-	ctl := <-pull.pullCtxs
-	require.NoError(t, ctl.Err(), "the pull must run under a non-cancelled control context")
-	_, hasDeadline := ctl.Deadline()
-	require.True(t, hasDeadline)
+	obs := <-pull.pullObs
+	require.NoError(t, obs.err, "the pull must run under a non-cancelled control context")
+	require.True(t, obs.hasDeadline)
 }
 
 func TestBatchWebDrainRequiresPull(t *testing.T) {
