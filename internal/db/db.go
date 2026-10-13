@@ -45,8 +45,23 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.asyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, asyncReactionDebtExists); err != nil {
 		return nil, fmt.Errorf("error preparing query AsyncReactionDebtExists: %w", err)
 	}
+	if q.batchDisposeBoundNoticesByToolCallIDStmt, err = db.PrepareContext(ctx, batchDisposeBoundNoticesByToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchDisposeBoundNoticesByToolCallID: %w", err)
+	}
+	if q.batchHistoryRependNodesByDeletedNoticeMessagesStmt, err = db.PrepareContext(ctx, batchHistoryRependNodesByDeletedNoticeMessages); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryRependNodesByDeletedNoticeMessages: %w", err)
+	}
+	if q.batchHistoryRootsForOwnerStmt, err = db.PrepareContext(ctx, batchHistoryRootsForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryRootsForOwner: %w", err)
+	}
+	if q.batchHistoryStateCountsStmt, err = db.PrepareContext(ctx, batchHistoryStateCounts); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryStateCounts: %w", err)
+	}
 	if q.batchLevelNodesStmt, err = db.PrepareContext(ctx, batchLevelNodes); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchLevelNodes: %w", err)
+	}
+	if q.batchListBoundNoticesByToolCallIDStmt, err = db.PrepareContext(ctx, batchListBoundNoticesByToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchListBoundNoticesByToolCallID: %w", err)
 	}
 	if q.batchLiveNodesForOwnersStmt, err = db.PrepareContext(ctx, batchLiveNodesForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchLiveNodesForOwners: %w", err)
@@ -107,6 +122,30 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.batchRecoveryRootsStmt, err = db.PrepareContext(ctx, batchRecoveryRoots); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchRecoveryRoots: %w", err)
+	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByAnnounceMessageIDs: %w", err)
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByToolCallIDs: %w", err)
+	}
+	if q.batchRerunRependNodesByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunRependNodesByNoticeMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunRependNodesByNoticeMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidNodesByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidNodesByNoticeMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidNodesByNoticeMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidNodesOfVoidedRootsStmt, err = db.PrepareContext(ctx, batchRerunVoidNodesOfVoidedRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidNodesOfVoidedRoots: %w", err)
+	}
+	if q.batchRerunVoidRootsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidRootsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidRootsByAnnounceMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidRootsByToolCallIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidRootsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidRootsByToolCallIDs: %w", err)
+	}
+	if q.batchResetDeleteOwnerNodesStmt, err = db.PrepareContext(ctx, batchResetDeleteOwnerNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchResetDeleteOwnerNodes: %w", err)
 	}
 	if q.batchRetentionRootsStmt, err = db.PrepareContext(ctx, batchRetentionRoots); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchRetentionRoots: %w", err)
@@ -703,9 +742,34 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing asyncReactionDebtExistsStmt: %w", cerr)
 		}
 	}
+	if q.batchDisposeBoundNoticesByToolCallIDStmt != nil {
+		if cerr := q.batchDisposeBoundNoticesByToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchDisposeBoundNoticesByToolCallIDStmt: %w", cerr)
+		}
+	}
+	if q.batchHistoryRependNodesByDeletedNoticeMessagesStmt != nil {
+		if cerr := q.batchHistoryRependNodesByDeletedNoticeMessagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryRependNodesByDeletedNoticeMessagesStmt: %w", cerr)
+		}
+	}
+	if q.batchHistoryRootsForOwnerStmt != nil {
+		if cerr := q.batchHistoryRootsForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryRootsForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.batchHistoryStateCountsStmt != nil {
+		if cerr := q.batchHistoryStateCountsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryStateCountsStmt: %w", cerr)
+		}
+	}
 	if q.batchLevelNodesStmt != nil {
 		if cerr := q.batchLevelNodesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing batchLevelNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchListBoundNoticesByToolCallIDStmt != nil {
+		if cerr := q.batchListBoundNoticesByToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchListBoundNoticesByToolCallIDStmt: %w", cerr)
 		}
 	}
 	if q.batchLiveNodesForOwnersStmt != nil {
@@ -806,6 +870,46 @@ func (q *Queries) Close() error {
 	if q.batchRecoveryRootsStmt != nil {
 		if cerr := q.batchRecoveryRootsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing batchRecoveryRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByToolCallIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunRependNodesByNoticeMessageIDsStmt != nil {
+		if cerr := q.batchRerunRependNodesByNoticeMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunRependNodesByNoticeMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidNodesByNoticeMessageIDsStmt != nil {
+		if cerr := q.batchRerunVoidNodesByNoticeMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidNodesByNoticeMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidNodesOfVoidedRootsStmt != nil {
+		if cerr := q.batchRerunVoidNodesOfVoidedRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidNodesOfVoidedRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidRootsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.batchRerunVoidRootsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidRootsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidRootsByToolCallIDsStmt != nil {
+		if cerr := q.batchRerunVoidRootsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidRootsByToolCallIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchResetDeleteOwnerNodesStmt != nil {
+		if cerr := q.batchResetDeleteOwnerNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchResetDeleteOwnerNodesStmt: %w", cerr)
 		}
 	}
 	if q.batchRetentionRootsStmt != nil {
@@ -1779,7 +1883,12 @@ type Queries struct {
 	archiveAsyncJobToolCallIDStmt                        *sql.Stmt
 	asyncJobDebtOwnersStmt                               *sql.Stmt
 	asyncReactionDebtExistsStmt                          *sql.Stmt
+	batchDisposeBoundNoticesByToolCallIDStmt             *sql.Stmt
+	batchHistoryRependNodesByDeletedNoticeMessagesStmt   *sql.Stmt
+	batchHistoryRootsForOwnerStmt                        *sql.Stmt
+	batchHistoryStateCountsStmt                          *sql.Stmt
 	batchLevelNodesStmt                                  *sql.Stmt
+	batchListBoundNoticesByToolCallIDStmt                *sql.Stmt
 	batchLiveNodesForOwnersStmt                          *sql.Stmt
 	batchOutboxAccountNodeStmt                           *sql.Stmt
 	batchOutboxAccountNoticeStmt                         *sql.Stmt
@@ -1800,6 +1909,14 @@ type Queries struct {
 	batchRecoveryInterruptStmt                           *sql.Stmt
 	batchRecoveryNoticeStmt                              *sql.Stmt
 	batchRecoveryRootsStmt                               *sql.Stmt
+	batchRerunLiveRootsByAnnounceMessageIDsStmt          *sql.Stmt
+	batchRerunLiveRootsByToolCallIDsStmt                 *sql.Stmt
+	batchRerunRependNodesByNoticeMessageIDsStmt          *sql.Stmt
+	batchRerunVoidNodesByNoticeMessageIDsStmt            *sql.Stmt
+	batchRerunVoidNodesOfVoidedRootsStmt                 *sql.Stmt
+	batchRerunVoidRootsByAnnounceMessageIDsStmt          *sql.Stmt
+	batchRerunVoidRootsByToolCallIDsStmt                 *sql.Stmt
+	batchResetDeleteOwnerNodesStmt                       *sql.Stmt
 	batchRetentionRootsStmt                              *sql.Stmt
 	batchRetentionWriterStmt                             *sql.Stmt
 	cancelAllWakeSchedulesForOwnerStmt                   *sql.Stmt
@@ -1989,16 +2106,21 @@ type Queries struct {
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                                                   tx,
-		tx:                                                   tx,
-		ackRunQueueEntryStmt:                                 q.ackRunQueueEntryStmt,
-		advanceBatchRootSequenceStmt:                         q.advanceBatchRootSequenceStmt,
-		advanceLoopWakeOccurrenceStmt:                        q.advanceLoopWakeOccurrenceStmt,
-		answerBatchControlRequestStmt:                        q.answerBatchControlRequestStmt,
-		archiveAsyncJobToolCallIDStmt:                        q.archiveAsyncJobToolCallIDStmt,
-		asyncJobDebtOwnersStmt:                               q.asyncJobDebtOwnersStmt,
-		asyncReactionDebtExistsStmt:                          q.asyncReactionDebtExistsStmt,
+		db:                                       tx,
+		tx:                                       tx,
+		ackRunQueueEntryStmt:                     q.ackRunQueueEntryStmt,
+		advanceBatchRootSequenceStmt:             q.advanceBatchRootSequenceStmt,
+		advanceLoopWakeOccurrenceStmt:            q.advanceLoopWakeOccurrenceStmt,
+		answerBatchControlRequestStmt:            q.answerBatchControlRequestStmt,
+		archiveAsyncJobToolCallIDStmt:            q.archiveAsyncJobToolCallIDStmt,
+		asyncJobDebtOwnersStmt:                   q.asyncJobDebtOwnersStmt,
+		asyncReactionDebtExistsStmt:              q.asyncReactionDebtExistsStmt,
+		batchDisposeBoundNoticesByToolCallIDStmt: q.batchDisposeBoundNoticesByToolCallIDStmt,
+		batchHistoryRependNodesByDeletedNoticeMessagesStmt:   q.batchHistoryRependNodesByDeletedNoticeMessagesStmt,
+		batchHistoryRootsForOwnerStmt:                        q.batchHistoryRootsForOwnerStmt,
+		batchHistoryStateCountsStmt:                          q.batchHistoryStateCountsStmt,
 		batchLevelNodesStmt:                                  q.batchLevelNodesStmt,
+		batchListBoundNoticesByToolCallIDStmt:                q.batchListBoundNoticesByToolCallIDStmt,
 		batchLiveNodesForOwnersStmt:                          q.batchLiveNodesForOwnersStmt,
 		batchOutboxAccountNodeStmt:                           q.batchOutboxAccountNodeStmt,
 		batchOutboxAccountNoticeStmt:                         q.batchOutboxAccountNoticeStmt,
@@ -2019,6 +2141,14 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		batchRecoveryInterruptStmt:                           q.batchRecoveryInterruptStmt,
 		batchRecoveryNoticeStmt:                              q.batchRecoveryNoticeStmt,
 		batchRecoveryRootsStmt:                               q.batchRecoveryRootsStmt,
+		batchRerunLiveRootsByAnnounceMessageIDsStmt:          q.batchRerunLiveRootsByAnnounceMessageIDsStmt,
+		batchRerunLiveRootsByToolCallIDsStmt:                 q.batchRerunLiveRootsByToolCallIDsStmt,
+		batchRerunRependNodesByNoticeMessageIDsStmt:          q.batchRerunRependNodesByNoticeMessageIDsStmt,
+		batchRerunVoidNodesByNoticeMessageIDsStmt:            q.batchRerunVoidNodesByNoticeMessageIDsStmt,
+		batchRerunVoidNodesOfVoidedRootsStmt:                 q.batchRerunVoidNodesOfVoidedRootsStmt,
+		batchRerunVoidRootsByAnnounceMessageIDsStmt:          q.batchRerunVoidRootsByAnnounceMessageIDsStmt,
+		batchRerunVoidRootsByToolCallIDsStmt:                 q.batchRerunVoidRootsByToolCallIDsStmt,
+		batchResetDeleteOwnerNodesStmt:                       q.batchResetDeleteOwnerNodesStmt,
 		batchRetentionRootsStmt:                              q.batchRetentionRootsStmt,
 		batchRetentionWriterStmt:                             q.batchRetentionWriterStmt,
 		cancelAllWakeSchedulesForOwnerStmt:                   q.cancelAllWakeSchedulesForOwnerStmt,
