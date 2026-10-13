@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "task": "teardown",
+  "mutations": [
+    {
+      "id": "release-join-omitted",
+      "file": "internal/agent/coordinator_interrupt.go",
+      "file_sha256": "1ef077f16c8122e40d5ea9e0e60500247f367bf90dbe9a8c270920f8c5a0e044",
+      "needle": "\t\tc.releaseWG.Wait()",
+      "replacement": "\t\t// c.releaseWG.Wait()",
+      "package": "internal/agent",
+      "test": "TestReleaseCallbackJoinedByCancelAll",
+      "purpose": "CI-only regression plan: omit release Wait; the after-waits seam must observe callback exit before shutdown can return gracefully.",
+      "expected_assertion": "release join reached after-waits seam before callback exit"
+    },
+    {
+      "id": "callback-admission-reopened",
+      "file": "internal/agent/supervision.go",
+      "file_sha256": "cea01a3564e1982a10d87fa7d37ec1174345bc230418d10be570b18bd81d9660",
+      "needle": "\tif c.callbackClosing {",
+      "replacement": "\tif false {",
+      "package": "internal/agent",
+      "test": "TestReleaseCallbackRefusedAfterShutdown",
+      "purpose": "CI-only regression plan: allow callback admission after shutdown.",
+      "expected_assertion": "refused callback must not enter the seam"
+    },
+    {
+      "id": "shutdown-context-not-cancelled",
+      "file": "internal/agent/coordinator_interrupt.go",
+      "file_sha256": "1ef077f16c8122e40d5ea9e0e60500247f367bf90dbe9a8c270920f8c5a0e044",
+      "needle": "\tcancelCallbacks()",
+      "replacement": "\t_ = cancelCallbacks",
+      "package": "internal/agent",
+      "test": "TestReleaseCallbackShutdownContextCancelled",
+      "purpose": "CI-only regression plan: suppress coordinator callback context cancellation.",
+      "expected_assertion": "cooperative callback should join gracefully"
+    },
+    {
+      "id": "notify-join-omitted",
+      "file": "internal/agent/coordinator_interrupt.go",
+      "file_sha256": "1ef077f16c8122e40d5ea9e0e60500247f367bf90dbe9a8c270920f8c5a0e044",
+      "needle": "\t\tc.notifyWG.Wait()",
+      "replacement": "\t\t// c.notifyWG.Wait()",
+      "package": "internal/agent",
+      "test": "TestNotifyCallbackJoinedAndRefusedByCancelAll",
+      "purpose": "CI-only regression plan: omit notification joining while delivery is blocked.",
+      "expected_assertion": "notify join reached after-waits seam before callback exit"
+    },
+    {
+      "id": "forced-verdict-suppressed",
+      "file": "internal/agent/coordinator_interrupt.go",
+      "file_sha256": "1ef077f16c8122e40d5ea9e0e60500247f367bf90dbe9a8c270920f8c5a0e044",
+      "needle": "\tif c.joinShutdownCallbacks() {",
+      "replacement": "\tif c.joinShutdownCallbacks() && false {",
+      "package": "internal/agent",
+      "test": "TestReleaseCallbackJoinExpiryReportsStillBusy",
+      "purpose": "CI-only regression plan: retain callback joining but suppress its forced-shutdown verdict on expiry.",
+      "expected_assertion": "unjoined release callback must report stillBusy"
+    }
+  ]
+}

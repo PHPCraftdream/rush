@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "task": "R11E",
+  "mutations": [
+    {
+      "id": "fault-exit-code-zero",
+      "file": "internal/app/app_batch_fault.go",
+      "file_sha256": "696ba935f55b563294eebf8c1765d786a822460e7b2abcf1214213c6e628ad61",
+      "needle": "\t\texit(BatchFaultExitCode)",
+      "replacement": "\t\texit(0)",
+      "package": "internal/app",
+      "test": "TestAppBatchFaultSubprocess",
+      "purpose": "process exit code on fault must be 70 (decision D4)",
+      "expected_assertion": "the helper must exit non-zero"
+    },
+    {
+      "id": "fault-watcher-ignores-runner",
+      "file": "internal/app/app_batch_runtime.go",
+      "file_sha256": "4ccb81009608dc27c2530aa26a739a3199838963412a5f12e4798dd879794dd0",
+      "needle": "\t\tif runner != nil {",
+      "replacement": "\t\tif false {",
+      "package": "internal/app",
+      "test": "TestBatchFaultExits70AfterContainment",
+      "purpose": "the watcher must observe the attached Runner's fault channel",
+      "expected_assertion": "exit must be called once"
+    },
+    {
+      "id": "host-release-error-inverted",
+      "file": "internal/app/app_batch_drain.go",
+      "file_sha256": "8ab523a4ec5669b6fa4b8ff390683dcbc71b5f8328b71cf469e06d1b16215be6",
+      "needle": "\t\tif err := rt.cfg.ReleaseHostIdentity(ctx); err != nil {",
+      "replacement": "\t\tif err := rt.cfg.ReleaseHostIdentity(ctx); err == nil {",
+      "package": "internal/app",
+      "test": "TestDrainReleaseErrorSurfaces",
+      "purpose": "host-identity release errors must surface in the result",
+      "expected_assertion": "An error is expected but got nil."
+    },
+    {
+      "id": "close-timeout-releases",
+      "file": "internal/app/app_batch_drain.go",
+      "file_sha256": "8ab523a4ec5669b6fa4b8ff390683dcbc71b5f8328b71cf469e06d1b16215be6",
+      "needle": "\t\trt.retainHostIdentity()\n\t\treturn BatchDrainResult{Forced: true, Err: closeErr}",
+      "replacement": "\t\trt.retainHostIdentity()\n\t\treturn BatchDrainResult{Forced: false, Err: closeErr}",
+      "package": "internal/app",
+      "test": "TestCloseTimeoutRetainsDrainingResources",
+      "purpose": "a Close timeout must report Forced and retain host identity and writer",
+      "expected_assertion": "Close timeout reports Forced"
+    },
+    {
+      "id": "writer-release-dropped",
+      "file": "internal/app/app_batch_drain.go",
+      "file_sha256": "8ab523a4ec5669b6fa4b8ff390683dcbc71b5f8328b71cf469e06d1b16215be6",
+      "needle": "\tif rt.cfg.ReleaseWriter != nil {",
+      "replacement": "\tif false {",
+      "package": "internal/app",
+      "test": "TestOrdinaryShutdownDrainsBeforeRelease",
+      "purpose": "ordinary shutdown must release the writer after the drain",
+      "expected_assertion": "drain precedes release"
+    },
+    {
+      "id": "fault-during-drain-not-forced",
+      "file": "internal/app/app_batch_drain.go",
+      "file_sha256": "8ab523a4ec5669b6fa4b8ff390683dcbc71b5f8328b71cf469e06d1b16215be6",
+      "needle": "\t\treturn BatchDrainResult{Forced: true, Err: closeErr}\n\t}\n\n\tif closeErr != nil {",
+      "replacement": "\t\treturn BatchDrainResult{Forced: false, Err: closeErr}\n\t}\n\n\tif closeErr != nil {",
+      "package": "internal/app",
+      "test": "TestFaultRacingShutdownFaultDuringDrain",
+      "purpose": "a fault observed during the drain must resolve the race in favour of the fault (Forced, no release)",
+      "expected_assertion": "fault during drain forces the result"
+    }
+  ]
+}
