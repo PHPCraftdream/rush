@@ -118,12 +118,27 @@ func (c *coordinator) stopTree(sessionID string) {
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopRecheckTicker()
-	// close() cancels the executor of every still-running job (their rows
-	// stay 'running' for the next host to recover, DUR-1) and stops the
-	// timeout service.
+	c.StopWakeScheduler()
+	// Stop timer admission before closing callback admission. Detached timer
+	// deliveries and recheck wakes remain separate lifecycle backlog.
+	if c.asyncJobs != nil {
+		c.asyncJobs.timeouts.close()
+	}
+	// Close admission before cancelling agent work: releases during unwind
+	// must not create new DB readers. Ownership cleanup already happened in
+	// agent_ownership.go; recheckChild intentionally does nothing on a closed
+	// ledger, so refused callbacks need no replacement bookkeeping.
+	c.callbackMu.Lock()
+	c.callbackClosing = true
+	c.callbackContextLocked()
+	cancelCallbacks := c.callbackCancel
+	c.callbackMu.Unlock()
+	// close() leaves rows running for recovery and suppresses shutdown-caused
+	// delegation completion before cancelled agents start releasing ownership.
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}
+	cancelCallbacks()
 	stillBusy = c.currentAgent.CancelAll()
 	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from
 	// c.currentAgent (task #1049) -- CancelAll must reach it too, or its own
@@ -134,7 +149,40 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 			stillBusy = true
 		}
 	}
+	if c.joinShutdownCallbacks() {
+		stillBusy = true
+	}
 	return stillBusy
+}
+
+// joinShutdownCallbacks shares one five-second grace across BOTH callback
+// groups and the stopped recheck producer, before App can release its store.
+// Admission is already closed, including for late natural completions.
+func (c *coordinator) joinShutdownCallbacks() bool {
+	done := make(chan struct{})
+	go func() {
+		if c.recheckDone != nil {
+			<-c.recheckDone
+		}
+		c.releaseWG.Wait()
+		c.notifyWG.Wait()
+		if c.callbackAfterWaitHook != nil {
+			c.callbackAfterWaitHook()
+		}
+		close(done)
+	}()
+	timer := time.NewTimer(DefaultCancelAllGrace)
+	defer timer.Stop()
+	expired := timer.C
+	if c.callbackJoinTimeout != nil {
+		expired = c.callbackJoinTimeout()
+	}
+	select {
+	case <-done:
+		return false
+	case <-expired:
+		return true
+	}
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {

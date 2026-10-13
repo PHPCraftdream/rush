@@ -76,9 +76,16 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	// influence either.
 	// Supervision progress is recorded when the notice moves into history
 	// (agent_notice_pull.go), not here.
-	c.notifyWG.Add(1)
+	ctx, ok := c.admitCallback(&c.notifyWG)
+	if !ok {
+		// The terminal fact is already durable; shutdown owes no new wake.
+		return
+	}
 	go func() {
 		defer c.notifyWG.Done()
+		if c.notifyCallbackHook != nil {
+			c.notifyCallbackHook(ctx)
+		}
 		// Re-check trigger (ii)/(iv): this goroutine IS the delivery that
 		// the completed job woke -- either directly (mailbox was idle) or
 		// merged into an already-live/queued generation (mailbox was busy).
@@ -89,7 +96,7 @@ func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 		// error here.
 		defer c.noteSubAgentChildRunEnded(completion.SessionID)
 		if completion.Wake {
-			_ = c.wakeSession(context.Background(), completion.SessionID, true)
+			_ = c.wakeSession(ctx, completion.SessionID, true)
 		}
 	}()
 }

@@ -117,7 +117,11 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	// consistently-reproducing pre-push CI failure). ReleaseAll guarantees
 	// this dataDir's connection is fully closed regardless of how Shutdown
 	// behaved — see its own doc for why this is safe under t.Parallel().
-	t.Cleanup(func() { _ = db.ReleaseAll(resolvedDataDir) })
+	t.Cleanup(func() {
+		if err := db.ReleaseAll(resolvedDataDir); err != nil {
+			t.Errorf("db.ReleaseAll(%s): %v", resolvedDataDir, err)
+		}
+	})
 
 	a, err := appPkg.New(t.Context(), conn, store)
 	require.NoError(t, err)
