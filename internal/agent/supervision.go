@@ -586,10 +586,38 @@ func lastNonEmptyLine(s string) string {
 
 // onSessionIdleHook is wired as every SessionAgent's OnSessionIdle
 // (coordinator_tools.go): the universal "the mailbox of this session was
-// just released" trigger. It does no work on the releasing goroutine (no DB,
-// no lock): everything runs in one goroutine (afterRelease).
+// just released" trigger. Only admission runs on the releasing goroutine;
+// bookkeeping and DB work run in the registered callback.
 func (c *coordinator) onSessionIdleHook(sessionID string) {
-	go c.afterRelease(sessionID)
+	ctx, ok := c.admitCallback(&c.releaseWG)
+	if !ok {
+		return
+	}
+	go func() {
+		defer c.releaseWG.Done()
+		c.afterReleaseContext(ctx, sessionID)
+	}()
+}
+
+// admitCallback registers BEFORE spawn, under the same mutex that closes
+// admission. No positive Add can race shutdown's Wait, including a natural
+// ledger completion whose onWebDone invocation was delayed past ledger.close.
+func (c *coordinator) admitCallback(wg *sync.WaitGroup) (context.Context, bool) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	if c.callbackClosing {
+		return nil, false
+	}
+	ctx := c.callbackContextLocked()
+	wg.Add(1)
+	return ctx, true
+}
+
+func (c *coordinator) callbackContextLocked() context.Context {
+	if c.callbackCtx == nil {
+		c.callbackCtx, c.callbackCancel = context.WithCancel(context.Background())
+	}
+	return c.callbackCtx
 }
 
 // afterRelease is the release-time work: the phase-3 delegation re-check
@@ -601,6 +629,18 @@ func (c *coordinator) onSessionIdleHook(sessionID string) {
 // does not relaunch itself here, and an unreadable debt check goes to the
 // re-check set.
 func (c *coordinator) afterRelease(sessionID string) {
+	ctx, ok := c.admitCallback(&c.releaseWG)
+	if !ok {
+		return
+	}
+	defer c.releaseWG.Done()
+	c.afterReleaseContext(ctx, sessionID)
+}
+
+func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string) {
+	if c.releaseCallbackHook != nil {
+		c.releaseCallbackHook(ctx)
+	}
 	if c.asyncJobs == nil || sessionID == "" {
 		return
 	}
@@ -608,7 +648,7 @@ func (c *coordinator) afterRelease(sessionID string) {
 	// turn a Stop cut off). #1130: no parent charge — the child paid its own
 	// cost_self as it ran, and readers sum the subtree on demand.
 	c.noteSubAgentChildRunEnded(sessionID)
-	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
+	if err := c.wakeSession(ctx, sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
 }

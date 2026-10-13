@@ -145,18 +145,20 @@ func TestBatchWorkSnapshot_UnknownHostIsConservative(t *testing.T) {
 }
 
 func TestBatchWorkSnapshot_NodesOrderedByOrdinal(t *testing.T) {
-	// Rows arrive deliberately out of ordinal order.
+	// Rows arrive deliberately out of ordinal order, and the ids are chosen
+	// so NodeID lexical order (r1, r1-b, r1-m) ALSO differs from ordinal
+	// order: only an ordinal sort yields 0,1,2.
 	root := batchNode("r1", "r1", "s1", "running", "tc-root", 0)
-	c := batchNode("r1-c", "r1", "s1", "running", "tc-c", 2)
-	a := batchNode("r1-a", "r1", "s1", "running", "tc-a", 1)
-	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, c, a}}, probeAlive, nil)
+	b := batchNode("r1-b", "r1", "s1", "running", "tc-b", 2)
+	m := batchNode("r1-m", "r1", "s1", "running", "tc-m", 1)
+	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, b, m}}, probeAlive, nil)
 
 	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
-	got := []int64{}
+	got := []string{}
 	for _, n := range snap.Roots[0].Nodes {
-		got = append(got, n.Ordinal)
+		got = append(got, n.NodeID)
 	}
-	require.Equal(t, []int64{0, 1, 2}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
+	require.Equal(t, []string{"r1", "r1-m", "r1-b"}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
 }
 
 func TestBatchWorkSnapshot_StructuredCompletions(t *testing.T) {

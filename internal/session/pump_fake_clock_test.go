@@ -183,3 +183,53 @@ func TestFakePumpClock_TickersFireOnAdvanceAndCoalesce(t *testing.T) {
 	default:
 	}
 }
+
+// TestFakePumpClock_CoalescedJumpSilencesTickerUntilNextPeriod pins the
+// starvation arithmetic behind the P350 retry-loop flake: a jump of 10
+// periods fires exactly one tick and leaves the ticker's next fire a full
+// period after the new now, so afterwards NOTHING but an advance of (at
+// least) the remaining time to that next fire produces a tick. Operational
+// consequence for test loops: small advances after a coalescing jump
+// deliver nothing until a full period passes — advance one period plus
+// epsilon instead.
+func TestFakePumpClock_CoalescedJumpSilencesTickerUntilNextPeriod(t *testing.T) {
+	t.Parallel()
+	const p = time.Minute
+	clk := newFakePumpClock(fakePumpEpoch)
+	tk := clk.NewTicker(p)
+	defer tk.Stop()
+
+	// The jump: 10 periods coalesce into exactly one buffered tick.
+	clk.Advance(10 * p)
+	select {
+	case <-tk.C():
+	default:
+		t.Fatal("coalesced jump must fire exactly one tick")
+	}
+	select {
+	case <-tk.C():
+		t.Fatal("coalesced jump must not fire more than one tick")
+	default:
+	}
+
+	// The silencing: the next fire is one full period after the jump, so
+	// advancing to just before it produces no tick.
+	clk.Advance(p - time.Millisecond)
+	select {
+	case <-tk.C():
+		t.Fatal("tick must not fire before the post-jump period elapses")
+	default:
+	}
+	// Crossing it (by 2ms) fires exactly one tick.
+	clk.Advance(2 * time.Millisecond)
+	select {
+	case <-tk.C():
+	default:
+		t.Fatal("tick must fire once the post-jump period elapses")
+	}
+	select {
+	case <-tk.C():
+		t.Fatal("crossing the next fire must fire exactly one tick")
+	default:
+	}
+}
