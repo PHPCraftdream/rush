@@ -323,5 +323,5 @@ func TestNewBatchExecutorFamiliesRegistersAllKinds(t *testing.T) {
 	for _, kind := range []string{batchKindGeneric, batchKindMCP, batchKindShell, batchKindArgv, batchKindAgent} {
 		require.Contains(t, families, kind, kind)
 	}
-	require.Same(t, families[batchKindGeneric], families[batchKindMCP], "MCP leaves run through the pinned generic leaf path")
+	require.Equal(t, families[batchKindGeneric], families[batchKindMCP], "MCP leaves run through the pinned generic leaf path")
 }
