@@ -280,9 +280,13 @@ func TestBatchAgentHeldQuestionKeepsNodeLive(t *testing.T) {
 				reader.set(true, true)
 				batchAgentTestNoReport(t, reports, "other work is live")
 			}
-			// Even with descendants terminal, the held question keeps it open.
+			// End the turn (and the driver exit barrier) while the question
+			// is STILL held: the turn has exited and descendants are
+			// terminal, so ONLY the held guard keeps the node live.
+			turn.finish()
+			turn.exitNow()
 			reader.set(false, true)
-			batchAgentTestNoReport(t, reports, "a question is held")
+			batchAgentTestNoReport(t, reports, "a question is held after the turn ended")
 			// The answer is injected at the held depth; the question-shaped
 			// response carries it and the node settles Completed.
 			require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":2,"text":"because"}`)))

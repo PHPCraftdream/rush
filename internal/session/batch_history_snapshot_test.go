@@ -23,6 +23,10 @@ func TestBatchHistorySnapshotShapeAndInjectableHostVerdict(t *testing.T) {
 	_, err := s.BatchAnnounceStarted(ctx, m, "owner", snap.Root.RootID, batchOutboxText("started"))
 	require.NoError(t, err)
 	batchOutboxSettle(t, s, ctx, snap, 2, snap.Nodes[1].NodeID, snap.Nodes[2].NodeID, snap.Root.RootID)
+	// Void one settled notice's delivery (rerun/disposal style) while it is
+	// still woken and unreacted: a void row is history, never debt.
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET delivery='void' WHERE node_id=?`, snap.Nodes[2].NodeID)
+	require.NoError(t, err)
 	r := batchReadTestReader(t, conn)
 	verdict := HostStatusAlive
 	r.ProbeHost = func(string, string) (HostLockStatus, error) { return verdict, nil }
@@ -38,7 +42,10 @@ func TestBatchHistorySnapshotShapeAndInjectableHostVerdict(t *testing.T) {
 	require.True(t, got.Nodes[1].Wake)
 	require.False(t, got.Nodes[1].Reacted)
 	require.Equal(t, snap.Nodes[1].NodeID, got.Nodes[1].Fact.NodeID)
-	require.Equal(t, 3, int(got.Debt), "settled unreacted woken nodes are debt")
+	require.Equal(t, "void", got.Nodes[2].Delivery)
+	require.True(t, got.Nodes[2].Wake)
+	require.False(t, got.Nodes[2].Reacted)
+	require.Equal(t, 2, int(got.Debt), "settled unreacted woken nodes are debt; a voided delivery row never counts")
 	// The settled notice has no message until pulled: no dead reference.
 	require.Empty(t, got.Root.MessageID)
 
