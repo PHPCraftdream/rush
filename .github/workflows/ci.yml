@@ -264,8 +264,14 @@ jobs:
     # the repo setting is enabled — see ci-security.yml's header comment.
     if: needs.plan.outputs.security_full == 'true' || needs.plan.outputs.security_deps == 'true' || needs.plan.outputs.security_actions == 'true'
     uses: ./.github/workflows/ci-security.yml
+    # A reusable workflow cannot exceed the caller job's permissions: its
+    # CodeQL/SARIF jobs need these (a caller with contents: read only makes
+    # the whole run fail at startup).
     permissions:
+      actions: read
       contents: read
+      pull-requests: read
+      security-events: write
     with:
       security_full: ${{ needs.plan.outputs.security_full == 'true' }}
       security_deps: ${{ needs.plan.outputs.security_deps == 'true' }}
