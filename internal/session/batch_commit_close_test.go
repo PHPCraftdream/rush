@@ -315,7 +315,8 @@ func TestBatchCommitPreservesEnvelopeAndChildSession(t *testing.T) {
 
 // Scenario 16: StartRejected persists the rejected state without outcome
 // synthesis beyond the reported facts; ControlReported persists control
-// facts; StopRequested never marks the root terminal.
+// facts; a leaf StopRequested latches only the leaf and the root stays
+// running, never terminal.
 func TestBatchCommitStartRejectedControlReportedStopRequested(t *testing.T) {
 	env := newCommitHookEnv(t)
 	// StartRejected: the executor refuses the start.
@@ -347,7 +348,10 @@ func TestBatchCommitStartRejectedControlReportedStopRequested(t *testing.T) {
 	require.Equal(t, "failed", leaf2.ControlState, "control facts persisted")
 	require.Equal(t, "stop_failed", leaf2.ControlError)
 	root2 := commitHookReadNode(t, env2.conn, "s")
-	require.Equal(t, "cancelling", root2.State, "StopRequested never marks the root terminal")
+	require.Equal(t, "running", root2.State,
+		"a leaf StopRequested latches only the leaf; the root stays running, never terminal")
+	require.False(t, jobbatch.State(root2.State).Terminal(),
+		"StopRequested must not settle the root")
 	require.Zero(t, root2.NoticeSelected)
 	select {
 	case <-b2.Done():
