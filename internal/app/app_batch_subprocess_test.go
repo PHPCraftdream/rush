@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,15 +63,18 @@ func TestAppBatchFaultSubprocess(t *testing.T) {
 		rt.SetRunner(runner)
 		rt.Start()
 
-		if _, err := runner.Submit(context.Background(), jobbatch.SubmitRequest{
+		_, submitErr := runner.Submit(context.Background(), jobbatch.SubmitRequest{
 			Root: "r",
 			Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "test"}),
-		}); err != nil {
+		})
+		// The submit commit blocks in the hook; the Runner faults on its own
+		// CommitTimeout, so Submit returns the ErrCommitFailed-wrapped fault
+		// error ~CommitTimeout in — that is the EXPECTED outcome, not a
+		// helper failure. The watcher fences, retains, and os.Exit(70) runs;
+		// the lock file is never removed or released by any cleanup path.
+		if submitErr != nil && !errors.Is(submitErr, jobbatch.ErrCommitFailed) {
 			os.Exit(4)
 		}
-		// The submit commit blocks in the hook; the Runner faults on its own
-		// CommitTimeout, the watcher fences, retains, and os.Exit(70) runs.
-		// The lock file is never removed or released by any cleanup path.
 		select {
 		case <-runner.Faulted():
 		case <-time.After(10 * time.Second):
