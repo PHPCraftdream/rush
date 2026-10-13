@@ -220,6 +220,60 @@ class SelectionTests(unittest.TestCase):
         self.assertIn(MODULE + "/internal/ui", names)
         self.assertTrue(any(e["reason"].startswith("deleted") for e in p.not_run))
 
+    def test_race_root_change_requires_native_lanes(self):
+        class R:
+            base = "b"
+            head = "h"
+            merge_base = "b"
+            base_tree_files = []
+            changes = [
+                type("C", (), {"status": "M", "path": "internal/agent/x_test.go", "old_path": None})()
+            ]
+        p = selector.plan(".", R(), self.graphs, self.pol)
+        self.assertTrue(p.native_required["required"])
+        self.assertTrue(any("race_roots" in r for r in p.native_required["reasons"]))
+
+    def test_race_root_change_runs_native_reverse_deps(self):
+        objs = [
+            _p(MODULE),
+            _p(MODULE + "/internal/agent"),
+            _p(MODULE + "/internal/app", imports=[MODULE + "/internal/agent"]),
+            _p(MODULE + "/internal/db"),
+            _p(MODULE + "/internal/ui", imports=[MODULE + "/internal/db"]),
+        ]
+        graphs = {
+            os_name: golist.parse_stream(stream(*objs), os_name)
+            for os_name in golist.TARGET_OSES
+        }
+        class R:
+            base = "b"
+            head = "h"
+            merge_base = "b"
+            base_tree_files = []
+            changes = [
+                type("C", (), {"status": "M", "path": "internal/agent/supervision.go", "old_path": None})()
+            ]
+        p = selector.plan(".", R(), graphs, self.pol)
+        self.assertTrue(p.native_required["required"])
+        darwin = [e.package for e in p.selected["darwin"]]
+        windows = [e.package for e in p.selected["windows"]]
+        self.assertIn(MODULE + "/internal/app", darwin)
+        self.assertIn(MODULE + "/internal/app", windows)
+
+    def test_always_run_guard_change_forces_full(self):
+        self.pol.always_run = [".githooks/"]
+        class R:
+            base = "b"
+            head = "h"
+            merge_base = "b"
+            base_tree_files = []
+            changes = [
+                type("C", (), {"status": "M", "path": ".githooks/check_file_size.sh", "old_path": None})()
+            ]
+        p = selector.plan(".", R(), self.graphs, self.pol)
+        self.assertEqual(p.mode, "full")
+        self.assertTrue(any("always-run" in f for f in p.fallbacks))
+
     def test_rename_both_paths_considered(self):
         class R:
             base = "b"

@@ -73,9 +73,10 @@ owners = ["internal/agent/tools"]
 patterns = ["internal/skills/**/*.md", "internal/skills/**/*"]
 owners = ["internal/skills", "internal/agent"]
 
-# Guard list: changes here always run planning + guards (plan mode only in
-# shadow phase; the heavy lanes come in phase 2).
+# Guard list: changes here always run planning + guards — guard changes force
+# full mode, and the guards themselves run in phase 2.
 always_run = [
+  ".githooks/",
   ".github/scripts/",
   ".github/workflows/ci-plan.yml",
   ".github/ci-policy.toml",

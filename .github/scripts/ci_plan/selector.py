@@ -241,6 +241,26 @@ def plan(
             "dependency/toolchain changes: " + ", ".join(sorted(set(dep_files))[:10])
         )
 
+    # Race roots: any change (production or test-only) in a package under
+    # race_roots requires native lanes (concurrency-sensitive flakes).
+    race_native: list[str] = []
+    for d in owners:
+        if pol.under_prefix((d + "/") if d else "internal/", polobj.race_roots):
+            race_native.append(
+                f"changed package {d} is under race_roots: concurrency-sensitive tests run on native lanes"
+            )
+
+    # Guard infrastructure: changes here always run guards (full mode).
+    guard_hits = []
+    for ch in repo.changes:
+        for path in ([ch.path, ch.old_path] if ch.old_path else [ch.path]):
+            if pol.under_prefix(path, polobj.always_run):
+                guard_hits.append(path)
+    if guard_hits:
+        p.fallbacks.append(
+            "always-run guard files changed: " + ", ".join(sorted(set(guard_hits))[:10])
+        )
+
     # Core prefix blanket rule (production only).
     core_hits = []
     for d, ch in owners.items():
@@ -317,6 +337,7 @@ def plan(
                 + ", ".join(f"{k}:{'yes' if v else 'no'}" for k, v in presence.items())
                 + ")"
             )
+    nreq.extend(race_native)
     nreq = sorted(set(nreq))
     p.native_required = {"required": bool(nreq), "reasons": nreq}
 
