@@ -13,10 +13,13 @@ import (
 // root; blockedPull makes Pull wait for the test's release gate (signals,
 // never sleeps).
 type fakePull struct {
-	n          int
-	err        error
-	rootDone   chan struct{}
-	blocked    bool
+	n        int
+	err      error
+	rootDone chan struct{}
+	blocked  bool
+	// ignoreCtx makes the blocked select wait ONLY on release: used when the
+	// wrapper's own bound must be the single exit (avoids ctx races).
+	ignoreCtx  bool
 	release    chan struct{}
 	pullCtxs   chan context.Context
 	calls      chan struct{}
@@ -40,7 +43,10 @@ func (f *fakePull) Pull(ctx context.Context) (int, error) {
 		select {
 		case <-f.release:
 		case <-ctx.Done():
-			return 0, ctx.Err()
+			if !f.ignoreCtx {
+				return 0, ctx.Err()
+			}
+			<-f.release
 		}
 	}
 	if f.err != nil {
@@ -56,6 +62,7 @@ func TestBatchWebDrainNonblockingWithBlockedRoot(t *testing.T) {
 	t.Parallel()
 	pull := newFakePull(0, nil)
 	pull.blocked = true
+	pull.ignoreCtx = true // The wrapper's 50ms bound is the ONLY exit.
 	pull.release = make(chan struct{})
 	t.Cleanup(func() { close(pull.release) }) // Unblock the goroutine at the end.
 	results := make(chan error, 1)
