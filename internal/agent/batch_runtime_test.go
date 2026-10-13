@@ -111,8 +111,9 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	cfg.Attach = attach
 	cfg.Runner = runner
 	cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{})
-	leafA := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {}}}
-	leafB := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {}}}
+	toolInA, toolInB := newTestLeaf("view"), newTestLeaf("view")
+	leafA := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {tool: toolInA}}}
+	leafB := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {tool: toolInB}}}
 	cfg.Leaves = func(registryID string) (*policyLeafRegistry, error) {
 		if registryID == "reg-a" {
 			return leafA, nil
@@ -189,6 +190,8 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	require.NoError(t, err)
 	toolB, err := env.resolveLeaf(batchLeafPayload{Tool: "view", RegistryID: "reg-b", SessionID: "sess-1"})
 	require.NoError(t, err)
+	require.Same(t, toolInA, toolA, "reg-a resolves its own pinned tool")
+	require.Same(t, toolInB, toolB, "reg-b resolves its own pinned tool")
 	require.NotSame(t, toolA, toolB, "executor lookup keys on the payload registry")
 }
 
