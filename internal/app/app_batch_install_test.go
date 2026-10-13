@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -112,6 +114,11 @@ func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 
 	release := func() {
 		if a.batchRuntime != nil {
+			// Stop disarms the watcher; Close drains the factory-built real
+			// Runner (Stop alone leaves the engine goroutines running).
+			if r := a.batchRuntime.Runner(); r != nil {
+				_ = r.Close(context.Background())
+			}
 			a.batchRuntime.Stop()
 		}
 		if a.asyncJobStore != nil {
@@ -191,16 +198,34 @@ func TestAppReleaseResourcesCloseTimeoutForced(t *testing.T) {
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, _, _ := wireTestBatchRuntimeFull(t, app, runner)
+	// The drain bound is production-owned (appBatchDrainTimeout = 5s), so the
+	// timeout is simulated the way a REAL Runner.Close reports it (the R11E
+	// contract: *jobbatch.CloseTimeoutError, errors.Is ErrCloseTimeout) —
+	// Close returns the error early instead of silently returning nil on
+	// ctx.Done (which is what lost the Forced verdict: the gate only promotes
+	// on the Close error, and a nil one reads as a graceful drain).
+	runner.finishClose(&jobbatch.CloseTimeoutError{Nodes: []jobbatch.ID{"root-1"}})
 
 	res := app.releaseResources(false)
 	require.True(t, res.Forced, "Close timeout must promote the shutdown to Forced")
 	require.Equal(t, []string{"retain-host"}, rec.snapshot(),
-		"host identity and writer retained on the forced path")
+		"host identity and writer retained on the forced path (no releases)")
+	found := false
+	for _, err := range res.CleanupErrors {
+		if errors.Is(err, jobbatch.ErrCloseTimeout) {
+			found = true
+		}
+	}
+	require.True(t, found, "the Close timeout error is surfaced in the cleanup errors")
 }
 
 // TestAppReleaseResourcesFaultFenceRetains: a fault fence observed through
 // releaseResources retains everything until exit 70 — no host release, no
-// writer release, Forced verdict.
+// writer release, Forced verdict. handleFault itself records the fence's
+// retain (app_batch_fault.go: fence first, log, RetainHostIdentity, exit 70
+// exactly once) — the gate then refuses every release (DrainAndRelease
+// returns Forced from Fenced() without releasing) — so the recorder shows
+// exactly one retain-host and no release at all.
 func TestAppReleaseResourcesFaultFenceRetains(t *testing.T) {
 	t.Parallel()
 	app := batchFactoryApp(t)
@@ -211,8 +236,8 @@ func TestAppReleaseResourcesFaultFenceRetains(t *testing.T) {
 
 	res := app.releaseResources(false)
 	require.True(t, res.Forced, "fenced shutdown is Forced")
-	require.Empty(t, rec.snapshot(),
-		"fault fence retains host identity and writer until exit 70")
+	require.Equal(t, []string{"retain-host"}, rec.snapshot(),
+		"fault fence retains the host identity once and never releases host or writer")
 }
 
 // TestAppReleaseResourcesForcedAgentsBusy: when agent work already made the

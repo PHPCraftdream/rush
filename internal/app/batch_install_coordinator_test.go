@@ -31,6 +31,11 @@ func TestBatchWorkIngressFlagOnInstalled(t *testing.T) {
 	require.NotNil(t, ingress, "flag on: the one-authority seam is installed")
 	t.Cleanup(func() {
 		if a.batchRuntime != nil {
+			// Close drains the factory-built real Runner; Stop alone leaves
+			// the engine goroutines running.
+			if r := a.batchRuntime.Runner(); r != nil {
+				_ = r.Close(context.Background())
+			}
 			a.batchRuntime.Stop()
 		}
 		_ = a.asyncJobStore.Close(context.Background())

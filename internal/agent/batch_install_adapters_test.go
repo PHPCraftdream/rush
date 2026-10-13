@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,34 @@ func (e installFakeExecutor) Start(_ context.Context, _ jobbatch.Launch, report 
 type installFakeExecution struct{}
 
 func (installFakeExecution) Stop(context.Context) error { return nil }
+
+// gatingInstallExecutor keeps the one-item batch LIVE (the node stays
+// running, so the reserved root stays a live batch root) until the test
+// releases it — the same gating pattern as gatingLeaf. Without it the
+// instant completion settles the root asynchronously and the fence probes
+// race the settlement: once the root is Final, GetLiveBatchRoot returns no
+// rows and every probe legitimately reports attached=false, err=nil.
+type gatingInstallExecutor struct {
+	release chan struct{}
+	once    sync.Once
+	content string
+}
+
+func newGatingInstallExecutor(content string) *gatingInstallExecutor {
+	return &gatingInstallExecutor{release: make(chan struct{}), content: content}
+}
+
+func (e *gatingInstallExecutor) Start(ctx context.Context, _ jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+	select {
+	case <-e.release:
+	case <-ctx.Done():
+		return installFakeExecution{}, ctx.Err()
+	}
+	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse(e.content))})
+	return installFakeExecution{}, nil
+}
+
+func (e *gatingInstallExecutor) letGo() { e.once.Do(func() { close(e.release) }) }
 
 // newTestBatchStore builds a BatchStore on a fresh temp SQLite database with
 // foreign keys off, matching the isolated ledger test convention.
@@ -98,8 +127,23 @@ func TestBatchRunnerAdapterSubmitsOneItemAndSettles(t *testing.T) {
 func TestBatchAttachAdapterProbesLiveRootWithFences(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
+	deps := installTestDeps(t, store, conn, "ok")
+	// A GATED executor keeps the root genuinely live while every probe runs:
+	// the engine settles the root asynchronously with the instant fake, so
+	// the fence probes below would otherwise race the settlement and read
+	// no live root at all (GetLiveBatchRoot: attached=false, err=nil).
+	gate := newGatingInstallExecutor("ok")
+	deps.Executor = gate
+	install, err := InstallBatchRuntime(ctx, deps)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		gate.letGo()
+		if install.Runner != nil {
+			// Close (not Stop) drains the engine to Final so no goroutine
+			// outlives the test.
+			require.NoError(t, install.Runner.Close(context.Background()))
+		}
+	})
 	spec := installOneItemSpec(t, "")
 	root := installSubmit(t, install, spec)
 	hash := batchInvocationHash(spec)
@@ -107,15 +151,25 @@ func TestBatchAttachAdapterProbesLiveRootWithFences(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, attached)
 	require.Equal(t, root, got)
-	for name, p := range map[string]batchAttachProbe{
-		"hash mismatch":   {Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(installOneItemSpec(t, "other"))},
-		"foreign host":    {Owner: "owner", Host: "elsewhere", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash},
-		"runner mismatch": {Owner: "owner", Host: "host", RunnerID: "runner-2", ToolCallID: "call-1", InputHash: hash},
+	for name, tc := range map[string]struct {
+		probe batchAttachProbe
+		want  error
+	}{
+		"hash mismatch":   {probe: batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(installOneItemSpec(t, "other"))}, want: session.ErrBatchInputMismatch},
+		"foreign host":    {probe: batchAttachProbe{Owner: "owner", Host: "elsewhere", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchForeignLiveHost},
+		"runner mismatch": {probe: batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-2", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchRunnerMismatch},
 	} {
-		_, attached, err := install.Attach.ProbeLive(ctx, p)
-		require.Error(t, err, name, "mismatch is an error, not a resubmission")
+		_, attached, err := install.Attach.ProbeLive(ctx, tc.probe)
+		require.Error(t, err, name+": mismatch is an error, not a resubmission")
+		require.ErrorIs(t, err, tc.want, name)
 		require.False(t, attached, name)
 	}
+	// Release the gate: the root settles cleanly and the runner closes
+	// without leaving engine goroutines behind.
+	gate.letGo()
+	_, ok, err := install.Done.AwaitDone(ctx, "owner", root)
+	require.NoError(t, err)
+	require.True(t, ok)
 }
 
 // LoadDone reads a persisted completion without waiting; a settled row
