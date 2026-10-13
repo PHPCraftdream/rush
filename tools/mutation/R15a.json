@@ -7,10 +7,10 @@
       "file": "internal/server/handlers_batch.go",
       "file_sha256": "acaf1865c3015493cddfcc63c4590cd989b3e89cf76722cb9625e016379cbbb0",
       "needle": "snap.Complete = walkComplete && !missingRoot",
-      "replacement": "snap.Complete = true",
+      "replacement": "snap.Complete = true\n\t\t_ = walkComplete\n\t\t_ = missingRoot",
       "package": "internal/server",
       "test": "TestBatchWorkSnapshot_IncompleteKeepsRoots",
-      "purpose": "Treat failed child fetch as complete. False assertion's explicit message is in handlers_batch_test.go. Additional advertised test: TestBatchWorkSnapshot_UnknownHostIsConservative.",
+      "purpose": "Treat failed child fetch as complete while keeping walkComplete/missingRoot used so the mutant compiles: blank assignments discard both variables and the constant true forces the completeness expression. False assertion's explicit message is in handlers_batch_test.go. Additional advertised test: TestBatchWorkSnapshot_UnknownHostIsConservative.",
       "expected_assertion": "a failed fetch must make the scope incomplete"
     },
     {
@@ -44,7 +44,7 @@
       "package": "internal/server",
       "test": "TestBatchWorkSnapshot_UnknownHostIsConservative",
       "purpose": "Map unknown host to dead. Per-node HostStatusUnknown still sets rootComplete false, so the first actual differing assertion is root.Host = unknown, not the preceding completeness assertion.",
-      "expected_assertion": "Should be false"
+      "expected_assertion": "expected: \"unknown\""
     },
     {
       "id": "mut8_route_flag_off",

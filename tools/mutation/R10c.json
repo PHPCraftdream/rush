@@ -132,7 +132,7 @@
       "package": "internal/session",
       "test": "TestBatchDisposeLegacyBoundNoticesExactlyOnce",
       "purpose": "Drop both delivery and wake guards, retaining reacted. Compiled SQL equivalent. Although intended to break double-dispose, the existing first-call count already fails on unwoken/void rows; preserve that actual first assertion.",
-      "expected_assertion": "disposal happens exactly once"
+      "expected_assertion": "only pending/done unreacted woken rows dispose"
     },
     {
       "id": "m13_live_rerun_unreachable",

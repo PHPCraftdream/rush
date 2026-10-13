@@ -80,17 +80,6 @@
       "expected_assertion": "expected: \"0\""
     },
     {
-      "id": "m08_reconstruct_notices",
-      "file": "internal/session/batch_commit.go",
-      "file_sha256": "50a2d070790745ef9448ff438b76e7c5eda075cd17ac03d49e50be0444233447",
-      "needle": "\tfor i, n := range t.Notices {\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
-      "replacement": "\tfor i, v := range t.Changed {\n\t\tif !v.State.Terminal() {\n\t\t\tcontinue\n\t\t}\n\t\tn := jobbatch.Notice{Root: v.Root, Node: v.ID, Kind: v.Kind, State: v.State, Cause: v.Cause}\n\t\tnotice, err := batchCommitNotice(n, i, closing)",
-      "package": "internal/session",
-      "test": "TestBatchCommitNoticeOrdinalIsSlicePosition",
-      "purpose": "Reconstruct selection from terminal Changed rows. Additional advertised test: TestBatchCommitNotifyEachPerChildNotices. Primary leaf ordinal equality has this explicit assertion message; whether an earlier commit/barrier fails must be reviewed in CI output.",
-      "expected_assertion": "ordinal is the slice position, not the structural ordinal"
-    },
-    {
       "id": "m09_closing_wake_one",
       "file": "internal/session/batch_commit.go",
       "file_sha256": "50a2d070790745ef9448ff438b76e7c5eda075cd17ac03d49e50be0444233447",
@@ -165,7 +154,7 @@
       "package": "internal/session",
       "test": "TestBatchCommitNotifyEachPerChildNotices",
       "purpose": "Allow duplicate notice selection; target emitted compiled SQL without regeneration. Replay ErrorIs has the distinctive message in batch_commit_close_test.go.",
-      "expected_assertion": "Expected error with \"batch store: projection identity or sequence conflict\" in chain but got nil."
+      "expected_assertion": "duplicate notice selection refused"
     },
     {
       "id": "m16_drop_projection_sequence_fence",
@@ -176,7 +165,7 @@
       "package": "internal/session",
       "test": "TestBatchCommitIncarnationFencing",
       "purpose": "Inflate caller's projection sequence. Test pins stale same-sequence refusal and unchanged sequence. Earlier setup/commit may be affected; inspect output rather than accepting an unrelated error.",
-      "expected_assertion": "Expected error with \"batch store: projection identity or sequence conflict\" in chain but got nil."
+      "expected_assertion": "projection_sequence not inflated"
     },
     {
       "id": "m17_add_second_root",

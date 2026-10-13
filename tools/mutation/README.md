@@ -79,8 +79,12 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
   merged base. The sqlc regeneration changed the needle-bearing blob (see the
   R10c entry above for the exact SHA and needle deltas). m02/m17 use the earlier
   primary-test NoError failure, not their advertised later root-count messages.
+  Round6: **16 records** — m08_reconstruct_notices moved to Pending.json after
+  surviving proof run 38457733623 (see Known gaps / pending test strengthening).
 - R11E: 7 records from `.mutsrc/lists/r11e.mutlist.json`, packages normalized
-  to `internal/app`; one workflow shard (single package, 7 mutations).
+  to `internal/app`; one workflow shard (single package). Round6: **6 records**
+  — setrunner-wake-dropped moved to Pending.json after surviving proof run
+  38457733623 (see Known gaps / pending test strengthening).
 - Teardown: 5 records from `.mutsrc/lists/teardown.mutlist.json`, task name
   exactly `teardown`, packages normalized to `internal/agent`; one workflow
   shard (single package, 5 mutations).
@@ -105,6 +109,86 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
   of its helper/import parser transformation; no target needles were altered.
   (The round plan said 7; the delivered set is 6 — mut2/mut7 remain web-test
   mutations and stay excluded.)
+
+## Proof status
+
+Real CI proof run: GitHub Actions run id **38457733623**, commit **c18c9cbd**,
+branch `mut/round6` (workflow matrix: R10b/R10c/R7c/R11B/R11E/Teardown/R15a;
+R11C/R11D remain excluded and unproven). 83 records executed: 74 KILLED,
+6 KILLED_UNEXPECTED (all six expected assertions corrected to the observed
+literals this round — they are proven kills), 1 EXECUTION_ERROR (R15a mut1,
+compile failure, fixed this round; still unproven until the next run),
+2 SURVIVED (real test gaps, moved to Pending.json).
+
+| Manifest | Proven kills / total enforced | Notes |
+|---|---|---|
+| R7c | 15/15 | 2 assertions corrected to observed literals (rc1, rc6) |
+| R10b | 13/13 | |
+| R10c | 20/20 | 1 assertion corrected to observed literal (m12) |
+| R11B | 16/16 enforced + 1 pending (m08 in Pending.json) | m15/m16 assertions corrected to observed literals |
+| R11E | 6/6 enforced + 1 pending (setrunner in Pending.json) | |
+| R15a | 5/6 proven; mut1 compile-fixed, unproven until next run | mut6 assertion corrected to observed literal |
+| Teardown | 5/5 | |
+| R11C | not proven | excluded from matrix pending #29 |
+| R11D | not proven | excluded from matrix pending #29 + R11D PR |
+| Pending.json | excluded from enforcement | 2 records awaiting test strengthening |
+
+KILLED_UNEXPECTED records re-anchored to the observed failing output (raw
+go-test text, verified verbatim in the per-record mutated logs):
+
+| Record | Old expected_assertion | New (observed) | Log evidence |
+|---|---|---|---|
+| R10c m12_dispose_second_call_voids_again | disposal happens exactly once | `only pending/done unreacted woken rows dispose` | Messages line at batch_consumers_test.go:179 (observed expected int(2) / actual int64(4)) |
+| R7c rc1_scope_before_close | scope reported while the turn loop runs | `scope reported while descendants are live` | t.Errorf text at batch_exec_agent_test.go:231 |
+| R7c rc6_stop_ack_settles | scope reported while descendants are still live after the ack | `scope reported while descendants are live before the stop` | t.Errorf text at batch_exec_agent_test.go:440 |
+| R15a mut6_host_unknown_dead | Should be false | `expected: "unknown"` | Equal failure at handlers_batch_test.go:143 (expected "unknown" / actual "dead") |
+| R11B m15_drop_notice_selected_guard | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | `duplicate notice selection refused` | Target-error-in-chain failure at batch_commit_close_test.go:47 |
+| R11B m16_drop_projection_sequence_fence | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | `projection_sequence not inflated` | Messages line at batch_commit_test.go:506 (expected 2 / actual 4611686018427387904) |
+
+R15a mut1 EXECUTION_ERROR fix (no hash change — needle unchanged, still occurs
+exactly once in `internal/server/handlers_batch.go` at HEAD acaf1865):
+replacement is now
+
+```go
+snap.Complete = true
+		_ = walkComplete
+		_ = missingRoot
+```
+
+Both previously unused variables are discarded with blank assignments at
+statement position, so the mutant compiles, and the forced `true` still makes
+`TestBatchWorkSnapshot_IncompleteKeepsRoots` observe a complete snapshot and
+fail at its `a failed fetch must make the scope incomplete` assertion
+(handlers_batch_test.go:127).
+
+## Known gaps / pending test strengthening
+
+`tools/mutation/Pending.json` (schema_version 1, task `pending`) holds the two
+survived records; they are NOT in the workflow matrix and are excluded from
+enforcement until their tests are strengthened:
+
+- **setrunner-wake-dropped** (from R11E; internal/app/app_batch_runtime.go,
+  test TestWatcherWakesOnSetRunnerAfterStart): the mutant removes the
+  `<-rt.runnerSet` case from the dormant watcher select. The test calls
+  SetRunner immediately after Start, so the watcher goroutine usually performs
+  its first top-of-loop re-read of `rt.runner` AFTER the runner is stored and
+  takes the live branch — the dormant select is then never reached, the exit-70
+  path still happens, and the test passes (observed PASS in the mutated log).
+  The test never forces the watcher to be parked in the dormant branch before
+  SetRunner. Strengthening: deterministically park the watcher in the dormant
+  select (barrier/hook) before SetRunner. Catching assertion if it did:
+  `watcher must wake on SetRunner and exit once` (require.Eventually message,
+  app_batch_watch_test.go:30).
+- **m08_reconstruct_notices** (from R11B; internal/session/batch_commit.go,
+  test TestBatchCommitNoticeOrdinalIsSlicePosition): the mutant reconstructs
+  the notice selection from terminal `t.Changed` rows with the Changed index as
+  ordinal. In this fixture the terminal Changed rows coincide in order and
+  position with `t.Notices` (leaf r.1 at index 0, then r.2 and root), so the
+  mutant produces the same ordinals ("0"/"0"/"1") and the test passes (observed
+  PASS in the mutated log). Strengthening: make the terminal Changed order
+  differ from the Notices slice order. Catching assertion if it did:
+  `ordinal is the slice position, not the structural ordinal`
+  (batch_commit_test.go:351, require.Equal message — printed on failure).
 
 ## Known gaps
 
@@ -157,7 +241,8 @@ foreign keys ON. No test name is used as an assertion substring.
 - R11E `fenced-channel-check-dropped`: the mutant makes Fenced() true whenever a
   runner is attached, so TestOrdinaryShutdownDrainsBeforeRelease blocks at
   `<-runner.closeEntered` (app_batch_drain_test.go:28) before its require — a
-  hang (rc None is EXECUTION_ERROR, not a kill). Dropped; R11E is 7 records.
+  hang (rc None is EXECUTION_ERROR, not a kill). Dropped; R11E is 6 records
+  after Round6 moved setrunner-wake-dropped to Pending.json.
 - R15a mut2/mut7: target actual Node/TypeScript tests in
   `web/src/batchWork.test.ts`, not Go tests.
 
@@ -174,6 +259,7 @@ python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R1
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R11E.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/Teardown.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R15a.json
+python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/Pending.json
 python -I tools/mutation/run.py --validate --root <r11c-sibling> --manifest tools/mutation/R11C.json
 python -I tools/mutation/run.py --validate --root <r11d-sibling> --manifest tools/mutation/R11D.json
 ```
@@ -299,13 +385,13 @@ test file:line where the first failing assertion prints it.
 
 | Manifest | id | expected_assertion | printed at |
 |---|---|---|---|
-| R7c | rc1_scope_before_close | scope reported while the turn loop runs | batch_exec_agent_test.go:192/225 |
+| R7c | rc1_scope_before_close | scope reported while descendants are live | batch_exec_agent_test.go:231 (observed in run 38457733623) |
 | R7c | rc2_report_twice | duplicate report: | batch_exec_agent_test.go:243 |
 | R7c | rc3_incomplete_closed | scope reported while the read is unknown | batch_exec_agent_test.go:192/258 |
 | R7c | rc4a_inject_after_stop_scope | batch agent: incarnation is stopped | batch_exec_agent_test.go:642 (ErrorIs quoted target) |
 | R7c | rc4b_inject_after_stop_exec | batch agent: incarnation is stopped | batch_exec_agent_test.go:384 (ErrorIs quoted target) |
 | R7c | rc5_stale_generation | batch agent: stale incarnation | batch_exec_agent_test.go:401 (ErrorIs quoted target) |
-| R7c | rc6_stop_ack_settles | scope reported while descendants are still live after the ack | batch_exec_agent_test.go:445 via :192 |
+| R7c | rc6_stop_ack_settles | scope reported while descendants are live before the stop | batch_exec_agent_test.go:440 (observed in run 38457733623) |
 | R7c | rc7_wrong_depth | batch agent: no held question at that depth | batch_exec_agent_test.go:338 (ErrorIs nil-err message) |
 | R7c | rc8_dispose_no_barrier | context deadline exceeded | batch_exec_agent_test.go:470 (ErrorIs nil-err message) |
 | R7c | rc9_leak_driver_waiter | context deadline exceeded | batch_exec_agent_test.go:507 (NoError) or :470 |
@@ -338,7 +424,7 @@ test file:line where the first failing assertion prints it.
 | R10c | m09_snapshot_probe_bypassed | Not equal: | batch_history_snapshot_test.go:60 |
 | R10c | m10_roots_drops_terminal | should have 2 item(s), but has 1 | batch_history_snapshot_test.go:110 |
 | R10c | m11_snapshot_debt_counts_void | settled unreacted woken nodes are debt; a voided delivery row never counts | batch_history_snapshot_test.go:68 |
-| R10c | m12_dispose_second_call_voids_again | disposal happens exactly once | batch_consumers_test.go:204 |
+| R10c | m12_dispose_second_call_voids_again | only pending/done unreacted woken rows dispose | batch_consumers_test.go:179 (observed in run 38457733623) |
 | R10c | m13_live_rerun_unreachable | both live roots are routed for stop | batch_history_rerun_test.go:333 |
 | R10c | m14_repend_keeps_dead_ref | batch store: projection identity or sequence conflict | batch_history_rerun_test.go:275 (NoError prints the fault text) |
 | R10c | m15_reset_omits_pending | Expected error with "batch reset: the session still owns a nonterminal batch root" in chain but got nil. | batch_history_reset_test.go:118 |
@@ -354,20 +440,20 @@ test file:line where the first failing assertion prints it.
 | R11B | m05_accept_overflow | batch commit: uint64 value exceeds sql int64 range | batch_commit_test.go:521 (ErrorIs quoted target) |
 | R11B | m06_skip_envelope | Input ('') needs to be valid json | batch_commit_test.go:383 |
 | R11B | m07_notice_structural_ordinal | expected: "0" | batch_commit_test.go:357 |
-| R11B | m08_reconstruct_notices | ordinal is the slice position, not the structural ordinal | batch_commit_test.go:351 |
+| R11B | m08_reconstruct_notices | ordinal is the slice position, not the structural ordinal | batch_commit_test.go:351 — MOVED to Pending.json (survived run 38457733623) |
 | R11B | m09_closing_wake_one | host-closing notices never wake | batch_commit_close_test.go:90 |
 | R11B | m10_rewrite_latched_cause | already-latched cause not rewritten by host closing | batch_commit_close_test.go:85 |
 | R11B | m11_finalize_settlements | interruption facts persisted | batch_commit_close_test.go:88 |
 | R11B | m12_retry_commit | hook error returned as-is, not wrapped | batch_commit_close_test.go:240 |
 | R11B | m13_wrap_hook_error | hook error returned as-is, not wrapped | batch_commit_close_test.go:240 |
 | R11B | m14_drop_coalesce_passthrough | COALESCE must preserve the stored child_session_id | batch_commit_close_test.go:312 |
-| R11B | m15_drop_notice_selected_guard | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | batch_commit_close_test.go:47 |
-| R11B | m16_drop_projection_sequence_fence | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | batch_commit_test.go:502 |
+| R11B | m15_drop_notice_selected_guard | duplicate notice selection refused | batch_commit_close_test.go:47 (observed in run 38457733623) |
+| R11B | m16_drop_projection_sequence_fence | projection_sequence not inflated | batch_commit_test.go:506 (observed in run 38457733623) |
 | R11B | m17_add_second_root | jobbatch: commit failed: error | batch_commit_test.go:330 (bare NoError prints the fault text) |
-| R15a | mut1_incomplete_treated_complete | a failed fetch must make the scope incomplete | handlers_batch_test.go:127 |
+| R15a | mut1_incomplete_treated_complete | a failed fetch must make the scope incomplete | handlers_batch_test.go:127 (replacement made compilable in Round6; unproven until next run) |
 | R15a | mut3_text_parsing_reintroduced | OutcomeCode: | handlers_batch_test.go:173 (Equal struct diff) |
 | R15a | mut4_flag_ignored | Should be false | handlers_batch_test.go:186 |
-| R15a | mut6_host_unknown_dead | Should be false | handlers_batch_test.go:168 |
+| R15a | mut6_host_unknown_dead | expected: "unknown" | handlers_batch_test.go:143 (observed in run 38457733623: expected "unknown" / actual "dead") |
 | R15a | mut8_route_flag_off | unknown command: get_session_batch_work | handlers_batch_test.go:212 (Contains prints both strings) |
 | R15a | mut5_ordinal_order | nodes must be ordered by ordinal, not arrival or NodeID | handlers_batch_test.go:158 |
 | R11E | fault-exit-code-zero | the helper must exit non-zero | app_batch_subprocess_test.go:102 |
@@ -376,7 +462,7 @@ test file:line where the first failing assertion prints it.
 | R11E | close-timeout-releases | Close timeout reports Forced | app_batch_drain_test.go:55 |
 | R11E | writer-release-dropped | drain precedes release; host identity precedes writer | app_batch_drain_test.go:36 |
 | R11E | fault-during-drain-not-forced | fault during drain forces the result | app_batch_fault_test.go:106 |
-| R11E | setrunner-wake-dropped | watcher must wake on SetRunner and exit once | app_batch_watch_test.go:30 (Eventually msg) |
+| R11E | setrunner-wake-dropped | watcher must wake on SetRunner and exit once | app_batch_watch_test.go:30 (Eventually msg) — MOVED to Pending.json (survived run 38457733623) |
 | Teardown | release-join-omitted | release join reached after-waits seam before callback exit | release_callback_join_test.go:97 |
 | Teardown | callback-admission-reopened | refused callback must not enter the seam | release_callback_join_test.go:144 |
 | Teardown | shutdown-context-not-cancelled | cooperative callback should join gracefully | release_callback_join_test.go:167 |

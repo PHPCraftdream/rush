@@ -11,7 +11,7 @@
       "package": "internal/agent",
       "test": "TestBatchAgentScopeWaitsForTurnAndDescendants",
       "purpose": "Report before the turn and descendants close; assertion from batchAgentTestNoReport in batch_exec_agent_test.go.",
-      "expected_assertion": "scope reported while the turn loop runs"
+      "expected_assertion": "scope reported while descendants are live"
     },
     {
       "id": "rc2_report_twice",
@@ -77,7 +77,7 @@
       "package": "internal/agent",
       "test": "TestBatchAgentStopAckDoesNotSettle",
       "purpose": "Bypass closure wait; first NoReport assertion catches premature settlement before Stop.",
-      "expected_assertion": "scope reported while descendants are still live after the ack"
+      "expected_assertion": "scope reported while descendants are live before the stop"
     },
     {
       "id": "rc7_wrong_depth",
