@@ -191,14 +191,14 @@ func watcherParkedInSelect() bool {
 	// runtime.Stack hides runtime-internal frames (selectgo), but each
 	// goroutine block header carries its wait state: "goroutine N [select]:".
 	for _, block := range strings.Split(allStacks(), "\n\n") {
-		if strings.Contains(block, "BatchRuntime).watchFaults") && strings.Contains(firstLine(block), "[select") {
+		if strings.Contains(block, "BatchRuntime).watchFaults") && strings.Contains(stackBlockHeader(block), "[select") {
 			return true
 		}
 	}
 	return false
 }
 
-func firstLine(s string) string {
+func stackBlockHeader(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
 }
