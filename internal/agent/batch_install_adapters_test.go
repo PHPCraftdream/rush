@@ -53,8 +53,10 @@ func installTestDeps(t *testing.T, store *session.BatchStore, conn *sql.DB, cont
 		Store: store, Messages: message.NewService(db.New(conn)),
 		Executor: installFakeExecutor{content: content}, DonePoll: time.Millisecond,
 		// R11F round-2 (P1-7 item 6): jobbatch.NewRunner fails closed on zero
-		// budgets (runner.go newRunnerWithClockAndHooks), so every adapter
-		// test needs positive budgets or it aborts before its assertions.
+		// budgets AND on zero limits (engine.go validate), so every adapter
+		// test needs positive limits and budgets or it aborts before its
+		// assertions.
+		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	}
 }

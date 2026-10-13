@@ -119,6 +119,8 @@ func newBatchP1Env(t *testing.T, leaf fantasy.AgentTool, extraLeaves ...fantasy.
 		Messages: message.NewService(q),
 		// R11F P1-1: NO Owner — the commit hook resolves it per invocation
 		// from the spec payload; Owner=host would be an FK violation.
+		// Round-2 P1-7 item 6: NewRunner also fails closed on zero limits.
+		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	})
 	if err != nil {
@@ -298,6 +300,7 @@ func TestBatchLoadDoneWithoutLiveHandle(t *testing.T) {
 		Host: "host-2", RunnerID: "runner-2",
 		Profile: profile, Registries: env.registries,
 		Store: env.store, Messages: message.NewService(env.q),
+		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	})
 	if err != nil {
@@ -401,10 +404,43 @@ func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 	if bridgeA == nil || bridgeB == nil {
 		t.Fatalf("stamped invocations must each get a bridge (A=%v B=%v)", bridgeA, bridgeB)
 	}
-	// P1-4: the two invocations resolve DISTINCT registries — a bridge bound
-	// to the latest registry would return the same (last-pinned) bridge.
-	if bridgeA == bridgeB {
-		t.Fatalf("both invocations resolved the SAME bridge: latest-registry contamination")
+	callA := fantasy.ToolCall{ID: "c-a1", Name: "view", Input: `{}`}
+	callB := fantasy.ToolCall{ID: "c-b1", Name: "view", Input: `{}`}
+	// Interleaved: A, B, A — each call must cross the authority with the
+	// bridge's OWN registry identity and run ITS OWN leaf; P1-4: a bridge
+	// bound to the latest registry would route A's second call to reg-B.
+	resp, err := bridgeA.Call(context.Background(), callA)
+	if err != nil || resp.Content != "ok" {
+		t.Fatalf("A call 1: resp %q err %v", resp.Content, err)
+	}
+	if got := fake.lastInvocation().RegistryID; got != "reg-A" {
+		t.Fatalf("A call 1 crossed the authority as registry %q, want reg-A", got)
+	}
+	resp, err = bridgeB.Call(context.Background(), callB)
+	if err != nil || resp.Content != "ok" {
+		t.Fatalf("B call 1: resp %q err %v", resp.Content, err)
+	}
+	if got := fake.lastInvocation().RegistryID; got != "reg-B" {
+		t.Fatalf("B call 1 crossed the authority as registry %q, want reg-B (cross-contamination)", got)
+	}
+	resp, err = bridgeA.Call(context.Background(), callA)
+	if err != nil || resp.Content != "ok" {
+		t.Fatalf("A call 2: resp %q err %v", resp.Content, err)
+	}
+	if got := fake.lastInvocation().RegistryID; got != "reg-A" {
+		t.Fatalf("A call 2 crossed the authority as registry %q, want reg-A (latest-registry contamination)", got)
+	}
+	if got := fake.callsFor("reg-A"); got != 2 {
+		t.Fatalf("reg-A crossed %d times, want 2", got)
+	}
+	if got := fake.callsFor("reg-B"); got != 1 {
+		t.Fatalf("reg-B crossed %d times, want 1", got)
+	}
+	if got := leafA.runCount(); got != 2 {
+		t.Fatalf("reg-A leaf ran %d times, want 2", got)
+	}
+	if got := leafB.runCount(); got != 1 {
+		t.Fatalf("reg-B leaf ran %d times, want 1", got)
 	}
 	if got := coordinatorBridgeFallback(context.Background()); got != nil {
 		t.Fatalf("unstamped context must keep the legacy no-bridge behaviour, got %v", got)
@@ -415,11 +451,40 @@ func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 }
 
 // bridgeTestIngress is a minimal BatchWorkIngress over a real registry store
-// for the bridge test (only Registry/PinLeafRegistry are exercised).
-type bridgeTestIngress struct{ registries *BatchLeafRegistryStore }
+// for the bridge test. It records the LAST invocation (with its RegistryID)
+// and a per-registry call count under a mutex, and RUNS the leaf so bridge
+// calls produce real responses.
+type bridgeTestIngress struct {
+	registries *BatchLeafRegistryStore
 
-func (f *bridgeTestIngress) Invoke(context.Context, BatchInvocation, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	return fantasy.ToolResponse{}, nil
+	mu      sync.Mutex
+	invokes int
+	last    BatchInvocation
+	perReg  map[string]int
+}
+
+func (f *bridgeTestIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	f.mu.Lock()
+	f.invokes++
+	f.last = inv
+	if f.perReg == nil {
+		f.perReg = make(map[string]int)
+	}
+	f.perReg[inv.RegistryID]++
+	f.mu.Unlock()
+	return leaf.Run(ctx, call)
+}
+
+func (f *bridgeTestIngress) lastInvocation() BatchInvocation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last
+}
+
+func (f *bridgeTestIngress) callsFor(registryID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.perReg[registryID]
 }
 
 func (f *bridgeTestIngress) PinLeafRegistry(r *BatchLeafRegistry) (string, error) {

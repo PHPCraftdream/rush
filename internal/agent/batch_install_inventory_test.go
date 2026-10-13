@@ -23,6 +23,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -122,6 +123,8 @@ func newBatchInventoryEnv(t *testing.T, tool string, opts ...func(*BatchInstallD
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
 		Profile: profile, Registries: registries,
 		Store: session.NewBatchStore(conn), Messages: message.NewService(q),
+		// Round-2 P1-7 item 6: NewRunner fails closed on zero limits.
+		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	}
 	for _, opt := range opts {

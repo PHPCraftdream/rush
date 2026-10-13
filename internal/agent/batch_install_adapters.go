@@ -411,14 +411,27 @@ func InstallBatchRuntime(ctx context.Context, deps BatchInstallDeps) (*BatchInst
 const batchDormantInstallOwner = "batch-install:per-invocation-owner"
 
 // batchCommitOwnerFor is the P1-1 OwnerFor resolver: the INVOKING session
-// carried in the one-item spec payload (batchLeafPayload.SessionID). An
-// unparseable spec keeps the dormant default (the commit hook falls back).
+// carried in the one-item spec payload (batchLeafPayload.SessionID). The
+// runner adapter submits jobbatch.OneItem(*req.Spec.Task) — a BATCH-root
+// spec (OneItem: Mode parallel, NotifyAll, Items=[{Task}]) whose task rides
+// in spec.Batch.Items[0].Task — so the resolver walks the batch items too.
+// An unparseable spec (or a spec with neither shape) keeps the dormant
+// default: the commit hook falls back and the fixed/dormant Owner applies.
 func batchCommitOwnerFor(spec jobbatch.Spec) string {
-	if spec.Task == nil {
+	task := spec.Task
+	if task == nil && spec.Batch != nil {
+		for i := range spec.Batch.Items {
+			if spec.Batch.Items[i].Task != nil {
+				task = spec.Batch.Items[i].Task
+				break
+			}
+		}
+	}
+	if task == nil {
 		return ""
 	}
 	var p batchLeafPayload
-	if err := json.Unmarshal(spec.Task.Payload, &p); err != nil {
+	if err := json.Unmarshal(task.Payload, &p); err != nil {
 		return ""
 	}
 	return p.SessionID

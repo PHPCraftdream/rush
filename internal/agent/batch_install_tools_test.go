@@ -271,15 +271,21 @@ func TestNoRawAgentFamilyFactory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if strings.Contains(string(src), "batchAgentDeps{}") {
-			t.Fatalf("%s: production code constructs a zero-deps (raw) batch agent family", name)
-		}
 		for _, line := range strings.Split(string(src), "\n") {
-			if !strings.Contains(line, "newBatchExecutorFamilies(") {
+			trimmed := strings.TrimSpace(line)
+			// Narrow to CODE: comment lines are prose, and the constructor's
+			// own declaration line names the parameter, not the wiring.
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "func ") {
 				continue
 			}
-			if !strings.Contains(line, "AgentDeps") && !strings.Contains(line, "CoordinatorBatchAgentDeps") {
-				t.Fatalf("%s: newBatchExecutorFamilies call site does not derive its deps from the flagged wiring: %s", name, strings.TrimSpace(line))
+			if strings.Contains(trimmed, "batchAgentDeps{}") {
+				t.Fatalf("%s: production code constructs a zero-deps (raw) batch agent family: %s", name, trimmed)
+			}
+			if !strings.Contains(trimmed, "newBatchExecutorFamilies(") {
+				continue
+			}
+			if !strings.Contains(trimmed, "AgentDeps") && !strings.Contains(trimmed, "CoordinatorBatchAgentDeps") {
+				t.Fatalf("%s: newBatchExecutorFamilies call site does not derive its deps from the flagged wiring: %s", name, trimmed)
 			}
 		}
 	}
@@ -301,7 +307,10 @@ func TestAgentDriverRunsPinnedLeaf(t *testing.T) {
 	deps := CoordinatorBatchAgentDeps()
 	turn, err := deps.Runs.StartAgentTurn(batchCallCtx("sess-1"), batchAgentRunRequest{
 		NodeID: "n1", Token: 1, SessionID: "child-1", ToolCallID: "call-a",
-		Input: []byte(`{"prompt":"hi"}`), RegistryID: "reg-1", MessageID: "msg-1",
+		// Round-2 P1-3: the driver fails closed on an empty Tool — dispatch
+		// is by the RECORDED tool name.
+		Tool: AgentToolName, Input: []byte(`{"prompt":"hi"}`),
+		RegistryID: "reg-1", MessageID: "msg-1",
 	}, batchAgentHost{})
 	if err != nil {
 		t.Fatalf("StartAgentTurn: %v", err)
@@ -373,7 +382,10 @@ func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 		t.Fatalf("generic kind %q", got)
 	}
 
-	bridge := coordinatorBridgeFallback(context.Background())
+	// P1-4: the fallback resolves a bridge ONLY from a STAMPED invocation —
+	// stamp the context with the pinned registry the binding just pinned.
+	stamped := withBatchBridgeInvocation(batchCallCtx("sess-1"), batchBridgeInvocation{RegistryID: "reg-1", MessageID: "msg-1"})
+	bridge := coordinatorBridgeFallback(stamped)
 	if bridge == nil {
 		t.Fatal("bridge fallback nil with a live binding")
 	}

@@ -56,9 +56,14 @@ func TestBatchRuntimeFactoryBuildDormant(t *testing.T) {
 	rt, install, err := factory.build(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(rt.Stop)
-	require.NotNil(t, rt.Runner(), "the runner is attached")
+	// R11F P1-6: the deferred install keeps NO Runner at build — the Runner
+	// is constructed at BatchRuntime.Start through the RunnerFactory.
+	require.Nil(t, rt.Runner(), "dormant build constructs no Runner")
 	require.False(t, rt.Fenced(), "dormant build is not fenced")
 	require.NotNil(t, install.Runtime)
 	require.NotNil(t, install.Delivery)
 	require.NotNil(t, install.NoticePull)
+	rt.Start()
+	t.Cleanup(rt.Stop)
+	require.NotNil(t, rt.Runner(), "Start constructs the Runner (P1-6 RunnerFactory)")
 }
