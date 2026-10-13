@@ -240,7 +240,8 @@ type Querier interface {
 	// computed over a fraction of it.
 	CountMessagesMissingUsageInRange(ctx context.Context, arg CountMessagesMissingUsageInRangeParams) (int64, error)
 	CountSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error)
-	// The FK binds the request to the node's owner, host and root incarnation.
+	// The FK binds the request to the node's owner, host and root incarnation;
+	// runner_id copies the owning node's incarnation so answers are fenced.
 	CreateBatchControlRequest(ctx context.Context, arg CreateBatchControlRequestParams) (BatchControlRequest, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
@@ -398,6 +399,11 @@ type Querier interface {
 	GetBatchControlRequest(ctx context.Context, arg GetBatchControlRequestParams) (BatchControlRequest, error)
 	GetBatchNode(ctx context.Context, arg GetBatchNodeParams) (BatchNode, error)
 	GetBatchRoot(ctx context.Context, arg GetBatchRootParams) (BatchNode, error)
+	// Queries for the R11B CommitHook adapter and Runner incarnation fencing.
+	// New queries only; shared node/control statements stay in their own files.
+	// Resolve the owner of any projected root, including roots this Runner only
+	// touches through admission; the caller fences host and incarnation itself.
+	GetBatchRootIdentity(ctx context.Context, rootID string) (GetBatchRootIdentityRow, error)
 	// call_tree_activity.sql: freshest message activity across a session's whole
 	// descendant call tree (root + every sub-agent session reachable via
 	// parent_session_id), in ONE recursive-CTE query per root.
@@ -813,6 +819,8 @@ type Querier interface {
 	// a linked process to a due moment it can never claim either.
 	NextDueWakeScheduleAt(ctx context.Context, arg NextDueWakeScheduleAtParams) (interface{}, error)
 	// Projects the loop's accepted view, not a competing terminal-state decision.
+	// COALESCE preserves envelope, reference and child-session facts written by
+	// earlier events; the caller passes NULL to keep the current value.
 	ProjectBatchNode(ctx context.Context, arg ProjectBatchNodeParams) (int64, error)
 	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
 	// caller does this, then INSERTs the history message, then stores
@@ -1091,6 +1099,9 @@ type Querier interface {
 	// predicate below is a no-op for them (always matches whatever is already
 	// there) and their pre-A11 "any running row matches" behavior is unchanged.
 	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
+	// Rootless lifecycle checkpoint for one (host, incarnation). Lower or equal
+	// sequences are ignored; 0 is never written (Runner sequences start at 1).
+	UpdateBatchRunnerCheckpoint(ctx context.Context, arg UpdateBatchRunnerCheckpointParams) (int64, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
 	// which was true for the normal case (the row exists, one row updates) but

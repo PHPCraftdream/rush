@@ -294,6 +294,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getBatchRootStmt, err = db.PrepareContext(ctx, getBatchRoot); err != nil {
 		return nil, fmt.Errorf("error preparing query GetBatchRoot: %w", err)
 	}
+	if q.getBatchRootIdentityStmt, err = db.PrepareContext(ctx, getBatchRootIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchRootIdentity: %w", err)
+	}
 	if q.getCallTreeActivityStmt, err = db.PrepareContext(ctx, getCallTreeActivity); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCallTreeActivity: %w", err)
 	}
@@ -647,6 +650,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.transitionAsyncJobTerminalPreserveVoidStmt, err = db.PrepareContext(ctx, transitionAsyncJobTerminalPreserveVoid); err != nil {
 		return nil, fmt.Errorf("error preparing query TransitionAsyncJobTerminalPreserveVoid: %w", err)
+	}
+	if q.updateBatchRunnerCheckpointStmt, err = db.PrepareContext(ctx, updateBatchRunnerCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateBatchRunnerCheckpoint: %w", err)
 	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
@@ -1155,6 +1161,11 @@ func (q *Queries) Close() error {
 	if q.getBatchRootStmt != nil {
 		if cerr := q.getBatchRootStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getBatchRootStmt: %w", cerr)
+		}
+	}
+	if q.getBatchRootIdentityStmt != nil {
+		if cerr := q.getBatchRootIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchRootIdentityStmt: %w", cerr)
 		}
 	}
 	if q.getCallTreeActivityStmt != nil {
@@ -1747,6 +1758,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing transitionAsyncJobTerminalPreserveVoidStmt: %w", cerr)
 		}
 	}
+	if q.updateBatchRunnerCheckpointStmt != nil {
+		if cerr := q.updateBatchRunnerCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateBatchRunnerCheckpointStmt: %w", cerr)
+		}
+	}
 	if q.updateMessageStmt != nil {
 		if cerr := q.updateMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateMessageStmt: %w", cerr)
@@ -1966,6 +1982,7 @@ type Queries struct {
 	getBatchControlRequestStmt                           *sql.Stmt
 	getBatchNodeStmt                                     *sql.Stmt
 	getBatchRootStmt                                     *sql.Stmt
+	getBatchRootIdentityStmt                             *sql.Stmt
 	getCallTreeActivityStmt                              *sql.Stmt
 	getCallTreeActivityBatchStmt                         *sql.Stmt
 	getFileStmt                                          *sql.Stmt
@@ -2084,6 +2101,7 @@ type Queries struct {
 	takeOverSessionDriverStmt                            *sql.Stmt
 	terminalFailRunQueueEntryStmt                        *sql.Stmt
 	transitionAsyncJobTerminalPreserveVoidStmt           *sql.Stmt
+	updateBatchRunnerCheckpointStmt                      *sql.Stmt
 	updateMessageStmt                                    *sql.Stmt
 	updateMessageIfNotTerminalStmt                       *sql.Stmt
 	updateMessagePinnedStmt                              *sql.Stmt
@@ -2198,6 +2216,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getBatchControlRequestStmt:                           q.getBatchControlRequestStmt,
 		getBatchNodeStmt:                                     q.getBatchNodeStmt,
 		getBatchRootStmt:                                     q.getBatchRootStmt,
+		getBatchRootIdentityStmt:                             q.getBatchRootIdentityStmt,
 		getCallTreeActivityStmt:                              q.getCallTreeActivityStmt,
 		getCallTreeActivityBatchStmt:                         q.getCallTreeActivityBatchStmt,
 		getFileStmt:                                          q.getFileStmt,
@@ -2316,6 +2335,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		takeOverSessionDriverStmt:                            q.takeOverSessionDriverStmt,
 		terminalFailRunQueueEntryStmt:                        q.terminalFailRunQueueEntryStmt,
 		transitionAsyncJobTerminalPreserveVoidStmt:           q.transitionAsyncJobTerminalPreserveVoidStmt,
+		updateBatchRunnerCheckpointStmt:                      q.updateBatchRunnerCheckpointStmt,
 		updateMessageStmt:                                    q.updateMessageStmt,
 		updateMessageIfNotTerminalStmt:                       q.updateMessageIfNotTerminalStmt,
 		updateMessagePinnedStmt:                              q.updateMessagePinnedStmt,

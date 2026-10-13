@@ -74,7 +74,7 @@ func (q *Queries) BatchHistoryRependNodesByDeletedNoticeMessages(ctx context.Con
 }
 
 const batchHistoryRootsForOwner = `-- name: BatchHistoryRootsForOwner :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND node_id = root_id
 ORDER BY created_at, root_id
 `
@@ -148,6 +148,8 @@ func (q *Queries) BatchHistoryRootsForOwner(ctx context.Context, owner string) (
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -247,7 +249,7 @@ func (q *Queries) BatchListBoundNoticesByToolCallID(ctx context.Context, arg Bat
 }
 
 const batchRerunLiveRootsByAnnounceMessageIDs = `-- name: BatchRerunLiveRootsByAnnounceMessageIDs :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND node_id = root_id
   AND state IN ('pending', 'starting', 'running', 'cancelling')
   AND announce_message_id IN (/*SLICE:message_ids*/?)
@@ -342,6 +344,8 @@ func (q *Queries) BatchRerunLiveRootsByAnnounceMessageIDs(ctx context.Context, a
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -357,7 +361,7 @@ func (q *Queries) BatchRerunLiveRootsByAnnounceMessageIDs(ctx context.Context, a
 }
 
 const batchRerunLiveRootsByToolCallIDs = `-- name: BatchRerunLiveRootsByToolCallIDs :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND node_id = root_id
   AND state IN ('pending', 'starting', 'running', 'cancelling')
   AND announce_message_id IS NULL
@@ -450,6 +454,8 @@ func (q *Queries) BatchRerunLiveRootsByToolCallIDs(ctx context.Context, arg Batc
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -572,7 +578,7 @@ UPDATE batch_nodes SET delivery = 'void', wake = 0, updated_at = ?1
 WHERE owner_session_id = ?2 AND node_id = root_id
   AND notice_selected = 1 AND delivery != 'void'
   AND announce_message_id IN (/*SLICE:message_ids*/?)
-RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type BatchRerunVoidRootsByAnnounceMessageIDsParams struct {
@@ -662,6 +668,8 @@ func (q *Queries) BatchRerunVoidRootsByAnnounceMessageIDs(ctx context.Context, a
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -681,7 +689,7 @@ UPDATE batch_nodes SET delivery = 'void', wake = 0, updated_at = ?1
 WHERE owner_session_id = ?2 AND node_id = root_id
   AND notice_selected = 1 AND delivery != 'void' AND announce_message_id IS NULL
   AND tool_call_id IN (/*SLICE:tool_call_ids*/?)
-RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type BatchRerunVoidRootsByToolCallIDsParams struct {
@@ -771,6 +779,8 @@ func (q *Queries) BatchRerunVoidRootsByToolCallIDs(ctx context.Context, arg Batc
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
