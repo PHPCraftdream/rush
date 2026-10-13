@@ -41,7 +41,8 @@ import {
   trackMessageParts,
 } from "./store";
 import { applyLiveWorkSnapshot, sendGetSessionLiveWork, isLiveWorkRequestID, applyWakeSchedulesSnapshot, sendGetSessionWakeSchedules, isWakeSchedulesGetRequestID, isWakeSchedulesCancelRequestID, $wakeScheduleCancelError } from "./store_livework";
-import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload, SessionWakeSchedulesPayload } from "./types";
+import { applyBatchWorkSnapshot } from "./batchWork";
+import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload, SessionWakeSchedulesPayload, BatchWorkSnapshot } from "./types";
 import { isKeepAliveRunning, startKeepAlive, stopKeepAlive, installKeepAliveAutoResume } from "./keepAlive";
 import { installSitterAutoRestore } from "./sitter";
 
@@ -462,6 +463,13 @@ export function useWS() {
       // cancel_wake_schedule -- keyed by its own sessionID field.
       ws.on("session_wake_schedules", (msg: WSMessage) => {
         applyWakeSchedulesSnapshot(msg.payload as SessionWakeSchedulesPayload);
+      }),
+
+      // Batch work (R15a): structured batch-node snapshots. Harmless no-op
+      // when the server runs with RUSH_BATCH_RUNTIME off -- the event
+      // simply never arrives.
+      ws.on("session_batch_work", (msg: WSMessage) => {
+        applyBatchWorkSnapshot(msg.payload as BatchWorkSnapshot);
       }),
 
       ws.on("error", (msg: WSMessage) => {

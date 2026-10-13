@@ -151,6 +151,15 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	case CmdGetSessionLiveWork:
 		c.dispatch("handleGetSessionLiveWork", msg.ID, func() { handleGetSessionLiveWork(ctx, a, c, msg) })
+	case CmdGetSessionBatchWork:
+		// R15a: route exists ONLY when the inert batch runtime is on --
+		// flag off must behave exactly as if the case were absent.
+		if batchRuntimeEnabled() {
+			c.dispatch("handleGetSessionBatchWork", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })
+		} else {
+			slog.Debug("ws: unknown command", "type", msg.Type)
+			c.reply(msg.ID, EventError, nil, "unknown command: "+msg.Type)
+		}
 	case CmdGetSessionWakeSchedules:
 		c.dispatch("handleGetSessionWakeSchedules", msg.ID, func() { handleGetSessionWakeSchedules(ctx, a, c, msg) })
 	case CmdCancelWakeSchedule:

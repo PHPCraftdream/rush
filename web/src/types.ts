@@ -299,6 +299,80 @@ export interface SessionLiveWorkPayload {
   agents: LiveWorkItem[];
 }
 
+// ─── Batch work (R15a, inert unless RUSH_BATCH_RUNTIME is on) ───────────────
+//
+// Structured batch-node wire, mirroring internal/server/handlers_batch.go's
+// BatchWorkSnapshotWire (v: 1). Consumed by web/src/batchWork.ts. No UI
+// component renders these yet (R15b).
+
+export interface BatchWorkCounts {
+  pending: number;
+  starting: number;
+  running: number;
+  cancelling: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  timed_out: number;
+  interrupted: number;
+  skipped: number;
+  active: number;
+}
+
+export interface BatchWorkDelivery {
+  selected: number;
+  pending: number;
+  delivered: number;
+}
+
+export interface BatchWorkNode {
+  nodeID: string;
+  parentID: string;
+  kind: string;
+  taskKind: string;
+  toolCallID: string;
+  state: string;
+  cause: string;
+  ordinal: number;
+  depth: number;
+  childSessionID: string;
+  host: string;
+  outcomeCode: string;
+  outcomeSummary: string;
+  outcomeRef: string;
+}
+
+export interface BatchWorkRoot {
+  rootID: string;
+  ownerSessionID: string;
+  toolCallID: string;
+  kind: string;
+  taskKind: string;
+  state: string;
+  cause: string;
+  startedAt: number;
+  host: string;
+  complete: boolean;
+  counts: BatchWorkCounts;
+  delivery: BatchWorkDelivery;
+  nodes: BatchWorkNode[];
+}
+
+export interface BatchWorkCompletion {
+  rootID: string;
+  nodeID: string;
+  outcomeCode: string;
+  outcomeRef: string;
+}
+
+export interface BatchWorkSnapshot {
+  v: number;
+  sessionID: string;
+  complete: boolean;
+  roots: BatchWorkRoot[];
+  completions: BatchWorkCompletion[];
+}
+
 // ─── Wake schedules panel (stage 5b) ────────────────────────────────────────
 //
 // One wake_schedules row, sourced from internal/server/protocol.go's
