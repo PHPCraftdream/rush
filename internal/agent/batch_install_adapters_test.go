@@ -180,14 +180,23 @@ func TestBatchStoreDoneSourceLoadDoneProjection(t *testing.T) {
 	store, conn, ctx := newTestBatchStore(t)
 	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
 	require.NoError(t, err)
-	// Unsettled: no completion is reported.
+	// Unsettled/unknown root: no completion is reported (a missing root row
+	// maps to ok=false, never sql.ErrNoRows — see
+	// BatchDeliveryOneItemCompletion in internal/session/batch_adapters.go).
 	_, ok, err := install.Done.LoadDone(ctx, "owner", "root-none")
 	require.NoError(t, err)
 	require.False(t, ok)
 	root := installSubmit(t, install, installOneItemSpec(t, ""))
-	_, ok, err = install.Done.LoadDone(ctx, "owner", root)
+	// Submit acknowledgement does not await settlement (the runner applies
+	// EventSettled asynchronously), so wait for the REAL completion first —
+	// only then can LoadDone find the persisted envelope.
+	resp, ok, err := install.Done.AwaitDone(ctx, "owner", root)
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, ok, err := install.Done.LoadDone(ctx, "owner", root)
 	require.NoError(t, err)
 	require.True(t, ok, "settled root reports its envelope")
+	require.Equal(t, resp, got, "LoadDone projects the same settled envelope")
 }
 
 func TestBatchStoreDoneSourceForeignRootWaitsDurably(t *testing.T) {

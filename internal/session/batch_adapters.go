@@ -101,6 +101,20 @@ func batchProbeHashMatches(live db.BatchNode, children []db.BatchNode, hash stri
 func (s *BatchStore) BatchDeliveryOneItemCompletion(ctx context.Context, owner, root string) (BatchDeliveryEnvelope, bool, error) {
 	snap, err := s.Read(ctx, owner, root)
 	if err != nil {
+		// A root row that does not exist (yet, or ever — e.g. a foreign or
+		// unknown root) is "no persisted completion", NOT an error: the
+		// batchDoneSource contract (batch_delivery.go LoadDone) reads a
+		// persisted completion without waiting and reports ok=false when
+		// none exists, and AwaitDone's durable poll must keep waiting on
+		// such a root until ctx cancel instead of treating it as terminal.
+		// This no-rows error can only originate from the FIRST query of
+		// batchSnapshot (GetBatchRoot, a :one query on the root row,
+		// batch_nodes.sql); the second query (ListBatchNodes) is :many and
+		// returns an empty slice, never sql.ErrNoRows. So errors.Is
+		// sql.ErrNoRows here unambiguously means "root row absent".
+		if errors.Is(err, sql.ErrNoRows) {
+			return BatchDeliveryEnvelope{}, false, nil
+		}
 		return BatchDeliveryEnvelope{}, false, err
 	}
 	if e, ok, err := batchDeliveryEnvelopeOf(snap.Root); ok || err != nil {
