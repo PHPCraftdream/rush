@@ -44,10 +44,17 @@ func batchWebDrain(ctx context.Context, pull batchNoticePull, cap time.Duration)
 		n, err := pull.Pull(ctl)
 		done <- drainOutcome{n, err}
 	}()
+	// A caller already cancelled before the pull started is not "gone
+	// mid-wait": the pull still drains, bounded by its own cap. Only a
+	// cancellation that arrives while waiting stops the wait.
+	callerGone := ctx.Done()
+	if ctx.Err() != nil {
+		callerGone = nil
+	}
 	select {
 	case o := <-done:
 		return o.n, o.err
-	case <-ctx.Done():
+	case <-callerGone:
 		// Caller gone: stop waiting. The pull keeps its own bound.
 		return 0, ctx.Err()
 	case <-ctl.Done():
