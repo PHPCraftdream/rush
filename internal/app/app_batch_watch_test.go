@@ -12,15 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWatcherWakesOnSetRunnerAfterStart: Start while dormant, SetRunner
-// later, then a fault — the watcher must wake on runnerSet and exit 70
-// exactly once after the injected containment wait.
+// TestWatcherWakesOnSetRunnerAfterStart: Start while dormant, wait until the
+// watcher is parked in the dormant select, SetRunner, then a fault — the
+// watcher must wake on runnerSet and exit 70 exactly once after the injected
+// containment wait.
 func TestWatcherWakesOnSetRunnerAfterStart(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, nil) // dormant: no runner yet
 	rt.Start()
 	defer rt.Stop()
+
+	// Park the watcher in the dormant branch first: without this, SetRunner
+	// right after Start races the watcher's first top-of-loop re-read, and a
+	// dropped runnerSet wake is unobservable. With no Runner attached the
+	// live fault select is unreachable, so "parked in a select" means
+	// "parked in the dormant runnerSet select".
+	require.Eventually(t, watcherParkedInSelect, 5*time.Second, time.Millisecond,
+		"watcher must park in the dormant select before SetRunner")
 
 	rt.SetRunner(runner)
 	require.Equal(t, runner, rt.Runner())
