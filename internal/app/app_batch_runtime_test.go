@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -152,15 +153,28 @@ func newTestRuntime(t *testing.T, runner *fakeRunner) (*BatchRuntime, *exitRecor
 }
 
 // TestBatchRuntimeConstructionHasNoGoroutines proves construction has no
-// side effects: no watcher goroutine, no releases, no exit.
+// side effects: no watcher goroutine, no releases, no exit. It counts only
+// the runtime's own watcher goroutines (by stack), not process-wide ones, and
+// is not parallel: other tests' goroutines start and exit around it.
 func TestBatchRuntimeConstructionHasNoGoroutines(t *testing.T) {
-	t.Parallel()
-	before := numGoroutine()
+	before := watcherGoroutines()
 	rt := NewBatchRuntime(BatchRuntimeConfig{})
-	require.Equal(t, before, numGoroutine(), "construction must not start goroutines")
+	require.Equal(t, before, watcherGoroutines(), "construction must not start goroutines")
 	require.Nil(t, rt.Runner(), "dormant runtime has no Runner")
 	require.False(t, rt.Fenced(), "dormant runtime is not fenced")
 	require.Nil(t, rt.cfg.ReleaseWriter, "construction must not invent release hooks")
 }
 
-func numGoroutine() int { return runtime.NumGoroutine() }
+// watcherGoroutines counts goroutines currently inside the fault watcher.
+func watcherGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	return strings.Count(string(buf), "BatchRuntime).watchFaults")
+}
