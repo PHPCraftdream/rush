@@ -140,7 +140,7 @@ func TestBatchCommitFinalNoSyntheticSettlements(t *testing.T) {
 func TestBatchCommitCrossHostAttachRefused(t *testing.T) {
 	env := newCommitHookEnv(t)
 	spec := jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"})
-	r, _, ctx := commitHookRunner(t, env.adapter())
+	r, e, ctx := commitHookRunner(t, env.adapter())
 	commitHookSubmit(t, ctx, r, "r", spec, "call-r")
 	before := commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes")
 	_, err := env.store.ReserveIdentity(env.ctx, BatchReservation{
@@ -154,6 +154,10 @@ func TestBatchCommitCrossHostAttachRefused(t *testing.T) {
 	require.Equal(t, before, commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes"),
 		"no new work on foreign live host")
 	require.Zero(t, commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes WHERE node_id = 'r-b'"))
+	// The submitted root was never accepted; let the executor's Start return so
+	// the runner's drain can finish and the t.Cleanup close cannot hang.
+	a := commitHookReceive(t, env.ctx, e.starts)
+	a.decision <- commitHookDecision{exec: &commitHookExecution{}}
 }
 
 // Scenario 13: concurrent hooks of two stores on one DB serialize per root;

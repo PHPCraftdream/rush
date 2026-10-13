@@ -93,7 +93,11 @@ func commitHookRunner(t *testing.T, hook func(context.Context, jobbatch.Transiti
 		CommitHook: hook, CommitTimeout: 20 * time.Second,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer closeCancel()
+		_ = r.Close(closeCtx)
+	})
 	return r, e, ctx
 }
 
@@ -204,7 +208,7 @@ type commitHookNodeRow struct {
 func commitHookReadNode(t *testing.T, conn *sql.DB, node string) commitHookNodeRow {
 	t.Helper()
 	var r commitHookNodeRow
-	err := conn.QueryRow(`SELECT state, cause, control_state, control_error,
+	err := conn.QueryRowContext(context.Background(), `SELECT state, cause, control_state, control_error,
 		outcome_state, outcome_code, outcome_summary, token, attempts, control_pending,
 		ordinal, root_sequence, projection_sequence,
 		COALESCE(response_envelope,''), COALESCE(response_envelope_ref,''),
@@ -224,13 +228,13 @@ func commitHookReadNode(t *testing.T, conn *sql.DB, node string) commitHookNodeR
 func commitHookCount(t *testing.T, conn *sql.DB, query string, args ...any) int64 {
 	t.Helper()
 	var n int64
-	require.NoError(t, conn.QueryRow(query, args...).Scan(&n))
+	require.NoError(t, conn.QueryRowContext(context.Background(), query, args...).Scan(&n))
 	return n
 }
 
 func commitHookCheckpoint(t *testing.T, conn *sql.DB, runner string) (seq int64, eventType string, final int64) {
 	t.Helper()
-	require.NoError(t, conn.QueryRow(
+	require.NoError(t, conn.QueryRowContext(context.Background(),
 		`SELECT sequence, event_type, final FROM batch_runner_checkpoints WHERE runner_id = ?`,
 		runner).Scan(&seq, &eventType, &final))
 	return seq, eventType, final
