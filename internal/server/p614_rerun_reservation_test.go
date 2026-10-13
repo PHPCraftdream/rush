@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -445,6 +446,19 @@ func TestHandleRerunMessage_HeldReservationBlocksConcurrentSend(t *testing.T) {
 // ReserveExclusive call times out/fails because the session is permanently
 // stuck at mbOwned.
 func TestRunWithReservedOwnership_ModelResolutionFailureReleasesReservation(t *testing.T) {
+	runModelResolutionFailureScenario(t)
+}
+
+// TestRunWithReservedOwnership_TeardownStress repeats the scenario so a rare
+// teardown race (a DB goroutine outliving the app) reproduces within one CI
+// run. Diagnostic: not meant to be merged into the integration branch.
+func TestRunWithReservedOwnership_TeardownStress(t *testing.T) {
+	for i := range 60 {
+		t.Run(fmt.Sprintf("iter%02d", i), runModelResolutionFailureScenario)
+	}
+}
+
+func runModelResolutionFailureScenario(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := diagDataDir(t)
