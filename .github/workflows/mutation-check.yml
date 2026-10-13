@@ -22,6 +22,8 @@ jobs:
         shard:
           - { task: R7c, manifest: tools/mutation/R7c.json, i: 1, n: 2 }
           - { task: R7c, manifest: tools/mutation/R7c.json, i: 2, n: 2 }
+          - { task: R10b, manifest: tools/mutation/R10b.json, i: 1, n: 2 }
+          - { task: R10b, manifest: tools/mutation/R10b.json, i: 2, n: 2 }
           - { task: R10c, manifest: tools/mutation/R10c.json, i: 1, n: 2 }
           - { task: R10c, manifest: tools/mutation/R10c.json, i: 2, n: 2 }
           - { task: R11B, manifest: tools/mutation/R11B.json, i: 1, n: 2 }
@@ -40,7 +42,8 @@ jobs:
             go.sum
             tools/mutation/*.json
       - name: Record commit SHA
-        run: echo "Proved commit: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Proved commit: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Run mutation shard
         run: |
           set -o pipefail
