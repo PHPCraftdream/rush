@@ -22,11 +22,16 @@ const (
 
 // batchLeafPayload is the JSON carried in jobbatch.TaskSpec.Payload for every
 // kind. Input is the model's tool input exactly as the policy leaf expects it.
+// RegistryID and Policy are the R11C ingress transport: when set, leaf
+// resolution is keyed by the invocation's pinned registry identity, never by
+// session, and Policy carries the invocation's immutable executor context.
 type batchLeafPayload struct {
-	Tool       string          `json:"tool"`
-	ToolCallID string          `json:"tool_call_id"`
-	SessionID  string          `json:"session_id"`
-	Input      json.RawMessage `json:"input"`
+	Tool       string                  `json:"tool"`
+	ToolCallID string                  `json:"tool_call_id"`
+	SessionID  string                  `json:"session_id"`
+	Input      json.RawMessage         `json:"input"`
+	RegistryID string                  `json:"registry_id,omitempty"`
+	Policy     *batchLeafPolicyContext `json:"policy,omitempty"`
 }
 
 // batchLeafEnv gives a family its pinned, policy-wrapped targets.
@@ -84,12 +89,22 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	return family.start(ctx, e.env, l, p, report)
 }
 
+// batchLeafLookupID returns the identity leaf resolution is keyed under: the
+// invocation's pinned registry identity when present, else the legacy
+// session-keyed lookup.
+func batchLeafLookupID(p batchLeafPayload) string {
+	if p.RegistryID != "" {
+		return p.RegistryID
+	}
+	return p.SessionID
+}
+
 // resolveLeaf returns the pinned policy leaf for the payload's tool.
 func (env batchLeafEnv) resolveLeaf(p batchLeafPayload) (fantasy.AgentTool, error) {
 	if env.Leaves == nil {
 		return nil, &batchStartError{batchCodeNoLeaf, errors.New("no toolset provider")}
 	}
-	registry, err := env.Leaves(p.SessionID)
+	registry, err := env.Leaves(batchLeafLookupID(p))
 	if err != nil {
 		return nil, &batchStartError{batchCodeNoLeaf, err}
 	}
