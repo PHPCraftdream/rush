@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -377,9 +378,35 @@ func TestR12AOwnHostRefuses(t *testing.T) {
 	assert.NoError(t, CheckLiveHosts(ctx, conn, dataDir, nil))
 }
 
-// Case 6: <dataDir>/hosts exists as a FILE, so every probe open fails with
-// ENOTDIR (Unknown) and the gate refuses -- deterministic cross-platform.
-func TestR12AProbeErrorRefuses(t *testing.T) {
+// Case 6: an error during async_hosts ENUMERATION refuses the gate. Closing
+// the connection makes conn.QueryContext fail deterministically on every OS,
+// exercising the "failed to enumerate async_hosts" branch.
+func TestR12AEnumerateErrorRefuses(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, conn := r12aNewEmbeddedDB(t)
+	_, err := conn.ExecContext(ctx,
+		`INSERT INTO async_hosts (id, pid, label, started_at) VALUES ('host-broken', 4, 'cli', 1700000000)`)
+	require.NoError(t, err)
+	// openTestDB registers Cleanup(conn.Close); sql.DB.Close is idempotent.
+	require.NoError(t, conn.Close())
+
+	err = CheckLiveHosts(ctx, conn, t.TempDir(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to enumerate async_hosts")
+}
+
+// Case 6b (unix-only): <dataDir>/hosts exists as a FILE, so the probe open
+// fails with ENOTDIR (Unknown) and the gate refuses. On Windows opening a
+// path under a file component fails with ERROR_PATH_NOT_FOUND/
+// ERROR_DIRECTORY, which the shared probe classifies as not-exist, i.e. Dead
+// per the legacy session contract. That is the intended, legacy-identical
+// outcome there (the gate correctly proceeding is fine), so the ENOTDIR-
+// Unknown refusal is only asserted on unix.
+func TestR12AHostsAsFileProbeErrorRefuses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows classifies a missing path under a file component as not-exist, i.e. Dead by the legacy probe contract; the Unix ENOTDIR-Unknown behaviour is covered here")
+	}
 	t.Parallel()
 	ctx := context.Background()
 	dataDir := t.TempDir()
