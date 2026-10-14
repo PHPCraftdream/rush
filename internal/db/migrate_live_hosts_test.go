@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/filelock"
@@ -29,12 +30,41 @@ import (
 
 const (
 	r12aSyntheticDir      = "testdata/r12a_drop_async_jobs_testonly" // fs paths use forward slashes on every OS
+	r12aSyntheticFile     = "20991231000001_r12a_drop_async_jobs_testonly.sql"
 	r12aSyntheticVersion  = int64(20991231000001)
 	r12aHelperEnv         = "RUSH_DB_HOSTLOCK_HELPER"
 	r12aHelperLockPathEnv = "RUSH_DB_HOSTLOCK_PATH"
 )
 
-func r12aSyntheticFS() fs.FS { return os.DirFS(r12aSyntheticDir) }
+// r12aEmbeddedFS returns a MapFS holding exactly the embedded migration set
+// (same pattern as internal/session's batchStoreTestMigrationFS).
+func r12aEmbeddedFS(t *testing.T) fstest.MapFS {
+	t.Helper()
+	embedded, err := migrationFS()
+	require.NoError(t, err)
+	entries, err := fs.ReadDir(embedded, ".")
+	require.NoError(t, err)
+	files := fstest.MapFS{}
+	for _, entry := range entries {
+		data, e := fs.ReadFile(embedded, entry.Name())
+		require.NoError(t, e)
+		files[entry.Name()] = &fstest.MapFile{Data: data}
+	}
+	return files
+}
+
+// r12aSyntheticFS returns the full embedded set PLUS the synthetic test-only
+// migration, so a fully-migrated test DB sees pending={synthetic}, unknown=∅.
+// The synthetic content is read from testdata so the FS cannot drift from the
+// DDL fixture.
+func r12aSyntheticFS(t *testing.T) fs.FS {
+	t.Helper()
+	files := r12aEmbeddedFS(t)
+	data, err := os.ReadFile(filepath.Join(r12aSyntheticDir, r12aSyntheticFile))
+	require.NoError(t, err)
+	files[r12aSyntheticFile] = &fstest.MapFile{Data: data}
+	return files
+}
 
 // r12aNewEmbeddedDB builds a temp SQLite database fully migrated through the
 // embedded set.
@@ -50,7 +80,7 @@ func r12aNewEmbeddedDB(t *testing.T) (string, *sql.DB) {
 // goose runner and reports how many versions it applied.
 func r12aApplySynthetic(t *testing.T, conn *sql.DB) int {
 	t.Helper()
-	provider, err := goose.NewProvider(goose.DialectSQLite3, conn, r12aSyntheticFS(),
+	provider, err := goose.NewProvider(goose.DialectSQLite3, conn, r12aSyntheticFS(t),
 		goose.WithLogger(goose.NopLogger()))
 	require.NoError(t, err)
 	applied, err := provider.Up(context.Background())
@@ -69,23 +99,26 @@ func r12aSeedRichDB(t *testing.T, ctx context.Context, conn *sql.DB) {
 		`INSERT INTO sessions (id, title, updated_at, created_at) VALUES ('sess-1', 'sess-1', 1700000000, 1700000000)`,
 		`INSERT INTO async_hosts (id, pid, label, started_at) VALUES ('host-a', 1, 'cli', 1700000000)`,
 		`INSERT INTO async_hosts (id, pid, label, started_at) VALUES ('host-b', 2, 'cli', 1700000000)`,
-		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, created_at, updated_at)
-			VALUES ('sess-1', 'call-1', 'command', 'h1', 'host-a', 1700000000, 1700000000)`,
-		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, created_at, updated_at)
-			VALUES ('sess-1', 'call-2', 'agent', 'h2', 'host-a', 1700000000, 1700000000)`,
+		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
+			VALUES ('sess-1', 'call-1', 'command', 'h1', 'host-a', 'running', 1700000000, 1700000000)`, // state NOT NULL, 20261005000001
+		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
+			VALUES ('sess-1', 'call-2', 'agent', 'h2', 'host-a', 'running', 1700000000, 1700000000)`,
 		`INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)
 			VALUES ('msg-1', 'sess-1', 'user', '[]', 1700000000, 1700000000)`,
 		// Job-bound notice: pairs with ('sess-1', 'call-1').
 		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
 			VALUES ('sess-1', 'supervision', 'job-bound', 1, 'pending', 'call-1', 1700000000, 1700000000)`,
+		// Second job-bound notice: pairs with ('sess-1', 'call-2').
+		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
+			VALUES ('sess-1', 'supervision', 'job-bound-2', 1, 'pending', 'call-2', 1700000000, 1700000000)`,
 		// Unrelated notice: no async_jobs row references it.
 		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
 			VALUES ('sess-1', 'wake_failed', 'unrelated', 1, 'pending', NULL, 1700000000, 1700000000)`,
 		// batch_nodes root node (the schema's CHECKs force this exact shape).
 		`INSERT INTO batch_nodes (node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
-			tool_call_id, input_hash, mode, created_at, updated_at)
+			tool_call_id, input_hash, mode, state, created_at, updated_at)
 			VALUES ('root-1', 'root-1', 'sess-1', 'host-a', NULL, 0, 'batch', 'call-r', 'hash-r',
-			'parallel', 1700000000, 1700000000)`,
+			'parallel', 'pending', 1700000000, 1700000000)`, // state NOT NULL, no default, 20261012000001
 		`INSERT INTO batch_control_requests (request_id, owner_session_id, root_id, node_id, host_id, created_at)
 			VALUES ('req-1', 'sess-1', 'root-1', 'root-1', 'host-a', 1700000000)`,
 		`INSERT INTO session_drivers (session_id, host_id, pid, claimed_at)
@@ -107,13 +140,14 @@ func r12aCount(t *testing.T, ctx context.Context, conn *sql.DB, query string, ar
 	return n
 }
 
-func r12aNotice(t *testing.T, ctx context.Context, conn *sql.DB, text string) (delivery string, wake int) {
+// r12aNotice returns a notice's delivery, wake flag, and updated_at.
+func r12aNotice(t *testing.T, ctx context.Context, conn *sql.DB, text string) (delivery string, wake int, updatedAt int64) {
 	t.Helper()
 	err := conn.QueryRowContext(ctx,
-		`SELECT delivery, wake FROM session_notices WHERE text = ?`, text,
-	).Scan(&delivery, &wake)
+		`SELECT delivery, wake, updated_at FROM session_notices WHERE text = ?`, text,
+	).Scan(&delivery, &wake, &updatedAt)
 	require.NoError(t, err)
-	return delivery, wake
+	return delivery, wake, updatedAt
 }
 
 // TestHelperHostLockHold is the re-exec child entry point (same idiom as
@@ -205,14 +239,20 @@ func TestR12ASyntheticUpgrade_NoConversion(t *testing.T) {
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM messages`))
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_drivers`))
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM wake_schedules`))
-	assert.Equal(t, 2, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_notices`))
+	assert.Equal(t, 3, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_notices`))
 
-	delivery, wake := r12aNotice(t, ctx, conn, "job-bound")
+	delivery, wake, updated := r12aNotice(t, ctx, conn, "job-bound")
 	assert.Equal(t, "void", delivery)
 	assert.Equal(t, 0, wake)
-	delivery, wake = r12aNotice(t, ctx, conn, "unrelated")
+	assert.Greater(t, updated, int64(1700000000), "voided notice's updated_at must be rewritten")
+	delivery2, wake2, updated2 := r12aNotice(t, ctx, conn, "job-bound-2")
+	assert.Equal(t, "void", delivery2)
+	assert.Equal(t, 0, wake2)
+	assert.Greater(t, updated2, int64(1700000000))
+	delivery, wake, unrelatedUpdated := r12aNotice(t, ctx, conn, "unrelated")
 	assert.Equal(t, "pending", delivery)
 	assert.Equal(t, 1, wake)
+	assert.Equal(t, int64(1700000000), unrelatedUpdated, "untouched notice's updated_at must not change")
 
 	assert.True(t, dbVersionSet(t, conn)[r12aSyntheticVersion])
 }
@@ -383,7 +423,7 @@ func TestR12AMayMigrateFalseRefuses(t *testing.T) {
 	ctx := context.Background()
 	dbPath, conn := r12aNewEmbeddedDB(t)
 
-	err := migrate(ctx, conn, dbPath, r12aSyntheticFS(),
+	err := migrate(ctx, conn, dbPath, r12aSyntheticFS(t),
 		newMigrateOptions([]MigrateOption{WithMayMigrate(false)}, dbPath))
 	require.Error(t, err)
 	var notAllowed *SchemaMigrationNotAllowedError
@@ -406,8 +446,7 @@ func TestR12AUnknownOnlyPolicyUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	before := dbVersionSet(t, conn)
 
-	embeddedFS, ferr := migrationFS()
-	require.NoError(t, ferr)
+	embeddedFS := r12aEmbeddedFS(t)
 	require.NoError(t, migrate(ctx, conn, "unused.db", embeddedFS,
 		newMigrateOptions(nil, "unused.db")))
 	assert.Equal(t, before, dbVersionSet(t, conn), "nothing may be applied on unknown-only")
@@ -431,9 +470,8 @@ func TestR12AGateHookIntegration(t *testing.T) {
 	}
 
 	t.Run("benign applies", func(t *testing.T) {
-		t.Parallel()
 		dataDir, conn := newHookedDB(t)
-		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(),
+		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(t),
 			newMigrateOptions([]MigrateOption{
 				WithPreMigrationChecks(func(ctx context.Context, conn *sql.DB, dbPath string) error {
 					return CheckLiveHosts(ctx, conn, dataDir, nil)
@@ -449,7 +487,7 @@ func TestR12AGateHookIntegration(t *testing.T) {
 		defer h.stop(t)
 
 		before := dbVersionSet(t, conn)
-		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(),
+		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(t),
 			newMigrateOptions([]MigrateOption{
 				WithPreMigrationChecks(func(ctx context.Context, conn *sql.DB, dbPath string) error {
 					return CheckLiveHosts(ctx, conn, dataDir, nil)

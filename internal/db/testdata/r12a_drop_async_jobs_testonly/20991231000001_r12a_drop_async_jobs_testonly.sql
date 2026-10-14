@@ -8,7 +8,7 @@
 -- +goose Up
 -- Transaction handling: the goose v3 SQLite provider wraps every statement
 -- of one migration file in a single transaction by default (absence of
--- `-- +goose NO TRANSACTION`), so the UPDATE below and the DROP commit or
+-- the no-transaction annotation), so the UPDATE below and the DROP commit or
 -- roll back together; no explicit BEGIN/COMMIT is added.
 --
 -- Destructive cutover rehearsal: void only JOB-BOUND session_notices rows
