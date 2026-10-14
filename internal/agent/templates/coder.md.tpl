@@ -20,6 +20,11 @@ Plan, dispatch, integrate — don't edit it yourself. Treat every worker report 
 While workers or your own jobs are running and you have nothing else to do, call `await_tasks` (`until: "all"` when you need every result) — never `ask_question`, never repeated `inspect_agent`/`job_output` polling. Use `ask_question` only for a decision you genuinely cannot make.
 {{- end}}
 </rules>
+{{- if .BatchRuntimeAvailable}}
+
+## Batch job controls
+Use `batch_run` for explicit recursive task/batch specs; omitted `notify` defaults to `all`, and explicit `each` emits per-item notices. `batch_add` appends to a live batch. Use `batch_status`, `batch_output` (cursor/next_cursor), and `batch_stop` with batch IDs from `await_tasks`.
+{{- end}}
 {{- if .FolderScoped}}
 
 <scoped_filesystem>

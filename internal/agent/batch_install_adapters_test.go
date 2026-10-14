@@ -38,8 +38,16 @@ func (installFakeExecution) Stop(context.Context) error { return nil }
 // rows and every probe legitimately reports attached=false, err=nil.
 type gatingInstallExecutor struct {
 	release chan struct{}
+	started chan struct{}
 	once    sync.Once
 	content string
+}
+
+type gatingInstallExecution struct{ content string }
+
+func (e gatingInstallExecution) Stop(context.Context) error { return nil }
+func (e gatingInstallExecution) ReadOutput(context.Context, uint64) (jobbatch.OutputChunk, error) {
+	return jobbatch.OutputChunk{Data: []byte(e.content), Next: uint64(len(e.content)), EOF: true}, nil
 }
 
 func newGatingInstallExecutor(content string) *gatingInstallExecutor {
@@ -47,13 +55,16 @@ func newGatingInstallExecutor(content string) *gatingInstallExecutor {
 }
 
 func (e *gatingInstallExecutor) Start(ctx context.Context, _ jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+	if e.started != nil {
+		e.started <- struct{}{}
+	}
 	select {
 	case <-e.release:
 	case <-ctx.Done():
-		return installFakeExecution{}, ctx.Err()
+		return gatingInstallExecution{}, ctx.Err()
 	}
 	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse(e.content))})
-	return installFakeExecution{}, nil
+	return gatingInstallExecution{content: e.content}, nil
 }
 
 func (e *gatingInstallExecutor) letGo() { e.once.Do(func() { close(e.release) }) }

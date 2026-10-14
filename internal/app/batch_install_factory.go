@@ -24,6 +24,7 @@ import (
 // seams) are supplied by the flagged-install wiring (M2/M3).
 type batchRuntimeFactory struct {
 	deps agent.BatchInstallDeps
+	live *session.BatchLiveReader
 }
 
 // newBatchRuntimeFactory resolves the App-owned resources. It fails closed
@@ -48,6 +49,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	}
 	deps.Store = session.NewBatchStore(writer)
 	deps.Messages = a.Messages
+	deps.Sessions = a.Sessions
 	// R11F (M3): closed defaults so a bare install never builds half-wired.
 	// Flag-off Apps never reach the factory; the flag-on install keeps its
 	// own idempotent guards on top.
@@ -87,7 +89,9 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	if deps.RecordRetention <= 0 {
 		deps.RecordRetention = 256
 	}
-	return &batchRuntimeFactory{deps: deps}, nil
+	live := session.NewBatchLiveReader(db.New(writer), a.dataDir)
+	f := &batchRuntimeFactory{deps: deps, live: live}
+	return f, nil
 }
 
 // build constructs the adapted install and a new DORMANT BatchRuntime

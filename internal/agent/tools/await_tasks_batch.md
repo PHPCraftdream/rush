@@ -1,0 +1,1 @@
+When batch work is included in a waiting item, its `batch_root_id` and `batch_node_id` identify the owned batch root and waiting task node. Use them with `batch_status`, `batch_output`, or `batch_stop`. Output reads are cursor-based; continue from `next_cursor`.

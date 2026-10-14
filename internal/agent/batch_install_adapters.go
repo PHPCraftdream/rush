@@ -45,12 +45,10 @@ func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequ
 	if a.runner == nil {
 		return "", errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
-	if req.Spec.Task == nil {
-		return "", fmt.Errorf("%w: direct calls submit one task", jobbatch.ErrInvalidSpec)
+	if req.Spec.Task == nil && req.Spec.Batch == nil {
+		return "", fmt.Errorf("%w: task or batch spec required", jobbatch.ErrInvalidSpec)
 	}
-	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{
-		Root: req.Root, Spec: jobbatch.OneItem(*req.Spec.Task), Ref: req.Ref,
-	})
+	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
 	if err != nil {
 		return "", err
 	}
@@ -63,6 +61,22 @@ func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequ
 // Stop requests cancellation of one root.
 func (a *batchRunnerAdapter) Stop(ctx context.Context, id jobbatch.ID) error {
 	return a.runner.Stop(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error) {
+	return a.runner.Add(ctx, req)
+}
+
+func (a *batchRunnerAdapter) Snapshot(ctx context.Context, id jobbatch.ID) (jobbatch.BatchView, error) {
+	return a.runner.Snapshot(ctx, id)
+}
+
+func (a *batchRunnerAdapter) View(ctx context.Context, id jobbatch.ID) (jobbatch.NodeView, error) {
+	return a.runner.View(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Output(ctx context.Context, id jobbatch.ID, cursor uint64) (jobbatch.OutputChunk, error) {
+	return a.runner.Output(ctx, id, cursor)
 }
 
 // batchFor returns the in-process Batch of a root started by THIS adapter,
@@ -367,6 +381,7 @@ type BatchInstallDeps struct {
 	// DonePoll is the done source's durable poll cadence; zero selects the
 	// default.
 	DonePoll time.Duration
+	Sessions session.Service
 }
 
 // BatchInstall is one fully adapted, still-dormant installation.
@@ -383,6 +398,7 @@ type BatchInstall struct {
 	Done         batchDoneSource
 	Elector      batchElector
 	NoticePull   batchNoticePull
+	Sessions     session.Service
 }
 
 // InstallBatchRuntime builds the real Runner, commit hook, attach store,
@@ -418,23 +434,25 @@ const batchDormantInstallOwner = "batch-install:per-invocation-owner"
 // An unparseable spec (or a spec with neither shape) keeps the dormant
 // default: the commit hook falls back and the fixed/dormant Owner applies.
 func batchCommitOwnerFor(spec jobbatch.Spec) string {
-	task := spec.Task
-	if task == nil && spec.Batch != nil {
-		for i := range spec.Batch.Items {
-			if spec.Batch.Items[i].Task != nil {
-				task = spec.Batch.Items[i].Task
-				break
+	var find func(jobbatch.Spec) string
+	find = func(current jobbatch.Spec) string {
+		if current.Task != nil {
+			var p batchLeafPayload
+			if err := json.Unmarshal(current.Task.Payload, &p); err != nil {
+				return ""
+			}
+			return p.SessionID
+		}
+		if current.Batch != nil {
+			for _, child := range current.Batch.Items {
+				if owner := find(child); owner != "" {
+					return owner
+				}
 			}
 		}
-	}
-	if task == nil {
 		return ""
 	}
-	var p batchLeafPayload
-	if err := json.Unmarshal(task.Payload, &p); err != nil {
-		return ""
-	}
-	return p.SessionID
+	return find(spec)
 }
 
 // InstallBatchRuntimeDeferred builds everything InstallBatchRuntime builds
@@ -466,7 +484,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		return nil, errors.New("batch install: message service is required")
 	}
 	owner := deps.Owner
-	if owner == "" {
+	if owner == "" || owner == batchDormantInstallOwner {
 		owner = batchDormantInstallOwner
 	}
 	runnerAdapter := &batchRunnerAdapter{started: make(map[jobbatch.ID]*jobbatch.Batch)}
@@ -511,10 +529,8 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		CommitHook: commitHook, Runtime: runtime,
 		RunnerHandle: runnerAdapter, Attach: batchAttachAdapter{store: deps.Store},
 		Delivery: delivery, Done: done, Elector: elector,
-		// R11F P1-5(d): the notice-pull drain adapter has NO production
-		// consumer yet — it is consumed by the web drain surface in
-		// R12/R15b; wired inertly until then. Do not invent a consumer.
 		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
+		Sessions:   deps.Sessions,
 		runnerCfg:  runnerCfg,
 	}
 	if withRunner {

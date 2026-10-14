@@ -780,11 +780,23 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		}
 	}
 
-	// GetMCPTools reads the live mcp.Tools() registry, not cfg -- see this
-	// function's doc comment for why that is deliberate. agent.AllowedMCP
-	// below IS from the pinned cfg/agent, so the allow-list decision itself
-	// is consistent with the rest of this build; only the candidate tool set
-	// it is applied to can be from a different generation.
+	if batchFlagEnabled() {
+		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
+			for _, name := range batchControlAvailability(filteredTools) {
+				if name == tools.AwaitTasksToolName {
+					for i, tool := range filteredTools {
+						if tool.Info().Name == name {
+							filteredTools[i] = tools.NewBatchAwaitTasksTool(c)
+						}
+					}
+					continue
+				}
+				filteredTools = append(filteredTools, newBatchControlPlaceholder(name))
+			}
+		}
+	}
+
+	// GetMCPTools reads the live MCP tool registry; apply the configured MCP allowlist below.
 	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
@@ -811,7 +823,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	return c.finishToolAssembly(filteredTools, hookRunner, isSubAgent)
+	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent)
 }
 
 // finishToolAssembly is the final construction boundary. Flag OFF (no batch
@@ -820,10 +832,56 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 // restrictions run once here, then every batch-admissible work tool is
 // re-armed through the ONE authority (batchRuntime.Invoke) and the old
 // async/stall wrappers are NOT installed.
-func (c *coordinator) finishToolAssembly(filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool) (policyToolBuild, error) {
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool) (policyToolBuild, error) {
 	if bind := coordinatorBatchBindingFor(c); bind != nil {
+		allowedControls := batchControlAvailability(filteredTools)
+		filteredTools = withoutBatchControlPlaceholders(filteredTools)
 		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
-		return newBatchWorkToolBuild(bind, filteredTools)
+		built, err := newBatchWorkToolBuild(bind, filteredTools)
+		if err != nil {
+			return policyToolBuild{}, err
+		}
+		if batchFlagEnabled() && bind.controls != nil {
+			allowed := allowedControls
+			if len(allowed) > 0 {
+				registry, err := bind.ingress.Registry(built.registryID)
+				if err != nil {
+					return policyToolBuild{}, err
+				}
+				inv := BatchInvocation{
+					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
+					BackgroundEscape: batchEscapeNever,
+					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(filteredTools)},
+				}
+				inv.SessionID = tools.GetSessionFromContext(ctx)
+				inv.MessageID = tools.GetMessageFromContext(ctx)
+				inv.CallID = ""
+				inv.Policy.MessageID = inv.MessageID
+				inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
+				inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+				if inv.WaiterRank == 0 {
+					inv.WaiterRank = batchGroupRanks[batchGroupDefault]
+				}
+				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
+				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
+				if opts := callOptionsFrom(ctx); opts != nil && tools.HasDiskProvider(opts.DiskProvider) {
+					return policyToolBuild{}, ErrDiskProviderNotDurable
+				}
+				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
+				if err != nil {
+					return policyToolBuild{}, err
+				}
+				for _, control := range controls {
+					if control.Info().Name == tools.AwaitTasksToolName {
+						continue
+					}
+					if slices.Contains(allowed, control.Info().Name) {
+						built.tools = append(built.tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{control}, restrictedRunAuthorizer(c.permissions)), hookRunner, isSubAgent)[0])
+					}
+				}
+			}
+		}
+		return built, nil
 	}
 	filteredTools = c.wrapAsyncTools(filteredTools)
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the

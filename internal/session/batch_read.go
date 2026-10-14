@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -78,6 +79,7 @@ type BatchLiveNode struct {
 	Depth                                                                   int
 	Ordinal                                                                 int64
 	State, Cause                                                            string
+	Notify                                                                  sql.NullString
 	HostID                                                                  string
 	HostStatus                                                              HostLockStatus
 	StartedAt                                                               time.Time
@@ -85,7 +87,7 @@ type BatchLiveNode struct {
 }
 
 func batchLiveFact(n db.BatchNode, call string, depth int, status HostLockStatus) BatchLiveNode {
-	return BatchLiveNode{Ref: BatchLiveRef{n.OwnerSessionID, n.RootID}, NodeID: n.NodeID, ParentID: n.ParentID.String, SessionID: n.OwnerSessionID, ToolCallID: call, Kind: n.Kind, TaskKind: n.TaskKind.String, ChildSessionID: n.ChildSessionID.String, Depth: depth, Ordinal: n.Ordinal, State: n.State, Cause: n.Cause, HostID: n.HostID, HostStatus: status, StartedAt: time.Unix(n.CreatedAt, 0)}
+	return BatchLiveNode{Ref: BatchLiveRef{n.OwnerSessionID, n.RootID}, NodeID: n.NodeID, ParentID: n.ParentID.String, SessionID: n.OwnerSessionID, ToolCallID: call, Kind: n.Kind, TaskKind: n.TaskKind.String, ChildSessionID: n.ChildSessionID.String, Depth: depth, Ordinal: n.Ordinal, State: n.State, Cause: n.Cause, Notify: n.Notify, HostID: n.HostID, HostStatus: status, StartedAt: time.Unix(n.CreatedAt, 0)}
 }
 
 func batchReadTerminal(state string) bool {
