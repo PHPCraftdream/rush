@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
@@ -85,6 +86,9 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	var p batchLeafPayload
 	if err := json.Unmarshal(l.Task.Payload, &p); err != nil || p.Tool == "" || p.SessionID == "" {
 		return nil, &batchStartError{batchCodeBadPayload, errors.New("payload needs tool, session_id and input")}
+	}
+	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") {
+		return nil, &batchStartError{batchCodeBadPayload, ErrDiskProviderNotDurable}
 	}
 	return family.start(ctx, e.env, l, p, report)
 }

@@ -69,6 +69,7 @@ type batchLeafPolicyContext struct {
 	FolderScope       *permission.FolderScopeSpec  `json:"folder_scope,omitempty"`
 	RunAllowlist      *permission.RunAllowlistSpec `json:"run_allowlist,omitempty"`
 	CustomDisk        string                       `json:"custom_disk,omitempty"`
+	DiskProvider      bool                         `json:"disk_provider,omitempty"`
 	RestrictedToolset string                       `json:"restricted_toolset"`
 }
 
@@ -152,6 +153,9 @@ func (inv *BatchInvocation) Validate() error {
 	inv.Policy.RestrictedToolset = strings.TrimSpace(inv.Policy.RestrictedToolset)
 	inv.Policy.ModelName = strings.TrimSpace(inv.Policy.ModelName)
 	inv.Policy.CustomDisk = strings.TrimSpace(inv.Policy.CustomDisk)
+	if inv.Policy.CustomDisk != "" || inv.Policy.DiskProvider {
+		return fmt.Errorf("%w", ErrDiskProviderNotDurable)
+	}
 	if inv.SessionID == "" {
 		return fmt.Errorf("%w", errBatchMissingSessionID)
 	}

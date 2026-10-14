@@ -513,6 +513,9 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	}
 	env := batchLeafEnv{Leaves: deps.Registries.Resolve}
 	executor := deps.Executor
+	if deps.AgentDeps.Runs != nil {
+		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
+	}
 	if executor == nil {
 		executor = newBatchExecutor(env, newBatchExecutorFamilies(deps.AgentDeps))
 	}

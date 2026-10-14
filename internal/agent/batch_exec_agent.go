@@ -27,7 +27,9 @@ type batchAgentRunRequest struct {
 	// Dispatch resolves the pinned leaf by this name and names the call
 	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
 	// the "agent" leaf. Empty fails closed in the driver.
-	Tool string
+	Tool            string
+	ChildSessionID  string
+	NoChildSelected bool
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
@@ -35,7 +37,9 @@ type batchAgentRunRequest struct {
 // injected answer at the same depth arrives; the tool turns it into a
 // successful question-shaped response, keeping the node live meanwhile.
 type batchAgentHost struct {
-	Ask func(ctx context.Context, depth int, question string) (json.RawMessage, error)
+	Ask              func(ctx context.Context, depth int, question string) (json.RawMessage, error)
+	BindChildSession func(string)
+	NoChildSelected  func()
 }
 
 // batchAgentTurnResult is one turn loop's outcome.
@@ -78,7 +82,8 @@ type batchAgentDeps struct {
 	Descendants batchAgentDescendantReader
 	// Poll is the descendant re-read interval while the scope stays open.
 	// Zero means a single read after the turn ends.
-	Poll time.Duration
+	Poll              time.Duration
+	QuestionPublisher batchChildQuestionPublisher
 }
 
 // batchAgentFamily implements the engine executor contract for the agent
@@ -140,15 +145,34 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	return e, nil
 }
 
-// launch calls the run factory with panic containment; a panic means no
-// execution exists.
+func (e *batchAgentExecution) requestSnapshot() batchAgentRunRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.req
+}
+
+func (e *batchAgentExecution) bindChildSession(id string) {
+	e.mu.Lock()
+	e.req.ChildSessionID = id
+	e.mu.Unlock()
+}
+
+func (e *batchAgentExecution) markNoChildSelected() {
+	e.mu.Lock()
+	e.req.NoChildSelected = true
+	e.mu.Unlock()
+}
+
+// launch calls the run factory with panic containment; a panic means no execution exists.
 func (e *batchAgentExecution) launch(runCtx context.Context) (turn batchAgentTurn, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			turn, err = nil, &batchStartError{"agent_start_panic", fmt.Errorf("%v", r)}
 		}
 	}()
-	return e.deps.Runs.StartAgentTurn(runCtx, e.req, batchAgentHost{Ask: e.ask})
+	return e.deps.Runs.StartAgentTurn(runCtx, e.requestSnapshot(), batchAgentHost{
+		Ask: e.askBatchQuestion, BindChildSession: e.bindChildSession, NoChildSelected: e.markNoChildSelected,
+	})
 }
 
 type batchAgentExecution struct {
@@ -165,10 +189,11 @@ type batchAgentExecution struct {
 	result   jobbatch.Result
 	reported bool
 
-	driverDone  chan struct{} // Driver goroutine exit: late kill barrier.
-	watcherDone chan struct{}
-	finished    chan struct{}  // Closed once, when the scope result is fixed.
-	internal    sync.WaitGroup // Adapter goroutines; zero again after Dispose.
+	driverDone       chan struct{} // Driver goroutine exit: late kill barrier.
+	watcherDone      chan struct{}
+	finished         chan struct{}  // Closed once, when the scope result is fixed.
+	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
+	questionSequence uint64
 }
 
 var (
@@ -189,9 +214,13 @@ func (e *batchAgentExecution) heldDepth() (int, bool) {
 }
 
 // ask implements the host question channel of one incarnation.
-func (e *batchAgentExecution) ask(ctx context.Context, depth int, question string) (json.RawMessage, error) {
+func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, question string) (json.RawMessage, error) {
 	h, err := e.scope.hold(depth)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.publishQuestion(ctx, depth, question); err != nil {
+		e.scope.discardHold(h)
 		return nil, err
 	}
 	select {
@@ -203,8 +232,19 @@ func (e *batchAgentExecution) ask(ctx context.Context, depth int, question strin
 	}
 }
 
-// watch runs the scope watcher: it waits for the turn to end, then for a
-// confirmed scope closure, and reports exactly once.
+func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, question string) error {
+	if e.deps.QuestionPublisher == nil {
+		return errors.New("batch question: publisher unavailable")
+	}
+	req := e.requestSnapshot()
+	e.scope.mu.Lock()
+	e.scope.questionSequence++
+	sequence := e.scope.questionSequence
+	e.scope.mu.Unlock()
+	return e.deps.QuestionPublisher.PublishChildQuestion(context.WithoutCancel(ctx), batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
+}
+
+// watch waits for turn completion, then confirmed scope closure, and reports exactly once.
 func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, report func(jobbatch.Result)) {
 	defer close(e.watcherDone)
 	select {
@@ -222,7 +262,11 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 		// Reads survive a stop cancellation: confirmed closure is a fact,
 		// not an acknowledgement.
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), poll)
-		live, complete := e.deps.Descendants.DescendantsLive(dctx, e.req)
+		req := e.requestSnapshot()
+		live, complete := e.deps.Descendants.DescendantsLive(dctx, req)
+		if req.NoChildSelected {
+			live, complete = false, true
+		}
 		e.scope.descendants(live, complete)
 		if e.scope.closedNow() {
 			cancel()

@@ -28,20 +28,7 @@ type batchCoordinatorAgentRuns struct{}
 // the RECORDED tool name (req.Tool) — an "agentic_fetch" payload resolves
 // its own pinned leaf and names the call agentic_fetch; an empty name fails
 // closed.
-//
-// R11F round-2 (P1-5a), host.Ask wiring decision — DIRECT IS CORRECT, not a
-// discard: the engine-side host.Ask is batchAgentExecution.ask, whose hold
-// is answered only by the engine's Inject (batchAgentExecution.Inject →
-// scope.deliver). The R7c delegation leaf deliberately keeps its OWN
-// question machinery (question_stop.go / delegation_question.go): a child
-// asking ask_question FINISHES its turn with a question-shaped block, the
-// scope closes, and the parent's answer arrives as a RESUME — a fresh
-// generation. Wiring host.Ask into the leaf's turn would park the incarnation
-// on a hold no one answers (the leaf no longer runs a turn), i.e. the exact
-// deadlock R7c removed. The hold channel stays reachable through Inject for
-// operators and tests.
 func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
-	_ = host // See P1-5a note above: direct is correct; the hold is served via Inject.
 	bind := processCoordinatorBatchBinding()
 	if bind == nil {
 		return nil, errBatchCoordinatorNotBound
@@ -57,7 +44,14 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	if err != nil {
 		return nil, err
 	}
+	depth := batchAgentQuestionDepth(ctx) + 1
+	if depth <= 0 {
+		depth = 1
+	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	runCtx = withBatchAgentQuestionContext(runCtx, depth)
+	runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
+	runCtx = withBatchAgentLifecycle(runCtx, batchAgentLifecycle{BindChildSession: host.BindChildSession, NoChildSelected: host.NoChildSelected})
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, req.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, req.MessageID)
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds

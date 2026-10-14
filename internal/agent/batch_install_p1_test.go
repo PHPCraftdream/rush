@@ -535,7 +535,6 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 		ModelName:    "pinned-model",
 		FolderScope:  &permission.FolderScopeSpec{},
 		RunAllowlist: &permission.RunAllowlistSpec{},
-		CustomDisk:   "pinned-disk",
 	}
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "recorder", ToolCallID: "call-policy", SessionID: "pinned-session",
@@ -579,8 +578,8 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 	if got, _ := leafCtx.Value(batchRunAllowlistContextKey{}).(*permission.RunAllowlistSpec); got == nil {
 		t.Fatal("pinned run allowlist lost in the executor-built ctx")
 	}
-	if got, _ := leafCtx.Value(batchCustomDiskContextKey{}).(string); got != "pinned-disk" {
-		t.Fatalf("custom disk %q, want the pinned disk", got)
+	if got := tools.GetModelNameFromContext(leafCtx); got != "pinned-model" {
+		t.Fatalf("model name %q, want the PINNED model name (start-ctx value leaked)", got)
 	}
 }
 
