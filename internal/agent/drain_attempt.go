@@ -139,7 +139,26 @@ type drainAttempt struct {
 	// chain guard's accounting (#1113).
 	chainIdleClaims []string
 	chainProgress   bool
-	closed          bool
+	// chainBatchRoots holds the root tool_call_ids of the batch launches
+	// THIS leg started whose classification was a pure wait (the started
+	// tool response's own identity: the launched root's tool_call_id IS the
+	// call id). Each root's selected completion becomes a node debt row
+	// keyed by that root id; read by the reaction chain guard's batch
+	// accounting.
+	chainBatchRoots []string
+	// batchSnapshot is the batch twin of snapshot: the visible batch debt
+	// captured right after the leg's own turn-start pull -- the ONLY set
+	// this leg's accounting may increment on or settle. batchCaptured says
+	// the capture succeeded; a failed capture is NEVER re-read late at
+	// accounting time (a late capture would widen the acted-on set with
+	// rows that arrived after the pull).
+	batchSnapshot session.BatchDebtSnapshot
+	batchCaptured bool
+	// batchDebtCallIDs is batchSnapshot's node rows resolved to their
+	// ROOT tool_call_ids (the chain identity vocabulary), computed by the
+	// accounting right before the chain guard reads it.
+	batchDebtCallIDs []string
+	closed           bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -258,25 +277,41 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	if drainAttemptExempt(att, turnErr) || l.store == nil {
 		return
 	}
+	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	if turnErr == nil {
 		// Reaction chain guard (#1113): account the leg's link BEFORE the
 		// debt's post-attempt state is read -- a successful reaction (rows.
-		// open == 0 below) must not reset the count.
+		// open == 0 below) must not reset the count. On the batch path a leg
+		// whose pull-time capture failed is as undocumented as a failed
+		// legacy snapshot read: skip the link too (same conservatism as the
+		// accounting below, which will not count it). The batch guard
+		// compares ROOT tool_call_ids, so the acted-on rows are resolved
+		// into the identity vocabulary first.
+		if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
+			if !att.batchCaptured {
+				slog.Warn("drain attempt: pull-time batch debt capture missing; link unaccounted",
+					"session_id", sid)
+				pace()
+				return
+			}
+			att.batchDebtCallIDs = bfacts.DebtToolCallIDs(ctx, att.batchSnapshot)
+		}
 		c.arb.chainLink(sid, att, att.snapshot)
 	}
-	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	var rows snapshotAttempts
 	if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
-		// Flag on: count and reread through the ACTED-ON snapshot; async_jobs
-		// is never written or read. Captured here, after the turn-start
-		// pull: the same acted-on visible set att.snapshot held on the
-		// legacy path.
-		snap, err := bfacts.CaptureVisibleDebt(ctx, sid)
-		if err != nil {
-			slog.Error("drain attempt: read batch debt snapshot failed", "session_id", sid, "err", err)
+		// Flag on: count and reread through the ACTED-ON snapshot captured at
+		// the turn-start pull (att.batchSnapshot); async_jobs is never
+		// written or read. A leg without that capture is not counted and
+		// settles nothing -- a late recapture would widen the acted-on set
+		// with rows that arrived after the pull.
+		if !att.batchCaptured {
+			slog.Warn("drain attempt: no pull-time batch debt snapshot; attempt uncounted",
+				"session_id", sid)
 			pace()
 			return
 		}
+		snap := att.batchSnapshot
 		if err := bfacts.IncrementWakeAttempts(ctx, sid, snap); err != nil {
 			slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
 			pace()

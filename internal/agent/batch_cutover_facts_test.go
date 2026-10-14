@@ -145,7 +145,11 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 	texts, err = facts.ReactedFailedTexts(env.ctx, env.sessionID)
 	require.NoError(t, err)
 	require.Len(t, texts, 1, "the node row's own outcome summary is the reacted-failed text")
-	require.Equal(t, "boom", texts[0].Text, "the node rows keep their outcome summary; Text=OutcomeSummary")
+	// NotifyAll selects the STRUCTURAL ROOT (jobbatch notice.go), and the
+	// root settle keeps its OWN OutcomeSummary -- it never copies the
+	// failed child's "boom" (tree_apply.go). The marker's production
+	// carrier is the wake_failed session_notices row asserted below.
+	require.Empty(t, texts[0].Text, "the NotifyAll root's own outcome summary (never the child's)")
 	// The wake_failed marker itself landed as a session_notices row.
 	var markers int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,

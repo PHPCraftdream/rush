@@ -194,6 +194,19 @@ func (n nodeBatchCutoverFacts) LiveNodes(ctx context.Context, owner string) ([]s
 	return res.Tree, nil
 }
 
+// LiveDelegationNodes lists owner's live delegation descendants (the
+// child-session facts carrying ChildSessionID, batch_read_live.go's
+// Descendants) for the supervision summary's delegation half. The
+// conservative rule mirrors LiveNodes: an incomplete or failed read returns
+// what it saw plus the error.
+func (n nodeBatchCutoverFacts) LiveDelegationNodes(ctx context.Context, owner string) ([]session.BatchLiveNode, error) {
+	res := n.liveResult(ctx, owner)
+	if !res.Complete || res.Err != nil {
+		return res.Descendants, res.Err
+	}
+	return res.Descendants, nil
+}
+
 // errBatchFactsUnavailable marks a missing node source dependency.
 var errBatchFactsUnavailable = errors.New("batch facts: node source unavailable")
 
@@ -344,17 +357,16 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 		kindText session.SessionNoticeRow
 	}
 	var pending []pendingRow
+	defer rows.Close()
 	for rows.Next() {
 		var r pendingRow
 		if err := rows.Scan(&r.id, &r.kindText.Kind, &r.kindText.Text, &r.wake); err != nil {
-			_ = rows.Close()
 			return nil, err
 		}
 		r.kindText.ID = r.id
 		pending = append(pending, r)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return nil, err
 	}
 	if err := rows.Close(); err != nil {

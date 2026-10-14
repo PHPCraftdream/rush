@@ -73,6 +73,11 @@ type SessionFacts struct {
 	ChainLinks        int
 	ChainOwnsAllDebt  bool
 	ChainNoticed      bool
+	// ChainBatchRoots is the ON-path twin of the ledger path's ChainClaims:
+	// the root tool_call_ids of the pure-wait batch launches the recorded
+	// chain legs started. readTurnFactsBatch's rule-5 predicate compares
+	// the debt's node rows against this set (ownership, not over-deferral).
+	ChainBatchRoots   []string
 	RunningDelegation bool
 	// RunningOwnJobs counts the session's running await_tasks work: its own
 	// async rows PLUS its live descendant delegation rows (rule 4b; the

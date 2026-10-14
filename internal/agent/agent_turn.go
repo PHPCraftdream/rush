@@ -388,6 +388,26 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		switch {
 		case snapErr == nil:
 			att.snapshot = snap
+			// Batch twin (R12-E round 4): capture the visible batch debt
+			// ONCE, right here after the leg's own pull -- this is the ONLY
+			// set the leg's accounting may increment on or settle. A failed
+			// capture stays uncaptured: accounting must not fall back to a
+			// late recapture (that would widen the acted-on set with rows
+			// that arrived after the pull). The flag-off path is nil here
+			// and never captures.
+			if a.asyncJobs != nil {
+				if bfacts := coordinatorBatchCutoverFacts(a.asyncJobs.coord); bfacts != nil {
+					bctx, bcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
+					bsnap, berr := bfacts.CaptureVisibleDebt(bctx, call.SessionID)
+					bcancel()
+					if berr == nil {
+						att.batchSnapshot, att.batchCaptured = bsnap, true
+					} else {
+						slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
+							"session_id", call.SessionID, "err", berr)
+					}
+				}
+			}
 		case call.drainTurnCommitted:
 			slog.Warn("drain turn: debt snapshot failed on a committed continuation; it runs uncounted",
 				"session_id", call.SessionID, "err", snapErr)

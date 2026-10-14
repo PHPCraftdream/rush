@@ -421,6 +421,33 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		if !ok {
 			continue
 		}
+		// Batch branch (R12-E round 4): a batch started tool response names
+		// its launched root in its own text ("batch root <id> started; ...")
+		// and carries no ClientMetadata, so the launched root's identity IS
+		// the call id. Classify exactly like legacy waits via
+		// classifyStepCall: a pure-wait batch launch records the root as
+		// chain identity, a real batch action is progress; a refusal or a
+		// neutral result started nothing this leg may claim.
+		if batchFlagEnabled() && isBatchStartedToolResult(result) {
+			// A batch launch is async by construction (the started response
+			// IS the detached boundary and carries no ClientMetadata), so
+			// stamp the async half of the legacy started tag and classify
+			// EXACTLY like a legacy wait: a pure-wait batch launch records
+			// the root's call id as chain identity; a real batch action is
+			// progress; a refusal/neutral result started nothing this leg
+			// may claim.
+			asyncResult := result
+			asyncResult.ClientMetadata = `{"async":true}`
+			switch classifyStepCall(call, asyncResult, stepClassifyCtx{}) {
+			case stepCallWait:
+				ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+			case stepCallRefused, stepCallNeutral:
+				// started nothing this leg may claim
+			default:
+				ts.att.chainProgress = true
+			}
+			continue
+		}
 		class := classifyStepCall(call, result, stepClassifyCtx{})
 		var meta asyncToolMetadata
 		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)

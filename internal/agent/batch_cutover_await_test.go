@@ -222,6 +222,19 @@ func readFactsON(t *testing.T, coord *coordinator, env *cutoverEnv) TurnFacts {
 	return facts
 }
 
+// armAwaitAny runs the PRODUCTION top-level ANY arm: bind the coordinator
+// to the ingress and call AwaitTasks(mode "any"), which reports the live
+// work and NEVER arms the sleep (only mode "all" does).
+func armAwaitAny(t *testing.T, coord *coordinator, env *cutoverEnv) tools.AwaitTasksResult {
+	t.Helper()
+	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
+	require.NoError(t, err)
+	require.NoError(t, BindCoordinatorBatchControls(coord, ingress, nil, env.live))
+	res, err := coord.AwaitTasks(env.ctx, env.sessionID, "any", 0)
+	require.NoError(t, err)
+	return res
+}
+
 // armSleepAll arms await_tasks' sleep through the PRODUCTION top-level
 // path: bind the coordinator to the ingress (AwaitTasks' capture reads the
 // bound bind.live) and call AwaitTasks(mode "all"), which sets the
@@ -273,8 +286,45 @@ func leafItemCalls(callID string, items int) []string {
 // runner handle: items one-task Specs whose payloads carry batchLeafPayload
 // JSON (Tool matching the registered gated leaf, unique ToolCallID,
 // SessionID=this owner -- the commit hook's OwnerFor walks batch items).
-// Returns the requested root id.
+// After Submit succeeds the root is ANNOUNCED through the production
+// election API (the same batchStoreElector.ElectStarted deliverDetached
+// runs): without it the root's selected completion debt rows are invisible
+// to every announced-gated read (BatchOutboxPending/DebtNodes require
+// announced=1). Returns the requested root id.
 func (e *cutoverEnv) submitBatchRoot(callID string, items int, leaf *gatedLeaf) string {
+	e.t.Helper()
+	calls := leafItemCalls(callID, items)
+	specs := make([]jobbatch.Spec, 0, items)
+	for _, tc := range calls {
+		payload, err := json.Marshal(batchLeafPayload{
+			Tool: leaf.name, ToolCallID: tc, SessionID: e.sessionID,
+			Input: json.RawMessage(`{"p":1}`), RegistryID: e.registryID,
+		})
+		require.NoError(e.t, err)
+		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}})
+	}
+	root := uuid.NewString()
+	_, err := e.install.RunnerHandle.Submit(e.ctx, jobbatch.SubmitRequest{
+		Root: jobbatch.ID(root),
+		Spec: jobbatch.Spec{Batch: &jobbatch.BatchSpec{
+			Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyAll, Items: specs,
+		}},
+		Ref: callID,
+	})
+	require.NoError(e.t, err, "%s: runner submit", callID)
+	won, err := batchStoreElector{store: e.store, messages: e.messages}.
+		ElectStarted(e.ctx, e.sessionID, jobbatch.ID(root))
+	require.NoError(e.t, err, "%s: started election", callID)
+	require.True(e.t, won, "%s: the started election must win on first announce", callID)
+	return root
+}
+
+// submitBatchRootUnannounced is submitBatchRoot WITHOUT the started
+// announcement: the root stays announced=0, so its synchronous inline
+// election can win (BatchOutboxInlineElect requires announced=0, one task
+// child). Used by the AW-b fixtures whose script calls
+// BatchAnnounceInlineResult explicitly.
+func (e *cutoverEnv) submitBatchRootUnannounced(callID string, items int, leaf *gatedLeaf) string {
 	e.t.Helper()
 	calls := leafItemCalls(callID, items)
 	specs := make([]jobbatch.Spec, 0, items)
@@ -486,13 +536,14 @@ func (e *cutoverEnv) logDebtRows(t *testing.T) {
 		`SELECT root_id, node_id, wake, reacted, delivery FROM batch_nodes
 		 WHERE owner_session_id = ?1 AND notice_selected = 1`, e.sessionID)
 	require.NoError(t, err)
+	defer rows.Close()
 	for rows.Next() {
 		var root, node, delivery string
 		var wake, reacted int64
 		require.NoError(t, rows.Scan(&root, &node, &wake, &reacted, &delivery))
 		t.Logf("AW debt root=%s node=%s wake=%d reacted=%d delivery=%s", root, node, wake, reacted, delivery)
 	}
-	require.NoError(t, rows.Close())
+	require.NoError(t, rows.Err())
 	t.Logf("AW history background notices: %d", e.backgroundNoticeCount())
 }
 
@@ -630,6 +681,15 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	env.invokeDetached("call-a3-b", "run_command", argvLeaf)
 	argvLeaf.waitStarted(t, "call-a3-b")
 	rootB := env.rootID("call-a3-b")
+	// The PRODUCTION top-level ANY arm (both roots live): it reports the
+	// waiting task children and NEVER arms the sleep (only mode "all"
+	// does); a second arm is idempotent and equally harmless.
+	resAny := armAwaitAny(t, coord, env)
+	require.GreaterOrEqual(t, len(resAny.WaitingFor), 1, "phase 1: ANY reports the live task children")
+	resAny = armAwaitAny(t, coord, env)
+	require.GreaterOrEqual(t, len(resAny.WaitingFor), 1, "phase 1: a second ANY arm is harmless")
+	require.False(t, readFactsON(t, coord, env).Session.SleepAll,
+		"phase 1: production ANY never arms the sleep")
 	// The ANY variant never arms the sleep (only mode "all" does).
 
 	// Phase 1: no settlement, no debt: nothing launches.
@@ -792,15 +852,18 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 
 	// Publish the question through the PRODUCTION publisher path: the live
 	// TASK CHILD's token fences the incarnation (admission assigns tokens
-	// to leaves only; the root token stays 0).
+	// to leaves only; the root token stays 0), and BatchPublishQuestion
+	// requires the token of the EXACT node -- so publish against the child
+	// node id, not the root.
+	var childNodeID string
 	var token int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,
-		`SELECT token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
-		liveRoot).Scan(&token))
+		`SELECT node_id, token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
+		liveRoot).Scan(&childNodeID, &token))
 	require.Greater(t, token, int64(0), "the live task child carries an incarnation token")
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
 	require.NoError(t, publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
-		Owner: env.sessionID, ChildSessionID: "sess-child-a5", NodeID: liveRoot,
+		Owner: env.sessionID, ChildSessionID: "sess-child-a5", NodeID: childNodeID,
 		Token: uint64(token), Depth: 1, Sequence: 1, Question: "continue?",
 	}))
 
@@ -817,6 +880,15 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 		"the question broke the sleep: one eligible launch (answer admitted)")
 
 	// The question is NOT settled by the wake: still pending and unreacted.
+	// ACCEPTANCE SEAM (stated, not fabricated): the only production answer
+	// path for a published batch child question is the execution boundary
+	// Runner.Inject(node) -> Messenger (batchAgentExecution.Inject ->
+	// scope.deliver at a held depth), which requires an agent-kind
+	// execution parked in host.Ask; this harness's live child is a gated
+	// generic leaf that cannot hold one, and no store/coordinator API marks
+	// a published batch question reacted. The strongest production-supported
+	// acceptance available here is therefore the admission fact below: the
+	// question broke the armed sleep and the answer launch is admitted.
 	var delivery string
 	var reacted int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,

@@ -72,6 +72,11 @@ type BatchCutoverFacts interface {
 	LiveDelegationChildOf(ctx context.Context, parent, child string) (bool, error)
 	// LiveNodes lists owner's live tree nodes for the supervision summary.
 	LiveNodes(ctx context.Context, owner string) ([]session.BatchLiveNode, error)
+	// LiveDelegationNodes lists owner's live delegation DESCENDANT nodes
+	// (the child-session facts carrying ChildSessionID) for the supervision
+	// summary's delegation half. The conservative rule mirrors LiveNodes:
+	// a failed or incomplete read returns what it saw plus the error.
+	LiveDelegationNodes(ctx context.Context, owner string) ([]session.BatchLiveNode, error)
 	// AttemptRows rereads the GIVEN acted-on snapshot after an attempt was
 	// counted (per-row wake attempts against the atK threshold).
 	AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (BatchAttemptRows, error)
@@ -145,6 +150,10 @@ func (unknownBatchCutoverFacts) DelegationChildEver(context.Context, string, str
 }
 
 func (unknownBatchCutoverFacts) LiveNodes(context.Context, string) ([]session.BatchLiveNode, error) {
+	return nil, errors.New("batch facts: node source unavailable")
+}
+
+func (unknownBatchCutoverFacts) LiveDelegationNodes(context.Context, string) ([]session.BatchLiveNode, error) {
 	return nil, errors.New("batch facts: node source unavailable")
 }
 
@@ -342,6 +351,11 @@ func (f ledgerBatchCutoverFacts) LiveNodes(context.Context, string) ([]session.B
 	return nil, nil
 }
 
+func (f ledgerBatchCutoverFacts) LiveDelegationNodes(context.Context, string) ([]session.BatchLiveNode, error) {
+	// The ledger adapter is OFF-path-unused and the summary is a batch read.
+	return nil, nil
+}
+
 func (f ledgerBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (BatchAttemptRows, error) {
 	l := f.ledger()
 	if l == nil || l.store == nil {
@@ -519,6 +533,12 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 	f.Session.SleepAll = s.SleepAll
 	f.Session.ChainLinks = s.ChainLinks
 	f.Session.ChainNoticed = s.ChainNoticed
+	if len(s.ChainBatchRoots) > 0 {
+		f.Session.ChainBatchRoots = make([]string, 0, len(s.ChainBatchRoots))
+		for root := range s.ChainBatchRoots {
+			f.Session.ChainBatchRoots = append(f.Session.ChainBatchRoots, root)
+		}
+	}
 	if s.SleepAll {
 		own, descendants, liveErr := facts.LiveWorkSummary(ctx, sessionID)
 		if liveErr != nil {
@@ -528,14 +548,39 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 		// LiveWorkForRoots on the ledger path (#1270).
 		f.Session.RunningOwnJobs = own + descendants
 	}
-	// Rule 5 on the flag-on path: the chain's own launch identity does not
-	// exist for batch launches (no claim id), so the guard defers on ANY
-	// pure node-completion debt once the link count fires: over-deferral
-	// (an unrelated completion waits one pace) is conservative and
-	// reversible by a real reaction; under-deferral would mask the chain.
-	// Claim identity for batch launches is R12-F.
+	// Rule 5 on the flag-on path: the chain guard owns the debt by IDENTITY,
+	// not by shape. Batch launches carry their launched root's tool_call_id
+	// (the started tool response's own identity, recorded per leg by
+	// recordChainEvidence into chainBatchRoots), and every node debt row is
+	// keyed by its root id -- so the ON predicate is ownership: the chain
+	// defers only when EVERY pending node debt row is a completion of a
+	// root the chain itself launched, and no notice row intervenes. An
+	// unrelated completion (a root the chain never launched) is NOT owned,
+	// so it neither defers the chain nor gets deferred by it. Rule 5 defers
+	// WITHOUT pacing: there is no "waits one pace" step anywhere on this
+	// path -- the deferred launch is simply refused until the ownership
+	// predicate changes.
 	if f.Session.ChainLinks >= turnReactionChainLimit && len(rows.Nodes) > 0 && len(rows.Notices) == 0 {
-		f.Session.ChainOwnsAllDebt = true
+		if len(f.Session.ChainBatchRoots) > 0 {
+			ids := facts.DebtToolCallIDs(ctx, session.BatchDebtSnapshot{Owner: sessionID, Nodes: rows.Nodes})
+			// No resolvable identity: fail closed (no defer) rather than
+			// pretend ownership over rows we cannot name.
+			owns := len(ids) > 0
+			for _, id := range facts.DebtToolCallIDs(ctx, session.BatchDebtSnapshot{Owner: sessionID, Nodes: rows.Nodes}) {
+				found := false
+				for _, root := range f.Session.ChainBatchRoots {
+					if root == id {
+						found = true
+						break
+					}
+				}
+				if !found {
+					owns = false
+					break
+				}
+			}
+			f.Session.ChainOwnsAllDebt = owns
+		}
 	}
 	f.Gate = s.Gate
 	f.Gate.HintNow = l.hintSeqOf(sessionID)

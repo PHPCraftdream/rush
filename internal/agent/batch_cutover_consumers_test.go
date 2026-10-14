@@ -162,26 +162,29 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "node debt present")
 
-	// Three self-sustaining chain links: each leg re-records c1. (Injected
-	// arbiter state: legitimate for a state-level test; batch-side chain
-	// evidence collection is R12-F.)
-	att := &drainAttempt{chainIdleClaims: []string{"c1"}}
-	snap := session.DebtSnapshot{Jobs: []session.DebtJobRef{{ClaimID: "c1"}}}
+	// Three self-sustaining chain links over BATCH evidence: each leg
+	// recorded the launched root's tool_call_id (the started response's own
+	// identity) and carries the pending-inclusive node debt rows of exactly
+	// that root.
+	debtRows, err := env.store.BatchReactionPendingInclusiveDebtRows(env.ctx, env.sessionID)
+	require.NoError(t, err)
+	require.Len(t, debtRows.Nodes, 1, "the settled root is the one node debt row")
+	att := &drainAttempt{chainBatchRoots: []string{"call-chain"}, batchSnapshot: session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes}}
 	for i := 0; i < 3; i++ {
-		coord.arb.chainLink(env.sessionID, att, snap)
+		coord.arb.chainLink(env.sessionID, att, session.DebtSnapshot{})
 	}
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 3)
 
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
 	require.Equal(t, reactionChainReason, pv.reason,
-		"the chain guard defers on pure node-completion debt")
+		"the chain guard defers on node-completion debt the chain launched")
 	t.Logf("ChainGuard defer reason=%q", pv.reason)
 
 	// A NON-completion row breaks the chain ownership: a pending child
-	// question in the rows makes ChainOwnsAllDebt stay false, so rule 5
-	// cannot fire even with the links counted.
+	// question in the rows makes rule 5's rows.Notices==0 condition fail,
+	// so it cannot fire even with the links counted.
 	now := time.Now().Unix()
-	_, err := env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
+	_, err = env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
 		Owner: env.sessionID, Kind: session.NoticeKindChildQuestion,
 		Text: "chain question?", Wake: 1, CreatedAt: now, UpdatedAt: now,
 	})
@@ -190,8 +193,20 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	require.NotEqual(t, reactionChainReason, pv.reason,
 		"a mixed-in question row breaks the chain ownership")
 
+	// An UNRELATED completion (a root the chain never launched) is NOT
+	// owned: the ownership predicate fails and the defer disappears even
+	// though the debt is pure node-completion again.
+	env.invokeDetached("call-chain-other", "view", fast)
+	otherID := env.rootID("call-chain-other")
+	require.Equal(t, "completed", env.rootTerminal(otherID))
+	require.Eventually(t, func() bool { return env.debtExists() },
+		5*time.Second, 5*time.Millisecond, "the unrelated root's debt committed")
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.NotEqual(t, reactionChainReason, pv.reason,
+		"an unrelated completion is not chain-owned: no defer")
+
 	// Without node debt (settle it away) there is no defer.
-	env.requireBatchPull(1)
+	env.requireBatchPull(2)
 	snapB, err := facts.CaptureVisibleDebt(env.ctx, env.sessionID)
 	require.NoError(t, err)
 	_, err = facts.SettleReactedFailedWithMarker(env.ctx, env.sessionID, snapB, "chain probe")
@@ -226,6 +241,58 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 	require.Equal(t, "completed", env.rootTerminal(rootID))
 	require.Eventually(t, func() bool { return !l.supervisionWorkOpen(env.sessionID) },
 		5*time.Second, 5*time.Millisecond, "the scope closed after the settle")
+
+	// Synthetic delegation descendant (the DelegationFactsON reservation
+	// pattern): a live child node naming a delegation child session must
+	// increment the header's delegation count.
+	child := "sess-super-child"
+	res, err := env.store.Reserve(env.ctx, session.BatchReservation{
+		Owner: env.sessionID, Host: "host-super", RunnerID: "runner-super",
+		ToolCallID: "call-super-del", InputHash: "hash-super-del", Sequence: 100,
+		Root: session.BatchReservationNode{
+			Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: nullString("parallel"), State: "running", ControlState: "none"},
+			Children: []session.BatchReservationNode{
+				{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: nullString("agent"), State: "pending", ControlState: "none", ChildSessionID: nullString(child)}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	childNode := res.Snapshot.Nodes[1].NodeID
+	require.NoError(t, env.store.Project(env.ctx, session.BatchProjection{
+		Host: "host-super", RunnerID: "runner-super", Sequence: 101,
+		Roots: []session.BatchRootProjection{{
+			Owner: env.sessionID, Root: res.Snapshot.Root.RootID,
+			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "running", ControlState: "none"}},
+		}},
+	}))
+	require.True(t, l.supervisionWorkOpen(env.sessionID), "the delegation keeps the scope open")
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 2, time.Minute, false)
+	require.Contains(t, text, "1 sub-agent delegation(s) in progress",
+		"the Descendants fact increments the delegation count")
+	require.Contains(t, text, "call-super-del", "the summary names the delegation's tool call id")
+	require.Nil(t, flagged)
+
+	// A pending child_question notice adds the awaiting clause and the
+	// guidance prefix; settling (reacting) the question removes both.
+	now := time.Now().Unix()
+	_, err = env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
+		Owner: env.sessionID, Kind: session.NoticeKindChildQuestion,
+		Text: "super question?", Wake: 1, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	require.Contains(t, text, "(1 awaiting your answer)", "the awaiting clause appears for the held question")
+	require.Contains(t, text, "A sub-agent is blocked on your answer; waiting will not progress it.",
+		"the awaiting guidance prefix appears")
+	require.Nil(t, flagged)
+	_, err = env.conn.ExecContext(env.ctx,
+		`UPDATE session_notices SET reacted = 1 WHERE owner = ?1 AND kind = ?2`,
+		env.sessionID, session.NoticeKindChildQuestion)
+	require.NoError(t, err)
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
+	require.NotContains(t, text, "awaiting your answer", "the awaiting clause disappears once settled")
+	require.NotContains(t, text, "blocked on your answer")
+	require.Nil(t, flagged, "silence escalation awaits the R12-F batch output-buffer seam; check-ins, pause wording, scope and held-question policy are preserved")
 }
 
 // ---- Fix 5 proof: the ON notice pull delivers batch notices and session

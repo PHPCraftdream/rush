@@ -544,21 +544,19 @@ func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID stri
 }
 
 // buildSupervisionSummaryBatch is the flag-on supervision summary: one line
-// per live batch node, from the facts' live read. flagged is nil: silence
-// escalation requires the batch output-buffer seam (R12-F); until then the
-// escalation lines are absent on the ON path. Scope-open/close, check-ins,
-// pause wording and the delegation/header halves are preserved. The #1157
-// awaiting-question line is ledger-held-question state (l.heldQuestionJob
-// reads l.bySession, empty in batch mode) -- restoring it needs the same
-// R12-F seam, so awaitingCount is 0 here by construction.
+// per live batch node, from the facts' live read, with the delegation count
+// and the #1157 awaiting-question line sourced from batch FACTS
+// (LiveDelegationNodes' Descendants and HeldQuestions' pending
+// child_question rows -- never l.bySession, which is empty in batch mode).
+// Silence escalation stays legacy-only (R12-F): batch executions keep their
+// output on batchGenericExecution.content (batch_exec_generic.go), which no
+// facts reader exposes -- there is NO output-buffer/last-activity seam on
+// BatchCutoverFacts, so no silence line and no flagged job exists here;
+// flagged stays nil.
 func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
 	nodes, err := facts.LiveNodes(context.Background(), rootSessionID)
 	lines := make([]string, 0, len(nodes))
-	delegations := 0
 	for _, node := range nodes {
-		if node.ChildSessionID != "" {
-			delegations++
-		}
 		name := node.ToolCallID
 		if name == "" {
 			name = node.NodeID
@@ -570,6 +568,26 @@ func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now t
 		lines = append(lines, fmt.Sprintf("- %s (%s): %s, running %s",
 			name, kind, node.State, now.Sub(node.StartedAt).Round(time.Second)))
 	}
+	// The delegation count is the DESCENDANT facts' count (every live child
+	// node naming a delegation child session), not a recount of the tree
+	// lines: a descendant whose root line is present still counts once.
+	delegations := 0
+	if delegationNodes, derr := facts.LiveDelegationNodes(context.Background(), rootSessionID); derr == nil {
+		for _, node := range delegationNodes {
+			if node.ChildSessionID != "" {
+				delegations++
+			}
+		}
+	}
+	// #1157 on batch facts: HeldQuestions is the pending child_question
+	// debt (conservative fail-safe: 1 + err). Its rows carry only id+kind
+	// (session.PendingNoticeDebt), no question text, so the count clause
+	// stands alone -- the question itself reaches the parent through the
+	// pulled notice.
+	awaitingCount := 0
+	if held, herr := facts.HeldQuestions(context.Background(), rootSessionID); herr == nil {
+		awaitingCount = len(held)
+	}
 	body := strings.Join(lines, "\n")
 	if body == "" {
 		if err != nil {
@@ -579,12 +597,18 @@ func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now t
 		}
 	}
 	guidance := "Inspect with batch_output, or stop with batch_stop."
+	if awaitingCount > 0 {
+		guidance = "A sub-agent is blocked on your answer; waiting will not progress it.\n" + guidance
+	}
 	if paused {
 		guidance = fmt.Sprintf(
 			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
 			tickNum, guidance)
 	}
 	awaitingClause := ""
+	if awaitingCount > 0 {
+		awaitingClause = fmt.Sprintf(" (%d awaiting your answer)", awaitingCount)
+	}
 	text := fmt.Sprintf(
 		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
 		tickNum, interval.Minutes(), len(nodes), delegations, awaitingClause, body, guidance)
