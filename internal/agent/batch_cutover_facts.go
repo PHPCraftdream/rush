@@ -88,9 +88,10 @@ type BatchCutoverFacts interface {
 	// history (production BatchPullNotices) and returns them with empty
 	// claim ids (batch nodes carry no async claim identity).
 	PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]session.PulledNotice, error)
-	// PullPendingSessionNotices delivers pending wake=1 session notices
-	// WITHOUT the legacy async_jobs void validation: a supervision check-in
-	// voids only when the owner's batch live scope is closed; wake_only and
+	// PullPendingSessionNotices delivers EVERY pending session notice
+	// (markers included, wake=0 rows like the wake_failed marker) WITHOUT
+	// the legacy async_jobs void validation: a supervision check-in voids
+	// only when the owner's batch live scope is closed; wake_only and
 	// child_question rows (job_tool_call_id NULL in batch mode) deliver.
 	PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error)
 	// HeldQuestions lists pending child-question debt rows (fenced per
@@ -527,10 +528,12 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 		// LiveWorkForRoots on the ledger path (#1270).
 		f.Session.RunningOwnJobs = own + descendants
 	}
-	// Rule 5 on the flag-on path: the chain's idle launches are batch node
-	// completions (their claims were async identities), so the guard owns
-	// the debt when every pending row is a node completion and no notice
-	// row (supervision, question, marker) is mixed in.
+	// Rule 5 on the flag-on path: the chain's own launch identity does not
+	// exist for batch launches (no claim id), so the guard defers on ANY
+	// pure node-completion debt once the link count fires: over-deferral
+	// (an unrelated completion waits one pace) is conservative and
+	// reversible by a real reaction; under-deferral would mask the chain.
+	// Claim identity for batch launches is R12-F.
 	if f.Session.ChainLinks >= turnReactionChainLimit && len(rows.Nodes) > 0 && len(rows.Notices) == 0 {
 		f.Session.ChainOwnsAllDebt = true
 	}

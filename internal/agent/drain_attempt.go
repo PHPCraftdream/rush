@@ -139,12 +139,7 @@ type drainAttempt struct {
 	// chain guard's accounting (#1113).
 	chainIdleClaims []string
 	chainProgress   bool
-	// batchSnapshot is the ON-path twin of snapshot: the batch debt visible
-	// when the leg started (turn-start capture, the same conservatism) --
-	// the ONLY set this leg's accounting may increment on or settle.
-	batchSnapshot session.BatchDebtSnapshot
-	batchCaptured bool
-	closed        bool
+	closed          bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -156,16 +151,6 @@ func (a *sessionAgent) newDrainAttempt(call SessionAgentCall) *drainAttempt {
 	att := &drainAttempt{sessionID: call.SessionID}
 	if a.asyncJobs != nil {
 		att.hintAt = a.asyncJobs.hintSeqOf(call.SessionID)
-		if a.asyncJobs.coord != nil {
-			if bfacts := coordinatorBatchCutoverFacts(a.asyncJobs.coord); bfacts != nil {
-				ctx2, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
-				bs, err := bfacts.CaptureVisibleDebt(ctx2, call.SessionID)
-				cancel()
-				if err == nil {
-					att.batchSnapshot, att.batchCaptured = bs, true
-				}
-			}
-		}
 	}
 	return att
 }
@@ -282,20 +267,15 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	var rows snapshotAttempts
 	if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
-		// Flag on: count and reread through the ACTED-ON snapshot (the batch
-		// twin of att.snapshot, captured at turn start); async_jobs is never
-		// written or read. A missing turn-start capture (an older attempt
-		// built before the seam, or a failed capture) falls back to a capture
-		// HERE -- still before the increment, so the acted-on property holds.
-		snap := att.batchSnapshot
-		if !att.batchCaptured {
-			captured, err := bfacts.CaptureVisibleDebt(ctx, sid)
-			if err != nil {
-				slog.Error("drain attempt: read batch debt snapshot failed", "session_id", sid, "err", err)
-				pace()
-				return
-			}
-			snap = captured
+		// Flag on: count and reread through the ACTED-ON snapshot; async_jobs
+		// is never written or read. Captured here, after the turn-start
+		// pull: the same acted-on visible set att.snapshot held on the
+		// legacy path.
+		snap, err := bfacts.CaptureVisibleDebt(ctx, sid)
+		if err != nil {
+			slog.Error("drain attempt: read batch debt snapshot failed", "session_id", sid, "err", err)
+			pace()
+			return
 		}
 		if err := bfacts.IncrementWakeAttempts(ctx, sid, snap); err != nil {
 			slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)

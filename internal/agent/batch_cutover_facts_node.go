@@ -203,7 +203,7 @@ func (n nodeBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, sn
 	}
 	// The GIVEN acted-on set only: rows another settlement closed since the
 	// snapshot was taken are never re-captured into this accounting.
-	var out BatchAttemptRows
+	out := BatchAttemptRows{AtK: session.BatchDebtSnapshot{Owner: owner}}
 	for _, ref := range snap.Nodes {
 		count, err := n.store.BatchReactionMaxWakeAttempts(ctx, owner, session.BatchDebtSnapshot{Owner: owner, Nodes: []session.BatchDebtNodeRef{ref}})
 		if err != nil {
@@ -318,12 +318,13 @@ func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages me
 	return out, nil
 }
 
-// PullPendingSessionNotices delivers pending wake=1 session notices without
-// the legacy async_jobs void validation. A supervision check-in voids only
-// when the owner's batch live scope is closed (conservative: an unreadable
-// liveness read keeps the check-in); wake_only and child_question rows
-// (job_tool_call_id NULL in batch mode) deliver. Tx shape mirrors
-// AsyncJobStore.pullOneSessionNotice.
+// PullPendingSessionNotices delivers EVERY pending session notice (markers
+// included, wake=0 rows like the wake_failed and reaction-chain markers),
+// without the legacy async_jobs void validation. A supervision check-in
+// voids only when the owner's batch live scope is closed (conservative: an
+// unreadable liveness read keeps the check-in); wake_only and
+// child_question rows (job_tool_call_id NULL in batch mode) deliver. Tx
+// shape mirrors AsyncJobStore.pullOneSessionNotice.
 func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error) {
 	if n.writer == nil {
 		return nil, errBatchFactsUnavailable
@@ -332,19 +333,20 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 	live, descendants, lerr := n.LiveWorkSummary(ctx, owner)
 	openScope := lerr != nil || live > 0 || descendants > 0
 	rows, err := n.writer.QueryContext(ctx,
-		`SELECT id, kind, text FROM session_notices WHERE owner = ?1 AND delivery = 'pending' AND wake = 1 ORDER BY id`,
+		`SELECT id, kind, text, wake FROM session_notices WHERE owner = ?1 AND delivery = 'pending' ORDER BY id`,
 		owner)
 	if err != nil {
 		return nil, err
 	}
 	type pendingRow struct {
 		id       int64
+		wake     int64
 		kindText session.SessionNoticeRow
 	}
 	var pending []pendingRow
 	for rows.Next() {
 		var r pendingRow
-		if err := rows.Scan(&r.id, &r.kindText.Kind, &r.kindText.Text); err != nil {
+		if err := rows.Scan(&r.id, &r.kindText.Kind, &r.kindText.Text, &r.wake); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -366,7 +368,7 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 			continue
 		}
 		if pulled {
-			out = append(out, session.PulledNotice{Message: msg, Wake: true})
+			out = append(out, session.PulledNotice{Message: msg, Wake: r.wake == 1})
 		}
 	}
 	return out, nil

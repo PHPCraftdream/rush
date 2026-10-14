@@ -43,7 +43,8 @@ func newCutoverLedgerCoordinator(t *testing.T) (*coordinator, *workLedger) {
 
 func TestBatchCutoverSelectedDebtON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord, _ := newCutoverLedgerCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	require.NotNil(t, coordinatorBatchCutoverFacts(coord), "flag on: the seam returns a fact source")
@@ -55,7 +56,6 @@ func TestBatchCutoverSelectedDebtON(t *testing.T) {
 	require.False(t, debt)
 
 	// A detached root with a fast leaf settles through the real runner.
-	fast := &countingTool{name: "view"}
 	env.invokeDetached("call-fact-debt", "view", fast)
 	rootID := env.rootID("call-fact-debt")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
@@ -112,13 +112,11 @@ func TestBatchCutoverHeldQuestionsON(t *testing.T) {
 
 func TestBatchCutoverReactionFailureON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
+	failing := &errLeaf{countingTool: countingTool{name: "view"}}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, failing)
 	coord, _ := newCutoverLedgerCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
-
-	// A failing leaf settles its detached root as failed: real failure debt.
-	failing := &errLeaf{countingTool: countingTool{name: "view"}}
 	inv := env.invocation("call-fact-fail")
 	inv.Delivery.Mode = batchDeliveryDetached
 	_, err := env.install.Runtime.Invoke(env.ctx, inv, failing,
@@ -146,8 +144,14 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 	require.False(t, env.debtExists(), "the visible debt is closed by the failure settle")
 	texts, err = facts.ReactedFailedTexts(env.ctx, env.sessionID)
 	require.NoError(t, err)
-	require.Len(t, texts, 1)
-	require.Equal(t, "wake failed: probe", texts[0].Text)
+	require.Len(t, texts, 1, "the node row's own outcome summary is the reacted-failed text")
+	require.Equal(t, "boom", texts[0].Text, "the node rows keep their outcome summary; Text=OutcomeSummary")
+	// The wake_failed marker itself landed as a session_notices row.
+	var markers int64
+	require.NoError(t, env.conn.QueryRowContext(env.ctx,
+		`SELECT count(*) FROM session_notices WHERE owner = ?1 AND kind = 'wake_failed' AND text = 'wake failed: probe'`,
+		env.sessionID).Scan(&markers))
+	require.EqualValues(t, 1, markers, "the wake_failed marker landed in session_notices")
 	require.Zero(t, env.asyncJobsCount(), "async_jobs stays empty on the ON path")
 	env.logNodeRows(t, rootID)
 }
@@ -157,12 +161,12 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 
 func TestBatchCutoverWakeBreakersON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord, _ := newCutoverLedgerCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
-	fast := &countingTool{name: "view"}
 	env.invokeDetached("call-fact-wake", "view", fast)
 	rootID := env.rootID("call-fact-wake")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
@@ -287,7 +291,10 @@ func TestBatchCutoverAdmissionHeldTerminationON(t *testing.T) {
 	require.Equal(t, "pending", env.nodeState(rootB), "admission held through the Stop")
 
 	viewLeaf.letGo("call-fact-adm-r")
-	require.Equal(t, "completed", env.rootTerminal(rootR))
+	require.Equal(t, "cancelled", env.rootTerminal(rootR),
+		"the latched stop cause settles R cancelled")
+	// B is gated: release it so its settle can complete.
+	argvLeaf.letGo("call-fact-adm-b")
 	require.Eventually(t, func() bool { return env.nodeState(rootB) == "completed" },
 		5*time.Second, 5*time.Millisecond, "a new batch admitted only after the settle")
 	require.Zero(t, env.asyncJobsCount())

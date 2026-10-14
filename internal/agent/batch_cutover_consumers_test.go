@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
-	fast := &countingTool{name: "fast"}
+	fast := &countingTool{name: "grep"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
 	releaseAllAt(t, leaf)
 	coord := newCutoverCoordinator(t, env)
@@ -31,6 +32,10 @@ func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 	// DROP removes the legacy ledger wholesale.
 	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
 	require.NoError(t, err)
+	// ALSO point the coordinator's legacy store at the SAME (now headless)
+	// conn: any accidental legacy read hits the dropped table. No Close
+	// cleanup: the conn is shared with the env.
+	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-nolegacy")
 
 	// Before any debt: the ON debt answer never touches the old table.
 	debt, err := coord.ReactionDebtExists(env.ctx, env.sessionID)
@@ -42,7 +47,7 @@ func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 	t.Logf("NoLegacy: empty decision=%v verdict=%v", ddebt, dv)
 
 	// A real detached root settles: the ON path sees the debt ...
-	env.invokeDetached("call-nolegacy", "fast", fast)
+	env.invokeDetached("call-nolegacy", "grep", fast)
 	rootID := env.rootID("call-nolegacy")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
 	require.Eventually(t, func() bool { return env.debtExists() },
@@ -143,7 +148,7 @@ func TestBatchCutoverDelegationFactsON(t *testing.T) {
 
 func TestBatchCutoverChainGuardON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	fast := &countingTool{name: "fast"}
+	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
@@ -151,13 +156,15 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 
 	// Node debt: a settled detached root (delivery still pending -- the
 	// pending-inclusive rows include it).
-	env.invokeDetached("call-chain", "fast", fast)
+	env.invokeDetached("call-chain", "view", fast)
 	rootID := env.rootID("call-chain")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "node debt present")
 
-	// Three self-sustaining chain links: each leg re-records c1.
+	// Three self-sustaining chain links: each leg re-records c1. (Injected
+	// arbiter state: legitimate for a state-level test; batch-side chain
+	// evidence collection is R12-F.)
 	att := &drainAttempt{chainIdleClaims: []string{"c1"}}
 	snap := session.DebtSnapshot{Jobs: []session.DebtJobRef{{ClaimID: "c1"}}}
 	for i := 0; i < 3; i++ {
@@ -170,8 +177,20 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 		"the chain guard defers on pure node-completion debt")
 	t.Logf("ChainGuard defer reason=%q", pv.reason)
 
+	// A NON-completion row breaks the chain ownership: a pending child
+	// question in the rows makes ChainOwnsAllDebt stay false, so rule 5
+	// cannot fire even with the links counted.
+	now := time.Now().Unix()
+	_, err := env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
+		Owner: env.sessionID, Kind: session.NoticeKindChildQuestion,
+		Text: "chain question?", Wake: 1, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.NotEqual(t, reactionChainReason, pv.reason,
+		"a mixed-in question row breaks the chain ownership")
+
 	// Without node debt (settle it away) there is no defer.
-	env.requireBatchPull(1)
 	env.requireBatchPull(1)
 	snapB, err := facts.CaptureVisibleDebt(env.ctx, env.sessionID)
 	require.NoError(t, err)
@@ -200,7 +219,7 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 	require.True(t, l.supervisionWorkOpen(env.sessionID), "the live gated root keeps the scope open")
 	text, flagged := l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 1, time.Minute, false)
 	require.Contains(t, text, "call-super", "the summary names the live node's tool call id")
-	require.Nil(t, flagged, "the silence escalation is legacy-only on the ON path")
+	require.Nil(t, flagged, "silence escalation awaits the R12-F batch output-buffer seam; check-ins, pause wording, scope and held-question policy are preserved")
 	t.Logf("SupervisionON text=%q", text)
 
 	leaf.letGo("call-super")
@@ -215,7 +234,7 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 func TestBatchCutoverNoticePullON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
-	fast := &countingTool{name: "fast"}
+	fast := &countingTool{name: "grep"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
 	releaseAllAt(t, leaf)
 	coord := newCutoverCoordinator(t, env)
@@ -225,7 +244,7 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 	require.NoError(t, err)
 
 	// Batch notices: a settled detached root delivers exactly once.
-	env.invokeDetached("call-pull", "fast", fast)
+	env.invokeDetached("call-pull", "grep", fast)
 	rootID := env.rootID("call-pull")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
 	pulled, err := facts.PullBatchNotices(env.ctx, env.messages, env.sessionID)
@@ -287,17 +306,17 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 
 func TestBatchCutoverSettleExactRowsON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	fast := &countingTool{name: "fast"}
+	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
 	// Two real roots, both settled AND pulled (visible debt).
-	env.invokeDetached("call-exact-a", "fast", fast)
+	env.invokeDetached("call-exact-a", "view", fast)
 	rootA := env.rootID("call-exact-a")
 	require.Equal(t, "completed", env.rootTerminal(rootA))
-	env.invokeDetached("call-exact-b", "fast", fast)
+	env.invokeDetached("call-exact-b", "view", fast)
 	rootB := env.rootID("call-exact-b")
 	require.Equal(t, "completed", env.rootTerminal(rootB))
 	env.requireBatchPull(2)

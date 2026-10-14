@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -124,8 +125,10 @@ type cutoverEnv struct {
 	messages   message.Service
 	live       *session.BatchLiveReader
 	install    *BatchInstall
+	registries *BatchLeafRegistryStore
 	registryID string
 	sessionID  string
+	dataDir    string
 }
 
 // newCutoverEnv installs the full batch runtime over a real database with
@@ -167,7 +170,11 @@ func newCutoverEnv(t *testing.T, limits jobbatch.Limits, leaves ...fantasy.Agent
 	if err != nil {
 		t.Fatalf("InstallBatchRuntime: %v", err)
 	}
-	t.Cleanup(func() { _ = install.Runner.Close(context.Background()) })
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		_ = install.Runner.Close(closeCtx)
+	})
 	live := session.NewBatchLiveReader(db.New(conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
 	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
@@ -176,7 +183,8 @@ func newCutoverEnv(t *testing.T, limits jobbatch.Limits, leaves ...fantasy.Agent
 	return &cutoverEnv{
 		t: t, ctx: ctx, conn: conn, q: q, store: session.NewBatchStore(conn),
 		messages: message.NewService(q), live: live, install: install,
-		registryID: registryID, sessionID: sessionID,
+		registries: registries, registryID: registryID, sessionID: sessionID,
+		dataDir: dataDir,
 	}
 }
 
@@ -214,17 +222,19 @@ func readFactsON(t *testing.T, coord *coordinator, env *cutoverEnv) TurnFacts {
 	return facts
 }
 
-// armSleepAll arms the production await_tasks sleep on the fixture arbiter.
-func armSleepAll(t *testing.T, coord *coordinator, sessionID string) {
+// armSleepAll arms await_tasks' sleep through the PRODUCTION top-level
+// path: bind the coordinator to the ingress (AwaitTasks' capture reads the
+// bound bind.live) and call AwaitTasks(mode "all"), which sets the
+// arbiter's sleepAll flag.
+func armSleepAll(t *testing.T, coord *coordinator, env *cutoverEnv) tools.AwaitTasksResult {
 	t.Helper()
-	coord.arb.setSleepAll(sessionID)
-}
-
-// clearSleepAllArb disarms it (the coordinator funnel cancels schedules too;
-// the tests only need the arbiter flag gone).
-func clearSleepAllArb(t *testing.T, coord *coordinator, sessionID string) {
-	t.Helper()
-	_ = coord.arb.clearSleepAll(sessionID)
+	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
+	require.NoError(t, err)
+	require.NoError(t, BindCoordinatorBatchControls(coord, ingress, nil, env.live))
+	res, err := coord.AwaitTasks(env.ctx, env.sessionID, "all", 0)
+	require.NoError(t, err)
+	t.Logf("armSleepAll: waiting=%d", len(res.WaitingFor))
+	return res
 }
 
 // invocation is the detached-mode invocation every AW scenario uses: the
@@ -274,7 +284,7 @@ func (e *cutoverEnv) submitBatchRoot(callID string, items int, leaf *gatedLeaf) 
 			Input: json.RawMessage(`{"p":1}`), RegistryID: e.registryID,
 		})
 		require.NoError(e.t, err)
-		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: "test", Payload: payload}})
+		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}})
 	}
 	root := uuid.NewString()
 	_, err := e.install.RunnerHandle.Submit(e.ctx, jobbatch.SubmitRequest{
@@ -309,6 +319,30 @@ func (e *cutoverEnv) nodeState(nodeID string) string {
 		nodeID, e.sessionID).Scan(&state)
 	require.NoError(e.t, err, "no batch node %s", nodeID)
 	return state
+}
+
+// nodeControl reads one node's control_state (the executor Stop result:
+// 'acked' means the execution's Stop returned without error).
+func (e *cutoverEnv) nodeControl(nodeID string) string {
+	e.t.Helper()
+	var control string
+	err := e.conn.QueryRowContext(e.ctx,
+		`SELECT control_state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
+		nodeID, e.sessionID).Scan(&control)
+	require.NoError(e.t, err, "no batch node %s", nodeID)
+	return control
+}
+
+// childNodeID reads the root's task child at the given ordinal (a one-item
+// root's executor child is ordinal 1).
+func (e *cutoverEnv) childNodeID(root string, ordinal int) string {
+	e.t.Helper()
+	var nodeID string
+	err := e.conn.QueryRowContext(e.ctx,
+		`SELECT node_id FROM batch_nodes WHERE root_id = ?1 AND ordinal = ?2 AND node_id != root_id`,
+		root, ordinal).Scan(&nodeID)
+	require.NoError(e.t, err, "no child ordinal %d under root %s", ordinal, root)
+	return nodeID
 }
 
 // childState reads the FIRST non-root child's state under root.
@@ -566,18 +600,14 @@ func TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld(t *testing.T) {
 	require.EqualValues(t, 0, reacted)
 
 	// The production pull delivers exactly once, then the row is consumed.
+	before := env.backgroundNoticeCount()
 	env.requireBatchPull(1)
-	require.EqualValues(t, 1, eDelivered(t, env), "exactly one delivered completion")
+	require.EqualValues(t, 1, env.backgroundNoticeCount()-before, "exactly one completion delivered by the pull")
 	delivery, _, _, _ = env.nodeNotice(rootID)
 	require.Equal(t, "done", delivery)
 	require.Equal(t, 0, env.pullBatchNotices(), "the second pull is empty: consumed once")
 	require.Zero(t, env.asyncJobsCount())
 	env.logNodeRows(t, rootID)
-}
-
-func eDelivered(t *testing.T, env *cutoverEnv) int64 {
-	t.Helper()
-	return env.backgroundNoticeCount()
 }
 
 // ---- AW-a3: top-level ANY launches only on ROOT debt; a live other root
@@ -591,7 +621,6 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	releaseAllAt(t, viewLeaf, argvLeaf)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
-	armSleepAll(t, coord, env.sessionID)
 
 	// R: a 2-child NotifyAll gated root. B: a live gated root.
 	rootR := env.submitBatchRoot("call-a3-r", 2, viewLeaf)
@@ -601,10 +630,12 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	env.invokeDetached("call-a3-b", "run_command", argvLeaf)
 	argvLeaf.waitStarted(t, "call-a3-b")
 	rootB := env.rootID("call-a3-b")
+	// The ANY variant never arms the sleep (only mode "all" does).
 
 	// Phase 1: no settlement, no debt: nothing launches.
 	facts := readFactsON(t, coord, env)
 	require.False(t, facts.Debt.PendingIncl, "phase 1: no debt before any settlement")
+	require.False(t, facts.Session.SleepAll, "phase 1: ANY never arms the sleep")
 	debt, dv, err := coord.drainDecision(env.ctx, env.sessionID, false)
 	require.NoError(t, err)
 	require.False(t, debt, "phase 1: drainDecision reports no debt")
@@ -621,8 +652,10 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, debt, "phase 2: top-level ANY has NO launch on a child alone")
 
-	// Phase 3: R settles -> root debt, completion-class, B still live:
-	// rule 4b defers with EXACTLY the armed-sleep reason.
+	// Phase 3: R settles -> root debt while B is live. The sleep is NOT
+	// armed (ANY), so rule 4b cannot defer: the root-debt launch is
+	// ELIGIBLE. The gate is fresh (zero value: no streak, not paced), so
+	// gateShut is false and the verdict is an allow.
 	viewLeaf.letGo(rCalls[1])
 	require.Equal(t, "completed", env.rootTerminal(rootR))
 	require.Eventually(t, func() bool { return env.debtExists() },
@@ -630,23 +663,20 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	facts = readFactsON(t, coord, env)
 	require.True(t, facts.Debt.PendingIncl, "phase 3: the settled root is debt")
 	require.True(t, facts.Debt.CompletionOnly, "phase 3: root completion debt is completion-class")
-	require.Greater(t, facts.Session.RunningOwnJobs, 0, "phase 3: B is live work")
+	require.False(t, facts.Session.SleepAll, "phase 3: sleep not armed on ANY")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, "sleeping until all tasks finish", pv.reason,
-		"phase 3: one root-debt-triggered 4b defer, no launch")
-	t.Logf("AW-a3 phase3 facts runningOwn=%d reason=%q", facts.Session.RunningOwnJobs, pv.reason)
+	require.Equal(t, drainAllow, pv.kind,
+		"phase 3: top-level ANY: one eligible launch after root debt")
+	t.Logf("AW-a3 phase3 runningOwn=%d kind=%v reason=%q", facts.Session.RunningOwnJobs, pv.kind, pv.reason)
 
-	// Phase 4: B settles too -> no live work: 4b no longer defers.
+	// Phase 4: B settles too: the debt remains and the launch stays
+	// eligible (nothing consumed the debt: no launch actually ran).
 	argvLeaf.letGo("call-a3-b")
 	require.Equal(t, "completed", env.rootTerminal(rootB))
-	require.Eventually(t, func() bool {
-		f, err := coord.readTurnFacts(env.ctx, env.sessionID, siteCLI)
-		return err == nil && f.Session.RunningOwnJobs == 0
-	}, 5*time.Second, 5*time.Millisecond, "phase 4: no live work after B settles")
+	require.True(t, env.debtExists(), "phase 4: the durable debt is untouched")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.NotEqual(t, "sleeping until all tasks finish", pv.reason,
-		"phase 4: the sleep hold lifted with the last live root")
-	t.Logf("AW-a3 phase4 reason=%q", pv.reason)
+	require.Equal(t, drainAllow, pv.kind, "phase 4: the launch stays eligible")
+	t.Logf("AW-a3 phase4 kind=%v reason=%q", pv.kind, pv.reason)
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootR, rootB)
 }
@@ -659,6 +689,8 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 	argvLeaf := newGatedLeaf("run_command")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)
 	releaseAllAt(t, viewLeaf, argvLeaf)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
 	env.invokeDetached("call-a4-r", "view", viewLeaf)
 	viewLeaf.waitStarted(t, "call-a4-r")
 	rootR := env.rootID("call-a4-r")
@@ -666,12 +698,32 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 	argvLeaf.waitStarted(t, "call-a4-b")
 	rootB := env.rootID("call-a4-b")
 
+	// The PRODUCTION top-level ALL arm: both live roots reported, sleepAll
+	// set on the arbiter.
+	res := armSleepAll(t, coord, env)
+	require.Len(t, res.WaitingFor, 2, "both live roots reported")
+	facts := readFactsON(t, coord, env)
+	require.True(t, facts.Session.SleepAll, "AwaitTasks all armed the sleep")
+	require.GreaterOrEqual(t, facts.Session.RunningOwnJobs, 2, "both roots live")
+
+	// Secondary assertion: the BatchAwaitWorker ALL mode stays asleep while
+	// B is live (NotifyAll semantics over real reads). Capture BEFORE R
+	// settles so both live roots are in the set.
 	captured := env.capture()
 	require.Len(t, captured.Refs(), 2)
 	resCh := env.awaitAsync(batchAwaitModeAll, captured, true, 600*time.Millisecond)
 
-	// Settle only R; ALL must NOT wake (B still live): it times out.
+	// While B is live, root debt on R would defer with the armed-sleep
+	// reason: settle R and assert the production 4b defer.
 	viewLeaf.letGo("call-a4-r")
+	require.Equal(t, "completed", env.rootTerminal(rootR))
+	require.Eventually(t, func() bool { return env.debtExists() },
+		5*time.Second, 5*time.Millisecond, "R's root debt")
+	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainDeferred, pv.kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.reason,
+		"top-level ALL defers while another root is live")
+
 	select {
 	case out := <-resCh:
 		t.Logf("AW-a4 await mode=%s timedOut=%v finished=%d remaining=%d", out.Mode, out.TimedOut, out.FinishedCount, len(out.Remaining))
@@ -684,11 +736,12 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 		t.Fatal("worker did not report its timeout")
 	}
 
-	// Settle B too: every captured root is terminal, so ALL's wait is over.
+	// Settle B: the production 4b hold lifts (allow) and ALL's wait is over.
 	argvLeaf.letGo("call-a4-b")
-	require.Equal(t, "completed", env.rootTerminal(rootR))
 	require.Equal(t, "completed", env.rootTerminal(rootB))
-	t.Logf("AW-a4 both settled r=%s b=%s", env.nodeState(rootR), env.nodeState(rootB))
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainAllow, pv.kind, "the hold lifted with the last live root")
+	t.Logf("AW-a4 both settled r=%s b=%s kind=%v", env.nodeState(rootR), env.nodeState(rootB), pv.kind)
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootR, rootB)
 }
@@ -699,17 +752,25 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
+	fast := &countingTool{name: "grep"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
 	releaseAllAt(t, leaf)
-	// A completed detached root (completion debt, delivery held) plus a live root.
-	fast := &countingTool{name: "run_command"}
-	env.invokeDetached("call-a5-done", "run_command", fast)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+	// A completed detached root (completion debt, delivery held) plus a live
+	// root. The plain completion leaf is "grep" (admissible) because "view"
+	// is the gated leaf's pinned name.
+	env.invokeDetached("call-a5-done", "grep", fast)
 	doneRoot := env.rootID("call-a5-done")
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "completion debt after the detached root settles")
 	env.invokeDetached("call-a5-live", "view", leaf)
 	leaf.waitStarted(t, "call-a5-live")
 	liveRoot := env.rootID("call-a5-live")
+
+	// Arm the sleep through the PRODUCTION top-level ALL path first, so the
+	// hold/break below is the production 4b.
+	armSleepAll(t, coord, env)
 
 	debt := func(context.Context) (session.BatchPendingDebt, error) {
 		return env.store.BatchReactionPendingInclusiveDebtRows(env.ctx, env.sessionID)
@@ -725,14 +786,18 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 	require.True(t, facts.DebtPendingIncl)
 	require.True(t, facts.CompletionOnly, "selected completions are completion-class")
 	require.True(t, facts.SleepHolds(true, BatchSleepBreakers{}), "rule 4b holds on completions only")
+	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainDeferred, pv.kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.reason, "the armed sleep defers")
 
 	// Publish the question through the PRODUCTION publisher path: the live
-	// node's token fences the incarnation, the marker text needs \n.
+	// TASK CHILD's token fences the incarnation (admission assigns tokens
+	// to leaves only; the root token stays 0).
 	var token int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,
-		`SELECT token FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
-		liveRoot, env.sessionID).Scan(&token))
-	require.Greater(t, token, int64(0), "the live root carries an incarnation token")
+		`SELECT token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
+		liveRoot).Scan(&token))
+	require.Greater(t, token, int64(0), "the live task child carries an incarnation token")
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
 	require.NoError(t, publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
 		Owner: env.sessionID, ChildSessionID: "sess-child-a5", NodeID: liveRoot,
@@ -744,6 +809,12 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 	t.Logf("AW-a5 facts after question: completionOnly=%v", facts.CompletionOnly)
 	require.False(t, facts.CompletionOnly, "a question is not completion-class")
 	require.False(t, facts.SleepHolds(true, BatchSleepBreakers{}), "the question breaks the armed sleep")
+	// Production 4b: CompletionOnly false falls through rule 4b; with no
+	// other gate on the fresh fixture the launch is ADMITTED (the answer/
+	// inject path would run).
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainAllow, pv.kind,
+		"the question broke the sleep: one eligible launch (answer admitted)")
 
 	// The question is NOT settled by the wake: still pending and unreacted.
 	var delivery string

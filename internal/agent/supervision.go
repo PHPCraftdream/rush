@@ -544,13 +544,21 @@ func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID stri
 }
 
 // buildSupervisionSummaryBatch is the flag-on supervision summary: one line
-// per live batch node, from the facts' live read. flagged is nil -- the
-// second-tick job_kill escalation is ledger-output-buffer policy; the batch
-// controls are batch_output/batch_stop (documented ON divergence).
+// per live batch node, from the facts' live read. flagged is nil: silence
+// escalation requires the batch output-buffer seam (R12-F); until then the
+// escalation lines are absent on the ON path. Scope-open/close, check-ins,
+// pause wording and the delegation/header halves are preserved. The #1157
+// awaiting-question line is ledger-held-question state (l.heldQuestionJob
+// reads l.bySession, empty in batch mode) -- restoring it needs the same
+// R12-F seam, so awaitingCount is 0 here by construction.
 func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
 	nodes, err := facts.LiveNodes(context.Background(), rootSessionID)
 	lines := make([]string, 0, len(nodes))
+	delegations := 0
 	for _, node := range nodes {
+		if node.ChildSessionID != "" {
+			delegations++
+		}
 		name := node.ToolCallID
 		if name == "" {
 			name = node.NodeID
@@ -576,9 +584,10 @@ func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now t
 			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
 			tickNum, guidance)
 	}
+	awaitingClause := ""
 	text := fmt.Sprintf(
 		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
-		tickNum, interval.Minutes(), len(nodes), 0, "", body, guidance)
+		tickNum, interval.Minutes(), len(nodes), delegations, awaitingClause, body, guidance)
 	return text, nil
 }
 
