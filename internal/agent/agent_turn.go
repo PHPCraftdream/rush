@@ -367,7 +367,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// an interruption discovered right now is already delivery='pending' and
 	// gets pulled into history in THIS turn, not a later one. Recovery never
 	// writes history or wakes anyone itself -- see RecoverOwnerScope's doc.
-	if a.asyncJobs != nil && a.asyncJobs.store != nil {
+	// Batch runtime ON (R12-E): batch recovery is R9's sweep; the ON turn
+	// never touches async_jobs, so a dropped async_jobs store must not even
+	// be read here.
+	if a.asyncJobs != nil && a.asyncJobs.store != nil && !batchFlagEnabled() {
 		a.asyncJobs.store.RecoverOwnerScope(preambleCtx, call.SessionID, a.messages)
 	}
 

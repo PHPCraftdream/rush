@@ -317,7 +317,8 @@ func (n nodeBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) 
 	return out, nil
 }
 
-// LiveHeldQuestions lists pending unreacted child_question notices whose
+// LiveHeldQuestions lists pending-or-delivered unreacted child_question
+// notices whose
 // marker names a LIVE batch node incarnation of owner: the notice text must
 // carry the production marker header, and the named batch_nodes row must
 // exist for this owner with a live state and the marker's exact token
@@ -327,7 +328,10 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
 	}
 	rows, err := n.writer.QueryContext(ctx,
-		`SELECT id, text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery = 'pending' ORDER BY id`,
+		// The retained-debt predicate (BatchOutboxDebtNotices, batch_outbox.sql):
+		// pending OR already-delivered rows still hold the session while
+		// unreacted and wake=1.
+		`SELECT id, text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0 ORDER BY id`,
 		owner, session.NoticeKindChildQuestion)
 	if err != nil {
 		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err

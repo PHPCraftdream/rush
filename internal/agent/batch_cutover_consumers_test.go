@@ -322,14 +322,45 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		"the awaiting guidance prefix appears")
 	require.Nil(t, flagged)
 
+	// (c) Round-6 predicate: a DELIVERED but still-unreacted question is
+	// STILL HELD (delivery IN ('pending','done') AND wake=1 AND reacted=0,
+	// matching BatchOutboxDebtNotices in batch_outbox.sql).
+	_, err = env.conn.ExecContext(env.ctx,
+		`UPDATE session_notices SET delivery = 'done' WHERE owner = ?1 AND kind = ?2 AND reacted = 0`,
+		env.sessionID, session.NoticeKindChildQuestion)
+	require.NoError(t, err)
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	require.Contains(t, text, "(1 awaiting your answer)",
+		"the delivered-but-unreacted question is STILL counted (the retained-debt predicate)")
+
 	// Settling (reacting) removes the clause: unreacted is part of the
-	// predicate.
+	// predicate (checked against the now-delivered row).
 	_, err = env.conn.ExecContext(env.ctx,
 		`UPDATE session_notices SET reacted = 1 WHERE owner = ?1 AND kind = ?2`,
 		env.sessionID, session.NoticeKindChildQuestion)
 	require.NoError(t, err)
 	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
 	require.NotContains(t, text, "awaiting your answer", "the awaiting clause disappears once settled")
+	require.NotContains(t, text, "blocked on your answer")
+	require.Nil(t, flagged)
+
+	// (d) Round-6 predicate: with the notice back to pending/unreacted but
+	// the bound node TERMINALIZED, the clause disappears -- liveness of the
+	// node incarnation is part of the predicate.
+	_, err = env.conn.ExecContext(env.ctx,
+		`UPDATE session_notices SET reacted = 0, delivery = 'pending' WHERE owner = ?1 AND kind = ?2`,
+		env.sessionID, session.NoticeKindChildQuestion)
+	require.NoError(t, err)
+	require.NoError(t, env.store.Project(env.ctx, session.BatchProjection{
+		Host: "host-super", RunnerID: "runner-super", Sequence: 102,
+		Roots: []session.BatchRootProjection{{
+			Owner: env.sessionID, Root: res.Snapshot.Root.RootID,
+			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "completed", ControlState: "none"}},
+		}},
+	}))
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
+	require.NotContains(t, text, "awaiting your answer",
+		"the awaiting clause disappears once the bound node is terminal")
 	require.NotContains(t, text, "blocked on your answer")
 	require.Nil(t, flagged, "silence escalation awaits the R12-F batch output-buffer seam; check-ins, pause wording, scope and held-question policy are preserved")
 }

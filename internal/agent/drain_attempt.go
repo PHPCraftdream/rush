@@ -270,7 +270,18 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), 0)
 		return
 	case drainNoTurn:
-		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: !att.snapshot.Empty()}
+		// R12-E fix: with the batch runtime on, the pull-time capture fills
+		// att.batchSnapshot and leaves att.snapshot zero (agent_turn.go), so
+		// visible batch debt is exactly a nonempty batch snapshot. Without
+		// this term a flag-ON policy refusal reported CommitRefused=false
+		// and fell through to "no debt: gate reset", clearing a gate the
+		// attempt produced no evidence about. A failed capture cannot reach
+		// the no-turn path: the ON capture either fails the turn (error
+		// return) or runs uncounted committed (the !commit branch is
+		// skipped for drainTurnCommitted), so att.batchCaptured true here
+		// means the capture succeeded.
+		batchRefused := att.batchCaptured && !att.batchSnapshot.Empty()
+		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: !att.snapshot.Empty() || batchRefused}
 		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), 0)
 		return
 	}

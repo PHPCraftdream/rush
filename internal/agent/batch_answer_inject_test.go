@@ -29,6 +29,15 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+		// Production binds the child session inside the agent run
+		// (batch_exec_agent.go launches the run with
+		// BindChildSession: e.bindChildSession); the fixture mirrors that
+		// before asking. session_notices has no FK on a child id (its only
+		// reference is owner -> sessions), so no child session row is
+		// needed -- the id only lands in the marker text and the publisher
+		// struct's ChildSessionID (which batch_install_question requires
+		// nonempty).
+		host.BindChildSession("sess-child-a5i")
 		askAndShape(t2, host, 1, "continue?")
 	}
 	reader := newBatchAgentTestReader(false, false)
@@ -125,9 +134,11 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	require.EqualValues(t, 1, wake, "the held question wakes the owner session")
 	require.EqualValues(t, 0, reacted, "acceptance does not react the question notice")
 
-	// A stale-generation answer on the terminal incarnation is refused.
+	// A late answer on the terminal incarnation is refused: the public
+	// guard in runner_requests.go returns ErrTerminal for a terminal node
+	// BEFORE the executor (and its stale-generation check) is consulted.
 	require.ErrorIs(t, runner.Inject(env.ctx, jobbatch.ID(node),
-		json.RawMessage(`{"depth":1,"text":"late"}`)), ErrBatchAgentStaleGeneration,
+		json.RawMessage(`{"depth":1,"text":"late"}`)), jobbatch.ErrTerminal,
 		"a terminal incarnation rejects further answers")
 	require.Zero(t, env.asyncJobsCount())
 	env.logDebtRows(t)

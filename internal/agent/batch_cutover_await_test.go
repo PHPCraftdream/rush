@@ -727,8 +727,15 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	// text response and names the live task children.
 	toolText, stopTurn := awaitAnyThroughTool(t, coord, env)
 	require.True(t, stopTurn, "the ANY arm's tool response sets StopTurn (tools/await_tasks.go)")
-	require.Contains(t, toolText, "view", "the tool response names the live view leaf")
-	require.Contains(t, toolText, "run_command", "the tool response names the live run_command leaf")
+	// Production truth (batch_commit.go writes task_kind = Spec.Task.Kind;
+	// batch_ingress.go maps run_command onto the argv family): the refs'
+	// ToolName is the TASK KIND, not the leaf name.
+	require.Contains(t, toolText, batchKindGeneric, "the tool response names the generic batch children by task kind")
+	require.Contains(t, toolText, batchKindArgv, "the tool response names the detached run_command root by task kind")
+	// The renderer emits "- %s (tool_call_id %s, ...)" per ref, so the call
+	// ids tie the names to the real children.
+	require.Contains(t, toolText, "call-a3-r-item-0", "the tool response names the real batch child call id")
+	require.Contains(t, toolText, "call-a3-b", "the tool response names the detached root call id")
 	// The ANY variant never arms the sleep (only mode "all" does).
 
 	// Phase 1: no settlement, no debt: nothing launches.

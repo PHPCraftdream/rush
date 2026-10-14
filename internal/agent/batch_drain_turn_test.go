@@ -52,6 +52,15 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "the settled root is visible batch debt")
 
+	// Round 6: the production pull DELIVERS the completion first (the real
+	// runTurn pulls notices before the capture), and the delivered row is
+	// STILL visible debt (batch_reaction.go keeps delivery='done' rows for
+	// visible=true; BatchOutboxDebtNodes matches delivery IN
+	// ('pending','done') with wake=1, reacted=0).
+	env.requireBatchPull(1)
+	delivery, _, _, _ := env.nodeNotice(rootID)
+	require.Equal(t, "done", delivery, "the pull delivered the settled root's completion")
+
 	// FIRST ASSERTION (static trace in the report): the ON capture is the
 	// production call; with async_jobs dropped it must still succeed and be
 	// non-empty -- CaptureVisibleDebt reads batch_nodes + session_notices
@@ -68,7 +77,7 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 	// The production decision with that input: the turn is TAKEN (the
 	// provider stream would be reached), zero error.
 	sa := &sessionAgent{asyncJobs: coord.asyncJobs}
-	commit, verdict := sa.decideDrainTurn(env.ctx, env.sessionID, true)
+	commit, verdict := sa.decideDrainTurn(env.ctx, env.sessionID, hasVisibleDebt)
 	require.True(t, commit, "visible batch debt commits the Drain turn (ON path)")
 	t.Logf("DrainTurnON commit=%v verdict=%+v", commit, verdict)
 
