@@ -1,0 +1,425 @@
+# ci-tests — REUSABLE workflow (workflow_call ONLY).
+#
+# Holds the heavy tiered-test job bodies called by .github/ci.yml (the new
+# tiered entry point). All commands, flags, timeouts and action pins are
+# copied EXACTLY from .github/workflows/build.yml (normal batches, the 8
+# sequential internal/agent batches with their GOMEMLIMIT/parallel history,
+# the -race batches) and .github/workflows/lint.yml. For a FULL Windows plan
+# the reusable .github/workflows/ci-windows-shards.yml is CALLED instead of
+# re-running a sequential package list — its logic is never duplicated here.
+#
+# Package lists come from the plan job in ci.yml (space-separated module
+# paths). Empty group files mean "plan selected nothing here" and each step
+# exits 0 — that IS the tiered skip mechanism; the plan's `not_run` list is
+# the audit trail (rendered by ci-gate).
+name: ci-tests
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "Plan mode: tier1 | full"
+        type: string
+        required: true
+      linux_packages:
+        description: "Ubuntu-selected packages, space-separated"
+        type: string
+        default: ""
+      darwin_packages:
+        description: "macOS-selected packages, space-separated"
+        type: string
+        default: ""
+      windows_packages:
+        description: "Windows-selected packages, space-separated"
+        type: string
+        default: ""
+      race_packages:
+        description: "Race-selected packages (linux), space-separated"
+        type: string
+        default: ""
+      ubuntu_needed:
+        type: boolean
+        default: false
+      macos_needed:
+        type: boolean
+        default: false
+      windows_needed:
+        type: boolean
+        default: false
+      agent_selected:
+        description: "internal/agent is in the linux selection"
+        type: boolean
+        default: false
+      race_needed:
+        description: "At least one race package selected (excluding internal/agent)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Dot-directory under the workspace: ignored by `go list ./...`, untracked
+  # for git diff (same convention as ci-windows-shards.yml's SHARD_DIR).
+  GROUP_DIR: ${{ github.workspace }}/.ci-plan-tmp/groups
+
+jobs:
+  # ── build.yml `build` job, ubuntu leg, reduced to the plan's selection ──
+  test-ubuntu:
+    if: inputs.ubuntu_needed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: resolve plan selection into build.yml's named groups
+        run: |
+          set -euo pipefail
+          mkdir -p "$GROUP_DIR"
+          python3 - "$GROUP_DIR" "${{ inputs.linux_packages }}" <<'PY'
+          import os, sys
+          outdir, pkgs = sys.argv[1], sys.argv[2].split()
+          groups = [
+              ("app",            ["internal/app/"]),
+              ("server-session", ["internal/server/", "internal/session/"]),
+              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/csync/"]),
+              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("sdk",            ["sdk/"]),
+              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
+                                  "internal/agent/hyper/", "internal/agent/notify/",
+                                  "internal/agent/prompt/", "internal/agent/tools/"]),
+              ("db-msg-queue-pubsub-history",
+                                 ["internal/db/", "internal/message/", "internal/queue/",
+                                  "internal/pubsub/", "internal/history/"]),
+              ("oauth-deploy-update-version",
+                                 ["internal/oauth/", "internal/deploy/", "internal/update/",
+                                  "internal/version/"]),
+          ]
+          left = []
+          for p in pkgs:
+              for name, prefixes in groups:
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
+                      with open(os.path.join(outdir, f"g-{name}.txt"), "a") as f:
+                          f.write(p + "\n")
+                      break
+              else:
+                  left.append(p)
+          # catch-all: every selected package no named group claimed (the
+          # exact mechanism build.yml's computed catch-all step uses).
+          if left:
+              with open(os.path.join(outdir, "g-catchall.txt"), "w") as f:
+                  f.write("\n".join(left) + "\n")
+          PY
+          wc -c "$GROUP_DIR"/* 2>/dev/null || echo "no groups selected"
+      # Same commands as build.yml's ubuntu-leg named steps, unchanged:
+      # -short (skips VCR/network integration), -failfast -p 2; the app
+      # group keeps its explicit -timeout 20m.
+      - name: "test: internal/app"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-app.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 -timeout 20m $(cat "$f")
+      - name: "test: internal/server, internal/session"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-server-session.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: internal/permission, internal/config, internal/csync"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-perm-config-csync.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: internal/cmd, internal/commands"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-cmd-commands.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: sdk"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-sdk.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-agent-subpkgs.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-db-msg-queue-pubsub-history.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-oauth-deploy-update-version.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      - name: "test: everything else (computed catch-all)"
+        shell: bash
+        run: |
+          f="$GROUP_DIR/g-catchall.txt"; [ -s "$f" ] || exit 0
+          go test -short -failfast -p 2 $(cat "$f")
+      # build.yml runs this Linux-only suite without -short (real fork/exec).
+      # It only makes sense when internal/session or internal/cmd actually
+      # changed-and-selected, which in the selector always forces mode=full
+      # (core_prefixes); gate on mode as a cheap, correct approximation.
+      - name: process-group and lock-fence suites (Linux, no -short)
+        if: inputs.mode == 'full'
+        run: |
+          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/cmd/
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: Test npm wrapper cache logic (crush, legacy package)
+        run: node npm/crush/bin/crush.cache.test.js
+      - name: Test npm wrapper cache logic (rush)
+        run: node npm/rush/bin/rush.cache.test.js
+
+  # ── build.yml `test-agent` ubuntu leg + one whole-package -race pass ──
+  agent-ubuntu:
+    if: inputs.agent_selected
+    # 8 sequential batches (~396 tests) + one -race pass over the whole
+    # package; 90m is a runaway backstop, not a target.
+    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: go test ./internal/agent/ split into sequential batches
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Verbatim ubuntu branch of build.yml's test-agent job: source
+          # extracted test names (auto-covers new tests), bash-3.2-safe
+          # while-read loop, 8 batches, -parallel 2 (ubuntu/macOS branch —
+          # the Windows branch's -parallel 1 + GOMEMLIMIT=1500MiB lives in
+          # ci-windows-shards.yml and is NOT needed on ubuntu).
+          names=()
+          if ! name_list="$(mktemp)"; then
+            echo "::error::could not create a temporary test-name list"
+            exit 1
+          fi
+          cleanup_name_list() { rm -f -- "${name_list:-}" || :; }
+          trap cleanup_name_list EXIT
+          if ! grep -h -E '^func Test[A-Za-z0-9_]+\(' internal/agent/*_test.go \
+            | sed -n -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' \
+            | sed '/^TestMain$/d' \
+            | LC_ALL=C sort -u >"$name_list"; then
+            echo "::error::failed to extract internal/agent test names"
+            exit 1
+          fi
+          if [ ! -s "$name_list" ]; then
+            echo "::error::no internal/agent tests were extracted"
+            exit 1
+          fi
+          while IFS= read -r name; do
+            [ -n "$name" ] && names+=("$name")
+          done <"$name_list"
+          total=${#names[@]}
+          [ "$total" -gt 0 ] || { echo "::error::internal/agent test-name list is empty"; exit 1; }
+          batches=8
+          parallel=2
+          size=$(( (total + batches - 1) / batches ))
+          status=0
+          for ((i = 0; i < batches; i++)); do
+            start=$((i * size))
+            chunk=("${names[@]:start:size}")
+            [ ${#chunk[@]} -eq 0 ] && continue
+            pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
+            echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
+            go test -short -failfast -parallel "$parallel" -run "$pattern" ./internal/agent/
+            rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              status=$rc
+              break
+            fi
+          done
+          exit $status
+      # Whole-package race in ONE invocation (replaces build.yml
+      # test-race's 5 batched -run-filtered agent batches): -parallel 2 and
+      # an explicit 60m timeout against the known ~11m local cost, so no
+      # single 10m-default kill can bite and the job owns the diagnosis.
+      - name: go test -race -short -parallel 2 (internal/agent, one invocation)
+        run: go test -race -short -parallel 2 -count=1 -timeout 60m ./internal/agent/
+
+  # ── build.yml `test-race` job, reduced to the plan's selection,
+  #    EXCLUDING internal/agent (covered by agent-ubuntu above) ──
+  race-ubuntu:
+    if: inputs.race_needed
+    # Same runaway backstop as build.yml's test-race.
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: resolve race selection into build.yml's race groups
+        run: |
+          set -euo pipefail
+          mkdir -p "$GROUP_DIR"
+          python3 - "$GROUP_DIR" "${{ inputs.race_packages }}" <<'PY'
+          import os, sys
+          outdir, pkgs = sys.argv[1], sys.argv[2].split()
+          groups = [
+              ("hooks-session", ["internal/hooks", "internal/session"]),
+              ("tasktree-csync", ["internal/tasktree/", "cmd/tasklab", "internal/csync"]),
+              ("jobbatch-batchlab", ["internal/jobbatch", "cmd/batchlab"]),
+          ]
+          left = []
+          for p in pkgs:
+              if p == "github.com/PHPCraftdream/rush/internal/agent":
+                  continue  # agent's -race runs in agent-ubuntu
+              for name, prefixes in groups:
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
+                      with open(os.path.join(outdir, f"r-{name}.txt"), "a") as f:
+                          f.write(p + "\n")
+                      break
+              else:
+                  left.append(p)
+          if left:
+              with open(os.path.join(outdir, "r-catchall.txt"), "w") as f:
+                  f.write("\n".join(left) + "\n")
+          PY
+      # build.yml test-race's exact flags: -race -short -failfast -timeout 15m.
+      - name: go test -race -short -failfast (internal/hooks, internal/session)
+        shell: bash
+        run: |
+          f="$GROUP_DIR/r-hooks-session.txt"; [ -s "$f" ] || exit 0
+          go test -race -short -failfast -timeout 15m $(cat "$f")
+      - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
+        shell: bash
+        run: |
+          f="$GROUP_DIR/r-tasktree-csync.txt"; [ -s "$f" ] || exit 0
+          go test -race -short -failfast -timeout 15m $(cat "$f")
+      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+        shell: bash
+        run: |
+          f="$GROUP_DIR/r-jobbatch-batchlab.txt"; [ -s "$f" ] || exit 0
+          go test -race -short -failfast -timeout 15m $(cat "$f")
+      - name: go test -race -short -failfast (everything else selected for race)
+        shell: bash
+        run: |
+          f="$GROUP_DIR/r-catchall.txt"; [ -s "$f" ] || exit 0
+          go test -race -short -failfast -timeout 15m $(cat "$f")
+
+  # ── build.yml `build`/`test-agent` native legs, reduced to the plan's
+  #    selection. A lane is skipped entirely when the plan says that OS is
+  #    not needed. On a FULL Windows plan the reusable shards workflow is
+  #    called instead (windows-full-shards below). ──
+  test-native:
+    if: inputs.macos_needed || (inputs.windows_needed && inputs.mode != 'full')
+    strategy:
+      # Same rationale as build.yml's build matrix: one leg's failure must
+      # not cancel the other mid-run.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: no-op when this OS lane is not needed
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ inputs.macos_needed }}" != "true" ]; then
+            echo "plan: darwin lane not needed"; exit 0
+          fi
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            if [ "${{ inputs.windows_needed }}" != "true" ]; then echo "plan: windows lane not needed"; exit 0; fi
+            if [ "${{ inputs.mode }}" = "full" ]; then echo "plan: full windows run goes to ci-windows-shards"; exit 0; fi
+          fi
+      - run: git config --global core.autocrlf input
+        if: matrix.os == 'windows-latest'
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: resolve plan selection into build.yml's named groups
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GROUP_DIR"
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then pkgs="${{ inputs.darwin_packages }}"; else pkgs="${{ inputs.windows_packages }}"; fi
+          python3 - "$GROUP_DIR" "$pkgs" <<'PY'
+          import os, sys
+          outdir, pkgs = sys.argv[1], sys.argv[2].split()
+          groups = [
+              ("app",            ["internal/app/"]),
+              ("server-session", ["internal/server/", "internal/session/"]),
+              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/csync/"]),
+              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("sdk",            ["sdk/"]),
+              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
+                                  "internal/agent/hyper/", "internal/agent/notify/",
+                                  "internal/agent/prompt/", "internal/agent/tools/"]),
+              ("db-msg-queue-pubsub-history",
+                                 ["internal/db/", "internal/message/", "internal/queue/",
+                                  "internal/pubsub/", "internal/history/"]),
+              ("oauth-deploy-update-version",
+                                 ["internal/oauth/", "internal/deploy/", "internal/update/",
+                                  "internal/version/"]),
+          ]
+          left = []
+          for p in pkgs:
+              if p == "github.com/PHPCraftdream/rush/internal/agent":
+                  continue  # exact internal/agent package: dedicated agent job on ubuntu
+              for name, prefixes in groups:
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
+                      with open(os.path.join(outdir, f"n-{name}.txt"), "a", newline="\n") as f:
+                          f.write(p + "\n")
+                      break
+              else:
+                  left.append(p)
+          if left:
+              with open(os.path.join(outdir, "n-catchall.txt"), "w", newline="\n") as f:
+                  f.write("\n".join(left) + "\n")
+          PY
+      # Native legs run the same groups with the same flags as build.yml's
+      # native legs, as one loop (the per-group step split lives on the
+      # ubuntu lane and in ci-windows-shards; see .github/ci-structure.md).
+      - name: "test: selected packages (named groups, sequential)"
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          for f in "$GROUP_DIR"/n-*.txt; do
+            [ -e "$f" ] || { echo "plan: nothing selected for ${{ matrix.os }}"; exit 0; }
+            [ -s "$f" ] || continue
+            echo "::group::test: $(basename "$f" .txt)"
+            timeout_flags=""
+            [ "$(basename "$f" .txt)" = "n-app" ] && timeout_flags="-timeout 20m"
+            # CR-safe: a text-mode writer on Windows emits CRLF, and a stray CR makes
+            # every package path "[setup failed]".
+            go test -short -failfast -p 2 $timeout_flags $(tr -d '\r' < "$f")
+            rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then status=$rc; break; fi
+          done
+          exit $status
+
+  # ── FULL Windows plan: delegate to the reusable shards workflow ──
+  # (a `uses:` job carries no steps — kept thin per ci-structure.md).
+  windows-full-shards:
+    if: inputs.mode == 'full' && inputs.windows_needed
+    uses: ./.github/workflows/ci-windows-shards.yml
+    permissions:
+      contents: read
+    secrets: inherit
