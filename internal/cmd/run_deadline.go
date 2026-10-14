@@ -41,8 +41,18 @@ func installRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.
 	ctx, cancel := context.WithTimeoutCause(ctx, deadline, &agent.RunTimeoutCause{
 		Duration: deadline, Source: source, DefaultCap: isCap,
 	})
-	timers := make([]*time.Timer, 0, 1)
-	timers = append(timers, time.AfterFunc(deadline+grace, func() {
+	timer := time.AfterFunc(deadline+grace, hardKillCallback(ctx, deadline, grace, isCap, stderr, exit))
+	return ctx, func() {
+		timer.Stop()
+		cancel()
+	}
+}
+
+func hardKillCallback(ctx context.Context, deadline, grace time.Duration, isCap bool, stderr io.Writer, exit func(int)) func() {
+	// Independent timer callbacks can execute out of order, so wait for this
+	// run's context rather than assuming the callback fired at its deadline.
+	return func() {
+		<-ctx.Done()
 		if cause, ok := context.Cause(ctx).(*agent.RunTimeoutCause); !ok || cause == nil {
 			return
 		}
@@ -56,11 +66,5 @@ func installRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.
 				deadline+grace, deadline, grace)
 		}
 		exit(124)
-	}))
-	return ctx, func() {
-		for _, t := range timers {
-			t.Stop()
-		}
-		cancel()
 	}
 }

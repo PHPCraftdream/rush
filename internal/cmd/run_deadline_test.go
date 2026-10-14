@@ -150,6 +150,41 @@ func TestInstallRunDeadline_HardKillOnlyPastTheGrace(t *testing.T) {
 	require.Contains(t, stderr.String(), "force-killing")
 }
 
+type enteredDoneContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (c *enteredDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
+}
+
+func TestInstallRunDeadline_HardKillWaitsForTimeoutCause(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	wrapped := &enteredDoneContext{Context: ctx, entered: make(chan struct{})}
+	stderr, rec := newLockedBuf(), newExitRecorder()
+	callbackDone := make(chan struct{})
+	go func() {
+		hardKillCallback(wrapped, 0, 0, false, stderr, rec.exit)()
+		close(callbackDone)
+	}()
+	select {
+	case <-wrapped.entered:
+	case <-callbackDone:
+		require.FailNow(t, "hard-kill callback returned before deadline cancellation")
+	}
+	require.Nil(t, context.Cause(ctx))
+	require.Empty(t, rec.calls())
+	cancel(&agent.RunTimeoutCause{Duration: time.Second, Source: "test"})
+	awaitClosed(t, callbackDone, "hard-kill callback completion")
+	require.Equal(t, []int{124}, rec.calls())
+	require.Contains(t, stderr.String(), "force-killing")
+}
+
 // --timeout is unchanged: its own deadline and grace, its own message, no cap
 // notice; a stopped run never fires either timer.
 //
