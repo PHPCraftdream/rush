@@ -363,7 +363,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		err := n.writer.QueryRowContext(ctx,
 			`SELECT token, state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
 			node, owner).Scan(&rowToken, &state)
-		if err != nil || !batchNodeStateLive(state) || rowToken != int64(token) {
+		if err != nil || !batchNodeStateLive(state) || rowToken != token {
 			continue
 		}
 		out = append(out, session.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion})
@@ -376,8 +376,10 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 // batchCoordinatorQuestionPublisher (batch_install_question.go):
 // "[batch-question node=X token=N sequence=S depth=D child=C]". A text
 // without a parseable marker (or token 0, which the publisher never writes)
-// is not counted.
-func parseBatchQuestionMarker(text string) (string, uint64, bool) {
+// is not counted. The token parses straight into int64 -- the batch_nodes
+// token column's type -- so no unbounded uint64->int64 conversion exists
+// (CodeQL go/integer-conversion).
+func parseBatchQuestionMarker(text string) (string, int64, bool) {
 	if !strings.HasPrefix(text, "[batch-question ") {
 		return "", 0, false
 	}
@@ -386,7 +388,7 @@ func parseBatchQuestionMarker(text string) (string, uint64, bool) {
 		header = header[:idx]
 	}
 	var node string
-	var token uint64
+	var token int64
 	for _, field := range strings.Fields(header) {
 		name, value, ok := strings.Cut(field, "=")
 		if !ok {
@@ -396,7 +398,7 @@ func parseBatchQuestionMarker(text string) (string, uint64, bool) {
 		case "node":
 			node = value
 		case "token":
-			t, err := strconv.ParseUint(value, 10, 64)
+			t, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
 				return "", 0, false
 			}

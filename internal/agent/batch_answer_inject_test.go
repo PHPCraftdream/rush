@@ -86,7 +86,7 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	node, tok, ok := parseBatchQuestionMarker(text)
 	require.True(t, ok, "the notice text carries the production marker: %q", text)
 	require.NotEmpty(t, node)
-	require.Greater(t, tok, uint64(0), "the incarnation token is nonzero")
+	require.Greater(t, tok, int64(0), "the incarnation token is nonzero")
 	require.Contains(t, text, "depth=1", "the marker stamps the held depth")
 	require.Contains(t, text, "continue?", "the question body follows the marker")
 

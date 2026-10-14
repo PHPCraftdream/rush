@@ -442,7 +442,28 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				att.outcome = drainNoTurn
 				att.commitNo = verdict
 				if !hasVisibleDebt {
-					att.pendingLeft = a.pendingDebtLeft(preambleCtx, call.SessionID)
+					// Pending-inclusive debt source (R12-E round 7): ON with
+					// bound facts the pending read comes from the BATCH rows
+					// too -- the legacy AsyncReactionDebtExists over
+					// async_jobs never runs with the flag on, so a dropped
+					// legacy table cannot fail the accounting. OFF keeps the
+					// legacy predicate byte-identical.
+					if bfacts != nil {
+						pctx, pcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
+						pending, perr := bfacts.PendingInclusiveDebt(pctx, call.SessionID)
+						pcancel()
+						if perr != nil {
+							// Same fail-safe as pendingDebtLeft: an
+							// unreadable answer counts as "remains".
+							slog.Warn("drain turn: pending batch debt check failed; treating the debt as remaining",
+								"session_id", call.SessionID, "err", perr)
+							att.pendingLeft = true
+						} else {
+							att.pendingLeft = len(pending.Nodes)+len(pending.Notices) > 0
+						}
+					} else {
+						att.pendingLeft = a.pendingDebtLeft(preambleCtx, call.SessionID)
+					}
 				}
 				preambleCancel()
 				a.closeDrainAttempt(att, nil)

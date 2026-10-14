@@ -733,8 +733,14 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	require.Contains(t, toolText, batchKindGeneric, "the tool response names the generic batch children by task kind")
 	require.Contains(t, toolText, batchKindArgv, "the tool response names the detached run_command root by task kind")
 	// The renderer emits "- %s (tool_call_id %s, ...)" per ref, so the call
-	// ids tie the names to the real children.
-	require.Contains(t, toolText, "call-a3-r-item-0", "the tool response names the real batch child call id")
+	// ids tie the names to the real children. Production truth: every
+	// subtree ref carries the ROOT's tool_call_id (batchLiveFact propagates
+	// level.Node.ToolCallID, read at the root -- session/batch_read.go
+	// batchLiveFact), so the R root renders as "call-a3-r"; "call-a3-b" is
+	// the detached root's own ref (invokeDetached's BatchInvocation carries
+	// ToolCallID=callID and rootID() matches tool_call_id = callID AND
+	// node_id = root_id).
+	require.Contains(t, toolText, "call-a3-r", "the tool response names the R root's call id (the root ref, not a child id)")
 	require.Contains(t, toolText, "call-a3-b", "the tool response names the detached root call id")
 	// The ANY variant never arms the sleep (only mode "all" does).
 

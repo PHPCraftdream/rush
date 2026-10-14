@@ -355,7 +355,11 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		Host: "host-super", RunnerID: "runner-super", Sequence: 102,
 		Roots: []session.BatchRootProjection{{
 			Owner: env.sessionID, Root: res.Snapshot.Root.RootID,
-			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "completed", ControlState: "none"}},
+			// Token matches the row's projected token (batch_nodes.sql writes
+			// token = @token verbatim, no COALESCE): the ONLY reason the
+			// awaiting clause disappears must be state='completed' failing
+			// batchNodeStateLive, never a token mismatch.
+			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "completed", ControlState: "none", Token: liveToken}},
 		}},
 	}))
 	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)

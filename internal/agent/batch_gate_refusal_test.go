@@ -1,16 +1,16 @@
 package agent
 
-// R12-E round 6 (fix 1a): a batch-policy refusal (the launch gate is shut
-// over visible BATCH debt) must NOT clear the launch gate. Before the fix
-// the no-turn facts carried CommitRefused=false on the ON path (att.snapshot
-// stays zero there), so decideAccount fell through to "no debt: gate reset"
-// and executeAccountVerdict reset a gate the attempt produced no evidence
-// about. Production accounting path: accountDrainAttempt -> facts.Attempt
-// (drain_attempt.go, drainNoTurn case) -> decideAccount -> A3' "commit
-// refused: gate untouched" -> executeAccountVerdict leaves the gate.
+// R12-E round 7 (fix 1): the detached completion root uses a plain
+// countingTool leaf (no gates): its Run returns immediately, so the root
+// settles completed with no release bookkeeping and rootTerminal's
+// Eventually has nothing to wait on. Production accounting path:
+// accountDrainAttempt -> facts.Attempt (drain_attempt.go, drainNoTurn
+// case) -> decideAccount -> A3' "commit refused: gate untouched" ->
+// executeAccountVerdict leaves the gate.
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -25,14 +25,14 @@ import (
 // stay paced (A3': the attempt is no evidence about the gate).
 func TestBatchGateRefusalUntouchedON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	leaf := newGatedLeaf("view")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
-	releaseAllAt(t, leaf)
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
 
-	// Real visible batch debt: a settled, DELIVERED detached root.
-	env.invokeDetached("call-gate", "view", leaf)
+	// Real visible batch debt: a settled, DELIVERED detached root. The
+	// countingTool leaf completes instantly (no gate, nothing to release).
+	env.invokeDetached("call-gate", "view", fast)
 	rootID := env.rootID("call-gate")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
 	env.requireBatchPull(1)
@@ -84,9 +84,8 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 // gate ("no debt: gate reset").
 func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	leaf := newGatedLeaf("view")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
-	releaseAllAt(t, leaf)
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	require.Nil(t, coordinatorBatchCutoverFacts(coord), "flag off: no batch facts (the inline ledger path)")
 
@@ -116,4 +115,117 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 	require.False(t, gate.Paced, "OFF no-debt: the gate is reset")
 	require.True(t, gate.RetryAt.IsZero())
 	require.Zero(t, gate.PaidStreak, "OFF no-debt: the streaks are cleared")
+}
+
+// TestBatchPendingLeftONNoDebtResetsGate (R12-E round 7 fix 4a): the ON
+// no-visible-debt accounting computes pendingLeft from the BATCH
+// pending-inclusive source, never from async_jobs -- with the legacy table
+// DROPPED, a no-debt no-turn leg still reaches A3 "no debt: gate reset".
+func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+	// Headless legacy store on the SAME conn, then DROP async_jobs (the
+	// batch_drain_turn_test.go shape): any legacy read anywhere in this
+	// accounting fails with "no such table".
+	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-g1")
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	require.NoError(t, err)
+
+	// A paced gate the reset must clear.
+	coord.arb.pace(env.sessionID, 0, time.Minute, false, pacePaidUnreacted)
+
+	// The production predicate inputs (agent_turn.go att block): the ON
+	// capture is empty (fresh env, nothing invoked) and the pending-inclusive
+	// batch read is empty too -> pendingLeft=false.
+	bfacts := coordinatorBatchCutoverFacts(coord)
+	require.NotNil(t, bfacts)
+	bctx, bcancel := context.WithTimeout(env.ctx, drainAccountBudget())
+	bsnap, berr := bfacts.CaptureVisibleDebt(bctx, env.sessionID)
+	bcancel()
+	require.NoError(t, berr)
+	require.True(t, bsnap.Empty(), "no batch debt was ever created")
+	pending, perr := bfacts.PendingInclusiveDebt(env.ctx, env.sessionID)
+	require.NoError(t, perr, "the pending read is batch-only: async_jobs is dropped")
+	require.Empty(t, pending.Nodes)
+	require.Empty(t, pending.Notices)
+
+	att := &drainAttempt{
+		sessionID:     env.sessionID,
+		outcome:       drainNoTurn,
+		commitNo:      drainVerdict{kind: drainDeferred, reason: "no visible debt"},
+		batchSnapshot: bsnap,
+		batchCaptured: true,
+		pendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
+	}
+	coord.accountDrainAttempt(env.ctx, att, nil)
+
+	// FIRST ASSERTION (static trace in the report): the gate is RESET.
+	// Trace: accountDrainAttempt -> drainNoTurn -> batchRefused=false
+	// (empty batch snapshot), CommitRefused=false -> decideAccount A3 "no
+	// debt: gate reset" (PendingLeft=false) -> executeAccountVerdict's
+	// reset branch -> resetGate (drain_attempt.go).
+	gate := coord.arb.snapshot(env.sessionID).Gate
+	require.False(t, gate.Paced, "ON no-debt: the gate is reset via the batch pending source")
+	require.True(t, gate.RetryAt.IsZero())
+}
+
+// TestBatchPendingLeftONPendingDebtPacesGate (R12-E round 7 fix 4b): a
+// settled batch completion that was NOT pulled is invisible debt but
+// pending-inclusive debt: the ON predicate yields pendingLeft=true and the
+// accounting paces the gate (A2 "pending debt left behind"), all with
+// async_jobs DROPPED (the ON branch never touches the legacy store).
+func TestBatchPendingLeftONPendingDebtPacesGate(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-g2")
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	require.NoError(t, err)
+
+	// A settled, UNPULLED batch completion (countingTool: instant settle).
+	env.invokeDetached("call-pl", "view", fast)
+	rootID := env.rootID("call-pl")
+	require.Equal(t, "completed", env.rootTerminal(rootID))
+
+	// Production predicate inputs: visible capture EMPTY (delivery is still
+	// 'pending' -- no pull), pending-inclusive NONEMPTY (the same row set
+	// with visible=false over batch_nodes; the node's completion notice is
+	// unpulled). Trace the production code: hasVisibleDebt=false ->
+	// bfacts != nil -> pendingLeft = len(pending.Nodes)+len(pending.Notices)
+	// > 0 = true (agent_turn.go).
+	bfacts := coordinatorBatchCutoverFacts(coord)
+	require.NotNil(t, bfacts)
+	bctx, bcancel := context.WithTimeout(env.ctx, drainAccountBudget())
+	bsnap, berr := bfacts.CaptureVisibleDebt(bctx, env.sessionID)
+	bcancel()
+	require.NoError(t, berr)
+	require.True(t, bsnap.Empty(), "the completion is NOT visible before any pull")
+	pending, perr := bfacts.PendingInclusiveDebt(env.ctx, env.sessionID)
+	require.NoError(t, perr, "the pending read is batch-only: async_jobs is dropped")
+	require.NotZero(t, len(pending.Nodes)+len(pending.Notices), "the unpulled completion is pending-inclusive debt")
+
+	att := &drainAttempt{
+		sessionID:     env.sessionID,
+		outcome:       drainNoTurn,
+		commitNo:      drainVerdict{kind: drainDeferred, reason: "no visible debt"},
+		batchSnapshot: bsnap,
+		batchCaptured: true,
+		pendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
+	}
+	coord.accountDrainAttempt(env.ctx, att, nil)
+
+	// FIRST ASSERTION (static trace in the report): the gate is PACED.
+	// Trace: accountDrainAttempt -> drainNoTurn -> CommitRefused=false,
+	// PendingLeft=true -> decideAccount A2 "pending debt left behind" ->
+	// executeAccountVerdict's A2 branch -> paceUnreacted(sid, hintAt, true,
+	// paceFreeNoTurn) -> arbPace with wait=drainRetryAfterFailure (default
+	// 60s; drain_attempt.go init) -> RetryAt in the future.
+	gate := coord.arb.snapshot(env.sessionID).Gate
+	require.True(t, gate.Paced, "ON pending-left: the gate is paced (A2)")
+	require.True(t, gate.RetryAt.After(time.Now()), "the A2 pace is the 60s retry pause, not a stale tick")
 }
