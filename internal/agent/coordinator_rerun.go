@@ -2,6 +2,12 @@
 // Rerun-scoped stop (work_ledger_rerun.go). The durable reconciliation is
 // session.TruncateForRerun's single transaction; this runs only after it
 // committed.
+//
+// R12-F: this is the FLAG-OFF contract ([]session.VoidedAsyncJob). The
+// flag-on counterpart - exact-incarnation post-commit stop over the R10c
+// node-row reconciliation's Voided set - lives in batch_cutover_rerun.go
+// (BatchRerunStopper.BatchRerunStopVoided); the rerun handler selects
+// between them on config.BatchRuntimeEnabled().
 package agent
 
 import (

@@ -34,7 +34,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	if a == nil {
 		return nil, errors.New("batch runtime factory: nil app")
 	}
-	if a.asyncJobStore == nil {
+	if a.asyncJobStore == nil && !(batchCutoverOn() && a.batchHostStore() != nil) {
 		return nil, errors.New("batch runtime factory: no agent store (agent setup skipped)")
 	}
 	if a.Messages == nil {
@@ -45,7 +45,14 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		return nil, errors.New("batch runtime factory: no db writer")
 	}
 	if deps.Host == "" {
-		deps.Host = a.asyncJobStore.HostID()
+		if batchCutoverOn() {
+			// R12-F: the flag-ON identity is the HostStore's.
+			if hs := a.batchHostStore(); hs != nil {
+				deps.Host = hs.HostID()
+			}
+		} else {
+			deps.Host = a.asyncJobStore.HostID()
+		}
 	}
 	deps.Store = session.NewBatchStore(writer)
 	deps.Messages = a.Messages

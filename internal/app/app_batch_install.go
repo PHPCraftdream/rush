@@ -45,7 +45,15 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// R11F (M3): the commit-hook identity must exist BEFORE the first Claim,
 	// so the flagged install registers the host up front (HostID() is empty
 	// until the lazy ensureHost registration).
-	host, err := app.asyncJobStore.EnsureHost(ctx)
+	// R12-F: with the flag ON the identity is R12-D's job-independent
+	// HostStore -- async_jobs is never read (the table may not even exist).
+	var host string
+	var err error
+	if batchCutoverOn() {
+		host, err = app.batchHostEnsure(ctx)
+	} else {
+		host, err = app.asyncJobStore.EnsureHost(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -93,8 +101,16 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// RetainHostIdentity mirrors the flag-off forced path's CloseKeepLock,
 	// ReleaseHostIdentity the graceful Close, and ReleaseWriter the
 	// generation-safe per-reference DB release of releaseResources.
-	rt.cfg.RetainHostIdentity = app.asyncJobStore.CloseKeepLock
-	rt.cfg.ReleaseHostIdentity = app.asyncJobStore.Close
+	if batchCutoverOn() {
+		// R12-F: host release goes through the HostStore -- CloseKeepLock
+		// pins the OS lock, Close deletes via DeleteAsyncHostIfNoNodes,
+		// never async_jobs.
+		rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
+		rt.cfg.ReleaseHostIdentity = app.batchHostRelease
+	} else {
+		rt.cfg.RetainHostIdentity = app.asyncJobStore.CloseKeepLock
+		rt.cfg.ReleaseHostIdentity = app.asyncJobStore.Close
+	}
 	rt.cfg.ReleaseWriter = func(context.Context) error {
 		return app.releaseBatchWriter()
 	}
@@ -147,15 +163,20 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 	rt := app.batchRuntime
 	if rt == nil {
 		// Defensive: a flag-off App must never take this path; keep the
-		// flag-off retention semantics if it somehow does.
-		if app.asyncJobStore != nil {
+		// flag-off retention semantics if it somehow does. Flag ON: the
+		// HostStore twin.
+		if batchCutoverOn() {
+			app.batchHostReleaseKeepLock()
+		} else if app.asyncJobStore != nil {
 			app.asyncJobStore.CloseKeepLock()
 		}
 		return stillBusy
 	}
 	if stillBusy {
 		rt.Stop()
-		if app.asyncJobStore != nil {
+		if batchCutoverOn() {
+			app.batchHostReleaseKeepLock()
+		} else if app.asyncJobStore != nil {
 			app.asyncJobStore.CloseKeepLock()
 		}
 		return true
