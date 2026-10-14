@@ -25,7 +25,8 @@ import (
 
 // batchSessionGuardReason returns "" when the session's batch facts are
 // safely at rest, or a human-readable reason naming the offending root:
-// an incomplete read first (conservative), then a held root, then debt.
+// an incomplete read first (conservative), then a held root, then the
+// pending-inclusive delivery debt (terminal roots included).
 func batchSessionGuardReason(f batchSessionFacts) string {
 	if f.Unknown {
 		return "batch read was incomplete; live batch work is unknown"
@@ -39,8 +40,8 @@ func batchSessionGuardReason(f batchSessionFacts) string {
 			return fmt.Sprintf("batch root %s (tool call %s) is %s", short(r.RootID), r.ToolCallID, verdict)
 		}
 	}
-	if f.Debt > 0 {
-		return fmt.Sprintf("batch delivery debt of %d unreacted notice(s)", f.Debt)
+	if f.GuardDebt {
+		return fmt.Sprintf("batch delivery debt of %d unreacted notice(s) (terminal roots included)", f.GuardDebtN)
 	}
 	return ""
 }
@@ -58,11 +59,11 @@ func batchResetRefusedError(sessionID string, refusal *session.BatchResetRefusal
 		sessionID, refusal.RootID, refusal.ToolCallID, state, sessionID)
 }
 
-// resetActivityRefusal is the shared live-work gate both reset paths run
-// before touching history: the legacy classifier decides "still being worked
-// on" (driver, running jobs, delegations); --force skips only the lock half,
-// which the caller handled. Batch roots are covered by the batch reset's own
-// atomic refusal, not here.
+// resetActivityRefusal is the legacy reset path's live-work gate: the legacy
+// classifier decides "still being worked on" (driver, running jobs,
+// delegations); --force skips only the lock half, which the caller handled.
+// The flag-ON batch path does NOT use it: the R10c batch reset refuses
+// atomically on any nonterminal root, which is its live-work gate.
 func resetActivityRefusal(ctx context.Context, a *app.App, sessionID string, force bool) error {
 	act, actErr := a.SessionActivity(ctx, sessionID)
 	if actErr != nil {
@@ -78,23 +79,18 @@ func resetActivityRefusal(ctx context.Context, a *app.App, sessionID string, for
 	return nil
 }
 
-// batchResetSessionHistory is the flag-ON reset path: identical recovery and
-// live-work gate, then the R10c batch reset (check + delete in ONE writer
-// transaction; refusal writes nothing).
-func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string, force bool) (session.BatchResetOutcome, error) {
-	store := a.AsyncJobStore()
-	if store == nil {
-		// No async data can exist without a store: the plain wipe is all there is.
+// batchResetSessionHistory is the flag-ON reset path: the R10c batch reset
+// (check + delete in ONE writer transaction; refusal writes nothing). Its
+// atomic refusal of any nonterminal batch root IS the live-work gate -- no
+// legacy classifier or ledger recovery runs here. The plain-wipe fallback
+// exists only for a configless App (nil DB).
+func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.BatchResetOutcome, error) {
+	if a.DB() == nil {
+		// No database can hold batch rows: the plain wipe is all there is.
 		if err := a.Messages.DeleteSessionMessages(ctx, sessionID); err != nil {
 			return session.BatchResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
 		}
 		return session.BatchResetOutcome{}, nil
-	}
-	// Dead-host rows of the legacy ledger become 'interrupted' first, same
-	// as the flag-OFF path.
-	store.RecoverOwnerScope(ctx, sessionID, a.Messages)
-	if err := resetActivityRefusal(ctx, a, sessionID, force); err != nil {
-		return session.BatchResetOutcome{}, err
 	}
 	out, err := session.NewBatchStore(a.DB()).BatchResetOwnerHistory(ctx, a.Messages, sessionID)
 	var refusal *session.BatchResetRefusal
@@ -134,15 +130,15 @@ func gcDropBatchProtected(a *app.App, candidates []gcItem) []gcItem {
 }
 
 // gcBatchRetention runs the batch-side numbers of --jobs-older-than through
-// the R10c retention API instead of duplicating its cutoff policy. Returns
-// the expired root/node count; verb is "would purge" on a dry run.
-func gcBatchRetention(ctx context.Context, a *app.App, dryRun bool, now time.Time) (int64, error) {
+// the R10c retention API at the caller-chosen age instead of duplicating its
+// cutoff policy. Returns the expired root/node count; verb is "would purge"
+// on a dry run.
+func gcBatchRetention(ctx context.Context, a *app.App, dryRun bool, age time.Duration) (int64, error) {
 	bs := session.NewBatchStore(a.DB())
-	cutoff := session.BatchRetentionCutoff(now)
 	if dryRun {
-		return bs.BatchCountExpired(ctx, cutoff)
+		return bs.BatchCountJobsOlderThan(ctx, age)
 	}
-	return bs.BatchPurgeExpired(ctx, cutoff)
+	return bs.BatchPurgeJobsOlderThan(ctx, age)
 }
 
 // compactBatchLiveSessions lists the sessions whose batch facts show live or

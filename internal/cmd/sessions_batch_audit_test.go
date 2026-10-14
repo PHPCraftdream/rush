@@ -92,6 +92,7 @@ func TestSessionsAudit_BatchFlagOn_MissingLegacyTableReported(t *testing.T) {
 	require.Equal(t, 2, facts.Tasks.Pending, "two seeded task children")
 	require.Equal(t, int64(2), facts.StateCounts["pending"],
 		"BatchHistoryStateCounts must count the task nodes per state")
+	require.False(t, facts.GuardDebt, "a fresh fixture has no completion debt")
 	require.Empty(t, reports[0].SchemaIssues)
 }
 
@@ -128,11 +129,15 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	require.False(t, reports[0].Batch.LegacyAsyncJobsAbsent,
 		"the legacy table is present; the absence flag must stay off")
 
-	// Terminal root: nothing unfinished, but the counts still show the work.
+	// Terminal root: no unfinished_jobs FINDING (the rule status line still
+	// says where it counts from), but the counts still show the work.
 	projectBatchAuditRoot(t, f, "completed", 3)
 	stdout, reports = auditRunRulesDB(t, dataDir, "--all")
-	require.NotContains(t, stdout, "unfinished_jobs",
-		"a completed root is not unfinished work")
+	require.NotContains(t, stdout,
+		auditFindingLine("unfinished_jobs", sessionID, f.toolCallID+":cancelling", 1),
+		"a completed root produces no unfinished_jobs finding")
+	require.Contains(t, stdout, auditBatchRuleBatchStatus,
+		"the batch status line (counted from batch_nodes) stays")
 	require.NotNil(t, reports[0].Batch)
 	facts := reports[0].Batch.Sessions[sessionID]
 	require.False(t, facts.Live)
@@ -149,7 +154,7 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 // Static-trace: the flag-off path never calls auditScanBatchFacts, so
 // report.Batch stays nil and printText adds nothing.
 func TestSessionsAudit_BatchFlagOff_MissingLegacyTableUnchanged(t *testing.T) {
-	require.False(t, batchRuntimeFlagOnForTest(), "precondition: flag must be unset")
+	t.Setenv("RUSH_BATCH_RUNTIME", "off")
 	dataDir, _, f := seedBatchAuditDB(t, "audit-batch-flagoff-drop")
 	dropLegacyAsyncJobs(t, dataDir)
 
@@ -168,7 +173,7 @@ func TestSessionsAudit_BatchFlagOff_MissingLegacyTableUnchanged(t *testing.T) {
 // untouched migrated database with the flag off, the report carries no batch
 // block and the seeded async-free audit output is what today produces.
 func TestSessionsAudit_BatchFlagOff_NormalDBUnchanged(t *testing.T) {
-	require.False(t, batchRuntimeFlagOnForTest(), "precondition: flag must be unset")
+	t.Setenv("RUSH_BATCH_RUNTIME", "off")
 	dataDir, sessionID, _ := seedBatchAuditDB(t, "audit-batch-flagoff-normal")
 
 	stdout, reports := auditRunRulesDB(t, dataDir, "--all")

@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -47,6 +48,26 @@ type batchSessionFacts struct {
 	Unknown bool // any read in the tree was incomplete or errored
 	Debt    int64
 	Tasks   session.BatchLiveCounts
+	// GuardDebt is the pending-inclusive delivery debt (terminal roots'
+	// selected unreacted notices plus retained session_notices rows) that
+	// protects the session from gc/compact; Debt stays the display count.
+	GuardDebt   bool
+	GuardDebtN  int
+	HasQuestion bool // a held child_question notice awaits an answer
+}
+
+// awaitingAnswer reports whether any held question or undelivered root
+// notice of the session awaits an answer.
+func (f batchSessionFacts) awaitingAnswer() bool {
+	if f.HasQuestion {
+		return true
+	}
+	for _, r := range f.Roots {
+		if r.AwaitingAnswer {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *batchSessionFacts) addRoot(r batchRootFact) {
@@ -87,10 +108,10 @@ func batchRootHeld(state string) bool {
 // unknown)" when the read was incomplete -- never a silent blank.
 func batchStatusAnnotation(f batchSessionFacts) string {
 	switch {
-	case f.Live:
-		return " (batch live)"
 	case f.Unknown:
 		return " (batch unknown)"
+	case f.Live:
+		return " (batch live)"
 	}
 	return ""
 }
@@ -113,6 +134,10 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 		res := live[id]
 		if res.Err != nil || !res.Complete {
 			f.Unknown = true
+			if len(res.Tree) == 0 {
+				// An incomplete read with no roots must never read as idle.
+				f.Live = true
+			}
 		}
 		for _, root := range res.Tree {
 			rf := batchRootFact{
@@ -144,6 +169,30 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 				}
 			}
 			f.addRoot(rf)
+		}
+		// Pending-inclusive delivery debt (terminal roots included) and held
+		// questions guard the session from gc/compact even at rest. A debt
+		// read error is conservative unknown; skipped on an incomplete live
+		// read, which is already unknown (the guard reasons on that first).
+		if res.Err == nil && res.Complete {
+			debt, debtErr := store.BatchReactionPendingInclusiveDebtRows(ctx, id)
+			if debtErr != nil {
+				f.Unknown = true
+				f.Live = true
+			} else {
+				f.GuardDebtN = len(debt.Nodes) + len(debt.Notices)
+				f.GuardDebt = f.GuardDebtN > 0
+				for _, n := range debt.Notices {
+					if n.Kind == session.NoticeKindChildQuestion {
+						f.HasQuestion = true
+					}
+				}
+			}
+			if f.HasQuestion {
+				for i := range f.Roots {
+					f.Roots[i].AwaitingAnswer = true
+				}
+			}
 		}
 		out[id] = f
 	}
@@ -205,6 +254,60 @@ func describeBatchRootsForWhy(ctx context.Context, a *app.App, dataDir, sessionI
 	if f.Unknown {
 		fmt.Fprintln(out, "  note: the batch read was incomplete; treat live batch work as unknown")
 	}
+	if f.HasQuestion {
+		fmt.Fprintln(out, "  note: a held batch question is awaiting an answer")
+	}
+}
+
+// explainWhyBatch is the flag-ON `sessions why` body: batch facts plus the
+// session lock fact decide the status; no legacy async_jobs read runs.
+func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
+	facts := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})
+	f := facts[sessionID]
+	lock := session.InspectSessionLockFact(dataDir, sessionID)
+	status, reason := "at rest", "no live batch work"
+	switch {
+	case f.Unknown:
+		status = "batch unknown (incomplete read)"
+		reason = "the batch read was incomplete; live batch work is unknown"
+	case f.Live:
+		status = "batch live"
+		for _, r := range f.Roots {
+			if r.Held {
+				reason = fmt.Sprintf("batch root %s is %s (held work)", short(r.RootID), r.State)
+				break
+			}
+		}
+	case lock.Kind == session.LockHeld:
+		status = "running"
+		reason = "the session lock is held by a live process"
+	}
+	printStallHeader(ctx, a, dataDir, sessionID, status, lock, out)
+	fmt.Fprintf(out, "reason: %s.\n", reason)
+	if f.HasQuestion {
+		fmt.Fprintln(out, "note: a held batch question is awaiting an answer")
+	}
+	msgs, msgsErr := a.Messages.List(ctx, sessionID)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Last assistant message:")
+	if msgsErr != nil {
+		fmt.Fprintf(out, "  (could not read: %v)\n", msgsErr)
+	} else {
+		var last *message.Message
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == message.Assistant {
+				last = &msgs[i]
+				break
+			}
+		}
+		if last == nil {
+			fmt.Fprintln(out, "  (none)")
+		} else {
+			fmt.Fprintf(out, "  finish_reason: %s\n", finishReasonOrUnknown(last.FinishPart()))
+		}
+	}
+	describeBatchRootsForWhy(ctx, a, dataDir, sessionID, out)
+	return nil
 }
 
 // renderSessionsJobsBatch is the flag-ON `sessions jobs` path: batch roots of
@@ -220,7 +323,7 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		enc := json.NewEncoder(os.Stdout)
 		if len(f.Roots) == 0 {
 			if f.Unknown {
-				return enc.Encode(jobsJSONItem{Kind: "batch", State: "unknown", BatchUnknown: true})
+				return enc.Encode(jobsJSONItem{Kind: "batch", State: "unknown", BatchUnknown: true, BatchAwaitingAnswer: f.HasQuestion})
 			}
 			return nil
 		}
@@ -236,6 +339,7 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 				item.State = "unknown"
 				item.BatchUnknown = true
 			}
+			item.BatchUnknown = item.BatchUnknown || f.Unknown
 			if r.Held {
 				item.Liveness = "held"
 			}
@@ -247,7 +351,7 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 			item.BatchHeld = r.Held
 			item.BatchCancelling = r.Cancelling
 			item.BatchAwaitingTermination = r.AwaitingTermination
-			item.BatchAwaitingAnswer = r.AwaitingAnswer
+			item.BatchAwaitingAnswer = r.AwaitingAnswer || f.HasQuestion
 			item.BatchDebt = r.Debt
 			item.BatchTasksPending = r.Tasks.Pending
 			item.BatchTasksActive = r.Tasks.Active

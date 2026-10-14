@@ -180,7 +180,9 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 	// --jobs-older-than` with nothing to collect on the session side still
 	// performs job retention.
 	var jobsAffected, noticesAffected int64
-	if purgeJobs {
+	// Flag ON: the batch retention block below replaces the legacy ledger
+	// purge -- the async_jobs table must not be queried at all.
+	if purgeJobs && !config.BatchRuntimeEnabled() {
 		store := a.AsyncJobStore()
 		if store == nil {
 			return fmt.Errorf("--jobs-older-than: no async job store available (SkipAgentSetup or no data dir)")
@@ -217,7 +219,7 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 	// (same cutoff policy, terminal and debt-free roots only) instead of
 	// duplicating it here.
 	if config.BatchRuntimeEnabled() && purgeJobs {
-		batchAffected, batchErr := gcBatchRetention(cmd.Context(), a, dryRun, now)
+		batchAffected, batchErr := gcBatchRetention(cmd.Context(), a, dryRun, jobsOlderThan)
 		if batchErr != nil {
 			return fmt.Errorf("--jobs-older-than (batch retention): %w", batchErr)
 		}

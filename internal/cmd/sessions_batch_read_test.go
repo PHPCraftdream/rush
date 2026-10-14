@@ -23,19 +23,30 @@ import (
 )
 
 // batchReadFixture carries the seeded root's identities for assertions.
+// closeAsync, when non-nil, closes the fallback AsyncJobStore the seed
+// opened for a store-less App (releasing its host lock).
 type batchReadFixture struct {
 	rootID, nodeA, nodeB, host, owner, toolCallID string
 	store                                         *session.BatchStore
+	closeAsync                                    func()
 }
 
 // seedBatchReadRoot reserves a real batch root (kind=batch with tool call and
 // input hash, two task children) for owner on the app's own registered host,
-// so the live reader proves liveness via the own-host registry.
+// so the live reader proves liveness via the own-host registry. Tolerates a
+// nil a.AsyncJobStore() (setupAppLite fixtures): it then opens a fallback
+// store, whose EnsureHost registers the live test process and which is
+// closed at cleanup so the host lock cannot block later command runs.
 func seedBatchReadRoot(t *testing.T, a *app.App, owner string) batchReadFixture {
 	t.Helper()
 	ctx := context.Background()
 	store := a.AsyncJobStore()
-	require.NotNil(t, store)
+	var closeAsync func()
+	if store == nil {
+		store = session.NewAsyncJobStore(a.DB(), a.Config().Options.DataDirectory, os.Getpid(), "batch-read-fixture")
+		closeAsync = func() { _ = store.Close(context.Background()) }
+		t.Cleanup(closeAsync)
+	}
 	host, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
 	bs := session.NewBatchStore(a.DB())
@@ -51,11 +62,22 @@ func seedBatchReadRoot(t *testing.T, a *app.App, owner string) batchReadFixture 
 		}},
 	})
 	require.NoError(t, err)
+	// Snapshot.Nodes includes the root and is ordered by node_id: derive the
+	// task children by parent_id, never by index.
+	rootID := reserved.Snapshot.Root.RootID
+	var kids []string
+	for _, n := range reserved.Snapshot.Nodes {
+		if n.ParentID.Valid && n.ParentID.String == rootID {
+			kids = append(kids, n.NodeID)
+		}
+	}
+	require.Len(t, kids, 2, "the fixture reserves exactly two task children")
 	return batchReadFixture{
-		rootID: reserved.Snapshot.Root.RootID,
-		nodeA:  reserved.Snapshot.Nodes[0].NodeID,
-		nodeB:  reserved.Snapshot.Nodes[1].NodeID,
+		rootID: rootID,
+		nodeA:  kids[0],
+		nodeB:  kids[1],
 		host:   host, owner: owner, toolCallID: "batch-read-call", store: bs,
+		closeAsync: closeAsync,
 	}
 }
 
@@ -110,12 +132,14 @@ func TestReduceBatchSessionFacts_ErrorMeansUnknownAndNeverIdle(t *testing.T) {
 // reports as held/awaiting termination -- never terminal, never idle.
 func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	a, _ := isolatedJobsEnv(t)
+	a, dataDir := isolatedJobsEnv(t)
 	ctx := context.Background()
 
 	sess, err := a.Sessions.CreateWithID(ctx, "jobs-batch-sess", "session with batch root")
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, a, sess.ID)
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
 
 	// (a) pending root: live, held.
@@ -125,8 +149,11 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	require.Contains(t, stdout, "pending")
 	require.Contains(t, stdout, "true", "the HELD column must say the root is held")
 
-	// (b) cancelling root: held, awaiting termination, not terminal.
+	// (b) cancelling root: held, awaiting termination, not terminal. A held
+	// child_question notice also makes the root await an answer.
 	projectBatchRoot(t, f, "cancelling")
+	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
+		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
 	stdout = runJobsCmd(t, sess.ID)
 	t.Logf("sessions jobs (flag on, cancelling):\n%s", stdout)
 	require.Contains(t, stdout, "cancelling")
@@ -144,6 +171,7 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	require.True(t, item.BatchHeld)
 	require.True(t, item.BatchCancelling)
 	require.True(t, item.BatchAwaitingTermination)
+	require.True(t, item.BatchAwaitingAnswer, "the held child_question notice must surface as awaiting answer")
 	require.False(t, item.BatchUnknown, "a complete read must not claim unknown")
 }
 
@@ -151,7 +179,7 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 // database with the flag unset must produce today's legacy output exactly --
 // batch rows invisible, "(no jobs)" printed, no batch_* JSON fields.
 func TestSessionsJobsCmdRun_BatchFlagOffRegression(t *testing.T) {
-	require.False(t, batchRuntimeFlagOnForTest(), "precondition: flag must be unset")
+	t.Setenv("RUSH_BATCH_RUNTIME", "off")
 	a, _ := isolatedJobsEnv(t)
 	ctx := context.Background()
 
@@ -172,13 +200,15 @@ func TestSessionsJobsCmdRun_BatchFlagOffRegression(t *testing.T) {
 // held-termination verdict, and never falls back to "at rest"/idle.
 func TestSessionsWhyCmdRun_BatchCancellingRootHeld(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	a, _, dataDir := whyAwaitingTestEnv(t)
+	a, store, dataDir := whyAwaitingTestEnv(t)
 	ctx := context.Background()
 
 	sess, err := a.Sessions.CreateWithID(ctx, "why-batch-sess", "why batch root")
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, a, sess.ID)
 	projectBatchRoot(t, f, "cancelling")
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
 
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
@@ -191,6 +221,14 @@ func TestSessionsWhyCmdRun_BatchCancellingRootHeld(t *testing.T) {
 	require.NotContains(t, out, "Async jobs:", "the legacy async section is replaced with the flag on")
 	require.Contains(t, out, "Batch roots:")
 	require.Contains(t, out, f.toolCallID)
+
+	// A held child_question notice (delivery pending, wake=1: the R8 debt
+	// rows API sees it) must be named as awaiting an answer.
+	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID,
+		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
+	buf.Reset()
+	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
+	require.Contains(t, buf.String(), "awaiting an answer", "the held question must be named")
 }
 
 // TestSessionsListCmdRun_BatchFlagOnStatusAndJSON: with the flag on, a listed
@@ -198,12 +236,14 @@ func TestSessionsWhyCmdRun_BatchCancellingRootHeld(t *testing.T) {
 // additive batch_* JSON fields; with the flag off the same row has neither.
 func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	a, _, _ := isolatedListEnvWithConfiguredDataDir(t)
+	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
 	ctx := context.Background()
 
 	sess, err := a.Sessions.CreateWithID(ctx, "list-batch-sess", "listed batch session")
 	require.NoError(t, err)
 	seedBatchReadRoot(t, a, sess.ID)
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
 
 	stdout := captureStdout(t, func() {
@@ -222,6 +262,7 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	require.Equal(t, "live", item.BatchStatus)
 	require.Equal(t, 1, item.BatchRoots)
 	require.Contains(t, item.Status, "batch live")
+	require.False(t, item.BatchAwaitingAnswer, "no held question in this fixture")
 }
 
 // TestSessionsShowCmdRun_BatchFlagOnCounts: with the flag on, `sessions show`
@@ -251,6 +292,8 @@ func TestSessionsShowCmdRun_BatchFlagOnCounts(t *testing.T) {
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, seed, sess.ID)
 	projectBatchRoot(t, f, "running")
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
 	seed.Shutdown()
 
 	require.NoError(t, sessionsShowCmd.Flags().Set("json", "true"))
@@ -273,6 +316,5 @@ func TestSessionsShowCmdRun_BatchFlagOnCounts(t *testing.T) {
 	require.Equal(t, 1, item.BatchRoots)
 }
 
-// batchRuntimeFlagOnForTest mirrors config.BatchRuntimeEnabled for the
-// regression test's precondition without importing config here twice.
-func batchRuntimeFlagOnForTest() bool { return os.Getenv("RUSH_BATCH_RUNTIME") == "1" }
+// batchRuntimeFlagOnForTest was the regression tests' flag precondition
+// helper; the tests now set RUSH_BATCH_RUNTIME explicitly with t.Setenv.

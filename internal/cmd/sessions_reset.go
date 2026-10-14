@@ -109,7 +109,7 @@ rush sessions reset pr-42 --force
 			// R10c batch reset, which refuses atomically while the owner
 			// has any nonterminal root; the legacy async-ledger wipe below
 			// stays the flag-off path.
-			batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID, force)
+			batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID)
 			if err != nil {
 				return err
 			}

@@ -70,18 +70,33 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// registry) is deliberately not consulted: a parked delegation keeps
 		// its own async_jobs row live, so another process sees the same
 		// verdict (decision 9).
-		activities, err := a.SessionActivityBatch(cmd.Context(), idsOf(sessions))
-		if err != nil {
-			return fmt.Errorf("failed to classify sessions: %w", err)
+		//
+		// R12-B: with the batch runtime on, NO legacy store read runs at all:
+		// statusByID is built from the batch facts alone (a held root or an
+		// incomplete read can never show as at rest). Flag off: batchFacts is
+		// nil and the legacy path below is unchanged.
+		ids := idsOf(sessions)
+		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
+		var statusByID map[string]string
+		awaitingByID := map[string]session.ChildQuestion{}
+		if batchFacts != nil {
+			statusByID = make(map[string]string, len(ids))
+			for _, id := range ids {
+				bf := batchFacts[id]
+				switch {
+				case bf.Unknown:
+					statusByID[id] = "batch unknown (incomplete read)"
+				case bf.Live:
+					statusByID[id] = "batch live"
+				}
+			}
+		} else {
+			activities, err := a.SessionActivityBatch(cmd.Context(), ids)
+			if err != nil {
+				return fmt.Errorf("failed to classify sessions: %w", err)
+			}
+			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, ids)
 		}
-		statusByID, awaitingByID := listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, idsOf(sessions))
-
-		// R12-B: with the batch runtime on, live batch roots are read through
-		// the session read APIs and folded into the STATUS column (a held root
-		// or an incomplete read can never show as at rest) plus the additive
-		// batch_* wire fields. Flag off: batchFacts is nil, nothing changes.
-		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, idsOf(sessions))
-		applyBatchStatus(batchFacts, idsOf(sessions), statusByID)
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -199,24 +214,6 @@ func statusOrDash(s string) string {
 	return s
 }
 
-// applyBatchStatus folds the flag-ON batch facts into the STATUS column: a
-// held batch root annotates any verdict and upgrades at rest to "batch
-// live"; an incomplete read upgrades at rest to "batch unknown" -- never a
-// silent blank while a read is incomplete (conservative-read rule).
-func applyBatchStatus(facts map[string]batchSessionFacts, ids []string, statusByID map[string]string) {
-	if facts == nil {
-		return
-	}
-	for _, id := range ids {
-		bf, ok := facts[id]
-		if !ok || (!bf.Live && !bf.Unknown) {
-			continue
-		}
-		st := statusByID[id]
-		statusByID[id] = st + batchStatusAnnotation(bf)
-	}
-}
-
 // sessionListItem is the JSON shape of `rush sessions list --json`. Held
 // as a separate struct (rather than just marshalling session.Session
 // directly) so the wire-stable field names don't drift if session.Session
@@ -258,6 +255,9 @@ type sessionListItem struct {
 	BatchRoots  int    `json:"batch_roots,omitempty"`
 	BatchDebt   int64  `json:"batch_debt,omitempty"`
 	BatchStatus string `json:"batch_status,omitempty"`
+	// BatchAwaitingAnswer marks a held batch question (or undelivered batch
+	// notice) awaiting an answer; additive, flag ON only.
+	BatchAwaitingAnswer bool `json:"batch_awaiting_answer,omitempty"`
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable

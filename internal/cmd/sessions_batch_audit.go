@@ -100,6 +100,7 @@ type auditBatchSessionJSON struct {
 	Live        bool                `json:"live"`
 	Unknown     bool                `json:"unknown"`
 	Debt        int64               `json:"debt"`
+	GuardDebt   bool                `json:"guard_debt"`
 	Roots       int                 `json:"roots"`
 	HeldRoots   int                 `json:"held_roots"`
 	Tasks       auditBatchTasksJSON `json:"tasks"`
@@ -140,6 +141,7 @@ func (s *auditBatchScan) report(legacyAbsent bool) *auditBatchReport {
 			Live:      f.Live,
 			Unknown:   f.Unknown,
 			Debt:      f.Debt,
+			GuardDebt: f.GuardDebt,
 			Roots:     len(f.Roots),
 			HeldRoots: held,
 			Tasks: auditBatchTasksJSON{

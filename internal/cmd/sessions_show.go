@@ -352,10 +352,16 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 			if r.AwaitingTermination {
 				fmt.Print(" (stopped but awaiting termination)")
 			}
+			if r.AwaitingAnswer {
+				fmt.Print(" (awaiting answer)")
+			}
 			fmt.Println()
 		}
 		if batchFacts.Unknown && len(batchFacts.Roots) == 0 {
 			fmt.Println("Batch:        unknown (incomplete read)")
+		}
+		if batchFacts.HasQuestion {
+			fmt.Println("Batch:        a held batch question is awaiting an answer")
 		}
 	}
 	if output.AsyncJobsTotal > 0 {
