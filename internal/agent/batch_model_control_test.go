@@ -153,7 +153,13 @@ func TestInstalledModelControlRunMatchesOneItemNotifyAll(t *testing.T) {
 }
 
 func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
-	env := newBatchInventoryEnv(t, "view")
+	// The Add fence rejects terminal roots, so the seed item must stay live
+	// while Add runs: hold the executor (the gating pattern the other
+	// live-required control tests use) or the instant-settle default settles
+	// the one-item root before Add and the precondition legitimately rejects.
+	gate := newGatingInstallExecutor("held")
+	t.Cleanup(gate.letGo)
+	env := newBatchInventoryEnvWithExecutor(t, "view", gate)
 	root := jobbatch.ID("ancestor-root-r13")
 	task := batchTestLeaf(batchKindGeneric, "view", "").Task
 	_ = batchOwnerTree(t, env, root, []jobbatch.Spec{{Task: task}}, "ancestor-call")
