@@ -105,7 +105,8 @@ jobs:
           left = []
           for p in pkgs:
               for name, prefixes in groups:
-                  if any(p == pref.rstrip("/") or p.startswith(pref) for pref in prefixes):
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
                       with open(os.path.join(outdir, f"g-{name}.txt"), "a") as f:
                           f.write(p + "\n")
                       break
@@ -285,7 +286,8 @@ jobs:
               if p == "github.com/PHPCraftdream/rush/internal/agent":
                   continue  # agent's -race runs in agent-ubuntu
               for name, prefixes in groups:
-                  if any(p == pref.rstrip("/") or p.startswith(pref) for pref in prefixes):
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
                       with open(os.path.join(outdir, f"r-{name}.txt"), "a") as f:
                           f.write(p + "\n")
                       break
@@ -379,7 +381,8 @@ jobs:
               if p == "github.com/PHPCraftdream/rush/internal/agent":
                   continue  # exact internal/agent package: dedicated agent job on ubuntu
               for name, prefixes in groups:
-                  if any(p == pref.rstrip("/") or p.startswith(pref) for pref in prefixes):
+                  rel = p.removeprefix("github.com/PHPCraftdream/rush/")
+                  if any(rel == pref.rstrip("/") or rel.startswith(pref) for pref in prefixes):
                       with open(os.path.join(outdir, f"n-{name}.txt"), "a", newline="\n") as f:
                           f.write(p + "\n")
                       break
