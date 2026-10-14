@@ -65,7 +65,9 @@ func requirePlaceholderCount(t *testing.T, stmt string, args ...any) {
 // wake=0) or SELECTED (notice_selected=1, notice_kind/state/cause NOT NULL,
 // notice_sequence>0, notice_ordinal NOT NULL, delivery!='none'). The notice
 // metadata is always bound as ARGS (never spliced into the SQL text): the
-// unselected shape binds NULL for all six notice columns; the selected shape
+// unselected shape binds notice_selected as a concrete 0 (the column is NOT
+// NULL -- an explicit NULL would violate it) and NULL for the five nullable
+// notice metadata columns; the selected shape
 // binds 1,'task','completed',”,1,0. This is the raw-INSERT escape hatch: no
 // production API produces an arbitrary live/void/terminal root under a
 // caller-chosen owner/host/tool_call_id (Reserve always reserves a fresh
@@ -76,7 +78,8 @@ func seedBatchRoot(t *testing.T, ctx context.Context, conn *sql.DB, hostID, root
 	if hostID == "" {
 		hostID = "host-notice-test"
 	}
-	var noticeSelected, noticeKind, noticeState, noticeCause, noticeSeq, noticeOrd any
+	var noticeKind, noticeState, noticeCause, noticeSeq, noticeOrd any
+	noticeSelected := any(0)
 	if delivery != "none" {
 		noticeSelected, noticeKind, noticeState = 1, "task", "completed"
 		noticeCause, noticeSeq, noticeOrd = "", 1, 0
@@ -299,15 +302,17 @@ func NoticeDelivery(t *testing.T, q *db.Queries, owner string, delivery string, 
 // notice (notice_selected=1, kind/state/cause/sequence/ordinal set,
 // delivery='pending', wake=1 -- CHECK-legal, same tx) -> third read: one
 // BatchDebtNodeRef{RootID=NodeID=root, NoticeMessageID ""} plus the notice
-// debt -> batchOutboxSettle(seq 3, child root.1) selects the CHILD notice
-// (kind 'task', CHECK-legal) -> bs.BatchPullNotices(message.NewService(q),
-// owner, batchOutboxParams): the REAL R8 consumer pulls both selected
+// debt -> batchOutboxSettle(seq 3, child root.1) advances the root to
+// sequence 3 and settles the child (state completed, notice selected, kind
+// 'task' -- CHECK-legal), then bs.BatchPullNotices(message.NewService(q),
+// owner, batchOutboxParams): the REAL R8 consumer pulls BOTH selected
 // notices in root sequence/ordinal order, CASes each delivery pending->done
 // and names each message via BatchOutboxNameMessage (same tx) -> fourth
 // read: TWO node refs -- root (RootID==NodeID) and child (RootID=root,
-// NodeID=root.1, NoticeMessageID non-empty) -> batchOutboxSettle seq 4
-// reprojects the root COMPLETED: both refs SURVIVE (terminal roots stay debt while their notices
-// are pending|done) -> raw UPDATE delivery='void', wake=0 on the SELECTED
+// NodeID=root.1, NoticeMessageID non-empty) -- and the terminal settled root
+// is STILL debt with its pulled (done) notice: the terminal-root-stays-debt
+// regression is exercised by the seq 2 and seq 3 reads themselves, with no
+// extra reprojection -> raw UPDATE delivery='void', wake=0 on the SELECTED
 // rows only (CHECK-legal: selected rows with delivery!='none'; the
 // rerun-only void write has no per-node API; the untouched second child
 // stays unselected delivery='none') -> fifth read: no node debt, notice
@@ -342,19 +347,14 @@ func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 	require.Empty(t, debt.Nodes[0].NoticeMessageID, "no notice message named yet")
 	require.Len(t, debt.Notices, 1)
 
-	// Terminal-root regression (the review's finding): the settled root is
-	// COMPLETED, its wake notice still pending -- the debt must persist.
-	require.NoError(t, bs.Project(ctx, BatchProjection{Host: "host", Sequence: 3, Roots: []BatchRootProjection{{
-		Owner: "owner", Root: root,
-		Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(root, "completed")},
-	}}}))
-	debt, err = store.BatchPendingInclusiveDebtRows(ctx, "owner")
-	require.NoError(t, err)
-	require.Len(t, debt.Nodes, 1, "a completed announced root with a pending wake notice is STILL debt")
-	require.Equal(t, root, debt.Nodes[0].RootID)
+	// Terminal-root regression (the review's finding) is ALREADY exercised by
+	// the read above: the root was settled terminal (completed) at sequence 2
+	// and its wake notice is still pending -- the debt must persist. No extra
+	// reprojection is needed (any further Project would need a sequence
+	// strictly greater than the last one, 2).
 
 	// Selected-CHILD + message-identity oracles (the review's finding):
-	// settle a child, then pull BOTH selected notices through the real R8
+	// settle a child at the NEXT sequence, then pull BOTH selected notices through the real R8
 	// consumer so delivery='done' and notice_message_id is named. A debt
 	// implementation that discarded selected children or always returned an
 	// empty NoticeMessageID now fails here.
@@ -382,11 +382,8 @@ func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 	require.NotEmpty(t, childRef.NoticeMessageID,
 		"the pulled child notice must keep its named message identity (BatchOutboxNameMessage)")
 
-	// Terminal roots still debt, now with BOTH refs present.
-	require.NoError(t, bs.Project(ctx, BatchProjection{Host: "host", Sequence: 4, Roots: []BatchRootProjection{{
-		Owner: "owner", Root: root,
-		Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(root, "completed")},
-	}}}))
+	// The terminal root stays debt even with BOTH refs present and its
+	// notice already pulled (delivery='done'): reassert after the R8 pull.
 	debt, err = store.BatchPendingInclusiveDebtRows(ctx, "owner")
 	require.NoError(t, err)
 	require.Len(t, debt.Nodes, 2, "terminal root and pulled child BOTH stay debt")
