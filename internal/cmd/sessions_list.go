@@ -76,6 +76,13 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		}
 		statusByID, awaitingByID := listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, idsOf(sessions))
 
+		// R12-B: with the batch runtime on, live batch roots are read through
+		// the session read APIs and folded into the STATUS column (a held root
+		// or an incomplete read can never show as at rest) plus the additive
+		// batch_* wire fields. Flag off: batchFacts is nil, nothing changes.
+		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, idsOf(sessions))
+		applyBatchStatus(batchFacts, idsOf(sessions), statusByID)
+
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
 			for _, s := range sessions {
@@ -87,6 +94,15 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					item.AwaitingAnswer = true
 					item.AwaitingChild = q.ChildSessionID
 					item.AwaitingQuestion = q.Question
+				}
+				if bf, ok := batchFacts[s.ID]; ok && (len(bf.Roots) > 0 || bf.Unknown) {
+					item.BatchRoots = len(bf.Roots)
+					item.BatchDebt = bf.Debt
+					if bf.Unknown {
+						item.BatchStatus = "unknown"
+					} else {
+						item.BatchStatus = "live"
+					}
 				}
 				if err := enc.Encode(item); err != nil {
 					return err
@@ -183,6 +199,24 @@ func statusOrDash(s string) string {
 	return s
 }
 
+// applyBatchStatus folds the flag-ON batch facts into the STATUS column: a
+// held batch root annotates any verdict and upgrades at rest to "batch
+// live"; an incomplete read upgrades at rest to "batch unknown" -- never a
+// silent blank while a read is incomplete (conservative-read rule).
+func applyBatchStatus(facts map[string]batchSessionFacts, ids []string, statusByID map[string]string) {
+	if facts == nil {
+		return
+	}
+	for _, id := range ids {
+		bf, ok := facts[id]
+		if !ok || (!bf.Live && !bf.Unknown) {
+			continue
+		}
+		st := statusByID[id]
+		statusByID[id] = st + batchStatusAnnotation(bf)
+	}
+}
+
 // sessionListItem is the JSON shape of `rush sessions list --json`. Held
 // as a separate struct (rather than just marshalling session.Session
 // directly) so the wire-stable field names don't drift if session.Session
@@ -218,6 +252,12 @@ type sessionListItem struct {
 	AwaitingAnswer   bool   `json:"awaiting_answer,omitempty"`
 	AwaitingChild    string `json:"awaiting_child,omitempty"`
 	AwaitingQuestion string `json:"awaiting_question,omitempty"`
+	// Batch read fields (R12-B, flag ON only): additive, zero on the legacy
+	// path so the flag-OFF wire shape stays byte-identical. BatchStatus is
+	// "live" (held batch root) or "unknown" (incomplete/failed read).
+	BatchRoots  int    `json:"batch_roots,omitempty"`
+	BatchDebt   int64  `json:"batch_debt,omitempty"`
+	BatchStatus string `json:"batch_status,omitempty"`
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable

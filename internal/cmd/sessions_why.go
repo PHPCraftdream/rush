@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -150,6 +151,13 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 	if status == "" {
 		status = "at rest"
 	}
+	// R12-B conservative rule: with the batch runtime on, a held batch root
+	// or an incomplete batch read must never read as idle/at rest.
+	if config.BatchRuntimeEnabled() {
+		if bf := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})[sessionID]; len(bf.Roots) > 0 || bf.Unknown {
+			status += batchStatusAnnotation(bf)
+		}
+	}
 	// A live verdict over a lock that recorded a dead holder is annotated,
 	// not demoted: the PID is evidence, not the Kind (decision 1).
 	if status != "at rest" && v.Kind != session.ActivityCrashed &&
@@ -224,6 +232,14 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 				fmt.Fprintf(out, "  error:         %s\n", errText)
 			}
 		}
+	}
+
+	// R12-B: with the batch runtime on, batch node rows are the authority
+	// for the jobs/debt section; the legacy async_jobs rendering below is
+	// kept byte-for-byte for the flag-OFF path.
+	if config.BatchRuntimeEnabled() {
+		describeBatchRootsForWhy(ctx, a, dataDir, sessionID, out)
+		return nil
 	}
 
 	describeAsyncJobsAndDebt(ctx, a, sessionID, out)

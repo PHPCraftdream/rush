@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -103,33 +104,58 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
+		if config.BatchRuntimeEnabled() {
+			// Flag ON: history (messages and batch rows) goes through the
+			// R10c batch reset, which refuses atomically while the owner
+			// has any nonterminal root; the legacy async-ledger wipe below
+			// stays the flag-off path.
+			batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID, force)
+			if err != nil {
+				return err
+			}
+			return finishSessionReset(cmd, a, sess.ID, force, fmt.Sprintf(
+				"batch reset: deleted %d message(s), %d batch node(s), voided %d notice(s), cancelled %d schedule(s)",
+				batchOutcome.MessagesDeleted, batchOutcome.NodesDeleted, batchOutcome.NoticesVoided, batchOutcome.SchedulesCancelled))
+		}
+
 		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID, force)
 		if err != nil {
 			return err
 		}
-		// Zero the per-session usage counters so a follow-up run starts
-		// from an honest "empty context" estimate. cost_self is never
-		// lowered (it is monotonic, #1130): the reset freezes the node's
-		// budget instead — cost_base = subtree_spent, so the budget
-		// (subtree minus base) starts from zero again.
-		if err := a.Sessions.SetSummaryAndUsage(cmd.Context(), sess.ID, "", 0, 0); err != nil {
-			return fmt.Errorf("failed to reset session counters for %s: %w", sess.ID, err)
-		}
-		if err := a.Sessions.ResetCostBase(cmd.Context(), sess.ID); err != nil {
-			return fmt.Errorf("failed to reset session cost for %s: %w", sess.ID, err)
-		}
-		fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sess.ID, short(session.HashID(sess.ID)))
+		summary := ""
 		if outcome.JobsVoided+outcome.NoticesVoided > 0 {
-			fmt.Fprintf(os.Stderr, "voided %d background job notice(s) and %d session notice(s) of the wiped history\n",
+			summary = fmt.Sprintf("voided %d background job notice(s) and %d session notice(s) of the wiped history",
 				outcome.JobsVoided, outcome.NoticesVoided)
 		}
-		// Task #1153: --force proved the previous holder dead; its queued runs
-		// and injects must not survive the reset either.
-		if force {
-			purgeQueuedWorkAfterStop(cmd, sess.ID)
-		}
-		return nil
+		return finishSessionReset(cmd, a, sess.ID, force, summary)
 	},
+}
+
+// finishSessionReset is the shared tail of both reset paths: zero the
+// per-session usage counters, print the standard reset line plus the
+// path-specific outcome summary, and purge queued work after --force.
+func finishSessionReset(cmd *cobra.Command, a *app.App, sessID string, force bool, summary string) error {
+	// Zero the per-session usage counters so a follow-up run starts
+	// from an honest "empty context" estimate. cost_self is never
+	// lowered (it is monotonic, #1130): the reset freezes the node's
+	// budget instead — cost_base = subtree_spent, so the budget
+	// (subtree minus base) starts from zero again.
+	if err := a.Sessions.SetSummaryAndUsage(cmd.Context(), sessID, "", 0, 0); err != nil {
+		return fmt.Errorf("failed to reset session counters for %s: %w", sessID, err)
+	}
+	if err := a.Sessions.ResetCostBase(cmd.Context(), sessID); err != nil {
+		return fmt.Errorf("failed to reset session cost for %s: %w", sessID, err)
+	}
+	fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sessID, short(session.HashID(sessID)))
+	if summary != "" {
+		fmt.Fprintln(os.Stderr, summary)
+	}
+	// Task #1153: --force proved the previous holder dead; its queued runs
+	// and injects must not survive the reset either.
+	if force {
+		purgeQueuedWorkAfterStop(cmd, sessID)
+	}
+	return nil
 }
 
 // resetSessionHistory is the wipe itself (R8A-3): it refuses while the session
@@ -157,16 +183,9 @@ func resetSessionHistory(ctx context.Context, a *app.App, sessionID string, forc
 	// job or delegation is work --force cannot safely drop, and still refuses
 	// (conscious R-ACT-2 change: a plain reset now refuses mid-turn too,
 	// where it used to be lock-blind and wipe under a live holder).
-	act, actErr := a.SessionActivity(ctx, sessionID)
-	if actErr != nil {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
-	}
-	if f := act.Facts; force {
-		if f.Driver != nil || f.OwnRunningJobs > 0 || f.LiveDelegations > 0 || len(f.OpenSchedules) > 0 || len(f.Unreadable) > 0 {
-			return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
-		}
-	} else if kindIsLive(act.Verdict.Kind) {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
+	// Shared with the flag-ON batch path (resetActivityRefusal).
+	if err := resetActivityRefusal(ctx, a, sessionID, force); err != nil {
+		return session.ResetOutcome{}, err
 	}
 	outcome, err := store.ResetOwnerHistory(ctx, a.Messages, sessionID)
 	if errors.Is(err, session.ErrResetJobsRunning) {
