@@ -12,14 +12,16 @@ import (
 // AND every descendant is confirmed terminal. A confirmed closure happens
 // exactly once; all transitions are serialized by mu. Inert until R11.
 type batchAgentScope struct {
-	mu      sync.Mutex
-	ended   bool // The agent turn loop ended.
-	stopped bool // A Stop request reached this incarnation.
-	held    *batchAgentHeldQuestion
-	closed  bool // Confirmed closure; never unset.
-	live    bool // Descendants observed live.
-	readsIn bool // At least one descendant read completed.
-	changed chan struct{}
+	mu                   sync.Mutex
+	ended                bool // The agent turn loop ended.
+	stopped              bool // A Stop request reached this incarnation.
+	held                 *batchAgentHeldQuestion
+	closed               bool // Confirmed closure; never unset.
+	live                 bool // Descendants observed live.
+	readsIn              bool // At least one descendant read completed.
+	questionSequence     uint64
+	questionPublishError error
+	changed              chan struct{}
 }
 
 // batchAgentHeldQuestion is one question awaiting an injected answer.

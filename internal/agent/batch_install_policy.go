@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -10,6 +11,51 @@ import (
 // context stamping, the per-build policy snapshot for the private-fetch
 // arming point, and the live-descendant reader over the R10a store. New
 // logic lives in this file; sibling files carry only stated minimal hunks.
+
+type batchAgentLifecycle struct {
+	BindChildSession func(string)
+	NoChildSelected  func()
+}
+
+type batchAgentLifecycleContextKey struct{}
+
+type (
+	batchAgentQuestionContext    struct{ Depth int }
+	batchAgentQuestionContextKey struct{}
+)
+
+type batchAgentQuestionBinding struct {
+	Ask func(context.Context, int, string) (json.RawMessage, error)
+}
+type batchAgentQuestionBindingKey struct{}
+
+func withBatchAgentLifecycle(ctx context.Context, lifecycle batchAgentLifecycle) context.Context {
+	return context.WithValue(ctx, batchAgentLifecycleContextKey{}, lifecycle)
+}
+
+func withBatchAgentQuestionContext(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, batchAgentQuestionContextKey{}, batchAgentQuestionContext{Depth: depth})
+}
+
+func batchAgentQuestionDepth(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	v, _ := ctx.Value(batchAgentQuestionContextKey{}).(batchAgentQuestionContext)
+	return v.Depth
+}
+
+func withBatchAgentQuestionBinding(ctx context.Context, b batchAgentQuestionBinding) context.Context {
+	return context.WithValue(ctx, batchAgentQuestionBindingKey{}, b)
+}
+
+func batchAgentQuestionBindingFrom(ctx context.Context) (batchAgentQuestionBinding, bool) {
+	if ctx == nil {
+		return batchAgentQuestionBinding{}, false
+	}
+	b, ok := ctx.Value(batchAgentQuestionBindingKey{}).(batchAgentQuestionBinding)
+	return b, ok && b.Ask != nil
+}
 
 // batchBridgeInvocation is the TRUSTED enclosing invocation the CLI bridge
 // binds to (P1-4): the pinned registry identity and message id of the
@@ -64,10 +110,11 @@ func batchBridgeInvocationFrom(ctx context.Context) (batchBridgeInvocation, bool
 //     message id, so the gate resolves the same allowlist entry the
 //     in-process path would. A static spec snapshot would go stale across
 //     the call's lifetime.
-//   - CustomDisk: CallOptions.DiskProvider is an arbitrary in-process
-//     tools.DiskProvider with no serializable identity (call_options.go:
-//     "a DiskProvider is arbitrary in-process Go code"); a call carrying
-//     one must never reach the durable queue at all.
+//   - CustomDisk: CallOptions.DiskProvider is arbitrary in-process Go code
+//     with no serializable identity. Flag-on ingress now stamps trusted
+//     provider presence and refuses it before attach or Submit; Validate
+//     refuses non-empty trimmed CustomDisk, and executor admission repeats
+//     the marked-payload refusal. Nil providers remain admitted.
 //
 // Consequently the arming points keep the pinned RegistryID/
 // RestrictedToolset identity, and the executor side (P1-5c executor hunks in
@@ -76,7 +123,7 @@ func batchBridgeInvocationFrom(ctx context.Context) (batchBridgeInvocation, bool
 // CustomDisk, message id, image support, model name) wins over whatever the
 // Start context carries. A future arming point that obtains genuine specs
 // can set them on the template without touching the executors.
-const batchArmingPolicyNote = ""
+const batchArmingPolicyNote = "Flag-on work refuses any trusted CallOptions DiskProvider, including explicit OSDisk and non-comparable providers, and any non-empty trimmed CustomDisk before attach, Submit, or leaf execution; executor admission rejects marked payloads. Nil providers remain admitted."
 
 // batchCoordinatorDescendants is the R10a descendant reader for the flagged
 // coordinator driver (P1-5b): it reports live descendants of the invocation
@@ -88,13 +135,14 @@ type batchCoordinatorDescendants struct {
 }
 
 func (d batchCoordinatorDescendants) DescendantsLive(ctx context.Context, req batchAgentRunRequest) (bool, bool) {
-	if d.live == nil {
-		// No store wired: the read is incomplete by construction, so the
-		// scope stays open (fail closed), never optimistic.
+	if req.ChildSessionID == "" {
 		return false, false
 	}
-	res := d.live.BatchLiveForOwner(ctx, req.SessionID)
-	return res.HasLiveDescendants(), res.Complete
+	if d.live == nil {
+		return false, false
+	}
+	res := d.live.BatchLiveForOwner(ctx, req.ChildSessionID)
+	return res.HasLive(), res.Complete
 }
 
 // CoordinatorBatchAgentDepsWithLive builds the flagged agent-family seams

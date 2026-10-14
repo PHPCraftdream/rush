@@ -47,6 +47,13 @@ type subAgentParams struct {
 // runs the agent with the given prompt, and propagates the cost to the parent
 // session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
+	childSelected := false
+	lifecycle, lifecycleBound := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
+	defer func() {
+		if !childSelected && lifecycleBound && lifecycle.NoChildSelected != nil {
+			lifecycle.NoChildSelected()
+		}
+	}()
 	var session session.Session
 	if params.ResumeSessionID != "" {
 		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so
@@ -79,6 +86,12 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
 		}
 		session = created
+	}
+
+	// Session selection has been validated; bind this exact ID, including resume.
+	childSelected = true
+	if lifecycleBound && lifecycle.BindChildSession != nil {
+		lifecycle.BindChildSession(session.ID)
 	}
 
 	// A delegation starting on this child lifts any suspension of its
@@ -291,7 +304,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// session; root inherited from the dispatching turn (design pt. 2).
 	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
-		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, SessionAgentCall{
+		call := SessionAgentCall{
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
@@ -304,7 +317,13 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			NonInteractive:   true,
 			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
-		})
+		}
+		if lifecycleBound {
+			if sa, ok := params.Agent.(*sessionAgent); ok {
+				call.Tools, _ = buildBatchQuestionTools(sa.tools.Copy(), ctx)
+			}
+		}
+		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, call)
 		return result, runErr
 	}
 	var result *fantasy.AgentResult

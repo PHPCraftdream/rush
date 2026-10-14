@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -212,7 +213,16 @@ func batchAgentTestPayload(t *testing.T, session string) json.RawMessage {
 	return payload
 }
 
-// ---- tests -------------------------------------------------------------
+func TestBatchCoordinatorDescendantsUsesChildOwnerTree(t *testing.T) {
+	env := newBatchInventoryEnv(t, "view")
+	live := session.NewBatchLiveReader(env.q, t.TempDir())
+	reader := batchCoordinatorDescendants{live: live}
+	_, complete := reader.DescendantsLive(env.ctx, batchAgentRunRequest{})
+	require.False(t, complete)
+	gotLive, complete := reader.DescendantsLive(env.ctx, batchAgentRunRequest{ChildSessionID: env.sessionID})
+	require.True(t, complete)
+	require.False(t, gotLive)
+}
 
 // RC1/RC13: the scope reports only after the turn ended AND descendants are
 // confirmed terminal, exactly once.
@@ -302,7 +312,7 @@ func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = e.ask(context.Background(), 4, "why?")
+		_, _ = e.askBatchQuestion(context.Background(), 4, "why?")
 	}()
 	require.Eventually(t, func() bool {
 		depth, held := e.heldDepth()
