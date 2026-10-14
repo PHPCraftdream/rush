@@ -1,6 +1,7 @@
 import { atom, computed } from "nanostores";
 import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
-import { indexAsyncJobCompletions, isAsyncCompletionNotice, type AsyncJobStatus } from "./asyncJobCompletion";
+import { buildMyPrompts, completionStatuses, mergeCompletionIndex } from "./completionIndex";
+import { $batchWorkBySession } from "./batchWork";
 
 // ── Connection state ─────────────────────────────────────────────────────────
 export const $connected = atom(false);
@@ -17,14 +18,20 @@ export const $skills = atom<SkillInfo[]>([]);
 export const $sessions = atom<Session[]>([]);
 export const $activeSessionID = atom<string | null>(null);
 export const $messages = atom<Message[]>([]);
-export const $asyncJobCompletions = computed($messages, indexAsyncJobCompletions);
-export const $asyncJobStatuses = computed($asyncJobCompletions, (index): Map<string, AsyncJobStatus> => {
-  const statuses = new Map<string, AsyncJobStatus>();
-  for (const [toolCallID, completion] of index.byToolCallID) {
-    statuses.set(toolCallID, completion.status);
-  }
-  return statuses;
-});
+// Completion indexes (R12-C): structured batch completions merged over the
+// prose fallback — see completionIndex.ts for the merge rules and the
+// structured-vs-prose behaviour boundary.
+export const $asyncJobCompletions = computed(
+  [$messages, $batchWorkBySession, $activeSessionID],
+  (msgs, batchMap, sessionID) =>
+    mergeCompletionIndex(
+      // indexAsyncJobCompletions lives in asyncJobCompletion.ts; wired via
+      // mergeCompletionIndex so the prose path stays read-only there.
+      indexAsyncJobCompletions(msgs),
+      batchMap.get(sessionID ?? "")?.lastGood.completions ?? null,
+    ),
+);
+export const $asyncJobStatuses = computed($asyncJobCompletions, completionStatuses);
 export const $config = atom<ConfigPayload | null>(null);
 // Set once per server start, and only when a newer release exists — the
 // backend sends nothing otherwise, so a non-null value always means
@@ -560,6 +567,7 @@ export interface WireAttachment {
 }
 import { logClientEvent } from "./telemetry";
 import { isTerminallyFinished } from "./components/Message/textParts";
+import { indexAsyncJobCompletions } from "./asyncJobCompletion";
 
 export function updateTodos(sessionID: string, todos: Todo[]) {
   // Optimistic local update
@@ -898,70 +906,13 @@ export function setProviderPeakHours(payload: {
 
 // ── My prompts history ─────────────────────────────────────────────────────
 //
-// Derived from $messages (current active session). One entry per visible
-// user message, newest first — feeds:
-//   • shell-style recall in the chat input (ArrowUp/Down on caret edge),
-//   • the history dropdown (clickable list + jump-to button).
-//
-// ONLY prompts a human typed in the web composer belong here. Eligibility is
-// gated by ONE shared predicate, isComposerTypedMessage below, so the arrow
-// history and the dropdown (both fed by $myPrompts — see ChatInput.tsx) can
-// never disagree on what counts as "typed by a human in this composer":
-//   • m.HumanTyped, computed server-side (internal/server/wire.go's
-//     isHumanTyped) from structured fields ONLY — role, Hidden,
-//     IsSummaryMessage, NoticeKind, AutoResumed, BackgroundJobNotice,
-//     Origin — never message text. This excludes every system-injected
-//     notice (async/background job completions, Phase 4 autonomous
-//     idle-resume, supervision check-ins, timeout/wake-failed markers, and
-//     any future notice kind the NoticeKind != "" check catches without
-//     needing a new field) and every other entry channel (CLI `rush run`/
-//     `rush sessions inject`, SDK; empty Origin = unspecified, also not
-//     composer input);
-//   • isAsyncCompletionNotice's content-pattern match, kept ONLY as a
-//     fallback for notice rows persisted before the BackgroundJobNotice
-//     column existed (so HumanTyped naively reads true on that old data —
-//     it has none of the structured flags set).
-//
-// The transcript itself ($messages) is untouched by this filter — every
-// channel's messages must still render in the conversation.
-//
-// Empty texts are dropped so the recall stack only holds prompts the user
-// could actually re-send.
-
-export interface MyPromptItem {
-  id: string;
-  text: string;
-}
-
-function partsToText(parts: Array<{ type: string; Text?: string }>): string {
-  let out = "";
-  for (const p of parts) {
-    if (p.type === "text" && p.Text) out += p.Text;
-  }
-  return out;
-}
-
-// isComposerTypedMessage is THE web-side authorship filter — the single
-// predicate shared by the arrow-history recall and the history dropdown,
-// both derived from $myPrompts below. See the doc block above for what each
-// half excludes and why.
-function isComposerTypedMessage(m: Message): boolean {
-  if (!m.HumanTyped) return false;
-  if (isAsyncCompletionNotice(m)) return false;
-  return true;
-}
-
-export const $myPrompts = computed($messages, (msgs): MyPromptItem[] => {
-  const out: MyPromptItem[] = [];
-  for (const m of msgs) {
-    if (!isComposerTypedMessage(m)) continue;
-    const text = partsToText(m.Parts as unknown as Array<{ type: string; Text?: string }>).trim();
-    if (!text) continue;
-    out.push({ id: m.ID, text });
-  }
-  // Newest first — matches "press ↑ to get the previous prompt".
-  return out.reverse();
-});
+// Derived from $messages (current active session), feeding shell-style
+// recall (ArrowUp/Down) and the history dropdown. Eligibility is decided by
+// isComposerTypedMessage / buildMyPrompts in completionIndex.ts (moved there
+// with the rest of the completion code — it is the prose notice predicate's
+// consumer); only the store wiring remains here.
+export type { MyPromptItem } from "./completionIndex";
+export const $myPrompts = computed($messages, buildMyPrompts);
 
 // jumpToMessage — scrolls the transcript to the given message ID and flashes
 // it briefly. The Message component renders id={`msg-${ID}`} on its row and

@@ -363,6 +363,12 @@ export interface BatchWorkCompletion {
   nodeID: string;
   outcomeCode: string;
   outcomeRef: string;
+  // R12-C, root completions only (BatchCompletionWire's omitempty pair):
+  // the terminal root's state and result summary, read from the structured
+  // batch_nodes history projection. Absent on node completions inside live
+  // roots.
+  state?: string;
+  outcomeSummary?: string;
 }
 
 export interface BatchWorkSnapshot {

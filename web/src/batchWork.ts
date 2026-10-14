@@ -1,5 +1,6 @@
 import { atom } from "nanostores";
 import type {
+  BatchWorkCompletion,
   BatchWorkRoot,
   BatchWorkSnapshot,
   LiveWorkItem,
@@ -49,10 +50,27 @@ export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
   const prev = next.get(payload.sessionID)?.lastGood ?? null;
   const lastGood: BatchWorkSnapshot =
     payload.complete || prev === null
-      ? { ...payload, roots: payload.roots ?? [] }
-      : { ...payload, roots: mergeRoots(prev.roots, payload.roots ?? []) };
+      ? { ...payload, roots: payload.roots ?? [], completions: payload.completions ?? [] }
+      : {
+          ...payload,
+          roots: mergeRoots(prev.roots, payload.roots ?? []),
+          // Completions follow the same merge rule as roots: an incomplete
+          // read may have missed the terminal-root history chunk, so a
+          // previously seen completion (keyed by rootID + nodeID) must
+          // never drop out of the index. A complete snapshot replaces.
+          completions: mergeCompletions(prev.completions, payload.completions ?? []),
+        };
   next.set(payload.sessionID, { lastGood });
   $batchWorkBySession.set(next);
+}
+
+/** Merges incoming completions over the previous ones by (rootID, nodeID):
+ * incoming overwrites its own key, previously seen completions without an
+ * incoming counterpart are kept. */
+function mergeCompletions(prev: BatchWorkCompletion[], incoming: BatchWorkCompletion[]): BatchWorkCompletion[] {
+  const byKey = new Map(prev.map((c) => [`${c.rootID}\u0000${c.nodeID}`, c]));
+  for (const c of incoming) byKey.set(`${c.rootID}\u0000${c.nodeID}`, c);
+  return [...byKey.values()];
 }
 
 /** Merges incoming incomplete roots into the previous roots by rootID:

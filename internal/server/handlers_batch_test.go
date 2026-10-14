@@ -27,10 +27,13 @@ import (
 )
 
 // fakeBatchSource serves canned node rows per owner list; failOn makes the
-// corresponding fetch return an error (a failed chunk).
+// corresponding fetch return an error (a failed chunk). history serves the
+// R12-C terminal-root read; failHistory fails every history read.
 type fakeBatchSource struct {
-	rows   []db.BatchNode
-	failOn map[string]bool
+	rows        []db.BatchNode
+	failOn      map[string]bool
+	history     []db.BatchNode
+	failHistory bool
 }
 
 func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []string) ([]db.BatchNode, error) {
@@ -40,6 +43,13 @@ func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []st
 		}
 	}
 	return f.rows, nil
+}
+
+func (f *fakeBatchSource) BatchHistoryRootsForOwner(_ context.Context, _ string) ([]db.BatchNode, error) {
+	if f.failHistory {
+		return nil, errors.New("history read failed")
+	}
+	return f.history, nil
 }
 
 // withBatchSeams swaps the production seams for fakes and restores them.

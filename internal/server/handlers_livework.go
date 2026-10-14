@@ -80,6 +80,11 @@ func handleGetSessionLiveWork(ctx context.Context, a *appPkg.App, c *Client, msg
 // probes hosts itself, so a stale 'running' can be visible for up to the
 // recovery sweep interval — by design, not a defect.
 func buildSessionLiveWork(ctx context.Context, a *appPkg.App, cache *titleCache, sessionID string) (SessionLiveWorkPayload, error) {
+	// R12-C: with the batch runtime ON the flat panel reads ONLY batch
+	// nodes (handlers_livework_batch.go) — no async_jobs SQL on this path.
+	if batchRuntimeEnabled() {
+		return buildSessionLiveWorkFromBatch(ctx, a, cache, sessionID)
+	}
 	snap := SessionLiveWorkPayload{SessionID: sessionID, Commands: []LiveWorkItemWire{}, Agents: []LiveWorkItemWire{}}
 	store := a.AsyncJobStore()
 	if store == nil {
@@ -398,7 +403,14 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 		slog.Warn("live_work: could not build the change snapshot", "session", sessionID, "err", err)
 		return
 	}
-	p.h.Broadcast(EventSessionLiveWork, snap)
+	// R12-C: an incomplete ON-path read is not broadcast — the client KEEPS
+	// the work it already shows instead of replacing it with a partial
+	// snapshot (a partial read never silently drops active work).
+	if batchRuntimeEnabled() && !snap.Complete {
+		slog.Warn("live_work: skipping an incomplete batch-read snapshot", "session", sessionID)
+	} else {
+		p.h.Broadcast(EventSessionLiveWork, snap)
+	}
 	// R15a: the same coalescing window also carries the structured
 	// batch-node snapshot (handlers_batch.go). Additive only: flag off this
 	// is a no-op and the live-work push above is unchanged. No new

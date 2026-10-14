@@ -759,6 +759,13 @@ type SessionLiveWorkPayload struct {
 	SessionID string             `json:"sessionID"`
 	Commands  []LiveWorkItemWire `json:"commands"`
 	Agents    []LiveWorkItemWire `json:"agents"`
+	// R12-C, additive: set ONLY on the batch-runtime ON path
+	// (handlers_livework_batch.go). False means the batch-node read was
+	// partial — the client must MERGE this snapshot into the previously
+	// shown work, never replace (an incomplete read never drops active
+	// work). The OFF path leaves the field zero, so omitempty keeps the
+	// flag-off wire bytes identical.
+	Complete bool `json:"complete,omitempty"`
 }
 
 // GetSessionBatchWorkPayload requests a structured batch-work snapshot

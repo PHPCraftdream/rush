@@ -192,3 +192,42 @@ test("unknown session picks nothing and merged view falls back to flat rows", ()
   const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s2");
   assert.deepEqual(merged, { commands: [], agents: [] });
 });
+
+test("incomplete snapshot merges structured completions, never drops prior roots", () => {
+  $batchWorkBySession.set(new Map());
+  applyBatchWorkSnapshot(
+    snap({
+      complete: true,
+      completions: [
+        { rootID: "root-a", nodeID: "root-a", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "done" },
+      ],
+    }),
+  );
+  applyBatchWorkSnapshot(
+    snap({
+      complete: false,
+      completions: [
+        { rootID: "root-b", nodeID: "root-b", outcomeCode: "boom", outcomeRef: "", state: "failed", outcomeSummary: "nope" },
+      ],
+    }),
+  );
+  const completions = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
+  assert.deepEqual(
+    completions.map((c) => c.rootID),
+    ["root-a", "root-b"],
+  );
+  // A complete snapshot is authoritative: it replaces wholesale.
+  applyBatchWorkSnapshot(
+    snap({
+      complete: true,
+      completions: [
+        { rootID: "root-c", nodeID: "root-c", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "fresh" },
+      ],
+    }),
+  );
+  const replaced = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
+  assert.deepEqual(
+    replaced.map((c) => c.rootID),
+    ["root-c"],
+  );
+});

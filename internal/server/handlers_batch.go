@@ -97,21 +97,29 @@ type BatchRootWire struct {
 }
 
 // BatchCompletionWire is one structured completion: a TERMINAL node inside
-// a returned live root. The outcome code and envelope ref are read from the
-// node's columns — no prose is parsed anywhere on this path.
+// a returned live root, or a TERMINAL ROOT (R12-C: NodeID == RootID; the
+// live-node read excludes terminal roots, so each finished root's outcome —
+// its state and result-summary columns — is delivered here, read from the
+// batch_nodes history projection). No prose is parsed anywhere on this path.
 type BatchCompletionWire struct {
 	RootID      string `json:"rootID"`
 	NodeID      string `json:"nodeID"`
 	OutcomeCode string `json:"outcomeCode"`
 	OutcomeRef  string `json:"outcomeRef"`
+	// Root completions only; node completions leave both zero (shape pinned
+	// by TestBatchWorkSnapshot_StructuredCompletions).
+	State          string `json:"state,omitempty"`
+	OutcomeSummary string `json:"outcomeSummary,omitempty"`
 }
 
 // BatchWorkSnapshotWire is both the session_batch_work push and the
 // get_session_batch_work reply (V: 1). Complete=false means the read was
-// partial (host unknown, chunk failed, depth overflow): clients must MERGE
-// such a snapshot into the previous one, never replace. Root-level terminal
-// completion delivery is NOT carried here until R12 (see
-// handlers_batch_doc.go).
+// partial (host unknown, chunk failed, depth overflow, root-history read
+// failed): clients must MERGE such a snapshot into the previous one, never
+// replace. Completions are keyed by root_id (roots) or (root_id, node_id)
+// (nodes inside live roots); a terminal root is carried exactly once per
+// snapshot, and a reload re-reads it from the structured store — never
+// from message prose.
 type BatchWorkSnapshotWire struct {
 	V           int                   `json:"v"`
 	SessionID   string                `json:"sessionID"`
@@ -126,6 +134,9 @@ type BatchWorkSnapshotWire struct {
 // session.BatchLiveSource uses.
 type batchNodeSource interface {
 	BatchLiveNodesForOwners(context.Context, []string) ([]db.BatchNode, error)
+	// BatchHistoryRootsForOwner is the R12-C terminal-root read: every root
+	// incarnation of one owner, terminal included (batch_history.sql).
+	BatchHistoryRootsForOwner(context.Context, string) ([]db.BatchNode, error)
 }
 
 // Production wiring. The source reads through the app's DB handle; the
@@ -183,12 +194,14 @@ func batchTerminal(state string) bool {
 // batchCollectRows walks the delegation forest exactly like
 // session.BatchLiveForSessions: links come only from nodes' child_session_id,
 // fetches chunk, and any failure or unfetched frontier session makes the
-// read incomplete.
-func batchCollectRows(ctx context.Context, src batchNodeSource, sessionID string) (rowsByOwner map[string][]db.BatchNode, complete bool) {
+// read incomplete. visited returns the sessions reached, in first-seen
+// order (the R12-C terminal-root completion read uses the same scope).
+func batchCollectRows(ctx context.Context, src batchNodeSource, sessionID string) (rowsByOwner map[string][]db.BatchNode, visited []string, complete bool) {
 	rowsByOwner = make(map[string][]db.BatchNode)
 	fetched := map[string]bool{}
 	failures := map[string]bool{}
-	visited := map[string]bool{sessionID: true}
+	seen := map[string]bool{sessionID: true}
+	visited = []string{sessionID}
 	frontier := []string{sessionID}
 	for depth := 0; depth <= 16 && len(frontier) > 0; depth++ {
 		var todo, next []string
@@ -209,8 +222,9 @@ func batchCollectRows(ctx context.Context, src batchNodeSource, sessionID string
 			}
 			for _, n := range rows {
 				rowsByOwner[n.OwnerSessionID] = append(rowsByOwner[n.OwnerSessionID], n)
-				if n.ChildSessionID.Valid && n.ChildSessionID.String != "" && !visited[n.ChildSessionID.String] {
-					visited[n.ChildSessionID.String] = true
+				if n.ChildSessionID.Valid && n.ChildSessionID.String != "" && !seen[n.ChildSessionID.String] {
+					seen[n.ChildSessionID.String] = true
+					visited = append(visited, n.ChildSessionID.String)
 					next = append(next, n.ChildSessionID.String)
 				}
 			}
@@ -218,7 +232,7 @@ func batchCollectRows(ctx context.Context, src batchNodeSource, sessionID string
 		frontier = next
 	}
 	complete = len(failures) == 0 && len(frontier) == 0
-	return rowsByOwner, complete
+	return rowsByOwner, visited, complete
 }
 
 // buildBatchWorkSnapshot assembles the v:1 snapshot for one session's
@@ -241,7 +255,7 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 		return batchProbeHost(dataDir, host)
 	}
 
-	rowsByOwner, walkComplete := batchCollectRows(ctx, src, sessionID)
+	rowsByOwner, visited, walkComplete := batchCollectRows(ctx, src, sessionID)
 	var all []db.BatchNode
 	for _, rows := range rowsByOwner {
 		all = append(all, rows...)
@@ -366,7 +380,50 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 	if !rootCompleteAll(snap.Roots) {
 		snap.Complete = false
 	}
+	// R12-C terminal-root completions: every terminal root incarnation of
+	// the visited sessions, keyed by root_id, read from the same structured
+	// store a reload re-reads. A failed history chunk only downgrades
+	// certainty — it never drops the completions that WERE read.
+	rootComps, historyComplete := batchRootCompletions(ctx, src, visited)
+	if !historyComplete {
+		snap.Complete = false
+	}
+	snap.Completions = append(snap.Completions, rootComps...)
 	return snap
+}
+
+// batchRootCompletions reads the TERMINAL root rows of every session the
+// live walk visited and maps each to one completion keyed by root_id (a
+// reused tool_call_id is a DIFFERENT incarnation with its own root_id, so
+// two reused ids stay distinct). Duplicates — the same root read twice —
+// collapse: exactly one completion per root_id. ok=false when any owner's
+// history read failed; the roots that WERE read are still returned.
+func batchRootCompletions(ctx context.Context, src batchNodeSource, visited []string) (comps []BatchCompletionWire, ok bool) {
+	comps = []BatchCompletionWire{}
+	ok = true
+	seen := map[string]bool{}
+	for _, owner := range visited {
+		roots, err := src.BatchHistoryRootsForOwner(ctx, owner)
+		if err != nil {
+			ok = false
+			continue
+		}
+		for _, r := range roots {
+			if r.NodeID != r.RootID || !batchTerminal(r.State) || seen[r.RootID] {
+				continue
+			}
+			seen[r.RootID] = true
+			comps = append(comps, BatchCompletionWire{
+				RootID:         r.RootID,
+				NodeID:         r.RootID,
+				OutcomeCode:    r.OutcomeCode,
+				OutcomeRef:     r.ResponseEnvelopeRef.String,
+				State:          r.State,
+				OutcomeSummary: r.OutcomeSummary,
+			})
+		}
+	}
+	return comps, ok
 }
 
 // rootCompleteAll is false when any carried root is incomplete — an
