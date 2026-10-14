@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -221,7 +222,7 @@ func TestInstalledModelControlOutputGapAndLimit(t *testing.T) {
 	toolSet := newBatchModelTools(c, batchTestModelInv(env, "output-tool"), modelRegistry("view"))
 	params, err := json.Marshal(batchModelParams{Root: string(root), Node: node})
 	require.NoError(t, err)
-	resp, err := toolSet[3].Run(env.ctx, fantasy.ToolCall{Name: "batch_output", Input: string(params)})
+	resp, err := toolSet[3].Run(context.WithValue(env.ctx, tools.SessionIDContextKey, env.sessionID), fantasy.ToolCall{Name: "batch_output", Input: string(params)})
 	require.NoError(t, err)
 	require.Contains(t, resp.Content, `"data":"`+strings.Repeat("x", 32))
 }
