@@ -154,6 +154,17 @@ func findBatchCLIIdentity(ctx context.Context, store *session.BatchStore, target
 	return identity, nodeID, err
 }
 
+func renderBatchShow(identity session.BatchCLIIdentity, level session.BatchLevelResult) (batchShowTree, error) {
+	if !level.Complete {
+		return batchShowTree{}, errors.New("batch tree is incomplete or host status unknown")
+	}
+	tree := batchShowTree{RootID: identity.Root, OwnerSessionID: identity.Owner, HostID: identity.Host, Incarnation: identity.Runner, Complete: level.Complete}
+	for _, node := range level.Subtree {
+		tree.Nodes = append(tree.Nodes, batchShowNode{NodeID: node.NodeID, ParentID: node.ParentID, Depth: node.Depth, Kind: node.Kind, State: node.State})
+	}
+	return tree, nil
+}
+
 func batchShow(cmd *cobra.Command, args []string) error {
 	store, reader, closeStore, err := batchReadStore(cmd)
 	if err != nil {
@@ -168,12 +179,9 @@ func batchShow(cmd *cobra.Command, args []string) error {
 		return errors.New("batch show requires a root id or root prefix")
 	}
 	level := reader.BatchLevel(cmd.Context(), session.BatchLiveRef{OwnerSessionID: identity.Owner, RootID: identity.Root}, identity.Root)
-	if !level.Complete {
-		return errors.New("batch tree is incomplete or host status unknown")
-	}
-	tree := batchShowTree{RootID: identity.Root, OwnerSessionID: identity.Owner, HostID: identity.Host, Incarnation: identity.Runner, Complete: level.Complete}
-	for _, node := range level.Subtree {
-		tree.Nodes = append(tree.Nodes, batchShowNode{NodeID: node.NodeID, ParentID: node.ParentID, Depth: node.Depth, Kind: node.Kind, State: node.State})
+	tree, err := renderBatchShow(identity, level)
+	if err != nil {
+		return err
 	}
 	if j, _ := cmd.Flags().GetBool("json"); j {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(tree)

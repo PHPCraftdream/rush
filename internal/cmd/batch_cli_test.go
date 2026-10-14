@@ -175,19 +175,24 @@ func TestBatchCLIStopSubprocessRecoversDeadHostUnannouncedRoot(t *testing.T) {
 	require.Zero(t, count, "dead-host recovery deletes unannounced root subtree")
 }
 
-func TestBatchCLIShowSubprocessIncompleteTreeRefusesTerminalShape(t *testing.T) {
-	if os.Getenv(batchCLIHelperEnv) == "1" {
-		executeBatchCLIHelper()
-		return
+func TestBatchCLIShowIncompleteTreeRefusesTerminalShape(t *testing.T) {
+	identity := session.BatchCLIIdentity{Owner: "owner", Host: "host", Root: "root", Runner: "runner"}
+	terminal := session.BatchLiveNode{NodeID: "root", Kind: "batch", State: "completed"}
+	cases := []struct {
+		name  string
+		level session.BatchLevelResult
+	}{
+		{name: "incomplete terminal-looking tree", level: session.BatchLevelResult{Node: terminal, Subtree: []session.BatchLiveNode{terminal}, Complete: false}},
+		{name: "failed fetch", level: session.BatchLevelResult{Err: errors.New("source unavailable"), Node: terminal, Subtree: []session.BatchLiveNode{terminal}}},
+		{name: "completed state without complete snapshot", level: session.BatchLevelResult{Node: terminal, Subtree: []session.BatchLiveNode{terminal}, Complete: false}},
 	}
-	fixture := seedBatchCLIAcceptance(t)
-	conn, err := db.Connect(context.Background(), fixture.dir)
-	require.NoError(t, err)
-	defer db.ReleaseConn(conn)
-	_, err = conn.ExecContext(context.Background(), `UPDATE batch_nodes SET parent_id='missing-parent' WHERE node_id=?`, fixture.root+".1.1")
-	require.NoError(t, err)
-	result := runBatchCLIProcess(t, fixture, []string{"batch", "show", fixture.root})
-	require.Contains(t, result.Error, "batch tree is incomplete or host status unknown")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := renderBatchShow(identity, tc.level)
+			require.EqualError(t, err, "batch tree is incomplete or host status unknown")
+			require.Equal(t, batchShowTree{}, got)
+		})
+	}
 }
 
 type batchCLIAcceptanceFixture struct {
