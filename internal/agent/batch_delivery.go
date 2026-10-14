@@ -287,14 +287,6 @@ func batchEscapeWindow(window string) (time.Duration, error) {
 // on FAILED ACKS only. Won: this caller delivered the single completion. Lost:
 // the single delivery already happened elsewhere and this return is a read.
 func (b *batchDeliveryImpl) electCompletion(ctx context.Context, owner string, root jobbatch.ID, envelope fantasy.ToolResponse) (fantasy.ToolResponse, error) {
-	// R12-F fixup P1: a late STALE completion arriving INLINE must also be
-	// refused — a rerun-retired (delivery='void') root can never elect
-	// completion history, detached or inline.
-	if retired, err := batchRetiredRoots.check(ctx, owner, string(root)); err != nil {
-		return fantasy.ToolResponse{}, err
-	} else if retired {
-		return fantasy.ToolResponse{}, fmt.Errorf("%w: root %s", errBatchRetiredRoot, root)
-	}
 	var lastErr error
 	for attempt := 0; attempt < batchInlineElectionAttempts; attempt++ {
 		won, err := b.deps.Elect.ElectInline(ctx, owner, root, envelope)
@@ -313,15 +305,6 @@ func (b *batchDeliveryImpl) electCompletion(ctx context.Context, owner string, r
 // deliverDetached returns the started response immediately. Later completions
 // arrive ONLY through selected notices (R8), never as a second launch.
 func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
-	// R12-F fixup P1: refuse a root a rerun retired (durable delivery='void'
-	// row, via the batch_cutover_rerun.go registry for this exact
-	// (owner, rootID); an unmarked root fails open). Its late stale completion
-	// must never elect started history.
-	if retired, err := batchRetiredRoots.check(ctx, owner, string(root)); err != nil {
-		return fantasy.ToolResponse{}, err
-	} else if retired {
-		return fantasy.ToolResponse{}, fmt.Errorf("%w: root %s", errBatchRetiredRoot, root)
-	}
 	if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
 		return fantasy.ToolResponse{}, err
 	}

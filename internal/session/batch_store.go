@@ -236,7 +236,14 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		v.RootID, v.HostID, v.OwnerSessionID, v.RunnerID = p.Root, host, p.Owner, runner
 		v.NoticeSequence = sql.NullInt64{Int64: sequence, Valid: true}
 		v.UpdatedAt = time.Now().Unix()
-		if err := batchRequireRow(q.SelectBatchNodeNotice(ctx, v)); err != nil {
+		// Every selected notice names a settled node, and settled nodes are
+		// always in the same transition's Changed set (engine.go), so the
+		// preceding ProjectBatchNode update already moved the row to exactly
+		// this projection_sequence. 0 rows therefore means notice_selected
+		// was already 1 — precisely a rerun's BatchVoidRetiredRoot void mark
+		// — and re-selection must be a tolerated no-op, never
+		// ErrBatchProjectionConflict (a commit failure is fatal).
+		if _, err := q.SelectBatchNodeNotice(ctx, v); err != nil {
 			return err
 		}
 	}
