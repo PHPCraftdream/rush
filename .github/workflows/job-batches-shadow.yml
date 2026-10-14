@@ -39,13 +39,16 @@ jobs:
   # Mirrors build.yml's `build` job (build.yml lines 27-281: same 3-OS
   # matrix, same package-group split, same computed catch-all), with these
   # changes:
-  #   * NO -failfast on any go test invocation (both test jobs): this is an
-  #     inventory/evidence run for the R12 cutover, not a gate. -failfast
-  #     stops at the first legacy-contract failure per package, hiding all
-  #     but the first failure — the run 38586260719 lesson. The complete
-  #     failure list is wanted, so every test step keeps going
-  #     (continue-on-error) and a final "Collect failure inventory" step
-  #     (tools/shadow_failures.py) decides the job's conclusion.
+  #   * Test steps are a keep-going inventory run: every package group
+  #     runs under `set +e` (NOT GitHub's default `bash -e -o pipefail`,
+  #     which would abort the script on the first red pipeline), and each
+  #     group's real exit code is captured via PIPESTATUS[0] and recorded
+  #     in a TSV ($RUNNER_TEMP/step-failures.tsv) alongside the tee'd
+  #     logs. Every test step exits 0; the final "Collect failure
+  #     inventory" step (tools/shadow_failures.py, fed BOTH the logs and
+  #     the TSV) alone decides the job's conclusion. -failfast stays off
+  #     for the same inventory reason (the run 38586260719 lesson: it
+  #     hides all but the first failure per package).
   #   * NO -short anywhere: the shadow suite must run the hermetic batch
   #     acceptance cases that -short skips. The only tests -short
   #     additionally skipped in normal CI are the network/VCR cassette
@@ -92,79 +95,53 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
       # go mod tidy / git diff --exit-code (build.yml) omitted: release/lint
       # hygiene, not test evidence.
-      - name: "test: internal/app"
+      # ONE keep-going step for all package groups (see the job header):
+      # `set +e` so one red group never stops the later groups; real exit
+      # codes captured via PIPESTATUS[0] into the TSV the collector reads.
+      - name: "test: all package groups (keep going, exit codes collected)"
+        id: groups
         shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB # Windows paging-file OOM mitigation (harmless on Linux/macOS)
         run: |
-          set -o pipefail
-          go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/app/... 2>&1 | tee "$RUNNER_TEMP/app.log"
-      - name: "test: internal/server, internal/session"
-        shell: bash
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/server/... ./internal/session/... 2>&1 | tee "$RUNNER_TEMP/server-session.log"
-      - name: "test: internal/permission, internal/config, internal/csync"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./internal/permission/... ./internal/config/... ./internal/csync/... 2>&1 | tee "$RUNNER_TEMP/permission-config-csync.log"
-      - name: "test: internal/cmd, internal/commands"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./internal/cmd/... ./internal/commands/... 2>&1 | tee "$RUNNER_TEMP/cmd-commands.log"
-      - name: "test: sdk"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./sdk/... 2>&1 | tee "$RUNNER_TEMP/sdk.log"
-      - name: "test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/... 2>&1 | tee "$RUNNER_TEMP/agent-subpackages.log"
-      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/... 2>&1 | tee "$RUNNER_TEMP/db-message-queue-pubsub-history.log"
-      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
-          go test -p 2 -skip 'TestCoderAgent' ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/... 2>&1 | tee "$RUNNER_TEMP/oauth-deploy-update-version.log"
-      # Computed catch-all, same philosophy as build.yml: runs every package
-      # not explicitly claimed above. Bash 3.2 compatible (macos-latest),
-      # no mapfile/readarray.
-      - name: "test: everything else (computed catch-all)"
-        shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
-        env:
-          GOMEMLIMIT: 1500MiB
-        run: |
-          set -o pipefail
+          # set +e (NOT the default `bash -e -o pipefail`): one red group must
+          # NOT stop the later groups — this is an inventory/evidence run.
+          # Each group's real exit code is captured via PIPESTATUS[0] (the go
+          # test side of the `| tee` pipeline) and recorded in the TSV the
+          # collector step reads; this step always exits 0 and the collector
+          # alone decides the job's conclusion.
+          set +e
+          TSV="$RUNNER_TEMP/step-failures.tsv"
+          : > "$TSV"
+          run_group() {
+            name="$1"; logfile="$2"; shift 2
+            echo "::group::$name"
+            "$@" 2>&1 | tee "$logfile"
+            rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              printf '%s\t%d\n' "$name" "$rc" >> "$TSV"
+            fi
+          }
+          run_group "internal/app" "$RUNNER_TEMP/app.log" \
+            go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/app/...
+          run_group "internal/server, internal/session" "$RUNNER_TEMP/server-session.log" \
+            go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/server/... ./internal/session/...
+          run_group "internal/permission, internal/config, internal/csync" "$RUNNER_TEMP/permission-config-csync.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./internal/permission/... ./internal/config/... ./internal/csync/...
+          run_group "internal/cmd, internal/commands" "$RUNNER_TEMP/cmd-commands.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./internal/cmd/... ./internal/commands/...
+          run_group "sdk" "$RUNNER_TEMP/sdk.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./sdk/...
+          run_group "internal/agent subpackages" "$RUNNER_TEMP/agent-subpackages.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/...
+          run_group "internal/db, message, queue, pubsub, history" "$RUNNER_TEMP/db-message-queue-pubsub-history.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/...
+          run_group "internal/oauth, deploy, update, version" "$RUNNER_TEMP/oauth-deploy-update-version.log" \
+            go test -p 2 -skip 'TestCoderAgent' ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/...
+          # Computed catch-all, same philosophy as build.yml: runs every package
+          # not explicitly claimed above. Bash 3.2 compatible (macos-latest),
+          # no mapfile/readarray.
           covered=(
             github.com/PHPCraftdream/rush/internal/app
             github.com/PHPCraftdream/rush/internal/server
@@ -204,12 +181,24 @@ jobs:
             [ "$found" -eq 0 ] && leftover+=("$pkg")
           done < <(go list ./...)
           echo "leftover packages: ${leftover[*]}"
+          echo "::group::catch-all"
           go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' "${leftover[@]}" 2>&1 | tee "$RUNNER_TEMP/catch-all.log"
+          rc=${PIPESTATUS[0]}
+          echo "::endgroup::"
+          if [ "$rc" -ne 0 ]; then
+            printf 'catch-all (leftover packages)\t%d\n' "$rc" >> "$TSV"
+          fi
       - name: Collect failure inventory (job stays red on failures)
         if: always()
         shell: bash
         run: |
-          set -o pipefail
+          set +e
+          TSV="$RUNNER_TEMP/step-failures.tsv"
+          # If the test step died before creating the TSV (hard crash), that
+          # itself is an unparsed failure: synthesize a row so the job is red.
+          if [ ! -f "$TSV" ]; then
+            printf '(test step did not complete)\t-1\n' > "$TSV"
+          fi
           python tools/shadow_failures.py \
             "$RUNNER_TEMP/app.log" \
             "$RUNNER_TEMP/server-session.log" \
@@ -220,11 +209,17 @@ jobs:
             "$RUNNER_TEMP/db-message-queue-pubsub-history.log" \
             "$RUNNER_TEMP/oauth-deploy-update-version.log" \
             "$RUNNER_TEMP/catch-all.log" \
+            --step-failures "$TSV" \
             -o "$RUNNER_TEMP/failures.md"
-          cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
-          if [ -s "$RUNNER_TEMP/failures.md" ] && [ "$(wc -l < "$RUNNER_TEMP/failures.md")" -gt 2 ]; then
-            exit 1
+          rc=$?
+          # Append BEFORE exiting so a failure inventory still reaches the
+          # summary: the parser exits 1 when rows exist, and this deliberate
+          # final exit is what keeps the job red (both causes: parsed rows
+          # AND unparseable step failures with their exit codes).
+          if [ -f "$RUNNER_TEMP/failures.md" ]; then
+            cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+          exit "$rc"
       - name: Upload failure inventory
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -247,10 +242,13 @@ jobs:
   # 8-way sequential batches, -parallel 1 + GOMEMLIMIT=1500MiB on Windows
   # and -parallel 2 elsewhere. Difference: NO -short and
   # `-skip 'TestCoderAgent'` on every invocation (same compensation as the
-  # shadow-build job above). Also NO -failfast and continue-on-error on the
-  # sharding step: inventory/evidence run for the R12 cutover, not a gate —
-  # the full failure list is wanted, so all batches run and the final
-  # "Collect failure inventory" step decides the job conclusion.
+  # shadow-build job above). NO -failfast, and the batch loop runs under
+  # `set +e` with each batch's PIPESTATUS[0] exit code recorded in the TSV:
+  # inventory/evidence run for the R12 cutover, not a gate — the full failure
+  # list is wanted, so all batches run, the step always exits 0, and the
+  # final "Collect failure inventory" step (logs + TSV) decides the job
+  # conclusion. The extraction-error guards still exit 1: a structurally
+  # broken shard step must be red (the collector runs if: always() anyway).
   shadow-agent:
     strategy:
       fail-fast: false
@@ -273,7 +271,6 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
       - name: go test ./internal/agent/ split into sequential batches
         shell: bash
-        continue-on-error: true # keep going: inventory run, see job header comment
         run: |
           set -o pipefail
           names=()
@@ -311,8 +308,13 @@ jobs:
             parallel=2
           fi
           size=$(( (total + batches - 1) / batches ))
-          status=0
           : > "$RUNNER_TEMP/shadow-agent.log"
+          : > "$RUNNER_TEMP/step-failures.tsv"
+          # set +e (NOT GitHub's default `bash -e -o pipefail`): an unguarded
+          # failing pipeline would abort the script before its exit code could
+          # be recorded — all 8 batches must always run; the TSV + collector
+          # decide redness.
+          set +e
           for ((i = 0; i < batches; i++)); do
             start=$((i * size))
             chunk=("${names[@]:start:size}")
@@ -320,24 +322,37 @@ jobs:
             pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
             echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
             go test -parallel "$parallel" -skip 'TestCoderAgent' -run "$pattern" ./internal/agent/ 2>&1 | tee -a "$RUNNER_TEMP/shadow-agent.log"
-            rc=$?
+            rc=${PIPESTATUS[0]}
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
-              status=$rc
+              printf 'internal/agent batch %d/%d\t%d\n' "$((i + 1))" "$batches" "$rc" >> "$RUNNER_TEMP/step-failures.tsv"
             fi
           done
-          exit $status
+          # This step always exits 0; the TSV + collector decide redness.
+          exit 0
       - name: Collect failure inventory (job stays red on failures)
         if: always()
         shell: bash
         run: |
-          set -o pipefail
-          python tools/shadow_failures.py "$RUNNER_TEMP/shadow-agent.log" \
-            -o "$RUNNER_TEMP/failures.md"
-          cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
-          if [ -s "$RUNNER_TEMP/failures.md" ] && [ "$(wc -l < "$RUNNER_TEMP/failures.md")" -gt 2 ]; then
-            exit 1
+          set +e
+          TSV="$RUNNER_TEMP/step-failures.tsv"
+          # If the test step died before creating the TSV (hard crash), that
+          # itself is an unparsed failure: synthesize a row so the job is red.
+          if [ ! -f "$TSV" ]; then
+            printf '(test step did not complete)\t-1\n' > "$TSV"
           fi
+          python tools/shadow_failures.py "$RUNNER_TEMP/shadow-agent.log" \
+            --step-failures "$TSV" \
+            -o "$RUNNER_TEMP/failures.md"
+          rc=$?
+          # Append BEFORE exiting so a failure inventory still reaches the
+          # summary: the parser exits 1 when rows exist, and this deliberate
+          # final exit is what keeps the job red (both causes: parsed rows
+          # AND unparseable step failures with their exit codes).
+          if [ -f "$RUNNER_TEMP/failures.md" ]; then
+            cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
       - name: Upload failure inventory
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
