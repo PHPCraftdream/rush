@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 // Columns an audited schema must have. Anything else is reported as an
@@ -32,6 +34,10 @@ type auditSchema struct {
 	MessagesBackgroundJobs bool
 	HasAsyncJobs           bool
 	AsyncJobColumns        []string
+	// HasBatchNodes reports whether the batch_nodes table exists. With the
+	// batch runtime flag on its absence is a schema issue (the migrations
+	// create it); with the flag off nothing reads it.
+	HasBatchNodes bool
 }
 
 // auditDBHealth is the file-level picture of one database.
@@ -86,6 +92,16 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 		return report, nil
 	}
 
+	// With the batch runtime on, batch_nodes is not optional: the migrations
+	// create it, so a database without it is reported as a schema issue and
+	// left untouched rather than audited against missing facts.
+	batchOn := config.BatchRuntimeEnabled()
+	if batchOn && !schema.HasBatchNodes {
+		report.SchemaIssues = append(report.SchemaIssues,
+			"unrecognized schema: no batch_nodes table (required with the batch runtime on)")
+		return report, nil
+	}
+
 	health, err := auditCollectHealth(ctx, db, dbPath)
 	if err != nil {
 		return report, fmt.Errorf("read db health of %s: %w", dbPath, err)
@@ -106,7 +122,19 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 	}
-	findings, err := auditFindings(ctx, db, schema, ids, since)
+	// With the flag on the batch facts come from batch_nodes over the same
+	// read-only handle, and the unfinished_jobs rule counts held roots; a
+	// missing legacy async_jobs table is then normal and reported, not a
+	// silent rule disable.
+	var batch *auditBatchScan
+	if batchOn {
+		batch, err = auditScanBatchFacts(ctx, db, dataDir, ids)
+		if err != nil {
+			return report, fmt.Errorf("read batch facts of %s: %w", dataDir, err)
+		}
+		report.Batch = batch.report(!schema.HasAsyncJobs)
+	}
+	findings, err := auditFindings(ctx, db, schema, ids, since, batch)
 	if err != nil {
 		return report, err
 	}
@@ -161,6 +189,11 @@ func auditInspectSchema(ctx context.Context, db *sql.DB) (auditSchema, []string)
 			schema.AsyncJobColumns = append(schema.AsyncJobColumns, column)
 		}
 		sort.Strings(schema.AsyncJobColumns)
+	}
+
+	batchColumns, err := auditTableColumns(ctx, db, "batch_nodes")
+	if err == nil {
+		schema.HasBatchNodes = len(batchColumns) > 0
 	}
 
 	return schema, issues

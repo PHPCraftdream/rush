@@ -155,6 +155,15 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(id)+".lock")
+
+	// Flag ON (R12-B part 2): batch nodes are not process-lock holders, so
+	// before any "nothing to kill" verdict is printed, say it when the
+	// session still owns live (or unknown) batch work. Additive note only:
+	// every legacy branch below keeps its exact output.
+	if note := batchKillLiveNote(cmd.Context(), dataDir, id); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+
 	info, err := os.Stat(lockPath)
 	if err != nil {
 		if os.IsNotExist(err) {

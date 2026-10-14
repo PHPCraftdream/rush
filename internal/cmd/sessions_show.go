@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -130,11 +131,19 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		SubAgentActivity string `json:"sub_agent_activity,omitempty"`
 		// AsyncJobsTotal/AsyncJobsRunning are this session's OWN async_jobs
 		// row counts (doc sec.5 step 7) -- 0/0, and omitted from JSON, when
-		// this App has no AsyncJobStore or the session owns no rows.
-		AsyncJobsTotal   int       `json:"async_jobs_total,omitempty"`
-		AsyncJobsRunning int       `json:"async_jobs_running,omitempty"`
-		SystemPrompt     string    `json:"system_prompt,omitempty"`
-		Messages         []msgItem `json:"messages,omitempty"`
+		// this App has no AsyncJobStore or the session owns no rows. With the
+		// batch runtime on (R12-B) they are populated from the batch task
+		// counts instead (total = every task node, running = active tasks),
+		// keeping the legacy field names on the flag-ON path too.
+		AsyncJobsTotal   int `json:"async_jobs_total,omitempty"`
+		AsyncJobsRunning int `json:"async_jobs_running,omitempty"`
+		// Batch read fields (R12-B, flag ON only): additive, zero on the
+		// legacy path so the flag-OFF wire shape stays byte-identical.
+		BatchRoots   int       `json:"batch_roots,omitempty"`
+		BatchDebt    int64     `json:"batch_debt,omitempty"`
+		BatchStatus  string    `json:"batch_status,omitempty"` // live | unknown
+		SystemPrompt string    `json:"system_prompt,omitempty"`
+		Messages     []msgItem `json:"messages,omitempty"`
 	}
 
 	// Fetch the first user message as "purpose".
@@ -202,7 +211,23 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	// Async job counts (doc sec.5 step 7): this session's OWN rows only --
 	// `sessions jobs <id>` is the place for the full delegation-tree view,
 	// this is just a summary line, not a second listing surface.
-	if store := a.AsyncJobStore(); store != nil {
+	// R12-B: with the batch runtime on, the counts and the new batch_* fields
+	// come from the batch node rows instead; the legacy block below stays the
+	// flag-OFF path byte-for-byte.
+	var batchFacts batchSessionFacts
+	if config.BatchRuntimeEnabled() {
+		batchFacts = batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, []string{sess.ID})[sess.ID]
+		output.AsyncJobsTotal = batchFacts.Tasks.Pending + batchFacts.Tasks.Starting + batchFacts.Tasks.Active + batchFacts.Tasks.Completed + batchFacts.Tasks.Failed + batchFacts.Tasks.Cancelled + batchFacts.Tasks.TimedOut + batchFacts.Tasks.Interrupted + batchFacts.Tasks.Skipped
+		output.AsyncJobsRunning = batchFacts.Tasks.Active
+		output.BatchRoots = len(batchFacts.Roots)
+		output.BatchDebt = batchFacts.Debt
+		switch {
+		case batchFacts.Unknown:
+			output.BatchStatus = "unknown"
+		case len(batchFacts.Roots) > 0:
+			output.BatchStatus = "live"
+		}
+	} else if store := a.AsyncJobStore(); store != nil {
 		if jobs, err := store.ListAsyncJobsForOwner(cmd.Context(), sess.ID); err == nil {
 			output.AsyncJobsTotal = len(jobs)
 			for _, j := range jobs {
@@ -315,6 +340,33 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	if output.SubAgentActivity != "" {
 		fmt.Printf("Delegating:   %s\n", output.SubAgentActivity)
+	}
+	// R12-B: conservative batch line -- never silent about an incomplete read.
+	if config.BatchRuntimeEnabled() {
+		for _, r := range batchFacts.Roots {
+			state := r.State
+			if r.Unknown {
+				state = "unknown"
+			}
+			fmt.Printf("Batch root:   %s tool call %s: %s", short(r.RootID), r.ToolCallID, state)
+			if r.AwaitingTermination {
+				fmt.Print(" (stopped but awaiting termination)")
+			}
+			if r.AwaitingAnswer {
+				fmt.Print(" (awaiting answer)")
+			}
+			fmt.Println()
+		}
+		// Any incomplete component read (live tree or history snapshot or
+		// bound-notice check) must surface, alongside (not instead of) the
+		// root lines: a root line shows its own state; this line flags the
+		// aggregate read was incomplete.
+		if batchFacts.Unknown {
+			fmt.Println("Batch:        unknown (incomplete read)")
+		}
+		if batchFacts.HasQuestion {
+			fmt.Println("Batch:        a held batch question is awaiting an answer")
+		}
 	}
 	if output.AsyncJobsTotal > 0 {
 		fmt.Printf("Async jobs:   %d total, %d running (see `sessions jobs %s`)\n", output.AsyncJobsTotal, output.AsyncJobsRunning, sess.ID)
