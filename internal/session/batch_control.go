@@ -186,7 +186,7 @@ func (p *BatchControlPump) Pump(ctx context.Context, owner, root string) (int, e
 			return count, ErrBatchProjectionConflict
 		}
 		// Exact identity CAS; answered controls are never redelivered by this pump.
-		e = p.store.AnswerControl(ctx, db.AnswerBatchControlRequestParams{RequestID: current.RequestID, OwnerSessionID: owner, HostID: p.host, RootID: root, NodeID: current.NodeID, AnswerCode: accepted.Code, AnswerSequence: sql.NullInt64{Int64: accepted.Sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}})
+		e = p.store.AnswerControl(ctx, db.AnswerBatchControlRequestParams{RequestID: current.RequestID, OwnerSessionID: owner, HostID: p.host, RootID: root, NodeID: current.NodeID, RunnerID: current.RunnerID, AnswerCode: accepted.Code, AnswerSequence: sql.NullInt64{Int64: accepted.Sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}})
 		if e != nil {
 			return count, e
 		}
@@ -217,6 +217,9 @@ func (p *BatchControlPump) answerClosed(ctx context.Context, t BatchControlTarge
 	if root.HostID != p.host || node.HostID != p.host {
 		return ErrBatchControlHostMismatch
 	}
+	if node.RunnerID != root.RunnerID {
+		return ErrBatchProjectionConflict
+	}
 	code := "terminal"
 	if !batchStateLive(root.State) {
 		code = "stale"
@@ -230,7 +233,7 @@ func (p *BatchControlPump) answerClosed(ctx context.Context, t BatchControlTarge
 	if sequence <= 0 {
 		return ErrBatchProjectionConflict
 	}
-	err = batchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: id, OwnerSessionID: t.Owner, RootID: t.Root, NodeID: t.Node, HostID: p.host, AnswerCode: code, AnswerSequence: sql.NullInt64{Int64: sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}}))
+	err = batchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: id, OwnerSessionID: t.Owner, RootID: t.Root, NodeID: t.Node, HostID: p.host, RunnerID: node.RunnerID, AnswerCode: code, AnswerSequence: sql.NullInt64{Int64: sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}}))
 	if err != nil {
 		return err
 	}

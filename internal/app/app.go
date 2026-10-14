@@ -117,6 +117,7 @@ type App struct {
 	// agent job store; flag-off Apps never touch it (M2 golden test pins
 	// this).
 	batchRuntime *BatchRuntime
+	batchInstall *agent.BatchInstall
 
 	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
 	// installed batch runtime. Nil on flag-off Apps; set together with
