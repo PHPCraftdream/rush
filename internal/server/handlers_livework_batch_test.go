@@ -70,7 +70,8 @@ func TestBuildSessionLiveWork_BatchOnPathWithoutAsyncJobsTable(t *testing.T) {
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap, "the ON path must answer without the old table")
-	require.True(t, snap.Complete, "a fully-read walk reports complete")
+	require.NotNil(t, snap.Complete, "the ON path always sets the complete pointer")
+	require.True(t, *snap.Complete, "a fully-read walk reports complete")
 	require.Len(t, snap.Agents, 1, "the batch root's agent task is the delegation item")
 	require.Empty(t, snap.Commands)
 	agent := snap.Agents[0]
@@ -103,14 +104,14 @@ func TestBuildSessionLiveWork_OffPathUnchanged(t *testing.T) {
 	hub.register <- client
 
 	// Flag OFF: the flat snapshot still comes from the old rows and never
-	// from batch nodes; the additive complete field stays zero (omitted on
+	// from batch nodes; the additive complete pointer stays nil (omitted on
 	// the wire, so the flag-off bytes are unchanged).
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
 	require.Len(t, snap.Commands, 1)
 	require.Equal(t, "tc-old", snap.Commands[0].ToolCallID)
 	require.Empty(t, snap.Agents, "batch nodes must not appear on the OFF path")
-	require.False(t, snap.Complete)
+	require.Nil(t, snap.Complete)
 	raw, err := json.Marshal(snap)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "complete")
@@ -138,7 +139,8 @@ func TestBuildSessionLiveWork_IncompleteBatchReadKeepsWork(t *testing.T) {
 
 	snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 	require.NoError(t, err)
-	require.False(t, snap.Complete, "a failed chunk must mark the snapshot incomplete")
+	require.NotNil(t, snap.Complete, "the ON path always sets the complete pointer")
+	require.False(t, *snap.Complete, "a failed chunk must mark the snapshot incomplete")
 	require.Len(t, snap.Agents, 1, "the read root is kept, not dropped")
 	require.Equal(t, "tc-b", snap.Agents[0].ToolCallID)
 }
@@ -161,7 +163,8 @@ More preamble.', 0, 'pending', 'tc-b', 1700000002, 1700000002)`, sess.ID)
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 	require.NoError(t, err)
-	require.True(t, snap.Complete)
+	require.NotNil(t, snap.Complete)
+	require.True(t, *snap.Complete)
 	require.Len(t, snap.Agents, 1)
 	require.True(t, snap.Agents[0].AwaitingAnswer, "the pending child_question notice must badge the held root")
 	require.Equal(t, "Should I proceed with the risky step?", snap.Agents[0].AwaitingQuestion)

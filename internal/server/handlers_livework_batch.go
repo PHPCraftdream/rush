@@ -40,7 +40,8 @@ type batchRootMeta struct {
 // live-work snapshot: one item per live root (the tool call the web knows —
 // task nodes carry no tool_call_id by schema), states straight from the
 // node columns, awaiting-answer badges matched from session_notices (never
-// the old store). complete=false whenever any chunk or notice read failed.
+// the old store). Complete is always set (a pointer): true on a full read,
+// false whenever any chunk or notice read failed.
 func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *titleCache, sessionID string) (SessionLiveWorkPayload, error) {
 	snap := SessionLiveWorkPayload{SessionID: sessionID, Commands: []LiveWorkItemWire{}, Agents: []LiveWorkItemWire{}}
 	src := batchSourceFor(a)
@@ -48,15 +49,16 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 		return snap, nil // conservative: no proof of absence, nothing replaced
 	}
 	rowsByOwner, visited, walkComplete := batchCollectRows(ctx, src, sessionID)
-	snap.Complete = walkComplete
+	complete := walkComplete
 
 	roots := collectBatchRoots(rowsByOwner)
 	roots = capBatchRoots(roots)
 
 	questions, questionsComplete := batchPendingQuestions(ctx, a, visited)
 	if !questionsComplete {
-		snap.Complete = false
+		complete = false
 	}
+	snap.Complete = &complete
 
 	jobs := make([]db.AsyncJob, 0, len(roots))
 	for _, m := range roots {

@@ -106,10 +106,13 @@ type BatchCompletionWire struct {
 	NodeID      string `json:"nodeID"`
 	OutcomeCode string `json:"outcomeCode"`
 	OutcomeRef  string `json:"outcomeRef"`
-	// Root completions only; node completions leave both zero (shape pinned
-	// by TestBatchWorkSnapshot_StructuredCompletions).
+	// Root completions only; node completions leave all three zero (shape
+	// pinned by TestBatchWorkSnapshot_StructuredCompletions).
 	State          string `json:"state,omitempty"`
 	OutcomeSummary string `json:"outcomeSummary,omitempty"`
+	// The terminal root's own tool call identity — the join key the web
+	// uses when no legacy prose metadata exists for the root.
+	ToolCallID string `json:"toolCallID,omitempty"`
 }
 
 // BatchWorkSnapshotWire is both the session_batch_work push and the
@@ -119,7 +122,8 @@ type BatchCompletionWire struct {
 // replace. Completions are keyed by root_id (roots) or (root_id, node_id)
 // (nodes inside live roots); a terminal root is carried exactly once per
 // snapshot, and a reload re-reads it from the structured store — never
-// from message prose.
+// from message prose. Root completions carry the root's toolCallID so the
+// web can join without legacy prose metadata.
 type BatchWorkSnapshotWire struct {
 	V           int                   `json:"v"`
 	SessionID   string                `json:"sessionID"`
@@ -137,6 +141,10 @@ type batchNodeSource interface {
 	// BatchHistoryRootsForOwner is the R12-C terminal-root read: every root
 	// incarnation of one owner, terminal included (batch_history.sql).
 	BatchHistoryRootsForOwner(context.Context, string) ([]db.BatchNode, error)
+	// BatchLevelNodes reads every node row of one (owner, root_id)
+	// incarnation (batch_read.sql) — the history BFS uses it to discover
+	// delegation child sessions behind terminal roots.
+	BatchLevelNodes(context.Context, db.BatchLevelNodesParams) ([]db.BatchNode, error)
 }
 
 // Production wiring. The source reads through the app's DB handle; the
@@ -392,36 +400,73 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 	return snap
 }
 
-// batchRootCompletions reads the TERMINAL root rows of every session the
-// live walk visited and maps each to one completion keyed by root_id (a
-// reused tool_call_id is a DIFFERENT incarnation with its own root_id, so
-// two reused ids stay distinct). Duplicates — the same root read twice —
-// collapse: exactly one completion per root_id. ok=false when any owner's
-// history read failed; the roots that WERE read are still returned.
+// batchHistoryDepth bounds the completion-history BFS over terminal-root
+// child sessions (matches batchCollectRows's delegation depth).
+const batchHistoryDepth = 16
+
+// batchRootCompletions reads the TERMINAL root rows reachable from the
+// live walk's visited sessions and maps each to one completion keyed by
+// root_id (a reused tool_call_id is a DIFFERENT incarnation with its own
+// root_id, so two reused ids stay distinct). The live walk's SQL excludes
+// terminal roots, so a completed delegation child would never be visited —
+// the read is a bounded BFS instead: each TERMINAL root's completion is
+// added, then its node rows are read (BatchLevelNodes) and the child
+// sessions they name form the next owner frontier. Depth is capped at
+// batchHistoryDepth; owner and root_id cycle guards stop re-reads.
+// Duplicates — the same root read twice — collapse: exactly one completion
+// per root_id. ok=false when any read failed; the completions that WERE
+// read are still returned (a failure downgrades, never drops).
 func batchRootCompletions(ctx context.Context, src batchNodeSource, visited []string) (comps []BatchCompletionWire, ok bool) {
 	comps = []BatchCompletionWire{}
 	ok = true
-	seen := map[string]bool{}
+	seenRoot := map[string]bool{}
+	seenOwner := map[string]bool{}
+	frontier := make([]string, 0, len(visited))
 	for _, owner := range visited {
-		roots, err := src.BatchHistoryRootsForOwner(ctx, owner)
-		if err != nil {
-			ok = false
-			continue
+		if !seenOwner[owner] {
+			seenOwner[owner] = true
+			frontier = append(frontier, owner)
 		}
-		for _, r := range roots {
-			if r.NodeID != r.RootID || !batchTerminal(r.State) || seen[r.RootID] {
+	}
+	for depth := 0; depth <= batchHistoryDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, owner := range frontier {
+			roots, err := src.BatchHistoryRootsForOwner(ctx, owner)
+			if err != nil {
+				ok = false
 				continue
 			}
-			seen[r.RootID] = true
-			comps = append(comps, BatchCompletionWire{
-				RootID:         r.RootID,
-				NodeID:         r.RootID,
-				OutcomeCode:    r.OutcomeCode,
-				OutcomeRef:     r.ResponseEnvelopeRef.String,
-				State:          r.State,
-				OutcomeSummary: r.OutcomeSummary,
-			})
+			for _, r := range roots {
+				if r.NodeID != r.RootID || !batchTerminal(r.State) || seenRoot[r.RootID] {
+					continue
+				}
+				seenRoot[r.RootID] = true
+				comps = append(comps, BatchCompletionWire{
+					RootID:         r.RootID,
+					NodeID:         r.RootID,
+					OutcomeCode:    r.OutcomeCode,
+					OutcomeRef:     r.ResponseEnvelopeRef.String,
+					State:          r.State,
+					OutcomeSummary: r.OutcomeSummary,
+					ToolCallID:     r.ToolCallID.String,
+				})
+				// The terminal root's own node rows name its delegation
+				// children; their owners enter the next frontier.
+				nodes, err := src.BatchLevelNodes(ctx, db.BatchLevelNodesParams{Owner: owner, RootID: r.RootID})
+				if err != nil {
+					ok = false
+					continue
+				}
+				for _, n := range nodes {
+					child := n.ChildSessionID.String
+					if n.ChildSessionID.Valid && child != "" && !seenOwner[child] {
+						seenOwner[child] = true
+						next = append(next, child)
+					}
+				}
+			}
 		}
+		frontier = next
 	}
 	return comps, ok
 }

@@ -127,20 +127,31 @@ export function pickMergedLiveWork(
     rows.filter((r) => !r.toolCallID || !covered.has(r.toolCallID));
   const commands = keep(flat.commands);
   const agents = keep(flat.agents);
+  // Flat rows by tool call: a structural ROOT node carries no
+  // childSessionID/awaiting state, so a covered flat agent row would lose
+  // its Agents classification and awaiting badge — carry those over.
+  const flatByToolCallID = new Map<string, LiveWorkItem>();
+  for (const row of [...flat.commands, ...flat.agents]) {
+    if (row.toolCallID) flatByToolCallID.set(row.toolCallID, row);
+  }
   for (const root of snap.roots) {
     for (const node of root.nodes) {
       if (!node.toolCallID) continue;
+      const flatRow = flatByToolCallID.get(node.toolCallID);
+      const childSessionID = node.childSessionID || flatRow?.childSessionID || undefined;
       const item: LiveWorkItem = {
         toolCallID: node.toolCallID,
         toolName: node.kind === "task" ? node.taskKind || node.kind : node.kind,
-        title: node.outcomeSummary || node.taskKind || node.kind,
-        childSessionID: node.childSessionID || undefined,
+        title: node.outcomeSummary || node.taskKind || node.kind || flatRow?.title || "",
+        childSessionID,
         startedAt: root.startedAt,
         status: node.state,
         reason: node.cause || undefined,
         lastActivityAt: undefined,
+        awaitingAnswer: flatRow?.awaitingAnswer,
+        awaitingQuestion: flatRow?.awaitingQuestion,
       };
-      (node.childSessionID ? agents : commands).push(item);
+      (childSessionID ? agents : commands).push(item);
     }
   }
   return { commands, agents };

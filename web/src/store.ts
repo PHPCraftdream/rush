@@ -1,5 +1,6 @@
 import { atom, computed } from "nanostores";
 import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
+import { isAsyncCompletionNotice, indexAsyncJobCompletions } from "./asyncJobCompletion";
 import { buildMyPrompts, completionStatuses, mergeCompletionIndex } from "./completionIndex";
 import { $batchWorkBySession } from "./batchWork";
 
@@ -28,7 +29,7 @@ export const $asyncJobCompletions = computed(
       // indexAsyncJobCompletions lives in asyncJobCompletion.ts; wired via
       // mergeCompletionIndex so the prose path stays read-only there.
       indexAsyncJobCompletions(msgs),
-      batchMap.get(sessionID ?? "")?.lastGood.completions ?? null,
+      batchMap.get(sessionID ?? "")?.lastGood?.completions ?? null,
     ),
 );
 export const $asyncJobStatuses = computed($asyncJobCompletions, completionStatuses);
@@ -567,7 +568,6 @@ export interface WireAttachment {
 }
 import { logClientEvent } from "./telemetry";
 import { isTerminallyFinished } from "./components/Message/textParts";
-import { indexAsyncJobCompletions } from "./asyncJobCompletion";
 
 export function updateTodos(sessionID: string, todos: Todo[]) {
   // Optimistic local update
@@ -912,7 +912,7 @@ export function setProviderPeakHours(payload: {
 // with the rest of the completion code — it is the prose notice predicate's
 // consumer); only the store wiring remains here.
 export type { MyPromptItem } from "./completionIndex";
-export const $myPrompts = computed($messages, buildMyPrompts);
+export const $myPrompts = computed($messages, (msgs) => buildMyPrompts(msgs, isAsyncCompletionNotice));
 
 // jumpToMessage — scrolls the transcript to the given message ID and flashes
 // it briefly. The Message component renders id={`msg-${ID}`} on its row and

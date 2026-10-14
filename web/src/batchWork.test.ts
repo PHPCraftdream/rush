@@ -185,6 +185,46 @@ test("covered flat rows are replaced by structured nodes; structured-only nodes 
   assert.equal(emptyRows.length, 1);
 });
 
+test("covered flat agent row keeps its classification and awaiting badge under a root node", () => {
+  $batchWorkBySession.set(new Map());
+  // Flat agents row fully covered by a structural ROOT node: the root node
+  // carries toolCallID but no childSessionID/awaiting state of its own.
+  const live = new Map<string, SessionLiveWork>([
+    [
+      "s1",
+      {
+        sessionID: "s1",
+        commands: [],
+        agents: [
+          {
+            toolCallID: "tcA",
+            toolName: "agent",
+            title: "flat agent",
+            childSessionID: "child-9",
+            startedAt: 1,
+            awaitingAnswer: true,
+            awaitingQuestion: "q?",
+          },
+        ],
+      },
+    ],
+  ]);
+  const rA = root("rA", "tcA");
+  rA.nodes[0].childSessionID = ""; // root node: no child link on the node
+  applyBatchWorkSnapshot(snap({ roots: [rA] }));
+  const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
+  const carried = merged.agents.find((r) => r.toolCallID === "tcA");
+  assert.ok(carried, "the carried childSessionID must classify the row as an agent");
+  assert.equal(carried.childSessionID, "child-9");
+  assert.equal(carried.awaitingAnswer, true);
+  assert.equal(carried.awaitingQuestion, "q?");
+  assert.deepEqual(
+    merged.commands.map((r) => r.toolCallID),
+    [],
+    "a covered delegation row must not fall into commands",
+  );
+});
+
 test("unknown session picks nothing and merged view falls back to flat rows", () => {
   assert.equal(pickBatchWork($batchWorkBySession.get(), null), null);
   assert.equal(pickBatchWork($batchWorkBySession.get(), "nope"), null);

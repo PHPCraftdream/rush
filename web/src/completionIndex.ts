@@ -1,10 +1,16 @@
-import { isAsyncCompletionNotice } from "./asyncJobCompletion";
 import type {
   AsyncJobCompletion,
   AsyncJobCompletionIndex,
   AsyncJobStatus,
 } from "./asyncJobCompletion";
 import type { BatchWorkCompletion, Message } from "./types";
+
+// TYPE-ONLY import above: this module must not value-import
+// asyncJobCompletion — CI runs `node --test src/*.test.ts`, and Node's ESM
+// resolver cannot resolve the extensionless "./asyncJobCompletion" specifier
+// (type imports are erased by Node's type stripping). The one runtime
+// dependency — the prose completion-notice predicate — is INJECTED: store.ts
+// passes isAsyncCompletionNotice into buildMyPrompts/isComposerTypedMessage.
 
 // Completion index (R12-C): merges the structured batch completions
 // (internal/server/handlers_batch.go's BatchCompletionWire, delivered on
@@ -24,11 +30,13 @@ import type { BatchWorkCompletion, Message } from "./types";
 //     tool_call_id stay distinct in `byRootID` even though the prose join
 //     can only resolve one of them onto the (shared) tool call.
 //
-// Join: a structured completion names only its rootID. The tool-call side
-// comes from the prose indexer's job_id→toolCallID metadata map — the batch
-// root's ID is the async job identity the pre-cutover tool_result metadata
-// already carries. A root with no such metadata row surfaces only in
-// `byRootID` (no tool-call badge), never by guessing.
+// Join: a structured completion names its rootID and (R12-C wire fix) its
+// own toolCallID. Prefer the wire's identity; fall back to the prose
+// indexer's job_id→toolCallID metadata map for records written before the
+// wire carried toolCallID — the batch root's ID is the async job identity
+// the pre-cutover tool_result metadata already carries. A root with
+// neither surfaces only in `byRootID` (no tool-call badge), never by
+// guessing.
 //
 // This module is PURE (no atom reads/writes): store.ts wires the returned
 // functions into nanostores computeds, exactly like the store_commands.ts
@@ -97,7 +105,7 @@ export function mergeCompletionIndex(
       rootID: comp.rootID,
     };
     byRootID.set(comp.rootID, record);
-    const toolCallID = prose.toolCallIDByJobID.get(comp.rootID);
+    const toolCallID = comp.toolCallID ?? prose.toolCallIDByJobID.get(comp.rootID);
     if (toolCallID) byToolCallID.set(toolCallID, record);
   }
   return { byToolCallID, byRootID, attachedNoticeIDs: new Set(prose.attachedNoticeIDs) };
@@ -133,19 +141,20 @@ export function partsToText(parts: Array<{ type: string; Text?: string }>): stri
 // isComposerTypedMessage is THE web-side authorship filter — the single
 // predicate shared by the arrow-history recall and the history dropdown,
 // both derived from $myPrompts (store.ts). HumanTyped is computed
-// server-side from structured fields only; isAsyncCompletionNotice stays as
-// the content-pattern fallback for notice rows persisted before the
-// BackgroundJobNotice column existed.
-export function isComposerTypedMessage(m: Message): boolean {
+// server-side from structured fields only; the injected isNotice predicate
+// (store.ts passes isAsyncCompletionNotice) stays as the content-pattern
+// fallback for notice rows persisted before the BackgroundJobNotice column
+// existed.
+export function isComposerTypedMessage(m: Message, isNotice: (m: Message) => boolean): boolean {
   if (!m.HumanTyped) return false;
-  if (isAsyncCompletionNotice(m)) return false;
+  if (isNotice(m)) return false;
   return true;
 }
 
-export function buildMyPrompts(msgs: Message[]): MyPromptItem[] {
+export function buildMyPrompts(msgs: Message[], isNotice: (m: Message) => boolean): MyPromptItem[] {
   const out: MyPromptItem[] = [];
   for (const m of msgs) {
-    if (!isComposerTypedMessage(m)) continue;
+    if (!isComposerTypedMessage(m, isNotice)) continue;
     const text = partsToText(m.Parts as unknown as Array<{ type: string; Text?: string }>).trim();
     if (!text) continue;
     out.push({ id: m.ID, text });

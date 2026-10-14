@@ -8,11 +8,13 @@
  * completion from the structured record alone, and a reload (fresh
  * messages_list + snapshot re-read) must reconstruct it.
  *
- * GATING: the whole file is skipped unless RUSH_BATCH_RUNTIME=ON is set in
- * the environment running Playwright, so the default e2e set (which runs
- * against the flag-OFF/prose server) is untouched:
+ * GATING: the whole file is skipped unless RUSH_BATCH_RUNTIME is set to a
+ * Go-strlib ParseBool truthy value (1/t/T/TRUE/true/True/on...) — any truthy
+ * spelling the Go flag parser accepts — in the environment running
+ * Playwright, so the default e2e set (which runs against the flag-OFF/prose
+ * server) is untouched:
  *
- *   RUSH_BATCH_RUNTIME=ON npm run test -- batch-structured-completions
+ *   RUSH_BATCH_RUNTIME=1 npm run test -- batch-structured-completions
  *
  * Revert-check: reverting the structured branch of mergeCompletionIndex
  * (web/src/completionIndex.ts) — or the `state`/`outcomeSummary` fields on
@@ -24,7 +26,11 @@ import { expect, test } from "@playwright/test";
 import { makeMessage, makeSession } from "./helpers/fixtures";
 import { sendMockWSMessage, setupMockWS } from "./helpers/mock-ws";
 
-test.skip(process.env.RUSH_BATCH_RUNTIME !== "ON", "R12-C structured completions require RUSH_BATCH_RUNTIME=ON");
+// Accepts the Go strconv.ParseBool truthy set, not just the "ON" spelling:
+// the server's config.BatchRuntimeEnabled uses ParseBool semantics.
+const flagEnabled = /^(1|t|true)$/i.test(process.env.RUSH_BATCH_RUNTIME ?? "");
+
+test.skip(!flagEnabled, "R12-C structured completions require RUSH_BATCH_RUNTIME to parse true (1/t/T/true/TRUE/True)");
 
 const sessionID = "batch-struct";
 
@@ -88,6 +94,36 @@ test("terminal-root completion badges the tool call from the structured record a
 test("a browser reload reconstructs the structured completion", async ({ page }) => {
   await selectSession(page, sessionID);
   // Reload = fresh messages_list first, structured snapshot re-read after.
+  await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: batchMessages } });
+  await sendMockWSMessage(page, {
+    type: "session_batch_work",
+    payload: {
+      v: 1,
+      sessionID,
+      complete: true,
+      roots: [],
+      completions: [{
+        rootID: "root-struct",
+        nodeID: "root-struct",
+        outcomeCode: "ok",
+        outcomeRef: "",
+        state: "completed",
+        outcomeSummary: "3 tasks finished",
+      }],
+    },
+  });
+  await expect(
+    page.locator('[data-test-id="action-row"]').filter({ hasText: "echo hi" }).getByText("done", { exact: true }),
+  ).toBeVisible();
+
+  // The REAL reload: setupMockWS is an addInitScript, so the mock transport
+  // survives page.reload() and the app must reconstruct the completion from
+  // a fresh messages_list + structured snapshot re-read alone.
+  await page.reload();
+  await sendMockWSMessage(page, { type: "sessions_list", payload: [makeSession({ ID: sessionID, Title: sessionID })] });
+  const row = page.getByTestId(`session-${sessionID}`);
+  await expect(row).toBeVisible({ timeout: 5000 });
+  await row.click();
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: batchMessages } });
   await sendMockWSMessage(page, {
     type: "session_batch_work",

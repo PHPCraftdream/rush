@@ -58,10 +58,49 @@ func TestBatchWorkSnapshot_RootCompletionKeyedByRootID(t *testing.T) {
 	}
 	require.Equal(t, BatchCompletionWire{
 		RootID: "r-done", NodeID: "r-done", OutcomeCode: "ok", OutcomeRef: "env-1",
-		State: "completed", OutcomeSummary: "3 tasks finished",
+		State: "completed", OutcomeSummary: "3 tasks finished", ToolCallID: "tc-shared",
 	}, byRoot["r-done"])
 	require.Equal(t, "failed", byRoot["r-fail"].State)
 	require.Equal(t, "env-2", byRoot["r-fail"].OutcomeRef)
+	require.Equal(t, "tc-shared", byRoot["r-fail"].ToolCallID)
+}
+
+// TestBatchWorkSnapshot_HistoryBFSReachesTerminalDescendants pins the R12-C
+// completion-history BFS: the live walk's SQL excludes terminal roots, so a
+// COMPLETED delegation child is never visited by it — only a terminal
+// root's node rows name the child session, and only a second history read
+// for that owner finds the child's own terminal root. Schema trace: both
+// roots are kind='batch' root rows with tool_call_id/input_hash NOT NULL
+// and the kind/task_kind CHECKs (migration 20261012000001_batch_projection
+// .sql:58-73); the task node's child_session_id feeds the composite FKs at
+// :75-81. Revert-check: scoping the history read to the live-walk's visited
+// slice only leaves rc unfetched and fails the byRoot assertions below.
+func TestBatchWorkSnapshot_HistoryBFSReachesTerminalDescendants(t *testing.T) {
+	rp := batchHistoryRoot("rp", "completed", "tc-p", "ok", "parent done", "env-p")
+	rc := batchHistoryRoot("rc", "completed", "tc-c", "ok", "child done", "env-c")
+	// rp's level rows: one task node delegating to session s2.
+	task := batchNode("rp-1", "rp", "s1", "completed", "", 0)
+	task.TaskKind = sql.NullString{String: "agent", Valid: true}
+	task.ChildSessionID = sql.NullString{String: "s2", Valid: true}
+	src := &fakeBatchSource{
+		// Live rows: empty — nothing is live anywhere in the tree.
+		historyByOwner: map[string][]db.BatchNode{"s1": {rp}, "s2": {rc}},
+		levels:         map[string][]db.BatchNode{"rp": {task}},
+	}
+	withBatchSeams(t, src, probeAlive, nil)
+
+	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
+	require.True(t, snap.Complete, "both history levels read cleanly")
+	byRoot := map[string]BatchCompletionWire{}
+	for _, c := range snap.Completions {
+		if c.NodeID == c.RootID {
+			byRoot[c.RootID] = c
+		}
+	}
+	require.Equal(t, "tc-p", byRoot["rp"].ToolCallID, "the parent root's completion is read")
+	require.Equal(t, "ok", byRoot["rc"].OutcomeCode,
+		"the terminal delegation child's own root completion must be reached through rp's node rows")
+	require.Equal(t, "tc-c", byRoot["rc"].ToolCallID)
 }
 
 func TestBatchWorkSnapshot_ReloadReconstructsRootCompletion(t *testing.T) {

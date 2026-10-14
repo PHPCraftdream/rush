@@ -405,8 +405,10 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 	}
 	// R12-C: an incomplete ON-path read is not broadcast — the client KEEPS
 	// the work it already shows instead of replacing it with a partial
-	// snapshot (a partial read never silently drops active work).
-	if batchRuntimeEnabled() && !snap.Complete {
+	// snapshot (a partial read never silently drops active work). Complete
+	// is a pointer: nil means the flag-OFF path built the snapshot, which is
+	// always broadcast unchanged.
+	if batchRuntimeEnabled() && snap.Complete != nil && !*snap.Complete {
 		slog.Warn("live_work: skipping an incomplete batch-read snapshot", "session", sessionID)
 	} else {
 		p.h.Broadcast(EventSessionLiveWork, snap)

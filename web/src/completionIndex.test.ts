@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { indexAsyncJobCompletions } from "./asyncJobCompletion.ts";
+import { indexAsyncJobCompletions, isAsyncCompletionNotice } from "./asyncJobCompletion.ts";
 import {
   buildMyPrompts,
   mergeCompletionIndex,
@@ -78,6 +78,10 @@ test("structured outcome supersedes prose for the joined tool call", () => {
   const prose = indexAsyncJobCompletions(historicalMessages);
   const merged = mergeCompletionIndex(prose, [
     completion({ state: "completed", outcomeSummary: "3 tasks finished" }),
+    // Wire-carried identity with NO prose metadata: the join must not need
+    // the prose indexer's job_id map for this root (kills a revert of the
+    // comp.toolCallID ?? fallback in mergeCompletionIndex).
+    completion({ rootID: "root-9", nodeID: "root-9", toolCallID: "tc9", state: "completed", outcomeSummary: "wire-only" }),
   ]);
   const rec = merged.byToolCallID.get("tc1");
   assert.ok(rec, "structured completion joined onto tool call tc1");
@@ -86,6 +90,10 @@ test("structured outcome supersedes prose for the joined tool call", () => {
   assert.equal(rec.source, "structured");
   assert.equal(rec.rootID, "root-1");
   assert.ok(merged.byRootID.get("root-1"));
+  const rec9 = merged.byToolCallID.get("tc9");
+  assert.ok(rec9, "a structured completion joins via its own wire toolCallID");
+  assert.equal(rec9.source, "structured");
+  assert.equal(rec9.content, "wire-only");
 });
 
 test("prose path still indexes historical messages with no structured outcome", () => {
@@ -103,9 +111,11 @@ test("prose path still indexes historical messages with no structured outcome", 
 test("two batch roots sharing one reused tool_call_id stay distinct by rootID", () => {
   const prose = indexAsyncJobCompletions(historicalMessages);
   const merged = mergeCompletionIndex(prose, [
-    completion({ rootID: "root-1", nodeID: "root-1", state: "completed", outcomeSummary: "first" }),
-    completion({ rootID: "root-2", nodeID: "root-2", state: "failed", outcomeSummary: "second" }),
+    completion({ rootID: "root-1", nodeID: "root-1", toolCallID: "tc1", state: "completed", outcomeSummary: "first" }),
+    completion({ rootID: "root-2", nodeID: "root-2", toolCallID: "tc1", state: "failed", outcomeSummary: "second" }),
   ]);
+  // Distinctness is delivered per root; byToolCallID intentionally holds
+  // the latest record for the single shared tool-call row.
   assert.equal(merged.byRootID.size, 2);
   assert.equal(merged.byRootID.get("root-1")?.status, "finished");
   assert.equal(merged.byRootID.get("root-2")?.status, "failed");
@@ -136,7 +146,7 @@ test("buildMyPrompts keeps HumanTyped rows and drops completion notices", () => 
     }),
     HumanTyped: true,
   };
-  const prompts = buildMyPrompts([typed, notice]);
+  const prompts = buildMyPrompts([typed, notice], isAsyncCompletionNotice);
   assert.deepEqual(
     prompts.map((p) => p.id),
     ["m-typed"],
