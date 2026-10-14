@@ -234,7 +234,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	sid := att.sessionID
 	turnErr = att.failure(turnErr)
 	turnCtxDone := att.turnCtxDone.Load()
-	facts := TurnFacts{Now: time.Now(), Site: siteAccount}
+	facts := TurnFacts{Now: c.arb.now(), Site: siteAccount}
 	facts.Session.ExternallyDrivenSelf = l.isExternalDriver(sid)
 	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
 	// "drain/reaction"): the leg's error is the ONLY place the run-queue/

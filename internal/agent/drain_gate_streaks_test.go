@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	shrinkDrainRetry(t, retry)
 	// No release hook: the test drives every launch itself (a release-launched
 	// Drain racing a fact's own would make the launch count nondeterministic).
-	f := newAttemptFixture(t, "gate-free-dormant", attemptFixtureOpts{noIdle: true})
+	f := newAttemptFixture(t, "gate-free-dormant", attemptFixtureOpts{noIdle: true, manualClock: true})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", false)
 	f.exec(ctx, blockPullTrigger)
@@ -87,7 +88,8 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind, "three no-turn Drains: dormant")
 
 	for range 3 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
 	require.EqualValues(t, drainDormantStreak, launches.runs.Load(), "a pass never reopens a dormant gate")
@@ -106,31 +108,40 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	ctx := context.Background()
 	const retry = 100 * time.Millisecond
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "gate-paid-dormant", attemptFixtureOpts{})
+	f := newAttemptFixture(t, "gate-paid-dormant", attemptFixtureOpts{manualClock: true})
 	f.seedDebt(ctx, "call-1", false)
 	f.blockReactionsAndSettles(ctx)
-
 	require.NoError(t, f.wake(ctx, true))
 	for range 2 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "three paid attempts, the close keeps failing")
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind)
 
 	f.seedDebt(ctx, "call-2", false)
 	require.NoError(t, f.wake(ctx, true))
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a newer fact does not reopen a paid-dormant gate")
 	// A refusal note (a queued Drain the lock refused) sets hintOpens; the
 	// dormant paid gate must not be reopened by the next fact through it.
 	f.coord.noteDrainRefused(f.sessID, errors.New("lock busy"))
 	f.ledger.bumpHint(f.sessID)
 	require.NoError(t, f.wake(ctx, true))
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a refusal note does not make a paid-dormant gate hint-openable")
 
+	f.waitDrainIdle()
 	f.coord.ResetAutoResumeCounter(f.sessID)
 	require.NoError(t, f.wake(ctx, true))
-	require.EqualValues(t, 4, f.requests.Load(), "a human message reopens it")
+	f.waitDrainIdle()
+	f.coord.recheckMu.Lock()
+	_, inFlight := f.coord.recheckWakeInFlight[f.sessID]
+	f.coord.recheckMu.Unlock()
+	state := fmt.Sprintf("gate=%+v requests=%d busy=%t inFlight=%t", f.coord.arb.snapshot(f.sessID).Gate, f.requests.Load(), f.sa.IsSessionBusy(f.sessID), inFlight)
+	require.EqualValues(t, 4, f.requests.Load(), "a human message reopens it; %s", state)
 }
 
 // R3B-5: when one row reaches K, only rows whose OWN counter reached it are
