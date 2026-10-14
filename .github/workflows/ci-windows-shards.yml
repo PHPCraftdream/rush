@@ -145,7 +145,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -timeout 20m -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-app.json"
+          go test -short -failfast -p 2 -timeout 20m -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-app.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/app|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -158,7 +158,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -timeout 20m -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-server-internal-session.json"
+          go test -short -failfast -p 2 -timeout 20m -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-server-internal-session.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/server, internal/session|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -171,7 +171,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-sdk.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-sdk.json"
           rc=$?
           echo "${{ matrix.shard }}|test: sdk|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -207,7 +207,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-cmd-internal-commands.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-cmd-internal-commands.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/cmd, internal/commands|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -220,7 +220,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-agent-subpackages.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-agent-subpackages.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/agent subpackages|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -233,7 +233,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-shell.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-shell.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/shell|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -246,7 +246,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-jobbatch-cmd-batchlab.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-jobbatch-cmd-batchlab.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/jobbatch, cmd/batchlab|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -259,7 +259,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/permission, internal/config, internal/csync|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -272,7 +272,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-db-internal-message-internal-queue-internal-pubsub-internal-history.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-db-internal-message-internal-queue-internal-pubsub-internal-history.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -285,7 +285,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/oauth, internal/deploy, internal/update, internal/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -298,7 +298,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(cat "$f") 2>&1 | tee "$LOG_DIR/test-everything-else-computed-catch-all.json"
+          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-everything-else-computed-catch-all.json"
           rc=$?
           echo "${{ matrix.shard }}|test: everything else (computed catch-all)|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
