@@ -76,7 +76,10 @@ func newAwaitTasksTool(control AwaitControl, description string, showBatchIDs bo
 			if len(res.WaitingFor) > 0 {
 				lines = append(lines, "Still running:")
 				for _, ref := range res.WaitingFor {
-					lines = append(lines, renderAwaitRef(ref, showBatchIDs, true))
+					lines = append(lines, renderAwaitRef(ref, showBatchIDs, showBatchIDs))
+				}
+				if showBatchIDs && hasAwaitBatchRoot(res.WaitingFor) {
+					lines = append(lines, "Use batch_status/batch_output/batch_stop to inspect or control batch work.")
 				}
 				lines = append(lines, "Call await_tasks again to keep waiting; do not end your turn while jobs you still need are running.")
 			}
@@ -100,6 +103,9 @@ func newAwaitTasksTool(control AwaitControl, description string, showBatchIDs bo
 			}
 			lines = append(lines, entry)
 		}
+		if showBatchIDs && hasAwaitBatchRoot(res.WaitingFor) {
+			lines = append(lines, "Use batch_status/batch_output/batch_stop to inspect or control batch work.")
+		}
 		if res.MaxWaitScheduleID != "" {
 			lines = append(lines, fmt.Sprintf("A wake fires in at most %d seconds (schedule %s) even if they are still running.", params.MaxWaitSeconds, res.MaxWaitScheduleID))
 		}
@@ -108,6 +114,15 @@ func newAwaitTasksTool(control AwaitControl, description string, showBatchIDs bo
 		resp.StopTurn = true
 		return resp, nil
 	})
+}
+
+func hasAwaitBatchRoot(refs []AwaitTaskRef) bool {
+	for _, ref := range refs {
+		if ref.BatchRootID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func renderAwaitRef(ref AwaitTaskRef, showBatch, showChild bool) string {

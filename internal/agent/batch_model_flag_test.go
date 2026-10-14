@@ -50,7 +50,12 @@ func TestBatchControlsOnlyAppearWhenAllowedInPinnedToolset(t *testing.T) {
 	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("bash")))
 	require.Equal(t, []string{"batch_status", "batch_output"}, batchControlAvailability(batchTestTools("job_output")))
 	require.Equal(t, []string{"batch_stop"}, batchControlAvailability(batchTestTools("job_kill")))
-	require.NotContains(t, batchControlAvailability(batchTestTools("view")), "batch_run")
+	// D1/D10 allow explicit batches of work the pinned role can already run;
+	// batch controls do not widen the view-only leaf registry.
+	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("view")))
+	require.Equal(t, []string{"await_tasks"}, batchControlAvailability(batchTestTools("await_tasks")), "await alone is visible but cannot launch work")
+	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks")), "batch_run")
+	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks")), "batch_add")
 }
 
 type modelControlInventory struct {

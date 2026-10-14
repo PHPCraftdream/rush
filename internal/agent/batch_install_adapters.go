@@ -46,8 +46,13 @@ func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequ
 	if a.runner == nil {
 		return "", errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
-	if req.Spec.Task == nil && req.Spec.Batch == nil {
-		return "", fmt.Errorf("%w: task or batch spec required", jobbatch.ErrInvalidSpec)
+	if req.Spec.Task != nil {
+		if req.Spec.Batch != nil {
+			return "", jobbatch.ErrInvalidSpec
+		}
+		req.Spec = jobbatch.OneItem(*req.Spec.Task)
+	} else if req.Spec.Batch == nil {
+		return "", jobbatch.ErrInvalidSpec
 	}
 	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
 	if err != nil {
