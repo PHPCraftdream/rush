@@ -37,12 +37,7 @@ type hostNodeStore struct {
 var _ AsyncHostStore = hostNodeStore{}
 
 func (a hostNodeStore) RegisterAsyncHost(ctx context.Context, arg db.RegisterAsyncHostParams) (db.AsyncHost, error) {
-	return a.q.RegisterAsyncHostRow(ctx, db.RegisterAsyncHostRowParams{
-		ID:        arg.ID,
-		Pid:       arg.Pid,
-		Label:     arg.Label,
-		StartedAt: arg.StartedAt,
-	})
+	return a.q.RegisterAsyncHostRow(ctx, db.RegisterAsyncHostRowParams(arg))
 }
 
 // DeleteAsyncHostIfNoJobs is the AsyncHostStore method name host_lock.go's

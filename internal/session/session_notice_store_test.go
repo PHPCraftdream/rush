@@ -155,6 +155,7 @@ func TestSessionNoticeStore_PullUnboundNoticeDelivers(t *testing.T) {
 // delivery done->void, keep path inserts the message -> assertions on
 // message count and final notice delivery.
 func TestSessionNoticeStore_BoundNoticeVoidRules(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		seed          func(t *testing.T, ctx context.Context, conn *sql.DB, toolCallID string)
@@ -369,9 +370,10 @@ func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 	require.Len(t, debt.Nodes, 2, "both settled nodes (root and child) are debt")
 	var rootRef, childRef *BatchDebtNodeRef
 	for i := range debt.Nodes {
-		if debt.Nodes[i].NodeID == root {
+		switch debt.Nodes[i].NodeID {
+		case root:
 			rootRef = &debt.Nodes[i]
-		} else if debt.Nodes[i].NodeID == child {
+		case child:
 			childRef = &debt.Nodes[i]
 		}
 	}
