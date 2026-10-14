@@ -49,12 +49,14 @@ func (f *attemptFixture) lastAssistantFinishTitle(ctx context.Context) string {
 // Revert-check: deciding the exemption from errors.Is(err,
 // context.DeadlineExceeded) alone (operatorStop ignoring turnCtxDone) exempts
 // the attempt: wake_attempts stays 0 and this test goes red.
+//
+// The client timeout remains real: only gate pacing uses the fixture clock.
 func TestDrainAttempt_TransportTimeoutIsCountedPacedAndSettledAtK(t *testing.T) {
 	ctx := context.Background()
 	const retry = 600 * time.Millisecond
 	shrinkDrainRetry(t, retry)
 	f := newAttemptFixture(t, "attempt-transport-timeout", attemptFixtureOpts{
-		handler: stallUntilClientGone, clientTimeout: 150 * time.Millisecond,
+		handler: stallUntilClientGone, clientTimeout: 150 * time.Millisecond, manualClock: true,
 	})
 	f.seedDebt(ctx, "call-1", false)
 
@@ -66,14 +68,22 @@ func TestDrainAttempt_TransportTimeoutIsCountedPacedAndSettledAtK(t *testing.T) 
 	require.Equal(t, "Provider Error", f.lastAssistantFinishTitle(ctx), "not the --timeout text")
 	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "paced behind the failure")
 	require.True(t, f.inRecheckSet())
+	f.waitDrainIdle()
 
 	requests := f.requests.Load()
-	time.Sleep(retry / 2)
-	require.Equal(t, requests, f.requests.Load(), "the release of a failed attempt must not relaunch a paid turn")
+	f.advanceDrainClock(retry / 2)
+	f.pass(ctx)
+	f.waitDrainIdle()
+	require.Equal(t, requests, f.requests.Load(), "the gate remains paced before expiry")
 
 	for want := int64(2); want <= 3; want++ {
-		time.Sleep(retry)
+		if want == 2 {
+			f.advanceDrainClock(retry / 2)
+		} else {
+			f.advanceDrainClock(retry)
+		}
 		f.pass(ctx)
+		f.waitDrainIdle()
 		require.Equal(t, want, f.row(ctx, "call-1").WakeAttempts, "the gate reopens for one attempt per pause")
 	}
 	row = f.row(ctx, "call-1")

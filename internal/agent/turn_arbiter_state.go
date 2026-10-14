@@ -37,9 +37,18 @@ type arbiterState struct {
 }
 
 // arbiter owns every arbiterState. The zero value is ready to use.
+// Clock is installed before use; nil uses wall time.
 type arbiter struct {
 	mu        sync.Mutex
 	bySession map[string]*arbiterState
+	clock     func() time.Time
+}
+
+func (a *arbiter) now() time.Time {
+	if a.clock != nil {
+		return a.clock()
+	}
+	return time.Now()
 }
 
 func (a *arbiter) state(sid string) *arbiterState {
@@ -120,7 +129,7 @@ func (a *arbiter) hold(sid string) (release func()) {
 			a.mu.Lock()
 			if s := a.bySession[sid]; s != nil && s.holds > 0 {
 				s.holds--
-				if s.holds == 0 && s.idle(time.Now()) {
+				if s.holds == 0 && s.idle(a.now()) {
 					delete(a.bySession, sid)
 				}
 			}
@@ -232,7 +241,7 @@ func (a *arbiter) pruneOverCapLocked(sid string, notices []session.PendingNotice
 			delete(s.overCap, id)
 		}
 	}
-	if s.idle(time.Now()) {
+	if s.idle(a.now()) {
 		delete(a.bySession, sid)
 	}
 }
@@ -255,7 +264,7 @@ func (a *arbiter) pace(sid string, hintAt uint64, wait time.Duration, hintOpens 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	g := &a.stateLocked(sid).gate
-	g.RetryAt = time.Now().Add(wait)
+	g.RetryAt = a.now().Add(wait)
 	g.HintSeen = hintAt
 	g.HintOpens = hintOpens
 	switch kind {

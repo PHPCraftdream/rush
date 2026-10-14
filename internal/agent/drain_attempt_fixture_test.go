@@ -25,16 +25,19 @@ import (
 )
 
 type attemptFixture struct {
-	t        *testing.T
-	env      fakeEnv
-	store    *session.AsyncJobStore
-	coord    *coordinator
-	ledger   *workLedger
-	sa       *sessionAgent
-	model    Model
-	sessID   string
-	requests atomic.Int32
-	srv      *httptest.Server
+	t             *testing.T
+	env           fakeEnv
+	store         *session.AsyncJobStore
+	coord         *coordinator
+	ledger        *workLedger
+	sa            *sessionAgent
+	model         Model
+	sessID        string
+	requests      atomic.Int32
+	requestEvents chan struct{}
+	clockOffset   atomic.Int64
+	manualClock   bool
+	srv           *httptest.Server
 	// authHeader is the Authorization header of the newest request.
 	authHeader atomic.Value
 
@@ -48,6 +51,7 @@ type attemptFixtureOpts struct {
 	noIdle  bool // do not wire OnSessionIdle
 	// streamIdle/streamTick shrink the stream watchdog (a stalled provider).
 	streamIdle, streamTick time.Duration
+	manualClock            bool
 	// clientTimeout is the provider HTTP client's Client.Timeout: a stalled
 	// server then fails with a net/http timeout, not a cancelled context.
 	clientTimeout time.Duration
@@ -63,10 +67,14 @@ type attemptFixtureOpts struct {
 
 func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemptFixture {
 	t.Helper()
-	f := &attemptFixture{t: t, handler: o.handler}
+	f := &attemptFixture{t: t, handler: o.handler, requestEvents: make(chan struct{}, 16), manualClock: o.manualClock}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
 		f.authHeader.Store(r.Header.Get("Authorization"))
+		select {
+		case f.requestEvents <- struct{}{}:
+		default:
+		}
 		f.mu.Lock()
 		h := f.handler
 		f.mu.Unlock()
@@ -76,7 +84,10 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 		}
 		textFinishResponse(w, "reacted")
 	}))
-	t.Cleanup(f.srv.Close)
+	t.Cleanup(func() {
+		f.waitReleases()
+		f.srv.Close()
+	})
 	if o.clientTimeout > 0 {
 		f.model = newProbeModelClient(t, f.srv, &http.Client{Timeout: o.clientTimeout})
 	} else {
@@ -85,8 +96,16 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 
 	f.env = testEnv(t)
 	f.store = session.NewAsyncJobStore(f.env.conn, f.env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = f.store.Close(context.Background()) })
+	t.Cleanup(func() {
+		f.waitReleases()
+		_ = f.store.Close(context.Background())
+	})
 	f.coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	if f.manualClock {
+		f.coord.arb.clock = func() time.Time {
+			return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f.clockOffset.Load()))
+		}
+	}
 	f.ledger = newWorkLedger(f.coord.notifyAsyncCompletion)
 	f.ledger.store = f.store
 	f.ledger.coord = f.coord
@@ -125,6 +144,37 @@ func (f *attemptFixture) setHandler(h http.HandlerFunc) {
 	f.mu.Lock()
 	f.handler = h
 	f.mu.Unlock()
+}
+
+// advanceDrainClock moves the fixture's explicitly installed clock forward.
+func (f *attemptFixture) advanceDrainClock(d time.Duration) {
+	f.t.Helper()
+	require.True(f.t, f.manualClock, "manual drain clock must be installed before use")
+	f.clockOffset.Add(int64(d))
+}
+
+// waitRequest waits for one provider request, up to the established timeout.
+func (f *attemptFixture) waitRequest() {
+	f.t.Helper()
+	select {
+	case <-f.requestEvents:
+	case <-time.After(10 * time.Second):
+		f.t.Fatal("provider request did not arrive")
+	}
+}
+
+func (f *attemptFixture) waitReleases() { f.coord.releaseWG.Wait() }
+
+func (f *attemptFixture) waitDrainIdle() {
+	f.t.Helper()
+	f.coord.waitRecheckWakes()
+	f.waitReleases()
+	f.coord.waitRecheckWakes()
+	f.coord.recheckMu.Lock()
+	_, inFlight := f.coord.recheckWakeInFlight[f.sessID]
+	f.coord.recheckMu.Unlock()
+	require.False(f.t, inFlight, "recheck wake remains in flight")
+	require.False(f.t, f.sa.IsSessionBusy(f.sessID), "session remains busy")
 }
 
 // seedDebt claims toolCallID, announces it and terminal-transitions it with
