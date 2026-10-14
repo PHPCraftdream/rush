@@ -380,13 +380,13 @@ jobs:
                   continue  # exact internal/agent package: dedicated agent job on ubuntu
               for name, prefixes in groups:
                   if any(p == pref.rstrip("/") or p.startswith(pref) for pref in prefixes):
-                      with open(os.path.join(outdir, f"n-{name}.txt"), "a") as f:
+                      with open(os.path.join(outdir, f"n-{name}.txt"), "a", newline="\n") as f:
                           f.write(p + "\n")
                       break
               else:
                   left.append(p)
           if left:
-              with open(os.path.join(outdir, "n-catchall.txt"), "w") as f:
+              with open(os.path.join(outdir, "n-catchall.txt"), "w", newline="\n") as f:
                   f.write("\n".join(left) + "\n")
           PY
       # Native legs run the same groups with the same flags as build.yml's
@@ -403,7 +403,9 @@ jobs:
             echo "::group::test: $(basename "$f" .txt)"
             timeout_flags=""
             [ "$(basename "$f" .txt)" = "n-app" ] && timeout_flags="-timeout 20m"
-            go test -short -failfast -p 2 $timeout_flags $(cat "$f")
+            # CR-safe: a text-mode writer on Windows emits CRLF, and a stray CR makes
+            # every package path "[setup failed]".
+            go test -short -failfast -p 2 $timeout_flags $(tr -d '\r' < "$f")
             rc=$?
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then status=$rc; break; fi
