@@ -251,12 +251,10 @@ func (f *batchRerunCutoverFx) reserveNewIncarnation(callID string) session.Batch
 	return snap
 }
 
-func (f *batchRerunCutoverFx) fence() *batchRerunFence { return batchRerunFenceFor(f.coord) }
-
 // TestBatchRerunStopVoided_StopsExactlyCommittedIncarnation proves (a) and
 // (c): the engine execution of the committed incarnation is cancelled, while
 // a fresh incarnation reusing the SAME tool_call_id keeps running and is
-// never fenced stale.
+// never retired with the old one.
 //
 // Revert-check: key the stop by tool_call_id (work_ledger_rerun-style) or
 // drop the exact-root guard, and the reused call id's new incarnation is
@@ -296,12 +294,18 @@ func TestBatchRerunStopVoided_StopsExactlyCommittedIncarnation(t *testing.T) {
 	// New incarnation on the reused tool_call_id: fresh root, running, and
 	// NOT fenced stale by the retired one.
 	newSnap := fx.reserveNewIncarnation("call-1")
+	// The durable retirement: the OLD incarnation's root row is void-delivery
+	// (written by BatchRerunReconcile in-tx), while the new incarnation's
+	// root row is running with delivery 'none'. The row state, not any
+	// in-memory registry, is the only stale/incarnation authority.
+	oldVoided := fx.rootRow(oldRoot)
+	require.Equal(t, "void", oldVoided.Delivery, "the retired incarnation's rows are durably void")
+	require.Equal(t, int64(1), oldVoided.NoticeSelected)
+	require.Zero(t, oldVoided.Wake)
 	newRow := fx.rootRow(newSnap.Root.RootID)
 	require.Equal(t, "running", newRow.State)
-	require.False(t, fx.fence().stale(batchRerunCutoverOwner, "call-1", newSnap.Root.RootID),
-		"the new incarnation's events on the reused call id must never be stale")
-	require.True(t, fx.fence().stale(batchRerunCutoverOwner, "call-1", oldRoot),
-		"the retired incarnation's events are stale")
+	require.Equal(t, "none", newRow.Delivery,
+		"the new incarnation's events on the reused call id are its own business, never the retired one's")
 
 	// A second committed pass over the SAME voided set is idempotent and
 	// cannot touch the new incarnation.
@@ -332,6 +336,12 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	fx.exec.reportLate = true
 
 	trunc := fx.rerun(fx.ack(oldRoot, "call-1"))
+	// R12-F round 4: the durable void is written by BatchRerunReconcile
+	// IN-TX, so it holds IMMEDIATELY after rerun() — before the stop
+	// goroutine even runs (this makes the test stronger than the former
+	// post-commit BatchVoidRetiredRoot write).
+	require.Equal(t, "void", fx.rootRow(oldRoot).Delivery,
+		"the reconciliation voids the retired root before any stop")
 	msgsBefore, err := fx.messages.List(ctx, batchRerunCutoverOwner)
 	require.NoError(t, err)
 	fx.coord.BatchRerunStopVoided(ctx, batchRerunCutoverOwner, trunc.Voided)
@@ -362,11 +372,12 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 
 	// SCHEMA TRACE (first real assertion of this test): the retired root's
 	// row is real (read back via session.BatchStore.Read) and its durable
-	// state is quarantined: the rerun's BatchVoidRetiredRoot marks the
-	// retired root's notice void BEFORE the stale settlement can select it,
-	// so delivery is 'void' and nothing is pullable.
+	// state is quarantined: BatchRerunReconcile voids the retired root's
+	// notice IN the truncation transaction — long before the stale
+	// settlement can select it — so delivery stays 'void' and nothing is
+	// pullable.
 	row := fx.rootRow(oldRoot)
-	require.Equal(t, "void", row.Delivery, "the rerun's BatchVoidRetiredRoot marks the retired root's notice void before the stale settlement can select it")
+	require.Equal(t, "void", row.Delivery, "the reconciliation voids the retired root's notice before the stale settlement can select it")
 	require.Zero(t, row.Wake, "the voided root wakes nothing: no outbox debt, no pull")
 
 	// The durable void mark holds at the OUTBOX: nothing is pullable for the
@@ -388,21 +399,21 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	newRow := fx.rootRow(newSnap.Root.RootID)
 	require.Equal(t, "running", newRow.State)
 	require.Equal(t, "none", newRow.Delivery)
-	require.False(t, fx.fence().stale(batchRerunCutoverOwner, "call-1", newSnap.Root.RootID))
 }
 
-// TestBatchVoidRetiredRoot_QuarantinesOutbox pins the durable void mark
-// (R12-F fixup P1): session.BatchStore.BatchVoidRetiredRoot turns a REAL
-// reserved, announced, live root into delivery='void', wake=0 with
-// notice_selected=1, so its notice is never pullable — BatchOutboxPending
-// requires delivery='pending' — and the operation is idempotent.
+// TestBatchRerunReconcile_QuarantinesOutboxLiveArm pins the in-tx live-root
+// void (R12-F round 4): session.BatchStore.BatchRerunReconcile's announce-arm
+// live arm turns a REAL reserved, announced, live root into delivery='void',
+// wake=0 with notice_selected=1 — inside the truncation transaction — so its
+// notice is never pullable (BatchOutboxPending requires delivery='pending').
 //
-// Revert-check: drop the BatchVoidRetiredRoot call in BatchRerunStopVoided
-// (or break its delivery='void' SET) and the root's settlement selects a
+// Revert-check: drop batchRerunVoidLiveRoots from BatchRerunReconcile (or
+// break its delivery='void' SET) and the root stays live/unselected; the
+// row assertions below fail and the root's settlement can select a
 // delivery='pending' notice that BatchPullNotices delivers into history.
 //
 // Parallel-safe: everything is scoped to this fixture's own database.
-func TestBatchVoidRetiredRoot_QuarantinesOutbox(t *testing.T) {
+func TestBatchRerunReconcile_QuarantinesOutboxLiveArm(t *testing.T) {
 	t.Parallel()
 	fx := newBatchRerunCutoverFx(t)
 	ctx := context.Background()
@@ -427,15 +438,17 @@ func TestBatchVoidRetiredRoot_QuarantinesOutbox(t *testing.T) {
 
 	// Announce the root: the outbox precondition (BatchOutboxPending joins on
 	// announced=1), so the quarantine assertion below is the REAL gate.
-	fx.ack(root, "call-void")
+	announce := fx.ack(root, "call-void")
 
-	// The durable void mark: live unselected root gets the synthetic
-	// select+void (CHECK-legal notice identity, delivery='void', wake=0).
-	require.NoError(t, fx.store.BatchVoidRetiredRoot(ctx, batchRerunCutoverOwner, root))
+	// The rerun's live arm retires the root IN the reconciliation transaction:
+	// synthetic select+void with the CHECK-legal notice identity.
+	trunc := fx.rerun(announce)
+	require.Len(t, trunc.Voided, 1)
+	require.Equal(t, root, trunc.Voided[0].RootID)
 	rootRow = fx.rootRow(root)
-	require.Equal(t, "void", rootRow.Delivery, "the retired root's notice is voided, never pullable")
+	require.Equal(t, "void", rootRow.Delivery, "the retired root's notice is voided in-tx, never pullable")
 	require.Zero(t, rootRow.Wake, "the voided root wakes nothing: no outbox debt")
-	require.Equal(t, int64(1), rootRow.NoticeSelected, "the void mark synthetically selects the notice")
+	require.Equal(t, int64(1), rootRow.NoticeSelected, "the in-tx void synthetically selects the notice")
 
 	// Nothing is pullable for the owner despite announced=1.
 	pulled, err := fx.store.BatchPullNotices(ctx, fx.messages, batchRerunCutoverOwner, func(row session.BatchNoticeRow) message.CreateMessageParams {
@@ -443,13 +456,97 @@ func TestBatchVoidRetiredRoot_QuarantinesOutbox(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, pulled, "BatchOutboxPending requires delivery='pending'; the row is 'void'")
+}
 
-	// Idempotent: a second void mark is a tolerated no-op.
-	require.NoError(t, fx.store.BatchVoidRetiredRoot(ctx, batchRerunCutoverOwner, root))
-	rootRow = fx.rootRow(root)
-	require.Equal(t, "void", rootRow.Delivery)
-	require.Zero(t, rootRow.Wake)
-	require.Equal(t, int64(1), rootRow.NoticeSelected)
+// TestBatchRerunVoidRootBlocksSubtreeSelection proves the root-void gates
+// (R12-F round 4): after the reconciliation voids an announced live root, a
+// LATE settlement of its subtree (one of two task children completing with a
+// wake notice) is a tolerated no-op that leaves NOTHING pullable or in debt.
+//
+// Revert-check: remove the root-void skip in batchProjectRoot (the void-root
+// gate on selection) and the child's Project selects a delivery='pending',
+// wake=1 notice — the child-row and pull/debt assertions fail. Remove the
+// root-void NOT EXISTS from the pull CAS or the debt exclusion and the
+// pending/debt rows resurface even with the selection gate in place.
+//
+// Parallel-safe: everything is scoped to this fixture's own database.
+func TestBatchRerunVoidRootBlocksSubtreeSelection(t *testing.T) {
+	t.Parallel()
+	fx := newBatchRerunCutoverFx(t)
+	ctx := context.Background()
+
+	// Reserve a live root with TWO task children (notify=each shape: each
+	// child would wake its own notice) and announce it.
+	fx.seq++
+	r, err := fx.store.Reserve(ctx, session.BatchReservation{
+		Owner: batchRerunCutoverOwner, Host: "host-a", RunnerID: "runner-2",
+		ToolCallID: "call-sub", InputHash: "hash-call-sub", Sequence: fx.seq,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "pending", ControlState: "none",
+		}, Children: []session.BatchReservationNode{
+			{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}},
+			{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}},
+		}},
+	})
+	require.NoError(t, err)
+	snap := r.Snapshot
+	require.Len(t, snap.Nodes, 3, "root + two children (real schema: children INSERTed under the root)")
+	root := snap.Root.RootID
+	child := snap.Nodes[1].NodeID
+	announce := fx.ack(root, "call-sub")
+
+	// The live arm voids the announced root in the reconciliation transaction.
+	fx.rerun(announce)
+	require.Equal(t, "void", fx.rootRow(root).Delivery)
+
+	// The late settlement: project the child to completed with a wake notice.
+	// The root itself is NOT in the update set (already covered by the void).
+	fx.seq++
+	notice := db.SelectBatchNodeNoticeParams{
+		NodeID: child, NoticeKind: sql.NullString{String: "task", Valid: true},
+		NoticeState: sql.NullString{String: "completed", Valid: true},
+		NoticeCause: sql.NullString{}, NoticeOrdinal: sql.NullInt64{Int64: 0, Valid: true},
+		NoticeCompleted: 1, Wake: 1,
+	}
+	require.NoError(t, fx.store.Project(ctx, session.BatchProjection{
+		Host: "host-a", RunnerID: "runner-2", Sequence: fx.seq,
+		Roots: []session.BatchRootProjection{{Owner: batchRerunCutoverOwner, Root: root, Updates: []db.ProjectBatchNodeParams{
+			{NodeID: child, State: "completed", ControlState: "none"},
+		}, Notices: []db.SelectBatchNodeNoticeParams{notice}}},
+	}), "the settlement is a tolerated no-op: the void root's subtree can never select notices")
+
+	// SCHEMA TRACE: the child row really took the ProjectBatchNode update
+	// (state completed) but its selection was skipped — delivery stays out of
+	// the outbox world entirely.
+	full, err := fx.store.Read(ctx, batchRerunCutoverOwner, root)
+	require.NoError(t, err)
+	got := db.BatchNode{}
+	for _, n := range full.Nodes {
+		if n.NodeID == child {
+			got = n
+		}
+	}
+	require.Equal(t, "completed", got.State, "the update half of the settlement landed")
+	require.Equal(t, int64(0), got.NoticeSelected, "the notice selection was skipped: the root is durably retired")
+	require.NotEqual(t, "pending", got.Delivery, "the child row must NOT become delivery='pending'")
+
+	// The pull gates hold: nothing is pullable for the owner.
+	pulled, err := fx.store.BatchPullNotices(ctx, fx.messages, batchRerunCutoverOwner, func(row session.BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "notice:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Empty(t, pulled, "the void root's subtree has nothing pullable")
+
+	// And the debt reader sees nothing for this root: no wake=1, reacted=0,
+	// delivery IN ('pending','done') rows survive under a void root
+	// (BatchOutboxDebtNodes + root-void exclusion).
+	var debt int
+	require.NoError(t, fx.conn.QueryRowContext(ctx,
+		`SELECT count(*) FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+		 WHERE n.owner_session_id = ? AND n.root_id = ? AND n.wake = 1 AND n.reacted = 0
+		   AND n.delivery IN ('pending','done')`, batchRerunCutoverOwner, root).Scan(&debt))
+	require.Zero(t, debt, "no outbox debt survives under the void root")
 }
 
 // TestBatchRerunStopVoided_NotWiredIsNoOp: a coordinator with no bound batch

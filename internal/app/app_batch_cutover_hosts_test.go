@@ -219,6 +219,14 @@ func TestLiveSessionDrivers_FlagOnLockProbe(t *testing.T) {
 	// session_drivers table), then the reader must never consult the store
 	// again.
 	require.NoError(t, h.app.asyncJobStore.ClaimSessionDriver(ctx, sess.ID))
+	// The fixture drives the app's flag-OFF AsyncJobStore directly, which
+	// lazily registers that store's OWN hosts/<id>.lock (ensureHost). A
+	// flag-ON shutdown only releases the HostStore twin through the drain
+	// gate (app_lifecycle.go's batchRuntime branch never touches
+	// asyncJobStore), so this cleanup is the only release of that OS lock
+	// handle; without it the open handle makes t.TempDir cleanup fail on
+	// Windows (sharing violation on hosts/<id>.lock).
+	t.Cleanup(func() { _ = h.app.asyncJobStore.Close(context.Background()) })
 	siblingStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 6161, "sibling")
 	t.Cleanup(func() { _ = siblingStore.Close(context.Background()) })
 	sibling, err := h.app.Sessions.Create(ctx, "flagon-sibling")

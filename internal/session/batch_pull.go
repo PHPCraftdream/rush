@@ -11,6 +11,122 @@ import (
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
+// batchOutboxPendingVoidAwareRow is the only identity the pull loop needs.
+type batchOutboxPendingVoidAwareRow struct{ RootID, NodeID string }
+
+// batchOutboxPendingVoidAware mirrors the canonical BatchOutboxPending
+// predicate (notice_selected=1, delivery='pending', root announced=1, same
+// ORDER BY) plus the R12-F root-void exclusion (r.delivery != 'void'): a
+// root durably retired by a rerun must never surface its selected notices.
+// Expressed Go-side because this fork has no pinned sqlc regeneration path;
+// fold back into internal/db/sql/batch_outbox.sql when regeneration is
+// available.
+func batchOutboxPendingVoidAware(ctx context.Context, dbtx db.DBTX, owner string) ([]batchOutboxPendingVoidAwareRow, error) {
+	rows, err := dbtx.QueryContext(ctx, `SELECT n.root_id, n.node_id FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+WHERE n.owner_session_id = ? AND n.notice_selected = 1
+  AND n.delivery = 'pending' AND r.announced = 1 AND r.delivery != 'void'
+ORDER BY r.created_at, n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []batchOutboxPendingVoidAwareRow
+	for rows.Next() {
+		var row batchOutboxPendingVoidAwareRow
+		if err := rows.Scan(&row.RootID, &row.NodeID); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// batchOutboxPullVoidAware is the canonical BatchOutboxPull CAS (root gate,
+// oldest-outstanding-order guard) plus the R12-F root-void exclusion: the
+// extra NOT EXISTS refuses to deliver a notice whose root was durably
+// retired by a rerun (delivery='void'). Expressed Go-side because this fork
+// has no pinned sqlc regeneration path; fold back into
+// internal/db/sql/batch_outbox.sql when regeneration is available.
+const batchOutboxPullVoidAware = `UPDATE batch_nodes SET delivery = 'done', updated_at = ?
+WHERE batch_nodes.owner_session_id = ? AND batch_nodes.root_id = ? AND batch_nodes.node_id = ?
+  AND batch_nodes.notice_selected = 1 AND batch_nodes.delivery = 'pending'
+  AND EXISTS (SELECT 1 FROM batch_nodes r WHERE r.node_id = batch_nodes.root_id AND r.announced = 1)
+  AND NOT EXISTS (SELECT 1 FROM batch_nodes r WHERE r.node_id = batch_nodes.root_id AND r.owner_session_id = batch_nodes.owner_session_id AND r.delivery = 'void')
+  AND NOT EXISTS (SELECT 1 FROM batch_nodes earlier
+    WHERE earlier.root_id = batch_nodes.root_id AND earlier.notice_selected = 1 AND earlier.delivery = 'pending'
+      AND (earlier.notice_sequence < batch_nodes.notice_sequence
+        OR (earlier.notice_sequence = batch_nodes.notice_sequence AND earlier.notice_ordinal < batch_nodes.notice_ordinal)
+        OR (earlier.notice_sequence = batch_nodes.notice_sequence AND earlier.notice_ordinal = batch_nodes.notice_ordinal AND earlier.node_id < batch_nodes.node_id)))
+RETURNING *`
+
+// scanBatchNodeRow scans RETURNING * in table column order (the generated
+// BatchOutboxPull scan order), so it must be kept in sync with the
+// batch_nodes schema until the query folds back into the .sql file.
+func scanBatchNodeRow(row *sql.Row) (db.BatchNode, error) {
+	var i db.BatchNode
+	err := row.Scan(
+		&i.NodeID,
+		&i.RootID,
+		&i.OwnerSessionID,
+		&i.HostID,
+		&i.ParentID,
+		&i.Ordinal,
+		&i.Kind,
+		&i.ToolCallID,
+		&i.InputHash,
+		&i.Announced,
+		&i.AnnounceMessageID,
+		&i.OriginCli,
+		&i.Mode,
+		&i.OnFail,
+		&i.Notify,
+		&i.MaxParallel,
+		&i.TaskKind,
+		&i.TaskGroup,
+		&i.TaskPayload,
+		&i.TimeoutNs,
+		&i.ChildSessionID,
+		&i.State,
+		&i.Cause,
+		&i.Token,
+		&i.Attempts,
+		&i.ControlState,
+		&i.ControlError,
+		&i.ControlPending,
+		&i.OutcomeState,
+		&i.OutcomeCode,
+		&i.OutcomeSummary,
+		&i.ResponseEnvelopeRef,
+		&i.RootSequence,
+		&i.ProjectionSequence,
+		&i.NoticeSelected,
+		&i.NoticeKind,
+		&i.NoticeState,
+		&i.NoticeCause,
+		&i.NoticeSequence,
+		&i.NoticeOrdinal,
+		&i.NoticePending,
+		&i.NoticeActive,
+		&i.NoticeCompleted,
+		&i.NoticeFailed,
+		&i.NoticeCancelled,
+		&i.NoticeTimedOut,
+		&i.NoticeInterrupted,
+		&i.NoticeSkipped,
+		&i.Delivery,
+		&i.NoticeMessageID,
+		&i.Wake,
+		&i.Reacted,
+		&i.WakeAttempts,
+		&i.ReactedFailed,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
+	)
+	return i, err
+}
+
 // BatchNoticeRow is a selected notice, not an inferred terminal notification.
 // RootID and NodeID identify the incarnation; ToolCallID belongs to the root.
 type BatchNoticeRow struct {
@@ -44,7 +160,10 @@ func batchNoticeRow(n, root db.BatchNode) BatchNoticeRow {
 // A failed row remains pending, blocks later notices of that root, and does
 // not fail the caller's turn. The CAS rechecks announcement and ordering.
 func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Service, owner string, build func(BatchNoticeRow) message.CreateMessageParams) ([]BatchPulledNotice, error) {
-	rows, err := db.New(s.writer).BatchOutboxPending(ctx, owner)
+	// Go-side predicate: BatchOutboxPending + the root-void exclusion (see
+	// batchOutboxPendingVoidAware; fold back into batch_outbox.sql when sqlc
+	// regeneration is available).
+	rows, err := batchOutboxPendingVoidAware(ctx, s.writer, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +188,10 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	}
 	defer tx.Rollback()
 	q := db.New(tx)
-	n, err := q.BatchOutboxPull(ctx, db.BatchOutboxPullParams{Owner: owner, RootID: root, NodeID: node, UpdatedAt: time.Now().Unix()})
+	// Go-side CAS: BatchOutboxPull + the root-void NOT EXISTS (see
+	// batchOutboxPullVoidAware; fold back into batch_outbox.sql when sqlc
+	// regeneration is available). Same statement, same RETURNING * scan.
+	n, err := scanBatchNodeRow(tx.QueryRowContext(ctx, batchOutboxPullVoidAware, time.Now().Unix(), owner, root, node))
 	if errors.Is(err, sql.ErrNoRows) {
 		return BatchPulledNotice{}, false, nil
 	}

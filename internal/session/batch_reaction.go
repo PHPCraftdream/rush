@@ -29,19 +29,54 @@ type BatchPendingDebt struct {
 	Notices []PendingNoticeDebt
 }
 
-func batchDebtSnapshot(ctx context.Context, q *db.Queries, owner string, visible bool) (BatchDebtSnapshot, error) {
-	nodes, err := q.BatchOutboxDebtNodes(ctx, owner)
+// batchOutboxDebtNodesVoidAware mirrors the canonical BatchOutboxDebtNodes
+// predicate (notice_selected=1, root announced, wake=1, reacted=0, delivery
+// IN ('pending','done'), same ORDER BY) plus the R12-F root-void exclusion
+// (r.delivery != 'void'): a root durably retired by a rerun is never debt.
+// Expressed Go-side because this fork has no pinned sqlc regeneration path;
+// fold back into internal/db/sql/batch_outbox.sql when regeneration is
+// available. Delivery is carried alongside the identity for the caller's
+// visible filter.
+type batchDebtNodeRow struct {
+	ref      BatchDebtNodeRef
+	delivery string
+}
+
+func batchOutboxDebtNodesVoidAware(ctx context.Context, dbtx db.DBTX, owner string) ([]batchDebtNodeRow, error) {
+	rows, err := dbtx.QueryContext(ctx, `SELECT n.root_id, n.node_id, n.notice_message_id, n.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+WHERE n.owner_session_id = ? AND n.notice_selected = 1 AND r.announced = 1
+  AND r.delivery != 'void'
+  AND n.wake = 1 AND n.reacted = 0 AND n.delivery IN ('pending', 'done')
+ORDER BY n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []batchDebtNodeRow{}
+	for rows.Next() {
+		var row batchDebtNodeRow
+		if err := rows.Scan(&row.ref.RootID, &row.ref.NodeID, &row.ref.NoticeMessageID, &row.delivery); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func batchDebtSnapshot(ctx context.Context, dbtx db.DBTX, owner string, visible bool) (BatchDebtSnapshot, error) {
+	nodes, err := batchOutboxDebtNodesVoidAware(ctx, dbtx, owner)
 	if err != nil {
 		return BatchDebtSnapshot{}, err
 	}
+	q := db.New(dbtx)
 	notices, err := q.BatchOutboxDebtNotices(ctx, owner)
 	if err != nil {
 		return BatchDebtSnapshot{}, err
 	}
 	snap := BatchDebtSnapshot{Owner: owner}
 	for _, n := range nodes {
-		if !visible || n.Delivery == "done" {
-			snap.Nodes = append(snap.Nodes, BatchDebtNodeRef{RootID: n.RootID, NodeID: n.NodeID, NoticeMessageID: n.NoticeMessageID.String})
+		if !visible || n.delivery == "done" {
+			snap.Nodes = append(snap.Nodes, n.ref)
 		}
 	}
 	for _, n := range notices {
@@ -59,7 +94,7 @@ func (s *BatchStore) BatchReactionCaptureDebtSnapshot(ctx context.Context, owner
 		return BatchDebtSnapshot{}, err
 	}
 	defer tx.Rollback()
-	snap, err := batchDebtSnapshot(ctx, db.New(tx), owner, true)
+	snap, err := batchDebtSnapshot(ctx, tx, owner, true)
 	if err != nil {
 		return BatchDebtSnapshot{}, err
 	}
@@ -72,7 +107,7 @@ func (s *BatchStore) batchReactionDebtExists(ctx context.Context, owner string, 
 		return false, err
 	}
 	defer tx.Rollback()
-	snap, err := batchDebtSnapshot(ctx, db.New(tx), owner, visible)
+	snap, err := batchDebtSnapshot(ctx, tx, owner, visible)
 	if err != nil {
 		return false, err
 	}
@@ -94,7 +129,7 @@ func (s *BatchStore) BatchReactionPendingInclusiveDebtRows(ctx context.Context, 
 	}
 	defer tx.Rollback()
 	q := db.New(tx)
-	snap, err := batchDebtSnapshot(ctx, q, owner, false)
+	snap, err := batchDebtSnapshot(ctx, tx, owner, false)
 	if err != nil {
 		return BatchPendingDebt{}, err
 	}
@@ -126,7 +161,7 @@ func (s *BatchStore) BatchReactionDebtOwners(ctx context.Context, owners []strin
 	defer tx.Rollback()
 	out := make(map[string]bool)
 	for _, owner := range owners {
-		snap, err := batchDebtSnapshot(ctx, db.New(tx), owner, false)
+		snap, err := batchDebtSnapshot(ctx, tx, owner, false)
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +298,7 @@ func (s *BatchStore) BatchReactionMaxWakeAttempts(ctx context.Context, owner str
 	defer tx.Rollback()
 	q := db.New(tx)
 	max := 0
-	current, err := batchDebtSnapshot(ctx, q, owner, true)
+	current, err := batchDebtSnapshot(ctx, tx, owner, true)
 	if err != nil {
 		return 0, err
 	}
