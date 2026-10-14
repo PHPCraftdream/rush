@@ -168,7 +168,7 @@ func TestBatchRunnerAdapterSubmitsOneItemAndSettles(t *testing.T) {
 	require.NoError(t, err)
 	rootView, err := install.RunnerHandle.View(ctx, root)
 	require.NoError(t, err)
-	require.Equal(t, jobbatch.KindRoot, rootView.Kind)
+	require.Equal(t, jobbatch.KindBatch, rootView.Kind, "ordinary one-item root is a batch node, distinct from root notices")
 	require.Equal(t, jobbatch.NotifyAll, rootView.Notify, "direct task submissions use a NotifyAll root batch")
 	require.Len(t, view.Descendants, 1)
 	require.Equal(t, jobbatch.KindTask, view.Descendants[0].Kind)
