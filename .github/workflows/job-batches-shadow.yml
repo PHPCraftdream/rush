@@ -1,0 +1,401 @@
+# Job-batches shadow workflow — R12 cutover evidence.
+#
+# Purpose: run the FULL test suite with RUSH_BATCH_RUNTIME=1 (the batch
+# runtime flag for the R12 job-batch cutover) to produce test evidence that
+# the whole suite passes with the flag ON. This is intentionally NOT a gate
+# on normal development: it is trigger-limited to pushes on ci-shadow/**
+# branches plus manual workflow_dispatch, and it MUST NEVER gain a
+# pull_request or schedule/cron trigger (hard repository rule — same rule
+# agent-leak-smoke.yml documents). Scope note: the shadow workflow is
+# scoped to test evidence, not release/lint gates — build.yml's
+# sqlc/fork-guard steps and the npm wrapper cache tests are deliberately
+# omitted; the web checks are kept (shadow-web job below).
+
+name: job-batches-shadow
+on:
+  # Repository rule: NO pull_request and NO schedule/cron triggers, ever.
+  push:
+    branches: ['ci-shadow/**']
+  workflow_dispatch:
+    inputs:
+      d11:
+        description: 'Run the D11 per-call-cost benchmark job (ubuntu) and upload its report'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: job-batches-shadow-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUSH_BATCH_RUNTIME: '1'
+  CGO_ENABLED: '0'
+  GOEXPERIMENT: greenteagc
+
+jobs:
+  # Mirrors build.yml's `build` job (build.yml lines 27-281: same 3-OS
+  # matrix, same package-group split, same computed catch-all), with these
+  # changes:
+  #   * NO -short anywhere: the shadow suite must run the hermetic batch
+  #     acceptance cases that -short skips. The only tests -short
+  #     additionally skipped in normal CI are the network/VCR cassette
+  #     tests (the TestCoderAgent family), which need a Charm hyper key
+  #     unavailable here; instead of -short we exclude exactly those with
+  #     `go test -skip 'TestCoderAgent'` (go.mod declares go 1.26.3, which
+  #     is >= 1.21, the first release supporting `go test -skip`). Nothing
+  #     else is skipped.
+  #   * Heavy package runs (internal/app, internal/server+internal/session,
+  #     and the catch-all) are serialized with `-p 1 -parallel 1` (instead
+  #     of build.yml's -p 2): the batch runtime adds a SQLite writer per
+  #     call, so cross-package parallelism is serialized to keep peak
+  #     memory and disk contention bounded. Same explicit -timeout 20m
+  #     values build.yml uses for those suites.
+  #   * GOMEMLIMIT=1500MiB on every test step, matching build.yml's
+  #     test-agent job Windows mitigation (VirtualAlloc errno=1455
+  #     ERROR_COMMITMENT_LIMIT); it is harmless on Linux/macOS, where the
+  #     GC simply never approaches the soft ceiling.
+  #   * Every go test invocation tees its output to a per-group log under
+  #     RUNNER_TEMP (per-job ephemeral), uploaded as an artifact with
+  #     if: always().
+  #   * build.yml's ubuntu-only fork-guard steps (sqlc generate drift,
+  #     hook self-tests) and the npm wrapper cache tests are omitted —
+  #     out of scope for a test-evidence-only shadow suite.
+  shadow-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0 (build.yml)
+        with:
+          go-version-file: go.mod
+      - name: Isolate global config/data dirs
+        shell: bash
+        run: |
+          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/rush-data" >> "$GITHUB_ENV"
+          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
+      # go mod tidy / git diff --exit-code (build.yml) omitted: release/lint
+      # hygiene, not test evidence.
+      - name: "test: internal/app"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB # Windows paging-file OOM mitigation (harmless on Linux/macOS)
+        run: |
+          set -o pipefail
+          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/app/... 2>&1 | tee "$RUNNER_TEMP/app.log"
+      - name: "test: internal/server, internal/session"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/server/... ./internal/session/... 2>&1 | tee "$RUNNER_TEMP/server-session.log"
+      - name: "test: internal/permission, internal/config, internal/csync"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/permission/... ./internal/config/... ./internal/csync/... 2>&1 | tee "$RUNNER_TEMP/permission-config-csync.log"
+      - name: "test: internal/cmd, internal/commands"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/cmd/... ./internal/commands/... 2>&1 | tee "$RUNNER_TEMP/cmd-commands.log"
+      - name: "test: sdk"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./sdk/... 2>&1 | tee "$RUNNER_TEMP/sdk.log"
+      - name: "test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/... 2>&1 | tee "$RUNNER_TEMP/agent-subpackages.log"
+      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/... 2>&1 | tee "$RUNNER_TEMP/db-message-queue-pubsub-history.log"
+      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/... 2>&1 | tee "$RUNNER_TEMP/oauth-deploy-update-version.log"
+      # Computed catch-all, same philosophy as build.yml: runs every package
+      # not explicitly claimed above. Bash 3.2 compatible (macos-latest),
+      # no mapfile/readarray.
+      - name: "test: everything else (computed catch-all)"
+        shell: bash
+        env:
+          GOMEMLIMIT: 1500MiB
+        run: |
+          set -o pipefail
+          covered=(
+            github.com/PHPCraftdream/rush/internal/app
+            github.com/PHPCraftdream/rush/internal/server
+            github.com/PHPCraftdream/rush/internal/session
+            github.com/PHPCraftdream/rush/internal/permission
+            github.com/PHPCraftdream/rush/internal/config
+            github.com/PHPCraftdream/rush/internal/csync
+            github.com/PHPCraftdream/rush/internal/cmd
+            github.com/PHPCraftdream/rush/internal/commands
+            github.com/PHPCraftdream/rush/sdk
+            github.com/PHPCraftdream/rush/internal/agent/agentguard
+            github.com/PHPCraftdream/rush/internal/agent/cliprovider
+            github.com/PHPCraftdream/rush/internal/agent/hyper
+            github.com/PHPCraftdream/rush/internal/agent/notify
+            github.com/PHPCraftdream/rush/internal/agent/prompt
+            github.com/PHPCraftdream/rush/internal/agent/tools
+            github.com/PHPCraftdream/rush/internal/agent/tools/mcp
+            github.com/PHPCraftdream/rush/internal/db
+            github.com/PHPCraftdream/rush/internal/message
+            github.com/PHPCraftdream/rush/internal/queue
+            github.com/PHPCraftdream/rush/internal/pubsub
+            github.com/PHPCraftdream/rush/internal/history
+            github.com/PHPCraftdream/rush/internal/oauth
+            github.com/PHPCraftdream/rush/internal/oauth/copilot
+            github.com/PHPCraftdream/rush/internal/oauth/hyper
+            github.com/PHPCraftdream/rush/internal/deploy
+            github.com/PHPCraftdream/rush/internal/update
+            github.com/PHPCraftdream/rush/internal/version
+            github.com/PHPCraftdream/rush/internal/agent
+          )
+          leftover=()
+          while IFS= read -r pkg; do
+            found=0
+            for c in "${covered[@]}"; do
+              [ "$pkg" = "$c" ] && { found=1; break; }
+            done
+            [ "$found" -eq 0 ] && leftover+=("$pkg")
+          done < <(go list ./...)
+          echo "leftover packages: ${leftover[*]}"
+          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' "${leftover[@]}" 2>&1 | tee "$RUNNER_TEMP/catch-all.log"
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
+        with:
+          name: shadow-build-logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+
+  # Same as build.yml's test-agent job (build.yml lines 283-424): 3-OS
+  # matrix, runtime test-name extraction from internal/agent/*_test.go,
+  # 8-way sequential batches, -parallel 1 + GOMEMLIMIT=1500MiB on Windows
+  # and -parallel 2 elsewhere. Difference: NO -short and
+  # `-skip 'TestCoderAgent'` on every invocation (same compensation as the
+  # shadow-build job above).
+  shadow-agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0 (build.yml)
+        with:
+          go-version-file: go.mod
+      - name: Isolate global config/data dirs
+        shell: bash
+        run: |
+          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/rush-data" >> "$GITHUB_ENV"
+          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
+      - name: go test ./internal/agent/ split into sequential batches
+        shell: bash
+        run: |
+          set -o pipefail
+          names=()
+          if ! name_list="$(mktemp)"; then
+            echo "::error::could not create a temporary test-name list"
+            exit 1
+          fi
+          cleanup_name_list() { rm -f -- "${name_list:-}" || :; }
+          trap cleanup_name_list EXIT
+          if ! grep -h -E '^func Test[A-Za-z0-9_]+\(' internal/agent/*_test.go \
+            | sed -n -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' \
+            | sed '/^TestMain$/d' \
+            | LC_ALL=C sort -u >"$name_list"; then
+            echo "::error::failed to extract internal/agent test names"
+            exit 1
+          fi
+          if [ ! -s "$name_list" ]; then
+            echo "::error::no internal/agent tests were extracted"
+            exit 1
+          fi
+          while IFS= read -r name; do
+            [ -n "$name" ] && names+=("$name")
+          done <"$name_list"
+          total=${#names[@]}
+          if [ "$total" -eq 0 ]; then
+            echo "::error::internal/agent test-name list is empty"
+            exit 1
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            batches=8
+            parallel=1
+            export GOMEMLIMIT=1500MiB
+          else
+            batches=8
+            parallel=2
+          fi
+          size=$(( (total + batches - 1) / batches ))
+          status=0
+          : > "$RUNNER_TEMP/shadow-agent.log"
+          for ((i = 0; i < batches; i++)); do
+            start=$((i * size))
+            chunk=("${names[@]:start:size}")
+            [ ${#chunk[@]} -eq 0 ] && continue
+            pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
+            echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
+            go test -failfast -parallel "$parallel" -skip 'TestCoderAgent' -run "$pattern" ./internal/agent/ 2>&1 | tee -a "$RUNNER_TEMP/shadow-agent.log"
+            rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              status=$rc
+              break
+            fi
+          done
+          exit $status
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
+        with:
+          name: shadow-agent-logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+
+  # PLACEHOLDER — selects the AW-a/AW-b acceptance tests once R12-E adds
+  # them; today it intentionally selects zero tests and the step tolerates
+  # that (`go test -run` with no matches prints "testing: warning: no tests
+  # to run" and exits 0). It starts failing the moment any matching test
+  # exists, which is the point: the acceptance must then pass under the
+  # batch runtime flag ON. Ubuntu-only because these placeholder-selected
+  # tests are hermetic and platform-agnostic until R12-E lands; widen the
+  # matrix when real acceptance tests arrive if any turn out OS-specific.
+  shadow-aw-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0 (build.yml)
+        with:
+          go-version-file: go.mod
+      - name: Isolate global config/data dirs
+        shell: bash
+        run: |
+          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/rush-data" >> "$GITHUB_ENV"
+          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
+      - name: AW acceptance selection (placeholder until R12-E)
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -run 'AWa|AWb|TestAW' ./internal/agent/ ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance.log"
+          rc=$?
+          if grep -q -e '^ok ' -e 'no tests to run' "$RUNNER_TEMP/aw-acceptance.log"; then
+            exit "$rc"
+          fi
+          echo "::error::AW acceptance run neither passed nor reported 'no tests to run'"
+          exit 1
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
+        with:
+          name: shadow-aw-acceptance-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+
+  # Mirrors lint.yml's lint-web job (lint.yml lines 86-110) verbatim.
+  shadow-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml/lint.yml)
+        with:
+          persist-credentials: false
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0 (build.yml/lint.yml)
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit
+        working-directory: web
+        run: pnpm typecheck
+      - name: oxlint
+        working-directory: web
+        run: pnpm lint
+      - name: web unit tests (node --test)
+        working-directory: web
+        run: node --test src/*.test.ts
+
+  # D11 per-call-cost benchmark. The benchmark itself is defined in
+  # internal/app/app_batch_bench_test.go (added by R12-G) and only runs
+  # when RUSH_D11_BENCH=1; it never runs in the default suite or the other
+  # shadow jobs. Triggered only via the d11 workflow_dispatch input, used
+  # ONLY in the job's `if:` — never interpolated into the run scripts
+  # (untrusted-input rule). inputs context is valid for workflow_dispatch.
+  d11-benchmark:
+    if: inputs.d11 == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0 (build.yml)
+        with:
+          go-version-file: go.mod
+      - name: Isolate global config/data dirs
+        shell: bash
+        run: |
+          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/rush-data" >> "$GITHUB_ENV"
+          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
+      - name: Run D11 benchmark (RUSH_D11_BENCH=1)
+        shell: bash
+        run: |
+          set -o pipefail
+          RUSH_D11_BENCH=1 go test -v -timeout 40m -run 'TestD11BatchRuntimeBenchmark' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-bench.log"
+      - name: Build D11 report
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/d11_report.py "$RUNNER_TEMP/d11-bench.log" -o "$RUNNER_TEMP/d11-report.md"
+          cat "$RUNNER_TEMP/d11-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload D11 report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
+        with:
+          name: d11-report
+          path: |
+            ${{ runner.temp }}/d11-bench.log
+            ${{ runner.temp }}/d11-report.md
+          if-no-files-found: ignore
