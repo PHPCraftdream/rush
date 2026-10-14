@@ -305,6 +305,18 @@ func (b *batchDeliveryImpl) electCompletion(ctx context.Context, owner string, r
 // deliverDetached returns the started response immediately. Later completions
 // arrive ONLY through selected notices (R8), never as a second launch.
 func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
+	// R12-F fixup P1: refuse a root a rerun retired (durable delivery='void'
+	// row, via the batch_cutover_rerun.go hook; nil means no fence). Its late
+	// stale completion must never elect started history.
+	if batchRetiredFence != nil {
+		retired, err := batchRetiredFence(ctx, owner, string(root))
+		if err != nil {
+			return fantasy.ToolResponse{}, err
+		}
+		if retired {
+			return fantasy.ToolResponse{}, fmt.Errorf("%w: root %s", errBatchRetiredRoot, root)
+		}
+	}
 	if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
 		return fantasy.ToolResponse{}, err
 	}

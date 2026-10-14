@@ -69,7 +69,25 @@ func (app *App) batchHostRelease(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	return s.Close(ctx)
+	if err := s.Close(ctx); err != nil {
+		return err
+	}
+	// The graceful release is the last legitimate consumer moment: forget the
+	// memoized stores so the package maps never retain a closed App (P2-6).
+	app.batchCutoverStoresForget()
+	return nil
+}
+
+// batchCutoverStoresForget drops this App's memoized flag-ON stores from the
+// package-level maps (batchHostStores, batchNoticeStores), which are keyed by
+// *App with no other deletion: without this, closed Apps and their
+// coordinators leak for the life of the process. Nil-safe.
+func (app *App) batchCutoverStoresForget() {
+	if app == nil {
+		return
+	}
+	batchHostStores.Delete(app)
+	batchNoticeStores.Delete(app)
 }
 
 // batchHostReleaseKeepLock is the flag-ON forced counterpart

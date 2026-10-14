@@ -38,7 +38,7 @@ type batchNodeFixture struct {
 	noticeKind, noticeState     sql.NullString
 	noticeCause                 sql.NullString
 	noticeSequence, noticeOrd   sql.NullInt64
-	delivery                    string
+	delivery, outcomeSummary    string
 	wake, reacted               int64
 }
 
@@ -46,18 +46,24 @@ type batchNodeFixture struct {
 // INSERT fails on any violated batch_nodes CHECK/FK.
 func insertBatchNode(t *testing.T, application *App, f batchNodeFixture) {
 	t.Helper()
+	// delivery defaults to the schema default 'none': every unselected fixture
+	// row must carry a CHECK-legal value (the delivery CHECK rejects '').
+	if f.delivery == "" {
+		f.delivery = "none"
+	}
 	_, err := application.DB().ExecContext(context.Background(), `
 INSERT INTO batch_nodes (
 	node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
 	tool_call_id, input_hash, announced, announce_message_id, mode, task_kind,
 	child_session_id, state, notice_selected, notice_kind, notice_state,
 	notice_cause, notice_sequence, notice_ordinal, delivery, wake, reacted,
-	created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`,
+	outcome_summary, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`,
 		f.nodeID, f.rootID, f.owner, f.host, f.parent, f.ordinal, f.kind,
 		f.toolCallID, f.inputHash, f.announced, f.announceMessageID, f.mode, f.taskKind,
 		f.childSessionID, f.state, f.noticeSelected, f.noticeKind, f.noticeState,
-		f.noticeCause, f.noticeSequence, f.noticeOrd, f.delivery, f.wake, f.reacted)
+		f.noticeCause, f.noticeSequence, f.noticeOrd, f.delivery, f.wake, f.reacted,
+		f.outcomeSummary)
 	require.NoError(t, err)
 }
 
@@ -206,6 +212,7 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	// root-one: terminal AND announced, delegating to the child session.
 	rootOne := testBatchRoot(parent, "root-one", "call-one", "completed", 1)
 	rootOne.childSessionID = nullString(child)
+	rootOne.outcomeSummary = "root-one done"
 	insertBatchNode(t, h.app, rootOne)
 	insertBatchNode(t, h.app, testBatchTask(parent, "root-one", "root-one-task", "completed", sql.NullString{}))
 	// root-two: still live -- never finished work.

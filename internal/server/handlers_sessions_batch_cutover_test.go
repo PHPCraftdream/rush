@@ -6,8 +6,11 @@ package server
 // App.SessionActivityBatch's flag-ON facts (app_batch_cutover_facts.go:
 // BatchLiveReader over batch_nodes), and the ON-path panel badges only an
 // UNREACTED child_question notice (session_notices delivery='pending')
-// bound to a live batch root; voided/delivered notices and ordinary
-// completion debt never badge.
+// bound to a live batch root -- in EITHER frame: the legacy
+// session-parentheses frame (keyed by the delegation tool call id) or the
+// real batch marker frame ParseBatchChildQuestionNotice reads (keyed by the
+// root's node id). Voided/delivered notices, ordinary completion debt and
+// non-question pending notices never badge.
 //
 // Every fixture first INSERTs into the REAL schema (the INSERT is the
 // first assertion: batch_nodes CHECKs -- roots kind='batch',
@@ -107,7 +110,10 @@ func TestHandleListSessions_BatchRuntimeOnDescendantFlagsFromBatchNodes(t *testi
 	liveRow := findSessionRow(t, rows, live.ID)
 	require.True(t, liveRow.HasLiveDescendantWork, "the running batch delegation is live descendant work")
 	require.Equal(t, []string{child.ID}, liveRow.LiveDescendantIDs)
-	require.False(t, liveRow.HasLiveOwnWork)
+	// The live root is a DEPTH-0 row of the session's own batch walk:
+	// BatchLiveForSessions counts it in Own, so OwnRunningJobs=1 and the
+	// annotator (handlers_sessions.go) sets HasLiveOwnWork.
+	require.True(t, liveRow.HasLiveOwnWork, "the depth-0 live batch root is the session's own live work")
 
 	terminalRow := findSessionRow(t, rows, terminal.ID)
 	require.False(t, terminalRow.HasLiveDescendantWork, "a terminal batch root is not live work")
@@ -192,5 +198,55 @@ preamble.', 0, ?, ?, ?, 1700000002, 1700000002)`,
 		require.NoError(t, err)
 		require.Empty(t, snap.Agents, "completion debt is not live work and never badges")
 		require.Empty(t, snap.Commands)
+	})
+
+	// POSITIVE (R12-F fixup): a REAL batch question — the marker-first frame
+	// BatchPublishQuestion writes, job_tool_call_id NULL — badges the live
+	// root it names (the frame's node= is the ROOT node id, the key
+	// batchRootItem falls back to).
+	t.Run("batch-frame pending question badges the live root", func(t *testing.T) {
+		a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+		ctx := t.Context()
+		sess, err := a.Sessions.Create(ctx, "badge-batch")
+		require.NoError(t, err)
+		child, err := a.Sessions.CreateTaskSession(ctx, "badge-batch-child", sess.ID, "child")
+		require.NoError(t, err)
+		// First real-schema assertion: the batch_nodes INSERT fails on any
+		// violated CHECK (root: kind='batch', node_id=root_id, tool_call_id/
+		// input_hash NOT NULL); the session_notices INSERT below asserts its
+		// delivery CHECK ('pending') the same way.
+		insertBatchCutoverTree(t, ctx, a, "rb-badge-batch", sess.ID, "tc-badge-batch", "running", child.ID)
+		_, err = a.DB().ExecContext(ctx, `INSERT INTO session_notices
+			(owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at)
+			VALUES (?, 'child_question', ?, 1, 'pending', 0, NULL, 1700000002, 1700000002)`,
+			sess.ID, "[batch-question node=rb-badge-batch token=1 sequence=1 depth=1 child="+child.ID+"]\nSUB-AGENT QUESTION: Should I proceed?\nAnswer with inject_agent ...")
+		require.NoError(t, err)
+		snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
+		require.NoError(t, err)
+		require.Len(t, snap.Agents, 1)
+		require.True(t, snap.Agents[0].AwaitingAnswer, "the real batch question badges the live root")
+		require.Contains(t, snap.Agents[0].AwaitingQuestion, "Should I proceed?")
+	})
+
+	// NEGATIVE: an ordinary pending non-question notice (supervision debt)
+	// never badges, even while the root is live.
+	t.Run("pending supervision notice does not badge", func(t *testing.T) {
+		a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+		ctx := t.Context()
+		sess, err := a.Sessions.Create(ctx, "badge-supervision")
+		require.NoError(t, err)
+		child, err := a.Sessions.CreateTaskSession(ctx, "badge-supervision-child", sess.ID, "child")
+		require.NoError(t, err)
+		insertBatchCutoverTree(t, ctx, a, "rb-badge-supervision", sess.ID, "tc-badge-supervision", "running", child.ID)
+		_, err = a.DB().ExecContext(ctx, `INSERT INTO session_notices
+			(owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at)
+			VALUES (?, 'supervision', 'Supervision check-in.', 1, 'pending', 0, ?, 1700000002, 1700000002)`,
+			sess.ID, "tc-badge-supervision")
+		require.NoError(t, err)
+		snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
+		require.NoError(t, err)
+		require.Len(t, snap.Agents, 1)
+		require.False(t, snap.Agents[0].AwaitingAnswer, "a non-question pending notice must not badge")
+		require.Empty(t, snap.Agents[0].AwaitingQuestion)
 	})
 }

@@ -11,12 +11,27 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+// errBatchRetiredRoot is the typed delivery fence error: a root whose durable
+// row says delivery='void' was retired by a rerun, so its delivery must never
+// elect started (or completion) history. Distinguishable via errors.Is.
+var errBatchRetiredRoot = errors.New("batch delivery: root incarnation was retired by a rerun")
+
+// batchRetiredFence is the DURABLE retired-root delivery fence (R12-F fixup,
+// P1: the in-memory batchRerunFence is coordinator-local, so the delivery
+// path — batchDeliveryImpl/deliverDetached — can never see it). It is set by
+// BatchRerunStopVoided when the coordinator has a bound batch store and nil
+// otherwise: the nil-safe default is fail-open, so the flag-off world and
+// every existing test are unchanged. batch_delivery.go consults it in
+// deliverDetached BEFORE ElectStarted.
+var batchRetiredFence func(ctx context.Context, owner, rootID string) (bool, error)
 
 // BatchRerunStopper is the flag-on rerun stop surface. It is an OPTIONAL
 // interface: the rerun handler type-asserts it when the batch runtime flag is
@@ -71,6 +86,25 @@ type batchRerunFence struct {
 	roots   map[string]struct{} // owner\x00rootID set
 }
 
+// batchRerunFenceCap bounds one coordinator's fence maps: many reruns on a
+// long-lived coordinator would otherwise grow them without bound. On
+// overflow BOTH maps reset before the insert — worst case a very old retired
+// root loses its in-memory fence entry, which is acceptable: the durable
+// delivery fence (batchRetiredFence over delivery='void' rows, fixup P1) is
+// the authority, this map only accelerates the coordinator-local checks.
+const batchRerunFenceCap = 1024
+
+// batchRetiredDeliveryFence is the durable fence check: the root row's
+// delivery == "void" (the void arm persists delivery='void'; the live arm
+// retires by stop routing only). A read error is not a retirement: fail open.
+func batchRetiredDeliveryFence(ctx context.Context, store *session.BatchStore, owner, rootID string) (bool, error) {
+	snap, err := store.Read(ctx, owner, rootID)
+	if err != nil {
+		return false, nil
+	}
+	return snap.Root.Delivery == "void", nil
+}
+
 func (f *batchRerunFence) retire(owner, toolCallID, rootID string) {
 	if owner == "" || rootID == "" {
 		return
@@ -80,6 +114,10 @@ func (f *batchRerunFence) retire(owner, toolCallID, rootID string) {
 	if f.retired == nil {
 		f.retired = make(map[string]string)
 		f.roots = make(map[string]struct{})
+	}
+	if len(f.roots) >= batchRerunFenceCap {
+		f.roots = make(map[string]struct{})
+		f.retired = make(map[string]string)
 	}
 	if _, seen := f.roots[owner+"\x00"+rootID]; !seen {
 		f.roots[owner+"\x00"+rootID] = struct{}{}
@@ -142,6 +180,14 @@ func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string
 	}
 	fence := batchRerunFenceFor(c)
 	runner, host, store := batchRerunRuntime(c)
+	if store != nil {
+		// Bind the DURABLE delivery fence to this store: from here on the
+		// delivery path refuses retired (delivery='void') roots even on a
+		// different coordinator, because the fence reads the row, not memory.
+		batchRetiredFence = func(ctx context.Context, owner, rootID string) (bool, error) {
+			return batchRetiredDeliveryFence(ctx, store, owner, rootID)
+		}
+	}
 	if runner == nil || host == "" {
 		slog.Warn("coordinator.BatchRerunStopVoided: batch runtime not bound; voided incarnations retire by delivery fencing only",
 			"session_id", sessionID, "voided", len(voided))

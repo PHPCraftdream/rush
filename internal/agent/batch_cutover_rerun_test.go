@@ -17,9 +17,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -36,6 +38,9 @@ type blockingBatchExecutor struct {
 	mu      sync.Mutex
 	release map[string]chan struct{}
 	stopped map[string]chan struct{}
+	// stops counts every observed engine cancellation (channel len is always
+	// 0, so idempotent second-pass stops are counted instead).
+	stops atomic.Int64
 	// reportLate: after the stop, ALSO submit a LATE "stale completion"
 	// report (the completion-isolation subject of test b). Off by default so
 	// test (a) observes a plain cancelled settlement.
@@ -78,6 +83,7 @@ func (e *blockingBatchExecutor) Start(ctx context.Context, l jobbatch.Launch, re
 	go func() {
 		select {
 		case <-ctx.Done():
+			e.stops.Add(1)
 			close(stopCh)
 			if e.reportLate {
 				// The stale incarnation's LATE completion: submitted after
@@ -130,6 +136,13 @@ func newBatchRerunCutoverFx(t *testing.T) *batchRerunCutoverFx {
 		Host: "host-a", RunnerID: "runner-1", Profile: profile,
 		Registries: registries, Store: store, Messages: messages,
 		Executor: exec,
+		// Engine budgets: jobbatch.NewRunner fails closed on zero values, so
+		// the fixture mirrors the production factory defaults
+		// (internal/app/batch_install_factory.go).
+		Limits:          jobbatch.Limits{MaxConcurrent: 16, MaxDepth: 8, MaxNodes: 256},
+		CommitTimeout:   5 * time.Second,
+		ControlTimeout:  60 * time.Second,
+		RecordRetention: 256,
 	})
 	require.NoError(t, err)
 	ingress, err := NewBatchWorkIngress(install.Runtime, registries)
@@ -183,12 +196,19 @@ func (f *batchRerunCutoverFx) ack(root, callID string) message.Message {
 	return msg
 }
 
-// rerun commits the real R10c reconciliation over the announce message and
-// returns the committed Voided set (the post-commit stop's input).
+// rerun commits the real R10c reconciliation. The TARGET is a real prior
+// user message and the announce message is the TAIL (batch_history_rerun.go
+// excludes the target from deletedIDs and matches the announce arm against
+// deletedIDs only — so the ack must live in the tail, never the target).
+// Returns the committed Voided set (the post-commit stop's input).
 func (f *batchRerunCutoverFx) rerun(announce message.Message) session.BatchRerunTruncation {
 	f.t.Helper()
+	target, err := f.messages.Create(context.Background(), batchRerunCutoverOwner, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "rerun target"}},
+	})
+	require.NoError(f.t, err)
 	trunc, err := f.store.BatchRerunReconcile(context.Background(), f.messages, session.RerunTruncateParams{
-		Owner: batchRerunCutoverOwner, TargetID: announce.ID,
+		Owner: batchRerunCutoverOwner, TargetID: target.ID, TailIDs: []string{announce.ID},
 	})
 	require.NoError(f.t, err)
 	require.NotEmpty(f.t, trunc.Voided, "the committed reconciliation must route the old incarnation for retirement")
@@ -218,7 +238,7 @@ func (f *batchRerunCutoverFx) reserveNewIncarnation(callID string) session.Batch
 		updates = append(updates, db.ProjectBatchNodeParams{NodeID: n.NodeID, State: "running", ControlState: "none"})
 	}
 	require.NoError(f.t, f.store.Project(context.Background(), session.BatchProjection{
-		Host: "host-a", Sequence: f.seq,
+		Host: "host-a", RunnerID: "runner-2", Sequence: f.seq,
 		Roots: []session.BatchRootProjection{{Owner: batchRerunCutoverOwner, Root: snap.Root.RootID, Updates: updates}},
 	}))
 	return snap
@@ -280,7 +300,7 @@ func TestBatchRerunStopVoided_StopsExactlyCommittedIncarnation(t *testing.T) {
 	// cannot touch the new incarnation.
 	fx.coord.BatchRerunStopVoided(ctx, batchRerunCutoverOwner, trunc.Voided)
 	require.Equal(t, "running", fx.rootRow(newSnap.Root.RootID).State, "the new incarnation keeps running")
-	require.NotEmpty(t, fx.exec.stoppedRoot(oldRoot), "the old incarnation stays stopped")
+	require.Positive(t, fx.exec.stops.Load(), "the old incarnation stays stopped (second pass is idempotent)")
 }
 
 // TestBatchRerunStopVoided_StaleCompletionNotDelivered proves (b): the late
@@ -296,6 +316,10 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	fx := newBatchRerunCutoverFx(t)
 	ctx := context.Background()
 
+	// Sequence (R12-F fixup): submit + ack the OLD incarnation, rerun (the
+	// live arm retires it), stop it, THEN reserve the NEW incarnation on the
+	// reused call id; the stale completion settles afterwards and must stay
+	// unpullable.
 	oldRoot := fx.submit("call-1")
 	fx.awaitRootState(oldRoot, "running")
 	fx.exec.reportLate = true
@@ -311,6 +335,15 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stale execution was never stopped")
 	}
+	// The new incarnation exists BEFORE the stale report settles: first the
+	// old root must leave the live key (the (owner, tool_call_id) unique live
+	// index would otherwise attach), then the reuse reserves fresh.
+	require.Eventually(t, func() bool {
+		row := fx.rootRow(oldRoot)
+		return !batchRerunStopWorthy(row.State)
+	}, 5*time.Second, 10*time.Millisecond, "the old root must leave the live key before the new incarnation reserves")
+	newSnap := fx.reserveNewIncarnation("call-1")
+
 	// The late report settles its OWN root (completed) or the engine's
 	// cancellation won the race (cancelled); either way it is terminal.
 	require.Eventually(t, func() bool {
@@ -326,6 +359,15 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	require.Zero(t, row.Wake, "a void root never wakes a delivery")
 	require.Empty(t, row.NoticeMessageID.String, "a void root names no notice message")
 
+	// The durable fence holds at the OUTBOX: nothing is pullable for the
+	// owner (the void root fails SelectBatchNodeNotice's delivery IN
+	// ('pending','done') predicate; the new incarnation has selected nothing).
+	pulled, err := fx.store.BatchPullNotices(ctx, fx.messages, batchRerunCutoverOwner, func(row session.BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "notice:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Empty(t, pulled, "the retired root's notice must not be pullable after the stale settlement")
+
 	// No history message was created by the stale completion.
 	msgsAfter, err := fx.messages.List(ctx, batchRerunCutoverOwner)
 	require.NoError(t, err)
@@ -333,11 +375,82 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 
 	// The new incarnation on the reused call id is unaffected: fresh rows,
 	// live delivery state, not fenced stale.
-	newSnap := fx.reserveNewIncarnation("call-1")
 	newRow := fx.rootRow(newSnap.Root.RootID)
 	require.Equal(t, "running", newRow.State)
 	require.Equal(t, "none", newRow.Delivery)
 	require.False(t, fx.fence().stale(batchRerunCutoverOwner, "call-1", newSnap.Root.RootID))
+}
+
+// TestBatchRerunFence_VoidRootDeliveryRefused pins the DURABLE delivery fence
+// (R12-F fixup P1): a root row with delivery='void' (the void arm's settled
+// shape) is refused by the delivery path's detached arm — errBatchRetiredRoot,
+// no started history — while the nil (default) hook keeps the old behavior.
+//
+// Revert-check: dropping the batchRetiredFence consult in deliverDetached
+// (or binding the fence to memory instead of the row) lets the late stale
+// completion elect started history again — the no-error case below becomes
+// the error case and the message count grows.
+//
+// Sequential on purpose: it flips the package-level batchRetiredFence, so it
+// must not race the parallel rerun tests that bind the same global.
+func TestBatchRerunFence_VoidRootDeliveryRefused(t *testing.T) {
+	fx := newBatchRerunCutoverFx(t)
+	ctx := context.Background()
+
+	// Fixture: seed the ANNOUNCED retired root directly (the void arm's
+	// settled row shape). SCHEMA TRACE (first real assertion): the INSERT
+	// must satisfy every batch_nodes CHECK — root branch (kind='batch',
+	// node_id=root_id, tool_call_id/input_hash NOT NULL, announced=1 needs
+	// announce_message_id) AND the full notice_selected branch
+	// (notice_kind/state/cause NOT NULL, notice_sequence>0,
+	// notice_ordinal>=0, delivery='void', wake=0).
+	rootID := string(batchRootID())
+	_, err := fx.conn.ExecContext(ctx, `INSERT INTO batch_nodes
+		(node_id, root_id, owner_session_id, host_id, ordinal, kind, tool_call_id, input_hash,
+		 mode, state, announced, announce_message_id,
+		 notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal,
+		 delivery, wake, created_at, updated_at)
+		VALUES (?, ?, ?, 'host-a', 0, 'batch', ?, 'hash-void-root',
+		 'parallel', 'completed', 1, 'msg-void-root',
+		 1, 'root', 'completed', '', 1, 0,
+		 'void', 0, 1700000000, 1700000001)`,
+		rootID, rootID, batchRerunCutoverOwner, "call-void-root")
+	require.NoError(t, err, "the INSERT is the schema assertion: CHECKs fire here")
+
+	// Install the real fence hook over a BatchStore on the same conn.
+	require.Nil(t, batchRetiredFence, "premise: the default hook is nil")
+	t.Cleanup(func() { batchRetiredFence = nil })
+	store := fx.store
+	batchRetiredFence = func(ctx context.Context, owner, root string) (bool, error) {
+		return batchRetiredDeliveryFence(ctx, store, owner, root)
+	}
+	retired, err := batchRetiredFence(ctx, batchRerunCutoverOwner, rootID)
+	require.NoError(t, err)
+	require.True(t, retired, "a delivery='void' root row is retired")
+
+	// The wired batchDeliveryImpl refuses detached delivery of that root.
+	impl, err := newBatchDelivery(batchDeliveryDeps{
+		Owner:  batchRerunCutoverOwner,
+		Done:   newFakeDone(fantasy.NewTextResponse("stale")),
+		Elect:  &fakeElector{},
+		Runner: fx.install.RunnerHandle,
+	})
+	require.NoError(t, err)
+	msgsBefore, err := fx.messages.List(ctx, batchRerunCutoverOwner)
+	require.NoError(t, err)
+	inv := BatchInvocation{SessionID: batchRerunCutoverOwner}
+	inv.Delivery.Mode = batchDeliveryDetached
+	_, err = impl.DeliverBatch(ctx, jobbatch.ID(rootID), inv)
+	require.ErrorIs(t, err, errBatchRetiredRoot, "the retired root's detached delivery fails closed")
+	msgsAfter, err := fx.messages.List(ctx, batchRerunCutoverOwner)
+	require.NoError(t, err)
+	require.Len(t, msgsAfter, len(msgsBefore), "no history message was created for the retired root")
+
+	// Hook nil (default): detached delivery proceeds to elect started (the
+	// existing behavior for the flag-off / not-yet-stopped world).
+	batchRetiredFence = nil
+	_, err = impl.DeliverBatch(ctx, jobbatch.ID(rootID), inv)
+	require.NoError(t, err)
 }
 
 // TestBatchRerunStopVoided_NotWiredIsNoOp: a coordinator with no bound batch

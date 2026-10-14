@@ -136,6 +136,9 @@ func capBatchRoots(metas []batchRootMeta) []batchRootMeta {
 // batchRootItem maps one root to the flat wire item. Reason carries the
 // node cause (the batch vocabulary for why a row left "running"); the title
 // falls back to the root's outcome summary like the old result_summary.
+// Awaiting-answer keys: legacy notices key by the held delegation's tool
+// call id; batch-frame notices (ParseBatchChildQuestionNotice) carry no
+// delegation tool call, so they key by the ROOT's node id.
 func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, questions map[string]session.ChildQuestion) LiveWorkItemWire {
 	root := m.root
 	key := liveWorkTitleKey{root.OwnerSessionID, root.ToolCallID.String, root.InputHash.String}
@@ -152,7 +155,11 @@ func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, question
 	if item.Title == "" {
 		item.Title = root.OutcomeSummary
 	}
-	if q, ok := questions[item.ToolCallID]; ok {
+	q, ok := questions[item.ToolCallID]
+	if !ok {
+		q, ok = questions[root.NodeID]
+	}
+	if ok {
 		item.AwaitingAnswer = true
 		item.AwaitingQuestion = q.Question
 	}
@@ -163,11 +170,18 @@ func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, question
 }
 
 // batchPendingQuestions reads the visited sessions' pending child_question
-// notices straight from session_notices (the same rows and frame the old
-// store.PendingChildQuestions reads) and keys them by the held delegation's
-// tool call id. It never touches async_jobs: unlike the old void rule, a
-// notice is kept unless the row itself is delivered/voided — liveness comes
-// from the batch-node walk, not from a job row. ok=false when a read failed.
+// notices straight from session_notices and keys them: a BATCH-frame notice
+// (the marker-first frame BatchPublishQuestion writes, job_tool_call_id
+// NULL) is parsed by ParseBatchChildQuestionNotice and keyed by the asking
+// node id (the live root's node id); only then does the legacy
+// session-parentheses frame fall through, keyed by the held delegation's
+// tool call id as before. It never touches async_jobs: unlike the old void
+// rule, a notice is kept unless the row itself is delivered/voided —
+// liveness comes from the batch-node walk, not from a job row. ok=false
+// when a read failed. Unreacted is enforced by the row itself: the select is
+// delivery='pending' only (ListPendingSessionNoticesForOwner), and a row
+// leaves 'pending' with reacted=1 only via the pull CAS to 'done' — a
+// pending row is by construction unreacted.
 func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
 	questions := map[string]session.ChildQuestion{}
 	if a == nil || a.DB == nil {
@@ -184,6 +198,11 @@ func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string)
 		}
 		for _, row := range rows {
 			if row.Kind != session.NoticeKindChildQuestion || row.Delivery != "pending" {
+				continue
+			}
+			// Real batch questions first: marker frame, keyed by node id.
+			if cq, parsed := session.ParseBatchChildQuestionNotice(row.Text); parsed {
+				questions[cq.NodeID] = cq
 				continue
 			}
 			cq, parsed := session.ParseChildQuestionNotice(row.Text, row.JobToolCallID.String)
