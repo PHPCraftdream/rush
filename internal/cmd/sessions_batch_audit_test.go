@@ -133,8 +133,10 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	// says where it counts from), but the counts still show the work.
 	projectBatchAuditRoot(t, f, "completed", 3)
 	stdout, reports = auditRunRulesDB(t, dataDir, "--all")
-	require.NotContains(t, stdout,
-		auditFindingLine("unfinished_jobs", sessionID, f.toolCallID+":cancelling", 1),
+	// Finding lines are "unfinished_jobs: session ..."; the rule STATUS line
+	// is "unfinished_jobs counted..." with no colon-space. Only findings are
+	// forbidden, never the status line.
+	require.NotContains(t, stdout, "unfinished_jobs: ",
 		"a completed root produces no unfinished_jobs finding")
 	require.Contains(t, stdout, auditBatchRuleBatchStatus,
 		"the batch status line (counted from batch_nodes) stays")
@@ -142,7 +144,9 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	facts := reports[0].Batch.Sessions[sessionID]
 	require.False(t, facts.Live)
 	require.Equal(t, 0, facts.HeldRoots)
-	require.Equal(t, 2, facts.Tasks.Done)
+	// Terminal roots are excluded from the live read (batch_read.sql filters
+	// to nonterminal roots), so Tasks totals come only from live roots: the
+	// completed tasks are asserted via the per-state counts instead.
 	require.Equal(t, int64(2), facts.StateCounts["completed"])
 }
 

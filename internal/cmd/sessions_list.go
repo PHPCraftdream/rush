@@ -89,6 +89,11 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				case bf.Live:
 					statusByID[id] = "batch live"
 				}
+				// F3/#R12-B: a held batch question annotates the status, the
+				// same "(awaiting answer)" substate the legacy path prints.
+				if bf.HasQuestion && statusByID[id] != "" {
+					statusByID[id] += " (awaiting answer)"
+				}
 			}
 		} else {
 			activities, err := a.SessionActivityBatch(cmd.Context(), ids)
@@ -118,6 +123,9 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					} else {
 						item.BatchStatus = "live"
 					}
+					// Any held batch question (bound root fact or the
+					// session-level fallback) surfaces on the wire.
+					item.BatchAwaitingAnswer = bf.awaitingAnswer()
 				}
 				if err := enc.Encode(item); err != nil {
 					return err

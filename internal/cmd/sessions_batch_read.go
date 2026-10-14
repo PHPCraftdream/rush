@@ -12,6 +12,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ type batchRootFact struct {
 	Held                      bool // pending | starting | running | cancelling
 	Cancelling                bool
 	AwaitingTermination       bool // cancelling: stopped but awaiting termination
-	AwaitingAnswer            bool // undelivered/unreacted notice or outstanding debt
+	AwaitingAnswer            bool // a held child_question notice is bound to this root
 	Debt                      int64
 	Tasks                     session.BatchLiveCounts
 	Unknown                   bool // this root's own read was incomplete or failed
@@ -56,8 +57,8 @@ type batchSessionFacts struct {
 	HasQuestion bool // a held child_question notice awaits an answer
 }
 
-// awaitingAnswer reports whether any held question or undelivered root
-// notice of the session awaits an answer.
+// awaitingAnswer reports whether any held batch question (session-level
+// fallback or a root's bound held question) awaits an answer.
 func (f batchSessionFacts) awaitingAnswer() bool {
 	if f.HasQuestion {
 		return true
@@ -119,8 +120,10 @@ func batchStatusAnnotation(f batchSessionFacts) string {
 // reduceBatchSessionFacts reads the given sessions' live batch roots through
 // the R10a live reader and the R10c history snapshots (delivery/debt per
 // root). A nil reader or source, a read error, or an incomplete read marks
-// the session Unknown instead of empty.
-func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReader, store *session.BatchStore, ids []string) map[string]batchSessionFacts {
+// the session Unknown instead of empty. A non-nil q adds the per-root bound
+// question check (session_notices by tool call id); nil only skips that
+// check, the conservative verdicts still stand.
+func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReader, store *session.BatchStore, q *db.Queries, ids []string) map[string]batchSessionFacts {
 	out := make(map[string]batchSessionFacts, len(ids))
 	if reader == nil || reader.Source == nil || store == nil || ctx == nil {
 		for _, id := range ids {
@@ -161,11 +164,29 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 					rf.Unknown = true
 				}
 				rf.Debt = snap.Debt
-				rf.AwaitingAnswer = snap.Debt > 0 || snap.Root.Delivery == "pending"
 				if snap.Disappeared {
 					// Deletion is not a confirmed termination fact: still live.
 					rf.State = "disappeared"
 					rf.Held = true
+				}
+			}
+			// Bound held question: the R10c query names the notices bound to
+			// THIS root's tool call, so a question fact stays per-root.
+			if q != nil {
+				notices, nerr := q.BatchListBoundNoticesByToolCallID(ctx, db.BatchListBoundNoticesByToolCallIDParams{
+					Owner: rf.Owner, ToolCallID: sql.NullString{String: rf.ToolCallID, Valid: true},
+				})
+				if nerr != nil {
+					f.Unknown = true
+					f.Live = true
+				} else {
+					for _, n := range notices {
+						if n.Kind == session.NoticeKindChildQuestion && n.Wake == 1 && n.Reacted == 0 &&
+							(n.Delivery == "pending" || n.Delivery == "done") {
+							rf.AwaitingAnswer = true
+							f.HasQuestion = true
+						}
+					}
 				}
 			}
 			f.addRoot(rf)
@@ -182,15 +203,14 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 			} else {
 				f.GuardDebtN = len(debt.Nodes) + len(debt.Notices)
 				f.GuardDebt = f.GuardDebtN > 0
+				// Conservative catch-all for questions whose bound root is not
+				// visible in the live tree: a debt row of kind child_question
+				// still flags the session-level question fact (the per-root
+				// bound check above is the precise signal; this is the fallback).
 				for _, n := range debt.Notices {
 					if n.Kind == session.NoticeKindChildQuestion {
 						f.HasQuestion = true
 					}
-				}
-			}
-			if f.HasQuestion {
-				for i := range f.Roots {
-					f.Roots[i].AwaitingAnswer = true
 				}
 			}
 		}
@@ -209,22 +229,17 @@ func batchRuntimeFacts(ctx context.Context, a *app.App, dataDir string, ids []st
 		ctx = context.Background()
 	}
 	reader := session.NewBatchLiveReader(db.New(a.DB()), dataDir)
-	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(a.DB()), ids)
+	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(a.DB()), db.New(a.DB()), ids)
 }
 
-// describeBatchRootsForWhy renders the `sessions why` batch section: one line
-// per live root (identity, state, held/termination verdict, debt), then the
-// conservative unknown line when the read was incomplete. Replaces the legacy
-// async-jobs section while RUSH_BATCH_RUNTIME is on.
-func describeBatchRootsForWhy(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) {
+// renderBatchRootsForWhy renders the `sessions why` batch section from
+// already-read facts: one line per root (identity, state, held/termination
+// verdict, debt), then the conservative unknown line when the read was
+// incomplete. Replaces the legacy async-jobs section while RUSH_BATCH_RUNTIME
+// is on.
+func renderBatchRootsForWhy(f batchSessionFacts, out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Batch roots:")
-	facts := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})
-	if facts == nil {
-		fmt.Fprintln(out, "  (batch runtime flag off)")
-		return
-	}
-	f := facts[sessionID]
 	if len(f.Roots) == 0 {
 		if f.Unknown {
 			fmt.Fprintln(out, "  (batch read incomplete; live batch work unknown)")
@@ -306,7 +321,8 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 			fmt.Fprintf(out, "  finish_reason: %s\n", finishReasonOrUnknown(last.FinishPart()))
 		}
 	}
-	describeBatchRootsForWhy(ctx, a, dataDir, sessionID, out)
+	// The facts are already read above; render them without a re-read.
+	renderBatchRootsForWhy(f, out)
 	return nil
 }
 
@@ -373,7 +389,9 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		switch {
 		case r.AwaitingTermination:
 			awaiting = "termination"
-		case r.AwaitingAnswer:
+		case r.AwaitingAnswer || f.HasQuestion:
+			// Session-scoped for questions: a bound root fact or the
+			// session-level question fallback renders the column.
 			awaiting = "answer"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\t%d\t%d/%d/%d\n",

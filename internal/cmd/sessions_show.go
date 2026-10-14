@@ -357,7 +357,11 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Println()
 		}
-		if batchFacts.Unknown && len(batchFacts.Roots) == 0 {
+		// Any incomplete component read (live tree or history snapshot or
+		// bound-notice check) must surface, alongside (not instead of) the
+		// root lines: a root line shows its own state; this line flags the
+		// aggregate read was incomplete.
+		if batchFacts.Unknown {
 			fmt.Println("Batch:        unknown (incomplete read)")
 		}
 		if batchFacts.HasQuestion {

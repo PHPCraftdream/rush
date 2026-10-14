@@ -83,7 +83,10 @@ func resetActivityRefusal(ctx context.Context, a *app.App, sessionID string, for
 // (check + delete in ONE writer transaction; refusal writes nothing). Its
 // atomic refusal of any nonterminal batch root IS the live-work gate -- no
 // legacy classifier or ledger recovery runs here. The plain-wipe fallback
-// exists only for a configless App (nil DB).
+// exists only for a configless App (nil DB). Known residual legacy touch: the
+// app-owned host-close query (DeleteAsyncHostIfNoJobs still reading async_jobs
+// at shutdown) belongs to the R12-A host-query split; every cmd-layer flag-ON
+// path here is legacy-free.
 func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.BatchResetOutcome, error) {
 	if a.DB() == nil {
 		// No database can hold batch rows: the plain wipe is all there is.
@@ -184,7 +187,7 @@ func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) string {
 	}
 	defer func() { _ = db.ReleaseConn(conn) }()
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
-	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), []string{sessionID})
+	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), db.New(conn), []string{sessionID})
 	f := facts[sessionID]
 	if reason := batchSessionGuardReason(f); reason != "" {
 		return fmt.Sprintf("note: batch work for session %s is not stopped by killing the lock holder: %s "+

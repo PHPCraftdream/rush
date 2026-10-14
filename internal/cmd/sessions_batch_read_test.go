@@ -113,7 +113,7 @@ func TestReduceBatchSessionFacts_ErrorMeansUnknownAndNeverIdle(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	reader := &session.BatchLiveReader{Source: errBatchLiveSource{err: context.DeadlineExceeded}}
-	got := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(nil), []string{"owner-x"})
+	got := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(nil), nil, []string{"owner-x"})
 	require.Contains(t, got, "owner-x")
 	f := got["owner-x"]
 	require.True(t, f.Unknown, "a failed read must be unknown")
@@ -121,7 +121,7 @@ func TestReduceBatchSessionFacts_ErrorMeansUnknownAndNeverIdle(t *testing.T) {
 	require.Empty(t, f.Roots, "no facts may be invented from a failed read")
 
 	// Nil reader: same conservative verdict.
-	got = reduceBatchSessionFacts(ctx, nil, nil, []string{"owner-y"})
+	got = reduceBatchSessionFacts(ctx, nil, nil, nil, []string{"owner-y"})
 	require.True(t, got["owner-y"].Unknown)
 	require.True(t, got["owner-y"].Live)
 	require.Equal(t, " (batch unknown)", batchStatusAnnotation(got["owner-y"]))
@@ -138,23 +138,32 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	sess, err := a.Sessions.CreateWithID(ctx, "jobs-batch-sess", "session with batch root")
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, a, sess.ID)
+	// Pending-phase coverage WITHOUT running RunE beside the live seed app:
+	// setupApp acquires the single MCP process owner (app.go mcp.Acquire), so
+	// a second setupApp while the seed is alive fails. Assert the pending
+	// root through the reducer directly instead, while the seed store is
+	// still open.
+	pending := batchRuntimeFacts(ctx, a, dataDir, []string{sess.ID})
+	require.NotNil(t, pending)
+	pf := pending[sess.ID]
+	require.False(t, pf.Unknown, "the seed read must be complete")
+	require.True(t, pf.Live, "a pending root is live")
+	require.Len(t, pf.Roots, 1)
+	require.Equal(t, f.toolCallID, pf.Roots[0].ToolCallID)
+	require.Equal(t, "pending", pf.Roots[0].State)
+	require.True(t, pf.Roots[0].Held)
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
-	a.Shutdown()
-
-	// (a) pending root: live, held.
-	stdout := runJobsCmd(t, sess.ID)
-	t.Logf("sessions jobs (flag on, pending):\n%s", stdout)
-	require.Contains(t, stdout, f.toolCallID, "the live root's tool call must appear")
-	require.Contains(t, stdout, "pending")
-	require.Contains(t, stdout, "true", "the HELD column must say the root is held")
-
-	// (b) cancelling root: held, awaiting termination, not terminal. A held
-	// child_question notice also makes the root await an answer.
+	// Project to cancelling AND insert the held question while the seed
+	// store is still open, then shut the seed down before any RunE.
 	projectBatchRoot(t, f, "cancelling")
 	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
 		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
-	stdout = runJobsCmd(t, sess.ID)
+	a.Shutdown()
+
+	// (b) cancelling root: held, awaiting termination, not terminal. The
+	// held child_question notice also makes the root await an answer.
+	stdout := runJobsCmd(t, sess.ID)
 	t.Logf("sessions jobs (flag on, cancelling):\n%s", stdout)
 	require.Contains(t, stdout, "cancelling")
 	require.Contains(t, stdout, "termination", "a cancelling root must be reported as awaiting termination")
@@ -215,7 +224,11 @@ func TestSessionsWhyCmdRun_BatchCancellingRootHeld(t *testing.T) {
 	out := buf.String()
 	t.Logf("sessions why (flag on, cancelling):\n%s", out)
 
-	require.Contains(t, out, "(batch live)", "a held root must keep the status live")
+	// printStallHeader prints "status: <s>" whenever the status is not
+	// "running" (sessions_stall.go), so "batch live" appears as a plain
+	// status line, and the reason names the offending held root.
+	require.Contains(t, out, "status: batch live", "a held root must keep the status live")
+	require.Contains(t, out, "reason: batch root ", "the reason must name the held root")
 	require.Contains(t, out, "stopped but awaiting termination", "cancelling must be explained as held")
 	require.NotContains(t, out, "at rest\n", "a held root must never read as at rest")
 	require.NotContains(t, out, "Async jobs:", "the legacy async section is replaced with the flag on")
@@ -241,7 +254,12 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 
 	sess, err := a.Sessions.CreateWithID(ctx, "list-batch-sess", "listed batch session")
 	require.NoError(t, err)
-	seedBatchReadRoot(t, a, sess.ID)
+	f := seedBatchReadRoot(t, a, sess.ID)
+	// A held child_question notice bound to the root's tool call must make
+	// the list row await an answer (positive case for the batch question
+	// reporting), inserted while the seed store is still open.
+	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
+		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
@@ -250,6 +268,7 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 		require.NoError(t, sessionsListCmd.RunE(sessionsListCmd, nil))
 	})
 	require.Contains(t, stdout, "batch live", "STATUS must report the held batch root")
+	require.Contains(t, stdout, "(awaiting answer)", "STATUS must carry the question substate")
 
 	require.NoError(t, sessionsListCmd.Flags().Set("json", "true"))
 	t.Cleanup(func() { _ = sessionsListCmd.Flags().Set("json", "false") })
@@ -262,7 +281,7 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	require.Equal(t, "live", item.BatchStatus)
 	require.Equal(t, 1, item.BatchRoots)
 	require.Contains(t, item.Status, "batch live")
-	require.False(t, item.BatchAwaitingAnswer, "no held question in this fixture")
+	require.True(t, item.BatchAwaitingAnswer, "the held bound question must surface as awaiting answer")
 }
 
 // TestSessionsShowCmdRun_BatchFlagOnCounts: with the flag on, `sessions show`

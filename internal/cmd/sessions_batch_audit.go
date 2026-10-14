@@ -48,8 +48,8 @@ type auditBatchScan struct {
 // caught earlier as a schema issue, never a silent empty scan.
 func auditScanBatchFacts(ctx context.Context, conn *sql.DB, dataDir string, ids []string) (*auditBatchScan, error) {
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
-	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), ids)
 	queries := db.New(conn)
+	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), queries, ids)
 	counts := make(map[string]map[string]int64, len(ids))
 	for _, id := range ids {
 		rows, err := queries.BatchHistoryStateCounts(ctx, id)
