@@ -332,6 +332,7 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
 	require.Contains(t, text, "(1 awaiting your answer)",
 		"the delivered-but-unreacted question is STILL counted (the retained-debt predicate)")
+	require.Nil(t, flagged)
 
 	// Settling (reacting) removes the clause: unreacted is part of the
 	// predicate (checked against the now-delivered row).

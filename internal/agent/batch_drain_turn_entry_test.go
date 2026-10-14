@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -63,6 +64,17 @@ func nodeNoticeFor(t *testing.T, env *cutoverEnv, owner, nodeID string) string {
 	return delivery
 }
 
+// rootTerminalFor polls until the root row reaches a terminal state,
+// scoped to an explicit owner (env.rootTerminal always uses env.sessionID).
+func rootTerminalFor(t *testing.T, env *cutoverEnv, owner, rootID string) string {
+	t.Helper()
+	var state string
+	require.Eventually(t, func() bool {
+		return dbQueryTerminal(t, env.conn, env.ctx, owner, rootID, &state)
+	}, 5*time.Second, 5*time.Millisecond, "root %s (owner %s) never settled", rootID, owner)
+	return state
+}
+
 func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
@@ -85,9 +97,14 @@ func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 	// settles instantly, no release bookkeeping.
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
+	// batch_nodes.owner_session_id REFERENCES sessions(id) (FKs ON), and the
+	// detached delivery's ElectStarted also writes history owned by f.sessID
+	// in THIS cutover DB: create the fixture's session row there first.
+	_, err = env.q.CreateSession(env.ctx, db.CreateSessionParams{ID: f.sessID, Title: f.sessID})
+	require.NoError(t, err)
 	invokeDetachedAs(t, env, f.sessID, "call-entry", "view", fast)
 	rootID := rootIDFor(t, env, f.sessID, "call-entry")
-	require.Equal(t, "completed", env.rootTerminal(rootID))
+	require.Equal(t, "completed", rootTerminalFor(t, env, f.sessID, rootID))
 	// Pull with the OWNER f.sessID (BatchPullNotices is owner-scoped): the
 	// completion notice delivers before the Drain turn.
 	require.Eventually(t, func() bool {
