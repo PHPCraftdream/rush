@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -18,9 +19,20 @@ func TestFinishToolAssemblyFlagOffDoesNotInstallBatchTools(t *testing.T) {
 	filtered := batchTestTools("bash", "view", "job_output")
 	off, err := c.finishToolAssembly(context.Background(), filtered, nil, false)
 	require.NoError(t, err)
-	legacy := c.wrapAsyncTools(filtered)
+	// wrapAsyncTools replaces entries in its input slice. Build a fresh
+	// baseline so it does not wrap the actual path's already-wrapped entries
+	// again.
+	legacy := batchTestTools("bash", "view", "job_output")
+	legacy = c.wrapAsyncTools(legacy)
 	legacy = decoratePolicyTools(legacy, restrictedRunAuthorizer(c.permissions), nil, false)
 	legacy = wrapToolsWithStallDetach(legacy)
+	for _, list := range [][]fantasy.AgentTool{legacy, off.tools} {
+		for _, tool := range list {
+			if tool.Info().Name == "bash" {
+				require.Equal(t, 1, strings.Count(tool.Info().Description, "In web and CLI sessions this tool starts asynchronously."), "bash async description must appear exactly once")
+			}
+		}
+	}
 	require.Equal(t, flagOffToolGolden(t, legacy), flagOffToolGolden(t, off.tools), "flag-off tool inventory/schema/description must be unchanged")
 	for _, tool := range off.tools {
 		require.NotContains(t, []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}, tool.Info().Name)
