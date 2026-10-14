@@ -117,7 +117,17 @@ func projectBatchAuditRoot(t *testing.T, f batchReadFixture, state string, seque
 // unfinished_jobs finding while the state counts still show it.
 func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	dataDir, sessionID, f := seedBatchAuditDB(t, "audit-batch-terminal")
+	dataDir, sessionID, seed := seedBatchAuditDB(t, "audit-batch-terminal")
+	// The seed app is shut down inside seedBatchAuditDB (its pool teardown
+	// closes handles at refcount zero), so projection needs a FRESH store on
+	// the same data dir via the Connect path dropLegacyAsyncJobs uses:
+	// Connect re-runs only pending migrations (no-op here) and bumps the
+	// pool refcount, keeping the handle open through both projections.
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	f := seed
+	f.store = session.NewBatchStore(conn)
+	t.Cleanup(func() { _ = db.ReleaseConn(conn) })
 	projectBatchAuditRoot(t, f, "cancelling", 2)
 
 	// Held (cancelling) root: one finding, named with the tool call and state.

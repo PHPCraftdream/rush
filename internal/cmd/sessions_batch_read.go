@@ -367,7 +367,10 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 			item.BatchHeld = r.Held
 			item.BatchCancelling = r.Cancelling
 			item.BatchAwaitingTermination = r.AwaitingTermination
-			item.BatchAwaitingAnswer = r.AwaitingAnswer || f.HasQuestion
+			// Per-root bound fact ONLY: the session-wide HasQuestion fallback is
+			// not attributable to this root; the session-level question surface
+			// is the summary line and the fallback paths.
+			item.BatchAwaitingAnswer = r.AwaitingAnswer
 			item.BatchDebt = r.Debt
 			item.BatchTasksPending = r.Tasks.Pending
 			item.BatchTasksActive = r.Tasks.Active
@@ -389,9 +392,10 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		switch {
 		case r.AwaitingTermination:
 			awaiting = "termination"
-		case r.AwaitingAnswer || f.HasQuestion:
-			// Session-scoped for questions: a bound root fact or the
-			// session-level question fallback renders the column.
+		case r.AwaitingAnswer:
+			// Per-root only: a question bound to ANOTHER root's tool call must
+			// not render this row as awaiting; the session-level fallback is
+			// carried by the summary/note surfaces.
 			awaiting = "answer"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\t%d\t%d/%d/%d\n",

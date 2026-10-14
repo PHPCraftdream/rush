@@ -184,6 +184,144 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	require.False(t, item.BatchUnknown, "a complete read must not claim unknown")
 }
 
+// seedSecondBatchRoot reserves a SECOND bare batch root (no children -- a
+// bare root row satisfies the batch_nodes CHECKs) on the same host for a
+// distinct tool call, so per-root question attribution can be proven across
+// two live roots of one owner.
+func seedSecondBatchRoot(t *testing.T, a *app.App, owner, host string) string {
+	t.Helper()
+	ctx := context.Background()
+	reserved, err := session.NewBatchStore(a.DB()).Reserve(ctx, session.BatchReservation{
+		Owner: owner, Host: host, RunnerID: "batch-read-runner",
+		ToolCallID: "other-root-call", InputHash: "other-root-hash", Sequence: 2,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "pending", ControlState: "none",
+		}},
+	})
+	require.NoError(t, err)
+	return reserved.Snapshot.Root.RootID
+}
+
+// TestSessionsJobsCmdRun_BoundQuestionStaysPerRoot: a held child_question
+// notice bound to root A's tool call must mark ONLY root A as awaiting an
+// answer -- in JSON (per-item batch_awaiting_answer) and in the text table
+// (root A's AWAITING cell "answer", root B's "-").
+//
+// Static trace: two nonterminal roots on one owner are legal (the live-attach
+// unique index is per (owner_session_id, tool_call_id), different tool calls,
+// both live), both appear in BatchLiveForSessions' tree, and the bound query
+// BatchListBoundNoticesByToolCallID matches only root A's job_tool_call_id,
+// whose R11G-style notice row (delivery 'pending', wake 1, reacted 0)
+// satisfies the bound predicate in reduceBatchSessionFacts
+// (sessions_batch_read.go:184-185).
+func TestSessionsJobsCmdRun_BoundQuestionStaysPerRoot(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	a, dataDir := isolatedJobsEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "jobs-two-root-sess", "two batch roots")
+	require.NoError(t, err)
+	f := seedBatchReadRoot(t, a, sess.ID)
+	seedSecondBatchRoot(t, a, f.owner, f.host)
+	// One held child_question notice bound ONLY to root A's tool call.
+	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
+		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
+	a.Shutdown()
+
+	// JSON path: two root items; only root A awaits an answer.
+	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
+	t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
+	stdout := runJobsCmd(t, sess.ID)
+	var items []jobsJSONItem
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		var it jobsJSONItem
+		require.NoError(t, json.Unmarshal([]byte(line), &it), stdout)
+		items = append(items, it)
+	}
+	require.Len(t, items, 2, "two live roots must render two rows")
+	var itemA, itemB *jobsJSONItem
+	for i := range items {
+		switch items[i].ToolCallID {
+		case f.toolCallID:
+			itemA = &items[i]
+		case "other-root-call":
+			itemB = &items[i]
+		}
+	}
+	require.NotNil(t, itemA, "root A's row must be present")
+	require.NotNil(t, itemB, "root B's row must be present")
+	require.True(t, itemA.BatchAwaitingAnswer, "the held bound question must surface on its own root")
+	require.False(t, itemB.BatchAwaitingAnswer, "the question must NOT leak to the other root")
+	require.True(t, itemA.BatchHeld, "both pending roots are held")
+	require.True(t, itemB.BatchHeld, "both pending roots are held")
+	require.False(t, itemA.BatchUnknown, "a complete read must not claim unknown")
+	require.False(t, itemB.BatchUnknown, "a complete read must not claim unknown")
+
+	// Text path: root A's AWAITING cell is "answer", root B's stays "-".
+	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "false"))
+	stdout = runJobsCmd(t, sess.ID)
+	var lineA, lineB string
+	for _, ln := range strings.Split(stdout, "\n") {
+		if strings.Contains(ln, f.toolCallID) {
+			lineA = ln
+		}
+		if strings.Contains(ln, "other-root-call") {
+			lineB = ln
+		}
+	}
+	require.NotEmpty(t, lineA, "root A's table row must be present")
+	require.NotEmpty(t, lineB, "root B's table row must be present")
+	require.Contains(t, lineA, "answer", "root A's AWAITING cell must say answer")
+	require.NotContains(t, lineB, "answer", "root B's AWAITING cell must stay '-'")
+}
+
+// TestSessionsJobsCmdRun_CompletionDebtNotAwaitingAnswer: done-but-unreacted
+// completion debt on a task child (snapshot Debt>0, GuardDebt true) is NOT a
+// question -- the row renders with batch_awaiting_answer false.
+//
+// Static trace: the fixture satisfies the batch_nodes CHECKs (root kind=
+// 'batch' with tool_call_id/input_hash); the raw UPDATEs satisfy the raw
+// CHECKs (root announced=1 WITH announce_message_id NOT NULL; task
+// notice_selected=1 with kind/state/cause NOT NULL, sequence>0, ordinal>=0,
+// delivery='done'). The debt predicate (batchHistoryDebtRow: selected, wake=1,
+// reacted=0, delivery != 'void') is satisfied; the debt-rows kind fallback
+// (sessions_batch_read.go:210-214) fires only on Kind==child_question, which
+// this row is not, so HasQuestion stays false.
+func TestSessionsJobsCmdRun_CompletionDebtNotAwaitingAnswer(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	a, dataDir := isolatedJobsEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "jobs-debt-sess", "completion debt session")
+	require.NoError(t, err)
+	f := seedBatchReadRoot(t, a, sess.ID)
+	// Root stays PENDING (live, renders a row); seed ordinary completion debt
+	// on ONE task child while the seed app is alive.
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET announced = 1, announce_message_id = 'debt-msg' WHERE node_id = ? AND root_id = ?`,
+		f.rootID, f.rootID)
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET notice_selected = 1, notice_kind = 'task', notice_state = 'completed',
+		 notice_cause = '', notice_sequence = 1, notice_ordinal = 0, delivery = 'done', wake = 1
+		 WHERE node_id = ? AND parent_id = ?`, f.nodeA, f.rootID)
+	require.NoError(t, err)
+	// Prove the flag-ON path never queries the legacy ledger.
+	dropLegacyAsyncJobs(t, dataDir)
+	a.Shutdown()
+
+	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
+	t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
+	stdout := runJobsCmd(t, sess.ID)
+	var item jobsJSONItem
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &item), stdout)
+	require.Equal(t, f.toolCallID, item.ToolCallID)
+	require.False(t, item.BatchAwaitingAnswer, "completion debt is not a question")
+	require.GreaterOrEqual(t, item.BatchDebt, int64(1), "the done-but-unreacted notice counts as debt")
+	require.False(t, item.BatchUnknown, "a complete read must not claim unknown")
+}
+
 // TestSessionsJobsCmdRun_BatchFlagOffRegression covers (d): the same seeded
 // database with the flag unset must produce today's legacy output exactly --
 // batch rows invisible, "(no jobs)" printed, no batch_* JSON fields.

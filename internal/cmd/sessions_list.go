@@ -91,8 +91,14 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				}
 				// F3/#R12-B: a held batch question annotates the status, the
 				// same "(awaiting answer)" substate the legacy path prints.
-				if bf.HasQuestion && statusByID[id] != "" {
-					statusByID[id] += " (awaiting answer)"
+				// The fallback also surfaces when the status is empty (at
+				// rest), so a held question never renders as blank/at rest.
+				if bf.HasQuestion {
+					if statusByID[id] == "" {
+						statusByID[id] = "batch question awaiting answer"
+					} else {
+						statusByID[id] += " (awaiting answer)"
+					}
 				}
 			}
 		} else {
@@ -115,17 +121,21 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					item.AwaitingChild = q.ChildSessionID
 					item.AwaitingQuestion = q.Question
 				}
-				if bf, ok := batchFacts[s.ID]; ok && (len(bf.Roots) > 0 || bf.Unknown) {
-					item.BatchRoots = len(bf.Roots)
-					item.BatchDebt = bf.Debt
-					if bf.Unknown {
-						item.BatchStatus = "unknown"
-					} else {
-						item.BatchStatus = "live"
-					}
-					// Any held batch question (bound root fact or the
-					// session-level fallback) surfaces on the wire.
+				if bf, ok := batchFacts[s.ID]; ok {
+					// A held question with no visible root and a complete read
+					// must still surface, so the answer flag sits outside the
+					// roots/unknown guard (false in the common no-question
+					// case, so the omitempty wire shape is unchanged).
 					item.BatchAwaitingAnswer = bf.awaitingAnswer()
+					if len(bf.Roots) > 0 || bf.Unknown {
+						item.BatchRoots = len(bf.Roots)
+						item.BatchDebt = bf.Debt
+						if bf.Unknown {
+							item.BatchStatus = "unknown"
+						} else {
+							item.BatchStatus = "live"
+						}
+					}
 				}
 				if err := enc.Encode(item); err != nil {
 					return err
