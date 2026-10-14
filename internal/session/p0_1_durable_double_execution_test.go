@@ -138,62 +138,82 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	counter := newDurableCallExecutionCounter(idempotencyKey, busyCycles)
 	counter.allowExecute = true // allow the first successful execution to complete
 
-	// Fast tick and lease TTL for test speed: tick every 20ms, lease expires
-	// after 30ms (same as TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty).
-	//
-	// Note on the 30ms TTL vs the whole-seconds lease_expires_at column:
-	// LeaseRunQueueEntry CEILS the deadline to the next whole Unix second
-	// (session.go ceilUnixSeconds, the P0-3 fix), so this "30ms" lease
-	// actually survives until the next second boundary — up to ~1s. For
-	// CleanupExpiredLeases to steal the row out from under the 6th
-	// (successful) execution, a tick would have to fire with
-	// now.Unix() > lease_expires_at INSIDE the few-millisecond lease→Ack
-	// window of that instant coordinator — i.e. a >1s scheduling stall
-	// mid-execution. That is the same fast-round-trip caveat already
-	// documented on the sibling test named above; not worth trading ~5s of
-	// test runtime (a ≥1s TTL also widens every busy-backoff cycle) to
-	// defend against it.
+	// Flake rewrite: the original version used a real 20ms tick with a 30ms
+	// lease TTL. On Windows CI the scheduling gap between the pump's
+	// `go p.executeEntry(...)` dispatch and Coordinator.Run returning could
+	// exceed the lease watchdog's guaranteed window: with TestLeaseTTL=30ms
+	// the watchdog safety margin is clamped to TTL/2 = 15ms
+	// (run_queue_pump.go) and the watchdog deadline is seeded from the
+	// CEILED DB lease_expires_at, so the guaranteed window is only ~15ms.
+	// When the watchdog fired (leaseLost=true) before Run returned, the
+	// SUCCESS outcome was skipped (run_queue_entry_exec.go: the
+	// `if leaseLost.Load()` branch returns errLeaseLost without an Ack) even
+	// though the instant fake coordinator had already executed the call. The
+	// row then cycled leased -> lease expiry (up to ~1s of ceil slack) ->
+	// CleanupExpiredLeases reap (attempt+1) -> re-lease, re-entering the same
+	// race. The failure is a test-timing premise flaw (production TTL is 30s
+	// with a 5s margin), so the fix is at the test layer: drive the pump on
+	// the manually advanced fake clock. No fake-time advance ever crosses a
+	// live execution's watchdog deadline (lease + 15s of fake time), and the
+	// fakeClockService stamps every DB lease on the fake clock (year 2001),
+	// so neither the watchdog nor lease expiry nor a real-time cleanup can
+	// ever fire — every interleaving is deterministic.
+	clk := newFakePumpClock(fakePumpEpoch)
+	probe := newFakeClockService(svc, clk)
+	const leaseTTL = 30 * time.Second
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
-		Sessions:       svc,
+		Sessions:       probe,
 		Coordinator:    counter,
 		PumpInstanceID: "p0-1-no-dup-pump",
+		TestClock:      clk,
 		TestTick:       func() time.Duration { return 20 * time.Millisecond },
-		TestLeaseTTL:   30 * time.Millisecond,
+		TestLeaseTTL:   leaseTTL,
+		// Keeps the real-ticker orphan-outbox goroutine idle so it can
+		// never observe the frozen fake clock.
+		TestDrainTick: func() time.Duration { return time.Hour },
 	})
 	pump.Start()
 	defer pump.Stop()
 
-	// Wait for the coordinator to be called at least busyCycles+1 times
-	// (the busy attempts plus the final successful execution). This proves
-	// the pump kept retrying despite the ErrCallQueuedNotExecuted responses.
-	// Match the sibling P350 test's 20s bound: on Windows CI the session
-	// package can contend with server tests for SQLite and delay pump retries
-	// beyond a 5s wall-clock window without losing the durable row.
-	require.Eventually(t, func() bool {
-		return counter.callCount.Load() > busyCycles
-	}, 20*time.Second, 20*time.Millisecond,
-		"coordinator must eventually be called past busyCycles — if this times out, "+
-			"the pump stopped retrying early (possible regression in no-attempt-penalty handling)")
+	rowPending := func() bool {
+		pending, err := probe.ListPendingRunQueueEntries(ctx)
+		return err == nil && len(pending) > 0
+	}
 
-	// Wait for the durable row to be acked (deleted) — this proves the pump
-	// eventually succeeded and committed the outcome to the database.
-	//
-	// The predicate must check pending-OR-leased (runQueueGoneEverywhere),
-	// not pending alone: ListPendingRunQueueEntries only scans
-	// status='pending', so a row the pump has leased and is executing reads
-	// as zero pending too. The preceding wait (callCount > busyCycles)
-	// returns at the ENTRY of the 6th Run — the row is leased at that
-	// instant — so a pending-only follow-up would be satisfied by its very
-	// first poll, long before any Ack. The executions==1 assertion below
-	// would then be unordered relative to the run's completion, despite the
-	// wait's message claiming "acked and deleted". AckRunQueueEntry runs
-	// only after Run returns, so "gone from both states" orders that
-	// assertion after the outcome write.
-	require.Eventually(t, func() bool {
-		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
-		return checkErr == nil && gone
-	}, 5*time.Second, 20*time.Millisecond,
-		"durable row should eventually be acked and deleted after successful execution")
+	// The pump's startup tick performs busy attempt 1 immediately.
+	awaitPump(t, func() bool { return counter.callCount.Load() >= 1 },
+		"pump startup tick must lease and dispatch the entry")
+
+	// Attempts 2..5: the coordinator returned ErrCallQueuedNotExecuted, the
+	// pump nacked with no attempt penalty (busyBackoffUntil = now + leaseTTL)
+	// and the row is pending again. Proving that BEFORE any time advances
+	// means CleanupExpiredLeases can never reap a live lease on the way.
+	for i := int64(2); i <= busyCycles; i++ {
+		awaitPump(t, rowPending,
+			"pump must retry after the busy backoff (no-attempt-penalty nack)")
+		// Crosses the busyBackoffUntil deadline (now + leaseTTL) and
+		// delivers exactly one coalesced tick.
+		clk.Advance(leaseTTL + 20*time.Millisecond + time.Millisecond)
+		awaitPump(t, func() bool { return counter.callCount.Load() >= i },
+			"pump tick after backoff must re-lease and re-dispatch the entry")
+	}
+
+	// Attempt 6: the coordinator succeeds, runs to completion, and the pump
+	// nacks the row back to pending on the busy path one last time before
+	// the next attempt executes it for real.
+	awaitPump(t, rowPending, "row must be pending again after the last busy attempt")
+	clk.Advance(leaseTTL + 20*time.Millisecond + time.Millisecond)
+	awaitPump(t, func() bool { return counter.callCount.Load() > busyCycles },
+		"the final (successful) attempt must execute the durable call")
+
+	// Fake time is now frozen forever: the watchdog (deadline = lease + 15s
+	// fake) and lease expiry cannot fire, and the DB lease stamps ride the
+	// fake clock so real time cannot reap either. This is a hang guard, not
+	// a timing window.
+	awaitPump(t, func() bool {
+		gone, err := runQueueGoneEverywhere(ctx, probe)
+		return err == nil && gone
+	}, "durable row should be acked and deleted after successful execution")
 
 	// The critical invariant: the call was executed EXACTLY ONCE total.
 	// Before the fix, the live owner would execute the mb.submitted copy,
