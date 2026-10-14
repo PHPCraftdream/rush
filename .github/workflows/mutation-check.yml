@@ -19,10 +19,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        # R11C (tools/mutation/R11C.json) and R11D (tools/mutation/R11D.json)
-        # are NOT in this matrix: they await their upstream merges (requires_merge:
-        # ["#29"] and ["#29","R11D PR"]) and are validated only against their
-        # read-only sibling worktrees. Add their shards after those merges land.
+        # R11C and R11D are enforced here from Round 7; their first proof is pending.
         # Shards group same-package mutations (whole-package compile) and stay
         # under ~12 mutations each.
         shard:
@@ -35,6 +32,9 @@ jobs:
           - { task: R11B, manifest: tools/mutation/R11B.json, i: 1, n: 2 }
           - { task: R11B, manifest: tools/mutation/R11B.json, i: 2, n: 2 }
           - { task: R11E, manifest: tools/mutation/R11E.json, i: 1, n: 1 }
+          - { task: R11C, manifest: tools/mutation/R11C.json, i: 1, n: 1 }
+          - { task: R11D, manifest: tools/mutation/R11D.json, i: 1, n: 2 }
+          - { task: R11D, manifest: tools/mutation/R11D.json, i: 2, n: 2 }
           - { task: Teardown, manifest: tools/mutation/Teardown.json, i: 1, n: 1 }
           - { task: R15a, manifest: tools/mutation/R15a.json, i: 1, n: 1 }
     env:

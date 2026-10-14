@@ -150,7 +150,7 @@ func TestDrainAttempt_ShutdownIsExempt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	f.coord.CancelAll()
 	select {
 	case err := <-done:
@@ -178,7 +178,7 @@ func TestDrainAttempt_CancelTurnIsExempt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	f.sa.Cancel(f.sessID)
 	select {
 	case err := <-done:
@@ -225,7 +225,7 @@ func TestDrainAttempt_QueuedUserTurnFailureNotCharged(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	res, err := f.sa.Run(ctx, SessionAgentCall{SessionID: f.sessID, Prompt: "hello"})
 	require.NoError(t, err)
 	require.Nil(t, res, "the user call queues behind the running Drain")

@@ -405,7 +405,7 @@ func decideAccount(f TurnFacts) Verdict {
 // error in hand (every launch site, every existing test) pass none and get
 // exactly the pre-#1142 snapshot.
 func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
-	f := TurnFacts{Now: time.Now(), Site: site, Snapshot: session.DebtSnapshot{}}
+	f := TurnFacts{Now: c.arb.now(), Site: site, Snapshot: session.DebtSnapshot{}}
 	for _, err := range runErrs {
 		if errors.Is(err, session.ErrForeignWorkspace) {
 			f.Session.ForeignWorkspace = true

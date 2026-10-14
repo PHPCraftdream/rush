@@ -29,10 +29,11 @@ type batchRunnerAdapter struct {
 
 	mu      sync.Mutex
 	started map[jobbatch.ID]*jobbatch.Batch
+	owners  map[jobbatch.ID]string
 }
 
 func newBatchRunnerAdapter(runner *jobbatch.Runner) *batchRunnerAdapter {
-	return &batchRunnerAdapter{runner: runner, started: make(map[jobbatch.ID]*jobbatch.Batch)}
+	return &batchRunnerAdapter{runner: runner, started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 }
 
 var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
@@ -85,6 +86,18 @@ func (a *batchRunnerAdapter) batchFor(root jobbatch.ID) *jobbatch.Batch {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.started[root]
+}
+
+func (a *batchRunnerAdapter) rememberOwner(root jobbatch.ID, owner string) {
+	a.mu.Lock()
+	a.owners[root] = owner
+	a.mu.Unlock()
+}
+
+func (a *batchRunnerAdapter) ownerFor(root jobbatch.ID) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.owners[root]
 }
 
 // batchAttachAdapter adapts session.BatchStore onto the R11B attach seam.
@@ -399,6 +412,8 @@ type BatchInstall struct {
 	Elector      batchElector
 	NoticePull   batchNoticePull
 	Sessions     session.Service
+	CLIPump      *session.BatchControlPump
+	cliAccepted  map[string]int64
 }
 
 // InstallBatchRuntime builds the real Runner, commit hook, attach store,
@@ -434,25 +449,22 @@ const batchDormantInstallOwner = "batch-install:per-invocation-owner"
 // An unparseable spec (or a spec with neither shape) keeps the dormant
 // default: the commit hook falls back and the fixed/dormant Owner applies.
 func batchCommitOwnerFor(spec jobbatch.Spec) string {
-	var find func(jobbatch.Spec) string
-	find = func(current jobbatch.Spec) string {
-		if current.Task != nil {
-			var p batchLeafPayload
-			if err := json.Unmarshal(current.Task.Payload, &p); err != nil {
-				return ""
-			}
-			return p.SessionID
+	if spec.Task != nil {
+		var p batchLeafPayload
+		if err := json.Unmarshal(spec.Task.Payload, &p); err != nil {
+			return ""
 		}
-		if current.Batch != nil {
-			for _, child := range current.Batch.Items {
-				if owner := find(child); owner != "" {
-					return owner
-				}
-			}
-		}
+		return p.SessionID
+	}
+	if spec.Batch == nil {
 		return ""
 	}
-	return find(spec)
+	for _, child := range spec.Batch.Items {
+		if owner := batchCommitOwnerFor(child); owner != "" {
+			return owner
+		}
+	}
+	return ""
 }
 
 // InstallBatchRuntimeDeferred builds everything InstallBatchRuntime builds
@@ -487,7 +499,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if owner == "" || owner == batchDormantInstallOwner {
 		owner = batchDormantInstallOwner
 	}
-	runnerAdapter := &batchRunnerAdapter{started: make(map[jobbatch.ID]*jobbatch.Batch)}
+	runnerAdapter := &batchRunnerAdapter{started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
 	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter})
@@ -529,6 +541,10 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		CommitHook: commitHook, Runtime: runtime,
 		RunnerHandle: runnerAdapter, Attach: batchAttachAdapter{store: deps.Store},
 		Delivery: delivery, Done: done, Elector: elector,
+		cliAccepted: make(map[string]int64),
+		// R11F P1-5(d): the notice-pull drain adapter has NO production
+		// consumer yet — it is consumed by the web drain surface in
+		// R12/R15b; wired inertly until then. Do not invent a consumer.
 		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
 		Sessions:   deps.Sessions,
 		runnerCfg:  runnerCfg,
@@ -536,6 +552,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if withRunner {
 		install.Runner = runnerAdapter.runner
 	}
+	install.CLIPump = session.NewBatchControlPump(deps.Store, deps.Host, install.commitCLIControl)
 	return install, nil
 }
 
