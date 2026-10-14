@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,41 +133,31 @@ func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
 		t2.finish()
 		t2.exitNow()
 	}
-	var execPtr atomic.Pointer[batchAgentExecution]
-	var answeredNode atomic.Value
-	answeredNode.Store("")
-	deps := batchAgentDeps{}
-	deps.InjectQuestionAnswer = func(_ context.Context, node string, depth int, answer json.RawMessage) error {
-		exec := execPtr.Load()
-		if exec == nil {
-			t.Error("answer routed before the execution existed")
-			return ErrBatchAgentNotHeld
-		}
-		require.Equal(t, string(exec.requestSnapshot().NodeID), node,
-			"the answer must be routed to the SAME node identity the question was published under")
-		require.Equal(t, 3, depth)
-		answeredNode.Store(node)
-		return jobbatch.Messenger(exec).Inject(context.Background(),
-			json.RawMessage(`{"depth":3,"text":"because"}`))
-	}
-	e, factory, reader, reports := batchAgentTestRun(t, deps, factory)
-	execPtr.Store(e)
+	e, factory, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
+	rig := factory.questionRig()
 	require.Eventually(t, func() bool {
 		_, held := e.heldDepth()
 		return held
 	}, 2*time.Second, time.Millisecond)
 	depth, _ := e.heldDepth()
 	require.Equal(t, 3, depth)
+	// The durable publisher recorded the question under this execution's OWN
+	// node identity.
+	notices := rig.publishedNotices()
+	require.Len(t, notices, 1, "exactly one publish per held question")
+	require.Equal(t, string(e.requestSnapshot().NodeID), notices[0].NodeID,
+		"the question must be published under the SAME node identity the answer routes to")
+	require.Equal(t, 3, notices[0].Depth)
 	// While held with terminal descendants the node must NOT settle.
 	reader.set(false, true)
 	batchAgentTestNoReport(t, reports, "a question is held")
-	require.NoError(t, e.answerQuestion(context.Background(), 3, json.RawMessage(`"because"`)))
+	// The answer routes through the executor's own Messenger seam into the
+	// SAME execution's hold (no re-entry through an adapter closure).
+	require.NoError(t, rig.inject(3, `"because"`))
 	reader.set(false, true)
 	r := batchAgentTestReport(t, reports)
 	require.Equal(t, jobbatch.StateCompleted, r.State)
 	require.Contains(t, r.Summary, "because")
-	require.Equal(t, string(e.requestSnapshot().NodeID), answeredNode.Load().(string),
-		"the routed answer must name this execution's own node")
 	require.ErrorIs(t, jobbatch.Messenger(e).Inject(context.Background(),
 		json.RawMessage(`{"depth":3,"text":"late"}`)), ErrBatchAgentStaleGeneration,
 		"a terminal incarnation must reject further answers as stale")

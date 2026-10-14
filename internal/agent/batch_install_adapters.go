@@ -494,16 +494,6 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	executor := deps.Executor
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
-		deps.AgentDeps.InjectQuestionAnswer = func(ctx context.Context, node string, depth int, answer json.RawMessage) error {
-			if runnerAdapter.runner == nil {
-				return errBatchRunnerNotWired
-			}
-			payload, err := json.Marshal(batchAgentInjectMessage{Depth: depth, Text: answer})
-			if err != nil {
-				return err
-			}
-			return runnerAdapter.runner.Inject(ctx, jobbatch.ID(node), payload)
-		}
 	}
 	if executor == nil {
 		executor = newBatchExecutor(env, newBatchExecutorFamilies(deps.AgentDeps))

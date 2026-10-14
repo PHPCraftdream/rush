@@ -40,7 +40,9 @@ func TestBatchInvocationValidateRejectsDiskProvider(t *testing.T) {
 		{"provider marker", func(inv *BatchInvocation) { inv.Policy.DiskProvider = true }},
 		{"custom disk", func(inv *BatchInvocation) { inv.Policy.CustomDisk = " disk " }},
 	} {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			inv := testInvocation()
 			tc.edit(&inv)
 			require.ErrorIs(t, inv.Validate(), ErrDiskProviderNotDurable,

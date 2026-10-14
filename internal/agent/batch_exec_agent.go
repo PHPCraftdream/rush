@@ -82,9 +82,8 @@ type batchAgentDeps struct {
 	Descendants batchAgentDescendantReader
 	// Poll is the descendant re-read interval while the scope stays open.
 	// Zero means a single read after the turn ends.
-	Poll                 time.Duration
-	QuestionPublisher    batchChildQuestionPublisher
-	InjectQuestionAnswer func(context.Context, string, int, json.RawMessage) error
+	Poll              time.Duration
+	QuestionPublisher batchChildQuestionPublisher
 }
 
 // batchAgentFamily implements the engine executor contract for the agent
@@ -190,12 +189,11 @@ type batchAgentExecution struct {
 	result   jobbatch.Result
 	reported bool
 
-	driverDone           chan struct{} // Driver goroutine exit: late kill barrier.
-	watcherDone          chan struct{}
-	finished             chan struct{}  // Closed once, when the scope result is fixed.
-	internal             sync.WaitGroup // Adapter goroutines; zero again after Dispose.
-	questionSequence     uint64
-	questionPublishError error
+	driverDone       chan struct{} // Driver goroutine exit: late kill barrier.
+	watcherDone      chan struct{}
+	finished         chan struct{}  // Closed once, when the scope result is fixed.
+	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
+	questionSequence uint64
 }
 
 var (
@@ -243,35 +241,7 @@ func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, qu
 	e.scope.questionSequence++
 	sequence := e.scope.questionSequence
 	e.scope.mu.Unlock()
-	err := e.deps.QuestionPublisher.PublishChildQuestion(context.WithoutCancel(ctx), batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
-	if err != nil {
-		e.scope.mu.Lock()
-		e.scope.questionPublishError = err
-		e.scope.mu.Unlock()
-	}
-	return err
-}
-
-func (e *batchAgentExecution) answerQuestion(ctx context.Context, depth int, answer json.RawMessage) error {
-	if e.deps.InjectQuestionAnswer == nil {
-		return errors.New("batch question: injection unavailable")
-	}
-	e.mu.Lock()
-	finished, stopped := e.reported, e.stopped
-	e.mu.Unlock()
-	if finished {
-		return ErrBatchAgentStaleGeneration
-	}
-	if stopped {
-		return ErrBatchAgentStopped
-	}
-	return e.deps.InjectQuestionAnswer(ctx, string(e.requestSnapshot().NodeID), depth, answer)
-}
-
-func (e *batchAgentExecution) questionPublishFailure() error {
-	e.scope.mu.Lock()
-	defer e.scope.mu.Unlock()
-	return e.scope.questionPublishError
+	return e.deps.QuestionPublisher.PublishChildQuestion(context.WithoutCancel(ctx), batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
 }
 
 // watch waits for turn completion, then confirmed scope closure, and reports exactly once.
@@ -296,9 +266,6 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 		live, complete := e.deps.Descendants.DescendantsLive(dctx, req)
 		if req.NoChildSelected {
 			live, complete = false, true
-		}
-		if e.questionPublishFailure() != nil {
-			live, complete = true, true
 		}
 		e.scope.descendants(live, complete)
 		if e.scope.closedNow() {
@@ -358,7 +325,7 @@ func (e *batchAgentExecution) Stop(ctx context.Context) error {
 // deterministically when the node is stopping, finished or holds no matching
 // question, so a message is never lost silently nor delivered to a new
 // incarnation.
-func (e *batchAgentExecution) Inject(ctx context.Context, msg json.RawMessage) error {
+func (e *batchAgentExecution) Inject(_ context.Context, msg json.RawMessage) error {
 	e.mu.Lock()
 	if e.disposed {
 		e.mu.Unlock()
@@ -372,13 +339,6 @@ func (e *batchAgentExecution) Inject(ctx context.Context, msg json.RawMessage) e
 	}
 	if stopped {
 		return ErrBatchAgentStopped
-	}
-	var envelope struct {
-		Depth int             `json:"depth"`
-		Text  json.RawMessage `json:"text"`
-	}
-	if json.Unmarshal(msg, &envelope) == nil && envelope.Depth > 0 && len(envelope.Text) > 0 {
-		return e.answerQuestion(ctx, envelope.Depth, envelope.Text)
 	}
 	var m batchAgentInjectMessage
 	if err := json.Unmarshal(msg, &m); err != nil {
