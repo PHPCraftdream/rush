@@ -178,7 +178,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	// authority and the old async/stall wrappers are not installed; flag-off
 	// Apps carry a nil ingress and never bind.
 	if app.batchWorkIngress != nil {
-		if err := agent.BindCoordinatorBatchRuntime(app.AgentCoordinator, app.batchWorkIngress); err != nil {
+		if err := agent.BindCoordinatorBatchControls(app.AgentCoordinator, app.batchWorkIngress, app.batchModelControl, app.batchLiveReader); err != nil {
 			slog.Error("Failed to bind batch runtime", "err", err)
 			return err
 		}

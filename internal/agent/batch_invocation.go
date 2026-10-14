@@ -95,6 +95,7 @@ type BatchInvocation struct {
 	// Origin names the ingress caller family (cli_bridge, agentic_fetch,
 	// coordinator) for audit.
 	Origin string `json:"origin"`
+	CallID string `json:"call_id,omitempty"`
 
 	Delivery         batchDeliveryChoice `json:"delivery"`
 	BackgroundEscape string              `json:"background_escape,omitempty"`

@@ -93,6 +93,10 @@ type batchInventoryEnv struct {
 // newBatchInventoryEnv installs the full runtime over a real database with
 // the family's counting-wrapped leaf pinned as its only registry entry.
 func newBatchInventoryEnv(t *testing.T, tool string, opts ...func(*BatchInstallDeps)) *batchInventoryEnv {
+	return newBatchInventoryEnvWithExecutor(t, tool, nil, opts...)
+}
+
+func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbatch.Executor, opts ...func(*BatchInstallDeps)) *batchInventoryEnv {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	dataDir := t.TempDir()
@@ -121,8 +125,9 @@ func newBatchInventoryEnv(t *testing.T, tool string, opts ...func(*BatchInstallD
 	}
 	deps := BatchInstallDeps{
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
-		Profile: profile, Registries: registries,
-		Store: session.NewBatchStore(conn), Messages: message.NewService(q),
+		Executor: executor,
+		Profile:  profile, Registries: registries,
+		Store: session.NewBatchStore(conn), Messages: message.NewService(q), Sessions: session.NewService(q, conn),
 		// Round-2 P1-7 item 6: NewRunner fails closed on zero limits.
 		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,

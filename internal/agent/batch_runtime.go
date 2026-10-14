@@ -22,6 +22,16 @@ type batchRunnerHandle interface {
 	Stop(ctx context.Context, id jobbatch.ID) error
 }
 
+// batchModelRunner is the optional control-plane view over the same Runner.
+type batchModelRunner interface {
+	Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error)
+	Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error)
+	Snapshot(ctx context.Context, id jobbatch.ID) (jobbatch.BatchView, error)
+	View(ctx context.Context, id jobbatch.ID) (jobbatch.NodeView, error)
+	Output(ctx context.Context, id jobbatch.ID, cursor uint64) (jobbatch.OutputChunk, error)
+	Stop(ctx context.Context, id jobbatch.ID) error
+}
+
 // batchDelivery is the narrow R11D seam: deliver this started root per the
 // invocation's mode/window and return its tool response. A nil seam is a
 // typed not-wired error, never a silent fallback to the old path.
