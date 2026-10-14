@@ -11,7 +11,7 @@
       "package": "internal/agent",
       "test": "TestInvokeRefusesControlToolLeaves",
       "purpose": "D1 control tools must be refused at the ingress gate before admission.",
-      "expected_assertion": "Target error should be in err chain:"
+      "expected_assertion": "Should be false"
     },
     {
       "id": "M4-attach-resubmit",
@@ -95,7 +95,7 @@
       "file": "internal/agent/batch_ingress.go",
       "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
       "needle": "if ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {",
-      "replacement": "if false {",
+      "replacement": "if false && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {",
       "package": "internal/agent",
       "test": "TestInvokeWaiterNotPoisonedByFirstCancel",
       "purpose": "A waiter whose own ctx is alive must not inherit the first caller's cancellation.",

@@ -47,17 +47,6 @@
       "expected_assertion": "exactly one Stop on caller cancellation"
     },
     {
-      "id": "r11d-escape-auto-detached-shortcircuit",
-      "file": "internal/agent/batch_delivery.go",
-      "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
-      "needle": "if inv.BackgroundEscape == batchEscapeAuto && mode != batchDeliveryDetached {",
-      "replacement": "if inv.BackgroundEscape == batchEscapeAuto {\n\t\tmode = batchDeliveryDetached\n\t}",
-      "package": "internal/agent",
-      "test": "TestBatchDeliveryEscapeCompletesWithinWindow",
-      "purpose": "Regression to the old always-detached shortcut: escape=auto switches to detached immediately, ignoring the window.",
-      "expected_assertion": "completion inside the window returns the full envelope"
-    },
-    {
       "id": "r11d-escape-window-defaulted",
       "file": "internal/agent/batch_delivery.go",
       "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
@@ -73,7 +62,7 @@
       "file": "internal/agent/batch_delivery.go",
       "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
       "needle": "return fantasy.ToolResponse{}, fmt.Errorf(\"%w: root %s: %w\", errBatchInlineElectionFailed, root, lastErr)",
-      "replacement": "return envelope, nil",
+      "replacement": "_ = lastErr\n\treturn envelope, nil",
       "package": "internal/agent",
       "test": "TestBatchDeliveryInlineFailedAckExhausted",
       "purpose": "Silently swallow a persistently failed ack, hiding a lost completion behind a fake success.",

@@ -89,7 +89,7 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
   exactly `teardown`, packages normalized to `internal/agent`; one workflow
   shard (single package, 5 mutations).
 - R11C: 9 enforced records from the 11-record source set; M2 was previously excluded for a gated-flight hang, and M1 is excluded after the Round7 source audit below. Targets are present in this integration worktree. M7 uses the top-level parent test because subtest names are not valid manifest test names.
-- R11D: 10 enforced records from the 12-record conversion set; drain stale-needle and caller-context cancellation records are excluded after Round7 audit below. Targets are present in this integration worktree.
+- R11D: 9 currently enforced records from the 12-record conversion set; drain stale-needle, caller-context cancellation, and escape-auto-shortcircuit records are excluded after audits below. Targets are present in this integration worktree.
 - R15a: 6 Go records: mut1/mut3/mut4/mut6/mut8 plus mut5 restored using the
   vacuous-list record — the strengthened fixture now differs in ordinal vs
   NodeID order, so the real assertion `nodes must be ordered by ordinal, not
@@ -100,7 +100,30 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
 
 ## Proof status
 
-The operator reports the existing PR40 set green on `mut/round7` and `mut/round8`; no run IDs were supplied. The existing set's current counts are R11B 17/17, R11E 7/7, and R15a 6/6. R11C/R11D are enforced from Round 7 and remain unproven until the first proof on `mut/round9`.
+The operator reports the existing PR40 set green on `mut/round7` and `mut/round8`; no run IDs were supplied. The existing set's current counts are R11B 17/17, R11E 7/7, and R15a 6/6. R11C and R11D have Round8 observed results and current unrerun manifest corrections; see the task rows below.
+
+### Round8 observed proof and follow-up (historical)
+
+Proof run **38489311664**, commit **3fa5357f** (`mut/round9`): 102 records,
+98 KILLED, 1 KILLED_UNEXPECTED, 3 EXECUTION_ERROR. R11C had 7 KILLED,
+1 KILLED_UNEXPECTED, 1 EXECUTION_ERROR (8 observed assertion kills); R11D had
+8 KILLED and 2 EXECUTION_ERROR (10 records across both R11D shards). The R11D
+manifest now has 9 records after dropping the unprovable escape record. Current interpretation:
+
+| Manifest | Current records | Cited run outcomes | Current status |
+|---|---:|---|---|
+| R11C | 9 | 7 KILLED, 1 KILLED_UNEXPECTED, 1 EXECUTION_ERROR | 8 observed assertion kills, including M3 now mapped to observed text; M11 compile correction unrerun. |
+| R11D | 9 | 8 KILLED, 2 EXECUTION_ERROR (10 tested) | 8 observed kills; inline-no-retry compile correction unrerun; 1 dropped record. |
+
+| Record | Round8 observed evidence | Follow-up |
+|---|---|---|
+| R11C M3-controls-allowed | `batch_ingress_test.go:362`: `Should be false`; message `tool "await_tasks"` (KILLED_UNEXPECTED). | Assertion corrected to `Should be false`; needle/SHA unchanged; not rerun. |
+| R11C M11-waiter-poison-replay | Build error `batch_ingress.go:6:2: "errors" imported and not used` (EXECUTION_ERROR). | Retain `errors.Is` uses in disabled condition `if false && (...)`; not rerun. |
+| R11D r11d-inline-no-retry-on-failed-ack | Build error `internal/agent/batch_delivery.go:276:6: declared and not used: lastErr` (EXECUTION_ERROR). | `_ = lastErr` before `return envelope, nil`; not rerun. |
+| R11D r11d-escape-auto-detached-shortcircuit | Prior full-block replacement failed syntax outside function (EXECUTION_ERROR). | DROPPED: named test is sync+auto and observes no distinction under guard-only removal; no faithful observable header-only variant. |
+
+The counts and failures above describe the cited run before corrections. No
+claim is made that edits have passed a later mutation run.
 
 
 | Manifest | Proven kills / total enforced | Notes |
@@ -112,8 +135,8 @@ The operator reports the existing PR40 set green on `mut/round7` and `mut/round8
 | R11E | 7/7 | Operator reports green on mut/round7 and mut/round8 |
 | R15a | 6/6 | Operator reports green on mut/round7 and mut/round8 |
 | Teardown | 5/5 | |
-| R11C | 0/9 | Enforced from Round 7; first proof pending mut/round9 |
-| R11D | 0/10 | Enforced from Round 7; first proof pending mut/round9 |
+| R11C | 8/9 | Round8: 7 KILLED + 1 KILLED_UNEXPECTED now mapped to observed text; M11 correction unrerun |
+| R11D | 8/9 | Round8: 8 KILLED; inline-no-retry correction unrerun; escape record dropped |
 
 KILLED_UNEXPECTED records re-anchored to the observed failing output (raw
 go-test text, verified verbatim in the per-record mutated logs):
@@ -161,7 +184,8 @@ confirmed by the next mutation run after PR #39 (not before).
   — the current test has no barrier forcing Reserve into the scan/wipe window
   the mutant opens, so a survivor would be unprovable. Add a barrier, name a
   real assertion, then restore the record.
-- **R11C/R11D current status:** targets are present and enforced; first proof pending. Revalidate the integration commit and rerun on `mut/round9`.
+- **R11C current status:** 8/9 observed assertion kills in Round8 (including M3's now-corrected expected text); M11's compile-fix is not rerun.
+- **R11D current status:** 8/9 observed kills; `r11d-inline-no-retry-on-failed-ack` compile-fix is not rerun. `r11d-escape-auto-detached-shortcircuit` is dropped because its named test would not observe a guard-only edit.
 - R10c and R11B previously resided in sibling worktrees; all of their targets
   are now present in this integration worktree and validate at base 75136c49.
 
@@ -192,6 +216,7 @@ foreign keys ON. No test name is used as an assertion substring.
 - R11C M1-singleflight-drop: removing map registration makes `entryFor(...).joined` nil and panics at `internal/agent/batch_ingress_test.go:253` before an assertion; excluded from enforcement.
 - R11D r11d-cancel-caller-ctx: `require.NoError` fails in a goroutine and Goexits before release at `batch_cancel_test.go:77-83`; the main test blocks in fake Stop (`batch_cancel_test.go:51-56`), so this is a timeout, not a named assertion kill.
 - R11D r11d-drain-block-on-root: excluded because its needle occurs zero times. Current LF source hash is `3ba7ef4d5368764c943b9b6749e7b0b38420506ee47fd0d1b451cc2195c86594`; source now uses `case <-callerGone` and returns `ctx.Err()` at `batch_delivery_drain.go:57-59`. The stale needle/hash was not refreshed.
+- R11D r11d-escape-auto-detached-shortcircuit: DROPPED after Round8. Its named `TestBatchDeliveryEscapeCompletesWithinWindow` uses sync+auto and verifies in-window completion; removing only the `mode != batchDeliveryDetached` guard would not change that case. The previous full-block replacement also introduced invalid syntax outside the function, so no faithful header-only mutant was established.
 
 - R10c m18 (`m18_reset_scan_outside_transaction`): kill is scheduling-dependent
   (see Known gaps).
@@ -440,7 +465,7 @@ test file:line where the first failing assertion prints it.
 | Teardown | notify-join-omitted | notify join reached after-waits seam before callback exit | release_callback_join_test.go:97 |
 | Teardown | forced-verdict-suppressed | unjoined release callback must report stillBusy | release_callback_join_test.go:129 |
 | R11C | M1-singleflight-drop | DROPPED: nil `joined` panic before assertion | batch_ingress_test.go:253 |
-| R11C | M3-controls-allowed | Target error should be in err chain: | batch_ingress_test.go:359 (first ErrorIs; later assertion unreachable) |
+| R11C | M3-controls-allowed | `Should be false` | batch_ingress_test.go:362 (observed; message `tool "await_tasks"`; correction unrerun) |
 
 | R11C | M4-attach-resubmit | an attached retry never submits | batch_ingress_test.go:323 |
 | R11C | M5-admission-swallow | Expected error with "batch runtime: admission failed before the runner was called" in chain but got nil. | batch_runtime_test.go:214 |
@@ -454,7 +479,7 @@ test file:line where the first failing assertion prints it.
 | R11D | r11d-sync-collapse-envelope | sync must forward the full executor envelope | batch_delivery_test.go:140 |
 | R11D | r11d-cancel-false-settlement | held termination keeps the admission unit occupied | batch_cancel_test.go:105 |
 | R11D | r11d-sync-cancel-skips-stop | exactly one Stop on caller cancellation | batch_cancel_test.go:178 |
-| R11D | r11d-escape-auto-detached-shortcircuit | completion inside the window returns the full envelope | batch_delivery_test.go:288 |
+| R11D | r11d-escape-auto-detached-shortcircuit | DROPPED: sync+auto test does not observe guard-only change; full-block replacement malformed | batch_delivery_test.go:276-290 |
 | R11D | r11d-escape-window-defaulted | Expected error with "batch delivery: escape=auto requires an explicit delivery window" in chain but got nil. | batch_delivery_test.go:368 (after controlled 30s timer) |
 | R11D | r11d-drain-block-on-root | DROPPED: stale needle (0 matches); SHA `33bb1b...` vs actual LF `3ba7ef...` | `batch_delivery_drain.go:57-59` |
 | R11D | r11d-cancel-caller-ctx | DROPPED: goroutine require Goexits before release; main Stop blocks, timeout not assertion | `batch_cancel_test.go:77-83`, fake Stop `:51-56` |
