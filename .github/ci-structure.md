@@ -1,144 +1,94 @@
 # ci-structure — the tiered CI graph (shadow mode, phase 2)
 
-Design record for the three new workflow files (`ci.yml`, `ci-tests.yml`,
-`ci-security.yml`). Existing workflows (`build.yml`, `lint.yml`,
-`security.yml`, `ci-windows-shards.yml`, `ci-plan.yml`) are untouched and
-remain authoritative until cutover.
+Design record for `ci.yml`, reusable `ci-tests.yml` and `ci-security.yml`. Existing build/lint/security workflows remain authoritative until operator cutover. The current shadow workflow is local/unmerged; no hosted cutover or GitHub behavior is claimed verified.
 
 ## Job graph
 
 ```
-plan (ubuntu: ci_plan.py selector, 3 pre-extracted GOOS graphs)
-├── checks (ALWAYS: guards + build/vet + golangci-lint + mips64 lint)
-├── tests  (uses ./.github/workflows/ci-tests.yml)
-│     ├── test-ubuntu          (plan's linux selection, build.yml group steps)
-│     ├── agent-ubuntu         (8 sequential agent batches + one -race pass)
-│     ├── race-ubuntu          (selected race pkgs, agent excluded)
-│     ├── test-native          (matrix: darwin / windows tier1 selection)
-│     └── windows-full-shards  (uses ./.github/workflows/ci-windows-shards.yml,
-│                               only when mode == full && windows needed)
-├── web     (lint.yml lint-web body + production build; only when web/ changed)
-├── security (uses ./.github/workflows/ci-security.yml)
-│     ├── codeql-go        (mode == full)
-│     ├── codeql-actions   (.github/workflows/** changed)
-│     ├── govulncheck      (full or deps changed)
-│     └── grype            (full or deps changed)
-└── ci-gate (always(): summary table + not_run list to $GITHUB_STEP_SUMMARY;
-             fails on any failure/cancelled)
+plan -> checks; plan + checks -> tests (test-ubuntu, agent-ubuntu, race-ubuntu, test-native, windows-full-shards)
+plan -> web; plan -> security (codeql-go, codeql-actions, govulncheck, grype)
+all -> ci-gate (always: live PR state, plan contract, top-level needs, exact current-attempt leaf jobs)
 ```
 
 ## What each job runs and why
 
-- **plan** — checks out with `fetch-depth: 0`, computes `BASE_SHA`/`HEAD_SHA`
-  (shadow: `git merge-base origin/ci/job-batches HEAD` vs HEAD; pull_request:
-  `github.event.pull_request.base.sha` / `.head.sha`), pre-extracts the three
-  per-OS `go list -deps -test -json ./...` graphs (same GOOS/GOARCH/CGO env as
-  `ci_plan/golist.py`), runs `.github/scripts/ci_plan.py`, uploads the plan
-  artifact, and exports job outputs from a python step reading `plan.json`.
-- **checks** — the cheap guards, byte-for-byte from build.yml's ubuntu leg:
-  SQL ASCII, stale slot spelling, DB release pairing + selftest, file-size
-  ratchet + selftest, `go mod tidy -diff` (see deviations), sqlc drift,
-  `go build ./...`, `go vet ./...`, pinned golangci-lint v2.13 + the
-  GOOS=linux/GOARCH=mips64 ncruces-driver lint from lint.yml.
-- **tests** → see ci-tests.yml header; every command/flag/timeout is copied
-  from build.yml (`-short -failfast -p 2`, app `-timeout 20m`, Linux-only
-  process-group suite without -short on full mode, agent 8×batches
-  `-parallel 2`, race `-race -short -failfast -timeout 15m`, agent race as
-  ONE `go test -race -short -parallel 2 -count=1 -timeout 60m
-  ./internal/agent/` inside a 90m job).
-- **web** — corepack + node 22 + `pnpm install --frozen-lockfile` +
-  `pnpm typecheck` + `pnpm lint` + `node --test src/*.test.ts` (lint.yml
-  verbatim) plus `pnpm build` (rsbuild production build; not in lint.yml —
-  added here because the plan pays for web only when `web/` changed).
-- **security** — CodeQL go/actions, govulncheck, Grype with the exact pins
-  and permissions from security.yml, gated by plan flags. **dependency-review
-  is NOT included** until the repo setting is enabled.
-- **ci-gate** — renders the per-job result table and the plan's `not_run`
-  list to the step summary; fails on any failure/cancelled. NOT REQUIRED YET:
-  phase 2c hardens ci-gate (skip-vs-needed cross-check, parity audits). It is
-  NOT added to any required checks / branch protection.
+- **plan** checks out full history, determines validated base/source-head (push main uses `before`/push SHA), extracts linux/darwin/windows Go graphs where needed, runs the selector and helper plan promotion, uploads `plan.json`, and exports the validated plan output contract. Labeled main PRs and main pushes promote all module package owners on every OS, configured race-policy packages (agent excluded from race because it has a dedicated whole-agent job), web, and complete security including CodeQL Actions. Main-bound PR without full-ci uses minimal plan only.
+- **checks** is guarded by relevant label-event eligibility. Cheap ASCII/stale-slot/DB-pairing/file-size guards run even if planning fails; Go setup, tidy/sqlc/build/vet/lint/mips64 are guarded by `heavy_allowed` so unlabeled main PRs do no accumulated heavy work.
+- **tests** calls `ci-tests.yml`; caller success is insufficient. Gate checks expected nested reusable/matrix job names. Full Windows leaves are `tests / windows-full-shards / plan-shards`, `windows-shard (A-D)`, `windows-agent`, and `shards-summary` (actual child job ID from `ci-windows-shards.yml`). Full Windows plan requires downloaded `shard-assignment/assignment.json` and validates unique complete package assignment. An optional successfully executed Windows native matrix job is not listed as skipped; no-op native matrix jobs do not count as test receipts.
+- **web/security** use the preserved reusable bodies and plan outputs; full promotes web and all security jobs.
+- **ci-gate** always runs, including when its plan dependency or artifact has failed. It fetches live PR labels/head/base before reading the plan or validating dependencies, then checks top-level needs, queries current-attempt jobs with pagination, compares validated plan outputs/SHA, checks expected exact leaves and assignment, and renders Markdown job and `not_run` tables. A live API failure fails closed. If the live main-bound PR has no `full-ci`, the pure decision policy returns the exact `Full validation not requested for this revision.` reason even when plan outputs are unavailable. Unrelated label events are ignored before API access. Eligibility decisions remain in `decide`; the adapter obtains live state and supplies it to that policy.
 
-## How plan outputs map to jobs
+## Gate truth table
 
-| plan field / output | consumed by |
+| Event/state | Work | Gate |
+|---|---|---|
+| Main-bound PR, full-ci absent (draft included) | minimal plan + cheap guards only | red exact `Full validation not requested for this revision.` |
+| Main-bound PR, live full-ci present | promoted full selection | current source head/base + every full receipt required |
+| Non-main PR | selector tier1/full fallback | live identity + selected receipts |
+| Push main | promoted full selection | full receipts required |
+| Unrelated label event | plan/check/worker/cancel jobs excluded by job guards; gate explicitly ignores if invoked | no heavy work/cancellation |
+
+Unlabeled full-ci is not decided from the event payload: gate queries live label state. Drafts have no bypass. Compare PR source head `.head.sha`, not merge SHA `github.sha`, and require validated base SHA == live `.base.sha`. Non-main full-ci removal still uses live tier1 lane and can pass selected checks.
+
+## Windows assignment integrity and risk
+
+The gate requires assignment `agent` to be exactly `github.com/PHPCraftdream/rush/internal/agent`, all shard packages to belong to the module, unique complete coverage of the Windows `per_os` plan inventory, and per-agent/per-shard/total counts to agree. The full Windows shard assignment is generated by `ci-windows-shards.yml`'s `plan-shards` job on `ubuntu-latest`; it runs `go list` there without setting `GOOS=windows`. The plan selector's Windows inventory comes from its Windows-target graph. Thus the assignment's Ubuntu-host enumeration may differ from the selector's Windows graph; this is an unverified hosted risk, and the gate intentionally fails closed on any inventory mismatch.
+
+## Cancellation and concurrency
+
+`run-name` distinguishes `ci [full]` from `ci [quick]`. Full means push main or main-bound PR with full-ci; otherwise quick. Full-ci labeled/unlabeled transitions share the corresponding quick/full PR concurrency group. Unrelated label events are isolated by `run_id`. Cancellation runs only on full-ci removal; it re-reads live labels, excludes self, filters same PR/workflow, `ci [full]` title and queued/in-progress status. Runs with no API-provided pull-request association are ambiguous (branch names can collide across forks), are not cancelled, and produce an operator-manual-cancellation warning. API/fork denial likewise yields a prominent warning; cancellation is never proof of gate eligibility.
+
+## Cutover (NOT ACTIVE): exact trigger diff
+
+Current triggers remain shadow push + workflow_dispatch. Do not apply this diff in the helper/test/doc repair:
+
+```diff
+ on:
+-  push:
+-    branches: ["ci-shadow/**"]
+-  workflow_dispatch:
++  pull_request:
++    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
++  push:
++    branches: [main]
+```
+
+No `pull_request_target`, cron or schedule.
+
+## PR #12 freeze-before-label/removal procedure
+
+Freeze integration before adding full-ci to PR #12; retain through approval/merge. Removing the label reopens integration work and intentionally leaves a red main-bound draft gate while scoped cancellation targets existing full runs. No automatic merge or branch-protection modification is performed.
+
+## Disposable-PR checklist (after operator-approved trigger activation)
+
+These transitions cannot be locally executed while shadow triggers remain active. On a disposable PR, verify:
+
+1. Add/remove an unrelated label: no heavy work or cancellation; gate reports ignored event.
+2. Main-bound draft without full-ci: cheap guards only and exact red message; draft does not bypass.
+3. Add full-ci to main-bound PR: full plan, all expected receipts and one `ci-gate` check.
+4. Remove full-ci: live label absent yields exact red reason; matching full runs cancelled or explicit warning.
+5. Retarget feature→main without label (red); main→feature re-evaluates tier1; edited/synchronize races cannot authorize stale source/base.
+6. Change head/base while a run is in flight: old result is stale and red.
+7. Force a needed leaf skipped, failed and cancelled; each blocks. Force intentional unneeded jobs skipped; inspect `not_run` and pass only if plan declares omission.
+8. Full Windows: verify hosted nested display names, assignment artifact, exact full-inventory coverage, A-D, isolated agent, summary receipt and optional native execution behavior. A Windows-versus-selector inventory mismatch must fail closed pending investigation.
+9. Deny cancellation API permission or omit a run's PR association: visible warning requires operator cancellation; no fallback by head branch.
+10. Verify branch protection expected-check behavior only after an operator-approved frozen full run.
+
+Local checks: `python -I -m unittest discover -s .github/scripts`; YAML parse; actionlint on four CI workflows; isolated helper mutation tests. These do not prove live GitHub API behavior, runner job-name formatting, permissions or required-check configuration. Require an up-to-date merge candidate; changed base invalidates old result. Trusted workflow changes need operator review.
+
+## Rollback and remaining operator changes
+
+Keep gate fail-closed. Rollback restores unconditional full selection and previous authoritative workflow triggers/protection. Do not remove legacy build/lint/security workflows until separately authorized cutover. Required-check/branch protection changes, dependency-review enablement and legacy trigger removal remain operator work; no live GitHub behavior is claimed verified.
+
+## Existing plan outputs and deviations
+
+| Output | Consumer |
 |---|---|
-| `mode` | tests (`windows-full-shards` iff `full`; process-group suite iff `full`), `security_full` |
-| `per_os.linux` → `linux_packages`, `ubuntu_needed` | test-ubuntu group resolution |
-| `per_os.darwin` → `darwin_packages`, `macos_needed` | test-native macos leg |
-| `per_os.windows` → `windows_packages`, `windows_needed` | test-native windows leg (tier1) |
-| `race_packages` → `race_packages`, `race_needed` (agent excluded) | race-ubuntu group resolution |
-| `internal/agent` in linux selection → `agent_selected` | agent-ubuntu |
-| changed files → `web_changed` | web |
-| changed files + mode → `security_full` / `security_deps` / `security_actions` | ci-security inputs |
-| `not_run` (artifact) | ci-gate summary |
+| mode/per-OS package strings | test-ubuntu/native/fixed Windows shards |
+| race_packages (agent excluded) | race-ubuntu |
+| agent_selected | whole-agent job |
+| web_changed | web reusable body |
+| security_full/deps/actions | CodeQL Go/Actions, govulncheck, Grype |
+| expected outputs, SHA identity, not_run | ci-gate |
 
-All gating is on precomputed boolean outputs (`ubuntu_needed == 'true'`
-style); no `fromJSON` of huge strings anywhere — package lists travel as
-plain space-separated string inputs/outputs.
-
-## Shadow triggers vs cutover triggers
-
-Current `ci.yml` (exactly what is on this branch):
-
-```yaml
-on:
-  push:
-    branches: ["ci-shadow/**"]
-  workflow_dispatch:
-```
-
-Cutover replaces that block with (and ONLY that — every job body already
-implements the pull_request base/head path):
-
-```yaml
-on:
-  pull_request:
-    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
-  push:
-    branches: [main]
-```
-
-No schedule/cron is added at cutover either (matches the fork's security.yml
-cron removal).
-
-## Deviations / awkward-reuse decisions (deliberate, not omissions)
-
-- `go mod tidy -diff` replaces build.yml's `go mod tidy` + `git diff
-  --exit-code` (same assertion, one process, no working-tree mutation).
-- lint.yml's 3-OS golangci-lint matrix: only the ubuntu leg is reproduced in
-  `checks`. The macOS/Windows legs are pure platform-formatting coverage
-  (autocrlf/gofmt) with no selector meaning; they stay in lint.yml until
-  cutover rather than paying 2 native runners on every shadow push.
-- Native (darwin/windows tier1) legs run the build.yml group structure as one
-  sequential bash loop with `::group::` markers instead of one named step per
-  group; the ubuntu lane and ci-windows-shards keep the per-step split.
-- build.yml's `shortcode-drift` job (`cahsync -check -strict`,
-  `continue-on-error: true`) is NOT reproduced: it is advisory-only (warns),
-  unrelated to the selector, and lint-sync/labeler-style jobs stay in their
-  own workflows. Revisit at cutover if it should join `checks`.
-- build.yml's test-race 5-batch agent split is replaced by the single
-  whole-package invocation (mandated shape); the batching history lives in
-  build.yml's comments and docs/lessons/2026-08-30-ci-goroutine-leak.md.
-
-## NOT done (future work)
-
-- ci-gate hardening (phase 2c): skip-without-declaration failure, required
-  check wiring, branch protection — nothing added to branch protection here.
-- `full-ci` label enforcement (labeler.yml exists; the plan does not read it).
-- dependency-review: requires the repo setting to be enabled first.
-- Replacing build.yml/lint.yml/security.yml triggers (the cutover task).
-
-## Validate
-
-```
-git push origin <branch>:ci-shadow/<name>
-```
-
-Then watch the run in the Actions tab (workflow `ci`); ci-gate's step summary
-has the result table and the not_run audit trail.
-
-## Rollback
-
-Delete `.github/workflows/ci.yml`, `.github/workflows/ci-tests.yml`,
-`.github/workflows/ci-security.yml` and this file. Nothing else references
-them; `ci-windows-shards.yml` keeps its own push trigger on `ci-shadow/**`.
+Retain original design rationale: `go mod tidy -diff` avoids mutation; only Ubuntu lint lane is reproduced; native groups are sequential; shortcode drift remains advisory; dependency-review is omitted until repository setting/API is enabled; whole-package agent race is retained. Full Windows native matrix currently has a no-op guard that exits 0 then later steps continue, so duplicate Windows testing may occur; do not mistake the guard itself for a receipt.

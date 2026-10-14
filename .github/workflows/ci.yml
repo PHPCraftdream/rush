@@ -15,25 +15,20 @@
 #   ./.github/workflows/ci-security.yml  — CodeQL / govulncheck / Grype
 # ci-gate stays here (a `uses:` job cannot have steps).
 name: ci
+run-name: ci [${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'full' || github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci') && 'full' || 'quick' }}]
 
 on:
   push:
     branches: ["ci-shadow/**"]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'full-ci') && format('isolated-{0}', github.run_id) || ((github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && 'full' || 'quick') }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
-  # ── plan: run the tiered selector, export its decisions as job outputs ──
-  # Same selector as the phase-1 shadow planner (.github/scripts/ci_plan.py);
-  # schema: mode (tier1|full), per_os selected packages, race_packages,
-  # native_required, fallbacks, not_run (see .github/scripts/README.md).
   plan:
+    if: github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci'
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.read.outputs.mode }}
@@ -50,111 +45,78 @@ jobs:
       security_full: ${{ steps.read.outputs.security_full }}
       security_deps: ${{ steps.read.outputs.security_deps }}
       security_actions: ${{ steps.read.outputs.security_actions }}
+      heavy_allowed: ${{ steps.read.outputs.heavy_allowed }}
+      native_required: ${{ steps.read.outputs.native_required }}
+      validated_head: ${{ steps.read.outputs.validated_head }}
+      validated_base: ${{ steps.read.outputs.validated_base }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: compute BASE_SHA / HEAD_SHA (shadow + pull_request paths)
+      - name: resolve validated base/head
         id: shas
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Real PR path: GitHub already provides the merge-base-against-
-            # target SHAs; no local merge-base needed.
+          if [ "${{ github.event_name }}" = pull_request ]; then
             echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
             echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           else
-            # Shadow path: everything after the last common ancestor with
-            # the job-batches baseline branch. (Cutover never takes this
-            # branch: pull_request events replace it wholesale.)
-            mb="$(git merge-base origin/ci/job-batches HEAD)"
-            echo "base=$mb" >> "$GITHUB_OUTPUT"
+            echo "base=$(git merge-base origin/ci/job-batches HEAD)" >> "$GITHUB_OUTPUT"
             echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
-      # Pre-extract the three per-OS package graphs (one `go list` process
-      # each — exactly what ci_plan.py would spawn itself, just hoisted for
-      # loggability; the same metadata the replay validation used).
-      - name: extract per-OS go list graphs
+      - name: choose validation lane
+        id: lane
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
-          set -euo pipefail
-          mkdir -p .ci-plan-tmp
-          GOOS=linux   GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/linux.json
-          GOOS=darwin  GOARCH=arm64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/darwin.json
+          if [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" != true ]; then echo cheap_only=true >> "$GITHUB_OUTPUT"; echo force_full=false >> "$GITHUB_OUTPUT"; else echo cheap_only=false >> "$GITHUB_OUTPUT"; fi
+          if { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
+      - name: setup Go for plan
+        if: steps.lane.outputs.cheap_only != 'true'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: extract platform graphs
+        if: steps.lane.outputs.cheap_only != 'true'
+        run: |
+          set -euo pipefail; mkdir -p .ci-plan-tmp
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/linux.json
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/darwin.json
           GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/windows.json
-      - name: run selector (ci_plan.py)
-        run: |
-          python3 .github/scripts/ci_plan.py \
-            --base "${{ steps.shas.outputs.base }}" \
-            --head "${{ steps.shas.outputs.head }}" \
-            --go-list-json linux=.ci-plan-tmp/linux.json \
-            --go-list-json darwin=.ci-plan-tmp/darwin.json \
-            --go-list-json windows=.ci-plan-tmp/windows.json \
-            --out .ci-plan-tmp/plan.json \
-            --summary .ci-plan-tmp/plan.md
-      - name: export plan decisions as job outputs
+      - name: select plan and export outputs
         id: read
         env:
           BASE: ${{ steps.shas.outputs.base }}
           HEAD: ${{ steps.shas.outputs.head }}
+          FORCE_FULL: ${{ steps.lane.outputs.force_full }}
+          CHEAP_ONLY: ${{ steps.lane.outputs.cheap_only }}
         run: |
-          set -euo pipefail
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os, subprocess
-          plan = json.load(open(".ci-plan-tmp/plan.json", encoding="utf-8"))
-          mod = "github.com/PHPCraftdream/rush"
-          full = plan["mode"] == "full"
-          native = plan["native_required"]["required"]
-          sel = {o: [e["package"] for e in pkgs] for o, pkgs in plan["per_os"].items()}
-          def out(k, v):
-              print(f"{k}={v}")
-          out("mode", plan["mode"])
-          for os_name, key in (("linux", "ubuntu"), ("darwin", "macos"), ("windows", "windows")):
-              pkgs = sel[os_name]
-              needed = full or native or bool(pkgs)
-              out(f"{key}_needed", "true" if needed else "false")
-              out(f"{os_name}_packages", " ".join(pkgs))
-          race = [p for p in plan["race_packages"] if p != f"{mod}/internal/agent"]
-          out("race_packages", " ".join(race))
-          out("race_needed", "true" if race else "false")
-          out("agent_selected", "true" if f"{mod}/internal/agent" in sel["linux"] else "false")
-          # Security flags: derive from the same diff the selector saw.
-          files = subprocess.run(["git", "diff", "--name-only", os.environ["BASE"], os.environ["HEAD"]],
-                                 capture_output=True, text=True, check=True).stdout.splitlines()
-          def changed(prefixes):
-              return any(f.startswith(p) for f in files for p in prefixes)
-          wf = changed((".github/workflows/",))
-          out("web_changed", "true" if changed(("web/",)) else "false")
-          out("security_full", "true" if full else "false")
-          out("security_deps", "true" if changed(("go.mod", "go.sum", "web/pnpm-lock.yaml")) else "false")
-          out("security_actions", "true" if wf else "false")
-          PY
-      - name: upload plan artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ci-plan
-          path: |
-            .ci-plan-tmp/plan.json
-            .ci-plan-tmp/plan.md
-
-  # ── checks: cheap guards + static analysis, ALWAYS run (not tiered) ──
-  # Copied exactly from build.yml / lint.yml (see .github/ci-structure.md
-  # for the one deliberate deviation: `go mod tidy -diff` instead of
-  # `go mod tidy` + `git diff --exit-code`, same assertion, one process).
+          set -euo pipefail; mkdir -p .ci-plan-tmp
+          if [ "$CHEAP_ONLY" = true ]; then python3 .github/scripts/ci_gate_decide.py minimal-plan --base "$BASE" --head "$HEAD" --output .ci-plan-tmp/plan.json
+          else
+            python3 .github/scripts/ci_plan.py --base "$BASE" --head "$HEAD" --go-list-json linux=.ci-plan-tmp/linux.json --go-list-json darwin=.ci-plan-tmp/darwin.json --go-list-json windows=.ci-plan-tmp/windows.json --out .ci-plan-tmp/selector-plan.json --summary .ci-plan-tmp/plan.md
+            extra=(); if [ "$FORCE_FULL" = true ]; then extra+=(--force-full); fi
+            python3 .github/scripts/ci_gate_decide.py prepare-plan --plan .ci-plan-tmp/selector-plan.json --graph-dir .ci-plan-tmp --policy .github/ci-policy.toml --output .ci-plan-tmp/plan.json --base "$BASE" --head "$HEAD" "${extra[@]}"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: {name: ci-plan, path: .ci-plan-tmp/plan.json}
   checks:
     needs: plan
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        with: {go-version-file: go.mod}
       - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
         run: |
           if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
@@ -173,10 +135,13 @@ jobs:
       - name: self-test file-size guard
         run: bash .githooks/check_file_size_selftest.sh
       - name: go mod tidy produces no diff
+        if: needs.plan.outputs.heavy_allowed == 'true'
         run: go mod tidy -diff
       - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
+        if: needs.plan.outputs.heavy_allowed == 'true'
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
       - name: sqlc generate produces no diff (committed internal/db/*.sql.go matches internal/db/sql/*.sql)
+        if: needs.plan.outputs.heavy_allowed == 'true'
         run: |
           set -uo pipefail
           "$(go env GOPATH)/bin/sqlc" generate
@@ -185,12 +150,15 @@ jobs:
             exit 1
           }
       - name: go build ./...
+        if: needs.plan.outputs.heavy_allowed == 'true'
         run: go build ./...
       - name: go vet ./...
+        if: needs.plan.outputs.heavy_allowed == 'true'
         run: go vet ./...
       # lint.yml `lint` job, ubuntu leg only (the macOS/Windows legs of the
       # lint matrix stay in lint.yml until cutover — see ci-structure.md).
       - name: golangci-lint
+        if: needs.plan.outputs.heavy_allowed == 'true'
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           args: --config=.golangci.yml --timeout=10m ./...
@@ -198,6 +166,7 @@ jobs:
       # lint.yml `lint-ncruces-driver` job (verbatim): the ncruces SQLite
       # driver branch is compiled on no runner otherwise.
       - name: golangci-lint (GOOS=linux GOARCH=mips64)
+        if: needs.plan.outputs.heavy_allowed == 'true'
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         env:
           GOOS: linux
@@ -205,15 +174,11 @@ jobs:
         with:
           args: --config=.golangci.yml --timeout=10m ./internal/db/...
           version: v2.13
-
-  # ── heavy test tiers: thin wrapper around the reusable ci-tests.yml ──
-  # (a `uses:` job carries no steps; plan decisions pass in as inputs).
   tests:
     needs: [plan, checks]
-    if: needs.plan.outputs.ubuntu_needed == 'true' || needs.plan.outputs.macos_needed == 'true' || needs.plan.outputs.windows_needed == 'true' || needs.plan.outputs.agent_selected == 'true' || needs.plan.outputs.race_needed == 'true'
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.ubuntu_needed == 'true' || needs.plan.outputs.macos_needed == 'true' || needs.plan.outputs.windows_needed == 'true' || needs.plan.outputs.agent_selected == 'true' || needs.plan.outputs.race_needed == 'true')
     uses: ./.github/workflows/ci-tests.yml
-    permissions:
-      contents: read
+    permissions: {contents: read}
     with:
       mode: ${{ needs.plan.outputs.mode }}
       linux_packages: ${{ needs.plan.outputs.linux_packages }}
@@ -226,16 +191,13 @@ jobs:
       agent_selected: ${{ needs.plan.outputs.agent_selected == 'true' }}
       race_needed: ${{ needs.plan.outputs.race_needed == 'true' }}
     secrets: inherit
-
-  # ── web UI gates (lint.yml `lint-web` job, verbatim + production build) ──
   web:
     needs: plan
-    if: needs.plan.outputs.web_changed == 'true'
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && needs.plan.outputs.web_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - name: Enable pnpm via corepack
         run: corepack enable
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -256,86 +218,70 @@ jobs:
       - name: production build (rsbuild build)
         working-directory: web
         run: pnpm build
-
-  # ── security tiers: thin wrapper around the reusable ci-security.yml ──
   security:
     needs: plan
-    # dependency-review is NOT included (here or in ci-security.yml) until
-    # the repo setting is enabled — see ci-security.yml's header comment.
-    if: needs.plan.outputs.security_full == 'true' || needs.plan.outputs.security_deps == 'true' || needs.plan.outputs.security_actions == 'true'
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.security_full == 'true' || needs.plan.outputs.security_deps == 'true' || needs.plan.outputs.security_actions == 'true')
     uses: ./.github/workflows/ci-security.yml
-    # A reusable workflow cannot exceed the caller job's permissions: its
-    # CodeQL/SARIF jobs need these (a caller with contents: read only makes
-    # the whole run fail at startup).
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: read
-      security-events: write
+    permissions: {actions: read, contents: read, pull-requests: read, security-events: write}
     with:
       security_full: ${{ needs.plan.outputs.security_full == 'true' }}
       security_deps: ${{ needs.plan.outputs.security_deps == 'true' }}
       security_actions: ${{ needs.plan.outputs.security_actions == 'true' }}
     secrets: inherit
-
-  # ── ci-gate: single summary/failure point for the whole graph ──
-  # NOT REQUIRED YET: phase 2c hardens ci-gate (per-job skip-vs-needed
-  # cross-check, plan.not_run rendering parity, required-check wiring).
-  # This branch adds it to NO branch protection / required checks.
+  cancel-full-on-unlabel:
+    if: github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name == 'full-ci'
+    runs-on: ubuntu-latest
+    permissions: {actions: write, contents: read, pull-requests: read}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - name: cancel matching full runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_LABEL: ${{ github.event.label.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python3 .github/scripts/ci_gate_decide.py cancel-full
   ci-gate:
     needs: [plan, checks, tests, web, security]
     if: always()
+    permissions: {actions: read, contents: read, pull-requests: read}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - name: download plan artifact
+        if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ci-plan
-          path: plan
-      - name: summarize results + not_run list
+        with: {name: ci-plan, path: plan}
+      - name: download Windows assignment
+        if: always() && needs.plan.outputs.mode == 'full' && needs.plan.outputs.windows_needed == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: shard-assignment, path: assignment}
+      - name: gate live state and receipts
+        if: always()
         env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECKS_RESULT: ${{ needs.checks.result }}
-          TESTS_RESULT: ${{ needs.tests.result }}
-          WEB_RESULT: ${{ needs.web.result }}
-          SECURITY_RESULT: ${{ needs.security.result }}
-        run: |
-          set -uo pipefail
-          python3 - <<'PY' > summary_body.md
-          import json, os
-          jobs = [
-              ("plan", os.environ["PLAN_RESULT"]),
-              ("checks", os.environ["CHECKS_RESULT"]),
-              ("tests (test-ubuntu/agent-ubuntu/race-ubuntu/test-native/windows-full-shards)",
-               os.environ["TESTS_RESULT"]),
-              ("web", os.environ["WEB_RESULT"]),
-              ("security", os.environ["SECURITY_RESULT"]),
-          ]
-          failed = 0
-          print("## ci-gate summary")
-          print()
-          print("| job | result |")
-          print("|---|---|")
-          for name, res in jobs:
-              print(f"| {name} | {res} |")
-              if res not in ("success", "skipped"):
-                  failed = 1
-          plan = json.load(open("plan/plan.json", encoding="utf-8"))
-          print()
-          print("## plan.not_run (audit trail — packages deliberately skipped)")
-          print()
-          print("```")
-          print(f"mode: {plan['mode']}")
-          for e in plan["not_run"]:
-              print(f"{e['os']}/{e['package_or_suite']}: {e['reason']}")
-          print("```")
-          with open("gate_failed", "w") as f:
-              f.write(str(failed))
-          PY
-          cat summary_body.md >> "$GITHUB_STEP_SUMMARY"
-          # Phase 2c will add: fail when a job was skipped WITHOUT the plan
-          # declaring it unnecessary. For now: fail on any failure/cancelled.
-          exit "$(cat gate_failed)"
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_LABEL: ${{ github.event.label.name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          PR_BASE_REF: ${{ github.base_ref || github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          VALIDATED_HEAD: ${{ needs.plan.outputs.validated_head }}
+          VALIDATED_BASE: ${{ needs.plan.outputs.validated_base }}
+          PLAN_OUTPUTS_JSON: ${{ toJSON(needs.plan.outputs) }}
+          NEEDS_JSON: '{"plan":"${{ needs.plan.result }}","checks":"${{ needs.checks.result }}","tests":"${{ needs.tests.result }}","web":"${{ needs.web.result }}","security":"${{ needs.security.result }}"}'
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/ci_gate_decide.py gate --plan plan/plan.json --assignment assignment/assignment.json --output gate-result.json
