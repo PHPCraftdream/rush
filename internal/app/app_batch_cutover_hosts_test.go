@@ -104,13 +104,18 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	if err != nil {
 		os.Exit(3)
 	}
-	defer conn.Close()
+	// Release through the pool accounting (db.Release), not conn.Close: the
+	// pool is ref-counted per data dir and os.Exit skips defers, so every
+	// exit path below releases explicitly before exiting.
+	defer func() { _ = db.Release(dataDir) }()
 	h, err := session.RegisterHost(ctx, dataDir, os.Getpid(), "r12f-helper",
 		session.AsyncHostStoreFromConn(conn))
 	if err != nil {
+		_ = db.Release(dataDir)
 		os.Exit(4)
 	}
 	if err := os.WriteFile(idFile, []byte(h.ID), 0o644); err != nil {
+		_ = db.Release(dataDir)
 		os.Exit(5)
 	}
 	select {} // hold the OS host lock until the parent kills us

@@ -126,6 +126,7 @@ func newBatchRerunCutoverFx(t *testing.T) *batchRerunCutoverFx {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
 	_, err = db.New(conn).CreateSession(ctx, db.CreateSessionParams{ID: batchRerunCutoverOwner, Title: batchRerunCutoverOwner})
+	require.NoError(t, err)
 	store := session.NewBatchStore(conn)
 	messages := message.NewService(db.New(conn))
 	exec := newBlockingBatchExecutor()
@@ -235,6 +236,13 @@ func (f *batchRerunCutoverFx) reserveNewIncarnation(callID string) session.Batch
 	snap := r.Snapshot
 	updates := []db.ProjectBatchNodeParams{{NodeID: snap.Root.NodeID, State: "running", ControlState: "none"}}
 	for _, n := range snap.Nodes {
+		// ListBatchNodes has no root exclusion: snap.Nodes includes the root
+		// itself, already covered by the seed update above. A second update
+		// with the same sequence would require projection_sequence < sequence
+		// and match 0 rows (ErrBatchProjectionConflict).
+		if n.NodeID == snap.Root.NodeID {
+			continue
+		}
 		updates = append(updates, db.ProjectBatchNodeParams{NodeID: n.NodeID, State: "running", ControlState: "none"})
 	}
 	require.NoError(f.t, f.store.Project(context.Background(), session.BatchProjection{
@@ -335,9 +343,11 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stale execution was never stopped")
 	}
-	// The new incarnation exists BEFORE the stale report settles: first the
-	// old root must leave the live key (the (owner, tool_call_id) unique live
-	// index would otherwise attach), then the reuse reserves fresh.
+	// The new incarnation is reserved AFTER the old root left the live key
+	// (the (owner, tool_call_id) unique live index would otherwise attach,
+	// so waiting is the only correct order). The assertions below prove the
+	// late stale report could not contaminate the ALREADY-RUNNING
+	// replacement rows — not that the report arrived before the reservation.
 	require.Eventually(t, func() bool {
 		row := fx.rootRow(oldRoot)
 		return !batchRerunStopWorthy(row.State)
@@ -352,12 +362,13 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond, "the stale root must settle")
 
 	// SCHEMA TRACE (first real assertion of this test): the retired root's
-	// row is real (read back via session.BatchStore.Read) and its completion
-	// is quarantined — void delivery, no wake — so it can never be delivered.
+	// row is real (read back via session.BatchStore.Read) and its durable
+	// state is truthful: the root was ACKED (announce_message_id set,
+	// notice_selected=0), so the schema CHECK (batch_nodes.sql:78-83) makes a
+	// void WRITE impossible — delivery stays 'none' and the row is terminal.
 	row := fx.rootRow(oldRoot)
-	require.Equal(t, "void", row.Delivery, "the stale completion commits void delivery")
-	require.Zero(t, row.Wake, "a void root never wakes a delivery")
-	require.Empty(t, row.NoticeMessageID.String, "a void root names no notice message")
+	require.Equal(t, "none", row.Delivery, "an acked, unselected root can never take delivery='void'")
+	require.NotEqual(t, "running", row.State, "the stale root is terminal")
 
 	// The durable fence holds at the OUTBOX: nothing is pullable for the
 	// owner (the void root fails SelectBatchNodeNotice's delivery IN
@@ -379,21 +390,52 @@ func TestBatchRerunStopVoided_StaleCompletionNotDelivered(t *testing.T) {
 	require.Equal(t, "running", newRow.State)
 	require.Equal(t, "none", newRow.Delivery)
 	require.False(t, fx.fence().stale(batchRerunCutoverOwner, "call-1", newSnap.Root.RootID))
+
+	// Quarantine through the DURABLE FENCE: the rerun marked (owner, oldRoot)
+	// in the synchronized registry, so the fence knows the exact retired
+	// root in the EXACT owning store — even though its delivery stayed 'none'.
+	retired, err := batchRetiredRoots.check(ctx, batchRerunCutoverOwner, oldRoot)
+	require.NoError(t, err)
+	require.True(t, retired, "the retired root is fenced by the rerun's registry mark")
+	// The fake done source is pre-finished so the INLINE arm routes through
+	// electCompletion (LoadDone reports done) instead of blocking in AwaitDone.
+	done := newFakeDone(fantasy.NewTextResponse("stale completion"))
+	done.finish(fantasy.NewTextResponse("stale completion"))
+	impl, err := newBatchDelivery(batchDeliveryDeps{
+		Owner:  batchRerunCutoverOwner,
+		Done:   done,
+		Elect:  &fakeElector{},
+		Runner: fx.install.RunnerHandle,
+	})
+	require.NoError(t, err)
+	inv := BatchInvocation{SessionID: batchRerunCutoverOwner}
+	inv.Delivery.Mode = batchDeliveryDetached
+	_, err = impl.DeliverBatch(ctx, jobbatch.ID(oldRoot), inv)
+	require.ErrorIs(t, err, errBatchRetiredRoot, "the stale root's DETACHED delivery is refused — it can never elect started history")
+	inv.Delivery.Mode = batchDeliveryInline
+	_, err = impl.DeliverBatch(ctx, jobbatch.ID(oldRoot), inv)
+	require.ErrorIs(t, err, errBatchRetiredRoot, "the stale root's INLINE delivery is refused — the late stale completion can never elect history")
 }
 
 // TestBatchRerunFence_VoidRootDeliveryRefused pins the DURABLE delivery fence
-// (R12-F fixup P1): a root row with delivery='void' (the void arm's settled
-// shape) is refused by the delivery path's detached arm — errBatchRetiredRoot,
-// no started history — while the nil (default) hook keeps the old behavior.
+// (R12-F fixup P1): a rerun-retired root — marked in the synchronized
+// batchRetiredRoots registry under its exact (owner, rootID), here seeded as
+// the void arm's settled delivery='void' row shape — is refused by BOTH
+// delivery arms, detached and inline, with errBatchRetiredRoot and no
+// started or completion history; an UNMARKED root keeps the open behavior.
+// The void-root row is a valid fence input: the void arm writes it (for
+// selected roots), and the live arm retires unselected rows by mark alone.
 //
-// Revert-check: dropping the batchRetiredFence consult in deliverDetached
-// (or binding the fence to memory instead of the row) lets the late stale
-// completion elect started history again — the no-error case below becomes
-// the error case and the message count grows.
+// Revert-check: dropping the batchRetiredRoots.check consult in
+// deliverDetached or electCompletion (or keying the fence by anything wider
+// than the (owner, rootID) pair) lets the late stale completion elect
+// history again — the error cases below become the no-error case and the
+// message count grows.
 //
-// Sequential on purpose: it flips the package-level batchRetiredFence, so it
-// must not race the parallel rerun tests that bind the same global.
+// Parallel-safe: the registry is keyed by this test's unique root id and
+// nothing restores a process global anymore.
 func TestBatchRerunFence_VoidRootDeliveryRefused(t *testing.T) {
+	t.Parallel()
 	fx := newBatchRerunCutoverFx(t)
 	ctx := context.Background()
 
@@ -417,21 +459,21 @@ func TestBatchRerunFence_VoidRootDeliveryRefused(t *testing.T) {
 		rootID, rootID, batchRerunCutoverOwner, "call-void-root")
 	require.NoError(t, err, "the INSERT is the schema assertion: CHECKs fire here")
 
-	// Install the real fence hook over a BatchStore on the same conn.
-	require.Nil(t, batchRetiredFence, "premise: the default hook is nil")
-	t.Cleanup(func() { batchRetiredFence = nil })
-	store := fx.store
-	batchRetiredFence = func(ctx context.Context, owner, root string) (bool, error) {
-		return batchRetiredDeliveryFence(ctx, store, owner, root)
-	}
-	retired, err := batchRetiredFence(ctx, batchRerunCutoverOwner, rootID)
+	// Mark the exact (owner, rootID) in the synchronized registry, then check
+	// through it: the entry points at the owning store on the same conn.
+	batchRetiredRoots.mark(batchRerunCutoverOwner, rootID, fx.store)
+	retired, err := batchRetiredRoots.check(ctx, batchRerunCutoverOwner, rootID)
 	require.NoError(t, err)
-	require.True(t, retired, "a delivery='void' root row is retired")
+	require.True(t, retired, "a marked retired root is fenced by the registry")
 
 	// The wired batchDeliveryImpl refuses detached delivery of that root.
+	// The fake done source is pre-finished so the INLINE arm routes through
+	// electCompletion (LoadDone reports done) instead of blocking in AwaitDone.
+	done := newFakeDone(fantasy.NewTextResponse("stale"))
+	done.finish(fantasy.NewTextResponse("stale"))
 	impl, err := newBatchDelivery(batchDeliveryDeps{
 		Owner:  batchRerunCutoverOwner,
-		Done:   newFakeDone(fantasy.NewTextResponse("stale")),
+		Done:   done,
 		Elect:  &fakeElector{},
 		Runner: fx.install.RunnerHandle,
 	})
@@ -446,10 +488,24 @@ func TestBatchRerunFence_VoidRootDeliveryRefused(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgsAfter, len(msgsBefore), "no history message was created for the retired root")
 
-	// Hook nil (default): detached delivery proceeds to elect started (the
-	// existing behavior for the flag-off / not-yet-stopped world).
-	batchRetiredFence = nil
+	// Inline is fenced too: the late stale completion can never elect
+	// completion history, detached or inline.
+	inv.Delivery.Mode = batchDeliveryInline
 	_, err = impl.DeliverBatch(ctx, jobbatch.ID(rootID), inv)
+	require.ErrorIs(t, err, errBatchRetiredRoot, "the retired root's inline delivery fails closed")
+
+	// An UNMARKED root keeps the open behavior: detached delivery proceeds
+	// to elect started history (the flag-off / not-yet-stopped world).
+	unmarked := string(batchRootID())
+	_, err = fx.conn.ExecContext(ctx, `INSERT INTO batch_nodes
+		(node_id, root_id, owner_session_id, host_id, ordinal, kind, tool_call_id, input_hash,
+		 mode, state, created_at, updated_at)
+		VALUES (?, ?, ?, 'host-a', 0, 'batch', ?, 'hash-unmarked',
+		 'parallel', 'completed', 1700000000, 1700000001)`,
+		unmarked, unmarked, batchRerunCutoverOwner, "call-unmarked")
+	require.NoError(t, err)
+	inv.Delivery.Mode = batchDeliveryDetached
+	_, err = impl.DeliverBatch(ctx, jobbatch.ID(unmarked), inv)
 	require.NoError(t, err)
 }
 

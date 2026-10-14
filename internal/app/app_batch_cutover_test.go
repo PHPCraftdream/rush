@@ -179,6 +179,7 @@ func TestSessionActivityBatch_BatchRuntimeOffUnchanged(t *testing.T) {
 		require.NoError(t, err)
 	}
 	_, err := h.app.asyncJobStore.Claim(ctx, session.ClaimParams{Owner: oldLive, ToolCallID: "own-bash", Kind: session.JobKindCommand, ToolName: "bash", Input: "x"})
+	require.NoError(t, err)
 	require.NoError(t, h.app.asyncJobStore.InsertSessionNotice(ctx, oldDebt, "wake", "x", true, ""))
 	insertBatchNode(t, h.app, testBatchRoot(batchOnly, "root-off", "call-off", "running", 0))
 

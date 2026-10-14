@@ -28,12 +28,13 @@ var batchAgentTaskKinds = map[string]bool{
 }
 
 // batchRootMeta is one live root's flat-panel facts: the root row plus the
-// task kind and delegation child session read from its task child (a root
-// row carries task_kind NULL by schema CHECK).
+// task kind, delegation child session and executing task node id read from
+// its task child (a root row carries task_kind NULL by schema CHECK).
 type batchRootMeta struct {
-	root     db.BatchNode
-	taskKind string
-	child    string
+	root      db.BatchNode
+	taskKind  string
+	child     string
+	askNodeID string
 }
 
 // buildSessionLiveWorkFromBatch is the ON-path replacement for the flat
@@ -99,6 +100,13 @@ func collectBatchRoots(rowsByOwner map[string][]db.BatchNode) []batchRootMeta {
 				if m.taskKind == "" && c.Kind == "task" {
 					m.taskKind = c.TaskKind.String
 				}
+				// The executing task node is the identity the agent family
+				// launched on (batch_exec_agent.go uses Launch.ID = the task
+				// child's node id, root.1 for one-item roots), so batch
+				// questions are asked under IT, not the root.
+				if m.askNodeID == "" && c.Kind == "task" {
+					m.askNodeID = c.NodeID
+				}
 				if m.child == "" && c.ChildSessionID.String != "" {
 					m.child = c.ChildSessionID.String
 				}
@@ -136,9 +144,12 @@ func capBatchRoots(metas []batchRootMeta) []batchRootMeta {
 // batchRootItem maps one root to the flat wire item. Reason carries the
 // node cause (the batch vocabulary for why a row left "running"); the title
 // falls back to the root's outcome summary like the old result_summary.
-// Awaiting-answer keys: legacy notices key by the held delegation's tool
-// call id; batch-frame notices (ParseBatchChildQuestionNotice) carry no
-// delegation tool call, so they key by the ROOT's node id.
+// Awaiting-answer keys, in order: legacy notices key by the held
+// delegation's tool call id; batch-frame notices (ParseBatchChildQuestionNotice)
+// carry no delegation tool call, so they key by the ASKING node id — the
+// executing task child the agent family launched on (m.askNodeID, the
+// production question identity per batch_exec_agent.go's Launch.ID); the
+// root's node id stays the last-resort fallback for legacy root-keyed rows.
 func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, questions map[string]session.ChildQuestion) LiveWorkItemWire {
 	root := m.root
 	key := liveWorkTitleKey{root.OwnerSessionID, root.ToolCallID.String, root.InputHash.String}
@@ -156,6 +167,9 @@ func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, question
 		item.Title = root.OutcomeSummary
 	}
 	q, ok := questions[item.ToolCallID]
+	if !ok {
+		q, ok = questions[m.askNodeID]
+	}
 	if !ok {
 		q, ok = questions[root.NodeID]
 	}
@@ -180,8 +194,9 @@ func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, question
 // liveness comes from the batch-node walk, not from a job row. ok=false
 // when a read failed. Unreacted is enforced by the row itself: the select is
 // delivery='pending' only (ListPendingSessionNoticesForOwner), and a row
-// leaves 'pending' with reacted=1 only via the pull CAS to 'done' — a
-// pending row is by construction unreacted.
+// leaves 'pending' with reacted=1 only via the pull CAS to 'done'. The
+// Reacted != 0 skip is defensive: a pending+reacted row is schema-valid and
+// must never badge — its question was already answered.
 func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
 	questions := map[string]session.ChildQuestion{}
 	if a == nil || a.DB == nil {
@@ -198,6 +213,9 @@ func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string)
 		}
 		for _, row := range rows {
 			if row.Kind != session.NoticeKindChildQuestion || row.Delivery != "pending" {
+				continue
+			}
+			if row.Reacted != 0 {
 				continue
 			}
 			// Real batch questions first: marker frame, keyed by node id.

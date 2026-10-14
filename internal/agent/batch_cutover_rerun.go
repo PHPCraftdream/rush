@@ -24,14 +24,67 @@ import (
 // elect started (or completion) history. Distinguishable via errors.Is.
 var errBatchRetiredRoot = errors.New("batch delivery: root incarnation was retired by a rerun")
 
-// batchRetiredFence is the DURABLE retired-root delivery fence (R12-F fixup,
-// P1: the in-memory batchRerunFence is coordinator-local, so the delivery
-// path — batchDeliveryImpl/deliverDetached — can never see it). It is set by
-// BatchRerunStopVoided when the coordinator has a bound batch store and nil
-// otherwise: the nil-safe default is fail-open, so the flag-off world and
-// every existing test are unchanged. batch_delivery.go consults it in
-// deliverDetached BEFORE ElectStarted.
-var batchRetiredFence func(ctx context.Context, owner, rootID string) (bool, error)
+// batchRetiredFenceRegistry is the DURABLE retired-root delivery fence
+// (R12-F fixup P1, resynchronized): one store per (owner, rootID) so
+// deliveries always consult the RIGHT database — never another App's — and
+// concurrent reruns never race the map. A per-delivery parameter is
+// impossible: batchDeliveryImpl is built in batch_install_adapters.go
+// outside any coordinator's ownership and carries no coordinator reference,
+// so the delivery path cannot receive the store through its deps. Keyed by
+// owner\x00rootID under an RWMutex; the flag-off world never marks anything,
+// so an empty registry fails open and every existing behavior is unchanged.
+// batch_delivery.go consults it in deliverDetached BEFORE ElectStarted and
+// in electCompletion BEFORE the inline retry loop.
+type batchRetiredFenceRegistry struct {
+	mu sync.RWMutex
+	m  map[string]*session.BatchStore
+}
+
+// batchRetiredRoots is the package-level registry instance: a synchronized
+// map keyed by owner+root is the correctly scoped form of the former
+// process-global hook (which one App's rerun overwrote for every other
+// App in the process).
+var batchRetiredRoots = &batchRetiredFenceRegistry{m: map[string]*session.BatchStore{}}
+
+// mark records the owning batch store for a retired root. Idempotent per
+// (owner, rootID); a nil store is ignored so a fence entry never points at
+// an unreadable database.
+func (r *batchRetiredFenceRegistry) mark(owner, rootID string, store *session.BatchStore) {
+	if owner == "" || rootID == "" || store == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = make(map[string]*session.BatchStore)
+	}
+	r.m[owner+"\x00"+rootID] = store
+}
+
+// check reports whether the exact (owner, rootID) root was retired. Absent:
+// (false, nil) — the flag-off / not-yet-stopped world fails open. Present:
+// read the row in the OWNING store as a sanity gate — a read error is not a
+// retirement (fail open, e.g. a dropped database); a readable row is retired
+// because mark only ever records roots the committed rerun's Voided set
+// named. delivery == "void" (the void arm's settled shape) is simply one
+// readable case; the live arm retires by stop routing only, and its row
+// stays delivery='none' forever (the schema CHECK forbids a void write on an
+// unselected root), so membership — not the row's delivery — is the fence.
+func (r *batchRetiredFenceRegistry) check(ctx context.Context, owner, rootID string) (bool, error) {
+	if owner == "" || rootID == "" {
+		return false, nil
+	}
+	r.mu.RLock()
+	store, ok := r.m[owner+"\x00"+rootID]
+	r.mu.RUnlock()
+	if !ok || store == nil {
+		return false, nil
+	}
+	if _, err := store.Read(ctx, owner, rootID); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
 
 // BatchRerunStopper is the flag-on rerun stop surface. It is an OPTIONAL
 // interface: the rerun handler type-asserts it when the batch runtime flag is
@@ -90,20 +143,10 @@ type batchRerunFence struct {
 // long-lived coordinator would otherwise grow them without bound. On
 // overflow BOTH maps reset before the insert — worst case a very old retired
 // root loses its in-memory fence entry, which is acceptable: the durable
-// delivery fence (batchRetiredFence over delivery='void' rows, fixup P1) is
+// delivery fence (batchRetiredRoots.check over delivery='void' rows, fixup
+// P1) is
 // the authority, this map only accelerates the coordinator-local checks.
 const batchRerunFenceCap = 1024
-
-// batchRetiredDeliveryFence is the durable fence check: the root row's
-// delivery == "void" (the void arm persists delivery='void'; the live arm
-// retires by stop routing only). A read error is not a retirement: fail open.
-func batchRetiredDeliveryFence(ctx context.Context, store *session.BatchStore, owner, rootID string) (bool, error) {
-	snap, err := store.Read(ctx, owner, rootID)
-	if err != nil {
-		return false, nil
-	}
-	return snap.Root.Delivery == "void", nil
-}
 
 func (f *batchRerunFence) retire(owner, toolCallID, rootID string) {
 	if owner == "" || rootID == "" {
@@ -180,14 +223,6 @@ func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string
 	}
 	fence := batchRerunFenceFor(c)
 	runner, host, store := batchRerunRuntime(c)
-	if store != nil {
-		// Bind the DURABLE delivery fence to this store: from here on the
-		// delivery path refuses retired (delivery='void') roots even on a
-		// different coordinator, because the fence reads the row, not memory.
-		batchRetiredFence = func(ctx context.Context, owner, rootID string) (bool, error) {
-			return batchRetiredDeliveryFence(ctx, store, owner, rootID)
-		}
-	}
 	if runner == nil || host == "" {
 		slog.Warn("coordinator.BatchRerunStopVoided: batch runtime not bound; voided incarnations retire by delivery fencing only",
 			"session_id", sessionID, "voided", len(voided))
@@ -200,6 +235,13 @@ func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string
 		// retired is not stopped twice. Keyed by root_id, never tool_call_id.
 		already := fence.retiredRoot(sessionID, v.RootID)
 		fence.retire(sessionID, v.ToolCallID, v.RootID)
+		// Mark the DURABLE delivery fence for this exact root FIRST — before
+		// the stop, so even a failed stop is fenced: from here on the delivery
+		// path refuses this (owner, rootID) in THIS owning store (never
+		// another App's), because check reads the row, not memory.
+		if store != nil {
+			batchRetiredRoots.mark(sessionID, v.RootID, store)
+		}
 		if v.ChildSessionID != "" {
 			c.stopTree(v.ChildSessionID)
 		}

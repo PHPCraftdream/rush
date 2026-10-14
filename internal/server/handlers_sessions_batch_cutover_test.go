@@ -9,7 +9,8 @@ package server
 // bound to a live batch root -- in EITHER frame: the legacy
 // session-parentheses frame (keyed by the delegation tool call id) or the
 // real batch marker frame ParseBatchChildQuestionNotice reads (keyed by the
-// root's node id). Voided/delivered notices, ordinary completion debt and
+// executing task child's node id, with the root's node id as fallback).
+// Voided/delivered notices, pending+reacted notices, ordinary completion debt and
 // non-question pending notices never badge.
 //
 // Every fixture first INSERTs into the REAL schema (the INSERT is the
@@ -200,10 +201,13 @@ preamble.', 0, ?, ?, ?, 1700000002, 1700000002)`,
 		require.Empty(t, snap.Commands)
 	})
 
-	// POSITIVE (R12-F fixup): a REAL batch question — the marker-first frame
-	// BatchPublishQuestion writes, job_tool_call_id NULL — badges the live
-	// root it names (the frame's node= is the ROOT node id, the key
-	// batchRootItem falls back to).
+	// POSITIVE (R12-F fixup, production identity): a REAL batch question — the
+	// marker-first frame BatchPublishQuestion writes, job_tool_call_id NULL —
+	// badges the live root it names. The marker names the TASK CHILD node id
+	// (rootID+"-1"), because production asks under the executing task node
+	// the agent family launched on: batch_exec_agent.go sets Launch.ID to the
+	// task child's node id (root.1 for one-item roots) and
+	// batch_question_integration_test.go publishes with nodeID = root.1.
 	t.Run("batch-frame pending question badges the live root", func(t *testing.T) {
 		a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 		ctx := t.Context()
@@ -219,13 +223,36 @@ preamble.', 0, ?, ?, ?, 1700000002, 1700000002)`,
 		_, err = a.DB().ExecContext(ctx, `INSERT INTO session_notices
 			(owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at)
 			VALUES (?, 'child_question', ?, 1, 'pending', 0, NULL, 1700000002, 1700000002)`,
-			sess.ID, "[batch-question node=rb-badge-batch token=1 sequence=1 depth=1 child="+child.ID+"]\nSUB-AGENT QUESTION: Should I proceed?\nAnswer with inject_agent ...")
+			sess.ID, "[batch-question node=rb-badge-batch-1 token=1 sequence=1 depth=1 child="+child.ID+"]\nSUB-AGENT QUESTION: Should I proceed?\nAnswer with inject_agent ...")
 		require.NoError(t, err)
 		snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 		require.NoError(t, err)
 		require.Len(t, snap.Agents, 1)
 		require.True(t, snap.Agents[0].AwaitingAnswer, "the real batch question badges the live root")
 		require.Contains(t, snap.Agents[0].AwaitingQuestion, "Should I proceed?")
+	})
+
+	// NEGATIVE (R12-F fixup): a pending child_question with reacted=1 — a
+	// schema-valid pending+reacted row — never badges (pins the Reacted != 0
+	// guard in batchPendingQuestions); the batch frame is refused too.
+	t.Run("pending reacted question does not badge", func(t *testing.T) {
+		a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+		ctx := t.Context()
+		sess, err := a.Sessions.Create(ctx, "badge-pending-reacted")
+		require.NoError(t, err)
+		child, err := a.Sessions.CreateTaskSession(ctx, "badge-pending-reacted-child", sess.ID, "child")
+		require.NoError(t, err)
+		insertBatchCutoverTree(t, ctx, a, "rb-badge-pending-reacted", sess.ID, "tc-badge-pending-reacted", "running", child.ID)
+		_, err = a.DB().ExecContext(ctx, `INSERT INTO session_notices
+			(owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at)
+			VALUES (?, 'child_question', ?, 1, 'pending', 1, NULL, 1700000002, 1700000002)`,
+			sess.ID, "[batch-question node=rb-badge-pending-reacted-1 token=1 sequence=1 depth=1 child="+child.ID+"]\nSUB-AGENT QUESTION: Should I proceed?\nAnswer with inject_agent ...")
+		require.NoError(t, err)
+		snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
+		require.NoError(t, err)
+		require.Len(t, snap.Agents, 1)
+		require.False(t, snap.Agents[0].AwaitingAnswer, "a pending+reacted question must not badge")
+		require.Empty(t, snap.Agents[0].AwaitingQuestion)
 	})
 
 	// NEGATIVE: an ordinary pending non-question notice (supervision debt)
