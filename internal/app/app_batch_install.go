@@ -100,6 +100,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		batchRuntimeConfigHook(&rt.cfg)
 	}
 	app.batchRuntime = rt
+	app.batchInstall = install
 	// Start arms the fault watcher (idempotent; SetRunner already ran inside
 	// build — Start and SetRunner are order-independent).
 	rt.Start()
