@@ -185,10 +185,89 @@ test("covered flat rows are replaced by structured nodes; structured-only nodes 
   assert.equal(emptyRows.length, 1);
 });
 
+test("covered flat agent row keeps its classification and awaiting badge under a root node", () => {
+  $batchWorkBySession.set(new Map());
+  // Flat agents row fully covered by a structural ROOT node: the root node
+  // carries toolCallID but no childSessionID/awaiting state of its own.
+  const live = new Map<string, SessionLiveWork>([
+    [
+      "s1",
+      {
+        sessionID: "s1",
+        commands: [],
+        agents: [
+          {
+            toolCallID: "tcA",
+            toolName: "agent",
+            title: "flat agent",
+            childSessionID: "child-9",
+            startedAt: 1,
+            awaitingAnswer: true,
+            awaitingQuestion: "q?",
+          },
+        ],
+      },
+    ],
+  ]);
+  const rA = root("rA", "tcA");
+  rA.nodes[0].childSessionID = ""; // root node: no child link on the node
+  applyBatchWorkSnapshot(snap({ roots: [rA] }));
+  const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
+  const carried = merged.agents.find((r) => r.toolCallID === "tcA");
+  assert.ok(carried, "the carried childSessionID must classify the row as an agent");
+  assert.equal(carried.childSessionID, "child-9");
+  assert.equal(carried.awaitingAnswer, true);
+  assert.equal(carried.awaitingQuestion, "q?");
+  assert.deepEqual(
+    merged.commands.map((r) => r.toolCallID),
+    [],
+    "a covered delegation row must not fall into commands",
+  );
+});
+
 test("unknown session picks nothing and merged view falls back to flat rows", () => {
   assert.equal(pickBatchWork($batchWorkBySession.get(), null), null);
   assert.equal(pickBatchWork($batchWorkBySession.get(), "nope"), null);
   const live = new Map<string, SessionLiveWork>([["s2", { sessionID: "s2", commands: [], agents: [] }]]);
   const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s2");
   assert.deepEqual(merged, { commands: [], agents: [] });
+});
+
+test("incomplete snapshot merges structured completions, never drops prior roots", () => {
+  $batchWorkBySession.set(new Map());
+  applyBatchWorkSnapshot(
+    snap({
+      complete: true,
+      completions: [
+        { rootID: "root-a", nodeID: "root-a", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "done" },
+      ],
+    }),
+  );
+  applyBatchWorkSnapshot(
+    snap({
+      complete: false,
+      completions: [
+        { rootID: "root-b", nodeID: "root-b", outcomeCode: "boom", outcomeRef: "", state: "failed", outcomeSummary: "nope" },
+      ],
+    }),
+  );
+  const completions = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
+  assert.deepEqual(
+    completions.map((c) => c.rootID),
+    ["root-a", "root-b"],
+  );
+  // A complete snapshot is authoritative: it replaces wholesale.
+  applyBatchWorkSnapshot(
+    snap({
+      complete: true,
+      completions: [
+        { rootID: "root-c", nodeID: "root-c", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "fresh" },
+      ],
+    }),
+  );
+  const replaced = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
+  assert.deepEqual(
+    replaced.map((c) => c.rootID),
+    ["root-c"],
+  );
 });

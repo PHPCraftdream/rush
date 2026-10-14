@@ -27,12 +27,15 @@ package server
 //   - Dedupe rule (web): a flat live-work row whose toolCallID matches a
 //     snapshot node's toolCallID is hidden from the merged view (empty
 //     toolCallIDs never dedupe).
+//   - R12-C: terminal-root completion delivery — Completions also carry
+//     every TERMINAL root incarnation of the visited sessions (NodeID ==
+//     RootID, keyed by root_id, state + outcome summary columns, deduped),
+//     read from batch_nodes history; a reload re-reads them from the
+//     structured store. No prose parsing, no legacy SQL. With the flag ON
+//     the flat session_live_work snapshot is likewise built from batch
+//     nodes only (handlers_livework_batch.go) and carries complete=false
+//     on an incomplete read, so previously shown active work is kept.
 //
 // Left open:
 //   - R15b: hierarchy renderer, output/held-input controls on batch nodes.
-//   - R12: root-level terminal completion delivery — terminal ROOTS are not
-//     returned by the live-node read (BatchLiveNodesForOwners returns only
-//     roots in pending/starting/running/cancelling), so a root finishing its
-//     whole tree is delivered by the notice/history path as before; this
-//     snapshot carries terminal NODES inside still-live roots only.
 type batchDoc struct{}

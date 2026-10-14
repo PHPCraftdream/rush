@@ -27,10 +27,20 @@ import (
 )
 
 // fakeBatchSource serves canned node rows per owner list; failOn makes the
-// corresponding fetch return an error (a failed chunk).
+// corresponding fetch return an error (a failed chunk). history serves the
+// R12-C terminal-root read; failHistory fails every history read. levels
+// serves the per-(owner, root) node read, keyed by root_id; a missing entry
+// returns no rows and no error.
 type fakeBatchSource struct {
-	rows   []db.BatchNode
-	failOn map[string]bool
+	rows        []db.BatchNode
+	failOn      map[string]bool
+	history     []db.BatchNode
+	failHistory bool
+	levels      map[string][]db.BatchNode
+	// historyByOwner, when non-nil, serves the terminal-root read per owner
+	// (the history BFS visits owners the live walk never reached); it takes
+	// precedence over the shared history slice.
+	historyByOwner map[string][]db.BatchNode
 }
 
 func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []string) ([]db.BatchNode, error) {
@@ -40,6 +50,20 @@ func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []st
 		}
 	}
 	return f.rows, nil
+}
+
+func (f *fakeBatchSource) BatchHistoryRootsForOwner(_ context.Context, owner string) ([]db.BatchNode, error) {
+	if f.failHistory {
+		return nil, errors.New("history read failed")
+	}
+	if f.historyByOwner != nil {
+		return f.historyByOwner[owner], nil
+	}
+	return f.history, nil
+}
+
+func (f *fakeBatchSource) BatchLevelNodes(_ context.Context, arg db.BatchLevelNodesParams) ([]db.BatchNode, error) {
+	return f.levels[arg.RootID], nil
 }
 
 // withBatchSeams swaps the production seams for fakes and restores them.
