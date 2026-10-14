@@ -139,7 +139,12 @@ type drainAttempt struct {
 	// chain guard's accounting (#1113).
 	chainIdleClaims []string
 	chainProgress   bool
-	closed          bool
+	// batchSnapshot is the ON-path twin of snapshot: the batch debt visible
+	// when the leg started (turn-start capture, the same conservatism) --
+	// the ONLY set this leg's accounting may increment on or settle.
+	batchSnapshot session.BatchDebtSnapshot
+	batchCaptured bool
+	closed        bool
 }
 
 // newDrainAttempt starts the accounting record of a Drain call's leg; nil for
@@ -151,6 +156,16 @@ func (a *sessionAgent) newDrainAttempt(call SessionAgentCall) *drainAttempt {
 	att := &drainAttempt{sessionID: call.SessionID}
 	if a.asyncJobs != nil {
 		att.hintAt = a.asyncJobs.hintSeqOf(call.SessionID)
+		if a.asyncJobs.coord != nil {
+			if bfacts := coordinatorBatchCutoverFacts(a.asyncJobs.coord); bfacts != nil {
+				ctx2, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
+				bs, err := bfacts.CaptureVisibleDebt(ctx2, call.SessionID)
+				cancel()
+				if err == nil {
+					att.batchSnapshot, att.batchCaptured = bs, true
+				}
+			}
+		}
 	}
 	return att
 }
@@ -265,12 +280,53 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		c.arb.chainLink(sid, att, att.snapshot)
 	}
 	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
+	var rows snapshotAttempts
+	if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
+		// Flag on: count and reread through the ACTED-ON snapshot (the batch
+		// twin of att.snapshot, captured at turn start); async_jobs is never
+		// written or read. A missing turn-start capture (an older attempt
+		// built before the seam, or a failed capture) falls back to a capture
+		// HERE -- still before the increment, so the acted-on property holds.
+		snap := att.batchSnapshot
+		if !att.batchCaptured {
+			captured, err := bfacts.CaptureVisibleDebt(ctx, sid)
+			if err != nil {
+				slog.Error("drain attempt: read batch debt snapshot failed", "session_id", sid, "err", err)
+				pace()
+				return
+			}
+			snap = captured
+		}
+		if err := bfacts.IncrementWakeAttempts(ctx, sid, snap); err != nil {
+			slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
+			pace()
+			return
+		}
+		batchRows, err := bfacts.AttemptRows(ctx, sid, snap, drainFailureSettleThreshold)
+		if err != nil {
+			slog.Error("drain attempt: read wake attempts failed", "session_id", sid, "err", err)
+			pace()
+			return
+		}
+		rows = snapshotAttempts{open: batchRows.Open, max: batchRows.Max, atKCount: len(batchRows.AtK.Nodes) + len(batchRows.AtK.Notices)}
+		facts.Attempt = AttemptFacts{
+			MaxWakeAttempts: batchRows.Max,
+			OpenRows:        batchRows.Open,
+			AtKBatch:        batchRows.AtK,
+			UnmappedAtK:     batchRows.UnmappedAtK,
+			Terminal:        c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone),
+		}
+		facts.BatchSnapshot = snap
+		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), rows.open)
+		return
+	}
 	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {
 		slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
 		pace()
 		return
 	}
-	rows, err := c.snapshotAttempts(ctx, sid, att.snapshot)
+	var err error
+	rows, err = c.snapshotAttempts(ctx, sid, att.snapshot)
 	if err != nil {
 		slog.Error("drain attempt: read wake attempts failed", "session_id", sid, "err", err)
 		pace()
@@ -306,6 +362,38 @@ func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att
 		cause := "the assistant responded, but its reaction to this event was not recorded"
 		if turnErr != nil {
 			cause = redactNetworkURLs(turnErr.Error())
+		}
+		if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil && !v.BatchRows.Empty() {
+			// Flag on: the settle closes EXACTLY the verdict's rows; no
+			// async_jobs row is touched and nothing is mirrored into the old
+			// tables. The marker names the acted-on tool-call ids, mirroring
+			// settleDrainDebtTail's two forms.
+			ids := bfacts.DebtToolCallIDs(ctx, v.BatchRows)
+			trimmed := make([]string, 0, len(ids))
+			for _, id := range ids {
+				id, _, _ := strings.Cut(id, "#reused#")
+				trimmed = append(trimmed, id)
+			}
+			var text string
+			if len(trimmed) > 0 {
+				text = fmt.Sprintf(
+					"Не удалось продолжить работу после события %s: %s. %s",
+					strings.Join(trimmed, ", "), cause, settleTailFor(turnErr))
+			} else {
+				text = fmt.Sprintf(
+					"Не удалось продолжить работу после ошибки провайдера: %s. %s",
+					cause, settleTailFor(turnErr))
+			}
+			if _, err := bfacts.SettleReactedFailedWithMarker(ctx, sid, v.BatchRows, text); err != nil {
+				pacePaid()
+				return
+			}
+			l.resetGate(sid)
+			closed := len(v.BatchRows.Nodes) + len(v.BatchRows.Notices)
+			if closed < openRows {
+				pacePaid()
+			}
+			return
 		}
 		if err := c.settleDrainDebtTail(ctx, sid, v.Rows, cause, settleTailFor(turnErr)); err != nil {
 			pacePaid()
