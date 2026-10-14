@@ -136,6 +136,14 @@ type cutoverEnv struct {
 // executor (leaves execute inside the runner). The executor resolves by
 // NAME from this pinned registry, never from the Invoke argument.
 func newCutoverEnv(t *testing.T, limits jobbatch.Limits, leaves ...fantasy.AgentTool) *cutoverEnv {
+	return newCutoverEnvDeps(t, limits, nil, BatchAgentDeps{}, leaves)
+}
+
+// newCutoverEnvDeps is newCutoverEnv with the two test-only install seams:
+// wrapExecutor (nil = the default executor unwrapped, e.g. the AW-b Stop
+// gate) and agentDeps (the R7c agent family, e.g. the AW-a5 answer rig).
+// Every other default matches newCutoverEnv byte-for-byte.
+func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(jobbatch.Executor) jobbatch.Executor, agentDeps BatchAgentDeps, leaves []fantasy.AgentTool) *cutoverEnv {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	dataDir := t.TempDir()
@@ -160,12 +168,19 @@ func newCutoverEnv(t *testing.T, limits jobbatch.Limits, leaves ...fantasy.Agent
 	if err != nil {
 		t.Fatalf("profile: %v", err)
 	}
+	// The production publisher seam the install wires when AgentDeps.Runs
+	// is set (batch_install_adapters.go): mirrored here because the
+	// executor is built OUTSIDE InstallBatchRuntime.
+	if agentDeps.Runs != nil {
+		agentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: session.NewBatchStore(conn)}
+	}
 	install, err := InstallBatchRuntime(ctx, BatchInstallDeps{
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
 		Profile: profile, Registries: registries,
 		Store: session.NewBatchStore(conn), Messages: message.NewService(q),
 		Limits: limits, CommitTimeout: time.Second, ControlTimeout: time.Second,
-		RecordRetention: 64,
+		RecordRetention: 64, Executor: gatedExecutor(wrapExecutor, registries, agentDeps),
+		AgentDeps: agentDeps,
 	})
 	if err != nil {
 		t.Fatalf("InstallBatchRuntime: %v", err)
@@ -233,6 +248,22 @@ func armAwaitAny(t *testing.T, coord *coordinator, env *cutoverEnv) tools.AwaitT
 	res, err := coord.AwaitTasks(env.ctx, env.sessionID, "any", 0)
 	require.NoError(t, err)
 	return res
+}
+
+// awaitAnyThroughTool drives the PRODUCTION await_tasks TOOL layer (not the
+// coordinator method directly): tools.NewAwaitTasksTool over the
+// coordinator, a context carrying the session id (tools.GetSessionFromContext),
+// params Until "any". Returns the text response and its StopTurn flag.
+func awaitAnyThroughTool(t *testing.T, coord *coordinator, env *cutoverEnv) (string, bool) {
+	t.Helper()
+	tool := tools.NewAwaitTasksTool(coord)
+	ctx := context.WithValue(env.ctx, tools.SessionIDContextKey, env.sessionID)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{
+		ID: "await-tool-a3", Name: tools.AwaitTasksToolName, Input: `{"until":"any"}`,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, "the tool call succeeds")
+	return resp.Content, resp.StopTurn
 }
 
 // armSleepAll arms await_tasks' sleep through the PRODUCTION top-level
@@ -517,6 +548,7 @@ func (e *cutoverEnv) logNodeRows(t *testing.T, roots ...string) {
 			`SELECT node_id, parent_id, kind, state, tool_call_id, notice_selected, wake, reacted, delivery, state
 			 FROM batch_nodes WHERE root_id = ?1 ORDER BY ordinal`, root)
 		require.NoError(t, err)
+		defer rows.Close()
 		for rows.Next() {
 			var id, kind, state2, delivery string
 			var parent, call sql.NullString
@@ -525,7 +557,7 @@ func (e *cutoverEnv) logNodeRows(t *testing.T, roots ...string) {
 			t.Logf("AW node root=%s id=%s parent=%s kind=%s state=%s call=%v sel=%d wake=%d reacted=%d delivery=%s",
 				root, id, parent.String, kind, state2, call, selected, wake, reacted, delivery)
 		}
-		require.NoError(t, rows.Close())
+		require.NoError(t, rows.Err())
 	}
 }
 
@@ -690,6 +722,13 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	require.GreaterOrEqual(t, len(resAny.WaitingFor), 1, "phase 1: a second ANY arm is harmless")
 	require.False(t, readFactsON(t, coord, env).Session.SleepAll,
 		"phase 1: production ANY never arms the sleep")
+	// Round 5 (AW-a5 4b): the SAME arm observed through the PRODUCTION TOOL
+	// layer: the await_tasks tool's non-blocked path sets StopTurn on the
+	// text response and names the live task children.
+	toolText, stopTurn := awaitAnyThroughTool(t, coord, env)
+	require.True(t, stopTurn, "the ANY arm's tool response sets StopTurn (tools/await_tasks.go)")
+	require.Contains(t, toolText, "view", "the tool response names the live view leaf")
+	require.Contains(t, toolText, "run_command", "the tool response names the live run_command leaf")
 	// The ANY variant never arms the sleep (only mode "all" does).
 
 	// Phase 1: no settlement, no debt: nothing launches.
@@ -880,15 +919,16 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 		"the question broke the sleep: one eligible launch (answer admitted)")
 
 	// The question is NOT settled by the wake: still pending and unreacted.
-	// ACCEPTANCE SEAM (stated, not fabricated): the only production answer
-	// path for a published batch child question is the execution boundary
-	// Runner.Inject(node) -> Messenger (batchAgentExecution.Inject ->
-	// scope.deliver at a held depth), which requires an agent-kind
-	// execution parked in host.Ask; this harness's live child is a gated
-	// generic leaf that cannot hold one, and no store/coordinator API marks
-	// a published batch question reacted. The strongest production-supported
-	// acceptance available here is therefore the admission fact below: the
-	// question broke the armed sleep and the answer launch is admitted.
+	// ACCEPTANCE SEAM (round 5): the production answer path IS now asserted
+	// end to end by TestAWa5AgentChildAnswerViaRunnerInject
+	// (batch_answer_inject_test.go): a REAL agent-kind child parks in
+	// host.Ask, the production publisher writes this durable notice, and
+	// Runner.Inject(node, {"depth":d,...}) is ACCEPTED into the SAME
+	// incarnation; the answered node settles completed. THIS test keeps
+	// asserting the admission half: a published question breaks the armed
+	// sleep and the answer launch is admitted, and the notice itself stays
+	// pending/unreacted (acceptance answers the in-memory hold; the
+	// durable notice is consumed only by the owner's notice pull).
 	var delivery string
 	var reacted int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,

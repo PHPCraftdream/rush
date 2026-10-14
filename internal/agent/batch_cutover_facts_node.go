@@ -8,6 +8,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -315,6 +317,94 @@ func (n nodeBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) 
 	return out, nil
 }
 
+// LiveHeldQuestions lists pending unreacted child_question notices whose
+// marker names a LIVE batch node incarnation of owner: the notice text must
+// carry the production marker header, and the named batch_nodes row must
+// exist for this owner with a live state and the marker's exact token
+// (incarnation fence). Notices without a parseable marker are NOT counted.
+func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error) {
+	if n.writer == nil {
+		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
+	}
+	rows, err := n.writer.QueryContext(ctx,
+		`SELECT id, text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery = 'pending' ORDER BY id`,
+		owner, session.NoticeKindChildQuestion)
+	if err != nil {
+		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+	}
+	defer rows.Close()
+	type heldRow struct {
+		id   int64
+		text string
+	}
+	var pending []heldRow
+	for rows.Next() {
+		var r heldRow
+		if err := rows.Scan(&r.id, &r.text); err != nil {
+			return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+	}
+	var out []session.PendingNoticeDebt
+	for _, r := range pending {
+		node, token, ok := parseBatchQuestionMarker(r.text)
+		if !ok {
+			continue
+		}
+		var rowToken int64
+		var state string
+		err := n.writer.QueryRowContext(ctx,
+			`SELECT token, state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
+			node, owner).Scan(&rowToken, &state)
+		if err != nil || !batchNodeStateLive(state) || rowToken != int64(token) {
+			continue
+		}
+		out = append(out, session.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion})
+	}
+	return out, nil
+}
+
+// parseBatchQuestionMarker extracts (nodeID, token) from a child-question
+// notice text whose header line is the production marker written by
+// batchCoordinatorQuestionPublisher (batch_install_question.go):
+// "[batch-question node=X token=N sequence=S depth=D child=C]". A text
+// without a parseable marker (or token 0, which the publisher never writes)
+// is not counted.
+func parseBatchQuestionMarker(text string) (string, uint64, bool) {
+	if !strings.HasPrefix(text, "[batch-question ") {
+		return "", 0, false
+	}
+	header := strings.TrimPrefix(text, "[batch-question ")
+	if idx := strings.Index(header, "]"); idx >= 0 {
+		header = header[:idx]
+	}
+	var node string
+	var token uint64
+	for _, field := range strings.Fields(header) {
+		name, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "node":
+			node = value
+		case "token":
+			t, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return "", 0, false
+			}
+			token = t
+		}
+	}
+	if node == "" || token == 0 {
+		return "", 0, false
+	}
+	return node, token, true
+}
+
 func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]session.PulledNotice, error) {
 	if n.store == nil {
 		return nil, errBatchFactsUnavailable
@@ -369,9 +459,8 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
+	// The deferred Close's error is intentionally not surfaced: scan/Err
+	// errors above already return (the logDebtRows pattern).
 	var out []session.PulledNotice
 	for _, r := range pending {
 		msg, pulled, err := n.pullOneSessionNotice(ctx, messages, owner, r.id, r.kindText, build, openScope)

@@ -280,11 +280,50 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		Text: "super question?", Wake: 1, CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
+	// Round 5 (LiveHeldQuestions): the awaiting count is bound to LIVE node
+	// incarnations through the production marker + node row.
+	//
+	// (b) NEGATIVE, unparseable: a raw child_question notice with NO marker
+	// (the old synthetic shape, inserted above) is NOT counted --
+	// LiveHeldQuestions skips notices without a parseable
+	// "[batch-question ...]" header.
+	// NEGATIVE, stale-bound: a marked notice naming a NONEXISTENT node is
+	// NOT counted (the batch_nodes lookup fails).
+	_, err = env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
+		Owner: env.sessionID, Kind: session.NoticeKindChildQuestion,
+		Text: "[batch-question node=missing-node token=9 sequence=1 depth=1 child=sess-x]\nSUB-AGENT QUESTION: gone?",
+		Wake: 1, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
 	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
-	require.Contains(t, text, "(1 awaiting your answer)", "the awaiting clause appears for the held question")
+	require.NotContains(t, text, "awaiting your answer",
+		"an unparseable or stale-bound question is NOT counted (LiveHeldQuestions)")
+	require.NotContains(t, text, "blocked on your answer")
+	require.Nil(t, flagged)
+
+	// (a) POSITIVE, live-bound: publish through the PRODUCTION publisher
+	// against the reserved LIVE delegation child (its row exists, state
+	// running). The synthetic fixture reserves tokens as 0, so project a
+	// nonzero admission-style token first (the questionTestNode pattern);
+	// BatchPublishQuestion requires token>0 and the EXACT row token.
+	const liveToken = int64(42)
+	_, err = env.conn.ExecContext(env.ctx,
+		`UPDATE batch_nodes SET token = ?1 WHERE node_id = ?2`, liveToken, childNode)
+	require.NoError(t, err)
+	require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx,
+		batchChildQuestionNotice{
+			Owner: env.sessionID, ChildSessionID: child, NodeID: childNode,
+			Token: uint64(liveToken), Depth: 1, Sequence: 1, Question: "continue?",
+		}))
+	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	require.Contains(t, text, "(1 awaiting your answer)",
+		"the LIVE-bound question is counted (exactly one: both synthetic rows are skipped)")
 	require.Contains(t, text, "A sub-agent is blocked on your answer; waiting will not progress it.",
 		"the awaiting guidance prefix appears")
 	require.Nil(t, flagged)
+
+	// Settling (reacting) removes the clause: unreacted is part of the
+	// predicate.
 	_, err = env.conn.ExecContext(env.ctx,
 		`UPDATE session_notices SET reacted = 1 WHERE owner = ?1 AND kind = ?2`,
 		env.sessionID, session.NoticeKindChildQuestion)

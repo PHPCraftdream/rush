@@ -384,39 +384,50 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// this Drain's own pull (a row pulled by an earlier failed attempt
 		// counts too), then the commit decision runs on it. A failing read
 		// leaves the leg "not attempted": a refusal, never a count.
-		snap, snapErr := a.visibleDebtSnapshot(preambleCtx, call.SessionID)
-		switch {
-		case snapErr == nil:
-			att.snapshot = snap
-			// Batch twin (R12-E round 4): capture the visible batch debt
-			// ONCE, right here after the leg's own pull -- this is the ONLY
-			// set the leg's accounting may increment on or settle. A failed
-			// capture stays uncaptured: accounting must not fall back to a
-			// late recapture (that would widen the acted-on set with rows
-			// that arrived after the pull). The flag-off path is nil here
-			// and never captures.
-			if a.asyncJobs != nil {
-				if bfacts := coordinatorBatchCutoverFacts(a.asyncJobs.coord); bfacts != nil {
-					bctx, bcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
-					bsnap, berr := bfacts.CaptureVisibleDebt(bctx, call.SessionID)
-					bcancel()
-					if berr == nil {
-						att.batchSnapshot, att.batchCaptured = bsnap, true
-					} else {
-						slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
-							"session_id", call.SessionID, "err", berr)
-					}
-				}
+		// Batch twin (R12-E): with the flag ON and the cutover facts bound,
+		// async_jobs is NEVER read here -- the decision input is the batch
+		// debt (batch nodes + session notices) captured ONCE, and that same
+		// capture is the leg's accounting snapshot (att.batchSnapshot).
+		// att.snapshot stays zero on this path: the ON accounting reads only
+		// att.batchSnapshot, and chainLink's legacy half is inert for a
+		// batch-only leg (chainIdleClaims empty).
+		var hasVisibleDebt bool
+		var bfacts BatchCutoverFacts
+		if a.asyncJobs != nil {
+			bfacts = coordinatorBatchCutoverFacts(a.asyncJobs.coord)
+		}
+		if batchFlagEnabled() && bfacts != nil {
+			bctx, bcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
+			bsnap, berr := bfacts.CaptureVisibleDebt(bctx, call.SessionID)
+			bcancel()
+			switch {
+			case berr == nil:
+				att.batchSnapshot, att.batchCaptured = bsnap, true
+				hasVisibleDebt = len(bsnap.Nodes)+len(bsnap.Notices) > 0
+			case call.drainTurnCommitted:
+				// A committed continuation runs uncounted, never fails.
+				slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
+					"session_id", call.SessionID, "err", berr)
+			default:
+				preambleCancel()
+				return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", berr)
 			}
-		case call.drainTurnCommitted:
-			slog.Warn("drain turn: debt snapshot failed on a committed continuation; it runs uncounted",
-				"session_id", call.SessionID, "err", snapErr)
-		default:
-			preambleCancel()
-			return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", snapErr)
+		} else {
+			snap, snapErr := a.visibleDebtSnapshot(preambleCtx, call.SessionID)
+			switch {
+			case snapErr == nil:
+				att.snapshot = snap
+				hasVisibleDebt = !snap.Empty()
+			case call.drainTurnCommitted:
+				slog.Warn("drain turn: debt snapshot failed on a committed continuation; it runs uncounted",
+					"session_id", call.SessionID, "err", snapErr)
+			default:
+				preambleCancel()
+				return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", snapErr)
+			}
 		}
 		if !call.drainTurnCommitted {
-			commit, verdict := a.decideDrainTurn(preambleCtx, call.SessionID, att.snapshot)
+			commit, verdict := a.decideDrainTurn(preambleCtx, call.SessionID, hasVisibleDebt)
 			if !commit {
 				// No visible debt, or policy forbids a turn: finish through the
 				// normal turn end WITHOUT reaching the provider (doc sec.3.4) --
@@ -427,7 +438,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				// release hook reads the gate the accounting writes.
 				att.outcome = drainNoTurn
 				att.commitNo = verdict
-				if att.snapshot.Empty() {
+				if !hasVisibleDebt {
 					att.pendingLeft = a.pendingDebtLeft(preambleCtx, call.SessionID)
 				}
 				preambleCancel()

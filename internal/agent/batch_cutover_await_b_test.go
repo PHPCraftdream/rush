@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -29,8 +30,15 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	gatedView := newGatedLeaf("view")
 	gatedRun := newGatedLeaf("run_command")
 	fast := &countingTool{name: "grep"}
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64},
-		gatedView, gatedRun, fast)
+	// The held-Stop gate: every execution's Stop blocks on this channel
+	// until the test releases it, so the phases between the Stop ACCEPTANCE
+	// and the release run while the dispatched executor Stop has
+	// deterministically NOT returned yet.
+	stopGate := make(chan struct{})
+	env := newCutoverEnvDeps(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64},
+		func(in jobbatch.Executor) jobbatch.Executor {
+			return &stopGateExecutor{Executor: in, gate: stopGate}
+		}, BatchAgentDeps{}, []fantasy.AgentTool{gatedView, gatedRun, fast})
 	releaseAllAt(t, gatedView, gatedRun)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
@@ -63,6 +71,8 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	resCh := env.awaitAsync(batchAwaitModeAll, captured, true, 10*time.Second)
 
 	// 3. Stop ACCEPTANCE: accepted, submitted, NEVER settles; R stays live.
+	// The executor Stop is BLOCKED in the gate: acceptance returned, the
+	// dispatched async Stop (runner_control.go) has not.
 	out := cancelBatchCall(env.ctx, env.install.RunnerHandle, jobbatch.ID(rootR))
 	require.NoError(t, out.Err, "Stop accepted")
 	require.True(t, out.Submitted)
@@ -79,6 +89,11 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 		2*time.Second, 5*time.Millisecond, "B queued pending behind R")
 	require.True(t, cutoverStateLive(env.nodeState(rootR)), "R still live")
 	t.Logf("AW-b4 B root=%s pending while R live", rootB)
+
+	// Gate release: phases 3/4 above ran while R's executor Stop was
+	// deterministically still blocked. Release it -- the dispatched Stop
+	// returns and 'acked' lands below.
+	close(stopGate)
 
 	// 5. The executor Stop RETURN fence: 'acked' lands while R is
 	// non-terminal and B is still Pending -- acceptance AND a successful
@@ -184,8 +199,14 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	gatedView := newGatedLeaf("view")
 	gatedRun := newGatedLeaf("run_command")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64},
-		gatedView, gatedRun)
+	// Same held-Stop gate as the combined variant: the submitted+pending
+	// assertion below runs while R's executor Stop is deterministically
+	// still blocked in the gate.
+	stopGate := make(chan struct{})
+	env := newCutoverEnvDeps(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64},
+		func(in jobbatch.Executor) jobbatch.Executor {
+			return &stopGateExecutor{Executor: in, gate: stopGate}
+		}, BatchAgentDeps{}, []fantasy.AgentTool{gatedView, gatedRun})
 	releaseAllAt(t, gatedView, gatedRun)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
@@ -201,9 +222,22 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 	require.True(t, out.Submitted)
 	require.False(t, out.Settled)
 	require.True(t, cutoverStateLive(env.nodeState(rootR)))
+
+	// B is submitted and queued PENDING while R's executor Stop is still
+	// BLOCKED in the gate: admission is not freed by the stop intent, and
+	// this is now BEFORE any possible Stop return, deterministically.
+	env.invokeDetached("call-bf-b", "run_command", gatedRun)
+	rootB := env.rootID("call-bf-b")
+	require.Eventually(t, func() bool { return env.nodeState(rootB) == "pending" },
+		2*time.Second, 5*time.Millisecond, "B queued pending behind R")
+
+	// Release the gate: the dispatched Stop returns ('acked') while R is
+	// non-terminal and B is still Pending.
+	close(stopGate)
 	require.Eventually(t, func() bool {
 		return env.nodeControl(env.childNodeID(rootR, 1)) == "acked"
 	}, 5*time.Second, 5*time.Millisecond, "executor Stop returned (acked)")
+	require.Equal(t, "pending", env.nodeState(rootB), "B still Pending at the Stop-return fence")
 
 	// EARLY fence: with no completion debt anywhere, rule 1 answers: no
 	// launch, no 4b verdict -- a stop intent is never debt evidence.
@@ -219,14 +253,8 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 	armSleepAll(t, coord, env)
 	require.True(t, readFactsON(t, coord, env).Session.SleepAll, "the armed sleep")
 
-	// B queued pending behind R (admission not freed by the stop intent).
-	env.invokeDetached("call-bf-b", "run_command", gatedRun)
-	rootB := env.rootID("call-bf-b")
-	require.Eventually(t, func() bool { return env.nodeState(rootB) == "pending" },
-		2*time.Second, 5*time.Millisecond, "B queued pending behind R")
-
 	// Release R: the latched stop cause settles R cancelled; B is admitted
-	// and runs.
+	// and runs (B was already submitted above, while the gate held).
 	gatedView.letGo(rCall)
 	require.Equal(t, "cancelled", env.rootTerminal(rootR))
 	require.Eventually(t, func() bool {

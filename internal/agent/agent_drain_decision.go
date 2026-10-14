@@ -11,15 +11,18 @@ import (
 )
 
 // decideDrainTurn reports whether a Drain call (agent_turn.go's runTurn,
-// after its own turn-start pull) should reach the provider at all. snap is
-// the visible (delivery='done') debt captured AFTER that pull: a pull that
-// never succeeds leaves rows 'pending', so it can never force a chain of
-// empty-prompt provider turns (doc sec.6). With visible debt the ONE launch
-// predicate decides (policy, then the launch gate); the verdict says why a
-// turn is refused. A Drain queued before a failure commits under the
-// now-closed gate and only pulls.
-func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, snap session.DebtSnapshot) (bool, drainVerdict) {
-	if snap.Empty() {
+// after its own turn-start pull) should reach the provider at all.
+// hasVisibleDebt says the debt captured AFTER that pull is non-empty: with
+// the batch flag ON it is len(batchSnap.Nodes)+len(batchSnap.Notices) > 0
+// (the batch capture; async_jobs is never read); with the flag OFF it is
+// !att.snapshot.Empty() over the legacy visible (delivery='done') rows. A
+// pull that never succeeds leaves rows 'pending', so it can never force a
+// chain of empty-prompt provider turns (doc sec.6). With visible debt the
+// ONE launch predicate decides (policy, then the launch gate); the verdict
+// says why a turn is refused. A Drain queued before a failure commits under
+// the now-closed gate and only pulls.
+func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, hasVisibleDebt bool) (bool, drainVerdict) {
+	if !hasVisibleDebt {
 		return false, drainVerdict{kind: drainDeferred, reason: "no visible debt"}
 	}
 	if a.asyncJobs == nil || a.asyncJobs.coord == nil {

@@ -102,6 +102,11 @@ type BatchCutoverFacts interface {
 	// HeldQuestions lists pending child-question debt rows (fenced per
 	// incarnation).
 	HeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error)
+	// LiveHeldQuestions lists pending child_question notices whose marker
+	// names a LIVE batch node incarnation of owner (row exists, state
+	// live, token matches the marker). Unparseable or stale-bound notices
+	// are NOT counted; a failed read is conservative (1 + err).
+	LiveHeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error)
 }
 
 // unknownBatchCutoverFacts is the flag-ON fail-safe: no node source could be
@@ -183,6 +188,10 @@ func (unknownBatchCutoverFacts) PullPendingSessionNotices(context.Context, messa
 
 func (unknownBatchCutoverFacts) HeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
 	return nil, errors.New("batch facts: node source unavailable")
+}
+
+func (unknownBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
+	return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errors.New("batch facts: node source unavailable")
 }
 
 // coordinatorBatchCutoverFactsBindings maps a *coordinator onto its
@@ -453,6 +462,12 @@ func (f ledgerBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string
 		}
 	}
 	return out, nil
+}
+
+// LiveHeldQuestions has no ledger twin (the incarnation fence is a
+// batch_nodes read): the OFF adapter answers nothing and never fails.
+func (f ledgerBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
+	return nil, nil
 }
 
 // readTurnFactsBatch is readTurnFacts' flag-on twin: the same TurnFacts

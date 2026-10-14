@@ -579,13 +579,15 @@ func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now t
 			}
 		}
 	}
-	// #1157 on batch facts: HeldQuestions is the pending child_question
-	// debt (conservative fail-safe: 1 + err). Its rows carry only id+kind
-	// (session.PendingNoticeDebt), no question text, so the count clause
-	// stands alone -- the question itself reaches the parent through the
-	// pulled notice.
+	// #1157 on batch facts: LiveHeldQuestions is the pending child_question
+	// debt bound to a LIVE node incarnation (conservative fail-safe: 1 +
+	// err). Its rows carry only id+kind (session.PendingNoticeDebt), no
+	// question text, so the count clause stands alone -- the question
+	// itself reaches the parent through the pulled notice. A settled or
+	// stale-incarnation question is NOT counted (it can no longer be
+	// answered through inject_agent).
 	awaitingCount := 0
-	if held, herr := facts.HeldQuestions(context.Background(), rootSessionID); herr == nil {
+	if held, herr := facts.LiveHeldQuestions(context.Background(), rootSessionID); herr == nil {
 		awaitingCount = len(held)
 	}
 	body := strings.Join(lines, "\n")
