@@ -136,7 +136,11 @@ func (f *batchRerunFx) reconcile(target string, tail ...string) (BatchRerunTrunc
 //	(f) attaching Reserve to terminal roots (GetLiveBatchRoot losing its
 //	    live-state predicate) reuses the old root_id -- the NotEqual fails;
 //	(g) widening the Voided set to a tool_call_id lookup adds the new
-//	    incarnation to Voided -- the emptiness assertion fails.
+//	    incarnation to Voided -- the emptiness assertion fails;
+//	(h) removing the void-root skip from Project's notice selection
+//	    (round-4 contract) turns the late void-root notice into
+//	    ErrBatchProjectionConflict -- the NoError on the late projection
+//	    and the unchanged-history assertions fail.
 func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	t.Parallel()
 	f := newBatchRerunFx(t)
@@ -173,9 +177,11 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	require.Equal(t, "done", before.Root.Delivery)
 
 	// A late COMPLETION of the OLD incarnation keys its own rows only: it
-	// may rewrite them, but it can never reach the new incarnation. (A
-	// second notice selection is refused by the R5 guard: the node already
-	// carries the rerun's selected notice.)
+	// may rewrite them, but it can never reach the new incarnation. A late
+	// notice on the VOID root is a tolerated no-op (the round-4 contract:
+	// the void-root skip silently drops its selection); a late notice on a
+	// LIVE already-selected node is still ErrBatchProjectionConflict, pinned
+	// by the protected rejection tests.
 	late := BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
 		batchStoreTestUpdate(old.Nodes[1].NodeID, "completed"),
 	}}}}
@@ -183,7 +189,35 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	lateNotice := BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
 		batchStoreTestUpdate(old.Nodes[1].NodeID, "completed"),
 	}, Notices: []db.SelectBatchNodeNoticeParams{batchStoreTestNotice(old.Nodes[1].NodeID)}}}}
-	require.ErrorIs(t, f.store.Project(f.ctx, lateNotice), ErrBatchProjectionConflict)
+	// The void-root skip tolerates the late selection: a tolerated no-op.
+	nodeBefore := f.node(old.Root.RootID, old.Nodes[1].NodeID)
+	historyBefore, err := f.messages.List(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.NoError(t, f.store.Project(f.ctx, lateNotice),
+		"the void-root skip tolerates the late selection: the old root is delivery='void'")
+	n := f.node(old.Root.RootID, old.Nodes[1].NodeID)
+	require.Equal(t, nodeBefore.NoticeSelected, n.NoticeSelected, "the void root's late notice was NOT re-selected")
+	require.Equal(t, "void", n.Delivery, "the void-root node stays void")
+	pulled, err := f.store.BatchPullNotices(f.ctx, f.messages, batchRerunOwner, func(row BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "late:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Empty(t, pulled, "nothing became pullable from the late void-root selection")
+	hasDebt, err := f.store.BatchReactionDebtExists(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.False(t, hasDebt, "the void exclusion keeps the late selection out of debt")
+	historyAfter, err := f.messages.List(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.Len(t, historyAfter, len(historyBefore), "history is unchanged by the tolerated late projection")
+	beforeIDs := make([]string, 0, len(historyBefore))
+	for _, m := range historyBefore {
+		beforeIDs = append(beforeIDs, m.ID)
+	}
+	afterIDs := make([]string, 0, len(historyAfter))
+	for _, m := range historyAfter {
+		afterIDs = append(afterIDs, m.ID)
+	}
+	require.Equal(t, beforeIDs, afterIDs, "the message ID set is unchanged")
 
 	// A late ACK of the old incarnation elects nothing (already announced).
 	_, err = f.store.BatchAnnounceStarted(f.ctx, f.messages, batchRerunOwner, old.Root.RootID, message.CreateMessageParams{

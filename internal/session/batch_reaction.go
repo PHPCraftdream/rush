@@ -43,7 +43,7 @@ type batchDebtNodeRow struct {
 }
 
 func batchOutboxDebtNodesVoidAware(ctx context.Context, dbtx db.DBTX, owner string) ([]batchDebtNodeRow, error) {
-	rows, err := dbtx.QueryContext(ctx, `SELECT n.root_id, n.node_id, n.notice_message_id, n.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+	rows, err := dbtx.QueryContext(ctx, `SELECT n.root_id, n.node_id, COALESCE(n.notice_message_id, '') AS notice_message_id, n.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.owner_session_id = ? AND n.notice_selected = 1 AND r.announced = 1
   AND r.delivery != 'void'
   AND n.wake = 1 AND n.reacted = 0 AND n.delivery IN ('pending', 'done')
