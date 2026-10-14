@@ -10,12 +10,18 @@ import (
 	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
-func worker() {
+func worker(stop, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	lastFlush := time.Time{}
 	lastBeat := now()
-	for range ticker.C {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
 		registry.Lock()
 		dirty := false
 		for _, r := range registry.rows {

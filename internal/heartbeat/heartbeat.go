@@ -161,6 +161,13 @@ var (
 	workerStarts atomic.Int64
 )
 
+// workerCtrl carries the worker's stop/done channels so QuiesceForTest can
+// stop the goroutine and wait for its exit. Guarded by mu.
+var workerCtrl struct {
+	mu         sync.Mutex
+	stop, done chan struct{}
+}
+
 // ensureProcessMeta caches pid/ppid/parent/start token exactly once.
 func ensureProcessMeta() {
 	processMetaOnce.Do(func() {
@@ -405,7 +412,11 @@ func dirtyRows() bool {
 func ensureWorker() {
 	workerOnce.Do(func() {
 		workerStarts.Add(1)
-		go worker()
+		workerCtrl.mu.Lock()
+		workerCtrl.stop, workerCtrl.done = make(chan struct{}), make(chan struct{})
+		stop, done := workerCtrl.stop, workerCtrl.done
+		workerCtrl.mu.Unlock()
+		go worker(stop, done)
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			if dirtyRows() {
@@ -424,6 +435,29 @@ func ResetForTest() {
 	initWorkspace = ""
 	initSlots = map[string]string{}
 	registry.Unlock()
+}
+
+// QuiesceForTest stops the worker, waits for its exit and for any in-flight
+// flush, then clears the registry. Test-only: a t.TempDir used as
+// RUSH_HEARTBEAT_DIR is removed by the test framework while the flush of a
+// dirty row may still be writing, which recreates files under the removed
+// directory (macOS "directory not empty" on cleanup).
+func QuiesceForTest() {
+	workerCtrl.mu.Lock()
+	stop, done := workerCtrl.stop, workerCtrl.done
+	workerCtrl.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+	flushMu.Lock()
+	ResetForTest()
+	flushMu.Unlock()
+	workerOnce = sync.Once{}
+	workerStarts.Store(0)
+	workerCtrl.mu.Lock()
+	workerCtrl.stop, workerCtrl.done = nil, nil
+	workerCtrl.mu.Unlock()
 }
 
 // FlushForTest publishes every dirty row now, bypassing the 5 s throttle.
