@@ -10,6 +10,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,10 +56,21 @@ func TestBatchHostStoreFlagOn_TeardownWithoutAsyncJobsTable(t *testing.T) {
 	_, err := app.DB().ExecContext(context.Background(), `DROP TABLE async_jobs`)
 	require.NoError(t, err)
 
+	// Capture the lock path before shutdown for the cross-OS leak oracle below.
+	lockPath := session.HostLockPath(app.dataDir, hostID)
+
 	res := app.ShutdownWithResult()
 	require.False(t, res.Forced)
 	require.Empty(t, res.CleanupErrors,
 		"the flag-ON teardown never queries async_jobs")
+
+	// Cross-OS leak oracle: with every flag-ON handle released, the lock
+	// file is either already unlinked by the graceful Close (host had no
+	// live nodes) or removable — on Windows an open handle makes Remove
+	// fail with a sharing violation, so any other error is a leak.
+	err = os.Remove(lockPath)
+	require.True(t, err == nil || errors.Is(err, os.ErrNotExist),
+		"hosts/*.lock must be removed or removable after shutdown (a sharing violation means a host lock handle leaked)")
 }
 
 // TestBatchHostStoreFlagOn_ShutdownDrainCompletes (R12-F acceptance: the
@@ -289,6 +301,12 @@ func TestBatchNoticeStoreFlagOn_Wired(t *testing.T) {
 	a := batchFactoryApp(t)
 	hostID, err := a.batchHostEnsure(context.Background())
 	require.NoError(t, err)
+	// The hand-assembled batchFactoryApp has no batch runtime, so Shutdown's
+	// drain gate never runs; this cleanup is the release of the ensured
+	// HostStore lock (the production branch added in releaseResources covers
+	// the same shape on the real shutdown path). t.Cleanup is LIFO: this runs
+	// AFTER the deadStore close below, but the two releases are independent.
+	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
 	ns := a.batchNoticeStore()
 	require.NotNil(t, ns)
 	require.Same(t, ns, a.BatchNoticeStore(), "memoized: one notice store per App")
@@ -323,6 +341,9 @@ func TestBatchRuntimeFactoryFlagOnWithoutAsyncJobStore(t *testing.T) {
 		a.asyncJobStore = nil
 		_, err := a.batchHostEnsure(context.Background())
 		require.NoError(t, err)
+		// Same shape as TestBatchNoticeStoreFlagOn_Wired: no batch runtime, so
+		// the drain gate never runs — release the ensured HostStore lock here.
+		t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
 		factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
 		require.NoError(t, err)
 		require.Equal(t, "host", factory.deps.Host, "explicit identity still wins")

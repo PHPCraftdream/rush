@@ -293,6 +293,17 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		// inside DrainAndRelease. A Close timeout or fault fence promotes the
 		// shutdown to Forced (resources retained).
 		stillBusy = app.releaseBatchRuntimeGate(shutdownCtx, stillBusy, recordCleanupError)
+	} else if batchCutoverOn() && app.batchHostStore() != nil {
+		// R12-F: a flag-ON app whose batch runtime was never installed still
+		// owns a HostStore identity if anything ensured it — release it here
+		// exactly like the drain gate's graceful/forced split, so every
+		// flag-ON host lock is released on the real shutdown path.
+		if stillBusy {
+			app.batchHostReleaseKeepLock()
+		} else if err := app.batchHostRelease(shutdownCtx); err != nil {
+			slog.Warn("Failed to release batch host identity on shutdown", "error", err)
+			recordCleanupError(err)
+		}
 	} else if app.asyncJobStore != nil {
 		if stillBusy {
 			app.asyncJobStore.CloseKeepLock()
