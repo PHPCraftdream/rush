@@ -32,28 +32,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// questionTestNode reserves one live batch root (state running) under the
-// env's real store and stamps a non-zero engine-style token so the durable
-// publisher's incarnation check has a realistic row to validate against.
+// questionTestNode reserves one VALID batch tree under the env's real store
+// — a live batch root (kind 'batch', mode parallel, state pending) with ONE
+// running task child (the schema CHECK forbids kind='task' on the root row)
+// — and stamps a non-zero engine-style token on that child, so the durable
+// publisher's node lookup (by node_id+owner) and incarnation check have a
+// realistic row to validate against.
 func questionTestNode(t *testing.T, env *batchInventoryEnv, callID string) (nodeID string, token int64) {
 	t.Helper()
 	result, err := env.store.Reserve(env.ctx, session.BatchReservation{
 		Owner: env.sessionID, Host: env.install.Runtime.cfg.Host, RunnerID: env.install.Runtime.cfg.RunnerID,
 		ToolCallID: callID, InputHash: callID, Sequence: 1,
-		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
-			Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "running", ControlState: "none",
-		}},
+		Root: session.BatchReservationNode{
+			Values: db.ReserveBatchNodeParams{
+				Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+				State: "pending", ControlState: "none",
+			},
+			Children: []session.BatchReservationNode{{
+				Values: db.ReserveBatchNodeParams{
+					Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true},
+					State: "running", ControlState: "none",
+				},
+			}},
+		},
 	})
 	require.NoError(t, err)
-	nodeID = result.Snapshot.Root.RootID
-	require.NotEmpty(t, nodeID)
+	require.Len(t, result.Snapshot.Nodes, 2, "want the batch root plus one task child")
+	nodeID = result.Snapshot.Nodes[1].NodeID
+	require.Equal(t, result.Snapshot.Root.RootID+".1", nodeID, "the child node is root.1")
 	token = 7
-	require.NoError(t, withQuestionToken(env, nodeID, token))
+	require.NoError(t, withQuestionToken(env, result.Snapshot.Root.RootID, nodeID, token))
 	return nodeID, token
 }
 
-func withQuestionToken(env *batchInventoryEnv, nodeID string, token int64) error {
-	_, err := env.conn.ExecContext(env.ctx, `UPDATE batch_nodes SET token = ? WHERE root_id = ? AND node_id = ?`, token, nodeID, nodeID)
+func withQuestionToken(env *batchInventoryEnv, rootID, nodeID string, token int64) error {
+	_, err := env.conn.ExecContext(env.ctx, `UPDATE batch_nodes SET token = ? WHERE root_id = ? AND node_id = ?`, token, rootID, nodeID)
 	return err
 }
 
@@ -124,14 +137,18 @@ func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
 	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
-		answer, err := host.Ask(context.Background(), 3, "why?")
-		if err != nil {
-			t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
-		} else {
-			t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
-		}
-		t2.finish()
-		t2.exitNow()
+		// The ask must NOT run on the Start goroutine: host.Ask parks on the
+		// hold until the test's answer arrives, and Start would deadlock.
+		go func() {
+			answer, err := host.Ask(context.Background(), 3, "why?")
+			if err != nil {
+				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+			} else {
+				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
+			}
+			t2.finish()
+			t2.exitNow()
+		}()
 	}
 	e, factory, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
 	rig := factory.questionRig()
