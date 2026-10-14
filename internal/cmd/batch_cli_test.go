@@ -34,7 +34,6 @@ func TestBatchCLISubprocessShowInstalledDatabaseWithRuntimeOff(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	for _, target := range []string{fixture.root, fixture.root[:8]} {
 		result := runBatchCLIProcess(t, fixture, []string{"batch", "show", "--json", target})
 		require.Empty(t, result.Error, result.Output)
@@ -55,7 +54,6 @@ func TestBatchCLIStopSubprocessQueuesExactNestedLeaf(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	leaf := fixture.root + ".1.2"
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", "--json", "--wait=20ms", leaf})
 	require.Empty(t, result.Error, result.Output)
@@ -86,7 +84,6 @@ func TestBatchCLIStopRejectsMissingTargetWithoutWriting(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", "missing-prefix"})
 	require.NotEmpty(t, result.Error)
 	assertNoBatchControlWrites(t, fixture)
@@ -100,7 +97,6 @@ func TestBatchCLIStopRejectsInvalidWaitWithoutWriting(t *testing.T) {
 	for _, wait := range []string{"-1ms", "31s"} {
 		t.Run(wait, func(t *testing.T) {
 			fixture := seedBatchCLIAcceptance(t)
-			defer fixture.close(t)
 			result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", "--wait=" + wait, fixture.root})
 			require.NotEmpty(t, result.Error)
 			assertNoBatchControlWrites(t, fixture)
@@ -114,7 +110,6 @@ func TestBatchCLIStopRejectsForeignAddWithoutWriting(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "add", fixture.root})
 	require.Contains(t, result.Error, "batch add is owner-process-only")
 	assertNoBatchControlWrites(t, fixture)
@@ -126,12 +121,11 @@ func TestBatchCLIStopSubprocessRejectsStaleTerminalIncarnation(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	conn, err := db.Connect(context.Background(), fixture.dir)
 	require.NoError(t, err)
+	defer db.ReleaseConn(conn)
 	_, err = conn.ExecContext(context.Background(), `UPDATE batch_nodes SET state='completed' WHERE root_id=?`, fixture.root)
 	require.NoError(t, err)
-	defer db.ReleaseConn(conn)
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", fixture.root})
 	require.Contains(t, result.Error, "batch control: stale incarnation")
 	assertNoBatchControlWrites(t, fixture)
@@ -143,9 +137,9 @@ func TestBatchCLIStopSubprocessRejectsUnknownHostWithoutWriting(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	conn, err := db.Connect(context.Background(), fixture.dir)
 	require.NoError(t, err)
+	defer db.ReleaseConn(conn)
 	lockPath := session.HostLockPath(fixture.dir, fixture.host)
 	if err = os.Remove(lockPath); err != nil {
 		t.Skipf("cannot remove host lock: %v", err)
@@ -153,7 +147,6 @@ func TestBatchCLIStopSubprocessRejectsUnknownHostWithoutWriting(t *testing.T) {
 	if err = os.Mkdir(lockPath, 0o700); err != nil {
 		t.Skipf("cannot replace host lock with directory: %v", err)
 	}
-	defer db.ReleaseConn(conn)
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", fixture.root})
 	require.Contains(t, result.Error, "batch control: unknown host")
 	assertNoBatchControlWrites(t, fixture)
@@ -165,7 +158,6 @@ func TestBatchCLIStopSubprocessRecoversDeadHostUnannouncedRoot(t *testing.T) {
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	// Retain an independent connection so the database remains available after
 	// closing the fixture store releases the host lock. The reserved root has
 	// not been announced, so dead-host recovery removes its whole subtree.
@@ -189,12 +181,11 @@ func TestBatchCLIShowSubprocessIncompleteTreeRefusesTerminalShape(t *testing.T) 
 		return
 	}
 	fixture := seedBatchCLIAcceptance(t)
-	defer fixture.close(t)
 	conn, err := db.Connect(context.Background(), fixture.dir)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(context.Background(), `DELETE FROM batch_nodes WHERE node_id=?`, fixture.root+".1.1")
-	require.NoError(t, err)
 	defer db.ReleaseConn(conn)
+	_, err = conn.ExecContext(context.Background(), `UPDATE batch_nodes SET parent_id='missing-parent' WHERE node_id=?`, fixture.root+".1.1")
+	require.NoError(t, err)
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "show", fixture.root})
 	require.Contains(t, result.Error, "batch tree is incomplete or host status unknown")
 }
@@ -205,34 +196,39 @@ type batchCLIAcceptanceFixture struct {
 	store           *session.AsyncJobStore
 }
 
-func (f *batchCLIAcceptanceFixture) close(t *testing.T) {
-	t.Helper()
-	if f.store != nil {
-		require.NoError(t, f.store.Close(context.Background()))
-		f.store = nil
-	}
-	if f.conn != nil {
-		require.NoError(t, db.ReleaseConn(f.conn))
-		f.conn = nil
-	}
-}
-
 func seedBatchCLIAcceptance(t *testing.T) batchCLIAcceptanceFixture {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
+	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
+	f := &batchCLIAcceptanceFixture{dir: dir, conn: conn, store: store}
+	t.Cleanup(func() {
+		if f.store != nil {
+			if err := f.store.Close(context.Background()); err != nil {
+				t.Errorf("close fixture store: %v", err)
+			}
+			f.store = nil
+		}
+		if f.conn != nil {
+			if err := db.ReleaseConn(f.conn); err != nil {
+				t.Errorf("release fixture database: %v", err)
+			}
+			f.conn = nil
+		}
+	})
 	queries := db.New(conn)
 	_, err = queries.CreateSession(ctx, db.CreateSessionParams{ID: "batch-cli-owner", Title: "batch CLI acceptance", Origin: "cli"})
 	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
 	host, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
+	f.host = host
 	batchStore := session.NewBatchStore(conn)
 	reserved, err := batchStore.Reserve(ctx, session.BatchReservation{Owner: "batch-cli-owner", Host: host, RunnerID: "r14-test-runner", ToolCallID: "acceptance-call", InputHash: "acceptance-hash", Sequence: 1, Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "pending", ControlState: "none"}, Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "pending", ControlState: "none"}, Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}, {Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}}}, {Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}}}})
 	require.NoError(t, err)
-	return batchCLIAcceptanceFixture{dir: dir, root: reserved.Snapshot.Root.RootID, host: host, conn: conn, store: store}
+	f.root = reserved.Snapshot.Root.RootID
+	return *f
 }
 
 func runBatchCLIProcess(t *testing.T, fixture batchCLIAcceptanceFixture, args []string) batchCLIResult {

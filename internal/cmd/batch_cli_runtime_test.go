@@ -27,7 +27,6 @@ func TestBatchCLIStopSubprocessAppliesOnlyNestedLeaf(t *testing.T) {
 	}
 	ctx := context.Background()
 	fixture := seedLiveBatchCLIProcessFixture(t)
-	defer fixture.close(t)
 
 	conn, err := db.Connect(ctx, fixture.dir)
 	require.NoError(t, err)
@@ -70,7 +69,7 @@ func TestBatchCLIStopSubprocessAppliesOnlyNestedLeaf(t *testing.T) {
 	batch, err := install.SubmitCLI(ctx, owner, spec)
 	require.NoError(t, err)
 	root := string(batch.ID())
-	awaitBatchCLIStopStarts(t, executor, 3)
+	awaitBatchCLIStopStarts(t, install.Runner, 3)
 
 	target := root + ".1.2"
 	result := runBatchCLIProcess(t, fixture, []string{"batch", "stop", "--json", "--wait=0", target})
@@ -121,6 +120,8 @@ type batchCLIStopExecutor struct {
 	stopCh      map[jobbatch.ID]chan struct{}
 	reports     map[jobbatch.ID]func(jobbatch.Result)
 	startNotify chan struct{}
+	closing     bool
+	closeState  jobbatch.State
 }
 
 type batchCLIStopExecution struct {
@@ -150,12 +151,18 @@ func (e *batchCLIStopExecutor) Start(_ context.Context, launch jobbatch.Launch, 
 		return nil, fmt.Errorf("duplicate launch %s", launch.ID)
 	}
 	e.started[launch.ID] = make(chan struct{})
-	e.reports[launch.ID] = report
 	close(e.started[launch.ID])
 	select {
 	case e.startNotify <- struct{}{}:
 	default:
 	}
+	if e.closing {
+		state := e.closeState
+		e.mu.Unlock()
+		report(jobbatch.Result{State: state})
+		return &batchCLIStopExecution{owner: e, id: launch.ID}, nil
+	}
+	e.reports[launch.ID] = report
 	e.mu.Unlock()
 	return &batchCLIStopExecution{owner: e, id: launch.ID}, nil
 }
@@ -189,9 +196,12 @@ func (e *batchCLIStopExecutor) waitStop(t *testing.T, id string) {
 
 func (e *batchCLIStopExecutor) reportAll(state jobbatch.State) {
 	e.mu.Lock()
+	e.closing = true
+	e.closeState = state
 	reports := make([]func(jobbatch.Result), 0, len(e.reports))
-	for _, report := range e.reports {
+	for id, report := range e.reports {
 		reports = append(reports, report)
+		delete(e.reports, id)
 	}
 	e.mu.Unlock()
 	for _, report := range reports {
@@ -199,15 +209,21 @@ func (e *batchCLIStopExecutor) reportAll(state jobbatch.State) {
 	}
 }
 
-func awaitBatchCLIStopStarts(t *testing.T, e *batchCLIStopExecutor, count int) {
+func awaitBatchCLIStopStarts(t *testing.T, runner *jobbatch.Runner, count int) {
 	t.Helper()
-	for count > 0 {
-		select {
-		case <-e.startNotify:
-			count--
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for batch tasks to start")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cursor := uint64(1)
+	started := make(map[jobbatch.ID]struct{}, count)
+	for len(started) < count {
+		page, err := runner.Events(ctx, cursor)
+		require.NoError(t, err)
+		for _, record := range page.Records {
+			if record.Type == jobbatch.RecordStarted {
+				started[record.Node] = struct{}{}
+			}
 		}
+		cursor = page.Next
 	}
 }
 
@@ -218,10 +234,18 @@ func seedLiveBatchCLIProcessFixture(t *testing.T) batchCLIAcceptanceFixture {
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
+	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
+	t.Cleanup(func() {
+		if err := store.Close(context.Background()); err != nil {
+			t.Errorf("close subprocess fixture store: %v", err)
+		}
+		if err := db.ReleaseConn(conn); err != nil {
+			t.Errorf("release subprocess fixture database: %v", err)
+		}
+	})
 	queries := db.New(conn)
 	_, err = queries.CreateSession(ctx, db.CreateSessionParams{ID: "batch-cli-owner", Title: "batch CLI acceptance", Origin: "cli"})
 	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
 	host, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
 	return batchCLIAcceptanceFixture{dir: dir, host: host, conn: conn, store: store}
