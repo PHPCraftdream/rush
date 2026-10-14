@@ -3,17 +3,6 @@
   "task": "R11C",
   "mutations": [
     {
-      "id": "M1-singleflight-drop",
-      "file": "internal/agent/batch_ingress.go",
-      "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
-      "needle": "r.calls[key] = e",
-      "replacement": "r.calls[\"\u0000dropped\"+key] = e",
-      "package": "internal/agent",
-      "test": "TestInvokeConcurrentMatchingRetriesExecuteOnce",
-      "purpose": "Concurrent matching retries must register the singleflight entry and execute once.",
-      "expected_assertion": "invalid memory address or nil pointer dereference"
-    },
-    {
       "id": "M3-controls-allowed",
       "file": "internal/agent/batch_ingress.go",
       "file_sha256": "c7e25c08a2bc05a3b7e48a5212f3213158aa07bcaaa179024494743486411815",
@@ -22,7 +11,7 @@
       "package": "internal/agent",
       "test": "TestInvokeRefusesControlToolLeaves",
       "purpose": "D1 control tools must be refused at the ingress gate before admission.",
-      "expected_assertion": "Should be false"
+      "expected_assertion": "Target error should be in err chain:"
     },
     {
       "id": "M4-attach-resubmit",
@@ -44,7 +33,7 @@
       "package": "internal/agent",
       "test": "TestInvokeValidateSubmitFailsBeforeRunnerCall",
       "purpose": "ValidateSubmit failure must surface as an error before any Runner call.",
-      "expected_assertion": "An error is expected but got nil."
+      "expected_assertion": "Expected error with \"batch runtime: admission failed before the runner was called\" in chain but got nil."
     },
     {
       "id": "M6-notwired-fallthrough",
@@ -65,7 +54,7 @@
       "replacement": "if len(inv.SessionID) > 1<<30 {",
       "package": "internal/agent",
       "test": "TestBatchInvocationValidateFailsClosed",
-      "purpose": "Validate must fail closed on a missing owner session identity. Schema adaptation: the runner requires a top-level ^Test\\w+$ name, so the parent test is named; its missing_session subtest runs under it and descendant output still classifies the kill.",
+      "purpose": "Validate must fail closed on a missing owner session identity; top-level parent name is required by runner schema and missing session subtest still runs under it.",
       "expected_assertion": "An error is expected but got nil."
     },
     {
@@ -112,8 +101,5 @@
       "purpose": "A waiter whose own ctx is alive must not inherit the first caller's cancellation.",
       "expected_assertion": "Received unexpected error"
     }
-  ],
-  "requires_merge": [
-    "#29"
   ]
 }

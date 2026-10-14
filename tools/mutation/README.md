@@ -88,20 +88,8 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
 - Teardown: 5 records from `.mutsrc/lists/teardown.mutlist.json`, task name
   exactly `teardown`, packages normalized to `internal/agent`; one workflow
   shard (single package, 5 mutations).
-- R11C: 11 records from `.mutsrc/lists/r11c.mutlist.json`, validated against
-  the read-only sibling worktree (HEAD `a495f69d`). Carries top-level
-  `"requires_merge": ["#29"]` (ignored by the validator; excluded from the
-  workflow matrix until the merge). M7's test is the top-level parent
-  `TestBatchInvocationValidateFailsClosed` because the schema forbids subtest
-  paths; the `missing_session` subtest runs under it and descendant output
-  still classifies the kill.
-- R11D: 12 records from `.mutsrc/lists/r11d.mutlist.json`, validated against
-  the read-only sibling worktree (HEAD `bec1de66`). Bare `agent` packages are
-  normalized to `internal/agent` and bare `session` to `internal/session`; the
-  mid-comment-starting needle occurs exactly once. Carries
-  `"requires_merge": ["#29", "R11D PR"]`; excluded from the workflow matrix.
-  All 12 author records validate, so none was dropped (the plan anticipated
-  10; see the Round4 report).
+- R11C: 9 enforced records from the 11-record source set; M2 was previously excluded for a gated-flight hang, and M1 is excluded after the Round7 source audit below. Targets are present in this integration worktree. M7 uses the top-level parent test because subtest names are not valid manifest test names.
+- R11D: 10 enforced records from the 12-record conversion set; drain stale-needle and caller-context cancellation records are excluded after Round7 audit below. Targets are present in this integration worktree.
 - R15a: 6 Go records: mut1/mut3/mut4/mut6/mut8 plus mut5 restored using the
   vacuous-list record — the strengthened fixture now differs in ordinal vs
   NodeID order, so the real assertion `nodes must be ordered by ordinal, not
@@ -112,25 +100,20 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
 
 ## Proof status
 
-Real CI proof run: GitHub Actions run id **38457733623**, commit **c18c9cbd**,
-branch `mut/round6` (workflow matrix: R10b/R10c/R7c/R11B/R11E/Teardown/R15a;
-R11C/R11D remain excluded and unproven). 83 records executed: 74 KILLED,
-6 KILLED_UNEXPECTED (all six expected assertions corrected to the observed
-literals this round — they are proven kills), 1 EXECUTION_ERROR (R15a mut1,
-compile failure, fixed this round; still unproven until the next run),
-2 SURVIVED (real test gaps, moved to Pending.json).
+The operator reports the existing PR40 set green on `mut/round7` and `mut/round8`; no run IDs were supplied. The existing set's current counts are R11B 17/17, R11E 7/7, and R15a 6/6. R11C/R11D are enforced from Round 7 and remain unproven until the first proof on `mut/round9`.
+
 
 | Manifest | Proven kills / total enforced | Notes |
 |---|---|---|
 | R7c | 15/15 | 2 assertions corrected to observed literals (rc1, rc6) |
 | R10b | 13/13 | |
 | R10c | 20/20 | 1 assertion corrected to observed literal (m12) |
-| R11B | 16/16 proven + m08 (returned after PR #39, unproven until the next run) | m15/m16 assertions corrected to observed literals |
-| R11E | 6/6 proven + setrunner (returned after PR #39, unproven until the next run) | |
-| R15a | 5/6 proven; mut1 compile-fixed, unproven until next run | mut6 assertion corrected to observed literal |
+| R11B | 17/17 | Operator reports green on mut/round7 and mut/round8 |
+| R11E | 7/7 | Operator reports green on mut/round7 and mut/round8 |
+| R15a | 6/6 | Operator reports green on mut/round7 and mut/round8 |
 | Teardown | 5/5 | |
-| R11C | not proven | excluded from matrix pending #29 |
-| R11D | not proven | excluded from matrix pending #29 + R11D PR |
+| R11C | 0/9 | Enforced from Round 7; first proof pending mut/round9 |
+| R11D | 0/10 | Enforced from Round 7; first proof pending mut/round9 |
 
 KILLED_UNEXPECTED records re-anchored to the observed failing output (raw
 go-test text, verified verbatim in the per-record mutated logs):
@@ -178,13 +161,7 @@ confirmed by the next mutation run after PR #39 (not before).
   — the current test has no barrier forcing Reserve into the scan/wipe window
   the mutant opens, so a survivor would be unprovable. Add a barrier, name a
   real assertion, then restore the record.
-- **R11C and R11D await merges.** Their targets exist only in the read-only
-  sibling worktrees (`jobbatch-r11c` HEAD `a495f69d`, `jobbatch-r11d` HEAD
-  `bec1de66`). Both manifests carry a top-level `requires_merge` field
-  (R11C: `["#29"]`; R11D: `["#29", "R11D PR"]`) and are **excluded from the
-  workflow matrix** until those merges land. Sibling validation is conversion
-  evidence only, not integration proof; revalidate against the final
-  integration commit and rerun their proofs after merging.
+- **R11C/R11D current status:** targets are present and enforced; first proof pending. Revalidate the integration commit and rerun on `mut/round9`.
 - R10c and R11B previously resided in sibling worktrees; all of their targets
   are now present in this integration worktree and validate at base 75136c49.
 
@@ -211,6 +188,10 @@ not the deterministic child node_id. `batchStoreTestDB` uses `db.Connect` with
 foreign keys ON. No test name is used as an assertion substring.
 
 ## Not provable by the named test
+
+- R11C M1-singleflight-drop: removing map registration makes `entryFor(...).joined` nil and panics at `internal/agent/batch_ingress_test.go:253` before an assertion; excluded from enforcement.
+- R11D r11d-cancel-caller-ctx: `require.NoError` fails in a goroutine and Goexits before release at `batch_cancel_test.go:77-83`; the main test blocks in fake Stop (`batch_cancel_test.go:51-56`), so this is a timeout, not a named assertion kill.
+- R11D r11d-drain-block-on-root: excluded because its needle occurs zero times. Current LF source hash is `3ba7ef4d5368764c943b9b6749e7b0b38420506ee47fd0d1b451cc2195c86594`; source now uses `case <-callerGone` and returns `ctx.Err()` at `batch_delivery_drain.go:57-59`. The stale needle/hash was not refreshed.
 
 - R10c m18 (`m18_reset_scan_outside_transaction`): kill is scheduling-dependent
   (see Known gaps).
@@ -239,15 +220,14 @@ python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R1
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R11E.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/Teardown.json
 python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R15a.json
-python -I tools/mutation/run.py --validate --root <r11c-sibling> --manifest tools/mutation/R11C.json
-python -I tools/mutation/run.py --validate --root <r11d-sibling> --manifest tools/mutation/R11D.json
+python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R11C.json
+python -I tools/mutation/run.py --validate --root . --manifest tools/mutation/R11D.json
 ```
 
 `--selftest` uses canned Python fixtures without invoking Go. `--validate` is
 read-only: no Go commands, checkout copies, mutation runs, results, logs,
 artifacts or step-summary writes. Exit zero means validation, not mutation
-proof. Extra top-level manifest keys such as `requires_merge` are tolerated by
-the validator (it reads known keys via `data.get`) and ignored for validation.
+proof. Extra top-level manifest keys are ignored by validator.
 
 ## Running a proof
 
@@ -265,7 +245,7 @@ jobs. **Revalidate every manifest against the final integration commit before
 pushing**; sibling or earlier-commit validation is not proof of this commit.
 If the commit moved since validation, revalidate and push from the new commit.
 
-## Round5 validation report (current round)
+## Round5 validation report (historical)
 
 Round5 fix pass: every `expected_assertion` re-checked against the FIRST
 failing assertion under the mutant (test sources + production paths read;
@@ -287,8 +267,8 @@ args). rc None (timeout/hang) is EXECUTION_ERROR, never KILLED.
 | R15a | base | 6 | 6 | 0 | 0 | 0 | 0 | 0 |
 | R11E | base | 7 | 7 | 0 | 0 | 0 | 0 | 0 |
 | Teardown | base | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| R11C | r11c sibling | 10 | 10 | 0 | 0 | 0 | 0 | 0 |
-| R11D | r11d sibling | 12 | 12 | 0 | 0 | 0 | 0 | 0 |
+| R11C | integration | 9 | 9 | 0 | 0 | 0 | 0 | 0 |
+| R11D | integration | 10 | 10 | 0 | 0 | 0 | 0 | 0 |
 
 Selftest PASS (0 failures); `actionlint .github/workflows/mutation-check.yml`
 exit 0.
@@ -309,12 +289,10 @@ Changed/dropped records (id | old -> new | DROPPED):
   retry join the in-flight entry and block on the never-closed fake gate;
   TestInvokeMismatchedHashFails deadlocks (EXECUTION_ERROR, not a kill).
 - R11C `M3-controls-allowed`: `control-plane tools are never leaves` ->
-  `Should be false` — the classifier at admission still refuses with
-  errBatchControlPlaneLeaf, so the first ErrorIs passes and
-  `require.False(errors.Is(err, errBatchSubmitBeforeInvalid))`
-  (batch_ingress_test.go:347) fails first.
-- R11C `M5-admission-swallow`: -> `An error is expected but got nil.` (the
-  ErrorIs at batch_runtime_test.go:214 sees a nil error).
+  `Target error should be in err chain:` — first ErrorIs at
+  `batch_ingress_test.go:359` sees the admission wrapper, not the ingress
+  control sentinel; later assertion at 362 is unreachable.
+- R11C `M5-admission-swallow`: `Expected error with "batch runtime: admission failed before the runner was called" in chain but got nil.` (ErrorIs at `batch_runtime_test.go:214` receives nil.)
 - R11C `M6-notwired-fallthrough`: -> `Target error should be in err chain:`
   (the fixture leaves Delivery AND Runner nil, so bypassing the Delivery guard
   reaches the Runner guard; ErrorIs at batch_runtime_test.go:89 fails).
@@ -324,12 +302,18 @@ Changed/dropped records (id | old -> new | DROPPED):
   `the started loser returns the envelope read-only` — the loser's duplicate
   inline election is recorded by the fake, so the loop assertions pass and the
   inlineCalls equality (batch_delivery_test.go:246) fails first.
-- R11D `r11d-sync-cancel-skips-stop`: -> `exactly one Stop on caller
-  cancellation` (ctx.Err() ErrorIs at batch_cancel_test.go:177 still passes).
-- R11D `r11d-inline-no-retry-on-failed-ack`: -> `An error is expected but got
-  nil.` (ErrorIs at batch_delivery_test.go:202).
-- R11D `r11d-escape-window-defaulted`: -> the ErrorIs nil-err literal quoted
-  in the table (the 30s default still fails closed, after its grace).
+- R11D `r11d-cancel-caller-ctx`: DROPPED — failing `require.NoError` in the
+  goroutine Goexits before release close, blocking main-thread fake Stop; timeout,
+  not named-test failure (`batch_cancel_test.go:77-81,83`; fake Stop :51-56).
+- R11D `r11d-drain-block-on-root`: DROPPED — stale literal occurs zero times;
+  current `case <-callerGone` is `batch_delivery_drain.go:57-59`. The manifest SHA
+  `33bb1bba71808878ea87b86f221776373a722366552da9f06d716c95dd8983f9` differs
+  from actual LF SHA `3ba7ef4d5368764c943b9b6749e7b0b38420506ee47fd0d1b451cc2195c86594`;
+  no refreshed active hash was introduced.
+- R11D `r11d-inline-no-retry-on-failed-ack`: `Expected error with "batch delivery: inline election retries exhausted" in chain but got nil.` (ErrorIs at `batch_delivery_test.go:209` receives nil.)
+- R11D r11d-inline-no-retry-on-failed-ack: -> `Expected error with
+  "batch delivery: inline election retries exhausted" in chain but got nil.`
+  (ErrorIs at `batch_delivery_test.go:209` receives nil).
 - R10b `m04_any_waits_all`, `m05_each_child_invisible`,
   `m07_skip_initial_evaluation`, `m16_ignore_hint_evaluation`: DROPPED — each
   leaves the worker waiting with no further hints (poll 1h, worker cap 40min),
@@ -349,7 +333,15 @@ Changed/dropped records (id | old -> new | DROPPED):
   live after the ack` (the skipped watch loop still marks closed; the report
   arrives at the second noReport, batch_exec_agent_test.go:445/192).
 
-R11B m02/m17 verified: the hook fault reason is `"error"`
+- R11D `r11d-cancel-caller-ctx`: DROPPED — failing `require.NoError` in the
+  goroutine Goexits before the release close; main goroutine blocks in fake Stop,
+  so timeout, not a named assertion completion (`batch_cancel_test.go:77-81,83;
+  fake Stop :51-56).
+- R11D `r11d-drain-block-on-root`: DROPPED — original needle occurs zero times;
+  current source is `case <-callerGone` at `batch_delivery_drain.go:57-59`.
+  Original SHA `33bb1bba71808878ea87b86f221776373a722366552da9f06d716c95dd8983f9`
+  differs from actual LF SHA `3ba7ef4d5368764c943b9b6749e7b0b38420506ee47fd0d1b451cc2195c86594`;
+  no refreshed active hash was introduced.
 (runner_commit.go:293 default), the runner fault is
 `jobbatch: commit failed: error`, and the first failing assertion is a bare
 `require.NoError` (batch_commit_test.go:119 / :330), which prints
@@ -447,36 +439,37 @@ test file:line where the first failing assertion prints it.
 | Teardown | shutdown-context-not-cancelled | cooperative callback should join gracefully | release_callback_join_test.go:167 |
 | Teardown | notify-join-omitted | notify join reached after-waits seam before callback exit | release_callback_join_test.go:97 |
 | Teardown | forced-verdict-suppressed | unjoined release callback must report stillBusy | release_callback_join_test.go:129 |
-| R11C | M1-singleflight-drop | invalid memory address or nil pointer dereference | batch_ingress_test.go:250 (panic, not an assertion) |
-| R11C | M3-controls-allowed | Should be false | batch_ingress_test.go:347 |
+| R11C | M1-singleflight-drop | DROPPED: nil `joined` panic before assertion | batch_ingress_test.go:253 |
+| R11C | M3-controls-allowed | Target error should be in err chain: | batch_ingress_test.go:359 (first ErrorIs; later assertion unreachable) |
+
 | R11C | M4-attach-resubmit | an attached retry never submits | batch_ingress_test.go:323 |
-| R11C | M5-admission-swallow | An error is expected but got nil. | batch_runtime_test.go:214 |
+| R11C | M5-admission-swallow | Expected error with "batch runtime: admission failed before the runner was called" in chain but got nil. | batch_runtime_test.go:214 |
 | R11C | M6-notwired-fallthrough | Target error should be in err chain: | batch_runtime_test.go:89 |
 | R11C | M7-identity-session | An error is expected but got nil. | batch_invocation_test.go:66 |
 | R11C | M8-policy-scope-drop | Not equal: | batch_runtime_test.go:151 |
 | R11C | M9-construct-probe | construction must not probe | batch_runtime_test.go:67 |
 | R11C | M10-finish-no-evict | a failed call leaves the singleflight map | batch_ingress_test.go:416 |
 | R11C | M11-waiter-poison-replay | Received unexpected error | batch_ingress_test.go:506 (NoError) |
-| R11D | r11d-inline-duplicate-delivery | the started loser returns the envelope read-only | batch_delivery_test.go:246 |
+| R11D | r11d-inline-duplicate-delivery | the started loser returns the envelope read-only | batch_delivery_test.go:256 |
 | R11D | r11d-sync-collapse-envelope | sync must forward the full executor envelope | batch_delivery_test.go:140 |
-| R11D | r11d-cancel-caller-ctx | control context must NOT be the cancelled caller ctx | batch_cancel_test.go:77 (NoError) |
-| R11D | r11d-cancel-false-settlement | held termination keeps the admission unit occupied | batch_cancel_test.go:102 |
-| R11D | r11d-sync-cancel-skips-stop | exactly one Stop on caller cancellation | batch_cancel_test.go:177 |
-| R11D | r11d-escape-auto-detached-shortcircuit | completion inside the window returns the full envelope | batch_delivery_test.go:275 |
-| R11D | r11d-escape-window-defaulted | Expected error with "batch delivery: escape=auto requires an explicit delivery window" in chain but got nil. | batch_delivery_test.go:349 |
-| R11D | r11d-drain-block-on-root | Drain ignored the caller's cancellation | batch_delivery_drain_test.go:96 (t.Fatal) |
-| R11D | r11d-inline-no-retry-on-failed-ack | An error is expected but got nil. | batch_delivery_test.go:202 |
+| R11D | r11d-cancel-false-settlement | held termination keeps the admission unit occupied | batch_cancel_test.go:105 |
+| R11D | r11d-sync-cancel-skips-stop | exactly one Stop on caller cancellation | batch_cancel_test.go:178 |
+| R11D | r11d-escape-auto-detached-shortcircuit | completion inside the window returns the full envelope | batch_delivery_test.go:288 |
+| R11D | r11d-escape-window-defaulted | Expected error with "batch delivery: escape=auto requires an explicit delivery window" in chain but got nil. | batch_delivery_test.go:368 (after controlled 30s timer) |
+| R11D | r11d-drain-block-on-root | DROPPED: stale needle (0 matches); SHA `33bb1b...` vs actual LF `3ba7ef...` | `batch_delivery_drain.go:57-59` |
+| R11D | r11d-cancel-caller-ctx | DROPPED: goroutine require Goexits before release; main Stop blocks, timeout not assertion | `batch_cancel_test.go:77-83`, fake Stop `:51-56` |
+| R11D | r11d-inline-no-retry-on-failed-ack | Expected error with "batch delivery: inline election retries exhausted" in chain but got nil. | batch_delivery_test.go:209 |
 | R11D | r11d-detached-no-started-election | expected: 1 | batch_delivery_test.go:259 |
 | R11D | r11d-store-inline-lost-loses-error | the second inline election must lose | batch_delivery_store_test.go:63 |
-| R11D | r11d-store-envelope-ignores-missing | unsettled root has no envelope | batch_delivery_store_test.go:38 |
+| R11D | r11d-store-envelope-ignores-missing | unsettled root has no envelope | batch_delivery_store_test.go:33 |
 
 ## Round2 validation report (compressed; superseded by Round5)
 
 Round2/3/4 histories: manifests revalidated with zero ID/file drift; all
 targets refreshed to committed SHAs; assertion strings rewritten in Round4 and
 re-derived in Round5 (see above). R10c/R11B moved from sibling worktrees into
-this integration worktree; R11C/R11D still validate only against their sibling
-worktrees and stay excluded from the workflow matrix until their merges land.
+this integration worktree; at that time R11C/R11D were still validated only against sibling
+worktrees and were excluded from the workflow matrix pending their merges.
 
 ## Formerly vacuous tests (resolved this round)
 

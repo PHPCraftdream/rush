@@ -25,17 +25,6 @@
       "expected_assertion": "sync must forward the full executor envelope"
     },
     {
-      "id": "r11d-cancel-caller-ctx",
-      "file": "internal/agent/batch_cancel.go",
-      "file_sha256": "038905b9fbb6d66979d83249bece8c94929dde5885ecef769e624d3a398b7023",
-      "needle": "ctl := context.WithoutCancel(caller)",
-      "replacement": "ctl := caller",
-      "package": "internal/agent",
-      "test": "TestBatchCancelControlContextSurvivesCallerCancel",
-      "purpose": "Submit Stop under the caller's already-cancelled context so the cancellation never lands.",
-      "expected_assertion": "control context must NOT be the cancelled caller ctx"
-    },
-    {
       "id": "r11d-cancel-false-settlement",
       "file": "internal/agent/batch_cancel.go",
       "file_sha256": "038905b9fbb6d66979d83249bece8c94929dde5885ecef769e624d3a398b7023",
@@ -54,7 +43,7 @@
       "replacement": "\t\t\tout := batchCancelOutcome{Submitted: true}",
       "package": "internal/agent",
       "test": "TestBatchDeliverySyncCallerCancelSubmitsStopOnce",
-      "purpose": "Acceptance item not wired: a cancelled sync caller returns WITHOUT submitting Stop, leaving the root running with no cancellation request.",
+      "purpose": "A cancelled sync caller returns WITHOUT submitting Stop, leaving the root running with no cancellation request.",
       "expected_assertion": "exactly one Stop on caller cancellation"
     },
     {
@@ -65,7 +54,7 @@
       "replacement": "if inv.BackgroundEscape == batchEscapeAuto {\n\t\tmode = batchDeliveryDetached\n\t}",
       "package": "internal/agent",
       "test": "TestBatchDeliveryEscapeCompletesWithinWindow",
-      "purpose": "Regression to the old always-detached shortcut: escape=auto switches to detached immediately, ignoring the window, so even a 10 ms command reports started.",
+      "purpose": "Regression to the old always-detached shortcut: escape=auto switches to detached immediately, ignoring the window.",
       "expected_assertion": "completion inside the window returns the full envelope"
     },
     {
@@ -80,17 +69,6 @@
       "expected_assertion": "Expected error with \"batch delivery: escape=auto requires an explicit delivery window\" in chain but got nil."
     },
     {
-      "id": "r11d-drain-block-on-root",
-      "file": "internal/agent/batch_delivery_drain.go",
-      "file_sha256": "33bb1bba71808878ea87b86f221776373a722366552da9f06d716c95dd8983f9",
-      "needle": "case <-ctx.Done():\n\t\t// Caller gone: stop waiting. The pull keeps its own bound.\n\t\treturn 0, ctx.Err()",
-      "replacement": "case <-ctx.Done():\n\t\to := <-done\n\t\treturn o.n, o.err",
-      "package": "internal/agent",
-      "test": "TestBatchWebDrainReturnsWhenCallerCancels",
-      "purpose": "Block Drain on running batch work: a cancelled caller now waits for the wedged pull.",
-      "expected_assertion": "Drain ignored the caller's cancellation"
-    },
-    {
       "id": "r11d-inline-no-retry-on-failed-ack",
       "file": "internal/agent/batch_delivery.go",
       "file_sha256": "292e36a96c4b41609ce9fd38b59a6397e598cb4a294d79e5d17ee7cff7e4fc8c",
@@ -99,7 +77,7 @@
       "package": "internal/agent",
       "test": "TestBatchDeliveryInlineFailedAckExhausted",
       "purpose": "Silently swallow a persistently failed ack, hiding a lost completion behind a fake success.",
-      "expected_assertion": "An error is expected but got nil."
+      "expected_assertion": "Expected error with \"batch delivery: inline election retries exhausted\" in chain but got nil."
     },
     {
       "id": "r11d-detached-no-started-election",
@@ -134,9 +112,5 @@
       "purpose": "Fabricate a completion envelope for an unsettled root (a synthetic settlement).",
       "expected_assertion": "unsettled root has no envelope"
     }
-  ],
-  "requires_merge": [
-    "#29",
-    "R11D PR"
   ]
 }
