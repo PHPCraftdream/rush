@@ -172,6 +172,13 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+	if opts := callOptionsFrom(ctx); opts != nil {
+		inv.Policy.DiskProvider = inv.Policy.DiskProvider || tools.HasDiskProvider(opts.DiskProvider)
+	}
+	inv.Policy.CustomDisk = strings.TrimSpace(inv.Policy.CustomDisk)
+	if inv.Policy.DiskProvider || inv.Policy.CustomDisk != "" {
+		return fantasy.NewTextErrorResponse(ErrDiskProviderNotDurable.Error()), nil
+	}
 	return ingress.Invoke(ctx, inv, leaf, call)
 }
 

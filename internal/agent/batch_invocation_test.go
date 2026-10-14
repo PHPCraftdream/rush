@@ -31,6 +31,26 @@ func testInvocation() BatchInvocation {
 	}
 }
 
+func TestBatchInvocationValidateRejectsDiskProvider(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		edit func(*BatchInvocation)
+	}{
+		{"provider marker", func(inv *BatchInvocation) { inv.Policy.DiskProvider = true }},
+		{"custom disk", func(inv *BatchInvocation) { inv.Policy.CustomDisk = " disk " }},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inv := testInvocation()
+			tc.edit(&inv)
+			require.ErrorIs(t, inv.Validate(), ErrDiskProviderNotDurable,
+				"disk provider policy must refuse before ingress admission")
+		})
+	}
+}
+
 func TestBatchInvocationValidateAcceptsComplete(t *testing.T) {
 	t.Parallel()
 	inv := testInvocation()

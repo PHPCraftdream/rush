@@ -110,6 +110,10 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 	}
 	for i, tool := range built.tools {
 		name := tool.Info().Name
+		if name == tools.AskQuestionToolName {
+			built.tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
+			continue
+		}
 		if !batchWorkTarget(name) {
 			continue
 		}

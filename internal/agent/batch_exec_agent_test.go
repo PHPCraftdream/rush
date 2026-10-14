@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,10 +94,54 @@ type batchAgentTestFactory struct {
 	started chan struct{}
 	panics  bool
 	useTurn func(*batchAgentTestTurn, batchAgentHost)
+	rigOnce sync.Once
+	rig     *batchAgentTestQuestionRig
 }
 
 func newBatchAgentTestFactory(turn *batchAgentTestTurn) *batchAgentTestFactory {
 	return &batchAgentTestFactory{turn: turn, started: make(chan struct{}, 1)}
+}
+
+// batchAgentTestQuestionRig is the unit-fixture question seam: it records
+// every published identity and delivers answers into the SAME execution
+// through the executor's own Messenger seam (no loop through production
+// adapter closures).
+type batchAgentTestQuestionRig struct {
+	mu        sync.Mutex
+	published []batchChildQuestionNotice
+	holder    atomic.Pointer[batchAgentExecution]
+}
+
+func (r *batchAgentTestQuestionRig) PublishChildQuestion(_ context.Context, n batchChildQuestionNotice) error {
+	r.mu.Lock()
+	r.published = append(r.published, n)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *batchAgentTestQuestionRig) publishedNotices() []batchChildQuestionNotice {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]batchChildQuestionNotice(nil), r.published...)
+}
+
+func (r *batchAgentTestQuestionRig) inject(depth int, text string) error {
+	exec := r.holder.Load()
+	if exec == nil {
+		return ErrBatchAgentNotHeld
+	}
+	payload, err := json.Marshal(batchAgentInjectMessage{Depth: depth, Text: json.RawMessage(text)})
+	if err != nil {
+		return err
+	}
+	return jobbatch.Messenger(exec).Inject(context.Background(), payload)
+}
+
+// questionRig lazily arms the fixture question seam on this factory and
+// installs it into the deps batchAgentTestRun will build the family with.
+func (f *batchAgentTestFactory) questionRig() *batchAgentTestQuestionRig {
+	f.rigOnce.Do(func() { f.rig = &batchAgentTestQuestionRig{} })
+	return f.rig
 }
 
 func (f *batchAgentTestFactory) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
@@ -168,6 +214,10 @@ func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTes
 	reader := newBatchAgentTestReader(false, false)
 	deps.Runs = factory
 	deps.Descendants = reader
+	rig := factory.questionRig()
+	if deps.QuestionPublisher == nil {
+		deps.QuestionPublisher = rig
+	}
 	if deps.Poll == 0 {
 		deps.Poll = time.Millisecond
 	}
@@ -182,7 +232,9 @@ func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTes
 	case <-time.After(2 * time.Second):
 		t.Fatal("run factory never started")
 	}
-	return exec.(*batchAgentExecution), factory, reader, reports
+	execE := exec.(*batchAgentExecution)
+	rig.holder.Store(execE)
+	return execE, factory, reader, reports
 }
 
 func batchAgentTestNoReport(t *testing.T, reports chan jobbatch.Result, why string) {
@@ -212,7 +264,16 @@ func batchAgentTestPayload(t *testing.T, session string) json.RawMessage {
 	return payload
 }
 
-// ---- tests -------------------------------------------------------------
+func TestBatchCoordinatorDescendantsUsesChildOwnerTree(t *testing.T) {
+	env := newBatchInventoryEnv(t, "view")
+	live := session.NewBatchLiveReader(env.q, t.TempDir())
+	reader := batchCoordinatorDescendants{live: live}
+	_, complete := reader.DescendantsLive(env.ctx, batchAgentRunRequest{})
+	require.False(t, complete)
+	gotLive, complete := reader.DescendantsLive(env.ctx, batchAgentRunRequest{ChildSessionID: env.sessionID})
+	require.True(t, complete)
+	require.False(t, gotLive)
+}
 
 // RC1/RC13: the scope reports only after the turn ended AND descendants are
 // confirmed terminal, exactly once.
@@ -302,7 +363,7 @@ func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = e.ask(context.Background(), 4, "why?")
+		_, _ = e.askBatchQuestion(context.Background(), 4, "why?")
 	}()
 	require.Eventually(t, func() bool {
 		depth, held := e.heldDepth()
