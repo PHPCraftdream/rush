@@ -147,7 +147,8 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 // batchOneItemSpec builds the direct-call spec: OneItem, NotifyAll, kind
 // derived from the tool family, payload carrying the invocation's immutable
 // policy transport and pinned registry identity. Explicit specs and Notify
-// selection are R13, never here.
+// selection are represented by the batch model controls, not this direct-call
+// adapter.
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
 	payload := batchLeafPayload{
 		Tool:       call.Name,
@@ -165,8 +166,8 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		Kind:    batchLeafKind(call.Name),
 		Payload: raw,
 	}}
-	// Direct calls are NotifyAll (D10); the empty declared group defers to
-	// classification, and explicit specs/Notify are R13, never here.
+	// Direct task specs are normalized by batchRunnerAdapter, the engine seam
+	// that enforces a batch root; keep this spec canonical for its durable hash.
 	return spec, nil
 }
 

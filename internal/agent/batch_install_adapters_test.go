@@ -38,8 +38,16 @@ func (installFakeExecution) Stop(context.Context) error { return nil }
 // rows and every probe legitimately reports attached=false, err=nil.
 type gatingInstallExecutor struct {
 	release chan struct{}
+	started chan struct{}
 	once    sync.Once
 	content string
+}
+
+type gatingInstallExecution struct{ content string }
+
+func (e gatingInstallExecution) Stop(context.Context) error { return nil }
+func (e gatingInstallExecution) ReadOutput(context.Context, uint64) (jobbatch.OutputChunk, error) {
+	return jobbatch.OutputChunk{Data: []byte(e.content), Next: uint64(len(e.content)), EOF: true}, nil
 }
 
 func newGatingInstallExecutor(content string) *gatingInstallExecutor {
@@ -47,13 +55,16 @@ func newGatingInstallExecutor(content string) *gatingInstallExecutor {
 }
 
 func (e *gatingInstallExecutor) Start(ctx context.Context, _ jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+	if e.started != nil {
+		e.started <- struct{}{}
+	}
 	select {
 	case <-e.release:
 	case <-ctx.Done():
-		return installFakeExecution{}, ctx.Err()
+		return gatingInstallExecution{}, ctx.Err()
 	}
 	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse(e.content))})
-	return installFakeExecution{}, nil
+	return gatingInstallExecution{content: e.content}, nil
 }
 
 func (e *gatingInstallExecutor) letGo() { e.once.Do(func() { close(e.release) }) }
@@ -107,6 +118,44 @@ func installSubmit(t *testing.T, install *BatchInstall, spec jobbatch.Spec) jobb
 	return root
 }
 
+func TestBatchRunnerAdapterPreservesExplicitNestedBatch(t *testing.T) {
+	t.Parallel()
+	store, conn, ctx := newTestBatchStore(t)
+	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
+	require.NoError(t, err)
+	explicit := jobbatch.Spec{Batch: &jobbatch.BatchSpec{
+		Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyEach, MaxParallel: 3,
+		Items: []jobbatch.Spec{{Batch: &jobbatch.BatchSpec{
+			Mode: jobbatch.ModeSequential, MaxParallel: 1,
+			Items: []jobbatch.Spec{installOneItemSpec(t, "")},
+		}}},
+	}}
+	root := installSubmit(t, install, explicit)
+	view, err := install.RunnerHandle.Snapshot(ctx, root)
+	require.NoError(t, err)
+	require.Equal(t, jobbatch.ModeParallel, view.Node.Mode)
+	require.Equal(t, jobbatch.NotifyEach, view.Node.Notify)
+	require.Equal(t, 3, view.Node.MaxParallel)
+	require.Len(t, view.Descendants, 2)
+	require.Equal(t, jobbatch.KindBatch, view.Descendants[0].Kind)
+	require.Equal(t, jobbatch.ModeSequential, view.Descendants[0].Mode)
+	require.Equal(t, 1, view.Descendants[0].MaxParallel)
+}
+
+func TestBatchRunnerAdapterRejectsMalformedSpecShapes(t *testing.T) {
+	t.Parallel()
+	store, conn, ctx := newTestBatchStore(t)
+	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
+	require.NoError(t, err)
+	for _, spec := range []jobbatch.Spec{
+		{},
+		{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric}, Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel}},
+	} {
+		_, err := install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: jobbatch.ID(uuid.NewString()), Spec: spec})
+		require.ErrorIs(t, err, jobbatch.ErrInvalidSpec)
+	}
+}
+
 func TestBatchRunnerAdapterSubmitsOneItemAndSettles(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
@@ -115,6 +164,23 @@ func TestBatchRunnerAdapterSubmitsOneItemAndSettles(t *testing.T) {
 	spec := installOneItemSpec(t, "")
 	root := installSubmit(t, install, spec)
 	require.NotNil(t, install.RunnerHandle.batchFor(root), "the started root is registered")
+	view, err := install.RunnerHandle.Snapshot(ctx, root)
+	require.NoError(t, err)
+	rootView, err := install.RunnerHandle.View(ctx, root)
+	require.NoError(t, err)
+	require.Equal(t, jobbatch.KindBatch, rootView.Kind, "ordinary one-item root is a batch node, distinct from root notices")
+	require.Equal(t, jobbatch.NotifyAll, rootView.Notify, "direct task submissions use a NotifyAll root batch")
+	require.Len(t, view.Descendants, 1)
+	require.Equal(t, jobbatch.KindTask, view.Descendants[0].Kind)
+	storeView, err := store.Read(ctx, "owner", string(root))
+	require.NoError(t, err)
+	require.Len(t, storeView.Nodes, 2)
+	var gotPayload batchLeafPayload
+	require.True(t, storeView.Nodes[1].TaskPayload.Valid)
+	require.NoError(t, json.Unmarshal([]byte(storeView.Nodes[1].TaskPayload.String), &gotPayload))
+	var wantPayload batchLeafPayload
+	require.NoError(t, json.Unmarshal(spec.Task.Payload, &wantPayload))
+	require.Equal(t, wantPayload, gotPayload, "task payload is preserved in the wrapped root")
 	resp, ok, err := install.Done.AwaitDone(ctx, "owner", root)
 	require.NoError(t, err)
 	require.True(t, ok)

@@ -87,6 +87,8 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver)
+	app.batchLiveReader = factory.live
 	// Wire the R11E release seams onto the gate BEFORE the watcher starts:
 	// RetainHostIdentity mirrors the flag-off forced path's CloseKeepLock,
 	// ReleaseHostIdentity the graceful Close, and ReleaseWriter the

@@ -43,9 +43,8 @@ var awaitTasksWorkerPollInterval = time.Second
 // otherwise reports the live rows and, for "all", arms the arbiter's
 // sleepAll flag so the launch decision defers turns until the work finishes.
 func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, maxWaitSeconds int) (tools.AwaitTasksResult, error) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return tools.AwaitTasksResult{}, errors.New(
-			"live-work facts are unavailable in this session; continue or finish instead")
+	if !batchFlagEnabled() && (c.asyncJobs == nil || c.asyncJobs.store == nil) {
+		return tools.AwaitTasksResult{}, errors.New("live-work facts are unavailable in this session; continue or finish instead")
 	}
 	if maxWaitSeconds != 0 && (maxWaitSeconds < awaitTasksMinWaitSeconds || maxWaitSeconds > awaitTasksMaxWaitSeconds) {
 		return tools.AwaitTasksResult{}, fmt.Errorf(
@@ -58,24 +57,58 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 	// the tool call instead; the arbiter is not involved.
 	if c.sessions != nil {
 		if sess, err := c.sessions.Get(ctx, sessionID); err == nil && sess.ParentSessionID != "" {
+			if batchFlagEnabled() {
+				return c.awaitTasksForBatchWorker(ctx, sessionID, mode, maxWaitSeconds)
+			}
+			if c.asyncJobs == nil || c.asyncJobs.store == nil {
+				return tools.AwaitTasksResult{}, errors.New("live-work facts are unavailable in this session; continue or finish instead")
+			}
 			return c.awaitTasksForWorker(ctx, sessionID, mode, maxWaitSeconds)
 		}
 	}
-	work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
-	waiting := make([]tools.AwaitTaskRef, 0, len(work.Own)+len(work.Descendants))
-	for _, job := range work.Own {
-		waiting = append(waiting, awaitTaskRef(job))
+	bind := coordinatorBatchBindingFor(c)
+	waiting := make([]tools.AwaitTaskRef, 0)
+	if !batchFlagEnabled() {
+		if c.asyncJobs == nil || c.asyncJobs.store == nil {
+			return tools.AwaitTasksResult{}, errors.New("live-work facts are unavailable in this session; continue or finish instead")
+		}
+		work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		waiting = make([]tools.AwaitTaskRef, 0, len(work.Own)+len(work.Descendants))
+		for _, job := range work.Own {
+			waiting = append(waiting, awaitTaskRef(job))
+		}
+		for _, job := range work.Descendants {
+			waiting = append(waiting, awaitTaskRef(job))
+		}
 	}
-	for _, job := range work.Descendants {
-		waiting = append(waiting, awaitTaskRef(job))
+	if batchFlagEnabled() {
+		if bind == nil || bind.live == nil {
+			return tools.AwaitTasksResult{}, errors.New("batch live reader unavailable")
+		}
+		reader := bind.live
+		captured := reader.BatchCaptured(ctx, []string{sessionID})
+		if !captured.Complete() {
+			return tools.AwaitTasksResult{}, errors.New("batch live-work capture incomplete")
+		}
+		for _, ref := range captured.Refs() {
+			level := reader.BatchLevel(ctx, ref, ref.RootID)
+			if !level.Complete || level.Disappeared {
+				return tools.AwaitTasksResult{}, errors.New("batch level read incomplete")
+			}
+			for _, node := range level.Subtree {
+				if node.Kind != "task" || batchAwaitTerminalState(node.State) {
+					continue
+				}
+				waiting = append(waiting, tools.AwaitTaskRef{ToolName: node.TaskKind, ToolCallID: level.Node.ToolCallID, AgeSeconds: int64(time.Since(node.StartedAt).Seconds()), BatchRootID: ref.RootID, BatchNodeID: node.NodeID})
+			}
+		}
 	}
+
 	if len(waiting) == 0 {
 		return tools.AwaitTasksResult{}, errors.New("nothing is running; continue or finish")
 	}
 	res := tools.AwaitTasksResult{Mode: mode, WaitingFor: waiting}
 	if mode == "all" {
-		// Arm the sleep BEFORE the schedule so a clear racing this call
-		// always finds the flag it must lift.
 		c.arb.setSleepAll(sessionID)
 	}
 	if maxWaitSeconds > 0 {
@@ -94,11 +127,65 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 	return res, nil
 }
 
+func batchAwaitNotifyModes(levels session.BatchCapturedLevels) map[session.BatchLiveRef]string {
+	modes := make(map[session.BatchLiveRef]string, len(levels.Roots))
+	for _, root := range levels.Roots {
+		mode := root.Node.Notify.String
+		if !root.Node.Notify.Valid || mode == "" {
+			mode = batchNotifyAll
+		}
+		modes[root.Ref] = mode
+	}
+	return modes
+}
+
+func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, mode string, maxWaitSeconds int) (tools.AwaitTasksResult, error) {
+	bind := coordinatorBatchBindingFor(c)
+	if bind == nil || bind.live == nil {
+		return tools.AwaitTasksResult{}, errors.New("batch live reader unavailable")
+	}
+	var captured session.BatchCapturedRoots
+	notifyByRef := make(map[session.BatchLiveRef]string)
+	result, err := BatchAwaitWorker(ctx, BatchAwaitParams{
+		Mode: mode, MaxWaitSeconds: maxWaitSeconds,
+		Capture: func(ctx context.Context) session.BatchCapturedRoots {
+			captured = bind.live.BatchCaptured(ctx, []string{sessionID})
+			levels := bind.live.BatchCapturedLevel(ctx, captured)
+			notifyByRef = batchAwaitNotifyModes(levels)
+			return captured
+		},
+		Levels: func(ctx context.Context) session.BatchCapturedLevels {
+			return bind.live.BatchCapturedLevel(ctx, captured)
+		},
+		NotifyModeOf: func(ref session.BatchLiveRef) string { return notifyByRef[ref] },
+	})
+	if err != nil {
+		return tools.AwaitTasksResult{}, err
+	}
+	refs := make([]tools.AwaitTaskRef, 0, len(result.Remaining))
+	for _, unit := range result.Remaining {
+		levels := bind.live.BatchCapturedLevel(ctx, captured)
+		for _, root := range levels.Roots {
+			if root.Ref == unit.Ref {
+				for _, node := range root.Children {
+					if node.Kind == "task" && !batchAwaitTerminalState(node.State) {
+						refs = append(refs, tools.AwaitTaskRef{ToolName: node.TaskKind, ToolCallID: unit.ToolCallID, AgeSeconds: int64(time.Since(node.StartedAt).Seconds()), BatchRootID: unit.Ref.RootID, BatchNodeID: node.NodeID})
+					}
+				}
+			}
+		}
+	}
+	return tools.AwaitTasksResult{Mode: mode, Blocked: true, TimedOut: result.TimedOut, FinishedCount: result.FinishedCount, WaitingFor: refs}, nil
+}
+
 // awaitTasksForWorker is the delegated-worker half of AwaitTasks: it blocks
 // inside the tool call until the wake condition holds, the deadline expires,
 // or the generation context is cancelled. It never arms the arbiter's sleep
 // nor schedules wake schedules.
 func (c *coordinator) awaitTasksForWorker(ctx context.Context, sessionID, mode string, maxWaitSeconds int) (tools.AwaitTasksResult, error) {
+	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+		return tools.AwaitTasksResult{}, errors.New("legacy live-work facts unavailable for mixed batch await")
+	}
 	return awaitTasksWorker(ctx, mode, maxWaitSeconds, func() session.RootLiveWork {
 		return c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
 	}, func(cap time.Duration) (<-chan time.Time, <-chan time.Time, func()) {

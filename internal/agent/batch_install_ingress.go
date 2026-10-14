@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -21,6 +22,15 @@ import (
 // BatchLeafRegistry is the exported alias of the pinned policy-leaf registry
 // (policy_leaf.go). Hosts never build one; they only pin resolved builds.
 type BatchLeafRegistry = policyLeafRegistry
+
+type BatchModelControl interface {
+	batchModelControl
+	InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error)
+}
+
+func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver) BatchModelControl {
+	return NewInstalledBatchModelControl(runner, delivery, store, live, sessions, host, runnerID, profile, resolver)
+}
 
 // BatchWorkIngress is the ONE authority for work-tool invocation on the
 // flag-on path: validate, attach-or-submit through the engine, deliver once.
@@ -87,7 +97,9 @@ func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, erro
 // agent-family driver (batchBridgeInvocation), so two concurrent invocations
 // with different pinned registries can never cross-contaminate.
 type batchCoordinatorBinding struct {
-	ingress BatchWorkIngress
+	ingress  BatchWorkIngress
+	controls BatchModelControl
+	live     *session.BatchLiveReader
 }
 
 func (b *batchCoordinatorBinding) pin(registry *policyLeafRegistry) (string, error) {
@@ -107,10 +119,17 @@ var (
 // build re-arms its work tools through the ingress; the old async/stall
 // wrappers are no longer installed. It fails closed on nil arguments.
 func BindCoordinatorBatchRuntime(c Coordinator, ingress BatchWorkIngress) error {
+	return BindCoordinatorBatchControls(c, ingress, nil)
+}
+
+func BindCoordinatorBatchControls(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, live ...*session.BatchLiveReader) error {
 	if c == nil || ingress == nil {
 		return errors.New("batch coordinator binding: coordinator and ingress are required")
 	}
-	bind := &batchCoordinatorBinding{ingress: ingress}
+	bind := &batchCoordinatorBinding{ingress: ingress, controls: controls}
+	if len(live) > 0 {
+		bind.live = live[0]
+	}
 	coordinatorBatchBindings.Store(c, bind)
 	processBatchBinding.CompareAndSwap(nil, bind)
 	// MCP executor routing (R7a): names registered by the MCP family resolve
@@ -149,6 +168,7 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	inv := tpl
 	inv.SessionID = tools.GetSessionFromContext(ctx)
 	inv.MessageID = tools.GetMessageFromContext(ctx)
+	inv.CallID = call.ID
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)

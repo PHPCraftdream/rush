@@ -122,7 +122,9 @@ type App struct {
 	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
 	// installed batch runtime. Nil on flag-off Apps; set together with
 	// batchRuntime and bound to the coordinator in InitCoderAgent.
-	batchWorkIngress agent.BatchWorkIngress
+	batchWorkIngress  agent.BatchWorkIngress
+	batchModelControl agent.BatchModelControl
+	batchLiveReader   *session.BatchLiveReader
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.

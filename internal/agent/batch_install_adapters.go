@@ -46,12 +46,15 @@ func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequ
 	if a.runner == nil {
 		return "", errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
-	if req.Spec.Task == nil {
-		return "", fmt.Errorf("%w: direct calls submit one task", jobbatch.ErrInvalidSpec)
+	if req.Spec.Task != nil {
+		if req.Spec.Batch != nil {
+			return "", jobbatch.ErrInvalidSpec
+		}
+		req.Spec = jobbatch.OneItem(*req.Spec.Task)
+	} else if req.Spec.Batch == nil {
+		return "", jobbatch.ErrInvalidSpec
 	}
-	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{
-		Root: req.Root, Spec: jobbatch.OneItem(*req.Spec.Task), Ref: req.Ref,
-	})
+	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
 	if err != nil {
 		return "", err
 	}
@@ -64,6 +67,22 @@ func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequ
 // Stop requests cancellation of one root.
 func (a *batchRunnerAdapter) Stop(ctx context.Context, id jobbatch.ID) error {
 	return a.runner.Stop(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error) {
+	return a.runner.Add(ctx, req)
+}
+
+func (a *batchRunnerAdapter) Snapshot(ctx context.Context, id jobbatch.ID) (jobbatch.BatchView, error) {
+	return a.runner.Snapshot(ctx, id)
+}
+
+func (a *batchRunnerAdapter) View(ctx context.Context, id jobbatch.ID) (jobbatch.NodeView, error) {
+	return a.runner.View(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Output(ctx context.Context, id jobbatch.ID, cursor uint64) (jobbatch.OutputChunk, error) {
+	return a.runner.Output(ctx, id, cursor)
 }
 
 // batchFor returns the in-process Batch of a root started by THIS adapter,
@@ -380,6 +399,7 @@ type BatchInstallDeps struct {
 	// DonePoll is the done source's durable poll cadence; zero selects the
 	// default.
 	DonePoll time.Duration
+	Sessions session.Service
 }
 
 // BatchInstall is one fully adapted, still-dormant installation.
@@ -396,6 +416,7 @@ type BatchInstall struct {
 	Done         batchDoneSource
 	Elector      batchElector
 	NoticePull   batchNoticePull
+	Sessions     session.Service
 	CLIPump      *session.BatchControlPump
 	cliAccepted  map[string]int64
 }
@@ -480,7 +501,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		return nil, errors.New("batch install: message service is required")
 	}
 	owner := deps.Owner
-	if owner == "" {
+	if owner == "" || owner == batchDormantInstallOwner {
 		owner = batchDormantInstallOwner
 	}
 	runnerAdapter := &batchRunnerAdapter{started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
@@ -530,6 +551,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		// consumer yet — it is consumed by the web drain surface in
 		// R12/R15b; wired inertly until then. Do not invent a consumer.
 		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
+		Sessions:   deps.Sessions,
 		runnerCfg:  runnerCfg,
 	}
 	if withRunner {

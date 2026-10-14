@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/hooks"
@@ -11,8 +13,9 @@ import (
 // policyToolBuild retains the registry belonging to one construction only.
 // The model tools keep their legacy wrappers; the registry has no consumer.
 type policyToolBuild struct {
-	tools  []fantasy.AgentTool
-	leaves *policyLeafRegistry
+	tools      []fantasy.AgentTool
+	leaves     *policyLeafRegistry
+	registryID string
 }
 
 // policyLeafEntry records the original layers and the policy-only execution.
@@ -34,7 +37,18 @@ func newPolicyToolBuild(tools []fantasy.AgentTool) policyToolBuild {
 	return policyToolBuild{tools: tools, leaves: registry}
 }
 
-// resolve never constructs a tool or consults live configuration or MCP state.
+func (r *policyLeafRegistry) hasToolset(fingerprint string) bool {
+	if r == nil || fingerprint == "" {
+		return false
+	}
+	names := make([]string, 0, len(r.entries))
+	for name := range r.entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fingerprint == strings.Join(names, ",")
+}
+
 func (r *policyLeafRegistry) resolve(name string) (fantasy.AgentTool, error) {
 	if r != nil {
 		if entry, ok := r.entries[name]; ok {

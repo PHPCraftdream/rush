@@ -46,6 +46,9 @@ func batchAwaitNode(owner, root, node, parent, kind, state string) db.BatchNode 
 		NodeID: node, RootID: root, OwnerSessionID: owner, Kind: kind, State: state,
 		HostID: "host", ToolCallID: batchAwaitNull("call-" + root),
 	}
+	if node == root {
+		n.Notify = batchAwaitNull(batchNotifyAll)
+	}
 	if parent != "" {
 		n.ParentID = batchAwaitNull(parent)
 		n.Ordinal = 1
@@ -135,6 +138,24 @@ func batchAwaitRootRow(root, state string) db.BatchNode {
 
 func batchAwaitChildRow(root, node, state string) db.BatchNode {
 	return batchAwaitNode(batchAwaitOwner, root, node, root, "task", state)
+}
+
+func TestBatchAwaitNotifyEachStoredRootMode(t *testing.T) {
+	root := batchAwaitRootRow("each-root", "running")
+	root.Notify = batchAwaitNull(batchNotifyEach)
+	h := newBatchAwaitHarness(t, root)
+	h.setLevel("each-root", root, batchAwaitChildRow("each-root", "each-root.1", "running"))
+	levels := h.rd.BatchCapturedLevel(context.Background(), h.rd.BatchCaptured(context.Background(), []string{h.session}))
+	modes := batchAwaitNotifyModes(levels)
+	require.Equal(t, batchNotifyEach, modes[session.BatchLiveRef{OwnerSessionID: h.session, RootID: "each-root"}])
+	finished, remaining := batchAwaitEvaluateFor("any", []batchAwaitTarget{{ref: session.BatchLiveRef{OwnerSessionID: h.session, RootID: "each-root"}, notifyAll: modes[session.BatchLiveRef{OwnerSessionID: h.session, RootID: "each-root"}] != batchNotifyEach}}, levels)
+	require.Empty(t, finished)
+	require.Len(t, remaining, 1)
+	h.setLevel("each-root", root, batchAwaitChildRow("each-root", "each-root.1", "completed"))
+	levels = h.rd.BatchCapturedLevel(context.Background(), h.rd.BatchCaptured(context.Background(), []string{h.session}))
+	finished, remaining = batchAwaitEvaluateFor("any", []batchAwaitTarget{{ref: session.BatchLiveRef{OwnerSessionID: h.session, RootID: "each-root"}, notifyAll: false}}, levels)
+	require.Len(t, finished, 1)
+	require.Empty(t, remaining)
 }
 
 func TestBatchAwaitAnyFirstUnit(t *testing.T) {

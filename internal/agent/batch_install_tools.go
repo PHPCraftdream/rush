@@ -103,6 +103,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 	if err != nil {
 		return policyToolBuild{}, err
 	}
+	built.registryID = registryID
 	fingerprint := batchToolsetFingerprint(list)
 	if fingerprint == "" {
 		fingerprint = registryID
@@ -117,6 +118,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 			Origin:           "coordinator",
 			Delivery:         batchDeliveryChoice{Mode: batchDeliverySync},
 			BackgroundEscape: batchEscapeNever,
+			WaiterRank:       0,
 			Policy: batchLeafPolicyContext{
 				RegistryID:        registryID,
 				RestrictedToolset: fingerprint,

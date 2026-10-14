@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "task": "R13",
+  "mutations": [
+    {
+      "id": "r13-explicit-notify",
+      "file": "internal/agent/batch_model_tools.go",
+      "needle": "notify = jobbatch.NotifyAll",
+      "replacement": "notify = jobbatch.NotifyEach",
+      "package": "internal/agent",
+      "test": "TestInstalledModelControlRecursiveDefaultsAndPinnedPolicy",
+      "purpose": "Pin explicit batch default notification mode.",
+      "expected_assertion": "explicit omitted notify defaults to all"
+    }
+  ]
+}
