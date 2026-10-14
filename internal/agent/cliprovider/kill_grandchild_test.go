@@ -173,6 +173,12 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
+			if runtime.GOOS != "windows" {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				output, err := platform.Command(ctx, "ps", "-o", "pid,ppid,pgid,stat,command", "-p", strconv.Itoa(grandpid)).CombinedOutput()
+				t.Logf("grandchild process diagnostics: output=%q error=%v", string(output), err)
+			}
 			t.Errorf("grandchild pid %d still alive after kill() — tree-kill does not reach grandchildren (regression of the orphaned-grandchild fix)", grandpid)
 		})
 	}
