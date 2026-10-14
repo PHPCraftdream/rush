@@ -24,6 +24,8 @@
 //	TestHbCtx_AsyncDetachedCarriesAttribution — documents WithoutCancel value
 //	  preservation (async_tool.go path) and the uncovered wakeSession
 //	  (context.Background()) gap; no production line to break by design.
+//	hbIsolateEnv — revert QuiesceForTest to ResetForTest: the heartbeat TempDir
+//	  cleanup races the worker's snapshot write.
 package agent
 
 import (
@@ -44,11 +46,13 @@ import (
 
 // hbIsolateEnv points every global heartbeat/config path at throwaway dirs so
 // the package-global registry and any config write stay test-local.
+// Quiesce also stops the writer and waits for in-flight flushes so TempDir
+// cleanup cannot race a snapshot write.
 func hbIsolateEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("RUSH_HEARTBEAT_DIR", t.TempDir())
 	heartbeat.ResetForTest()
-	t.Cleanup(heartbeat.ResetForTest)
+	t.Cleanup(heartbeat.QuiesceForTest)
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 }
