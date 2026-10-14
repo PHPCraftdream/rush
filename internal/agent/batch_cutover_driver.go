@@ -42,11 +42,14 @@ func SetBatchDriverClaimer(c Coordinator, s BatchDriverClaimer) error {
 // driverMarkerStore is the durable driver-marker store the claim/release
 // path consults: the injected HostStore when flag-ON wiring set one, else
 // the legacy AsyncJobStore (flag-OFF behaviour, byte-identical), else nil.
+// It returns a TRUE nil interface when no store exists -- never a typed nil
+// pointer -- so the caller's nil guard behaves like the former concrete-
+// pointer guard.
 func (c *coordinator) driverMarkerStore() BatchDriverClaimer {
 	if c.batchDriverClaimer != nil {
 		return c.batchDriverClaimer
 	}
-	if c.asyncJobs != nil {
+	if c.asyncJobs != nil && c.asyncJobs.store != nil {
 		return c.asyncJobs.store
 	}
 	return nil

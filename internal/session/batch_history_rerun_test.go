@@ -140,7 +140,10 @@ func (f *batchRerunFx) reconcile(target string, tail ...string) (BatchRerunTrunc
 //	(h) removing the void-root skip from Project's notice selection
 //	    (round-4 contract) turns the late void-root notice into
 //	    ErrBatchProjectionConflict -- the NoError on the late projection
-//	    and the unchanged-history assertions fail.
+//	    and the unchanged-history assertions fail;
+//	(i) suppressing debt for the whole owner (or excluding live roots too)
+//	    fails the replacement-presence assertions; keying the exclusion off
+//	    the root's delivery='void' only is what these assertions pin.
 func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	t.Parallel()
 	f := newBatchRerunFx(t)
@@ -203,9 +206,22 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, pulled, "nothing became pullable from the late void-root selection")
-	hasDebt, err := f.store.BatchReactionDebtExists(f.ctx, batchRerunOwner)
+	// An owner-wide BatchReactionDebtExists would be TRUE here because the
+	// replacement incarnation's own pulled wake notices are legitimate
+	// owner-wide debt. What the void exclusion guarantees is that the
+	// RETIRED root's nodes/notice never appear in debt.
+	debt, err := f.store.BatchReactionPendingInclusiveDebtRows(f.ctx, batchRerunOwner)
 	require.NoError(t, err)
-	require.False(t, hasDebt, "the void exclusion keeps the late selection out of debt")
+	for _, n := range debt.Nodes {
+		require.NotEqual(t, old.Root.RootID, n.RootID,
+			"the retired root contributes no debt: its subtree is void-quarantined")
+	}
+	require.NotEmpty(t, debt.Nodes,
+		"the replacement incarnation's own pulled wake notices are legitimate debt (they must not be suppressed)")
+	for _, n := range debt.Nodes {
+		require.Equal(t, re.Root.RootID, n.RootID,
+			"every debt node belongs to the live replacement incarnation")
+	}
 	historyAfter, err := f.messages.List(f.ctx, batchRerunOwner)
 	require.NoError(t, err)
 	require.Len(t, historyAfter, len(historyBefore), "history is unchanged by the tolerated late projection")
