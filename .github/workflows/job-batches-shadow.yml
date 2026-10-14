@@ -39,6 +39,13 @@ jobs:
   # Mirrors build.yml's `build` job (build.yml lines 27-281: same 3-OS
   # matrix, same package-group split, same computed catch-all), with these
   # changes:
+  #   * NO -failfast on any go test invocation (both test jobs): this is an
+  #     inventory/evidence run for the R12 cutover, not a gate. -failfast
+  #     stops at the first legacy-contract failure per package, hiding all
+  #     but the first failure — the run 38586260719 lesson. The complete
+  #     failure list is wanted, so every test step keeps going
+  #     (continue-on-error) and a final "Collect failure inventory" step
+  #     (tools/shadow_failures.py) decides the job's conclusion.
   #   * NO -short anywhere: the shadow suite must run the hermetic batch
   #     acceptance cases that -short skips. The only tests -short
   #     additionally skipped in normal CI are the network/VCR cassette
@@ -87,65 +94,73 @@ jobs:
       # hygiene, not test evidence.
       - name: "test: internal/app"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB # Windows paging-file OOM mitigation (harmless on Linux/macOS)
         run: |
           set -o pipefail
-          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/app/... 2>&1 | tee "$RUNNER_TEMP/app.log"
+          go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/app/... 2>&1 | tee "$RUNNER_TEMP/app.log"
       - name: "test: internal/server, internal/session"
         shell: bash
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/server/... ./internal/session/... 2>&1 | tee "$RUNNER_TEMP/server-session.log"
+          go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' ./internal/server/... ./internal/session/... 2>&1 | tee "$RUNNER_TEMP/server-session.log"
       - name: "test: internal/permission, internal/config, internal/csync"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/permission/... ./internal/config/... ./internal/csync/... 2>&1 | tee "$RUNNER_TEMP/permission-config-csync.log"
+          go test -p 2 -skip 'TestCoderAgent' ./internal/permission/... ./internal/config/... ./internal/csync/... 2>&1 | tee "$RUNNER_TEMP/permission-config-csync.log"
       - name: "test: internal/cmd, internal/commands"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/cmd/... ./internal/commands/... 2>&1 | tee "$RUNNER_TEMP/cmd-commands.log"
+          go test -p 2 -skip 'TestCoderAgent' ./internal/cmd/... ./internal/commands/... 2>&1 | tee "$RUNNER_TEMP/cmd-commands.log"
       - name: "test: sdk"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./sdk/... 2>&1 | tee "$RUNNER_TEMP/sdk.log"
+          go test -p 2 -skip 'TestCoderAgent' ./sdk/... 2>&1 | tee "$RUNNER_TEMP/sdk.log"
       - name: "test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/... 2>&1 | tee "$RUNNER_TEMP/agent-subpackages.log"
+          go test -p 2 -skip 'TestCoderAgent' ./internal/agent/agentguard/... ./internal/agent/cliprovider/... ./internal/agent/hyper/... ./internal/agent/notify/... ./internal/agent/prompt/... ./internal/agent/tools/... 2>&1 | tee "$RUNNER_TEMP/agent-subpackages.log"
       - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/... 2>&1 | tee "$RUNNER_TEMP/db-message-queue-pubsub-history.log"
+          go test -p 2 -skip 'TestCoderAgent' ./internal/db/... ./internal/message/... ./internal/queue/... ./internal/pubsub/... ./internal/history/... 2>&1 | tee "$RUNNER_TEMP/db-message-queue-pubsub-history.log"
       - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
           set -o pipefail
-          go test -failfast -p 2 -skip 'TestCoderAgent' ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/... 2>&1 | tee "$RUNNER_TEMP/oauth-deploy-update-version.log"
+          go test -p 2 -skip 'TestCoderAgent' ./internal/oauth/... ./internal/deploy/... ./internal/update/... ./internal/version/... 2>&1 | tee "$RUNNER_TEMP/oauth-deploy-update-version.log"
       # Computed catch-all, same philosophy as build.yml: runs every package
       # not explicitly claimed above. Bash 3.2 compatible (macos-latest),
       # no mapfile/readarray.
       - name: "test: everything else (computed catch-all)"
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         env:
           GOMEMLIMIT: 1500MiB
         run: |
@@ -189,7 +204,36 @@ jobs:
             [ "$found" -eq 0 ] && leftover+=("$pkg")
           done < <(go list ./...)
           echo "leftover packages: ${leftover[*]}"
-          go test -failfast -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' "${leftover[@]}" 2>&1 | tee "$RUNNER_TEMP/catch-all.log"
+          go test -p 1 -parallel 1 -timeout 20m -skip 'TestCoderAgent' "${leftover[@]}" 2>&1 | tee "$RUNNER_TEMP/catch-all.log"
+      - name: Collect failure inventory (job stays red on failures)
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/shadow_failures.py \
+            "$RUNNER_TEMP/app.log" \
+            "$RUNNER_TEMP/server-session.log" \
+            "$RUNNER_TEMP/permission-config-csync.log" \
+            "$RUNNER_TEMP/cmd-commands.log" \
+            "$RUNNER_TEMP/sdk.log" \
+            "$RUNNER_TEMP/agent-subpackages.log" \
+            "$RUNNER_TEMP/db-message-queue-pubsub-history.log" \
+            "$RUNNER_TEMP/oauth-deploy-update-version.log" \
+            "$RUNNER_TEMP/catch-all.log" \
+            -o "$RUNNER_TEMP/failures.md"
+          cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/failures.md" ] && [ "$(wc -l < "$RUNNER_TEMP/failures.md")" -gt 2 ]; then
+            exit 1
+          fi
+      - name: Upload failure inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shadow-failures-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/failures.md
+            ${{ runner.temp }}/failures.txt
+          if-no-files-found: ignore
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
@@ -203,7 +247,10 @@ jobs:
   # 8-way sequential batches, -parallel 1 + GOMEMLIMIT=1500MiB on Windows
   # and -parallel 2 elsewhere. Difference: NO -short and
   # `-skip 'TestCoderAgent'` on every invocation (same compensation as the
-  # shadow-build job above).
+  # shadow-build job above). Also NO -failfast and continue-on-error on the
+  # sharding step: inventory/evidence run for the R12 cutover, not a gate —
+  # the full failure list is wanted, so all batches run and the final
+  # "Collect failure inventory" step decides the job conclusion.
   shadow-agent:
     strategy:
       fail-fast: false
@@ -226,6 +273,7 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
       - name: go test ./internal/agent/ split into sequential batches
         shell: bash
+        continue-on-error: true # keep going: inventory run, see job header comment
         run: |
           set -o pipefail
           names=()
@@ -271,15 +319,34 @@ jobs:
             [ ${#chunk[@]} -eq 0 ] && continue
             pattern="^($(IFS='|'; echo "${chunk[*]}"))$"
             echo "::group::batch $((i + 1))/${batches} (${#chunk[@]} tests)"
-            go test -failfast -parallel "$parallel" -skip 'TestCoderAgent' -run "$pattern" ./internal/agent/ 2>&1 | tee -a "$RUNNER_TEMP/shadow-agent.log"
+            go test -parallel "$parallel" -skip 'TestCoderAgent' -run "$pattern" ./internal/agent/ 2>&1 | tee -a "$RUNNER_TEMP/shadow-agent.log"
             rc=$?
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
               status=$rc
-              break
             fi
           done
           exit $status
+      - name: Collect failure inventory (job stays red on failures)
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/shadow_failures.py "$RUNNER_TEMP/shadow-agent.log" \
+            -o "$RUNNER_TEMP/failures.md"
+          cat "$RUNNER_TEMP/failures.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/failures.md" ] && [ "$(wc -l < "$RUNNER_TEMP/failures.md")" -gt 2 ]; then
+            exit 1
+          fi
+      - name: Upload failure inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shadow-failures-agent-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/failures.md
+            ${{ runner.temp }}/failures.txt
+          if-no-files-found: ignore
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
