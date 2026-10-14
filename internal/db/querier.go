@@ -283,6 +283,28 @@ type Querier interface {
 	// table's own column needs only ONE real parameter and sidesteps the bug
 	// entirely.
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
+	// Host-row deletion guard, re-pointed from jobs to nodes. OLD semantics
+	// (DeleteAsyncHostIfNoJobs in async_jobs.sql) deleted the host row only when
+	// ZERO async_jobs rows of ANY state referenced it -- terminal/delivered rows
+	// still counted, exactly like running ones, until a separate retention pass
+	// purged them.
+	//
+	// NEW semantics (requested R12-D change, the batch-world equivalent of "no
+	// live nodes owned by the host"): the host row is deleted only when the host
+	// owns ZERO LIVE batch_nodes rows (state in the live set
+	// pending/starting/running/cancelling). Terminal node history alone does NOT
+	// retain the host row -- a deliberate, requested semantic change from the
+	// old all-states rule. The batch retention pass (DeleteBatchSubtree and
+	// friends) is what eventually clears terminal history; after it removes the
+	// last row, this guard can reap the host row. The live-set constants match
+	// idx_batch_nodes_host_live's partial index WHERE clause.
+	//
+	// The subquery is correlated against async_hosts.id (not a second bound
+	// parameter), same sqlc-SQLite-plugin workaround as DeleteAsyncHostIfNoJobs:
+	// correlating on the outer table's own column needs only ONE real parameter
+	// and sidesteps the repeated-placeholder rewrite bug (confirmed against
+	// sqlc v1.30.0, see the async_jobs.sql comment).
+	DeleteAsyncHostIfNoNodes(ctx context.Context, id string) (int64, error)
 	// Same-incarnation parent/root FKs cascade descendants and controls.
 	DeleteBatchSubtree(ctx context.Context, arg DeleteBatchSubtreeParams) (int64, error)
 	DeleteFile(ctx context.Context, id string) error
@@ -388,6 +410,7 @@ type Querier interface {
 	// Same lease-keyed CAS as CompleteOnceWakeSchedule.
 	FinishLoopWakeSchedule(ctx context.Context, arg FinishLoopWakeScheduleParams) (int64, error)
 	GetAsyncHost(ctx context.Context, id string) (AsyncHost, error)
+	GetAsyncHostRow(ctx context.Context, id string) (AsyncHost, error)
 	GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (AsyncJob, error)
 	// Debt-snapshot row lookup (R2A-4): a snapshot names a row by its claim_id,
 	// which survives the archive-on-reuse rename of tool_call_id -- a lookup by
@@ -565,6 +588,8 @@ type Querier interface {
 	// rowid is the tie-breaker: see ListUserMessagesBySession above - identical
 	// reasoning applies across all sessions, not just one.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// Test/diagnostic reader, job-independent twin of ListAsyncHosts.
+	ListAsyncHostRows(ctx context.Context) ([]AsyncHost, error)
 	// Test/diagnostic reader: no production caller, no `sessions hosts` command.
 	// `label` is the registrant's App label ("app" at both NewAsyncJobStore call
 	// sites), display-only bookkeeping.
@@ -573,6 +598,11 @@ type Querier interface {
 	// async_jobs rows of ANY state. Caller still must verify the lock file
 	// itself is gone/dead before treating a host as reapable.
 	ListAsyncHostsWithNoJobs(ctx context.Context) ([]AsyncHost, error)
+	// Retention candidates, nodes-based twin of ListAsyncHostsWithNoJobs (doc
+	// sec.3.7): host rows owning zero LIVE batch_nodes rows (same live-set rule
+	// as DeleteAsyncHostIfNoNodes above). Caller still must verify the lock file
+	// itself is gone/dead before treating a host as reapable.
+	ListAsyncHostsWithNoNodes(ctx context.Context) ([]AsyncHost, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
 	ListBatchChildren(ctx context.Context, arg ListBatchChildrenParams) ([]BatchNode, error)
@@ -877,6 +907,21 @@ type Querier interface {
 	// display-only bookkeeping, created once per process lifetime alongside the
 	// OS lock file. Never consulted to decide liveness.
 	RegisterAsyncHost(ctx context.Context, arg RegisterAsyncHostParams) (AsyncHost, error)
+	// RETAINED host queries (package R12-D chunk 1): host-only bookkeeping,
+	// job-independent. async_jobs lives in async_jobs.sql and is dropped by a
+	// later package (R12-H); these are the NEW-name equivalents of that file's
+	// host section (RegisterAsyncHost/GetAsyncHost/ListAsyncHosts/
+	// DeleteAsyncHostIfNoJobs/ListAsyncHostsWithNoJobs), re-pointed at
+	// batch_nodes so the retained host lifecycle outlives the job table.
+	//
+	// Naming: the *Row/*s suffixes mark "host row readers/writers" and keep the
+	// generated method names distinct from the async_jobs.sql originals -- both
+	// sets are generated onto the same db.Queries struct.
+	// Same lazy-registration shape as async_jobs.sql's RegisterAsyncHost (doc
+	// sec.3.6): the host row is display-only bookkeeping, created once per
+	// process lifetime alongside the OS lock file. Never consulted to decide
+	// liveness.
+	RegisterAsyncHostRow(ctx context.Context, arg RegisterAsyncHostRowParams) (AsyncHost, error)
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
 	// Extend a lease expiry while its owner is still genuinely working on it,
 	// or to back off a lease without counting a failed attempt. Scoped to

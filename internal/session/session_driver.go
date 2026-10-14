@@ -67,48 +67,46 @@ var sessionDriverBeforeTakeoverSeam func()
 // follows a lost CAS (someone else changed the row between our read and write).
 const claimSessionDriverAttempts = 3
 
-// hostLivenessDetail is HostLiveness with the probe error kept for messages:
-// this process's (or a sibling App's) hosts are alive without probing;
-// anything else goes through the shared, non-acquiring probe, and any outcome
-// other than a clean "dead" is folded into unknown.
-func (s *AsyncJobStore) hostLivenessDetail(hostID string) (HostLockStatus, error) {
+// hostLivenessDetailFor is hostLivenessDetail parameterized by dataDir, so
+// AsyncJobStore and HostStore share the exact same semantics: this process's
+// (or a sibling App's) hosts are alive without probing; anything else goes
+// through the shared, non-acquiring probe, and any outcome other than a
+// clean "dead" is folded into unknown.
+func hostLivenessDetailFor(dataDir, hostID string) (HostLockStatus, error) {
 	if hostID == "" {
 		return HostStatusUnknown, errors.New("empty host id")
 	}
 	if IsOwnHostID(hostID) {
 		return HostStatusAlive, nil
 	}
-	status, err := ProbeHostShared(s.dataDir, hostID)
+	status, err := ProbeHostShared(dataDir, hostID)
 	if err != nil && status != HostStatusDead {
 		return HostStatusUnknown, err
 	}
 	return status, nil
 }
 
-// ClaimSessionDriver records this store's host as sessionID's driver. It is
-// idempotent for the same host; refuses (*ErrSessionDrivenElsewhere) while
-// another host that is alive or unknown holds the marker; takes a dead
-// host's marker over with a CAS on that exact host (so of N concurrent takers
-// exactly one wins). A host lock the data dir cannot provide is
-// ErrDriverMarkerUnavailable; every other ensureHost failure is a plain error
-// (the caller must not proceed without the marker).
-func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string) error {
-	hostID, err := s.ensureHost(ctx)
-	if err != nil {
-		if errors.Is(err, ErrHostLockUnavailable) {
-			return fmt.Errorf("%w: %w", ErrDriverMarkerUnavailable, err)
-		}
-		return fmt.Errorf("session driver: register host: %w", err)
-	}
+// hostLivenessDetail is HostLiveness with the probe error kept for messages:
+// thin wrapper over hostLivenessDetailFor (identical semantics).
+func (s *AsyncJobStore) hostLivenessDetail(hostID string) (HostLockStatus, error) {
+	return hostLivenessDetailFor(s.dataDir, hostID)
+}
+
+// claimSessionDriverFor is ClaimSessionDriver's core, shared verbatim by
+// AsyncJobStore and HostStore. hostID must already be the caller's registered
+// host id: each store registers through its OWN ensure path above this
+// helper (AsyncJobStore's runs the async_jobs recovery sweep, HostStore's
+// does not -- that difference must not move into the shared core).
+func claimSessionDriverFor(ctx context.Context, hostID string, q *db.Queries, dataDir string, pid int, sessionID string) error {
 	for attempt := 0; attempt < claimSessionDriverAttempts; attempt++ {
 		now := time.Now().Unix()
-		row, err := s.q.GetSessionDriver(ctx, sessionID)
+		row, err := q.GetSessionDriver(ctx, sessionID)
 		switch {
 		case err == nil:
 			if row.HostID == hostID {
 				return nil
 			}
-			status, probeErr := s.hostLivenessDetail(row.HostID)
+			status, probeErr := hostLivenessDetailFor(dataDir, row.HostID)
 			if status != HostStatusDead {
 				return &ErrSessionDrivenElsewhere{
 					SessionID: sessionID, HostID: row.HostID, PID: row.Pid, Status: status, ProbeErr: probeErr,
@@ -117,8 +115,8 @@ func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string
 			if sessionDriverBeforeTakeoverSeam != nil {
 				sessionDriverBeforeTakeoverSeam()
 			}
-			n, err := s.q.TakeOverSessionDriver(ctx, db.TakeOverSessionDriverParams{
-				HostID: hostID, Pid: int64(s.pid), ClaimedAt: now, SessionID: sessionID, ExpectedHostID: row.HostID,
+			n, err := q.TakeOverSessionDriver(ctx, db.TakeOverSessionDriverParams{
+				HostID: hostID, Pid: int64(pid), ClaimedAt: now, SessionID: sessionID, ExpectedHostID: row.HostID,
 			})
 			if err != nil {
 				return fmt.Errorf("session driver: take over: %w", err)
@@ -127,8 +125,8 @@ func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string
 				return nil
 			}
 		case errors.Is(err, sql.ErrNoRows):
-			n, err := s.q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
-				SessionID: sessionID, HostID: hostID, Pid: int64(s.pid), ClaimedAt: now,
+			n, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
+				SessionID: sessionID, HostID: hostID, Pid: int64(pid), ClaimedAt: now,
 			})
 			if err != nil {
 				return fmt.Errorf("session driver: insert: %w", err)
@@ -144,37 +142,73 @@ func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string
 	return fmt.Errorf("session driver: claim of %s kept losing races after %d attempts", sessionID, claimSessionDriverAttempts)
 }
 
-// ReleaseSessionDriver deletes this store's own claim on sessionID (never
-// another host's). A no-op for a store that never registered a host.
-func (s *AsyncJobStore) ReleaseSessionDriver(ctx context.Context, sessionID string) error {
-	hostID := s.HostID()
+// releaseSessionDriverFor is ReleaseSessionDriver's core, shared by both
+// stores: deletes only the hostID-named row; hostID == "" (never registered)
+// is a no-op.
+func releaseSessionDriverFor(ctx context.Context, hostID string, q *db.Queries, sessionID string) error {
 	if hostID == "" {
 		return nil
 	}
-	if _, err := s.q.DeleteSessionDriver(ctx, db.DeleteSessionDriverParams{SessionID: sessionID, HostID: hostID}); err != nil {
+	if _, err := q.DeleteSessionDriver(ctx, db.DeleteSessionDriverParams{SessionID: sessionID, HostID: hostID}); err != nil {
 		return fmt.Errorf("session driver: release: %w", err)
 	}
 	return nil
 }
 
-// ForeignLiveDriver reports whether ANOTHER host that is alive or unknown
-// drives sessionID: no marker, or a marker naming this store's own host, is
-// not foreign; a dead host's marker is not foreign either. Reads on the
-// reader pool (a PK lookup).
-func (s *AsyncJobStore) ForeignLiveDriver(ctx context.Context, sessionID string) (SessionDriver, bool, error) {
-	row, err := s.readQuerier().GetSessionDriver(ctx, sessionID)
+// foreignLiveDriverFor is ForeignLiveDriver's core, shared by both stores.
+// readQ may be the same handle as the writer queries (single-connection
+// stores such as HostStore): the read is a PK lookup.
+func foreignLiveDriverFor(ctx context.Context, hostID string, readQ *db.Queries, dataDir string, sessionID string) (SessionDriver, bool, error) {
+	row, err := readQ.GetSessionDriver(ctx, sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionDriver{}, false, nil
 	}
 	if err != nil {
 		return SessionDriver{}, false, fmt.Errorf("session driver: read: %w", err)
 	}
-	if row.HostID == s.HostID() {
+	if row.HostID == hostID {
 		return SessionDriver{}, false, nil
 	}
-	status, _ := s.hostLivenessDetail(row.HostID)
+	status, _ := hostLivenessDetailFor(dataDir, row.HostID)
 	d := SessionDriver{SessionID: sessionID, HostID: row.HostID, PID: row.Pid, Status: status}
 	return d, status != HostStatusDead, nil
+}
+
+// ClaimSessionDriver records this store's host as sessionID's driver. It is
+// idempotent for the same host; refuses (*ErrSessionDrivenElsewhere) while
+// another host that is alive or unknown holds the marker; takes a dead
+// host's marker over with a CAS on that exact host (so of N concurrent takers
+// exactly one wins). A host lock the data dir cannot provide is
+// ErrDriverMarkerUnavailable; every other ensureHost failure is a plain error
+// (the caller must not proceed without the marker). Delegates the claim CAS
+// loop to claimSessionDriverFor; s.ensureHost (and with it the async_jobs
+// recovery sweep, SweepDeadHosts) stays here unchanged -- OFF-path behavior
+// is byte-for-byte identical to before the refactor.
+func (s *AsyncJobStore) ClaimSessionDriver(ctx context.Context, sessionID string) error {
+	hostID, err := s.ensureHost(ctx)
+	if err != nil {
+		if errors.Is(err, ErrHostLockUnavailable) {
+			return fmt.Errorf("%w: %w", ErrDriverMarkerUnavailable, err)
+		}
+		return fmt.Errorf("session driver: register host: %w", err)
+	}
+	return claimSessionDriverFor(ctx, hostID, s.q, s.dataDir, s.pid, sessionID)
+}
+
+// ReleaseSessionDriver deletes this store's own claim on sessionID (never
+// another host's). A no-op for a store that never registered a host.
+// Delegates to releaseSessionDriverFor (shared with HostStore).
+func (s *AsyncJobStore) ReleaseSessionDriver(ctx context.Context, sessionID string) error {
+	return releaseSessionDriverFor(ctx, s.HostID(), s.q, sessionID)
+}
+
+// ForeignLiveDriver reports whether ANOTHER host that is alive or unknown
+// drives sessionID: no marker, or a marker naming this store's own host, is
+// not foreign; a dead host's marker is not foreign either. Reads on the
+// reader pool (a PK lookup). Delegates to foreignLiveDriverFor (shared with
+// HostStore).
+func (s *AsyncJobStore) ForeignLiveDriver(ctx context.Context, sessionID string) (SessionDriver, bool, error) {
+	return foreignLiveDriverFor(ctx, s.HostID(), s.readQuerier(), s.dataDir, sessionID)
 }
 
 // purgeDeadSessionDrivers deletes every marker whose host is provably dead
