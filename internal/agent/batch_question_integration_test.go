@@ -160,6 +160,10 @@ func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
 	require.Equal(t, 3, depth)
 	// The durable publisher recorded the question under this execution's OWN
 	// node identity.
+	// The hold is registered BEFORE the publication, so the held state can be
+	// observed ahead of the publish: wait for it instead of reading at once.
+	require.Eventually(t, func() bool { return len(rig.publishedNotices()) >= 1 },
+		2*time.Second, time.Millisecond, "the held question must be published")
 	notices := rig.publishedNotices()
 	require.Len(t, notices, 1, "exactly one publish per held question")
 	require.Equal(t, string(e.requestSnapshot().NodeID), notices[0].NodeID,
