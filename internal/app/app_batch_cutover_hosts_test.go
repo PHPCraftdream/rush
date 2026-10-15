@@ -10,7 +10,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -56,21 +56,30 @@ func TestBatchHostStoreFlagOn_TeardownWithoutAsyncJobsTable(t *testing.T) {
 	_, err := app.DB().ExecContext(context.Background(), `DROP TABLE async_jobs`)
 	require.NoError(t, err)
 
-	// Capture the lock path before shutdown for the cross-OS leak oracle below.
-	lockPath := session.HostLockPath(app.dataDir, hostID)
-
 	res := app.ShutdownWithResult()
 	require.False(t, res.Forced)
 	require.Empty(t, res.CleanupErrors,
 		"the flag-ON teardown never queries async_jobs")
 
-	// Cross-OS leak oracle: with every flag-ON handle released, the lock
-	// file is either already unlinked by the graceful Close (host had no
-	// live nodes) or removable — on Windows an open handle makes Remove
-	// fail with a sharing violation, so any other error is a leak.
-	err = os.Remove(lockPath)
-	require.True(t, err == nil || errors.Is(err, os.ErrNotExist),
-		"hosts/*.lock must be removed or removable after shutdown (a sharing violation means a host lock handle leaked)")
+	// All-OS leak oracle: after the real flag-ON shutdown, EVERY lock file
+	// under hosts/ must be exclusively re-acquirable. Windows fails the
+	// acquire on an open handle (sharing violation); POSIX flock fails it on
+	// a held lock — unlike os.Remove, which succeeds on POSIX even for an
+	// open, flocked file. A file already unlinked by the graceful Close is
+	// simply absent from the glob. Release each acquired lock so later
+	// cleanups see no new handles.
+	entries, rerr := os.ReadDir(session.HostsDir(app.dataDir))
+	require.NoError(t, rerr)
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".lock" {
+			continue
+		}
+		lk, aerr := filelock.TryAcquireFileLock(session.HostLockPath(app.dataDir, strings.TrimSuffix(e.Name(), ".lock")))
+		require.NoError(t, aerr, "hosts/%s must be re-acquirable after shutdown (a failure means a host lock handle leaked)", e.Name())
+		if lk != nil {
+			require.NoError(t, lk.Release())
+		}
+	}
 }
 
 // TestBatchHostStoreFlagOn_ShutdownDrainCompletes (R12-F acceptance: the
@@ -95,6 +104,46 @@ func TestBatchHostStoreFlagOn_ShutdownDrainCompletes(t *testing.T) {
 	res := app.ShutdownWithResult()
 	require.False(t, res.Forced, "dormant runtime: the drain completes gracefully")
 	require.Empty(t, res.CleanupErrors)
+}
+
+// TestBatchHostShutdownReleasesEveryHostFlagOn (R12-F): a flag-ON app whose
+// LEGACY AsyncJobStore host was ensured directly (the pre-R12-F fixture
+// shape; production flag-ON code ensures only the HostStore) releases BOTH
+// hosts on the real ShutdownWithResult path — the drain gate releases the
+// HostStore, and releaseResources' runtime branch releases the legacy host
+// BEFORE the gate's writer release.
+//
+// Revert-check: dropping the legacy-release block from releaseResources'
+// runtime branch leaves the legacy hosts/<id>.lock held; the acquire below
+// fails with a sharing violation on Windows and a held flock on POSIX.
+func TestBatchHostShutdownReleasesEveryHostFlagOn(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+	app := newFullNewApp(t)
+	require.NotNil(t, app.batchRuntime, "flag on: runtime installed")
+	_, err := app.asyncJobStore.EnsureHost(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, app.BatchHostStore().HostID(), "the install registered the HostStore identity too")
+
+	res := app.ShutdownWithResult()
+	require.False(t, res.Forced)
+	require.Empty(t, res.CleanupErrors)
+
+	// Graceful Close deletes released lock files, so an empty dir is a pass;
+	// a leaked lock stays listed and fails the acquire below.
+	entries, rerr := os.ReadDir(session.HostsDir(app.dataDir))
+	if !os.IsNotExist(rerr) {
+		require.NoError(t, rerr)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".lock" {
+			continue
+		}
+		lk, aerr := filelock.TryAcquireFileLock(session.HostLockPath(app.dataDir, strings.TrimSuffix(e.Name(), ".lock")))
+		require.NoError(t, aerr, "hosts/%s must be re-acquirable after shutdown", e.Name())
+		if lk != nil {
+			require.NoError(t, lk.Release())
+		}
+	}
 }
 
 // TestBatchHostLockSubprocessHelper is the guarded helper process: it
