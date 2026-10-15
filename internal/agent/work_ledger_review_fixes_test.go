@@ -80,74 +80,138 @@ func TestWorkLedger_RetryLoopStopsAfterClose(t *testing.T) {
 
 // TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes pins P2: a
 // plain (non-delegation) job's natural finish racing cancelSession's Stop
-// must never wake the session, regardless of which cause's DB write
-// actually wins the CAS -- cancelSession marks the job stoppedBySession
-// under l.mu, synchronously with every other target, BEFORE either side's
-// DB write begins, so transition's delivery step can drop it silently no
-// matter who commits first.
+// must never wake the session AFTER Stop took effect -- once cancelSession
+// has marked the job stoppedBySession under l.mu (synchronously, BEFORE
+// either side's DB write begins), transition's delivery step can drop it
+// silently no matter which cause's CAS commits first.
 //
-// The in-memory onWebDone callback never firing is necessary but not
-// sufficient: causeStateNoticeKindWake sets wake=true for causeNaturalFinish
-// UNCONDITIONALLY, with no knowledge of stoppedBySession at all (that gate is
-// purely in-memory, checked only by deliverLocked, after the DB write
-// already committed) -- a bug that made the DB row ITSELF carry a stray
-// wake=1/pending row despite session_cancel actually winning would slip past
-// a memory-only check. This asserts the COMMITTED row is coherent with
-// whichever cause actually won: natural finish winning legitimately leaves
-// wake=1/pending (real, future debt for the next ordinary turn -- only the
-// immediate HINT is suppressed, not the row); session_cancel winning leaves
-// wake=0/session_cancel (no debt at all).
+// The finish-first interleaving is LEGITIMATE, not a leak: when finish's
+// entire commit+deliver completes before cancelSession first acquires l.mu,
+// causeNaturalFinish's own wake=1 completion is delivered before Stop
+// exists; the previously unconditional require.Empty mis-oracled that
+// ordering. It is now covered explicitly by its own subtest, and the
+// released-simultaneously race is replaced by a deterministic mark-then-
+// release subtest that holds the invariant for every CAS winner.
 //
-// Revert-check performed: temporarily removed the `job.stoppedBySession &&
-// job.childSession == ""` branch from transition's delivery step (falling
-// through to the unconditional deliverLocked call) -- this test FAILED
-// (some iterations delivered a completion, since finish's own transition
-// call sometimes won the race and reached deliverLocked normally). Restored
-// the branch; re-ran 30 iterations, passed. Diffed work_ledger_transition.go
-// against git HEAD after restoring: matches the committed fix.
+// Revert-check (deliverLocked's stoppedBySession branch removed, falling
+// through to unconditional delivery): subtest 3 fails require.Empty on any
+// iteration where finish wins the CAS (it delivers its {ok, wake=true}
+// completion), and subtest 1 fails at its FIRST require.Empty
+// (cancelSession's own transition would deliver a cancellation completion).
 func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T) {
-	for i := 0; i < 30; i++ {
+	// raceFixture builds the store, ledger and delivered channel shared by
+	// every subtest below, with one acknowledged plain bash job.
+	raceFixture := func(t *testing.T) (*session.AsyncJobStore, *workLedger, chan AsyncCompletion) {
+		t.Helper()
 		store := newTestAsyncJobStore(t)
 		delivered := make(chan AsyncCompletion, 4)
 		l := newWorkLedger(func(c AsyncCompletion) { delivered <- c })
 		l.store = store
-
 		_, _, err := l.Start("owner", "call", "", "bash", "", false, false, nil, func() {})
 		require.NoError(t, err)
 		l.acknowledged(jobOf(l, "owner", "call"))
+		return store, l, delivered
+	}
 
-		start := make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			<-start
-			l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
-		}()
-		go func() {
-			defer wg.Done()
-			<-start
-			l.cancelSession("owner")
-		}()
-		close(start)
-		wg.Wait()
+	t.Run("cancelSession returns before finish", func(t *testing.T) {
+		store, l, delivered := raceFixture(t)
 
-		got := drainCompletions(delivered)
-		require.Empty(t, got, "a plain job must never wake the session after Stop, regardless of which cause won the race (iteration %d)", i)
+		l.cancelSession("owner")
+		require.Empty(t, drainCompletions(delivered),
+			"cancelSession itself must deliver nothing for a plain job")
+
+		l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
+		require.Empty(t, drainCompletions(delivered),
+			"nothing may be delivered after cancelSession returned")
 
 		row, err := store.Get(context.Background(), "owner", "call")
-		require.NoError(t, err, "iteration %d", i)
-		switch row.State {
-		case "completed":
-			require.EqualValues(t, 1, row.Wake, "iteration %d: natural finish winning must still leave real, future debt in the row", i)
-			require.Equal(t, "ok", row.ResultSummary.String, "iteration %d", i)
-		case "cancelled":
-			require.EqualValues(t, 0, row.Wake, "iteration %d: session_cancel winning must never leave wake=1", i)
-			require.Equal(t, "session_cancel", row.NoticeKind, "iteration %d", i)
-		default:
-			t.Fatalf("iteration %d: unexpected committed state %q", i, row.State)
+		require.NoError(t, err)
+		require.Equal(t, "cancelled", row.State)
+		require.EqualValues(t, 0, row.Wake)
+		require.Equal(t, "session_cancel", row.NoticeKind)
+	})
+
+	t.Run("finish fully delivers before cancelSession", func(t *testing.T) {
+		store, l, delivered := raceFixture(t)
+
+		l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
+		got := drainCompletions(delivered)
+		require.Len(t, got, 1)
+		require.Equal(t, "ok", got[0].Content)
+		require.True(t, got[0].Wake)
+		require.False(t, got[0].Stopped)
+		require.False(t, got[0].Cancelled)
+		require.False(t, got[0].IsError)
+		require.Equal(t, "owner", got[0].SessionID)
+		require.Equal(t, "call", got[0].ToolCallID)
+		require.Equal(t, "bash", got[0].ToolName)
+
+		l.cancelSession("owner")
+		require.Empty(t, drainCompletions(delivered),
+			"no second delivery once the natural finish already completed the job")
+
+		row, err := store.Get(context.Background(), "owner", "call")
+		require.NoError(t, err)
+		require.Equal(t, "completed", row.State)
+		require.EqualValues(t, 1, row.Wake)
+		require.Equal(t, "ok", row.ResultSummary.String)
+	})
+
+	t.Run("stop marked before finish commits", func(t *testing.T) {
+		for i := 0; i < 30; i++ {
+			store, l, delivered := raceFixture(t)
+
+			// Replicate cancelSession's first critical section
+			// (work_ledger_delegation.go): mark stoppedBySession under l.mu
+			// BEFORE releasing either side, so the subtest is deterministic
+			// where the released-simultaneously race was not.
+			job := jobOf(l, "owner", "call") // jobOf takes l.mu itself
+			l.mu.Lock()
+			job.stoppedBySession = true
+			l.mu.Unlock()
+
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				// The same call stopTargets makes for a non-sync plain
+				// target; the DB CAS winner may vary, the invariant must
+				// not.
+				l.transition(jobOf(l, "owner", "call"), causeSessionCancel, jobResult{})
+			}()
+			close(start)
+			wg.Wait()
+
+			got := drainCompletions(delivered)
+			require.LessOrEqual(t, len(got), 1, "iteration %d", i)
+			require.Empty(t, got,
+				"iteration %d: with the mark already set, ANY delivery is a violation regardless of which CAS won", i)
+
+			// Both CAS orders converge on this row: natural finish either
+			// loses the CAS and adopts the committed cancellation, or wins
+			// it and the row check simply follows whichever state landed.
+			row, err := store.Get(context.Background(), "owner", "call")
+			require.NoError(t, err, "iteration %d", i)
+			switch row.State {
+			case "completed":
+				require.EqualValues(t, 1, row.Wake,
+					"iteration %d: finish winning the CAS must still leave real, future debt in the row", i)
+			case "cancelled":
+				require.EqualValues(t, 0, row.Wake,
+					"iteration %d: session_cancel winning must never leave wake=1", i)
+				require.Equal(t, "session_cancel", row.NoticeKind, "iteration %d", i)
+			default:
+				t.Fatalf("iteration %d: unexpected committed state %q", i, row.State)
+			}
 		}
-	}
+	})
 }
 
 // TestWorkLedger_MarkJobStopped_SyncJobPreservesStoppedOutcome pins the P2
