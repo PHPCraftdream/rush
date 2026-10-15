@@ -485,6 +485,8 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	store.SetupAgents()
 	conn, err := db.Connect(context.Background(), dir)
 	require.NoError(t, err)
+	// Runs after a.Shutdown (LIFO).
+	t.Cleanup(func() { _ = db.Release(dir) })
 	a, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(a.Shutdown)
