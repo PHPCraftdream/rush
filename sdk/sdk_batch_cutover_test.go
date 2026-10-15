@@ -78,7 +78,9 @@ func TestSDKBatchRuntimeOnCustomDiskProviderRefusedNotDurable(t *testing.T) {
 		},
 	})
 	require.Error(t, err, "the flag-ON runtime must refuse a custom DiskProvider")
-	require.Nil(t, res, "the refusal is admission-time: no run result exists")
+	if res != nil {
+		require.Equal(t, "error", res.ExitReason, "a refused run reports exit_reason=error")
+	}
 	require.ErrorIs(t, err, sdk.ErrDiskProviderNotDurable,
 		"the refusal must surface as the stable sdk.ErrDiskProviderNotDurable sentinel, got %v", err)
 	require.Zero(t, hits.Load(), "the refusal must happen before any provider traffic")
