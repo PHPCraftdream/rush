@@ -292,7 +292,35 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		// release below — Runner drain, then host identity, then writer, all
 		// inside DrainAndRelease. A Close timeout or fault fence promotes the
 		// shutdown to Forced (resources retained).
+		//
+		// R12-F: the gate releases only the HostStore identity. A flag-ON app
+		// can also hold a LEGACY AsyncJobStore host (ensured directly by a
+		// caller, e.g. a pre-R12-F fixture; production flag-ON code ensures
+		// only the HostStore). Release it here, BEFORE the gate — the gate
+		// releases the DB writer, and a post-writer store write would hit a
+		// released pool. Same graceful/forced split as below; a no-op when
+		// the legacy store never ensured a host, and exactly-once with the
+		// flag-off branch (an else-if below this one).
+		if app.asyncJobStore != nil {
+			if stillBusy {
+				app.asyncJobStore.CloseKeepLock()
+			} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
+				slog.Warn("Failed to release legacy async job store host identity on shutdown", "error", err)
+				recordCleanupError(err)
+			}
+		}
 		stillBusy = app.releaseBatchRuntimeGate(shutdownCtx, stillBusy, recordCleanupError)
+	} else if batchCutoverOn() && app.batchHostStore() != nil {
+		// R12-F: a flag-ON app whose batch runtime was never installed still
+		// owns a HostStore identity if anything ensured it — release it here
+		// exactly like the drain gate's graceful/forced split, so every
+		// flag-ON host lock is released on the real shutdown path.
+		if stillBusy {
+			app.batchHostReleaseKeepLock()
+		} else if err := app.batchHostRelease(shutdownCtx); err != nil {
+			slog.Warn("Failed to release batch host identity on shutdown", "error", err)
+			recordCleanupError(err)
+		}
 	} else if app.asyncJobStore != nil {
 		if stillBusy {
 			app.asyncJobStore.CloseKeepLock()

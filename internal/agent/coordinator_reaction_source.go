@@ -122,7 +122,7 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 	if c.asyncJobs == nil {
 		return nil
 	}
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
 			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
 				return err
@@ -162,7 +162,7 @@ func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID strin
 	// The DURABLE marker is released unconditionally: it is what other
 	// processes consult, and it must not keep naming a host that stays alive
 	// until this process really exits (shutdown can take a while).
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ReleaseSessionDriver(ctx, sessionID); err != nil {
 			slog.Warn("external driver: releasing the durable marker failed; Close is the backstop",
 				"session_id", sessionID, "err", err)

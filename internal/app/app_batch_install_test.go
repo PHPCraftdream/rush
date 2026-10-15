@@ -32,6 +32,14 @@ import (
 // proves nothing about the installed system.
 func newFullNewApp(t *testing.T) *App {
 	t.Helper()
+	return newFullNewAppAt(t, t.TempDir())
+}
+
+// newFullNewAppAt is newFullNewApp over a caller-chosen data directory (the
+// R12-F cross-process tests need the subprocess's data dir, not a private
+// TempDir).
+func newFullNewAppAt(t *testing.T, dataDir string) *App {
+	t.Helper()
 	isolateAppNewTestEnv(t)
 	// The provider probe never needs to be called; its existence satisfies
 	// config validation without a network endpoint.
@@ -41,7 +49,6 @@ func newFullNewApp(t *testing.T) *App {
 	}))
 	t.Cleanup(srv.Close)
 
-	dataDir := t.TempDir()
 	store, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)
 	store.Config().Providers.Set("openaicompat", config.ProviderConfig{
@@ -117,17 +124,20 @@ func TestBatchRuntimeFlagOffGolden(t *testing.T) {
 
 // TestBatchRuntimeFlagOnInstall: with the flag on, the app-level install
 // wires the full runtime — Runner attached, release seams bound to the
-// App's own asyncJobStore/DB release path, fault watcher armed — and the
-// commit-hook identity uses the App's host identity (one install, one
-// authority).
+// App's R12-F HostStore/DB release path, fault watcher armed — and the
+// commit-hook identity uses the HostStore identity (one install, one
+// authority), NOT the AsyncJobStore's: async_jobs stays untouched.
 func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	a := batchFactoryApp(t)
 	// The host identity registers during the flagged install (R11F M3:
 	// EnsureHost precedes the commit-hook identity), so read it after.
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	hostID := a.asyncJobStore.HostID()
+	hostID := a.BatchHostStore().HostID()
 	require.NotEmpty(t, hostID)
+	// R12-F independence pin: the AsyncJobStore identity was never ensured,
+	// so the async_jobs-backed registration never ran under the flag.
+	require.Empty(t, a.asyncJobStore.HostID())
 
 	release := func() {
 		if a.batchRuntime != nil {
@@ -138,10 +148,10 @@ func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 			}
 			a.batchRuntime.Stop()
 		}
-		if a.asyncJobStore != nil {
+		if hs := a.BatchHostStore(); hs != nil {
 			// Close (not CloseKeepLock): the test's TempDir cleanup must be
 			// able to unlink the host lock on Windows.
-			_ = a.asyncJobStore.Close(context.Background())
+			_ = hs.Close(context.Background())
 		}
 	}
 	t.Cleanup(release)
@@ -158,7 +168,7 @@ func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 	// App keeps its original runtime and Runner.
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	require.Same(t, rt, a.batchRuntime)
-	require.NotEmpty(t, a.asyncJobStore.HostID())
+	require.NotEmpty(t, a.BatchHostStore().HostID())
 }
 
 // TestBatchRuntimeFlagOnInstallFailsClosed: a hand-assembled App without a
@@ -169,7 +179,12 @@ func TestBatchRuntimeFlagOnInstallFailsClosed(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	a := batchFactoryApp(t)
 	a.Messages = nil
-	t.Cleanup(func() { _ = a.asyncJobStore.Close(context.Background()) })
+	t.Cleanup(func() {
+		_ = a.asyncJobStore.Close(context.Background())
+		if hs := a.BatchHostStore(); hs != nil {
+			_ = hs.Close(context.Background())
+		}
+	})
 	require.Error(t, a.installBatchRuntime(context.Background()))
 	require.Nil(t, a.batchRuntime, "fail closed: no partially-installed runtime")
 }

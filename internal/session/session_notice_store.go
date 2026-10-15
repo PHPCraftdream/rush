@@ -318,7 +318,10 @@ func (s *SessionNoticeStore) ListSessionNotices(ctx context.Context, owner strin
 // (PendingNoticeDebt). Delivery 'void' is never debt (the query filters
 // it); delivery 'none' cannot be (notice_selected=0 fails the CHECK).
 func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, owner string) (BatchPendingDebt, error) {
-	nodes, err := s.q.BatchOutboxDebtNodes(ctx, owner)
+	// Go-side predicate: BatchOutboxDebtNodes + the root-void exclusion (see
+	// batchOutboxDebtNodesVoidAware in batch_reaction.go; fold back into
+	// batch_outbox.sql when sqlc regeneration is available).
+	nodes, err := batchOutboxDebtNodesVoidAware(ctx, s.sqlDB, owner)
 	if err != nil {
 		return BatchPendingDebt{}, fmt.Errorf("session notice store: pending-inclusive debt rows: batch_nodes: %w", err)
 	}
@@ -328,7 +331,7 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 	}
 	out := BatchPendingDebt{}
 	for _, n := range nodes {
-		out.Nodes = append(out.Nodes, BatchDebtNodeRef{RootID: n.RootID, NodeID: n.NodeID, NoticeMessageID: n.NoticeMessageID.String})
+		out.Nodes = append(out.Nodes, n.ref)
 	}
 	for _, n := range noticeRows {
 		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})

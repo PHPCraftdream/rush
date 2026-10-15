@@ -136,7 +136,14 @@ func (f *batchRerunFx) reconcile(target string, tail ...string) (BatchRerunTrunc
 //	(f) attaching Reserve to terminal roots (GetLiveBatchRoot losing its
 //	    live-state predicate) reuses the old root_id -- the NotEqual fails;
 //	(g) widening the Voided set to a tool_call_id lookup adds the new
-//	    incarnation to Voided -- the emptiness assertion fails.
+//	    incarnation to Voided -- the emptiness assertion fails;
+//	(h) removing the void-root skip from Project's notice selection
+//	    (round-4 contract) turns the late void-root notice into
+//	    ErrBatchProjectionConflict -- the NoError on the late projection
+//	    and the unchanged-history assertions fail;
+//	(i) suppressing debt for the whole owner (or excluding live roots too)
+//	    fails the replacement-presence assertions; keying the exclusion off
+//	    the root's delivery='void' only is what these assertions pin.
 func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	t.Parallel()
 	f := newBatchRerunFx(t)
@@ -173,9 +180,11 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	require.Equal(t, "done", before.Root.Delivery)
 
 	// A late COMPLETION of the OLD incarnation keys its own rows only: it
-	// may rewrite them, but it can never reach the new incarnation. (A
-	// second notice selection is refused by the R5 guard: the node already
-	// carries the rerun's selected notice.)
+	// may rewrite them, but it can never reach the new incarnation. A late
+	// notice on the VOID root is a tolerated no-op (the round-4 contract:
+	// the void-root skip silently drops its selection); a late notice on a
+	// LIVE already-selected node is still ErrBatchProjectionConflict, pinned
+	// by the protected rejection tests.
 	late := BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
 		batchStoreTestUpdate(old.Nodes[1].NodeID, "completed"),
 	}}}}
@@ -183,7 +192,48 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	lateNotice := BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
 		batchStoreTestUpdate(old.Nodes[1].NodeID, "completed"),
 	}, Notices: []db.SelectBatchNodeNoticeParams{batchStoreTestNotice(old.Nodes[1].NodeID)}}}}
-	require.ErrorIs(t, f.store.Project(f.ctx, lateNotice), ErrBatchProjectionConflict)
+	// The void-root skip tolerates the late selection: a tolerated no-op.
+	nodeBefore := f.node(old.Root.RootID, old.Nodes[1].NodeID)
+	historyBefore, err := f.messages.List(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.NoError(t, f.store.Project(f.ctx, lateNotice),
+		"the void-root skip tolerates the late selection: the old root is delivery='void'")
+	n := f.node(old.Root.RootID, old.Nodes[1].NodeID)
+	require.Equal(t, nodeBefore.NoticeSelected, n.NoticeSelected, "the void root's late notice was NOT re-selected")
+	require.Equal(t, "void", n.Delivery, "the void-root node stays void")
+	pulled, err := f.store.BatchPullNotices(f.ctx, f.messages, batchRerunOwner, func(row BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "late:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Empty(t, pulled, "nothing became pullable from the late void-root selection")
+	// An owner-wide BatchReactionDebtExists would be TRUE here because the
+	// replacement incarnation's own pulled wake notices are legitimate
+	// owner-wide debt. What the void exclusion guarantees is that the
+	// RETIRED root's nodes/notice never appear in debt.
+	debt, err := f.store.BatchReactionPendingInclusiveDebtRows(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	for _, n := range debt.Nodes {
+		require.NotEqual(t, old.Root.RootID, n.RootID,
+			"the retired root contributes no debt: its subtree is void-quarantined")
+	}
+	require.NotEmpty(t, debt.Nodes,
+		"the replacement incarnation's own pulled wake notices are legitimate debt (they must not be suppressed)")
+	for _, n := range debt.Nodes {
+		require.Equal(t, re.Root.RootID, n.RootID,
+			"every debt node belongs to the live replacement incarnation")
+	}
+	historyAfter, err := f.messages.List(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.Len(t, historyAfter, len(historyBefore), "history is unchanged by the tolerated late projection")
+	beforeIDs := make([]string, 0, len(historyBefore))
+	for _, m := range historyBefore {
+		beforeIDs = append(beforeIDs, m.ID)
+	}
+	afterIDs := make([]string, 0, len(historyAfter))
+	for _, m := range historyAfter {
+		afterIDs = append(afterIDs, m.ID)
+	}
+	require.Equal(t, beforeIDs, afterIDs, "the message ID set is unchanged")
 
 	// A late ACK of the old incarnation elects nothing (already announced).
 	_, err = f.store.BatchAnnounceStarted(f.ctx, f.messages, batchRerunOwner, old.Root.RootID, message.CreateMessageParams{
@@ -283,6 +333,55 @@ func TestBatchRerunTargetGoneChangesNothing(t *testing.T) {
 	require.Equal(t, "running", f.root(old.Root.RootID).State)
 }
 
+// Settle+pull race closed at the COMMIT boundary (R12-F round 4): the
+// reconciliation voids the live root IN its truncation transaction, so a
+// settlement arriving AFTER the commit is a tolerated skip that can make
+// nothing pullable — history stays byte-identical.
+// Revert-check: move the live-root void back to the post-commit stop
+// goroutine (the round-3 shape) and the settlement lands in the void gap:
+// the root's notice re-selects pending, BatchPullNotices delivers it, and
+// the message-count assertion fails.
+func TestBatchRerunReconcileCommitClosesSettlePullRace(t *testing.T) {
+	t.Parallel()
+	f := newBatchRerunFx(t)
+	target := f.add(message.User, message.TextContent{Text: "rerun"})
+	asst := f.assistantCall("call-1")
+	old := f.reserve("call-1")
+	f.start(old)
+	announce := f.ack(old)
+
+	// SCHEMA TRACE (first real assertion): after the reconcile COMMITS, the
+	// live acked root is durably void in real batch_nodes — synthetic
+	// select+void, wake=0, state untouched for stop routing.
+	res, err := f.reconcile(target.ID, asst.ID, announce.ID)
+	require.NoError(t, err)
+	require.Len(t, res.Voided, 1)
+	require.Equal(t, old.Root.RootID, res.Voided[0].RootID)
+	row := f.root(old.Root.RootID)
+	require.Equal(t, "void", row.Delivery, "the live arm voids the root inside the truncation transaction")
+	require.Equal(t, int64(1), row.NoticeSelected)
+	require.Zero(t, row.Wake)
+	require.Equal(t, "running", row.State)
+
+	// A settlement arriving after the commit: terminal root update + root
+	// notice. The update lands; the notice selection is the tolerated
+	// void-root skip in batchProjectRoot.
+	require.NoError(t, f.store.Project(f.ctx, BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
+		batchStoreTestUpdate(old.Root.NodeID, "completed"),
+	}, Notices: []db.SelectBatchNodeNoticeParams{batchStoreTestNotice(old.Root.NodeID)}}}}))
+
+	// Nothing is pullable: the voided root's selected synthetic notice has
+	// delivery='void', and the skipped settlement selected nothing new.
+	pulled, err := f.store.BatchPullNotices(f.ctx, f.messages, batchRerunOwner, func(row BatchNoticeRow) message.CreateMessageParams {
+		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "notice:" + row.NodeID}}}
+	})
+	require.NoError(t, err)
+	require.Empty(t, pulled, "nothing under the voided root may reach the outbox after the commit")
+	row = f.root(old.Root.RootID)
+	require.Equal(t, "void", row.Delivery, "the settlement cannot move the voided root out of the outbox quarantine")
+	require.Zero(t, row.Wake)
+}
+
 // The legacy arm voids a root that never acked (announce_message_id NULL),
 // scoped to its exact root_id. Revert-check: removing the legacy arm itself
 // leaves it unvoided -- the Voided and delivery assertions fail.
@@ -304,14 +403,15 @@ func TestBatchRerunLegacyArmVoidsNeverAckedRoot(t *testing.T) {
 	require.Equal(t, "void", f.root(old.Root.RootID).Delivery)
 }
 
-// D-R10c-live: still-nonterminal roots the rerun deleted history for cannot
-// take a void WRITE (the batch_nodes CHECK constraint forbids delivery='void'
-// on notice_selected=0 rows), so they appear in res.Voided with their exact
-// root_id for post-commit stop routing while their rows stay live.
+// D-R10c-live (R12-F round 4): still-nonterminal roots the rerun deleted
+// history for are VOIDED IN the truncation transaction (synthetic select+void
+// with the CHECK-legal notice identity) AND appear in res.Voided with their
+// exact root_id for post-commit STOP ROUTING ONLY — the stop goroutine never
+// writes delivery state.
 // Revert-check (mutation m13_live_rerun_unreachable.py: restrict the
 // BatchRerunLiveRootsBy{AnnounceMessage,ToolCall}IDs SELECTs, e.g.
-// `AND 1=0` on the live arms): the live roots drop out of Voided -- the
-// Voided and Reserve-attach assertions below fail.
+// `AND 1=0` on the live arms): the live roots drop out of Voided AND stay
+// unvoided -- the Voided, delivery and Reserve-attach assertions below fail.
 func TestBatchRerunVoidedIncludesLiveRootsForStopRouting(t *testing.T) {
 	t.Parallel()
 	f := newBatchRerunFx(t)
@@ -337,14 +437,21 @@ func TestBatchRerunVoidedIncludesLiveRootsForStopRouting(t *testing.T) {
 	require.Contains(t, got, live.Root.RootID)
 	require.Contains(t, got, legacy.Root.RootID)
 	lr := f.root(live.Root.RootID)
-	require.Equal(t, "none", lr.Delivery, "live rows keep delivery='none': a void write would violate the schema CHECK")
-	require.Equal(t, "running", lr.State, "the row stays live; only stop routing retires it")
+	// The durable void landed IN the reconciliation transaction: synthetic
+	// select+void, wake=0 — the retired root can never select or surface a
+	// pullable notice again.
+	require.Equal(t, "void", lr.Delivery, "the live arm voids the acked root in-tx")
+	require.Equal(t, int64(1), lr.NoticeSelected, "the in-tx void synthetically selects the root notice")
+	require.Zero(t, lr.Wake, "the voided root wakes nothing: no outbox debt")
+	require.Equal(t, "running", lr.State, "the stop-routing state is untouched by the void write")
 	lg := f.root(legacy.Root.RootID)
-	require.Equal(t, "none", lg.Delivery)
+	require.Equal(t, "void", lg.Delivery)
+	require.Equal(t, int64(1), lg.NoticeSelected)
+	require.Zero(t, lg.Wake)
 	require.Equal(t, "running", lg.State)
-	// Until the executor confirms the stop, Reserve under the same
-	// tool_call_id still attaches to the OLD live root (mirrors legacy:
-	// attach was also keyed on the running row until it stopped). Stop
+	// Until the executor confirms the stop, the row's STATE stays live, so
+	// Reserve under the same tool_call_id still attaches to the OLD voided
+	// root (the void write never touches state; mirrors legacy). Stop
 	// routing, not a fresh incarnation, is asserted here.
 	re := f.reserve("call-1")
 	require.Equal(t, live.Root.RootID, re.Root.RootID, "attach still keys the old live root before its stop is confirmed")

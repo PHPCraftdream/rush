@@ -236,6 +236,25 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		v.RootID, v.HostID, v.OwnerSessionID, v.RunnerID = p.Root, host, p.Owner, runner
 		v.NoticeSequence = sql.NullInt64{Int64: sequence, Valid: true}
 		v.UpdatedAt = time.Now().Unix()
+		// R12-F round 4: read the target node's ROOT row first. If that root
+		// was durably retired by a rerun (BatchRerunReconcile's in-tx void,
+		// delivery='void'), its subtree can never select notices — the
+		// selection is a tolerated no-op. This is the ONLY tolerance: every
+		// other zero-row SelectBatchNodeNotice stays a hard
+		// ErrBatchProjectionConflict.
+		root, err := q.GetBatchNode(ctx, db.GetBatchNodeParams{RootID: p.Root, NodeID: p.Root, OwnerSessionID: p.Owner})
+		if err != nil {
+			return err
+		}
+		if root.Delivery == "void" {
+			continue
+		}
+		// Every selected notice names a settled node, and settled nodes are
+		// always in the same transition's Changed set (engine.go), so the
+		// preceding ProjectBatchNode update already moved the row to exactly
+		// this projection_sequence. 0 rows therefore means notice_selected
+		// was already 1 — a projection identity conflict the commit path
+		// must surface, never silently tolerate.
 		if err := batchRequireRow(q.SelectBatchNodeNotice(ctx, v)); err != nil {
 			return err
 		}

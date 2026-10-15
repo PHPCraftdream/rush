@@ -183,6 +183,17 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			return err
 		}
 	}
+	// R12-F P1: flag ON routes the CLI loop's durable driver markers through
+	// the job-independent HostStore (already released by the flag-ON shutdown
+	// drain gate), so the legacy AsyncJobStore never ensures a host and never
+	// creates a hosts/<id>.lock; flag OFF no claimer is set and the legacy
+	// AsyncJobStore is used unchanged.
+	if app.batchWorkIngress != nil && batchCutoverOn() && app.batchHostStore() != nil {
+		if err := agent.SetBatchDriverClaimer(app.AgentCoordinator, app.batchHostStore()); err != nil {
+			slog.Error("Failed to set batch driver claimer", "err", err)
+			return err
+		}
+	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
 	// store. Optional-interface assertion (agent.WakeScheduleController):
 	// the Coordinator interface is not grown for it, so existing test

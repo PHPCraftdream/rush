@@ -287,6 +287,11 @@ type coordinator struct {
 	// coordinator_subagent_drivers.go.
 	subAgentDrivers *subAgentDriverRegistry
 
+	// batchDriverClaimer overrides asyncJobs.store as the durable
+	// session-driver-marker store (flag-ON: session.HostStore); nil keeps
+	// the legacy path. See batch_cutover_driver.go.
+	batchDriverClaimer BatchDriverClaimer
+
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
 	// SetWakeScheduleStore from internal/app; nil until then.
