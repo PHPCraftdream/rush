@@ -623,19 +623,7 @@ func verifyImportedDatabase(ctx context.Context, old, fresh *sql.DB) error {
 			return err
 		}
 	}
-	fkRows, err := fresh.QueryContext(ctx, `PRAGMA foreign_key_check`)
-	if err != nil {
-		return err
-	}
-	if fkRows.Next() {
-		_ = fkRows.Close()
-		return errors.New("legacy import verification: foreign key check failed")
-	}
-	if err := fkRows.Err(); err != nil {
-		_ = fkRows.Close()
-		return err
-	}
-	if err := fkRows.Close(); err != nil {
+	if err := foreignKeyCheck(ctx, fresh); err != nil {
 		return err
 	}
 	var integrity string
@@ -721,4 +709,16 @@ func equalSQLiteValue(a, b any) bool {
 	default:
 		return fmt.Sprint(a) == fmt.Sprint(b)
 	}
+}
+
+func foreignKeyCheck(ctx context.Context, conn *sql.DB) error {
+	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("legacy import verification: foreign key check failed")
+	}
+	return rows.Err()
 }

@@ -57,13 +57,8 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 		_, err := conn.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
 	}
-	checkpoint, err := conn.QueryContext(t.Context(), `PRAGMA wal_checkpoint(FULL)`)
-	require.NoError(t, err)
-	require.True(t, checkpoint.Next())
 	var busy, logFrames, checkpointed int
-	require.NoError(t, checkpoint.Scan(&busy, &logFrames, &checkpointed))
-	require.NoError(t, checkpoint.Err())
-	require.NoError(t, checkpoint.Close())
+	require.NoError(t, conn.QueryRowContext(t.Context(), `PRAGMA wal_checkpoint(FULL)`).Scan(&busy, &logFrames, &checkpointed))
 	require.Zero(t, busy)
 	require.Equal(t, logFrames, checkpointed)
 	_, err = conn.ExecContext(t.Context(), `PRAGMA wal_autocheckpoint=0`)
