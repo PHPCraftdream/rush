@@ -19,15 +19,31 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 	}
 	mode := os.Getenv("RUSH_D11_MODE")
 	require.Contains(t, []string{"baseline", "candidate"}, mode)
-	e := newD11Env(t, mode)
+	workload := os.Getenv("RUSH_D11_WORKLOAD")
+	require.Contains(t, []string{"direct-view", "legacy-bash"}, workload)
+	e := newD11Env(t, mode, workload)
 	journal, syncMode := d11Durability(t, e.app.DB())
 	runs := []d11RunEntry{}
-	phase := func(label string, n, slot int) ([]float64, int, int64, int, int, int) {
+	var measuredMu sync.Mutex
+	var measuredIDs []d11ToolIdentity
+	phase := func(label string, n, slot int, measured bool) ([]float64, int, int64, int, int, int) {
 		before, sub, started, settled := e.writeSnapshot()
 		values := make([]float64, 0, n)
 		errs := 0
 		for i := 0; i < n; i++ {
-			ms, err := e.call(context.Background(), slot, fmt.Sprintf("%s-%d", label, i))
+			requestID := fmt.Sprintf("%s-%d", label, i)
+			ms, err := e.call(context.Background(), slot, requestID)
+			if measured {
+				if identity, ok := e.toolIdentity(requestID); ok {
+					measuredMu.Lock()
+					measuredIDs = append(measuredIDs, identity)
+					measuredMu.Unlock()
+				} else {
+					measuredMu.Lock()
+					measuredIDs = append(measuredIDs, d11ToolIdentity{call: ""})
+					measuredMu.Unlock()
+				}
+			}
 			if err != nil {
 				errs++
 			} else {
@@ -37,22 +53,22 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 		after, asub, astarted, asettled := e.writeSnapshot()
 		return values, errs, after - before, asub - sub, astarted - started, asettled - settled
 	}
-	warm, warmErr, warmWrites, warmSub, warmStarted, warmSettled := phase("warmup", d11WarmupCalls, 0)
-	runs = append(runs, d11RunEntry{Phase: "warmup", Samples: len(warm), Attempts: d11WarmupCalls, Errors: warmErr, P50Ms: percentile(warm, 50), P95Ms: percentile(warm, 95), P99Ms: percentile(warm, 99), Commits: warmWrites, SubmitWrites: warmSub, StartedWrites: warmStarted, SettledWrites: warmSettled, RawMs: warm})
+	warm, warmErr, warmWrites, warmSub, warmStarted, warmSettled := phase("warmup", d11WarmupCalls, 0, false)
+	runs = append(runs, d11RunEntry{Workload: workload, Phase: "warmup", Samples: len(warm), Attempts: d11WarmupCalls, Errors: warmErr, P50Ms: percentile(warm, 50), P95Ms: percentile(warm, 95), P99Ms: percentile(warm, 99), Commits: warmWrites, SubmitWrites: warmSub, StartedWrites: warmStarted, SettledWrites: warmSettled, RawMs: warm})
 	seq, conc := []float64{}, []float64{}
 	seqErr, concErr := 0, 0
 	totalWrites := int64(0)
 	submit, started, settled := 0, 0, 0
 	throughput := float64(0)
 	for round := 0; round < d11MeasuredRounds; round++ {
-		v, errs, w, su, st, se := phase(fmt.Sprintf("seq-%d", round), d11LatencySamples, 0)
+		v, errs, w, su, st, se := phase(fmt.Sprintf("seq-%d", round), d11LatencySamples, 0, true)
 		seq = append(seq, v...)
 		seqErr += errs
 		totalWrites += w
 		submit += su
 		started += st
 		settled += se
-		runs = append(runs, d11RunEntry{Phase: fmt.Sprintf("sequential-%d", round+1), Samples: len(v), Attempts: d11LatencySamples, Errors: errs, P50Ms: percentile(v, 50), P95Ms: percentile(v, 95), P99Ms: percentile(v, 99), Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: v})
+		runs = append(runs, d11RunEntry{Workload: workload, Phase: fmt.Sprintf("sequential-%d", round+1), Samples: len(v), Attempts: d11LatencySamples, Errors: errs, P50Ms: percentile(v, 50), P95Ms: percentile(v, 95), P99Ms: percentile(v, 99), Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: v})
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		block := []float64{}
@@ -66,7 +82,17 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 				own := []float64{}
 				errs := 0
 				for i := 0; i < d11ThroughputCallsPerSession; i++ {
-					ms, err := e.call(context.Background(), slot, fmt.Sprintf("conc-%d-%d-%d", round, slot, i))
+					requestID := fmt.Sprintf("conc-%d-%d-%d", round, slot, i)
+					ms, err := e.call(context.Background(), slot, requestID)
+					if identity, ok := e.toolIdentity(requestID); ok {
+						measuredMu.Lock()
+						measuredIDs = append(measuredIDs, identity)
+						measuredMu.Unlock()
+					} else {
+						measuredMu.Lock()
+						measuredIDs = append(measuredIDs, d11ToolIdentity{call: ""})
+						measuredMu.Unlock()
+					}
 					if err != nil {
 						errs++
 					} else {
@@ -93,22 +119,36 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 		concErr += blockErr
 		cps := float64(d11ThroughputSessions*d11ThroughputCallsPerSession) / time.Since(start).Seconds()
 		throughput += cps
-		runs = append(runs, d11RunEntry{Phase: fmt.Sprintf("contention-%d", round+1), Samples: len(block), Attempts: d11ThroughputSessions * d11ThroughputCallsPerSession, Errors: blockErr, P50Ms: percentile(block, 50), P95Ms: percentile(block, 95), P99Ms: percentile(block, 99), CallsPerSec: cps, Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: block})
+		runs = append(runs, d11RunEntry{Workload: workload, Phase: fmt.Sprintf("contention-%d", round+1), Samples: len(block), Attempts: d11ThroughputSessions * d11ThroughputCallsPerSession, Errors: blockErr, P50Ms: percentile(block, 50), P95Ms: percentile(block, 95), P99Ms: percentile(block, 99), CallsPerSec: cps, Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: block})
 	}
 	throughput /= d11MeasuredRounds
-	s := d11Summary{Mode: mode, CandidateSHA: os.Getenv("RUSH_D11_CANDIDATE_SHA"), BaselineSHA: os.Getenv("RUSH_D11_BASELINE_SHA"), P50Ms: percentile(seq, 50), P95Ms: percentile(seq, 95), P99Ms: percentile(seq, 99), P95ContentionMs: percentile(conc, 95), ThroughputCPS: throughput, Errors: seqErr + concErr, Commits: totalWrites, SequentialAttempts: d11MeasuredRounds * d11LatencySamples, ContentionAttempts: d11MeasuredRounds * d11ThroughputSessions * d11ThroughputCallsPerSession, SubmitWrites: submit, StartedWrites: started, SettledWrites: settled, Runs: runs}
+	s := d11Summary{Mode: mode, Workload: workload, CandidateSHA: os.Getenv("RUSH_D11_CANDIDATE_SHA"), BaselineSHA: os.Getenv("RUSH_D11_BASELINE_SHA"), P50Ms: percentile(seq, 50), P95Ms: percentile(seq, 95), P99Ms: percentile(seq, 99), P95ContentionMs: percentile(conc, 95), ThroughputCPS: throughput, Errors: seqErr + concErr, Commits: totalWrites, SequentialAttempts: d11MeasuredRounds * d11LatencySamples, ContentionAttempts: d11MeasuredRounds * d11ThroughputSessions * d11ThroughputCallsPerSession, SubmitWrites: submit, StartedWrites: started, SettledWrites: settled, Runs: runs}
 	if s.SequentialAttempts+s.ContentionAttempts > 0 {
 		s.CommitsPerCall = totalWrites / int64(s.SequentialAttempts+s.ContentionAttempts)
 	}
 	s.Durability.JournalMode = journal
 	s.Durability.Synchronous = syncMode
-	d11PrintSummary(t, s)
+	measuredMu.Lock()
+	ids := append([]d11ToolIdentity(nil), measuredIDs...)
+	measuredMu.Unlock()
+	measuredIDsOut := make([]string, len(ids))
+	for index, identity := range ids {
+		measuredIDsOut[index] = identity.call
+	}
+	s.MeasuredCallIDs = measuredIDsOut
+	if mode == "candidate" {
+		evidence, evidenceErr := e.transitions.validateCalls(ids)
+		s.CallTransactions = evidence
+		d11PrintSummary(t, s)
+		require.NoError(t, evidenceErr)
+	} else {
+		d11PrintSummary(t, s)
+	}
 	if mode == "candidate" {
 		expected := s.SequentialAttempts + s.ContentionAttempts
 		require.Equal(t, expected, submit)
 		require.Equal(t, expected, started)
 		require.Equal(t, expected, settled)
-		require.GreaterOrEqual(t, totalWrites, int64(expected*3))
 	}
 	require.Zero(t, warmErr)
 	require.Equal(t, d11WarmupCalls, len(warm))

@@ -438,12 +438,9 @@ jobs:
         working-directory: web
         run: node --test src/*.test.ts
 
-  # D11 per-call-cost benchmark. The benchmark itself is defined in
-  # internal/app/app_batch_bench_test.go (added by R12-G) and only runs
-  # when RUSH_D11_BENCH=1; it never runs in the default suite or the other
-  # shadow jobs. Triggered only via the d11 workflow_dispatch input, used
-  # ONLY in the job's `if:` — never interpolated into the run scripts
-  # (untrusted-input rule). inputs context is valid for workflow_dispatch.
+  # D11 per-call cost: compare both the direct tiny-fixture view workload and
+  # the legacy-wrapped bash workload. Each mode runs from an isolated checkout
+  # with the same benchmark source; per-workload limits are enforced separately.
   d11-benchmark:
     if: inputs.d11 == true
     runs-on: ubuntu-latest
@@ -466,6 +463,7 @@ jobs:
           mkdir -p baseline/internal/app
           cp candidate/internal/app/app_batch_bench_helpers_test.go baseline/internal/app/
           cp candidate/internal/app/app_batch_bench_test.go baseline/internal/app/
+          cp candidate/internal/app/app_batch_bench_observer_test.go baseline/internal/app/
       - name: Isolate D11 global dirs
         shell: bash
         run: |
@@ -473,29 +471,62 @@ jobs:
           echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/d11-gc" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$RUNNER_TEMP/d11-xd" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/d11-xc" >> "$GITHUB_ENV"
-      - name: Run baseline mode
+      - name: Run candidate D11 observer regressions
+        if: always() && !cancelled()
+        working-directory: candidate
+        shell: bash
+        run: go test -failfast -p 1 -parallel 1 -count=1 -run '^TestD11Observer' ./internal/app/
+      - name: Run both baseline workloads
         working-directory: baseline
+        shell: bash
         env:
           RUSH_D11_BENCH: '1'
           RUSH_D11_MODE: baseline
           RUSH_D11_BASELINE_SHA: d5c3b0d9ec8607370e2d97c80503c9d5a7866740
           RUSH_D11_CANDIDATE_SHA: ${{ github.sha }}
-        run: go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline.log"
-      - name: Run candidate even if baseline fails
+        run: |
+          set +e
+          set -o pipefail
+          rc=0
+          for workload in direct-view legacy-bash; do
+            echo "Running baseline workload: $workload"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
+            run_rc=${PIPESTATUS[0]}
+            if [ "$run_rc" -ne 0 ]; then rc=1; fi
+          done
+          exit "$rc"
+      - name: Run both candidate workloads even if baseline failed
         if: always() && !cancelled()
         working-directory: candidate
+        shell: bash
         env:
           RUSH_D11_BENCH: '1'
           RUSH_D11_MODE: candidate
           RUSH_D11_BASELINE_SHA: d5c3b0d9ec8607370e2d97c80503c9d5a7866740
           RUSH_D11_CANDIDATE_SHA: ${{ github.sha }}
-        run: go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate.log"
-      - name: Compare and emit JSON report
+        run: |
+          set +e
+          set -o pipefail
+          rc=0
+          for workload in direct-view legacy-bash; do
+            echo "Running candidate workload: $workload"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
+            run_rc=${PIPESTATUS[0]}
+            if [ "$run_rc" -ne 0 ]; then rc=1; fi
+          done
+          exit "$rc"
+      - name: Compare both workloads and emit report
         if: always()
         shell: bash
         run: |
           set +e
-          python candidate/tools/d11_report.py "$RUNNER_TEMP/d11-baseline.log" "$RUNNER_TEMP/d11-candidate.log" --json-out "$RUNNER_TEMP/d11-summary.json" -o "$RUNNER_TEMP/d11-report.md"
+          python candidate/tools/d11_report.py \
+            "$RUNNER_TEMP/d11-baseline-direct-view.log" \
+            "$RUNNER_TEMP/d11-candidate-direct-view.log" \
+            "$RUNNER_TEMP/d11-baseline-legacy-bash.log" \
+            "$RUNNER_TEMP/d11-candidate-legacy-bash.log" \
+            --json-out "$RUNNER_TEMP/d11-summary.json" \
+            -o "$RUNNER_TEMP/d11-report.md"
           rc=$?
           if [ -f "$RUNNER_TEMP/d11-report.md" ]; then cat "$RUNNER_TEMP/d11-report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$rc"
@@ -508,8 +539,8 @@ jobs:
         with:
           name: d11-evidence
           path: |
-            ${{ runner.temp }}/d11-baseline.log
-            ${{ runner.temp }}/d11-candidate.log
+            ${{ runner.temp }}/d11-baseline-*.log
+            ${{ runner.temp }}/d11-candidate-*.log
             ${{ runner.temp }}/d11-summary.json
             ${{ runner.temp }}/d11-report.md
           if-no-files-found: ignore

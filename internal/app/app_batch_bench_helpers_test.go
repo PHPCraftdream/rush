@@ -1,6 +1,6 @@
 // D11 benchmark helpers. Timed calls are real App.AgentCoordinator.Run turns.
-// A hermetic provider calls production `view` against the same tiny fixture
-// on each revision; there is no injected fake leaf or hand-built runtime.
+// The fixture workload uses the direct view tool; the wrapped workload uses
+// the production bash async wrapper with the same harmless command in both modes.
 package app
 
 import (
@@ -40,6 +40,7 @@ const (
 )
 
 type d11RunEntry struct {
+	Workload      string    `json:"workload"`
 	Phase         string    `json:"phase"`
 	Samples       int       `json:"samples"`
 	Attempts      int       `json:"attempts"`
@@ -56,22 +57,25 @@ type d11RunEntry struct {
 }
 
 type d11Summary struct {
-	Mode               string  `json:"mode"`
-	CandidateSHA       string  `json:"candidate_sha"`
-	BaselineSHA        string  `json:"baseline_sha"`
-	P50Ms              float64 `json:"p50_ms"`
-	P95Ms              float64 `json:"p95_ms"`
-	P99Ms              float64 `json:"p99_ms"`
-	P95ContentionMs    float64 `json:"p95_contention_ms"`
-	ThroughputCPS      float64 `json:"throughput_cps"`
-	Errors             int     `json:"errors"`
-	Commits            int64   `json:"commits"`
-	CommitsPerCall     int64   `json:"commits_per_call"`
-	SequentialAttempts int     `json:"sequential_attempts"`
-	ContentionAttempts int     `json:"contention_attempts"`
-	SubmitWrites       int     `json:"submit_writes"`
-	StartedWrites      int     `json:"started_writes"`
-	SettledWrites      int     `json:"settled_writes"`
+	Mode               string          `json:"mode"`
+	Workload           string          `json:"workload"`
+	CallTransactions   []d11CallCommit `json:"call_transactions"`
+	MeasuredCallIDs    []string        `json:"measured_call_ids"`
+	CandidateSHA       string          `json:"candidate_sha"`
+	BaselineSHA        string          `json:"baseline_sha"`
+	P50Ms              float64         `json:"p50_ms"`
+	P95Ms              float64         `json:"p95_ms"`
+	P99Ms              float64         `json:"p99_ms"`
+	P95ContentionMs    float64         `json:"p95_contention_ms"`
+	ThroughputCPS      float64         `json:"throughput_cps"`
+	Errors             int             `json:"errors"`
+	Commits            int64           `json:"commits"`
+	CommitsPerCall     int64           `json:"commits_per_call"`
+	SequentialAttempts int             `json:"sequential_attempts"`
+	ContentionAttempts int             `json:"contention_attempts"`
+	SubmitWrites       int             `json:"submit_writes"`
+	StartedWrites      int             `json:"started_writes"`
+	SettledWrites      int             `json:"settled_writes"`
 	Durability         struct {
 		JournalMode string `json:"journal_mode"`
 		Synchronous string `json:"synchronous"`
@@ -80,19 +84,44 @@ type d11Summary struct {
 }
 
 type d11TransitionCounts struct {
-	mu                                            sync.Mutex
-	committed, pending                            int64
-	submit, started, settled                      int
-	pendingSubmit, pendingStarted, pendingSettled int
-	currentDirty                                  bool
-	currentSubmit, currentStarted, currentSettled int
+	mu                 sync.Mutex
+	commits            int64
+	nextTx             int64
+	calls              map[string]*d11CallEvidence
+	currentTx          int64
+	currentEvents      map[string]string
+	currentEventCounts map[string]int
+	currentRootCalls   map[string]string
+	rootCalls          map[string]string
+	pendingTx          int64
+	pendingEvents      map[string]string
+	pendingEventRoots  map[string]map[string]string
+	pendingAmbiguity   []string
+	observerErrors     []string
 }
 
+type (
+	d11CallEvidence struct {
+		root         string
+		transactions map[string]int64
+	}
+	d11ToolIdentity struct{ root, call string }
+	d11CallCommit   struct {
+		Call        string `json:"call_id"`
+		Root        string `json:"root_id"`
+		Event       string `json:"event"`
+		Transaction int64  `json:"transaction"`
+	}
+)
+
 type d11Provider struct {
-	server   *httptest.Server
-	fixture  string
-	requests atomic.Int64
-	results  sync.Map // request ID -> *atomic.Int64 successful fixture-backed result responses
+	server     *httptest.Server
+	fixture    string
+	workload   string
+	state      *d11TransitionCounts
+	requests   atomic.Int64
+	results    sync.Map
+	identities sync.Map // request ID -> tool call ID
 }
 
 type d11Env struct {
@@ -106,12 +135,57 @@ type d11Env struct {
 func (d *d11TransitionCounts) snapshot() (int64, int, int, int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.committed, d.submit, d.started, d.settled
+	counts := [3]int{}
+	for _, call := range d.calls {
+		for i, kind := range []string{"submit", "started", "settled"} {
+			if call.transactions[kind] > 0 {
+				counts[i]++
+			}
+		}
+	}
+	return d.commits, counts[0], counts[1], counts[2]
 }
 
-func newD11Provider(t *testing.T, fixture string) *d11Provider {
+func (d *d11TransitionCounts) registerCall(callID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.calls == nil {
+		d.calls = make(map[string]*d11CallEvidence)
+	}
+	if d.calls[callID] == nil {
+		d.calls[callID] = &d11CallEvidence{transactions: make(map[string]int64)}
+	}
+}
+
+func (d *d11TransitionCounts) validateCalls(ids []d11ToolIdentity) ([]d11CallCommit, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.observerErrors) > 0 {
+		return nil, fmt.Errorf("checkpoint transaction attribution ambiguous: %s", strings.Join(d.observerErrors, "; "))
+	}
+	var evidence []d11CallCommit
+	for _, id := range ids {
+		call := d.calls[id.call]
+		if call == nil || call.root == "" || call.root == "duplicate" || (id.root != "" && call.root != id.root) {
+			return nil, fmt.Errorf("missing transaction identity for call %s root %s", id.call, id.root)
+		}
+		for _, kind := range []string{"submit", "started", "settled"} {
+			tx := call.transactions[kind]
+			if tx <= 0 {
+				return nil, fmt.Errorf("call %s missing or duplicated committed %s checkpoint", id.call, kind)
+			}
+			evidence = append(evidence, d11CallCommit{Call: id.call, Root: call.root, Event: kind, Transaction: tx})
+		}
+		if call.transactions["submit"] == call.transactions["started"] || call.transactions["submit"] == call.transactions["settled"] || call.transactions["started"] == call.transactions["settled"] {
+			return nil, fmt.Errorf("call %s merged checkpoint events in one transaction", id.call)
+		}
+	}
+	return evidence, nil
+}
+
+func newD11Provider(t *testing.T, fixture, workload string, state *d11TransitionCounts) *d11Provider {
 	t.Helper()
-	p := &d11Provider{fixture: fixture}
+	p := &d11Provider{fixture: fixture, workload: workload, state: state}
 	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var request struct {
@@ -179,7 +253,7 @@ func newD11Provider(t *testing.T, fixture string) *d11Provider {
 					return
 				}
 				if !strings.Contains(result, "d11 fixture sentinel") {
-					http.Error(w, "production view did not return fixture", http.StatusInternalServerError)
+					http.Error(w, "production workload did not return sentinel", http.StatusInternalServerError)
 					return
 				}
 			}
@@ -196,12 +270,17 @@ func newD11Provider(t *testing.T, fixture string) *d11Provider {
 			http.Error(w, "unexpected request turn role", http.StatusBadRequest)
 			return
 		}
+		toolName := "view"
 		args, _ := json.Marshal(map[string]string{"file_path": p.fixture})
+		if p.workload == "legacy-bash" {
+			toolName = "bash"
+			args, _ = json.Marshal(map[string]string{"command": "printf 'd11 fixture sentinel\\\\n'", "description": "D11 trivial command"})
+		}
 		calls := 0
 		for _, item := range request.Messages[lastUser+1:] {
 			for _, call := range item.ToolCalls {
 				calls++
-				if call.Function.Name != "view" {
+				if call.Function.Name != toolName {
 					http.Error(w, "unexpected tool requested", http.StatusInternalServerError)
 					return
 				}
@@ -211,7 +290,10 @@ func newD11Provider(t *testing.T, fixture string) *d11Provider {
 			http.Error(w, "unexpected historical/current tool call", http.StatusInternalServerError)
 			return
 		}
-		tool, _ := json.Marshal(map[string]any{"index": 0, "id": fmt.Sprintf("d11-view-%d", id), "type": "function", "function": map[string]string{"name": "view", "arguments": string(args)}})
+		toolID := fmt.Sprintf("d11-%s-%d", toolName, id)
+		p.identities.Store(requestID, toolID)
+		p.state.registerCall(toolID)
+		tool, _ := json.Marshal(map[string]any{"index": 0, "id": toolID, "type": "function", "function": map[string]string{"name": toolName, "arguments": string(args)}})
 		chunk, _ := json.Marshal(map[string]any{"id": "d11-tool", "object": "chat.completion.chunk", "created": 1, "model": "probe", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{json.RawMessage(tool)}}, "finish_reason": nil}}})
 		write(string(chunk), `{"id":"d11-tool","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`)
 	}))
@@ -219,16 +301,40 @@ func newD11Provider(t *testing.T, fixture string) *d11Provider {
 	return p
 }
 
-// modernc CommitHook executes before physical commit. Keep each transaction's
-// row/event writes in current*, promote them to pending only in CommitHook,
-// discard them on RollbackHook. A subsequent successful writer query (phase
-// snapshot) flushes pending into committed counts; because it uses the same
-// max-one-connection App writer, all prior returned SQL operations completed.
-// Thus SQL errors/rollback cannot be counted as committed evidence.
+// Hook observations stay transaction-local until a later writer boundary proves
+// the transaction committed. Checkpoints are written before projections in the
+// store transaction, so root attribution is finalized in CommitHook afterward.
 func d11InstallHooks(t *testing.T, conn *sql.DB, state *d11TransitionCounts) {
 	t.Helper()
 	c, err := conn.Conn(context.Background())
 	require.NoError(t, err)
+	defer c.Close()
+	rows, err := c.QueryContext(context.Background(), `SELECT name, cid FROM pragma_table_info('batch_nodes')`)
+	require.NoError(t, err)
+	if rows == nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	indexes := map[string]int{}
+	for rows.Next() {
+		var name string
+		var index int
+		require.NoError(t, rows.Scan(&name, &index))
+		indexes[name] = index
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	rootIndex, rootOK := indexes["root_id"]
+	callIndex, callOK := indexes["tool_call_id"]
+	require.True(t, rootOK && callOK, "batch_nodes identity columns missing")
+	state.mu.Lock()
+	if state.calls == nil {
+		state.calls = make(map[string]*d11CallEvidence)
+	}
+	if state.rootCalls == nil {
+		state.rootCalls = make(map[string]string)
+	}
+	state.mu.Unlock()
 	err = c.Raw(func(raw any) error {
 		hooks, ok := raw.(modernsqlite.HookRegisterer)
 		if !ok {
@@ -237,26 +343,47 @@ func d11InstallHooks(t *testing.T, conn *sql.DB, state *d11TransitionCounts) {
 		hooks.RegisterPreUpdateHook(func(change modernsqlite.SQLitePreUpdateData) {
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			// A writer transaction cannot start until the preceding one ends.
-			// Finalize its commit-hook observation only at this successful write boundary.
-			state.committed += state.pending
-			state.submit += state.pendingSubmit
-			state.started += state.pendingStarted
-			state.settled += state.pendingSettled
-			state.pending = 0
-			state.pendingSubmit, state.pendingStarted, state.pendingSettled = 0, 0, 0
-			state.currentDirty = true
+			if state.currentTx == 0 {
+				d11PromotePending(state)
+				state.currentTx = state.nextTx + 1
+				state.currentEvents = make(map[string]string)
+				state.currentEventCounts = make(map[string]int)
+				state.currentRootCalls = make(map[string]string)
+				state.pendingAmbiguity = nil
+			}
+			if change.TableName == "batch_nodes" && (change.Op == 18 || change.Op == 23) {
+				values := make([]any, change.Count())
+				if change.New(values...) == nil {
+					root, _ := values[rootIndex].(string)
+					callID, _ := values[callIndex].(string)
+					if root == "" && change.Op == 23 {
+						oldValues := make([]any, change.Count())
+						if change.Old(oldValues...) == nil {
+							root, _ = oldValues[rootIndex].(string)
+							if callID == "" {
+								callID, _ = oldValues[callIndex].(string)
+							}
+						}
+					}
+					if root != "" {
+						if callID == "" {
+							callID = state.rootCalls[root]
+						}
+						if callID != "" {
+							state.currentRootCalls[root] = callID
+						}
+					}
+				}
+			}
 			if change.TableName == "batch_runner_checkpoints" && (change.Op == 18 || change.Op == 23) {
-				var columns [7]any
-				if change.New(columns[:]...) == nil {
-					if event, ok := columns[3].(string); ok {
-						switch event {
-						case "submit":
-							state.currentSubmit++
-						case "started":
-							state.currentStarted++
-						case "settled":
-							state.currentSettled++
+				var values [7]any
+				if change.New(values[:]...) == nil {
+					if event, ok := values[3].(string); ok && (event == "submit" || event == "started" || event == "settled") {
+						state.currentEventCounts[event]++
+						if state.currentEventCounts[event] > 1 {
+							state.currentEvents[event] = "duplicate"
+						} else {
+							state.currentEvents[event] = event
 						}
 					}
 				}
@@ -265,37 +392,77 @@ func d11InstallHooks(t *testing.T, conn *sql.DB, state *d11TransitionCounts) {
 		hooks.RegisterCommitHook(func() int32 {
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			// Reaching a later commit proves the earlier hook's transaction
-			// completed; keep only one not-yet-confirmed commit observation.
-			state.committed += state.pending
-			state.submit += state.pendingSubmit
-			state.started += state.pendingStarted
-			state.settled += state.pendingSettled
-			state.pending, state.pendingSubmit, state.pendingStarted, state.pendingSettled = 0, 0, 0, 0
-			if state.currentDirty {
-				state.pending = 1
-				state.pendingSubmit = state.currentSubmit
-				state.pendingStarted = state.currentStarted
-				state.pendingSettled = state.currentSettled
+			if state.currentTx != 0 {
+				state.nextTx++
+				state.pendingTx = state.currentTx
+				state.pendingEvents = state.currentEvents
+				state.pendingEventRoots = make(map[string]map[string]string)
+				state.pendingAmbiguity = nil
+				for event := range state.currentEvents {
+					if len(state.currentRootCalls) != 1 {
+						state.pendingAmbiguity = append(state.pendingAmbiguity, fmt.Sprintf("event %s transaction touched %d roots", event, len(state.currentRootCalls)))
+						continue
+					}
+					for root, callID := range state.currentRootCalls {
+						state.pendingEventRoots[event] = map[string]string{root: callID}
+					}
+				}
 			}
-			state.currentDirty = false
-			state.currentSubmit, state.currentStarted, state.currentSettled = 0, 0, 0
+			state.currentTx = 0
+			state.currentEvents, state.currentEventCounts = nil, nil
+			state.currentRootCalls = nil
 			return 0
 		})
 		hooks.RegisterRollbackHook(func() {
 			state.mu.Lock()
-			state.currentDirty = false
-			state.currentSubmit, state.currentStarted, state.currentSettled = 0, 0, 0
-			state.pending, state.pendingSubmit, state.pendingStarted, state.pendingSettled = 0, 0, 0, 0
+			state.currentTx = 0
+			state.currentEvents, state.currentEventCounts = nil, nil
+			state.currentRootCalls = nil
+			state.pendingTx, state.pendingEvents, state.pendingEventRoots = 0, nil, nil
+			state.pendingAmbiguity = nil
 			state.mu.Unlock()
 		})
 		return nil
 	})
 	require.NoError(t, err)
-	require.NoError(t, c.Close())
 }
 
-func newD11Env(t *testing.T, mode string) *d11Env {
+func d11PromotePending(state *d11TransitionCounts) {
+	if state.pendingTx == 0 {
+		return
+	}
+	state.commits++
+	state.observerErrors = append(state.observerErrors, state.pendingAmbiguity...)
+	for _, roots := range state.pendingEventRoots {
+		for root, callID := range roots {
+			if callID == "" {
+				continue
+			}
+			state.rootCalls[root] = callID
+			if call := state.calls[callID]; call != nil {
+				if call.root != "" && call.root != root {
+					call.root = "duplicate"
+				} else {
+					call.root = root
+				}
+			}
+		}
+	}
+	for event, status := range state.pendingEvents {
+		for _, callID := range state.pendingEventRoots[event] {
+			if call := state.calls[callID]; call != nil {
+				if status == "duplicate" || call.transactions[event] != 0 {
+					call.transactions[event] = -1
+				} else {
+					call.transactions[event] = state.pendingTx
+				}
+			}
+		}
+	}
+	state.pendingTx, state.pendingEvents, state.pendingEventRoots, state.pendingAmbiguity = 0, nil, nil, nil
+}
+
+func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	t.Helper()
 	dir := t.TempDir()
 	for key, name := range map[string]string{"RUSH_GLOBAL_DATA": "global-data", "RUSH_GLOBAL_CONFIG": "global-config", "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config"} {
@@ -309,7 +476,9 @@ func newD11Env(t *testing.T, mode string) *d11Env {
 	}
 	fixture := filepath.Join(dir, d11FixtureName)
 	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
-	provider := newD11Provider(t, fixture)
+	e := &d11Env{t: t}
+	provider := newD11Provider(t, fixture, workload, &e.transitions)
+	e.provider = provider
 	store, err := config.Init(dir, dir, false)
 	require.NoError(t, err)
 	store.Config().Providers.Set("openaicompat", config.ProviderConfig{ID: "openaicompat", Type: openaicompat.Name, BaseURL: provider.server.URL, APIKey: "probe", Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}}})
@@ -321,7 +490,7 @@ func newD11Env(t *testing.T, mode string) *d11Env {
 	a, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(a.Shutdown)
-	e := &d11Env{t: t, app: a, provider: provider}
+	e.app = a
 	d11InstallHooks(t, a.DB(), &e.transitions)
 	for i := 0; i <= d11ThroughputSessions; i++ {
 		sess, err := a.Sessions.Create(context.Background(), fmt.Sprintf("d11-%s-%d", mode, i))
@@ -359,6 +528,18 @@ func d11ContentText(raw json.RawMessage) (string, error) {
 	return result.String(), nil
 }
 
+func (e *d11Env) toolIdentity(requestID string) (d11ToolIdentity, bool) {
+	value, ok := e.provider.identities.Load(requestID)
+	if !ok {
+		return d11ToolIdentity{}, false
+	}
+	callID, valid := value.(string)
+	if !valid || callID == "" {
+		return d11ToolIdentity{}, false
+	}
+	return d11ToolIdentity{call: callID}, true
+}
+
 func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error) {
 	started := time.Now()
 	_, err := e.app.AgentCoordinator.Run(ctx, e.sessions[slot], "Read fixture. request="+id)
@@ -367,8 +548,9 @@ func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error)
 	if ok {
 		count, ok = countValue.(*atomic.Int64).Load(), true
 	}
-	if err == nil && (!ok || count != 1) {
-		err = fmt.Errorf("expected exactly one fixture-backed view result for %s, got %d", id, count)
+	_, hasTool := e.provider.identities.Load(id)
+	if err == nil && (!ok || count != 1 || !hasTool) {
+		err = fmt.Errorf("expected one result and actual tool call for %s", id)
 	}
 	if err != nil {
 		e.t.Logf("D11 invocation %s failed: %v", id, err)
@@ -377,24 +559,28 @@ func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error)
 }
 
 func (e *d11Env) writeSnapshot() (int64, int, int, int) {
-	var one int
-	require.NoError(e.t, e.app.DB().QueryRow(`SELECT 1`).Scan(&one))
-	e.transitions.mu.Lock()
-	e.transitions.committed += e.transitions.pending
-	e.transitions.submit += e.transitions.pendingSubmit
-	e.transitions.started += e.transitions.pendingStarted
-	e.transitions.settled += e.transitions.pendingSettled
-	e.transitions.pending, e.transitions.pendingSubmit, e.transitions.pendingStarted, e.transitions.pendingSettled = 0, 0, 0, 0
-	e.transitions.mu.Unlock()
+	d11FlushCommitted(e.t, e.app.DB(), &e.transitions)
 	return e.transitions.snapshot()
+}
+
+func d11FlushCommitted(t *testing.T, writer *sql.DB, state *d11TransitionCounts) {
+	t.Helper()
+	c, err := writer.Conn(context.Background())
+	require.NoError(t, err)
+	defer c.Close()
+	var one int
+	require.NoError(t, c.QueryRowContext(context.Background(), `SELECT 1`).Scan(&one))
+	state.mu.Lock()
+	d11PromotePending(state)
+	state.mu.Unlock()
 }
 
 func d11Durability(t *testing.T, conn *sql.DB) (string, string) {
 	t.Helper()
 	var journal string
-	require.NoError(t, conn.QueryRow(`PRAGMA journal_mode`).Scan(&journal))
+	require.NoError(t, conn.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journal))
 	var value int
-	require.NoError(t, conn.QueryRow(`PRAGMA synchronous`).Scan(&value))
+	require.NoError(t, conn.QueryRowContext(context.Background(), `PRAGMA synchronous`).Scan(&value))
 	return journal, map[int]string{0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}[value]
 }
 
