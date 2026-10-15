@@ -40,6 +40,9 @@ func TestBatchWorkIngressFlagOnInstalled(t *testing.T) {
 		}
 		_ = a.asyncJobStore.Close(context.Background())
 	})
+	// installBatchRuntime ensured the HostStore; release its lock here
+	// (this t.Cleanup runs after the one above, so LIFO order is fine).
+	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
 
 	// Fail-closed validation fires BEFORE any store or engine call: an
 	// empty invocation is refused by the typed invocation validation.
