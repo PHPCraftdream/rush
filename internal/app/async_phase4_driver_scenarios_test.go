@@ -18,6 +18,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,7 +103,19 @@ func driverSource(t *testing.T, app *App) agent.ReactionDebtSource {
 func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 	var requestsW, requestsC atomic.Int32
 	handlerW, handlerC, jobRelease := driverScenarioHandlers(t, &requestsW, &requestsC)
-	appW, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerC)
+	// Release the sentinel from INSIDE C's provider handler: both of C's
+	// turn-start and prepareStep notice pulls precede its first provider
+	// request, so a release only after that request has been served can
+	// never join request 1's prompt -- the completion is committed while C
+	// is between turns and reaches it via the between-turns CLIScope drain.
+	// (Plain os.WriteFile, not releaseRecoveryJob: the handler runs on
+	// httptest's goroutine and require must stay on the test goroutine.
+	// The cleanup write below is an idempotent second write.)
+	handlerCWithRelease := func(rw http.ResponseWriter, r *http.Request) {
+		handlerC(rw, r)
+		_ = os.WriteFile(jobRelease, nil, 0o644)
+	}
+	appW, appC, sessionID := newRecoveryTwoAppHarness(t, handlerW, handlerCWithRelease)
 	// Release the sentinel before the harness's own deferred Shutdowns run
 	// (t.Cleanup is LIFO): the job either exits on its own or is killed
 	// outright, never left blocking past the TempDir removal.
@@ -118,7 +131,10 @@ func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 	require.Equal(t, "running", jobRow(t, appW, sessionID).State, "the job must outlive W's turn")
 	// Let the sentinel-blocked job finish now; the completion is one poll
 	// iteration away instead of a wall-clock estimate.
-	releaseRecoveryJob(t, jobRelease)
+	// Claim BEFORE C's run: W's completion decision must see a live foreign
+	// driver and park (same guarantee scenarios F/F2 establish); the loop's
+	// own claim later is idempotent (same store, same host).
+	require.NoError(t, driverSource(t, appC).ClaimExternalDriver(ctx, sessionID), "C claims the session as its driver before the job can finish")
 
 	resC, err := appC.RunNonInteractiveWithResult(ctx, io.Discard, "continue please", RunOverrides{
 		Origin: message.OriginCLI,
