@@ -418,8 +418,6 @@ func d11InstallHooks(t *testing.T, conn *sql.DB, state *d11TransitionCounts) {
 			state.currentTx = 0
 			state.currentEvents, state.currentEventCounts = nil, nil
 			state.currentRootCalls = nil
-			state.pendingTx, state.pendingEvents, state.pendingEventRoots = 0, nil, nil
-			state.pendingAmbiguity = nil
 			state.mu.Unlock()
 		})
 		return nil
