@@ -10,7 +10,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -109,6 +108,12 @@ type BatchCutoverFacts interface {
 	LiveHeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error)
 }
 
+// ErrBatchFactsSourceUnavailable marks a permanently unavailable batch
+// facts node source (missing binding or missing node-source dependency).
+// It is a terminal condition: callers must surface it as an error, never
+// retry it.
+var ErrBatchFactsSourceUnavailable = errBatchFactsUnavailable
+
 // unknownBatchCutoverFacts is the flag-ON fail-safe: no node source could be
 // constructed (no binding, no live reader). It never touches the ledger and
 // answers every question conservatively: debt true, live true.
@@ -119,23 +124,23 @@ func (unknownBatchCutoverFacts) SelectedDebtExists(context.Context, string) (boo
 }
 
 func (unknownBatchCutoverFacts) CaptureVisibleDebt(context.Context, string) (session.BatchDebtSnapshot, error) {
-	return session.BatchDebtSnapshot{}, errors.New("batch facts: node source unavailable")
+	return session.BatchDebtSnapshot{}, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) PendingInclusiveDebt(context.Context, string) (session.BatchPendingDebt, error) {
-	return session.BatchPendingDebt{}, errors.New("batch facts: node source unavailable")
+	return session.BatchPendingDebt{}, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) PendingInclusiveDebtSummary(context.Context, string) (bool, []string, error) {
-	return true, nil, errors.New("batch facts: node source unavailable")
+	return true, nil, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) ReactedFailedTexts(context.Context, string) ([]session.BatchReactedFailedText, error) {
-	return nil, errors.New("batch facts: node source unavailable")
+	return nil, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) LiveWorkSummary(context.Context, string) (int, int, error) {
-	return 1, 1, errors.New("batch facts: node source unavailable")
+	return 1, 1, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) LiveScopeForOwners(_ context.Context, owners []string) ([]BatchLiveScopeEntry, error) {
@@ -143,7 +148,7 @@ func (unknownBatchCutoverFacts) LiveScopeForOwners(_ context.Context, owners []s
 	for _, o := range owners {
 		out = append(out, BatchLiveScopeEntry{Owner: o, Live: true})
 	}
-	return out, errors.New("batch facts: node source unavailable")
+	return out, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) LiveDelegationChildOf(context.Context, string, string) (bool, error) {
@@ -155,23 +160,23 @@ func (unknownBatchCutoverFacts) DelegationChildEver(context.Context, string, str
 }
 
 func (unknownBatchCutoverFacts) LiveNodes(context.Context, string) ([]session.BatchLiveNode, error) {
-	return nil, errors.New("batch facts: node source unavailable")
+	return nil, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) LiveDelegationNodes(context.Context, string) ([]session.BatchLiveNode, error) {
-	return nil, errors.New("batch facts: node source unavailable")
+	return nil, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) AttemptRows(context.Context, string, session.BatchDebtSnapshot, int) (BatchAttemptRows, error) {
-	return BatchAttemptRows{}, errors.New("batch facts: node source unavailable")
+	return BatchAttemptRows{}, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) IncrementWakeAttempts(context.Context, string, session.BatchDebtSnapshot) error {
-	return errors.New("batch facts: node source unavailable")
+	return errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) SettleReactedFailedWithMarker(context.Context, string, session.BatchDebtSnapshot, string) (int64, error) {
-	return 0, errors.New("batch facts: node source unavailable")
+	return 0, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) DebtToolCallIDs(context.Context, session.BatchDebtSnapshot) []string {
@@ -187,11 +192,11 @@ func (unknownBatchCutoverFacts) PullPendingSessionNotices(context.Context, messa
 }
 
 func (unknownBatchCutoverFacts) HeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
-	return nil, errors.New("batch facts: node source unavailable")
+	return nil, errBatchFactsUnavailable
 }
 
 func (unknownBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
-	return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errors.New("batch facts: node source unavailable")
+	return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
 }
 
 // coordinatorBatchCutoverFactsBindings maps a *coordinator onto its

@@ -789,6 +789,10 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		}
 		state, stateErr := l.source.CLIScope(l.ctx, l.sessionID)
 		if stateErr != nil {
+			if errors.Is(stateErr, agent.ErrBatchFactsSourceUnavailable) {
+				fmt.Fprintf(l.errOut(), "rush run: session %q's batch fact source is unavailable; giving up: %v\n", l.sessionID, stateErr)
+				return stepExit, "", fmt.Errorf("rush run: batch fact source unavailable: %w", stateErr)
+			}
 			slog.Warn("rush run: scope check failed; retrying", "session_id", l.sessionID, "err", stateErr)
 			if dbErrorRetryStart.IsZero() {
 				dbErrorRetryStart = time.Now()
