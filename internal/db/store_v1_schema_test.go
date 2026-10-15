@@ -40,7 +40,7 @@ func openFixture(t *testing.T, fixture bool) *sql.DB {
 
 func sqliteObjects(t *testing.T, conn *sql.DB, exclude map[string]bool) map[string]string {
 	t.Helper()
-	rows, err := conn.Query(`SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`)
+	rows, err := conn.QueryContext(t.Context(), `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`)
 	require.NoError(t, err)
 	defer rows.Close()
 	objects := make(map[string]string)
@@ -147,7 +147,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 	conn := openFixture(t, true)
 	for _, table := range storeV1Tables {
 		var name string
-		require.NoError(t, conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name), table)
+		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name), table)
 	}
 	expectedColumns := map[string][]string{
 		"sessions":                 {"id", "parent_session_id", "title", "message_count", "prompt_tokens", "completion_tokens", "cost", "updated_at", "created_at", "summary_message_id", "todos", "smart_model_provider", "smart_model_id", "fast_model_provider", "fast_model_id", "system_prompt", "yolo_enabled", "smart_model_reasoning_effort", "fast_model_reasoning_effort", "cancel_requested", "ended_reason", "budget_max_cost", "budget_max_tokens", "budget_timeout_sec", "deleted_todos", "parent_cost_accounted", "worker_model_provider", "worker_model_id", "worker_model_reasoning_effort", "reviewer_model_provider", "reviewer_model_id", "reviewer_model_reasoning_effort", "origin", "cost_self", "cost_base", "cost_parent_id", "workspace_root", "git_branch"},
@@ -168,7 +168,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		"batch_runner_checkpoints": {"host_id", "runner_id", "sequence", "event_type", "final", "created_at", "updated_at"},
 	}
 	for table, want := range expectedColumns {
-		rows, err := conn.Query(`PRAGMA table_info(` + table + `)`)
+		rows, err := conn.QueryContext(t.Context(), `PRAGMA table_info(`+table+`)`)
 		require.NoError(t, err)
 		var got []string
 		for rows.Next() {
@@ -194,7 +194,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 	}
 	for _, absent := range []string{"async_jobs", "async_jobs_new", "async_jobs_old_schema"} {
 		var count int
-		require.NoError(t, conn.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name=?`, absent).Scan(&count))
+		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE name=?`, absent).Scan(&count))
 		require.Zero(t, count, absent)
 	}
 	var isNew bool

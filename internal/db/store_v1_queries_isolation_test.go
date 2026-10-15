@@ -144,13 +144,13 @@ func TestStoreV1CreationLeavesLegacyDatabaseAndSidecarsUntouched(t *testing.T) {
 	legacy, err := openDB(legacyPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, legacy.Close()) })
-	_, err = legacy.Exec(`CREATE TABLE legacy_marker (value TEXT)`)
+	_, err = legacy.ExecContext(t.Context(), `CREATE TABLE legacy_marker (value TEXT)`)
 	require.NoError(t, err)
-	_, err = legacy.Exec(`INSERT INTO legacy_marker VALUES ('old-store')`)
+	_, err = legacy.ExecContext(t.Context(), `INSERT INTO legacy_marker VALUES ('old-store')`)
 	require.NoError(t, err)
-	_, err = legacy.Exec(`CREATE TABLE async_hosts (id TEXT PRIMARY KEY,pid INTEGER NOT NULL,label TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL)`)
+	_, err = legacy.ExecContext(t.Context(), `CREATE TABLE async_hosts (id TEXT PRIMARY KEY,pid INTEGER NOT NULL,label TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL)`)
 	require.NoError(t, err)
-	_, err = legacy.Exec(`INSERT INTO async_hosts VALUES ('old-host',42,'legacy',1)`)
+	_, err = legacy.ExecContext(t.Context(), `INSERT INTO async_hosts VALUES ('old-host',42,'legacy',1)`)
 	require.NoError(t, err)
 	if err := legacy.Close(); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestStoreV1CreationLeavesLegacyDatabaseAndSidecarsUntouched(t *testing.T) {
 	fixture := storeV1FixtureMigrations()
 	require.NoError(t, migrateLocked(context.Background(), newDB, newPath, fixture, MigrateOptions{MayMigrate: true, MigrationLockPath: filepath.Join(dataDir, storepath.StoreV1MigrateLockFilename)}))
 	var hosts int
-	require.NoError(t, newDB.QueryRow(`SELECT count(*) FROM async_hosts`).Scan(&hosts))
+	require.NoError(t, newDB.QueryRowContext(t.Context(), `SELECT count(*) FROM async_hosts`).Scan(&hosts))
 	require.Zero(t, hosts)
 	for _, file := range oldFiles {
 		requireStoreFileUnchanged(t, file)
@@ -189,7 +189,7 @@ func TestStorePathLifecycleUsesLegacyFilename(t *testing.T) {
 	_, err = os.Stat(storepath.DataDirPath(dataDir, storepath.LegacyFilename))
 	require.NoError(t, err)
 	require.NoError(t, ReleaseAll(dataDir))
-	_, err = conn.Exec(`SELECT 1`)
+	_, err = conn.ExecContext(t.Context(), `SELECT 1`)
 	require.Error(t, err)
 	if _, err := os.Stat(storepath.DataDirPath(dataDir, storepath.StoreV1Filename)); !os.IsNotExist(err) {
 		t.Fatalf("inactive store unexpectedly created: %v", err)
