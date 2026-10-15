@@ -114,7 +114,6 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 	}
 
 	t.Run("cancelSession returns before finish", func(t *testing.T) {
-		t.Parallel()
 		store, l, delivered := raceFixture(t)
 
 		l.cancelSession("owner")
@@ -133,7 +132,6 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 	})
 
 	t.Run("finish fully delivers before cancelSession", func(t *testing.T) {
-		t.Parallel()
 		store, l, delivered := raceFixture(t)
 
 		l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
@@ -160,7 +158,6 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 	})
 
 	t.Run("stop marked before finish commits", func(t *testing.T) {
-		t.Parallel()
 		for i := 0; i < 30; i++ {
 			store, l, delivered := raceFixture(t)
 
