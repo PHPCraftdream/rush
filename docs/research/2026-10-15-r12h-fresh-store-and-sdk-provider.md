@@ -4,6 +4,8 @@ Operator decisions (2026-10-15): D1 D11 budget accepted (p95 +15 ms per call, 8-
 
 Source: read-only review jb-r12h-plan against origin/ci/job-batches at d5c3b0d9. Supersedes the destructive-migration parts of docs/research/2026-10-14-r12-cutover-decomposition.md.
 
+Addendum (operator, 2026-10-15, after this review): when a data directory contains the old `rush.db` and no `rush_store_v1.db`, the new binary imports the old data into the new store once. The old file is only read and stays untouched; the new store is built in a temporary file and atomically renamed into place; the import refuses while any old Rush host is alive (reusing R12-A's live-host probe); unfinished `async_jobs` rows and preparation-era batch rows are not carried over. This replaces the "no import" consequence in SECTION 1 §9 and is implemented as a separate package H7 between H3 and H4.
+
 # SECTION 1 — Revised R12-H/R12-I plan under D1–D4
 
 ## 1. Review scope and revised decision
