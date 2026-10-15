@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -33,12 +34,17 @@ type batchLeafPayload struct {
 	Input      json.RawMessage         `json:"input"`
 	RegistryID string                  `json:"registry_id,omitempty"`
 	Policy     *batchLeafPolicyContext `json:"policy,omitempty"`
+	// diskProvider is the in-process resolution of Policy.DiskBindingID,
+	// stamped by the executor router before family start; never serialized.
+	diskProvider tools.DiskProvider `json:"-"`
+	leaseRelease func()
 }
 
-// batchLeafEnv gives a family its pinned, policy-wrapped targets.
 type batchLeafEnv struct {
-	// Leaves returns the registry of the session's pinned toolset.
-	Leaves func(sessionID string) (*policyLeafRegistry, error)
+	// Leaves resolves a pinned policy-leaf registry by identity.
+	Leaves       func(sessionID string) (*policyLeafRegistry, error)
+	DiskBindings *DiskProviderRegistry
+	PinLease     func(registryID string) (func(), error)
 }
 
 // batchLeafFamily executes one kind. start follows jobbatch.Executor.Start:
@@ -53,6 +59,9 @@ const (
 	batchCodeBadPayload  = "bad_payload"
 	batchCodeUnknownKind = "unknown_kind"
 	batchCodeNoLeaf      = "tool_unavailable"
+	// batchCodeNoBinding marks a required process-bound disk binding that
+	// is no longer available (batchLeafPayload.Policy.DiskBindingID).
+	batchCodeNoBinding = "binding_unavailable"
 )
 
 // batchStartError carries a safe machine code for the Runner's code rule.
@@ -87,10 +96,62 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	if err := json.Unmarshal(l.Task.Payload, &p); err != nil || p.Tool == "" || p.SessionID == "" {
 		return nil, &batchStartError{batchCodeBadPayload, errors.New("payload needs tool, session_id and input")}
 	}
-	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") {
-		return nil, &batchStartError{batchCodeBadPayload, ErrDiskProviderNotDurable}
+	// A required provider dependency is never accepted with only the
+	// legacy boolean/free-text marker; this avoids OS-disk promotion.
+	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") && p.Policy.DiskBindingID == "" {
+		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
 	}
-	return family.start(ctx, e.env, l, p, report)
+	if p.Policy != nil && p.Policy.DiskBindingID != "" {
+		if e.env.DiskBindings == nil || p.RegistryID == "" {
+			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+		}
+		if e.env.PinLease == nil {
+			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+		}
+		releaseRegistry, err := e.env.PinLease(p.RegistryID)
+		if err != nil {
+			return nil, &batchStartError{batchCodeNoBinding, err}
+		}
+		releaseLease := releaseRegistry
+		registry, err := e.env.Leaves(p.RegistryID)
+		if err != nil || registry == nil || !registry.hasToolset(p.Policy.RestrictedToolset) {
+			if err == nil {
+				err = ErrDiskProviderUnavailable
+			}
+			releaseLease()
+			return nil, &batchStartError{batchCodeNoBinding, err}
+		}
+		leaf, err := registry.resolve(p.Tool)
+		if err != nil {
+			releaseLease()
+			return nil, &batchStartError{batchCodeNoBinding, err}
+		}
+		_ = leaf
+		provider, releaseProvider, err := e.env.DiskBindings.Acquire(p.Policy.DiskBindingID)
+		if err != nil {
+			releaseLease()
+			return nil, &batchStartError{batchCodeNoBinding, err}
+		}
+		p.diskProvider = provider
+		p.leaseRelease = func() { releaseProvider(); releaseLease() }
+	}
+	execution, err := family.start(ctx, e.env, l, p, report)
+	if err != nil {
+		if p.leaseRelease != nil {
+			p.leaseRelease()
+		}
+		return nil, err
+	}
+	if execution == nil {
+		if p.leaseRelease != nil {
+			p.leaseRelease()
+		}
+		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+	}
+	if p.leaseRelease != nil {
+		return newBatchBindingExecution(execution, p.leaseRelease), nil
+	}
+	return execution, nil
 }
 
 // batchLeafLookupID returns the identity leaf resolution is keyed under: the

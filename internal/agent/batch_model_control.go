@@ -27,13 +27,20 @@ type installedBatchModelControl struct {
 	host, runnerID     string
 	profile            *BatchProfile
 	resolver           batchMCPCapabilityResolver
+	rootLeases         *batchRootLeaseStore
+	leafRegistryRefs   *batchLeafRegistryLeaseStore
 	maxDepth, maxNodes int
 }
 
 var _ BatchModelControl = (*installedBatchModelControl)(nil)
 
-func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver) BatchModelControl {
-	return &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
+func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
+	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
+	if len(leases) > 0 {
+		control.rootLeases = leases[0]
+		control.leafRegistryRefs = leases[0].registries
+	}
+	return control
 }
 
 func (c *installedBatchModelControl) InstallBatchModelControls(reg *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
@@ -64,12 +71,53 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if err = ValidateSubmit(c.profile, batchRankContext{Rank: inv.WaiterRank, Root: root}, nil, spec, c.maxDepth, c.maxNodes, c.resolver); err != nil {
 		return "", err
 	}
-	id, err := c.runner.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: inv.CallID})
+	var pending *batchRootLeasePending
+	if inv.Policy.DiskBindingID != "" {
+		if c.rootLeases == nil {
+			return "", ErrDiskProviderUnavailable
+		}
+		pending, err = c.rootLeases.acquire(inv.Policy.DiskBindingID, inv.RegistryID)
+		if err != nil {
+			return "", err
+		}
+	}
+	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: inv.CallID}
+	var id jobbatch.ID
+	var batch *jobbatch.Batch
+	if pending != nil {
+		bound, ok := c.runner.(batchBoundRunnerHandle)
+		if !ok {
+			pending.release()
+			return "", ErrDiskProviderUnavailable
+		}
+		id, batch, err = bound.SubmitBound(ctx, request)
+	} else {
+		id, err = c.runner.Submit(ctx, request)
+	}
 	if err != nil {
+		if pending != nil {
+			pending.release()
+		}
 		return "", err
 	}
 	if id != root {
+		if pending != nil {
+			pending.release()
+		}
 		return "", fmt.Errorf("runner root %q differs from requested %q", id, root)
+	}
+	if pending != nil {
+		if batch == nil {
+			pending.release()
+			return "", ErrDiskProviderUnavailable
+		}
+		if batch.ID() != root {
+			pending.release()
+			return "", fmt.Errorf("runner root %q differs from requested %q", batch.ID(), root)
+		}
+		if err := c.rootLeases.adopt(root, batch.Done(), pending); err != nil {
+			return "", err
+		}
 	}
 	resp, err := c.delivery.DeliverBatch(ctx, root, inv)
 	if err != nil {
@@ -221,6 +269,9 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	}
 	if s.Root.RootID != root || s.Root.Kind != "batch" || s.Root.HostID != c.host || terminalBatchStoreState(s.Root.State) {
 		return nil, errors.New("batch_add requires live local owned root")
+	}
+	if c.rootLeases == nil || !c.rootLeases.matches(jobbatch.ID(root), inv.Policy.DiskBindingID, inv.RegistryID) {
+		return nil, ErrDiskProviderUnavailable
 	}
 	if parent == "" {
 		parent = root

@@ -28,8 +28,8 @@ type BatchModelControl interface {
 	InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error)
 }
 
-func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver) BatchModelControl {
-	return NewInstalledBatchModelControl(runner, delivery, store, live, sessions, host, runnerID, profile, resolver)
+func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
+	return NewInstalledBatchModelControl(runner, delivery, store, live, sessions, host, runnerID, profile, resolver, leases...)
 }
 
 // BatchWorkIngress is the ONE authority for work-tool invocation on the
@@ -49,8 +49,9 @@ type BatchWorkIngress interface {
 // batchWorkIngress adapts the unexported R11C runtime plus the M1 registry
 // store onto the exported seam.
 type batchWorkIngress struct {
-	rt         *batchRuntime
-	registries *BatchLeafRegistryStore
+	rt           *batchRuntime
+	registries   *BatchLeafRegistryStore
+	diskBindings *DiskProviderRegistry
 }
 
 var errBatchWorkIngressDeps = errors.New("batch work ingress: runtime and pinned registry store are required")
@@ -58,13 +59,24 @@ var errBatchWorkIngressDeps = errors.New("batch work ingress: runtime and pinned
 // NewBatchWorkIngress builds the exported ingress seam over one dormant
 // runtime and its registry store. Construction has no side effects.
 func NewBatchWorkIngress(rt *batchRuntime, registries *BatchLeafRegistryStore) (BatchWorkIngress, error) {
-	if rt == nil || registries == nil {
+	if rt == nil || registries == nil || rt.cfg.DiskBindings == nil {
 		return nil, errBatchWorkIngressDeps
 	}
-	return &batchWorkIngress{rt: rt, registries: registries}, nil
+	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: rt.cfg.DiskBindings}, nil
+}
+
+// NewBatchWorkIngressWithDiskBindings injects the owning App's provider
+// registry into one ingress/runtime; nil never selects a process global.
+func NewBatchWorkIngressWithDiskBindings(rt *batchRuntime, registries *BatchLeafRegistryStore, bindings *DiskProviderRegistry) (BatchWorkIngress, error) {
+	if rt == nil || registries == nil || bindings == nil {
+		return nil, errBatchWorkIngressDeps
+	}
+	rt.cfg.DiskBindings = bindings
+	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: bindings}, nil
 }
 
 func (b *batchWorkIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	ctx = withDiskProviderRegistry(ctx, b.diskBindings)
 	return b.rt.Invoke(ctx, inv, leaf, call)
 }
 
@@ -74,6 +86,10 @@ func (b *batchWorkIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string,
 	}
 	id := uuid.NewString()
 	if err := b.registries.Register(id, registry); err != nil {
+		return "", err
+	}
+	if err := b.registries.Retain(id); err != nil {
+		b.registries.Release(id)
 		return "", err
 	}
 	return id, nil
@@ -91,15 +107,23 @@ func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, erro
 	return b.registries.Resolve(registryID)
 }
 
+func registryForIngress(ingress BatchWorkIngress) *DiskProviderRegistry {
+	if b, ok := ingress.(*batchWorkIngress); ok {
+		return b.diskBindings
+	}
+	return nil
+}
+
 // batchCoordinatorBinding is one coordinator's flag-on binding. R11F P1-4:
 // it carries NO "latest pinned registry" — the CLI bridge binds to the
 // TRUSTED ENCLOSING INVOCATION through a typed context value stamped by the
 // agent-family driver (batchBridgeInvocation), so two concurrent invocations
 // with different pinned registries can never cross-contaminate.
 type batchCoordinatorBinding struct {
-	ingress  BatchWorkIngress
-	controls BatchModelControl
-	live     *session.BatchLiveReader
+	ingress      BatchWorkIngress
+	controls     BatchModelControl
+	live         *session.BatchLiveReader
+	diskBindings *DiskProviderRegistry
 }
 
 func (b *batchCoordinatorBinding) pin(registry *policyLeafRegistry) (string, error) {
@@ -123,10 +147,17 @@ func BindCoordinatorBatchRuntime(c Coordinator, ingress BatchWorkIngress) error 
 }
 
 func BindCoordinatorBatchControls(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, live ...*session.BatchLiveReader) error {
-	if c == nil || ingress == nil {
-		return errors.New("batch coordinator binding: coordinator and ingress are required")
+	return BindCoordinatorBatchRuntimeBindings(c, ingress, controls, registryForIngress(ingress), live...)
+}
+
+// BindCoordinatorBatchRuntimeBindings binds one coordinator to its specific
+// runtime and provider-binding registry; no process-global provider lookup
+// is used, so separate App instances remain isolated.
+func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, diskBindings *DiskProviderRegistry, live ...*session.BatchLiveReader) error {
+	if c == nil || ingress == nil || diskBindings == nil {
+		return errors.New("batch coordinator binding: coordinator, ingress and disk registry are required")
 	}
-	bind := &batchCoordinatorBinding{ingress: ingress, controls: controls}
+	bind := &batchCoordinatorBinding{ingress: ingress, controls: controls, diskBindings: diskBindings}
 	if len(live) > 0 {
 		bind.live = live[0]
 	}
@@ -164,6 +195,11 @@ func processCoordinatorBatchBinding() *batchCoordinatorBinding {
 // invokeBatchWithCallContext fills the invocation's per-call identity from
 // the call-time context (session, message, model, image support) and hands
 // it to the ONE authority. Missing identity fails closed inside Validate.
+// A call option carrying a custom (non-OS) DiskProvider registers a fresh
+// process binding (registerDiskBinding) and stamps its opaque ID into the
+// policy; the ID joins the canonical spec payload hash, so live attach with
+// a different binding is rejected. A template pinning a binding already
+// keeps it verbatim (nested/Add inheritance never re-resolves).
 func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, tpl BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	inv := tpl
 	inv.SessionID = tools.GetSessionFromContext(ctx)
@@ -173,12 +209,20 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
 	if opts := callOptionsFrom(ctx); opts != nil {
-		inv.Policy.DiskProvider = inv.Policy.DiskProvider || tools.HasDiskProvider(opts.DiskProvider)
+		ctx = withDiskProviderRegistry(ctx, registryForIngress(ingress))
+		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
+			bindingID, err := EnsureCallDiskBinding(opts, batchDiskRegistryFromContext(ctx))
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			inv.Policy.DiskBindingID = bindingID
+		}
+		inv.Policy.DiskProvider = inv.Policy.DiskBindingID != ""
+	}
+	if inv.Policy.DiskProvider && inv.Policy.DiskBindingID == "" {
+		return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
 	}
 	inv.Policy.CustomDisk = strings.TrimSpace(inv.Policy.CustomDisk)
-	if inv.Policy.DiskProvider || inv.Policy.CustomDisk != "" {
-		return fantasy.NewTextErrorResponse(ErrDiskProviderNotDurable.Error()), nil
-	}
 	return ingress.Invoke(ctx, inv, leaf, call)
 }
 

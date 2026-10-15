@@ -41,27 +41,44 @@ var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
 // Submit starts the caller-supplied root. The returned ID is always the
 // requested root (ingress contract: runner root must equal requested root).
 func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error) {
+	batch, err := a.submitBatch(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	_ = batch
+	return req.Root, nil
+}
+
+func (a *batchRunnerAdapter) SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error) {
+	batch, err := a.submitBatch(ctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	return req.Root, batch, nil
+}
+
+func (a *batchRunnerAdapter) submitBatch(ctx context.Context, req jobbatch.SubmitRequest) (*jobbatch.Batch, error) {
 	// R11F P1-6: a deferred install binds the real Runner at Start. An
 	// Invoke that races ahead of Start has no Runner and fails closed.
 	if a.runner == nil {
-		return "", errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
+		return nil, errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
 	if req.Spec.Task != nil {
 		if req.Spec.Batch != nil {
-			return "", jobbatch.ErrInvalidSpec
+			return nil, jobbatch.ErrInvalidSpec
 		}
 		req.Spec = jobbatch.OneItem(*req.Spec.Task)
 	} else if req.Spec.Batch == nil {
-		return "", jobbatch.ErrInvalidSpec
+		return nil, jobbatch.ErrInvalidSpec
 	}
 	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	a.mu.Lock()
 	a.started[req.Root] = batch
 	a.mu.Unlock()
-	return req.Root, nil
+	return batch, nil
 }
 
 // Stop requests cancellation of one root.
@@ -316,10 +333,12 @@ func batchNoticeText(row session.BatchNoticeRow) string {
 type BatchLeafRegistryStore struct {
 	mu         sync.RWMutex
 	registries map[string]*policyLeafRegistry
+	refs       map[string]int
+	owners     map[string]bool
 }
 
 func NewBatchLeafRegistryStore() *BatchLeafRegistryStore {
-	return &BatchLeafRegistryStore{registries: make(map[string]*policyLeafRegistry)}
+	return &BatchLeafRegistryStore{registries: make(map[string]*policyLeafRegistry), refs: make(map[string]int), owners: make(map[string]bool)}
 }
 
 // Register pins one registry under its identity. Double registration of the
@@ -337,6 +356,7 @@ func (s *BatchLeafRegistryStore) Register(registryID string, registry *policyLea
 		return fmt.Errorf("batch leaf registry: %q is already pinned", registryID)
 	}
 	s.registries[registryID] = registry
+	s.owners[registryID] = true
 	return nil
 }
 
@@ -350,6 +370,41 @@ func (s *BatchLeafRegistryStore) Resolve(registryID string) (*policyLeafRegistry
 		return nil, fmt.Errorf("batch leaf registry: unknown pinned registry identity %q", registryID)
 	}
 	return registry, nil
+}
+
+func (s *BatchLeafRegistryStore) Release(registryID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refs[registryID] > 0 {
+		s.refs[registryID]--
+	}
+	if s.refs[registryID] == 0 {
+		delete(s.refs, registryID)
+		delete(s.owners, registryID)
+		delete(s.registries, registryID)
+	}
+}
+
+func (s *BatchLeafRegistryStore) Retain(registryID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.registries[registryID]; !ok {
+		return fmt.Errorf("batch leaf registry: unknown pinned registry identity %q", registryID)
+	}
+	s.refs[registryID]++
+	return nil
+}
+
+func (s *BatchLeafRegistryStore) ReleaseLease(registryID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refs[registryID] > 0 {
+		s.refs[registryID]--
+	}
+	if s.refs[registryID] == 0 && !s.owners[registryID] {
+		delete(s.refs, registryID)
+		delete(s.registries, registryID)
+	}
 }
 
 // newBatchExecutorFamilies registers the R7 executor families for the
@@ -378,6 +433,9 @@ type BatchInstallDeps struct {
 	Profile *BatchProfile
 	// Registries is the pinned R1 registry resolver.
 	Registries *BatchLeafRegistryStore
+	// LeafRegistryRefs retains resolved registry entries until their root's
+	// construction lease and all accepted executions have disposed.
+	LeafRegistryRefs *batchLeafRegistryLeaseStore
 	// Store and Messages are the persistence and history services.
 	Store    *session.BatchStore
 	Messages message.Service
@@ -398,8 +456,9 @@ type BatchInstallDeps struct {
 	RecordRetention               int
 	// DonePoll is the done source's durable poll cadence; zero selects the
 	// default.
-	DonePoll time.Duration
-	Sessions session.Service
+	DonePoll     time.Duration
+	Sessions     session.Service
+	DiskBindings *DiskProviderRegistry
 }
 
 // BatchInstall is one fully adapted, still-dormant installation.
@@ -407,18 +466,20 @@ type BatchInstall struct {
 	mu        sync.Mutex
 	runnerCfg jobbatch.RunnerConfig
 
-	Runner       *jobbatch.Runner
-	CommitHook   func(context.Context, jobbatch.Transition) error
-	Runtime      *batchRuntime
-	RunnerHandle *batchRunnerAdapter
-	Attach       batchAttachStore
-	Delivery     batchDelivery
-	Done         batchDoneSource
-	Elector      batchElector
-	NoticePull   batchNoticePull
-	Sessions     session.Service
-	CLIPump      *session.BatchControlPump
-	cliAccepted  map[string]int64
+	Runner           *jobbatch.Runner
+	CommitHook       func(context.Context, jobbatch.Transition) error
+	Runtime          *batchRuntime
+	RunnerHandle     *batchRunnerAdapter
+	Attach           batchAttachStore
+	Delivery         batchDelivery
+	Done             batchDoneSource
+	Elector          batchElector
+	NoticePull       batchNoticePull
+	Sessions         session.Service
+	CLIPump          *session.BatchControlPump
+	DiskBindings     *DiskProviderRegistry
+	LeafRegistryRefs *batchLeafRegistryLeaseStore
+	cliAccepted      map[string]int64
 }
 
 // InstallBatchRuntime builds the real Runner, commit hook, attach store,
@@ -511,12 +572,19 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if err != nil {
 		return nil, err
 	}
-	env := batchLeafEnv{Leaves: deps.Registries.Resolve}
+	if deps.DiskBindings == nil {
+		return nil, errors.New("batch install: app-owned disk provider registry is required")
+	}
+	if deps.LeafRegistryRefs == nil {
+		deps.LeafRegistryRefs = newBatchLeafRegistryLeaseStore(deps.Registries)
+	}
+	runnerAdapter.rootLeases = newBatchRootLeaseStore(deps.DiskBindings, deps.LeafRegistryRefs)
+	env := batchLeafEnv{Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, PinLease: deps.LeafRegistryRefs.acquire}
 	executor := deps.Executor
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
 	}
-	if executor == nil {
+	if deps.Executor == nil {
 		executor = newBatchExecutor(env, newBatchExecutorFamilies(deps.AgentDeps))
 	}
 	// R11F P1-1: the commit hook reserves every Submit under the INVOKING
@@ -538,9 +606,10 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	}
 	runtime, err := newBatchRuntime(batchRuntimeConfig{
 		Host: deps.Host, RunnerID: deps.RunnerID, Profile: deps.Profile,
-		Resolver: deps.Resolver,
-		Leaves:   deps.Registries.Resolve,
-		Attach:   batchAttachAdapter{store: deps.Store}, Delivery: delivery, Runner: runnerAdapter,
+		Resolver: deps.Resolver, Leaves: deps.Registries.Resolve,
+		DiskBindings: deps.DiskBindings,
+		RootLeases:   runnerAdapter.rootLeases,
+		Attach:       batchAttachAdapter{store: deps.Store}, Delivery: delivery, Runner: runnerAdapter,
 	})
 	if err != nil {
 		return nil, err
@@ -553,15 +622,26 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		// R11F P1-5(d): the notice-pull drain adapter has NO production
 		// consumer yet — it is consumed by the web drain surface in
 		// R12/R15b; wired inertly until then. Do not invent a consumer.
-		NoticePull: batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
-		Sessions:   deps.Sessions,
-		runnerCfg:  runnerCfg,
+		NoticePull:       batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
+		Sessions:         deps.Sessions,
+		DiskBindings:     deps.DiskBindings,
+		LeafRegistryRefs: deps.LeafRegistryRefs,
+		runnerCfg:        runnerCfg,
 	}
 	if withRunner {
 		install.Runner = runnerAdapter.runner
 	}
 	install.CLIPump = session.NewBatchControlPump(deps.Store, deps.Host, install.commitCLIControl)
 	return install, nil
+}
+
+// DrainDiskBindings releases providers only after the runtime's Runner
+// completion gate has invoked ReleaseWriter; forced shutdown skips that gate.
+func (i *BatchInstall) DrainDiskBindings() {
+	if i == nil || i.DiskBindings == nil {
+		return
+	}
+	i.DiskBindings.Drain()
 }
 
 // BuildRunner constructs the real Runner for a deferred install (R11F P1-6)

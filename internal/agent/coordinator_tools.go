@@ -864,8 +864,22 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				}
 				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
 				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
-				if opts := callOptionsFrom(ctx); opts != nil && tools.HasDiskProvider(opts.DiskProvider) {
-					return policyToolBuild{}, ErrDiskProviderNotDurable
+				// A custom (non-OS) call provider pins a fresh process
+				// binding into the template: coordinator-originated batch
+				// work carries the binding instead of being refused.
+				if opts := callOptionsFrom(ctx); opts != nil {
+					ctx = withDiskProviderRegistry(ctx, bind.diskBindings)
+					if bindingID := opts.DiskBindingID; bindingID != "" {
+						inv.Policy.DiskBindingID = bindingID
+						inv.Policy.DiskProvider = true
+					} else if tools.IsCustomDiskProvider(opts.DiskProvider) {
+						bindingID, err := EnsureCallDiskBinding(opts, bind.diskBindings)
+						if err != nil {
+							return policyToolBuild{}, err
+						}
+						inv.Policy.DiskBindingID = bindingID
+						inv.Policy.DiskProvider = true
+					}
 				}
 				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
 				if err != nil {

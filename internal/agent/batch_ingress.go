@@ -116,6 +116,11 @@ func (r *batchRuntime) invokeFresh(ctx context.Context, inv BatchInvocation, spe
 	if err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("batch attach: %w", err)
 	}
+	if attached && inv.Policy.DiskBindingID != "" {
+		if r.cfg.RootLeases == nil || !r.cfg.RootLeases.matches(root, inv.Policy.DiskBindingID, inv.RegistryID) {
+			return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
+		}
+	}
 	if !attached {
 		root, err = r.submit(ctx, inv, spec, hash, callID)
 		if err != nil {
@@ -133,12 +138,54 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	if err := ValidateSubmit(r.cfg.Profile, waiter, nil, spec, r.cfg.MaxDepth, r.cfg.MaxNodes, r.cfg.Resolver); err != nil {
 		return "", fmt.Errorf("%w: %w", errBatchSubmitBeforeInvalid, err)
 	}
-	id, err := r.cfg.Runner.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: callID})
+	var pending *batchRootLeasePending
+	var err error
+	if inv.Policy.DiskBindingID != "" {
+		if r.cfg.RootLeases == nil {
+			return "", ErrDiskProviderUnavailable
+		}
+		pending, err = r.cfg.RootLeases.acquire(inv.Policy.DiskBindingID, inv.RegistryID)
+		if err != nil {
+			return "", err
+		}
+	}
+	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: callID}
+	var id jobbatch.ID
+	var batch *jobbatch.Batch
+	if pending != nil {
+		bound, ok := r.cfg.Runner.(batchBoundRunnerHandle)
+		if !ok {
+			pending.release()
+			return "", ErrDiskProviderUnavailable
+		}
+		id, batch, err = bound.SubmitBound(ctx, request)
+	} else {
+		id, err = r.cfg.Runner.Submit(ctx, request)
+	}
 	if err != nil {
+		if pending != nil {
+			pending.release()
+		}
 		return "", fmt.Errorf("batch submit: %w", err)
 	}
 	if id != root {
+		if pending != nil {
+			pending.release()
+		}
 		return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", id, root)
+	}
+	if pending != nil {
+		if batch == nil {
+			pending.release()
+			return "", ErrDiskProviderUnavailable
+		}
+		if batch.ID() != root {
+			pending.release()
+			return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", batch.ID(), root)
+		}
+		if err := r.cfg.RootLeases.adopt(root, batch.Done(), pending); err != nil {
+			return "", err
+		}
 	}
 	_ = hash // The commit hook reserves (root, callID, hash) atomically in R11B.
 	return root, nil

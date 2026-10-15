@@ -22,7 +22,10 @@ type batchRunnerHandle interface {
 	Stop(ctx context.Context, id jobbatch.ID) error
 }
 
-// batchModelRunner is the optional control-plane view over the same Runner.
+type batchBoundRunnerHandle interface {
+	SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error)
+}
+
 type batchModelRunner interface {
 	Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error)
 	Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error)
@@ -77,6 +80,9 @@ type batchRuntimeConfig struct {
 	Delivery batchDelivery
 	// Runner is the engine handle; nil until R11F binds it.
 	Runner batchRunnerHandle
+	// DiskBindings supplies validated process-bound providers to the executor.
+	DiskBindings *DiskProviderRegistry
+	RootLeases   *batchRootLeaseStore
 	// MaxDepth and MaxNodes are the admission budgets; zero selects the
 	// defaults below.
 	MaxDepth, MaxNodes int
@@ -154,7 +160,7 @@ func (r *batchRuntime) bindRunner(runner batchRunnerHandle) error {
 // the payload's pinned registry identity (batchLeafLookupID), never by
 // session, closing the section-3 collision gap.
 func (r *batchRuntime) LeafEnv() batchLeafEnv {
-	return batchLeafEnv{Leaves: r.cfg.Leaves}
+	return batchLeafEnv{Leaves: r.cfg.Leaves, DiskBindings: r.cfg.DiskBindings}
 }
 
 // batchRootID mints a fresh caller-supplied root identity.

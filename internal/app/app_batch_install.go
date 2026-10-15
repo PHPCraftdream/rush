@@ -67,10 +67,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		// and elections fence by the invocation's session
 		// (batchDeliveryImpl.owner); Host stays ONLY the fence identity.
 		Host: host, RunnerID: uuid.NewString(),
-		// R11F (M3) coordinator seams — AgentDeps (with the P1-5b
-		// store-backed descendant reader) and the non-reentrant MCP resolver
-		// are wired by the factory defaults above, so the reader is built
-		// from the App's own writer pool and data directory.
+		DiskBindings: agent.NewDiskProviderRegistry(),
 	})
 	if err != nil {
 		return err
@@ -91,11 +88,11 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	// R11F (M3): the exported one-authority ingress seam over the installed
 	// runtime; InitCoderAgent binds it to the coordinator.
-	app.batchWorkIngress, err = agent.NewBatchWorkIngress(install.Runtime, factory.deps.Registries)
+	app.batchWorkIngress, err = agent.NewBatchWorkIngressWithDiskBindings(install.Runtime, factory.deps.Registries, install.DiskBindings)
 	if err != nil {
 		return err
 	}
-	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver)
+	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver, install.Runtime.RootLeases)
 	app.batchLiveReader = factory.live
 	// Wire the R11E release seams onto the gate BEFORE the watcher starts:
 	// RetainHostIdentity mirrors the flag-off forced path's CloseKeepLock,
@@ -107,11 +104,18 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		// never async_jobs.
 		rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
 		rt.cfg.ReleaseHostIdentity = app.batchHostRelease
+		rt.cfg.ReleaseWriter = func(ctx context.Context) error {
+			app.batchInstall.DrainDiskBindings()
+			return app.releaseBatchWriter()
+		}
 	} else {
 		rt.cfg.RetainHostIdentity = app.asyncJobStore.CloseKeepLock
 		rt.cfg.ReleaseHostIdentity = app.asyncJobStore.Close
 	}
-	rt.cfg.ReleaseWriter = func(context.Context) error {
+	rt.cfg.ReleaseWriter = func(ctx context.Context) error {
+		if app.batchInstall != nil {
+			app.batchInstall.DrainDiskBindings()
+		}
 		return app.releaseBatchWriter()
 	}
 	if batchRuntimeConfigHook != nil {

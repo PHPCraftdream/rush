@@ -53,11 +53,20 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+	if opts := callOptionsFrom(ctx); opts != nil {
+		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
+			bindingID, err := EnsureCallDiskBinding(opts, batchDiskRegistryFromContext(ctx))
+			if err != nil {
+				return BatchInvocation{}, err
+			}
+			inv.Policy.DiskBindingID = bindingID
+		}
+		inv.Policy.DiskProvider = inv.Policy.DiskBindingID != ""
+	}
 	inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
 	inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
-	if opts := callOptionsFrom(ctx); opts != nil && tools.HasDiskProvider(opts.DiskProvider) {
-		return BatchInvocation{}, ErrDiskProviderNotDurable
-	}
+	// A template-pinned DiskBindingID propagates verbatim: nested batches
+	// and Add inherit the binding, never re-resolving to another provider.
 	return inv, nil
 }
 

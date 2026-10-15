@@ -126,9 +126,13 @@ const (
 // a host's implementation is directly assignable with zero conversion
 // code — the same aliasing pattern as FolderScope above.
 type (
-	// DiskProvider is the filesystem one run's fs_* tools operate on. See
-	// tools.DiskProvider for the full method contract (Stat, EvalSymlinks,
-	// Open, ReadFile, MkdirAll, WriteFile, Remove, List, Find, Search).
+	// DiskProvider is the borrowed filesystem capability for this run's
+	// fs_* tools. Rush does not close it; keep it usable until associated
+	// executions, including detached/held work, terminate and dispose.
+	// Concurrent calls may overlap. Cancellation requests are not proof of
+	// provider-operation termination. Process restart never resumes old work;
+	// supply a provider explicitly to a new SDK run. Missing bindings fail
+	// with ErrDiskProviderUnavailable, never OS-disk fallback.
 	DiskProvider = tools.DiskProvider
 
 	// DiskListRequest/DiskListResult are List's request/response shapes.
@@ -162,18 +166,13 @@ func OSDiskProvider() DiskProvider { return tools.OSDisk() }
 // already-closed channel instead (see their docs).
 var ErrClientClosed = errors.New("sdk: client is closed")
 
-// ErrSessionBusy and ErrDiskProviderNotDurable are stable re-exports of
-// the sentinel errors Run/RunWithCredentials wrap (see their docs and
-// the README's "Session-busy behaviour" and "DiskProvider" sections).
-// Aliased here (not merely documented as agent.* / internal/agent.*)
-// because internal/agent is unimportable from outside this module —
-// Go's internal/ visibility rule confines it to this repo's own module
-// tree — so an external consumer's errors.Is(err, ...) classification
-// can only ever compile against sdk.ErrSessionBusy /
-// sdk.ErrDiskProviderNotDurable, never the internal/agent originals.
+// ErrSessionBusy, ErrDiskProviderNotDurable, and ErrDiskProviderUnavailable are stable re-exports
+// of the sentinel errors Run/RunWithCredentials wrap. Aliased because
+// internal/agent is not importable by external consumers.
 var (
-	ErrSessionBusy            = agent.ErrSessionBusy
-	ErrDiskProviderNotDurable = agent.ErrDiskProviderNotDurable
+	ErrSessionBusy             = agent.ErrSessionBusy
+	ErrDiskProviderNotDurable  = agent.ErrDiskProviderNotDurable
+	ErrDiskProviderUnavailable = agent.ErrDiskProviderUnavailable
 )
 
 // Structured-event aliases onto the same raw types the web UI's WS layer

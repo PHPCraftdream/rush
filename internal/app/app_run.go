@@ -71,6 +71,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		return nil, err
 	}
 	defer cancel()
+	defer agent.ReleaseCallDiskBinding(setup.callOpts)
 	stdout := setup.stdout
 	stderr := setup.stderr
 	credsRunner := setup.credsRunner

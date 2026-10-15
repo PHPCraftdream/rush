@@ -175,6 +175,10 @@ func TestExternalErrorSentinelsAreClassifiable(t *testing.T) {
 	if !errors.Is(wrappedNotDurable, sdk.ErrDiskProviderNotDurable) {
 		t.Fatal("errors.Is(wrappedNotDurable, sdk.ErrDiskProviderNotDurable) = false, want true")
 	}
+	wrappedUnavailable := fmt.Errorf("outer: %w", sdk.ErrDiskProviderUnavailable)
+	if !errors.Is(wrappedUnavailable, sdk.ErrDiskProviderUnavailable) {
+		t.Fatal("errors.Is(wrappedUnavailable, sdk.ErrDiskProviderUnavailable) = false, want true")
+	}
 }
 
 // TestExternalModuleCannotImportInternal proves the sdk boundary is

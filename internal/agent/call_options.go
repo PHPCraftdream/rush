@@ -23,6 +23,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
@@ -36,6 +37,11 @@ import (
 // of every field means "unset — fall back to the legacy shared-state
 // path", matching how RunOverrides' zero values mean "no override" today.
 type CallOptions struct {
+	// diskBindingMu guards this immutable run's once-registered binding.
+	diskBindingMu       sync.Mutex
+	diskBindingRegistry *diskProviderRegistry
+	diskBindingID       string
+
 	// ModelRole is the named model slot driving this run (smart, fast,
 	// worker, reviewer). Read by workerSubAgentActiveForCall to decide
 	// worker-slot preference for sub-agent builds, replacing the
@@ -156,30 +162,26 @@ type CallOptions struct {
 	// Deliberately NOT symmetrical with FolderScope above: FolderScope is
 	// data that permission.BuildFolderScope compiles and T12 persists
 	// across a durable-queue restart; a DiskProvider is arbitrary
-	// in-process Go code with no serializable form. A call carrying one
-	// must therefore never reach the durable queue, and never be rebuilt
-	// from a row that somehow did. This is enforced by a three-layer
-	// refusal (see disk_provider_durable.go):
-	//   1. producer refusal at every durable-enqueue site — startDetachedRun,
-	//      handleInterruptTick (coordinator_interrupt.go), and the
-	//      finalizer in agent_ownership.go's restartOrphanedWithRetry —
-	//      each check callCarriesDiskProvider and return
-	//      ErrDiskProviderNotDurable instead of enqueueing;
-	//   2. a durable HostDiskProvider marker stamped onto the row by
-	//      ToSessionAgentCallData (call_data_conversion.go) as belt and
-	//      braces, in case a future producer forgets layer 1;
-	//   3. consumer refusal on rebuild — RebuildSessionAgentCall
-	//      (coordinator_interrupt.go) refuses outright, as terminal
-	//      (ErrCallAlreadyAttempted), any row marked HostDiskProvider,
-	//      rather than silently rebuilding it with DiskProvider == nil
-	//      (which buildTools' diskOrOS would resolve to the real OS
-	//      filesystem).
+	// in-process Go code with no serializable form. Batch work carrying
+	// one executes under a PROCESS-BOUND BINDING (R12-H2,
+	// disk_provider_binding.go): the batch ingress registers the provider
+	// (registerDiskBinding - canonical OS disk and nil map to no binding),
+	// stamps the opaque ID into Policy.DiskBindingID, and the executor
+	// resolves it through the registry before any leaf side effect; a lost
+	// binding fails closed (ErrDiskProviderUnavailable), never OS-disk
+	// promotion. Durable queue handoff/rebuild of a provider-dependent
+	// SESSION call is still refused (ErrDiskProviderNotDurable,
+	// disk_provider_durable.go).
 	//
 	// It does NOT affect the legacy single-target file tools
 	// (view/glob/grep/ls/write/edit/multiedit), bash, download, git_read,
 	// agentic_fetch or MCP tools, all of which keep hitting the real disk
 	// regardless of this field.
 	DiskProvider tools.DiskProvider
+	// DiskBindingID is the opaque required binding registered for this
+	// immutable CallOptions incarnation. It is internal trusted runtime
+	// metadata and is never serialized with session calls.
+	DiskBindingID string
 }
 
 type sessionModelPersistenceContextKey struct{}

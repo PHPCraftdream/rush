@@ -57,6 +57,17 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds
 	// to THIS invocation's pinned registry (never the latest one).
 	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID})
+	if req.DiskBindingID != "" {
+		provider := batchDiskProviderFrom(ctx)
+		if provider == nil {
+			cancel()
+			return nil, ErrDiskProviderUnavailable
+		}
+		runCtx = WithCallOptions(runCtx, &CallOptions{
+			DiskProvider: provider, DiskBindingID: req.DiskBindingID,
+			diskBindingRegistry: batchDiskRegistryFromContext(ctx),
+		})
+	}
 	call := fantasy.ToolCall{ID: req.ToolCallID, Name: req.Tool, Input: string(req.Input)}
 	turn := &batchCoordinatorAgentTurn{cancel: cancel, done: make(chan struct{}), exit: make(chan struct{})}
 	go func() {

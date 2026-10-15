@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -21,8 +22,10 @@ type batchAgentRunRequest struct {
 	Input      json.RawMessage
 	// R11F (M3): the invocation's pinned registry identity (leaf resolution
 	// through the ingress) and enclosing message id (child-session creation).
-	RegistryID string
-	MessageID  string
+	RegistryID    string
+	MessageID     string
+	DiskBindingID string
+	Policy        *batchLeafPolicyContext
 	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
 	// Dispatch resolves the pinned leaf by this name and names the call
 	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
@@ -96,7 +99,7 @@ func newBatchAgentFamily(deps batchAgentDeps) batchLeafFamily {
 
 var _ batchLeafFamily = batchAgentFamily{}
 
-func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -105,25 +108,45 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 		messageID = p.Policy.MessageID
 	}
 	req := batchAgentRunRequest{
-		NodeID:     l.ID,
-		Token:      l.Token,
-		SessionID:  p.SessionID,
-		ToolCallID: p.ToolCallID,
-		Input:      p.Input,
-		RegistryID: p.RegistryID,
-		MessageID:  messageID,
-		Tool:       p.Tool,
+		NodeID: l.ID, Token: l.Token, SessionID: p.SessionID,
+		ToolCallID: p.ToolCallID, Input: p.Input,
+		RegistryID: p.RegistryID, MessageID: messageID,
+		DiskBindingID: func() string {
+			if p.Policy != nil {
+				return p.Policy.DiskBindingID
+			}
+			return ""
+		}(),
+		Policy: p.Policy, Tool: p.Tool,
 	}
 	e := &batchAgentExecution{
-		deps:        f.deps,
-		req:         req,
-		scope:       newBatchAgentScope(),
-		driverDone:  make(chan struct{}),
-		watcherDone: make(chan struct{}),
-		finished:    make(chan struct{}),
+		deps:         f.deps,
+		req:          req,
+		leaseRelease: p.leaseRelease,
+		scope:        newBatchAgentScope(),
+		driverDone:   make(chan struct{}),
+		watcherDone:  make(chan struct{}),
+		finished:     make(chan struct{}),
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
+	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
+		cancel()
+		if p.leaseRelease != nil {
+			p.leaseRelease()
+		}
+		return nil, ErrDiskProviderUnavailable
+	}
+	if p.diskProvider != nil && p.Policy != nil {
+		runCtx = WithCallOptions(runCtx, &CallOptions{
+			DiskProvider: p.diskProvider, DiskBindingID: p.Policy.DiskBindingID,
+			diskBindingID:       p.Policy.DiskBindingID,
+			diskBindingRegistry: env.DiskBindings,
+		})
+	}
+	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
+	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
+	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: p.RegistryID, MessageID: messageID})
 	turn, err := e.launch(runCtx)
 	if err != nil {
 		cancel()
@@ -194,6 +217,7 @@ type batchAgentExecution struct {
 	finished         chan struct{}  // Closed once, when the scope result is fixed.
 	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
 	questionSequence uint64
+	leaseRelease     func()
 }
 
 var (
@@ -367,7 +391,7 @@ func (e *batchAgentExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 }
 
 // Dispose waits for the late kill (driver exit) and the watcher, then
-// releases the generation state: the question channel and retained output.
+// releases generation state and the retained provider/registry lease.
 func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-e.finished:
@@ -386,12 +410,18 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 		return ctx.Err()
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.disposed {
+		e.mu.Unlock()
 		return nil
 	}
 	e.disposed = true
 	e.content = nil
+	leaseRelease := e.leaseRelease
+	e.leaseRelease = nil
+	e.mu.Unlock()
+	if leaseRelease != nil {
+		leaseRelease()
+	}
 	return nil
 }
 

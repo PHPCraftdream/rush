@@ -349,7 +349,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// Queueing is what creates the orphan-restart risk Layers 1/2 refuse
 	// outright — forcing fail-fast here means a provider-carrying call
 	// never reaches that path in the first place.
-	failIfSessionBusy := req.FailIfSessionBusy || tools.HasDiskProvider(overrides.DiskProvider)
+	failIfSessionBusy := req.FailIfSessionBusy || tools.IsCustomDiskProvider(overrides.DiskProvider)
 
 	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
 	// and attach it to the run's context. Everything below that used to
@@ -405,13 +405,19 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// The coordinator's applyCallFolderScope rebuilds the toolset
 		// from it per call; rejectScopedCallOnCLIProvider (T9) refuses
 		// the call outright when the resolved provider is a CLI provider.
-		FolderScope: folderScope,
-		// #859: the caller-supplied filesystem for THIS call's fs_* tools
-		// (nil = real disk). Never persisted: a durably-queued call
-		// carrying one is refused outright (agent.ErrDiskProviderNotDurable),
-		// never rebuilt with a nil fallback onto the real disk.
+		FolderScope:       folderScope,
 		DiskProvider:      overrides.DiskProvider,
 		FailIfSessionBusy: failIfSessionBusy,
+	}
+	if tools.IsCustomDiskProvider(overrides.DiskProvider) && batchRuntimeFlagEnabled() {
+		if app.batchInstall == nil || app.batchInstall.DiskBindings == nil {
+			return nil, cancel, nil, agent.ErrDiskProviderUnavailable
+		}
+		bindingID, err := agent.EnsureCallDiskBinding(callOpts, app.batchInstall.DiskBindings)
+		if err != nil {
+			return nil, cancel, nil, err
+		}
+		callOpts.DiskBindingID = bindingID
 	}
 	// Turn-stall policy: resolve --stall-timeout (default 30m) onto this call.
 	applyTurnStallCallTimeout(callOpts, app.config.Config().Options)

@@ -358,8 +358,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// would durably enqueue a row that a restart could only replay onto
 	// the REAL disk.
 	if callCarriesDiskProvider(call) {
-		slog.Error("coordinator: refusing to durably enqueue an interrupt-inject call carrying a caller-supplied disk provider",
-			"session_id", sessionID, "logical_call_id", call.LogicalCallID)
+		if call.CallOptions.DiskBindingID != "" {
+			return false, fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued", ErrDiskProviderUnavailable)
+		}
 		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
 	}
 
