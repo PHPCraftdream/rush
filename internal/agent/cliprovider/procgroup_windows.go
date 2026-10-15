@@ -42,3 +42,10 @@ func trackChildTree(proc *os.Process, _, _ string) int {
 // process groups, and tree teardown is the Job Object assigned by
 // trackChildTree instead.
 func configureChildProcessGroup(*exec.Cmd) {}
+
+func killChildProcess(proc *os.Process) error {
+	if proc == nil || proc.Pid <= 0 {
+		return os.ErrProcessDone
+	}
+	return session.KillProcess(proc.Pid)
+}
