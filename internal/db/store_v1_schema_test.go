@@ -57,6 +57,40 @@ func sqliteObjects(t *testing.T, conn *sql.DB, exclude map[string]bool) map[stri
 	return objects
 }
 
+// tableColumns returns the column names of table.
+func tableColumns(t *testing.T, conn *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := conn.QueryContext(t.Context(), `PRAGMA table_info(`+table+`)`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		require.NoError(t, rows.Scan(&cid, &name, &typ, &notnull, &def, &pk))
+		got = append(got, name)
+	}
+	require.NoError(t, rows.Err())
+	return got
+}
+
+// queryNames returns the single string column of query.
+func queryNames(t *testing.T, conn *sql.DB, query string) []string {
+	t.Helper()
+	rows, err := conn.QueryContext(t.Context(), query)
+	require.NoError(t, err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		names = append(names, name)
+	}
+	require.NoError(t, rows.Err())
+	return names
+}
+
 func normalizeSchemaSQL(ddl string) string {
 	var tokens []string
 	for i := 0; i < len(ddl); {
@@ -168,18 +202,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		"batch_runner_checkpoints": {"host_id", "runner_id", "sequence", "event_type", "final", "created_at", "updated_at"},
 	}
 	for table, want := range expectedColumns {
-		rows, err := conn.QueryContext(t.Context(), `PRAGMA table_info(`+table+`)`)
-		require.NoError(t, err)
-		var got []string
-		for rows.Next() {
-			var cid, notnull, pk int
-			var name, typ string
-			var def any
-			require.NoError(t, rows.Scan(&cid, &name, &typ, &notnull, &def, &pk))
-			got = append(got, name)
-		}
-		require.NoError(t, rows.Close())
-		require.ElementsMatch(t, want, got, table)
+		require.ElementsMatch(t, want, tableColumns(t, conn, table), table)
 	}
 	objects := sqliteObjects(t, conn, nil)
 	tables := make(map[string]bool)
@@ -197,18 +220,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE name=?`, absent).Scan(&count))
 		require.Zero(t, count, absent)
 	}
-	var isNew bool
-	rows, err := conn.Query(`PRAGMA table_info(files)`)
-	require.NoError(t, err)
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var def any
-		require.NoError(t, rows.Scan(&cid, &name, &typ, &notnull, &def, &pk))
-		isNew = isNew || name == "is_new"
-	}
-	require.NoError(t, rows.Close())
-	require.False(t, isNew)
+	require.NotContains(t, tableColumns(t, conn, "files"), "is_new")
 	for _, object := range []string{
 		"idx_sessions_created_at", "idx_sessions_cost_parent", "idx_sessions_parent_session_id_updated_at", "idx_sessions_parent_session_id_created_at", "idx_sessions_updated_at", "idx_sessions_workspace_updated",
 		"idx_files_created_at", "idx_files_path", "idx_files_session_id_created_at",
@@ -221,7 +233,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		"update_sessions_updated_at", "update_files_updated_at", "update_messages_updated_at", "update_session_message_count_on_insert", "update_session_message_count_on_delete",
 	} {
 		var count int
-		require.NoError(t, conn.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name=?`, object).Scan(&count))
+		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE name=?`, object).Scan(&count))
 		require.Equal(t, 1, count, object)
 	}
 }
@@ -230,14 +242,9 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 	fixture := openFixture(t, true)
 	embedded := openFixture(t, false)
 	omitted := map[string]bool{}
-	rows, err := embedded.Query(`SELECT name FROM sqlite_master WHERE tbl_name='async_jobs'`)
-	require.NoError(t, err)
-	for rows.Next() {
-		var name string
-		require.NoError(t, rows.Scan(&name))
+	for _, name := range queryNames(t, embedded, `SELECT name FROM sqlite_master WHERE tbl_name='async_jobs'`) {
 		omitted[name] = true
 	}
-	require.NoError(t, rows.Close())
 	fixtureObjects := sqliteObjects(t, fixture, nil)
 	embeddedObjects := sqliteObjects(t, embedded, omitted)
 	// Columns are sorted only after tokenizing table elements outside quoted text; constraints stay as independent exact elements.
