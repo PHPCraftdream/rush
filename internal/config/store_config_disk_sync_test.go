@@ -615,7 +615,7 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.Greater(t, s.Generation(), gen)
 		require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model,
 			"the new eligible config must reach the store")
-		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(configPath)),
+		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)),
 			"the new candidate must join the tracked set")
 
 		// Drift cleared: a later forced tick does not reload again.
@@ -632,7 +632,7 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { s.StopConfigDiskSync() })
 		require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model)
-		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(configPath)))
+		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)))
 		gen := s.Generation()
 
 		// The eligible project config leaves the candidate set: a directory
@@ -648,7 +648,7 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.Greater(t, s.Generation(), gen)
 		require.Equal(t, "gpt-global", s.Config().Models[SelectedModelTypeSmart].Model,
 			"the removed file's models must revert to the remaining sources")
-		require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(configPath)),
+		require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)),
 			"the removed candidate must leave the tracked set")
 	})
 }
