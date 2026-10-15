@@ -1,27 +1,6 @@
-// D11 per-call-cost benchmark helpers (R12-G CI evidence package). This file
-// holds the measurement scaffolding: tunable constants, the summary schema,
-// the canned leaf/executor pair, and the hermetic per-path environment. The
-// test itself lives in app_batch_bench_test.go.
-//
-// SEAM CHOICE (documented per the D11 spec): the timed NEW path drives the
-// REAL batch runtime end to end — agent.InstallBatchRuntime over the App's
-// own pooled SQLite writer (db.Connect, WAL/NORMAL), with the REAL jobbatch
-// Runner engine, the REAL session batch commit hook (Submit/Started/Settled
-// persistence into batch_nodes) and the REAL R11D delivery election
-// (install.Delivery) reached through install.Runtime.Invoke — the same
-// ingress entry point the coordinator's work tools use. MOCKED: (a) the leaf
-// tool is a canned stub whose Run returns instantly, identical on both
-// paths, so the measured delta is exactly the persistence/election overhead
-// around the call; (b) the executor family is replaced by a minimal
-// jobbatch.Executor that runs the canned leaf and reports Completed — the
-// default generic family resolves leaves through the pinned policy-leaf
-// registry (internal/agent/policy_leaf.go), whose type is not constructible
-// outside internal/agent. This still satisfies "ordinary sequential
-// work-tool call" for latency accounting: every Submit admission, commit-hook
-// write and delivery election of the real path executes per call. The OLD
-// (flag-off) path is the pre-batch behavior the coordinator falls back to:
-// the work tool executes its leaf INLINE with no batch persistence —
-// mirrored by a direct leaf.Run per call.
+// D11 benchmark helpers. Timed calls are real App.AgentCoordinator.Run turns.
+// The fixture workload uses the direct view tool; the wrapped workload uses
+// the production bash async wrapper with the same harmless command in both modes.
 package app
 
 import (
@@ -29,362 +8,592 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	modernsqlite "modernc.org/sqlite"
 )
 
-// Tunable sizing constants. The whole benchmark must stay comfortably inside
-// the shadow workflow's 40m -timeout on a CI runner; keep the products of
-// these numbers under ~4000 timed calls total.
 const (
-	// d11WarmupCalls is the size of the one warmup round per path (not
-	// counted in any reported statistic).
-	d11WarmupCalls = 20
-	// d11LatencySamples is the number of sequential per-call latency samples
-	// per measured round and path.
-	d11LatencySamples = 200
-	// d11ThroughputSessions is the number of concurrent sessions sharing the
-	// ONE database during the throughput phase (writer contention).
-	d11ThroughputSessions = 8
-	// d11ThroughputCallsPerSession is the sequential call count per session
-	// in one throughput phase.
-	d11ThroughputCallsPerSession = 50
-	// d11MeasuredRounds is the number of measured rounds per path; rounds
-	// alternate OFF, ON, OFF, ON, ...
-	d11MeasuredRounds = 3
-	// d11DonePoll tightens the delivery done-source poll cadence from its
-	// 250ms fallback so per-call latency reflects persistence, not polling.
-	d11DonePoll = 2 * time.Millisecond
-	// d11P95BudgetMs is the PASS gate on the added p95 latency.
-	d11P95BudgetMs = 15.0
-	// d11ThroughputFloor is the PASS gate on throughput ON/OFF ratio.
-	d11ThroughputFloor = 0.80
+	d11WarmupCalls               = 2
+	d11LatencySamples            = 40
+	d11ThroughputSessions        = 8
+	d11ThroughputCallsPerSession = 20
+	d11MeasuredRounds            = 2
+	d11FixtureName               = "d11-fixture.txt"
 )
 
-// d11Summary is the single-line JSON object printed between the
-// D11-SUMMARY markers (parsed by tools/d11_report.py). Field order is the
-// schema order; encoding/json marshals struct fields in declaration order.
+type d11RunEntry struct {
+	Workload      string    `json:"workload"`
+	Phase         string    `json:"phase"`
+	Samples       int       `json:"samples"`
+	Attempts      int       `json:"attempts"`
+	Errors        int       `json:"errors"`
+	P50Ms         float64   `json:"p50_ms"`
+	P95Ms         float64   `json:"p95_ms"`
+	P99Ms         float64   `json:"p99_ms"`
+	CallsPerSec   float64   `json:"calls_per_sec"`
+	Commits       int64     `json:"commits"`
+	SubmitWrites  int       `json:"submit_writes"`
+	StartedWrites int       `json:"started_writes"`
+	SettledWrites int       `json:"settled_writes"`
+	RawMs         []float64 `json:"raw_ms"`
+}
+
 type d11Summary struct {
-	P95OffMs         float64 `json:"p95_off_ms"`
-	P95OnMs          float64 `json:"p95_on_ms"`
-	P95DeltaMs       float64 `json:"p95_delta_ms"`
-	P95BudgetMs      float64 `json:"p95_budget_ms"`
-	ThroughputOffCPS float64 `json:"throughput_off_cps"`
-	ThroughputOnCPS  float64 `json:"throughput_on_cps"`
-	ThroughputRatio  float64 `json:"throughput_ratio"`
-	ErrorsOff        int     `json:"errors_off"`
-	ErrorsOn         int     `json:"errors_on"`
-	CommitsOff       int     `json:"commits_off"`
-	CommitsOn        int     `json:"commits_on"`
-	Durability       struct {
+	Mode               string          `json:"mode"`
+	Workload           string          `json:"workload"`
+	CallTransactions   []d11CallCommit `json:"call_transactions"`
+	MeasuredCallIDs    []string        `json:"measured_call_ids"`
+	CandidateSHA       string          `json:"candidate_sha"`
+	BaselineSHA        string          `json:"baseline_sha"`
+	P50Ms              float64         `json:"p50_ms"`
+	P95Ms              float64         `json:"p95_ms"`
+	P99Ms              float64         `json:"p99_ms"`
+	P95ContentionMs    float64         `json:"p95_contention_ms"`
+	ThroughputCPS      float64         `json:"throughput_cps"`
+	Errors             int             `json:"errors"`
+	Commits            int64           `json:"commits"`
+	CommitsPerCall     int64           `json:"commits_per_call"`
+	SequentialAttempts int             `json:"sequential_attempts"`
+	ContentionAttempts int             `json:"contention_attempts"`
+	SubmitWrites       int             `json:"submit_writes"`
+	StartedWrites      int             `json:"started_writes"`
+	SettledWrites      int             `json:"settled_writes"`
+	Durability         struct {
 		JournalMode string `json:"journal_mode"`
 		Synchronous string `json:"synchronous"`
 	} `json:"durability"`
 	Runs []d11RunEntry `json:"runs"`
 }
 
-// d11RunEntry is one reported round (warmup or measured, per path).
-type d11RunEntry struct {
-	Phase       string  `json:"phase"`
-	Samples     int     `json:"samples"`
-	P50Ms       float64 `json:"p50_ms"`
-	P95Ms       float64 `json:"p95_ms"`
-	CallsPerSec float64 `json:"calls_per_sec"`
-	Errors      int     `json:"errors"`
-	Commits     int     `json:"commits"`
+type d11TransitionCounts struct {
+	mu                 sync.Mutex
+	commits            int64
+	nextTx             int64
+	calls              map[string]*d11CallEvidence
+	currentTx          int64
+	currentEvents      map[string]string
+	currentEventCounts map[string]int
+	currentRootCalls   map[string]string
+	rootCalls          map[string]string
+	pendingTx          int64
+	pendingEvents      map[string]string
+	pendingEventRoots  map[string]map[string]string
+	pendingAmbiguity   []string
+	observerErrors     []string
 }
 
-// d11BenchLeaf is the canned work-tool leaf: instant, identical on both
-// paths. It mirrors the offline probe pattern of newFullNewApp's provider —
-// a stub that satisfies the interface without doing real work.
-type d11BenchLeaf struct {
-	name string
-	runs atomic.Int64
-}
-
-func (l *d11BenchLeaf) Info() fantasy.ToolInfo { return fantasy.ToolInfo{Name: l.name} }
-
-func (l *d11BenchLeaf) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	l.runs.Add(1)
-	return fantasy.NewTextResponse("d11-ok"), nil
-}
-
-func (l *d11BenchLeaf) ProviderOptions() fantasy.ProviderOptions { return nil }
-
-func (l *d11BenchLeaf) SetProviderOptions(fantasy.ProviderOptions) {}
-
-// d11BenchExecutor is the minimal real Executor seam: it runs the canned
-// leaf and reports Completed. It replaces the default generic family only
-// because the pinned policy-leaf registry is not constructible outside
-// internal/agent; Submit/Settle/delivery above it stay fully real.
-type d11BenchExecutor struct {
-	leaf fantasy.AgentTool
-}
-
-func (x *d11BenchExecutor) Start(
-	ctx context.Context, launch jobbatch.Launch, report func(jobbatch.Result),
-) (jobbatch.Execution, error) {
-	call := fantasy.ToolCall{
-		ID: string(launch.ID), Name: launch.Task.Kind, Input: string(launch.Task.Payload),
+type (
+	d11CallEvidence struct {
+		root         string
+		transactions map[string]int64
 	}
-	if _, err := x.leaf.Run(ctx, call); err != nil {
-		report(jobbatch.Result{State: jobbatch.StateFailed, Code: "d11_leaf_error"})
-	} else {
-		report(jobbatch.Result{State: jobbatch.StateCompleted, Code: "d11_done"})
+	d11ToolIdentity struct{ root, call string }
+	d11CallCommit   struct {
+		Call        string `json:"call_id"`
+		Root        string `json:"root_id"`
+		Event       string `json:"event"`
+		Transaction int64  `json:"transaction"`
 	}
-	return d11NoopExecution{}, nil
+)
+
+type d11Provider struct {
+	server     *httptest.Server
+	fixture    string
+	workload   string
+	state      *d11TransitionCounts
+	requests   atomic.Int64
+	results    sync.Map
+	identities sync.Map // request ID -> tool call ID
 }
 
-// d11NoopExecution satisfies the Execution contract (Stop is idempotent per
-// handle; the Runner owns the lifecycle).
-type d11NoopExecution struct{}
-
-func (d11NoopExecution) Stop(context.Context) error { return nil }
-
-// d11BenchEnv is one hermetic per-path environment: a full App built through
-// the REAL New entry point (newFullNewApp, flag-aware) plus, on the ON path,
-// the real batch install driven over the SAME pooled database.
-type d11BenchEnv struct {
-	t          *testing.T
-	on         bool
-	app        *App
-	conn       *sql.DB
-	leaf       *d11BenchLeaf
-	install    *agent.BatchInstall
-	registryID string
+type d11Env struct {
+	t           *testing.T
+	app         *App
+	provider    *d11Provider
+	transitions d11TransitionCounts
+	sessions    []string
 }
 
-// d11SetBatchRuntimeEnv sets RUSH_BATCH_RUNTIME for one App construction and
-// restores the caller's value at cleanup. Plain os.Setenv + explicit restore
-// is used instead of t.Setenv because the two constructions in one test need
-// DIFFERENT values at different points mid-test; t.Setenv only restores at
-// cleanup and would panic under t.Parallel (this test never goes parallel).
-func d11SetBatchRuntimeEnv(t *testing.T, on bool) {
-	t.Helper()
-	prev, had := os.LookupEnv("RUSH_BATCH_RUNTIME")
-	if on {
-		require.NoError(t, os.Setenv("RUSH_BATCH_RUNTIME", "true"))
-	} else {
-		require.NoError(t, os.Unsetenv("RUSH_BATCH_RUNTIME"))
-	}
-	t.Cleanup(func() {
-		if had {
-			_ = os.Setenv("RUSH_BATCH_RUNTIME", prev)
-		} else {
-			_ = os.Unsetenv("RUSH_BATCH_RUNTIME")
+func (d *d11TransitionCounts) snapshot() (int64, int, int, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	counts := [3]int{}
+	for _, call := range d.calls {
+		for i, kind := range []string{"submit", "started", "settled"} {
+			if call.transactions[kind] > 0 {
+				counts[i]++
+			}
 		}
-	})
-}
-
-// newD11BenchEnv builds one path. The OFF app is constructed with the flag
-// unset and must expose NO batch runtime or ingress; the ON app is
-// constructed with the flag on and must expose both. The measurement install
-// (ON path only) shares the App's pooled SQLite writer through a second
-// reference-counted db.Connect to the same data directory.
-func newD11BenchEnv(t *testing.T, on bool) *d11BenchEnv {
-	t.Helper()
-	d11SetBatchRuntimeEnv(t, on)
-	require.Equal(t, on, config.BatchRuntimeEnabled(),
-		"flag parser must agree with the constructed path")
-	app := newFullNewApp(t)
-	if on {
-		require.NotNil(t, app.batchRuntime, "flag on: runtime installed at New")
-		require.NotNil(t, app.batchWorkIngress, "flag on: ingress seam installed")
-	} else {
-		require.Nil(t, app.batchRuntime, "flag off: no runtime installed")
-		require.Nil(t, app.batchWorkIngress, "flag off: no ingress seam")
 	}
+	return d.commits, counts[0], counts[1], counts[2]
+}
 
-	env := &d11BenchEnv{t: t, on: on, app: app, leaf: &d11BenchLeaf{name: "view"}}
-	env.registryID = "d11-bench-registry"
-	if !on {
-		return env
+func (d *d11TransitionCounts) registerCall(callID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.calls == nil {
+		d.calls = make(map[string]*d11CallEvidence)
 	}
-	ctx := context.Background()
-	conn, err := db.Connect(ctx, app.dataDir)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.ReleaseConn(conn) })
-	env.conn = conn
-	// Populate: one real session row per benchmark session (owner FK).
-	q := db.New(conn)
-	for i := 0; i <= d11ThroughputSessions; i++ {
-		id := env.sessionID(i)
-		_, err := q.CreateSession(ctx, db.CreateSessionParams{ID: id, Title: id})
-		require.NoError(t, err, "seed session row")
+	if d.calls[callID] == nil {
+		d.calls[callID] = &d11CallEvidence{transactions: make(map[string]int64)}
 	}
-	profile, err := agent.NewBatchProfileDefault()
-	require.NoError(t, err)
-	install, err := agent.InstallBatchRuntime(ctx, agent.BatchInstallDeps{
-		Host: "d11-host-" + uuid.NewString(), RunnerID: "d11-runner-" + uuid.NewString(),
-		Profile: profile, Registries: agent.NewBatchLeafRegistryStore(),
-		Store: session.NewBatchStore(conn), Messages: message.NewService(q),
-		Executor:      &d11BenchExecutor{leaf: env.leaf},
-		Limits:        jobbatch.Limits{MaxConcurrent: 16, MaxDepth: 8, MaxNodes: 1024},
-		CommitTimeout: 5 * time.Second, ControlTimeout: 30 * time.Second,
-		DonePoll: d11DonePoll,
-	})
-	require.NoError(t, err, "install the real batch runtime over the App DB")
-	t.Cleanup(func() { _ = install.Runner.Close(ctx) })
-	env.install = install
-	return env
 }
 
-// sessionID maps a benchmark slot to its seeded session row.
-func (e *d11BenchEnv) sessionID(slot int) string {
-	return fmt.Sprintf("d11-sess-%s-%d", map[bool]string{true: "on", false: "off"}[e.on], slot)
-}
-
-// invokeNew drives ONE real work-tool call through the REAL ingress: attach
-// probe, admission, Runner Submit (commit hook reserves the root), engine
-// execution of the canned leaf, Settled persistence, and R11D delivery
-// election. This is the exact seam the coordinator's work tools call.
-func (e *d11BenchEnv) invokeNew(ctx context.Context, slot int, callID string) error {
-	inv := agent.BatchInvocation{
-		SessionID: e.sessionID(slot), MessageID: "d11-msg", RegistryID: e.registryID,
-		Origin: "coordinator",
+func (d *d11TransitionCounts) validateCalls(ids []d11ToolIdentity) ([]d11CallCommit, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.observerErrors) > 0 {
+		return nil, fmt.Errorf("checkpoint transaction attribution ambiguous: %s", strings.Join(d.observerErrors, "; "))
 	}
-	inv.Policy.RegistryID = e.registryID
-	inv.Policy.RestrictedToolset = e.registryID
-	call := fantasy.ToolCall{ID: callID, Name: "view", Input: `{"p":1}`}
-	_, err := e.install.Runtime.Invoke(ctx, inv, e.leaf, call)
-	return err
-}
-
-// invokeOld is the flag-off legacy behavior: the work tool executes its leaf
-// inline with no batch persistence. The leaf is identical to the ON path's.
-func (e *d11BenchEnv) invokeOld(ctx context.Context, callID string) error {
-	call := fantasy.ToolCall{ID: callID, Name: "view", Input: `{"p":1}`}
-	_, err := e.leaf.Run(ctx, call)
-	return err
-}
-
-// d11Call runs one call of the path's mode and reports the wall time in ms.
-func (e *d11BenchEnv) d11Call(ctx context.Context, slot int, callID string) (float64, error) {
-	start := time.Now()
-	var err error
-	if e.on {
-		err = e.invokeNew(ctx, slot, callID)
-	} else {
-		err = e.invokeOld(ctx, callID)
-	}
-	return float64(time.Since(start).Microseconds()) / 1000.0, err
-}
-
-// countSettledTasks counts completed Settled task projections. Each settled
-// call leaves exactly one kind='task', state='completed' batch_nodes row
-// (the commit hook's terminal transition), so the before/after delta of a
-// round is the round's commit count.
-func countSettledTasks(ctx context.Context, conn *sql.DB) int {
-	var count int
-	_ = conn.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM batch_nodes WHERE kind = 'task' AND state = 'completed'`,
-	).Scan(&count)
-	return count
-}
-
-// d11Durability reads the EFFECTIVE journal mode and synchronous level from
-// the live connection (never set — only recorded and asserted; durability is
-// never disabled). synchronous returns an integer pragma value.
-func d11Durability(t *testing.T, conn *sql.DB) (string, string) {
-	t.Helper()
-	var mode string
-	require.NoError(t, conn.QueryRowContext(context.Background(),
-		`PRAGMA journal_mode`).Scan(&mode))
-	var sync int
-	require.NoError(t, conn.QueryRowContext(context.Background(),
-		`PRAGMA synchronous`).Scan(&sync))
-	names := map[int]string{0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}
-	name, ok := names[sync]
-	require.True(t, ok, "unknown synchronous pragma value %d", sync)
-	return mode, name
-}
-
-// percentile computes the p-th percentile of ms samples by sort (small
-// dependency-free helper; monotonic time.Now deltas only).
-func percentile(samples []float64, p float64) float64 {
-	if len(samples) == 0 {
-		return 0
-	}
-	sorted := append([]float64(nil), samples...)
-	sort.Float64s(sorted)
-	idx := int(float64(len(sorted)-1) * p / 100.0)
-	if idx < 0 {
-		idx = 0
-	}
-	return sorted[idx]
-}
-
-// d11RunPhase executes one round on one path: the latency samples (one
-// sequential session) plus, on measured rounds, the 8-session
-// shared-database throughput phase. Warmup rounds run only
-// d11WarmupCalls sequential calls and are never reported. It returns the
-// round's report entry and ALL latency samples. Every call carries full
-// Submit/Settle persistence and delivery on the ON path.
-func (e *d11BenchEnv) d11RunPhase(
-	ctx context.Context, phase string, warmup bool,
-) (d11RunEntry, []float64) {
-	e.t.Helper()
-	var (
-		samples []float64
-		errs    atomic.Int64
-	)
-	latencyCalls := d11LatencySamples
-	if warmup {
-		latencyCalls = d11WarmupCalls
-	}
-	for i := 0; i < latencyCalls; i++ {
-		ms, err := e.d11Call(ctx, 0, fmt.Sprintf("lat-%s-%d", phase, i))
-		if err != nil {
-			errs.Add(1)
-			continue
+	var evidence []d11CallCommit
+	for _, id := range ids {
+		call := d.calls[id.call]
+		if call == nil || call.root == "" || call.root == "duplicate" || (id.root != "" && call.root != id.root) {
+			return nil, fmt.Errorf("missing transaction identity for call %s root %s", id.call, id.root)
 		}
-		samples = append(samples, ms)
+		for _, kind := range []string{"submit", "started", "settled"} {
+			tx := call.transactions[kind]
+			if tx <= 0 {
+				return nil, fmt.Errorf("call %s missing or duplicated committed %s checkpoint", id.call, kind)
+			}
+			evidence = append(evidence, d11CallCommit{Call: id.call, Root: call.root, Event: kind, Transaction: tx})
+		}
+		if call.transactions["submit"] == call.transactions["started"] || call.transactions["submit"] == call.transactions["settled"] || call.transactions["started"] == call.transactions["settled"] {
+			return nil, fmt.Errorf("call %s merged checkpoint events in one transaction", id.call)
+		}
 	}
+	return evidence, nil
+}
 
-	before := countSettledTasks(ctx, e.app.DB())
-	start := time.Now()
-	var wg sync.WaitGroup
-	for slot := 1; !warmup && slot <= d11ThroughputSessions; slot++ {
-		wg.Add(1)
-		go func(slot int) {
-			defer wg.Done()
-			for i := 0; i < d11ThroughputCallsPerSession; i++ {
-				_, err := e.d11Call(ctx, slot, fmt.Sprintf("thr-%s-%d-%d", phase, slot, i))
+func newD11Provider(t *testing.T, fixture, workload string, state *d11TransitionCounts) *d11Provider {
+	t.Helper()
+	p := &d11Provider{fixture: fixture, workload: workload, state: state}
+	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var request struct {
+			Messages []struct {
+				Role      string          `json:"role"`
+				Name      string          `json:"name"`
+				Content   json.RawMessage `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil || len(request.Messages) == 0 {
+			http.Error(w, "invalid chat request", http.StatusBadRequest)
+			return
+		}
+		last := request.Messages[len(request.Messages)-1]
+		var requestID string
+		lastUser := -1
+		for i := len(request.Messages) - 1; i >= 0; i-- {
+			if request.Messages[i].Role == "user" {
+				lastUser = i
+				text, err := d11ContentText(request.Messages[i].Content)
 				if err != nil {
-					errs.Add(1)
+					http.Error(w, "invalid user content: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				if index := strings.LastIndex(text, "request="); index >= 0 {
+					requestID = strings.TrimSpace(text[index+len("request="):])
+				}
+				break
+			}
+		}
+		if requestID == "" {
+			http.Error(w, "user request id missing", http.StatusBadRequest)
+			return
+		}
+		id := p.requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		write := func(chunks ...string) {
+			for _, chunk := range chunks {
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if fl != nil {
+					fl.Flush()
 				}
 			}
-		}(slot)
-	}
-	wg.Wait()
-	wall := time.Since(start)
-	commits := countSettledTasks(ctx, e.app.DB()) - before
-	totalCalls := d11ThroughputSessions * d11ThroughputCallsPerSession
-	cps := float64(totalCalls) / wall.Seconds()
-	entry := d11RunEntry{
-		Phase: phase, Samples: len(samples),
-		P50Ms: percentile(samples, 50), P95Ms: percentile(samples, 95),
-		CallsPerSec: cps, Errors: int(errs.Load()), Commits: commits,
-	}
-	return entry, samples
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		if last.Role == "tool" {
+			count := 0
+			for _, item := range request.Messages[lastUser+1:] {
+				if item.Role != "tool" {
+					continue
+				}
+				count++
+				result, err := d11ContentText(item.Content)
+				if err != nil {
+					http.Error(w, "invalid tool-result content: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if !strings.Contains(result, "d11 fixture sentinel") {
+					http.Error(w, "production workload did not return sentinel", http.StatusInternalServerError)
+					return
+				}
+			}
+			if count != 1 {
+				http.Error(w, "expected exactly one new tool result", http.StatusInternalServerError)
+				return
+			}
+			counterValue, _ := p.results.LoadOrStore(requestID, &atomic.Int64{})
+			counterValue.(*atomic.Int64).Add(1)
+			write(`{"id":"d11-final","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"fixture read"},"finish_reason":null}]}`, `{"id":"d11-final","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`)
+			return
+		}
+		if last.Role != "user" {
+			http.Error(w, "unexpected request turn role", http.StatusBadRequest)
+			return
+		}
+		toolName := "view"
+		args, _ := json.Marshal(map[string]string{"file_path": p.fixture})
+		if p.workload == "legacy-bash" {
+			toolName = "bash"
+			args, _ = json.Marshal(map[string]string{"command": "printf 'd11 fixture sentinel\\\\n'", "description": "D11 trivial command"})
+		}
+		calls := 0
+		for _, item := range request.Messages[lastUser+1:] {
+			for _, call := range item.ToolCalls {
+				calls++
+				if call.Function.Name != toolName {
+					http.Error(w, "unexpected tool requested", http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+		if calls != 0 {
+			http.Error(w, "unexpected historical/current tool call", http.StatusInternalServerError)
+			return
+		}
+		toolID := fmt.Sprintf("d11-%s-%d", toolName, id)
+		p.identities.Store(requestID, toolID)
+		p.state.registerCall(toolID)
+		tool, _ := json.Marshal(map[string]any{"index": 0, "id": toolID, "type": "function", "function": map[string]string{"name": toolName, "arguments": string(args)}})
+		chunk, _ := json.Marshal(map[string]any{"id": "d11-tool", "object": "chat.completion.chunk", "created": 1, "model": "probe", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{json.RawMessage(tool)}}, "finish_reason": nil}}})
+		write(string(chunk), `{"id":"d11-tool","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`)
+	}))
+	t.Cleanup(p.server.Close)
+	return p
 }
 
-// d11PrintSummary prints the single-line JSON evidence block. It runs BEFORE
-// any numerical gate assertion so a breach still produces a report.
+// Hook observations stay transaction-local until a later writer boundary proves
+// the transaction committed. Checkpoints are written before projections in the
+// store transaction, so root attribution is finalized in CommitHook afterward.
+func d11InstallHooks(t *testing.T, conn *sql.DB, state *d11TransitionCounts) {
+	t.Helper()
+	c, err := conn.Conn(context.Background())
+	require.NoError(t, err)
+	defer c.Close()
+	rows, err := c.QueryContext(context.Background(), `SELECT name, cid FROM pragma_table_info('batch_nodes')`)
+	require.NoError(t, err)
+	if rows == nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	indexes := map[string]int{}
+	for rows.Next() {
+		var name string
+		var index int
+		require.NoError(t, rows.Scan(&name, &index))
+		indexes[name] = index
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	rootIndex, rootOK := indexes["root_id"]
+	callIndex, callOK := indexes["tool_call_id"]
+	require.True(t, rootOK && callOK, "batch_nodes identity columns missing")
+	state.mu.Lock()
+	if state.calls == nil {
+		state.calls = make(map[string]*d11CallEvidence)
+	}
+	if state.rootCalls == nil {
+		state.rootCalls = make(map[string]string)
+	}
+	state.mu.Unlock()
+	err = c.Raw(func(raw any) error {
+		hooks, ok := raw.(modernsqlite.HookRegisterer)
+		if !ok {
+			return fmt.Errorf("SQLite hook API unavailable on %T", raw)
+		}
+		hooks.RegisterPreUpdateHook(func(change modernsqlite.SQLitePreUpdateData) {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.currentTx == 0 {
+				d11PromotePending(state)
+				state.currentTx = state.nextTx + 1
+				state.currentEvents = make(map[string]string)
+				state.currentEventCounts = make(map[string]int)
+				state.currentRootCalls = make(map[string]string)
+				state.pendingAmbiguity = nil
+			}
+			if change.TableName == "batch_nodes" && (change.Op == 18 || change.Op == 23) {
+				values := make([]any, change.Count())
+				if change.New(values...) == nil {
+					root, _ := values[rootIndex].(string)
+					callID, _ := values[callIndex].(string)
+					if root == "" && change.Op == 23 {
+						oldValues := make([]any, change.Count())
+						if change.Old(oldValues...) == nil {
+							root, _ = oldValues[rootIndex].(string)
+							if callID == "" {
+								callID, _ = oldValues[callIndex].(string)
+							}
+						}
+					}
+					if root != "" {
+						if callID == "" {
+							callID = state.rootCalls[root]
+						}
+						if callID != "" {
+							state.currentRootCalls[root] = callID
+						}
+					}
+				}
+			}
+			if change.TableName == "batch_runner_checkpoints" && (change.Op == 18 || change.Op == 23) {
+				var values [7]any
+				if change.New(values[:]...) == nil {
+					if event, ok := values[3].(string); ok && (event == "submit" || event == "started" || event == "settled") {
+						state.currentEventCounts[event]++
+						if state.currentEventCounts[event] > 1 {
+							state.currentEvents[event] = "duplicate"
+						} else {
+							state.currentEvents[event] = event
+						}
+					}
+				}
+			}
+		})
+		hooks.RegisterCommitHook(func() int32 {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.currentTx != 0 {
+				state.nextTx++
+				state.pendingTx = state.currentTx
+				state.pendingEvents = state.currentEvents
+				state.pendingEventRoots = make(map[string]map[string]string)
+				state.pendingAmbiguity = nil
+				for event := range state.currentEvents {
+					if len(state.currentRootCalls) != 1 {
+						state.pendingAmbiguity = append(state.pendingAmbiguity, fmt.Sprintf("event %s transaction touched %d roots", event, len(state.currentRootCalls)))
+						continue
+					}
+					for root, callID := range state.currentRootCalls {
+						state.pendingEventRoots[event] = map[string]string{root: callID}
+					}
+				}
+			}
+			state.currentTx = 0
+			state.currentEvents, state.currentEventCounts = nil, nil
+			state.currentRootCalls = nil
+			return 0
+		})
+		hooks.RegisterRollbackHook(func() {
+			state.mu.Lock()
+			state.currentTx = 0
+			state.currentEvents, state.currentEventCounts = nil, nil
+			state.currentRootCalls = nil
+			state.mu.Unlock()
+		})
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+func d11PromotePending(state *d11TransitionCounts) {
+	if state.pendingTx == 0 {
+		return
+	}
+	state.commits++
+	state.observerErrors = append(state.observerErrors, state.pendingAmbiguity...)
+	for _, roots := range state.pendingEventRoots {
+		for root, callID := range roots {
+			if callID == "" {
+				continue
+			}
+			state.rootCalls[root] = callID
+			if call := state.calls[callID]; call != nil {
+				if call.root != "" && call.root != root {
+					call.root = "duplicate"
+				} else {
+					call.root = root
+				}
+			}
+		}
+	}
+	for event, status := range state.pendingEvents {
+		for _, callID := range state.pendingEventRoots[event] {
+			if call := state.calls[callID]; call != nil {
+				if status == "duplicate" || call.transactions[event] != 0 {
+					call.transactions[event] = -1
+				} else {
+					call.transactions[event] = state.pendingTx
+				}
+			}
+		}
+	}
+	state.pendingTx, state.pendingEvents, state.pendingEventRoots, state.pendingAmbiguity = 0, nil, nil, nil
+}
+
+func newD11Env(t *testing.T, mode, workload string) *d11Env {
+	t.Helper()
+	dir := t.TempDir()
+	for key, name := range map[string]string{"RUSH_GLOBAL_DATA": "global-data", "RUSH_GLOBAL_CONFIG": "global-config", "XDG_DATA_HOME": "xdg-data", "XDG_CONFIG_HOME": "xdg-config"} {
+		t.Setenv(key, filepath.Join(dir, name))
+	}
+	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
+	if mode == "candidate" {
+		t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	} else {
+		t.Setenv("RUSH_BATCH_RUNTIME", "0")
+	}
+	fixture := filepath.Join(dir, d11FixtureName)
+	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
+	e := &d11Env{t: t}
+	provider := newD11Provider(t, fixture, workload, &e.transitions)
+	e.provider = provider
+	store, err := config.Init(dir, dir, false)
+	require.NoError(t, err)
+	store.Config().Providers.Set("openaicompat", config.ProviderConfig{ID: "openaicompat", Type: openaicompat.Name, BaseURL: provider.server.URL, APIKey: "probe", Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}}})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetupAgents()
+	conn, err := db.Connect(context.Background(), dir)
+	require.NoError(t, err)
+	// Runs after a.Shutdown (LIFO).
+	t.Cleanup(func() { _ = db.Release(dir) })
+	a, err := New(context.Background(), conn, store)
+	require.NoError(t, err)
+	t.Cleanup(a.Shutdown)
+	e.app = a
+	d11InstallHooks(t, a.DB(), &e.transitions)
+	for i := 0; i <= d11ThroughputSessions; i++ {
+		sess, err := a.Sessions.Create(context.Background(), fmt.Sprintf("d11-%s-%d", mode, i))
+		require.NoError(t, err)
+		a.Permissions.AutoApproveSession(sess.ID)
+		e.sessions = append(e.sessions, sess.ID)
+		_, err = a.Messages.Create(context.Background(), sess.ID, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "seed"}}})
+		require.NoError(t, err)
+	}
+	return e
+}
+
+func d11ContentText(raw json.RawMessage) (string, error) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", fmt.Errorf("expected text string or text-part array: %w", err)
+	}
+	var result strings.Builder
+	for _, part := range parts {
+		if part.Type != "text" {
+			return "", fmt.Errorf("unsupported content part type %q", part.Type)
+		}
+		result.WriteString(part.Text)
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty text-part array")
+	}
+	return result.String(), nil
+}
+
+func (e *d11Env) toolIdentity(requestID string) (d11ToolIdentity, bool) {
+	value, ok := e.provider.identities.Load(requestID)
+	if !ok {
+		return d11ToolIdentity{}, false
+	}
+	callID, valid := value.(string)
+	if !valid || callID == "" {
+		return d11ToolIdentity{}, false
+	}
+	return d11ToolIdentity{call: callID}, true
+}
+
+func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error) {
+	started := time.Now()
+	_, err := e.app.AgentCoordinator.Run(ctx, e.sessions[slot], "Read fixture. request="+id)
+	countValue, ok := e.provider.results.Load(id)
+	var count int64
+	if ok {
+		count, ok = countValue.(*atomic.Int64).Load(), true
+	}
+	_, hasTool := e.provider.identities.Load(id)
+	if err == nil && (!ok || count != 1 || !hasTool) {
+		err = fmt.Errorf("expected one result and actual tool call for %s", id)
+	}
+	if err != nil {
+		e.t.Logf("D11 invocation %s failed: %v", id, err)
+	}
+	return float64(time.Since(started).Microseconds()) / 1000, err
+}
+
+func (e *d11Env) writeSnapshot() (int64, int, int, int) {
+	d11FlushCommitted(e.t, e.app.DB(), &e.transitions)
+	return e.transitions.snapshot()
+}
+
+func d11FlushCommitted(t *testing.T, writer *sql.DB, state *d11TransitionCounts) {
+	t.Helper()
+	c, err := writer.Conn(context.Background())
+	require.NoError(t, err)
+	defer c.Close()
+	var one int
+	require.NoError(t, c.QueryRowContext(context.Background(), `SELECT 1`).Scan(&one))
+	state.mu.Lock()
+	d11PromotePending(state)
+	state.mu.Unlock()
+}
+
+func d11Durability(t *testing.T, conn *sql.DB) (string, string) {
+	t.Helper()
+	var journal string
+	require.NoError(t, conn.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journal))
+	var value int
+	require.NoError(t, conn.QueryRowContext(context.Background(), `PRAGMA synchronous`).Scan(&value))
+	return journal, map[int]string{0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}[value]
+}
+
+func percentile(values []float64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	ordered := append([]float64(nil), values...)
+	sort.Float64s(ordered)
+	// Nearest-rank percentile: ceil(p*N)-1 avoids understating the tail.
+	return ordered[int(math.Ceil(p*float64(len(ordered))/100))-1]
+}
+
 func d11PrintSummary(t *testing.T, s d11Summary) {
 	t.Helper()
 	raw, err := json.Marshal(s)

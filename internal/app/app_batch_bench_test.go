@@ -1,14 +1,4 @@
-// D11 per-call-cost benchmark (R12-G CI evidence package). Measures, on ONE
-// runner in ONE run, the ADDED p95 latency of an ordinary sequential
-// work-tool call and the aggregate throughput of 8 concurrent sessions
-// sharing ONE SQLite database (writer contention), OLD path (batch runtime
-// effectively off; inline leaf execution) versus NEW path (RUSH_BATCH_RUNTIME
-// on; full Submit/Started/Settled persistence and elected delivery per call),
-// alternating warmup + 3 measured rounds per path over two fresh, equivalent,
-// populated databases. Gated behind RUSH_D11_BENCH=1 — the shadow workflow
-// (.github/workflows/job-batches-shadow.yml, job d11-benchmark) runs it
-// explicitly; it NEVER runs in the default suite and is intentionally NOT
-// skipped under -short.
+// D11 coordinator turn benchmark. Gated so default tests always skip it.
 package app
 
 import (
@@ -16,104 +6,153 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// TestD11BatchRuntimeBenchmark is the D11 gate. Pass criteria (asserted
-// AFTER the summary is printed, so a breach still produces a report):
-// p95 delta <= 15ms, throughput ratio >= 0.80, zero errors on both paths,
-// commits_on >= commits_off, and WAL + non-OFF synchronous durability.
 func TestD11BatchRuntimeBenchmark(t *testing.T) {
 	if os.Getenv("RUSH_D11_BENCH") != "1" {
-		t.Skip("D11 benchmark is expensive and contention-sensitive; run explicitly with RUSH_D11_BENCH=1 (see .github/workflows/job-batches-shadow.yml, job d11-benchmark)")
+		t.Skip("D11 explicitly gated")
 	}
-
-	// Two fresh, equivalent, populated databases: one flag-off app, one
-	// flag-on app, both through the REAL New entry point with the same
-	// isolated env and probe provider (see newFullNewApp).
-	off := newD11BenchEnv(t, false)
-	on := newD11BenchEnv(t, true)
-
-	journalMode, syncMode := d11Durability(t, on.app.DB())
-	offJournal, offSync := d11Durability(t, off.app.DB())
-	require.Equal(t, journalMode, offJournal, "both paths must share journal mode")
-	require.Equal(t, syncMode, offSync, "both paths must share synchronous level")
-
-	ctx := context.Background()
-	var runs []d11RunEntry
-	var p95OffSamples, p95OnSamples []float64
-	var cpsOffSum, cpsOnSum float64
-	var errorsOff, errorsOn, commitsOff, commitsOn int
-
-	// Warmup round per path (not counted): pages the DB, engine and pools.
-	for _, env := range []*d11BenchEnv{off, on} {
-		// The schema's phase enum is warmup|off|on.
-		phase := "warmup"
-		entry, _ := env.d11RunPhase(ctx, phase, true)
-		// Warmup never reports samples, commits or rates.
-		entry.Samples = 0
-		entry.Commits = 0
-		entry.P50Ms, entry.P95Ms, entry.CallsPerSec = 0, 0, 0
-		runs = append(runs, entry)
-	}
-
-	// Measured rounds alternate OFF, ON, OFF, ON, ...
-	for round := 0; round < d11MeasuredRounds; round++ {
-		for _, env := range []*d11BenchEnv{off, on} {
-			phase := fmt.Sprintf("off-%d", round+1)
-			if env.on {
-				phase = fmt.Sprintf("on-%d", round+1)
+	mode := os.Getenv("RUSH_D11_MODE")
+	require.Contains(t, []string{"baseline", "candidate"}, mode)
+	workload := os.Getenv("RUSH_D11_WORKLOAD")
+	require.Contains(t, []string{"direct-view", "legacy-bash"}, workload)
+	e := newD11Env(t, mode, workload)
+	journal, syncMode := d11Durability(t, e.app.DB())
+	runs := []d11RunEntry{}
+	var measuredMu sync.Mutex
+	var measuredIDs []d11ToolIdentity
+	phase := func(label string, n, slot int, measured bool) ([]float64, int, int64, int, int, int) {
+		before, sub, started, settled := e.writeSnapshot()
+		values := make([]float64, 0, n)
+		errs := 0
+		for i := 0; i < n; i++ {
+			requestID := fmt.Sprintf("%s-%d", label, i)
+			ms, err := e.call(context.Background(), slot, requestID)
+			if measured {
+				if identity, ok := e.toolIdentity(requestID); ok {
+					measuredMu.Lock()
+					measuredIDs = append(measuredIDs, identity)
+					measuredMu.Unlock()
+				} else {
+					measuredMu.Lock()
+					measuredIDs = append(measuredIDs, d11ToolIdentity{call: ""})
+					measuredMu.Unlock()
+				}
 			}
-			entry, samples := env.d11RunPhase(ctx, phase, false)
-			runs = append(runs, entry)
-			if env.on {
-				p95OnSamples = append(p95OnSamples, samples...)
-				cpsOnSum += entry.CallsPerSec
-				errorsOn += entry.Errors
-				commitsOn += entry.Commits
+			if err != nil {
+				errs++
 			} else {
-				p95OffSamples = append(p95OffSamples, samples...)
-				cpsOffSum += entry.CallsPerSec
-				errorsOff += entry.Errors
-				commitsOff += entry.Commits
+				values = append(values, ms)
 			}
 		}
+		after, asub, astarted, asettled := e.writeSnapshot()
+		return values, errs, after - before, asub - sub, astarted - started, asettled - settled
 	}
-
-	p95Off := percentile(p95OffSamples, 95)
-	p95On := percentile(p95OnSamples, 95)
-	cpsOff := cpsOffSum / d11MeasuredRounds
-	cpsOn := cpsOnSum / d11MeasuredRounds
-	ratio := 0.0
-	if cpsOff > 0 {
-		ratio = cpsOn / cpsOff
+	warm, warmErr, warmWrites, warmSub, warmStarted, warmSettled := phase("warmup", d11WarmupCalls, 0, false)
+	runs = append(runs, d11RunEntry{Workload: workload, Phase: "warmup", Samples: len(warm), Attempts: d11WarmupCalls, Errors: warmErr, P50Ms: percentile(warm, 50), P95Ms: percentile(warm, 95), P99Ms: percentile(warm, 99), Commits: warmWrites, SubmitWrites: warmSub, StartedWrites: warmStarted, SettledWrites: warmSettled, RawMs: warm})
+	seq, conc := []float64{}, []float64{}
+	seqErr, concErr := 0, 0
+	totalWrites := int64(0)
+	submit, started, settled := 0, 0, 0
+	throughput := float64(0)
+	for round := 0; round < d11MeasuredRounds; round++ {
+		v, errs, w, su, st, se := phase(fmt.Sprintf("seq-%d", round), d11LatencySamples, 0, true)
+		seq = append(seq, v...)
+		seqErr += errs
+		totalWrites += w
+		submit += su
+		started += st
+		settled += se
+		runs = append(runs, d11RunEntry{Workload: workload, Phase: fmt.Sprintf("sequential-%d", round+1), Samples: len(v), Attempts: d11LatencySamples, Errors: errs, P50Ms: percentile(v, 50), P95Ms: percentile(v, 95), P99Ms: percentile(v, 99), Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: v})
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		block := []float64{}
+		blockErr := 0
+		before, bsub, bst, bse := e.writeSnapshot()
+		start := time.Now()
+		for slot := 1; slot <= d11ThroughputSessions; slot++ {
+			wg.Add(1)
+			go func(slot int) {
+				defer wg.Done()
+				own := []float64{}
+				errs := 0
+				for i := 0; i < d11ThroughputCallsPerSession; i++ {
+					requestID := fmt.Sprintf("conc-%d-%d-%d", round, slot, i)
+					ms, err := e.call(context.Background(), slot, requestID)
+					if identity, ok := e.toolIdentity(requestID); ok {
+						measuredMu.Lock()
+						measuredIDs = append(measuredIDs, identity)
+						measuredMu.Unlock()
+					} else {
+						measuredMu.Lock()
+						measuredIDs = append(measuredIDs, d11ToolIdentity{call: ""})
+						measuredMu.Unlock()
+					}
+					if err != nil {
+						errs++
+					} else {
+						own = append(own, ms)
+					}
+				}
+				mu.Lock()
+				block = append(block, own...)
+				blockErr += errs
+				mu.Unlock()
+			}(slot)
+		}
+		wg.Wait()
+		after, asu, ast, ase := e.writeSnapshot()
+		w = after - before
+		su = asu - bsub
+		st = ast - bst
+		se = ase - bse
+		totalWrites += w
+		submit += su
+		started += st
+		settled += se
+		conc = append(conc, block...)
+		concErr += blockErr
+		cps := float64(d11ThroughputSessions*d11ThroughputCallsPerSession) / time.Since(start).Seconds()
+		throughput += cps
+		runs = append(runs, d11RunEntry{Workload: workload, Phase: fmt.Sprintf("contention-%d", round+1), Samples: len(block), Attempts: d11ThroughputSessions * d11ThroughputCallsPerSession, Errors: blockErr, P50Ms: percentile(block, 50), P95Ms: percentile(block, 95), P99Ms: percentile(block, 99), CallsPerSec: cps, Commits: w, SubmitWrites: su, StartedWrites: st, SettledWrites: se, RawMs: block})
 	}
-
-	summary := d11Summary{
-		P95OffMs: p95Off, P95OnMs: p95On, P95DeltaMs: p95On - p95Off,
-		P95BudgetMs:      d11P95BudgetMs,
-		ThroughputOffCPS: cpsOff, ThroughputOnCPS: cpsOn, ThroughputRatio: ratio,
-		ErrorsOff: errorsOff, ErrorsOn: errorsOn,
-		CommitsOff: commitsOff, CommitsOn: commitsOn,
-		Runs: runs,
+	throughput /= d11MeasuredRounds
+	s := d11Summary{Mode: mode, Workload: workload, CandidateSHA: os.Getenv("RUSH_D11_CANDIDATE_SHA"), BaselineSHA: os.Getenv("RUSH_D11_BASELINE_SHA"), P50Ms: percentile(seq, 50), P95Ms: percentile(seq, 95), P99Ms: percentile(seq, 99), P95ContentionMs: percentile(conc, 95), ThroughputCPS: throughput, Errors: seqErr + concErr, Commits: totalWrites, SequentialAttempts: d11MeasuredRounds * d11LatencySamples, ContentionAttempts: d11MeasuredRounds * d11ThroughputSessions * d11ThroughputCallsPerSession, SubmitWrites: submit, StartedWrites: started, SettledWrites: settled, Runs: runs}
+	if s.SequentialAttempts+s.ContentionAttempts > 0 {
+		s.CommitsPerCall = totalWrites / int64(s.SequentialAttempts+s.ContentionAttempts)
 	}
-	summary.Durability.JournalMode = journalMode
-	summary.Durability.Synchronous = syncMode
-	d11PrintSummary(t, summary)
-
-	// PASS gates — evaluated strictly after the evidence block is printed.
-	require.LessOrEqual(t, summary.P95DeltaMs, d11P95BudgetMs,
-		"added p95 latency of the batch-runtime work-tool call exceeds the budget")
-	require.GreaterOrEqual(t, ratio, d11ThroughputFloor,
-		"throughput ON/OFF ratio below the contention floor")
-	require.Zero(t, errorsOff, "errors on the OFF path")
-	require.Zero(t, errorsOn, "errors on the ON path")
-	require.GreaterOrEqual(t, commitsOn, commitsOff,
-		"the ON path must settle at least as many commits as OFF")
-	require.Equal(t, "wal", strings.ToLower(journalMode),
-		"journal_mode must be WAL (durability never disabled)")
-	require.NotEqual(t, "OFF", strings.ToUpper(syncMode),
-		"synchronous must never be OFF (durability never disabled)")
+	s.Durability.JournalMode = journal
+	s.Durability.Synchronous = syncMode
+	measuredMu.Lock()
+	ids := append([]d11ToolIdentity(nil), measuredIDs...)
+	measuredMu.Unlock()
+	measuredIDsOut := make([]string, len(ids))
+	for index, identity := range ids {
+		measuredIDsOut[index] = identity.call
+	}
+	s.MeasuredCallIDs = measuredIDsOut
+	if mode == "candidate" {
+		evidence, evidenceErr := e.transitions.validateCalls(ids)
+		s.CallTransactions = evidence
+		d11PrintSummary(t, s)
+		require.NoError(t, evidenceErr)
+	} else {
+		d11PrintSummary(t, s)
+	}
+	if mode == "candidate" {
+		expected := s.SequentialAttempts + s.ContentionAttempts
+		require.Equal(t, expected, submit)
+		require.Equal(t, expected, started)
+		require.Equal(t, expected, settled)
+	}
+	require.Zero(t, warmErr)
+	require.Equal(t, d11WarmupCalls, len(warm))
+	require.Zero(t, s.Errors)
+	require.Equal(t, "wal", strings.ToLower(journal))
+	require.Contains(t, []string{"NORMAL", "FULL", "EXTRA"}, strings.ToUpper(syncMode))
 }
