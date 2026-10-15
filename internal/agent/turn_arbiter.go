@@ -73,6 +73,11 @@ type SessionFacts struct {
 	ChainLinks        int
 	ChainOwnsAllDebt  bool
 	ChainNoticed      bool
+	// ChainBatchRoots is the ON-path twin of the ledger path's ChainClaims:
+	// the root tool_call_ids of the pure-wait batch launches the recorded
+	// chain legs started. readTurnFactsBatch's rule-5 predicate compares
+	// the debt's node rows against this set (ownership, not over-deferral).
+	ChainBatchRoots   []string
 	RunningDelegation bool
 	// RunningOwnJobs counts the session's running await_tasks work: its own
 	// async rows PLUS its live descendant delegation rows (rule 4b; the
@@ -145,9 +150,13 @@ type AttemptFacts struct {
 	// after the attempt was counted; 0 means every visible row reacted.
 	MaxWakeAttempts int
 	// OpenRows is how many snapshot rows are still debt; AtK is the rows
-	// whose own counter reached K.
-	OpenRows int
-	AtK      session.DebtSnapshot
+	// whose own counter reached K. AtKBatch is the batch-node twin of AtK
+	// on the flag-on path; UnmappedAtK counts threshold rows with no node
+	// identity.
+	OpenRows    int
+	AtK         session.DebtSnapshot
+	AtKBatch    session.BatchDebtSnapshot
+	UnmappedAtK int
 }
 
 // TurnFacts is one snapshot of every input the launch decision reads
@@ -160,6 +169,9 @@ type TurnFacts struct {
 	Gate     GateFacts
 	Attempt  AttemptFacts
 	Snapshot session.DebtSnapshot
+	// BatchSnapshot is the flag-on path's visible batch-node debt (the
+	// accounting side's VClose rows); empty on the ledger path.
+	BatchSnapshot session.BatchDebtSnapshot
 }
 
 // VerdictKind is the outcome of decide.
@@ -194,6 +206,8 @@ type Verdict struct {
 	// Rows names what VClose settles; Marker is the wake_failed text.
 	Rows   session.DebtSnapshot
 	Marker string
+	// BatchRows is the batch-node twin of Rows on the flag-on path.
+	BatchRows session.BatchDebtSnapshot
 }
 
 // gateShut reports the launch-gate half of the table (rules 8-10): the gate
@@ -372,10 +386,13 @@ func decideAccount(f TurnFacts) Verdict {
 	// clock -- a one-minute outage never closes it). The accounting settles
 	// exactly the named rows.
 	if f.Attempt.Terminal {
-		return Verdict{Kind: VClose, Rows: f.Snapshot, Reason: "terminal provider failure"}
+		return Verdict{Kind: VClose, Rows: f.Snapshot, BatchRows: f.BatchSnapshot, Reason: "terminal provider failure"}
 	}
 	if len(f.Attempt.AtK.Jobs)+len(f.Attempt.AtK.Notices) > 0 {
 		return Verdict{Kind: VClose, Rows: f.Attempt.AtK, Reason: "row reached its attempt limit"}
+	}
+	if len(f.Attempt.AtKBatch.Nodes)+len(f.Attempt.AtKBatch.Notices) > 0 || f.Attempt.UnmappedAtK > 0 {
+		return Verdict{Kind: VClose, Rows: f.Attempt.AtK, BatchRows: f.Attempt.AtKBatch, Reason: "row reached its attempt limit"}
 	}
 	// A7: otherwise this was a counted, unreacted attempt: the gate paces at
 	// R and a newer fact does NOT open it early (R3B-4).
@@ -414,6 +431,11 @@ func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site 
 	l := c.asyncJobs
 	if l == nil || l.store == nil {
 		return f, nil
+	}
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: every terminal/debt/liveness fact comes from batch node
+		// reads; async_jobs is never read (see batch_cutover_facts.go).
+		return c.readTurnFactsBatch(ctx, facts, sessionID, f, l)
 	}
 	// ---- DB half (the debt picture itself is the ONE rows read under
 	// bgArrival, below; only the visible snapshot and the session-side

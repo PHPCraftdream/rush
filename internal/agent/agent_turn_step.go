@@ -421,6 +421,53 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		if !ok {
 			continue
 		}
+		// Batch branch (R12-E round 4): a batch started tool response names
+		// its launched root in its own text ("batch root <id> started; ...")
+		// and carries no ClientMetadata, so the launched root's identity IS
+		// the call id. Classify exactly like legacy waits via
+		// classifyStepCall: a pure-wait batch launch records the root as
+		// chain identity, a real batch action is progress; a refusal or a
+		// neutral result started nothing this leg may claim.
+		if batchFlagEnabled() && isBatchStartedToolResult(result) {
+			// A batch launch is async by construction (the started response
+			// IS the detached boundary and carries no ClientMetadata), so
+			// stamp the async half of the legacy started tag and classify
+			// EXACTLY like a legacy wait: a pure-wait batch launch records
+			// the root's call id as chain identity; a real batch action is
+			// progress; a refusal/neutral result started nothing this leg
+			// may claim.
+			// Repeated-command policy (legacy parity): compute the launch
+			// command and consult chainLastLaunch like the legacy branch
+			// below (a non-refused launch records its command; an immediate
+			// byte-identical repeat is an idle claim, never progress) -- the
+			// root's call id is the batch identity appended instead of the
+			// legacy ClaimID. A FIRST substantial (non-wait) launch stays
+			// progress; a pure-wait launch is unchanged; refusals/neutral
+			// stay inert.
+			asyncResult := result
+			asyncResult.ClientMetadata = `{"async":true}`
+			class := classifyStepCall(call, asyncResult, stepClassifyCtx{})
+			command, isCommand := asyncLaunchCommand(call)
+			repeated := false
+			if isCommand && class != stepCallRefused && ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
+				repeated = ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+			}
+			switch class {
+			case stepCallWait:
+				ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+			case stepCallRefused, stepCallNeutral:
+				// started nothing this leg may claim
+			default:
+				if repeated {
+					// an idle claim: this leg launched nothing new it may
+					// count as progress
+					ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+				} else {
+					ts.att.chainProgress = true
+				}
+			}
+			continue
+		}
 		class := classifyStepCall(call, result, stepClassifyCtx{})
 		var meta asyncToolMetadata
 		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)

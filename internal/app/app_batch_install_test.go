@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -76,6 +77,17 @@ func newFullNewAppAt(t *testing.T, dataDir string) *App {
 // ingress seam, and the database carries NO batch rows at all — counted over
 // every owner, never through an owner=” query. This is the flag-off
 // equivalence pin for the M2 wiring.
+// unsetBatchRuntimeEnv clears RUSH_BATCH_RUNTIME for the test body:
+// t.Setenv registers the cleanup that restores the original value, and the
+// explicit os.Unsetenv removes it entirely — with the variable genuinely
+// gone, the subtest observes the unset path even when the parent CI process
+// exports RUSH_BATCH_RUNTIME=1.
+func unsetBatchRuntimeEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("RUSH_BATCH_RUNTIME", "")
+	require.NoError(t, os.Unsetenv("RUSH_BATCH_RUNTIME"))
+}
+
 func TestBatchRuntimeFlagOffGolden(t *testing.T) {
 	for _, tc := range []struct {
 		name, value string
@@ -89,6 +101,11 @@ func TestBatchRuntimeFlagOffGolden(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.set {
 				t.Setenv("RUSH_BATCH_RUNTIME", tc.value)
+			} else {
+				// Explicitly clear before any assertion or New call: inheriting
+				// the parent process's value would make the unset case a
+				// duplicate of whatever the CI environment exports.
+				unsetBatchRuntimeEnv(t)
 			}
 			require.False(t, config.BatchRuntimeEnabled())
 

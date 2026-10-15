@@ -280,6 +280,22 @@ func growInterval(cur, max time.Duration) time.Duration {
 	return next
 }
 
+// supervisionWorkOpen is the scope-open input of the supervision
+// deadline: batch live work on the flag-on path, the in-process job map
+// otherwise. Unknown reads fail open (work treated as open).
+func (l *workLedger) supervisionWorkOpen(sessionID string) bool {
+	if l.coord != nil {
+		if facts := coordinatorBatchCutoverFacts(l.coord); facts != nil {
+			own, desc, err := facts.LiveWorkSummary(context.Background(), sessionID)
+			if err != nil {
+				return true
+			}
+			return own > 0 || desc > 0
+		}
+	}
+	return l.running(sessionID)
+}
+
 // handleSupervisionDeadline is the timeoutService fire callback for
 // sessionID's armed generation. It re-checks everything under
 // supervisionRegistry.mu / workLedger.mu / the agent mailbox before acting
@@ -307,7 +323,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	// closed since this deadline was armed; drop the state instead of
 	// waiting for deliverLocked to have caught it first (belt and braces --
 	// the two can race harmlessly, both converge on "state gone").
-	if !l.running(rootSessionID) {
+	if !l.supervisionWorkOpen(rootSessionID) {
 		sr.mu.Lock()
 		if st2, ok := sr.byRoot[rootSessionID]; ok && st2.generation == generation {
 			delete(sr.byRoot, rootSessionID)
@@ -438,6 +454,14 @@ func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, 
 // (see supervision_silence.go), which handleSupervisionDeadline uses for the
 // second-tick escalation and the pause line.
 func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
+	if l.coord != nil {
+		if facts := coordinatorBatchCutoverFacts(l.coord); facts != nil {
+			// Flag on: a batch-node summary WITHOUT touching l.bySession/l.mu
+			// (the ledger job map is empty in batch mode anyway). The silence
+			// escalation is ledger-output-buffer policy and stays legacy-only.
+			return l.buildSupervisionSummaryBatch(facts, now, rootSessionID, tickNum, interval, paused)
+		}
+	}
 	l.mu.Lock()
 	var snaps []jobSnapshot
 	if s := l.bySession[rootSessionID]; s != nil {
@@ -517,6 +541,80 @@ func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID stri
 		}
 	}
 	return text, flagged
+}
+
+// buildSupervisionSummaryBatch is the flag-on supervision summary: one line
+// per live batch node, from the facts' live read, with the delegation count
+// and the #1157 awaiting-question line sourced from batch FACTS
+// (LiveDelegationNodes' Descendants and HeldQuestions' pending
+// child_question rows -- never l.bySession, which is empty in batch mode).
+// Silence escalation stays legacy-only (R12-F): batch executions keep their
+// output on batchGenericExecution.content (batch_exec_generic.go), which no
+// facts reader exposes -- there is NO output-buffer/last-activity seam on
+// BatchCutoverFacts, so no silence line and no flagged job exists here;
+// flagged stays nil.
+func (l *workLedger) buildSupervisionSummaryBatch(facts BatchCutoverFacts, now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
+	nodes, err := facts.LiveNodes(context.Background(), rootSessionID)
+	lines := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		name := node.ToolCallID
+		if name == "" {
+			name = node.NodeID
+		}
+		kind := node.TaskKind
+		if kind == "" {
+			kind = node.Kind
+		}
+		lines = append(lines, fmt.Sprintf("- %s (%s): %s, running %s",
+			name, kind, node.State, now.Sub(node.StartedAt).Round(time.Second)))
+	}
+	// The delegation count is the DESCENDANT facts' count (every live child
+	// node naming a delegation child session), not a recount of the tree
+	// lines: a descendant whose root line is present still counts once.
+	delegations := 0
+	if delegationNodes, derr := facts.LiveDelegationNodes(context.Background(), rootSessionID); derr == nil {
+		for _, node := range delegationNodes {
+			if node.ChildSessionID != "" {
+				delegations++
+			}
+		}
+	}
+	// #1157 on batch facts: LiveHeldQuestions is the pending child_question
+	// debt bound to a LIVE node incarnation (conservative fail-safe: 1 +
+	// err). Its rows carry only id+kind (session.PendingNoticeDebt), no
+	// question text, so the count clause stands alone -- the question
+	// itself reaches the parent through the pulled notice. A settled or
+	// stale-incarnation question is NOT counted (it can no longer be
+	// answered through inject_agent).
+	awaitingCount := 0
+	if held, herr := facts.LiveHeldQuestions(context.Background(), rootSessionID); herr == nil {
+		awaitingCount = len(held)
+	}
+	body := strings.Join(lines, "\n")
+	if body == "" {
+		if err != nil {
+			body = "(live scope unreadable: " + err.Error() + ")"
+		} else {
+			body = "(no details available)"
+		}
+	}
+	guidance := "Inspect with batch_output, or stop with batch_stop."
+	if awaitingCount > 0 {
+		guidance = "A sub-agent is blocked on your answer; waiting will not progress it.\n" + guidance
+	}
+	if paused {
+		guidance = fmt.Sprintf(
+			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
+			tickNum, guidance)
+	}
+	awaitingClause := ""
+	if awaitingCount > 0 {
+		awaitingClause = fmt.Sprintf(" (%d awaiting your answer)", awaitingCount)
+	}
+	text := fmt.Sprintf(
+		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
+		tickNum, interval.Minutes(), len(nodes), delegations, awaitingClause, body, guidance)
+	return text, nil
 }
 
 // oldestFlaggedJob returns the flagged job with the earliest start time.

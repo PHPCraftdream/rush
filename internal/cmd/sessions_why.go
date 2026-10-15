@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -124,6 +125,12 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // helper): this function used to call it here, mutating the App from
 // production code.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
+	// R12-B: with the batch runtime on, the whole explanation is built from
+	// the batch facts and the session lock fact -- no legacy classifier,
+	// notice, or async_jobs read runs (explainWhyBatch).
+	if config.BatchRuntimeEnabled() {
+		return explainWhyBatch(ctx, a, dataDir, sessionID, out)
+	}
 	// One classifier verdict is the whole decision (R-ACT): the facts and
 	// their reduction live in internal/session + internal/app; this command
 	// only renders them. Status words follow the command's established

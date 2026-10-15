@@ -32,7 +32,11 @@ func (s *BatchStore) BatchPublishQuestion(ctx context.Context, owner, node strin
 	if err != nil {
 		return fmt.Errorf("batch store: question node lookup: %w", err)
 	}
-	if rowToken != token || (state != "pending" && state != "running" && state != "cancelling") {
+	// "starting" is the durable post-admission/pre-EventStarted state
+	// (engine admission.go:90); the token fence still pins the exact
+	// incarnation, and inject_agent is accepted in this state
+	// (runner_requests.go refuses only terminal/cancelling).
+	if rowToken != token || (state != "pending" && state != "starting" && state != "running" && state != "cancelling") {
 		return errors.New("batch store: question node incarnation is not live")
 	}
 	var inserted int64

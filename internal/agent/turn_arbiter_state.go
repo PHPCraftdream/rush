@@ -19,12 +19,17 @@ import (
 // arbiterState is one session's launch-decision state. gate.RetryAt zero
 // means the gate is open (Paced is derived on the snapshot).
 type arbiterState struct {
-	holds           int // nested rerun holds (HoldAutomaticTurns)
-	suspended       bool
-	autoResumes     int
-	overCap         map[int64]struct{}
-	chainLinks      int
-	chainClaims     map[string]struct{}
+	holds       int // nested rerun holds (HoldAutomaticTurns)
+	suspended   bool
+	autoResumes int
+	overCap     map[int64]struct{}
+	chainLinks  int
+	chainClaims map[string]struct{}
+	// chainBatchRoots is the batch twin of chainClaims: the root
+	// tool_call_ids of the pure-wait batch launches the recorded legs
+	// started (each launched root's selected completion becomes a node debt
+	// row keyed by the root id).
+	chainBatchRoots map[string]struct{}
 	chainNoticed    bool
 	chainLastLaunch string
 	// sleepAll is await_tasks' "until: all" sleep (#1270): armed by the
@@ -73,15 +78,16 @@ func (a *arbiter) stateLocked(sid string) *arbiterState {
 // The sets are copied: the caller compares them against DB reads outside the
 // lock.
 type arbiterSnapshot struct {
-	Held         bool
-	Suspended    bool
-	AutoResumes  int
-	OverCap      map[int64]struct{}
-	ChainLinks   int
-	ChainClaims  map[string]struct{}
-	ChainNoticed bool
-	SleepAll     bool
-	Gate         GateFacts
+	Held            bool
+	Suspended       bool
+	AutoResumes     int
+	OverCap         map[int64]struct{}
+	ChainLinks      int
+	ChainClaims     map[string]struct{}
+	ChainBatchRoots map[string]struct{}
+	ChainNoticed    bool
+	SleepAll        bool
+	Gate            GateFacts
 }
 
 // snapshot copies sid's state under ONE lock capture.
@@ -112,6 +118,12 @@ func (a *arbiter) snapshot(sid string) arbiterSnapshot {
 		out.ChainClaims = make(map[string]struct{}, len(s.chainClaims))
 		for claim := range s.chainClaims {
 			out.ChainClaims[claim] = struct{}{}
+		}
+	}
+	if len(s.chainBatchRoots) > 0 {
+		out.ChainBatchRoots = make(map[string]struct{}, len(s.chainBatchRoots))
+		for root := range s.chainBatchRoots {
+			out.ChainBatchRoots[root] = struct{}{}
 		}
 	}
 	return out
@@ -323,8 +335,40 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 		s.chainLastLaunch = last
 		return
 	}
-	if len(att.chainIdleClaims) == 0 {
+	if len(att.chainIdleClaims) == 0 && len(att.chainBatchRoots) == 0 {
 		return // a text-only or neutral-tool leg breaks nothing and adds nothing
+	}
+	if len(att.chainBatchRoots) > 0 && len(att.chainIdleClaims) == 0 {
+		// Batch twin (R12-E round 4): the same self-sustaining/fresh-chain
+		// logic keyed by the batch roots instead of claim ids. The debt
+		// rows compared are the leg's OWN acted-on rows resolved to their
+		// ROOT tool_call_ids (att.batchDebtCallIDs, computed by the
+		// accounting): every row must be a completion of a root the chain
+		// launched.
+		roots := s.chainBatchRoots
+		if roots == nil {
+			roots = make(map[string]struct{}, len(att.chainBatchRoots))
+			s.chainBatchRoots = roots
+		}
+		selfSustaining := true
+		for _, call := range att.batchDebtCallIDs {
+			if _, ok := roots[call]; !ok {
+				selfSustaining = false
+				break
+			}
+		}
+		if len(att.batchSnapshot.Notices) > 0 {
+			selfSustaining = false // another fact (bg-shell done, supervision, ...)
+		}
+		if selfSustaining {
+			s.chainLinks++
+		} else {
+			s.chainLinks = 1
+		}
+		for _, root := range att.chainBatchRoots {
+			roots[root] = struct{}{}
+		}
+		return
 	}
 	claims := s.chainClaims
 	if claims == nil {
@@ -356,6 +400,7 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 func (a *arbiter) resetChainLocked(sid string, s *arbiterState) {
 	s.chainLinks = 0
 	s.chainClaims = nil
+	s.chainBatchRoots = nil
 	s.chainNoticed = false
 	s.chainLastLaunch = ""
 }
@@ -452,6 +497,7 @@ func (s *arbiterState) idle(now time.Time) bool {
 	pauseOver := s.gate.RetryAt.IsZero() || !s.gate.RetryAt.After(now)
 	return s.holds == 0 && !s.suspended && s.autoResumes == 0 &&
 		len(s.overCap) == 0 && s.chainLinks == 0 && len(s.chainClaims) == 0 &&
+		len(s.chainBatchRoots) == 0 &&
 		!s.sleepAll && s.maxWaitWakeID == "" &&
 		pauseOver && s.gate.FreeStreak == 0 && s.gate.PaidStreak == 0
 }

@@ -22,6 +22,9 @@ type auditDBReport struct {
 	Health       *auditDBHealth    `json:"health,omitempty"`
 	Sessions     []auditSessionRow `json:"sessions,omitempty"`
 	Findings     []auditFinding    `json:"findings,omitempty"`
+	// Batch is the additive flag-on block: batch facts from batch_nodes and
+	// the unfinished_jobs rule's status. Absent with the flag off.
+	Batch *auditBatchReport `json:"batch,omitempty"`
 }
 
 // auditPrintReports writes every scanned database, either as text or as a
@@ -88,6 +91,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 		fmt.Fprintf(w, "%s: session %s — %s (x%d)\n",
 			finding.Rule, short(finding.SessionID), finding.Detail, finding.Count)
 	}
+	report.Batch.printText(w)
 	return nil
 }
 
