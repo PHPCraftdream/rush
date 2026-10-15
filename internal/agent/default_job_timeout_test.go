@@ -190,6 +190,20 @@ func TestDefaultJobTimeout_DelegationUntouchedByDefault(t *testing.T) {
 	require.NotNil(t, job)
 	require.True(t, job.deadline.IsZero(), "a delegation must never inherit the bash/run_command default")
 	releaseOnce.Do(func() { close(release) })
+	// The executor goroutine commits the finished job to the store
+	// (commitTransition) only after the release channel unblocks it; wait for
+	// that commit to land before returning, or db.Release's pool close races
+	// the in-flight store.Transition and Windows' TempDir RemoveAll fails on
+	// the still-open rush.db handle.
+	require.Eventually(t, func() bool {
+		j := jobOf(l, "session", "call")
+		if j == nil {
+			return true // dropped from the map: commit already terminal/gone
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return j.state.terminal()
+	}, 5*time.Second, 10*time.Millisecond, "the executor must commit the finished delegation before teardown")
 }
 
 // TestDefaultJobTimeout_CallOptionsWinOverConfig: the run's CallOptions
