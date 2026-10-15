@@ -63,6 +63,7 @@ func TestFlagOnDriverClaimUsesHostStore_NoLegacyLock(t *testing.T) {
 
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
