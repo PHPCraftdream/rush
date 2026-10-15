@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/fantasy"
@@ -314,4 +315,20 @@ func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, owner string, r
 // batchStartedResponse is the detached/inline started tool response.
 func batchStartedResponse(root jobbatch.ID) fantasy.ToolResponse {
 	return fantasy.NewTextResponse(fmt.Sprintf("batch root %s %s", root, batchStartedResponseSuffix))
+}
+
+// isBatchStartedToolResult reports whether a tool result IS the production
+// batch started response above. The started response carries no
+// ClientMetadata, so the launched root's identity travels in its own text;
+// the caller pairs this with the tool call whose id named the root.
+func isBatchStartedToolResult(result fantasy.ToolResultContent) bool {
+	if result.Result == nil || result.Result.GetType() != fantasy.ToolResultContentTypeText {
+		return false
+	}
+	text, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentText](result.Result)
+	if !ok {
+		return false
+	}
+	trimmed := strings.TrimSpace(text.Text)
+	return strings.HasPrefix(trimmed, "batch root ") && strings.HasSuffix(trimmed, batchStartedResponseSuffix)
 }

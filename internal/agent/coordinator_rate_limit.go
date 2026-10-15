@@ -100,6 +100,16 @@ func rateLimitWaitFor(err error, priorWaits int) time.Duration {
 // delegation tree) still has undelivered work in the ledger — signal that
 // the operator is watching live output and the wait budget should pause.
 func (c *coordinator) hasLiveTreeWork(sessionID string) bool {
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: liveness is a batch live read (own roots plus live
+		// delegation descendants, the R10b/R11G semantics); an unreadable
+		// read conservatively pauses the budget.
+		own, descendants, err := facts.LiveWorkSummary(context.Background(), sessionID)
+		if err != nil {
+			return true
+		}
+		return own > 0 || descendants > 0
+	}
 	if c.asyncJobs == nil {
 		return false
 	}
