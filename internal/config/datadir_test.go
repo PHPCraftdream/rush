@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
@@ -144,20 +145,42 @@ func TestLoad_LegacyLocalRushDB_Rules(t *testing.T) {
 	deployedExeSeam(t)
 	isolateAllGlobalConfigPaths(t)
 
-	t.Run("rush.db without marker stays legacy-local", func(t *testing.T) {
-		mainRoot, wtRoot := makeMainRepoWithWorktree(t)
-		local := filepath.Join(wtRoot, ".rush")
-		require.NoError(t, os.MkdirAll(local, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(local, "rush.db"), []byte{}, 0o644))
-
-		store, err := Load(wtRoot, "", false)
-		require.NoError(t, err)
-		require.Equal(t, local, store.Config().Options.DataDirectory)
-		require.Equal(t, DataDirSourceLegacyLocal, store.DataDirSource())
-		require.True(t, store.WorkspaceHome())
-		_ = mainRoot
-		t.Cleanup(func() { setDataDirHomeForTest(true) })
-	})
+	// The marker files only select the directory; neither is opened here.
+	for _, tc := range []struct {
+		name string
+		old  bool
+		new  bool
+	}{
+		{name: "old only", old: true},
+		{name: "new only", new: true},
+		{name: "both", old: true, new: true},
+		{name: "neither"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mainRoot, wtRoot := makeMainRepoWithWorktree(t)
+			local := filepath.Join(wtRoot, ".rush")
+			if tc.old || tc.new {
+				require.NoError(t, os.MkdirAll(local, 0o755))
+			}
+			if tc.old {
+				require.NoError(t, os.WriteFile(storepath.DataDirPath(local, storepath.LegacyFilename), []byte{}, 0o644))
+			}
+			if tc.new {
+				require.NoError(t, os.WriteFile(storepath.StoreV1Path(local), []byte{}, 0o644))
+			}
+			store, err := Load(wtRoot, "", false)
+			require.NoError(t, err)
+			t.Cleanup(func() { setDataDirHomeForTest(true) })
+			if tc.old || tc.new {
+				require.Equal(t, local, store.Config().Options.DataDirectory)
+				require.Equal(t, DataDirSourceLegacyLocal, store.DataDirSource())
+				require.True(t, store.WorkspaceHome())
+			} else {
+				require.Equal(t, filepath.Join(mainRoot, ".rush"), store.Config().Options.DataDirectory)
+				require.Equal(t, DataDirSourceShared, store.DataDirSource())
+			}
+		})
+	}
 
 	t.Run("rush.db with marker is ignored (stray), shared wins", func(t *testing.T) {
 		mainRoot, wtRoot := makeMainRepoWithWorktree(t)
@@ -165,7 +188,7 @@ func TestLoad_LegacyLocalRushDB_Rules(t *testing.T) {
 		require.NoError(t, os.MkdirAll(mainData, 0o755))
 		local := filepath.Join(wtRoot, ".rush")
 		require.NoError(t, os.MkdirAll(local, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(local, "rush.db"), []byte{}, 0o644))
+		require.NoError(t, os.WriteFile(storepath.DataDirPath(local, storepath.LegacyFilename), []byte{}, 0o644))
 		require.NoError(t, MarkSharedWorkspace(mainData, wtRoot))
 
 		store, err := Load(wtRoot, "", false)
@@ -204,7 +227,7 @@ func TestLoad_Classification_NoRedirection(t *testing.T) {
 		mainRoot, _ := makeMainRepoWithWorktree(t)
 		local := filepath.Join(mainRoot, ".rush")
 		require.NoError(t, os.MkdirAll(local, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(local, "rush.db"), []byte{}, 0o644))
+		require.NoError(t, os.WriteFile(storepath.DataDirPath(local, storepath.LegacyFilename), []byte{}, 0o644))
 
 		store, err := Load(mainRoot, "", false)
 		require.NoError(t, err)
@@ -475,7 +498,7 @@ func TestResolveDataDirectory_LegacyLocalParity(t *testing.T) {
 	_, wtRoot := makeMainRepoWithWorktree(t)
 	local := filepath.Join(wtRoot, ".rush")
 	require.NoError(t, os.MkdirAll(local, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(local, "rush.db"), []byte{}, 0o644))
+	require.NoError(t, os.WriteFile(storepath.DataDirPath(local, storepath.LegacyFilename), []byte{}, 0o644))
 
 	rescued, err := ResolveDataDirectory(wtRoot, "")
 	require.NoError(t, err)
