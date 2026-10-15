@@ -69,20 +69,35 @@ func isProcessGroupLeader(pid int) bool {
 }
 
 // configureChildProcessGroup makes a pipe-branch CLI child a
-// process-group leader (pgid == pid) so session.KillProcess can kill
+// process-group leader (pgid == pid) and installs cancellation to kill
 // its whole tree — the direct child plus every grandchild it spawns
 // (claude.cmd → node.exe chains, MCP servers the CLI itself starts, …)
 // — with one killpg. This mirrors internal/agent/tools/mcp/
 // process_unix.go, where the same orphan-leak shape on stdio MCP
 // servers was fixed the same way.
 //
-// The PTY branch must NOT grow this: go-pty's unixPty.start() already
-// sets SysProcAttr{Setsid: true, Setctty: true}, and a session leader
-// is by definition a process-group leader, so KillProcess's group-kill
-// path applies there unconditionally.
+// The PTY branch is configured separately by go-pty, which establishes
+// its own session/process-group behavior and retains its separate teardown
+// path; this helper is specifically for children created through pipes.
 func configureChildProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		return killChildProcess(cmd.Process)
+	}
+}
+
+// killChildProcess targets the group established by configureChildProcessGroup,
+// even if the session leader has already exited and can no longer be inspected.
+func killChildProcess(proc *os.Process) error {
+	if proc == nil || proc.Pid <= 0 {
+		return os.ErrProcessDone
+	}
+	err := syscall.Kill(-proc.Pid, syscall.SIGKILL)
+	if err == nil || err == syscall.ESRCH {
+		return nil
+	}
+	return err
 }

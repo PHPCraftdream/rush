@@ -353,6 +353,12 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			// rejection would launch the unsafe WSL executable.
 			ptycmd := p.CommandContext(ctx, binaryPath, args...)
 			ptycmd.Dir = m.workingDir
+			if runtime.GOOS != "windows" {
+				// go-pty's Unix start creates a process-group leader with Setsid. Keep its
+				// known pid so cancellation can kill the full group established by
+				// Setpgid (pipe) or Setsid (PTY), even if the leader exits first.
+				ptycmd.Cancel = func() error { return killChildProcess(ptycmd.Process) }
+			}
 			if startErr := ptycmd.Start(); startErr == nil {
 				// Track the child's tree for teardown. On Windows this
 				// assigns a KILL_ON_JOB_CLOSE Job Object that
@@ -360,8 +366,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// hand-rolls CreateProcess, so post-Start tracking is
 				// the only hook we get). On Unix it is a no-op:
 				// go-pty's start() sets SysProcAttr{Setsid: true}, and
-				// a session leader is by definition a process-group
-				// leader, so KillProcess's group-kill path already
+				// a process-group leader, so KillProcess's group-kill path already
 				// applies.
 				childPid = trackChildTree(ptycmd.Process, m.dataDir, sessionID)
 				// Log command-line diagnostics. In production mode, args are sanitized
@@ -459,7 +464,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 						// (context-cancel watcher + scanner loop) without double-killing.
 						ptyKillOnce.Do(func() {
 							if ptycmd.Process != nil {
-								_ = session.KillProcess(ptycmd.Process.Pid)
+								_ = killChildProcess(ptycmd.Process)
 							}
 						})
 					},
@@ -568,9 +573,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		childPid = trackChildTree(cmd.Process, m.dataDir, sessionID)
 		slog.Info("cliprovider: process started", "binary", m.spec.Binary, "pid", cmd.Process.Pid)
 		proc = procHandle{stdout: reader, drained: drained, kill: func() {
-			if cmd.Process != nil {
-				_ = session.KillProcess(cmd.Process.Pid)
-			}
+			_ = killChildProcess(cmd.Process)
 		}, wait: func() (string, error) { err := cmd.Wait(); return strings.TrimSpace(stderrBuf.String()), err }, stderrRaw: func() []byte { return stderrBuf.Bytes() }}
 	}
 
