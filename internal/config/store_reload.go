@@ -13,9 +13,11 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
@@ -460,6 +462,15 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if hook := s.reloadAfterDiskRead; hook != nil {
 		hook()
 	}
+	// Re-verify the models-integrity rule on the candidate's stable bytes
+	// (plan §3.8, P1: without this a running process systematically adopts
+	// a hand-edited models block within one poll interval). On a mismatch
+	// (operator decision D4) the candidate keeps the PREVIOUS role models
+	// while the rest of it still publishes. This lives in
+	// buildAndPublishReload, so every reload path is covered.
+	if reloadModelsIntegrityMismatch(s, configDocuments) {
+		cfg.Models = prevModelsSelections(prev)
+	}
 
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
@@ -579,6 +590,65 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil
+}
+
+// prevModelsSelections snapshots the previous snapshot's raw role-model
+// selections for the integrity-mismatch carry-forward.
+func prevModelsSelections(prev *storeSnapshot) map[SelectedModelType]SelectedModel {
+	if prev == nil || prev.config == nil {
+		return nil
+	}
+	return maps.Clone(prev.config.Models)
+}
+
+// reloadModelsIntegrityMismatch re-verifies the models-integrity rule on
+// the candidate's stable bytes for the global-data and workspace paths.
+// A warning is logged once per distinct offending fingerprint.
+func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) bool {
+	lockExists := s.anySettingsLockExists()
+	mismatch := false
+	for _, path := range []string{s.globalDataPath, s.loadSnapshot().workspacePath} {
+		if path == "" {
+			continue
+		}
+		doc := stableConfigDocumentForPath(docs, path)
+		if doc == nil || !doc.present {
+			continue
+		}
+		if modelsIntegrityOf(doc.data, lockExists) != nil {
+			mismatch = true
+			warnModelsIntegrityFingerprintOnce(path, doc.fingerprint.digest)
+		}
+	}
+	return mismatch
+}
+
+// stableConfigDocumentForPath finds the candidate document for path.
+func stableConfigDocumentForPath(docs []stableConfigDocument, path string) *stableConfigDocument {
+	canonical := normalizeReloadPath(path)
+	for i := range docs {
+		if normalizeReloadPath(docs[i].path) == canonical {
+			return &docs[i]
+		}
+	}
+	return nil
+}
+
+var (
+	modelsIntegrityWarnMu sync.Mutex
+	modelsIntegrityWarned = map[[sha256.Size]byte]struct{}{}
+)
+
+// warnModelsIntegrityFingerprintOnce logs the unsigned-models warning at
+// most once per distinct file fingerprint.
+func warnModelsIntegrityFingerprintOnce(path string, digest [sha256.Size]byte) {
+	modelsIntegrityWarnMu.Lock()
+	defer modelsIntegrityWarnMu.Unlock()
+	if _, done := modelsIntegrityWarned[digest]; done {
+		return
+	}
+	modelsIntegrityWarned[digest] = struct{}{}
+	slog.Warn("Model settings were changed outside rush; keeping the previous role models", "path", path)
 }
 
 func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {
