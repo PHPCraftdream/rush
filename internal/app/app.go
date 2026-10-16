@@ -560,6 +560,15 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// "coordinator not ready" as an ordinary retryable failure and
 	// eventually dead-letter (delete) durably-accepted work it was never
 	// going to get a chance to run anyway.
+
+	// D6 (docs/plans/2026-10-15-role-models-hot-reload.md): start the OAuth
+	// disk-sync poller and its journal workers under the App-owned lifecycle.
+	// Starting here, right after InitCoderAgent, covers rush (web), rush run,
+	// and SDK application mode; SkipAgentSetup Apps return above and stay
+	// without it. releaseResources stops and joins the poller before the
+	// parallel cleanupFuncs batch.
+	app.config.StartOAuthDiskSync()
+
 	if dataDir != "" {
 		app.RunQueuePump = session.NewRunQueuePump(session.RunQueuePumpConfig{
 			Sessions:    app.Sessions,
