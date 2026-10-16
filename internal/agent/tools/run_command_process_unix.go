@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -23,6 +24,13 @@ func configureRunCommandProcess(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		// ESRCH: the group is gone. EPERM: macOS refuses to signal a group
+		// whose members have all exited but are not reaped yet (we own the
+		// group, so it cannot be a real permission failure).
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
+			return nil
+		}
+		return err
 	}
 }

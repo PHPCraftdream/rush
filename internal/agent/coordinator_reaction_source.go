@@ -122,7 +122,7 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 	if c.asyncJobs == nil {
 		return nil
 	}
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
 			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
 				return err
@@ -162,7 +162,7 @@ func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID strin
 	// The DURABLE marker is released unconditionally: it is what other
 	// processes consult, and it must not keep naming a host that stays alive
 	// until this process really exits (shutdown can take a while).
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ReleaseSessionDriver(ctx, sessionID); err != nil {
 			slog.Warn("external driver: releasing the durable marker failed; Close is the backstop",
 				"session_id", sessionID, "err", err)
@@ -179,6 +179,11 @@ func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID strin
 func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) (bool, error) {
 	if c.asyncJobs == nil {
 		return false, nil
+	}
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: pending-inclusive selected-notice debt from batch reads;
+		// async_jobs is never read.
+		return facts.SelectedDebtExists(ctx, sessionID)
 	}
 	return c.asyncJobs.reactionDebtExists(ctx, sessionID)
 }
@@ -208,6 +213,12 @@ func (c *coordinator) WaitForHint(ctx context.Context, sessionID string, until t
 // retention purge halves of the 60s pass (doc sec.3.6/3.7), factored out of
 // RecheckPass so a `rush run` can run them once at its start.
 func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
+	if batchFlagEnabled() {
+		// Flag on: the dead-host sweep and retention purge are ledger
+		// maintenance over async_jobs; batch GC is a later package's
+		// concern and must not mirror terminal state into the old tables.
+		return
+	}
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return
 	}
@@ -261,9 +272,16 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if pending {
 		state.WorkOpen = true
 	}
-	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
-	if err != nil {
-		return CLIScopeState{}, err
+	var debt bool
+	var debtErr error
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: the pending-inclusive debt fact comes from batch reads.
+		debt, debtErr = facts.SelectedDebtExists(ctx, sessionID)
+	} else {
+		debt, debtErr = c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
+	}
+	if debtErr != nil {
+		return CLIScopeState{}, debtErr
 	}
 	if !debt {
 		return state, nil
@@ -299,6 +317,15 @@ func (c *coordinator) runningWorkOpen(ctx context.Context, sessionID string) (bo
 	// treated as recoverable-and-gone rather than kept "open" forever (or,
 	// once recovered, correctly reported closed if nothing else is
 	// outstanding). Best-effort: RecoverOwnerScope never fails this call.
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: no ledger recovery write; liveness is a batch live read
+		// (conservative: an unreadable read reports open).
+		entries, scopeErr := facts.LiveScopeForOwners(ctx, []string{sessionID})
+		if scopeErr != nil {
+			return false, scopeErr
+		}
+		return len(entries) > 0 && entries[0].Live, nil
+	}
 	c.asyncJobs.store.RecoverOwnerScope(ctx, sessionID, c.messages)
 	rows, err := c.asyncJobs.store.ListRunningForOwners(ctx, []string{sessionID})
 	if err != nil {

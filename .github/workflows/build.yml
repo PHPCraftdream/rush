@@ -86,6 +86,12 @@ jobs:
       - name: self-test db release pairing guard
         if: matrix.os == 'ubuntu-latest'
         run: bash .githooks/check_db_release_pairing_selftest.sh
+      - name: no hand-written source file over 1000 lines (ratchet allowlist)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size.sh
+      - name: self-test file-size guard
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size_selftest.sh
       # Regenerate the sqlc output and fail if it drifts from what's
       # committed. Pinned to v1.30.0 — the exact version this repo's own
       # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
@@ -140,8 +146,11 @@ jobs:
       - name: "test: internal/app"
         run: go test -short -failfast -p 2 -timeout 20m ./internal/app/...
         shell: bash
+      # internal/session ran out of go test's 600s default on windows-latest
+      # (2026-10-13, 600.080s) once the batch store/commit-hook/history suites
+      # landed (many DB-backed tests); same fix as internal/app above.
       - name: "test: internal/server, internal/session"
-        run: go test -short -failfast -p 2 ./internal/server/... ./internal/session/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/server/... ./internal/session/...
         shell: bash
       - name: "test: internal/permission, internal/config, internal/csync"
         run: go test -short -failfast -p 2 ./internal/permission/... ./internal/config/... ./internal/csync/...
@@ -452,6 +461,10 @@ jobs:
       # race-sensitive and cheap (seconds), so they run here too.
       - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
         run: go test -race -short -failfast -timeout 15m ./internal/tasktree/... ./cmd/tasklab/ ./internal/csync/
+      # The job-batch engine, Runner and batchlab are single-loop concurrent
+      # code with real process trees in the lab tests; -race is the point.
+      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+        run: go test -race -short -failfast -timeout 15m ./internal/jobbatch/... ./cmd/batchlab/
       # internal/agent -- the most concurrency-heavy package in the repo
       # (generation fences, stream watchdog, mailboxes, coordinator
       # background work) -- gets -race coverage via the batched split

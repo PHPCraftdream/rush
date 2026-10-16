@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -102,18 +103,22 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	if !l.quota.reset.IsZero() {
 		l.final.QuotaResetAt = l.quota.reset.Format(time.RFC3339)
 	}
-	rows, incomplete := l.app.asyncJobStore.JobsInTree(l.ctx, l.sessionID)
+	rows, incomplete, err := l.quotaJobsInTree(l.ctx)
+	if err != nil {
+		final, exitErr := l.exitWait(err)
+		return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
+	}
 	if incomplete {
 		final, err := l.exitWait(fmt.Errorf("quota exit: finished work read incomplete"))
 		return cliStepResult{ev: evScopeWaitErr, final: final, err: err}
 	}
 	children := map[string]bool{}
 	for _, row := range rows {
-		if row.State != "running" && row.Announced != 0 && !l.quota.terminal[row.ClaimID] {
-			l.final.FinishedWork = append(l.final.FinishedWork, FinishedWork{SessionID: row.OwnerSessionID, JobID: row.ToolCallID, State: row.State, Result: row.ResultSummary.String})
+		if l.quotaTerminalState(row.State) && row.Announced && !l.quota.terminal[row.Key] {
+			l.final.FinishedWork = append(l.final.FinishedWork, FinishedWork{SessionID: row.OwnerSessionID, JobID: row.ToolCallID, State: row.State, Result: row.Result})
 		}
-		if row.ChildSessionID.Valid {
-			children[row.ChildSessionID.String] = true
+		if row.ChildSessionID != "" {
+			children[row.ChildSessionID] = true
 		}
 	}
 	childIDs := make([]string, 0, len(children))
@@ -161,16 +166,53 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 var cliQuotaActiveWorkSeam func(bool, error) (bool, error)
 
 func (l *cliLoop) snapshotQuotaTerminal() {
-	rows, incomplete := l.app.asyncJobStore.JobsInTree(l.ctx, l.sessionID)
-	l.quota.snapshotIncomplete = incomplete
-	if incomplete {
+	rows, incomplete, err := l.quotaJobsInTree(l.ctx)
+	l.quota.snapshotIncomplete = incomplete || err != nil
+	if l.quota.snapshotIncomplete {
 		return
 	}
 	for _, row := range rows {
-		if row.State != "running" {
-			l.quota.terminal[row.ClaimID] = true
+		if l.quotaTerminalState(row.State) {
+			l.quota.terminal[row.Key] = true
 		}
 	}
+}
+
+// quotaJobsInTree reads the finished-work rows of the session's tree: the
+// legacy async_jobs walk flag-OFF, the batch root/node walk flag-ON
+// (batchFinishedWork in app_batch_cutover_facts.go).
+func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]quotaWorkRow, bool, error) {
+	if batchCutoverOn() {
+		return l.app.batchFinishedWork(ctx, l.sessionID)
+	}
+	rows, incomplete := l.app.asyncJobStore.JobsInTree(ctx, l.sessionID)
+	out := make([]quotaWorkRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, quotaWorkRow{
+			OwnerSessionID: row.OwnerSessionID,
+			Key:            row.ClaimID,
+			ToolCallID:     row.ToolCallID,
+			State:          row.State,
+			Announced:      row.Announced != 0,
+			Result:         row.ResultSummary.String,
+			ChildSessionID: row.ChildSessionID.String,
+		})
+	}
+	return out, incomplete, nil
+}
+
+// quotaTerminalState is the terminal predicate: legacy "any non-running
+// state"; batch the terminal node state set (a pending/starting/cancelling
+// node is not finished).
+func (l *cliLoop) quotaTerminalState(state string) bool {
+	if batchCutoverOn() {
+		switch state {
+		case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
+			return true
+		}
+		return false
+	}
+	return state != "running"
 }
 
 func (l *cliLoop) resumeRole() string {

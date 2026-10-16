@@ -1,12 +1,6 @@
-// Stream's full request lifecycle: MCP wiring, PTY/pipe process launch,
-// the eager scanner goroutine, and the iterator closure with its cleanup
-// and wait plumbing. The method is one ~900-line function by design; its
-// internals are deliberately kept whole rather than split across seams.
-
 package cliprovider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,6 +20,14 @@ import (
 )
 
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	s, err := m.StartStream(ctx, call)
+	if err != nil {
+		return nil, err
+	}
+	return s.Stream(), nil
+}
+
+func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamSession, error) {
 	binaryPath, resolveErr := resolveLaunchBinary(m.spec.Binary)
 	if resolveErr != nil {
 		return nil, fmt.Errorf("resolve %s: %w", m.spec.Binary, resolveErr)
@@ -116,7 +118,8 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// Write / Task tools, bypassing agentguard (batch 16) and the MCP permission
 	// dialog. yolo only controls whether claude needs the bypass-permissions flag,
 	// not whether our MCP bridge sits in the loop.
-	if m.spec.UseRushMCP && m.perms != nil {
+	bridge := invocationToolBridge(ctx)
+	if m.spec.UseRushMCP && (m.perms != nil || bridge != nil) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -178,7 +181,12 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			"Agent",
 		}
 		// Include external MCP tools registered on the rush MCP bridge.
-		if m.mcpProxy != nil {
+		if bridge != nil {
+			allowed = nil
+			for _, tool := range bridge.Tools() {
+				allowed = append(allowed, "mcp__rush__"+tool.WireName)
+			}
+		} else if m.mcpProxy != nil {
 			for _, ext := range m.mcpProxy.ListTools() {
 				allowed = append(allowed, "mcp__rush__"+ext.ServerName+"__"+ext.Name)
 			}
@@ -198,7 +206,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// The Authorization: Bearer header is stored in the settings (qwen CLI
 	// supports custom headers for httpUrl transports); the server is
 	// localhost-only with a random port.
-	if m.spec.QwenMCPIntegration && m.perms != nil {
+	if m.spec.QwenMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := qwenMCPID(m.workingDir)
 		if idErr != nil {
 			slog.Warn("cliprovider: failed to get qwen MCP ID", "err", idErr)
@@ -226,18 +234,26 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 					// permission system.
 					// Also block the native todo_write so the model uses
 					// mcp__rush__todos which persists tasks to the rush session.
-					args = append(
-						args,
-						"--allowed-tools",
-						"mcp__"+id+"__Bash",
-						"mcp__"+id+"__Read",
-						"mcp__"+id+"__Write",
-						"mcp__"+id+"__Glob",
-						"mcp__"+id+"__Grep",
-						"mcp__"+id+"__todos",
-						"--exclude-tools",
-						"todo_write",
-					)
+					if bridge != nil {
+						args = append(args, "--allowed-tools")
+						for _, tool := range bridge.Tools() {
+							args = append(args, "mcp__"+id+"__"+tool.WireName)
+						}
+						args = append(args, "--exclude-tools", "todo_write")
+					} else {
+						args = append(
+							args,
+							"--allowed-tools",
+							"mcp__"+id+"__Bash",
+							"mcp__"+id+"__Read",
+							"mcp__"+id+"__Write",
+							"mcp__"+id+"__Glob",
+							"mcp__"+id+"__Grep",
+							"mcp__"+id+"__todos",
+							"--exclude-tools",
+							"todo_write",
+						)
+					}
 				}
 			}
 		}
@@ -247,7 +263,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// using a stable per-project ID. Gemini supports Authorization: Bearer headers and
 	// a trust:true flag to bypass its own confirmation prompts, so tool calls go
 	// directly to our MCP server which shows rush's permission dialog.
-	if m.spec.GeminiMCPIntegration && m.perms != nil {
+	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
 			slog.Warn("cliprovider: failed to get gemini MCP ID", "err", idErr)
@@ -280,7 +296,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// (inline config override). No persistent changes to ~/.codex/config.toml.
 	// The token is passed via environment variable and Authorization: Bearer header
 	// to avoid leaking secrets in process lists (query params are visible in /proc/<pid>/cmdline).
-	if m.spec.CodexMCPIntegration && m.perms != nil {
+	if m.spec.CodexMCPIntegration && (m.perms != nil || bridge != nil) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -291,22 +307,17 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 	}
 
+	if bridge != nil && mcpSrv == nil {
+		if attachTmpDir != "" {
+			_ = os.RemoveAll(attachTmpDir)
+		}
+		return nil, fmt.Errorf("cliprovider: configured tool bridge is unavailable for %s", m.spec.ModelID)
+	}
+
 	noPTY := m.spec.NoPTY || testDisablePTY
 	useStdin := m.spec.AlwaysStdin || noPTY || len(prompt) > effectiveMaxPromptArgLen(m.spec.Binary)
 	if !useStdin && m.spec.PromptFlag != "" {
 		args = append(args, m.spec.PromptFlag, prompt)
-	}
-
-	// procHandle abstracts PTY-backed and pipe-backed processes behind a
-	// uniform interface so the streaming loop below is platform-agnostic.
-	type procHandle struct {
-		stdout   io.Reader
-		usingPTY bool
-		// kill aborts the process and blocks until all resources are freed.
-		kill func()
-		// wait blocks until the process exits; returns (stderr output, error).
-		// In PTY mode stderr is merged so it is always "".
-		wait func() (string, error)
 	}
 
 	var proc procHandle
@@ -317,7 +328,10 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	// on every exit path of the stream.
 	var childPid int
 
-	if !useStdin && !noPTY {
+	if m.streamProcess != nil {
+		proc = m.streamProcess(noPTY)
+	}
+	if proc.stdout == nil && !useStdin && !noPTY {
 		// Use a PTY so the subprocess (e.g. Node.js claude CLI) sees a TTY on
 		// stdout and does not buffer output internally. go-pty supports both
 		// Unix PTY and Windows ConPTY transparently.
@@ -339,6 +353,12 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			// rejection would launch the unsafe WSL executable.
 			ptycmd := p.CommandContext(ctx, binaryPath, args...)
 			ptycmd.Dir = m.workingDir
+			if runtime.GOOS != "windows" {
+				// go-pty's Unix start creates a process-group leader with Setsid. Keep its
+				// known pid so cancellation can kill the full group established by
+				// Setpgid (pipe) or Setsid (PTY), even if the leader exits first.
+				ptycmd.Cancel = func() error { return killChildProcess(ptycmd.Process) }
+			}
 			if startErr := ptycmd.Start(); startErr == nil {
 				// Track the child's tree for teardown. On Windows this
 				// assigns a KILL_ON_JOB_CLOSE Job Object that
@@ -346,8 +366,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				// hand-rolls CreateProcess, so post-Start tracking is
 				// the only hook we get). On Unix it is a no-op:
 				// go-pty's start() sets SysProcAttr{Setsid: true}, and
-				// a session leader is by definition a process-group
-				// leader, so KillProcess's group-kill path already
+				// a process-group leader, so KillProcess's group-kill path already
 				// applies.
 				childPid = trackChildTree(ptycmd.Process, m.dataDir, sessionID)
 				// Log command-line diagnostics. In production mode, args are sanitized
@@ -445,30 +464,13 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 						// (context-cancel watcher + scanner loop) without double-killing.
 						ptyKillOnce.Do(func() {
 							if ptycmd.Process != nil {
-								_ = session.KillProcess(ptycmd.Process.Pid)
+								_ = killChildProcess(ptycmd.Process)
 							}
 						})
 					},
-					wait: func() (string, error) {
-						// Bound the wait against ctx.Done() for parity with the
-						// pipe branch: a grandchild holding the PTY's underlying
-						// handles can keep ptycmd.Wait() from returning even after
-						// the direct child exits. PTY mode merges stderr into the
-						// tty, so there is no stderrBuf to race on here.
-						// closePTY() is idempotent (sync.Once): on Unix it cleans
-						// up the master fd after the scanner has drained; on
-						// Windows it may have already been called by the eager
-						// goroutine above (which is fine — Do is a no-op).
-						select {
-						case <-ptyWaitDone:
-							closePTY()
-							return "", ptyWaitErr
-						case <-ctx.Done():
-							closePTY()
-							slog.Warn("cliprovider: PTY wait aborted on ctx cancellation", "binary", m.spec.Binary)
-							return "", ctx.Err()
-						}
-					},
+					wait:    func() (string, error) { <-ptyWaitDone; return "", ptyWaitErr },
+					closeIO: closePTY,
+					cleanup: closePTY,
 				}
 			} else {
 				_ = p.Close()
@@ -540,6 +542,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		// inheritance correctly for those.
 		var reader io.Reader
 		var stderrBuf bytes.Buffer
+		var drained func()
 		if m.spec.NoPTY {
 			stdoutPipe, pipeErr := cmd.StdoutPipe()
 			if pipeErr != nil {
@@ -553,11 +556,8 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				return nil, fmt.Errorf("start %s: %w", m.spec.Binary, startErr)
 			}
 			pr, pw := io.Pipe()
-			var copyWg sync.WaitGroup
-			copyWg.Add(2)
-			go func() { _, _ = io.Copy(pw, stdoutPipe); copyWg.Done() }()
-			go func() { _, _ = io.Copy(pw, stderrPipe); copyWg.Done() }()
-			go func() { copyWg.Wait(); pw.Close() }()
+			drained = mergeLines(pw, stdoutPipe, stderrPipe)
+			go func() { drained(); pw.Close() }()
 			reader = pr
 		} else {
 			cmd.Stderr = &stderrBuf
@@ -572,63 +572,9 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		}
 		childPid = trackChildTree(cmd.Process, m.dataDir, sessionID)
 		slog.Info("cliprovider: process started", "binary", m.spec.Binary, "pid", cmd.Process.Pid)
-		// Do NOT start cmd.Wait() eagerly. Per Go docs on StdoutPipe:
-		//   "it is incorrect to call Wait before all reads from the pipe have
-		//   completed."
-		// Wait() closes the StdoutPipe read end; starting it eagerly races with
-		// the scanner — on a fast-exiting child (echo/cat of a small file) the
-		// pipe can be closed before the scanner reads the last buffered line,
-		// losing data (the CI failure: final usage line lost). Instead, Wait()
-		// is started lazily inside the wait() closure below, which is only
-		// called after scanDone (the scanner has drained stdout to EOF). The
-		// wait() closure is idempotent via sync.Once so it can be safely
-		// deferred for cleanup on early-return paths.
-		var pipeWaitOnce sync.Once
-		var pipeWaitStderr string
-		var pipeWaitErr error
-		pipeWaitCh := make(chan error, 1)
-		proc = procHandle{
-			stdout:   reader,
-			usingPTY: false,
-			kill: func() {
-				if cmd.Process != nil {
-					_ = session.KillProcess(cmd.Process.Pid)
-				}
-			},
-			wait: func() (string, error) {
-				pipeWaitOnce.Do(func() {
-					// cmd.Wait() blocks until EVERY process holding the stderr
-					// write handle exits, not just the direct child — and the
-					// external CLI binaries this launches routinely spawn
-					// grandchildren (claude.cmd → cmd.exe → node.exe, MCP
-					// servers) that inherit stderr. If the direct child dies
-					// (stdout EOFs, scanner loop ends) but a grandchild is still
-					// alive holding stderr, an unbounded cmd.Wait() would block
-					// forever with no ctx check on this path. Bound it: run
-					// Wait in its own goroutine and select against ctx.Done().
-					go func() { pipeWaitCh <- cmd.Wait() }()
-					select {
-					case waitErr := <-pipeWaitCh:
-						// Only safe to read stderrBuf after Wait truly completed;
-						// os/exec's stderr-copy goroutine is joined by Wait.
-						pipeWaitStderr = strings.TrimSpace(stderrBuf.String())
-						if pipeWaitStderr != "" {
-							slog.Warn("cliprovider: process stderr", "binary", m.spec.Binary, "stderr", pipeWaitStderr)
-						}
-						pipeWaitErr = waitErr
-					case <-ctx.Done():
-						// ctx cancelled before Wait returned — stderrBuf may
-						// still be written to concurrently by the not-yet-joined
-						// stderr-copy goroutine, so do NOT read it (would race).
-						// The stderr-holding grandchild is the very thing ctx
-						// cancellation (via kill()) is trying to tear down.
-						slog.Warn("cliprovider: wait aborted on ctx cancellation; stderr discarded (may be incomplete)", "binary", m.spec.Binary)
-						pipeWaitErr = ctx.Err()
-					}
-				})
-				return pipeWaitStderr, pipeWaitErr
-			},
-		}
+		proc = procHandle{stdout: reader, drained: drained, kill: func() {
+			_ = killChildProcess(cmd.Process)
+		}, wait: func() (string, error) { err := cmd.Wait(); return strings.TrimSpace(stderrBuf.String()), err }, stderrRaw: func() []byte { return stderrBuf.Bytes() }}
 	}
 
 	var parsePart func([]byte) (fantasy.StreamPart, bool)
@@ -636,145 +582,80 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		parsePart = m.spec.NewPartParser()
 	}
 
-	// scanResult carries one scanner event: a raw line, or a terminal
-	// signal with any scanner error.
-	type scanResult struct {
-		raw  []byte
-		done bool
-		err  error
-	}
-	// Start reading proc.stdout SYNCHRONOUSLY here — before Stream() returns
-	// and regardless of when (or whether) the caller starts ranging over the
-	// returned iterator. This closes a structural race: the wait goroutine
-	// tears down the child's output the instant it exits (PTY branch:
-	// p.Close() discards buffered PTY output; pipe branch: cmd.Wait() closes
-	// the StdoutPipe read end), and a fast-exiting child (echo / cat of a
-	// small file) can finish before a lazily-started scanner reads a single
-	// byte, yielding an empty stream. Draining into a buffered channel from
-	// the moment the process starts guarantees the output is captured up
-	// front. The channel is sized generously so short outputs never block the
-	// scanner before a consumer arrives; larger outputs stream over time and
-	// backpressure safely (data stays in the OS pipe/PTY buffer, not lost).
-	scanCh := make(chan scanResult, 64)
-	go func() {
-		scanner := bufio.NewScanner(proc.stdout)
-		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			b := scanner.Bytes()
-			cp := make([]byte, len(b))
-			copy(cp, b)
-			select {
-			case scanCh <- scanResult{raw: cp}:
-			case <-ctx.Done():
-				return
-			}
+	retained := newStreamSession(proc)
+	var legacyWaitOnce sync.Once
+	var legacyStderr string
+	var legacyErr error
+	waitCaller := func() (string, error) {
+		result, err := retained.Wait(ctx)
+		if proc.closeIO != nil {
+			proc.closeIO()
 		}
-		// Guard the terminal signal against ctx.Done() as well: the goroutine
-		// now runs eagerly (before any consumer), so if the caller abandons
-		// the iterator without draining, an unguarded send on a full channel
-		// would leak this goroutine.
+		if err != nil {
+			return "", err
+		}
+		return result.Stderr, result.Err
+	}
+	legacyWait := func() (string, error) {
+		if proc.usingPTY {
+			return waitCaller()
+		}
+		legacyWaitOnce.Do(func() { legacyStderr, legacyErr = waitCaller() })
+		return legacyStderr, legacyErr
+	}
+
+	var visibleOnce sync.Once
+	visibleCleanup := func() {
+		visibleOnce.Do(func() {
+			session.UntrackProcessTree(childPid)
+			session.UnregisterChildGroup(m.dataDir, sessionID, childPid)
+			if geminiMCPName != "" {
+				deregisterGeminiMCP(geminiMCPName, mcpSrv.addr)
+			}
+			if qwenMCPName != "" {
+				deregisterQwenMCP(qwenMCPName, mcpSrv.addr)
+			}
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			if mcpTmpCfg != "" {
+				_ = os.Remove(mcpTmpCfg)
+			}
+			if mcpSrv != nil {
+				mcpSrv.stop()
+			}
+			if m.streamVisibleCleanup != nil {
+				m.streamVisibleCleanup()
+			}
+		})
+	}
+	iterStarted := make(chan struct{})
+	var iterStartedOnce sync.Once
+	go func() {
 		select {
-		case scanCh <- scanResult{done: true, err: scanner.Err()}:
+		case <-iterStarted:
 		case <-ctx.Done():
+			retained.legacyKill()
 		}
 	}()
 
-	// Abandonment watchdog for the tree-teardown state registered by
-	// trackChildTree above. Everything else that releases it — the
-	// deferred session.UntrackProcessTree inside the closure below —
-	// lives INSIDE the iterator, and an iter.Seq carries no guarantee
-	// that a consumer ever starts the range: a caller error between
-	// Stream() returning and the loop beginning, or a lazy wrapper
-	// whose own consumer disappears (fantasy's object.StreamWithTool
-	// returns exactly such a lazy wrapper around this stream), would
-	// leave the trackedJobs entry and its Job Object handle registered
-	// forever — and after the child exits, a stale entry keyed by a pid
-	// the OS is free to recycle. The watchdog arms here, in Stream's
-	// synchronous part, stands down the moment iteration starts, and on
-	// ctx cancellation — which every real abandon path funnels through —
-	// performs the same kill the closure's own ctx watcher would have
-	// (proc.kill races the closure safely: on Windows the tracked entry
-	// is consumed exactly once under trackedJobsMu, on Unix a second
-	// kill targets an already-dead process group). Residual gap,
-	// accepted: a caller that neither iterates nor cancels leaks the
-	// child process itself, which no fix inside this function survives.
-	iterStarted := make(chan struct{})
-	var iterStartedOnce sync.Once
-	if childPid != 0 {
-		go func() {
-			select {
-			case <-iterStarted:
-			case <-ctx.Done():
-				proc.kill()
-			}
-		}()
-	}
-
-	return func(yield func(fantasy.StreamPart) bool) {
-		// Signal the abandonment watchdog (see above) that the closure
-		// has taken ownership of cleanup: from here on every exit path
-		// runs the deferred UntrackProcessTree/wait below. The Once
-		// guards against a legal second iteration of the same Seq.
+	retained.stream = func(yield func(fantasy.StreamPart) bool) {
 		iterStartedOnce.Do(func() { close(iterStarted) })
-		// Cleanup MCP resources when the stream ends (cannot use defer in
-		// Stream() because that fires before the closure executes).
-		if mcpSrv != nil {
-			defer mcpSrv.stop()
-		}
-		if mcpTmpCfg != "" {
-			defer os.Remove(mcpTmpCfg)
-		}
-		if attachTmpDir != "" {
-			defer os.RemoveAll(attachTmpDir)
-		}
-		if qwenMCPName != "" {
-			// Pass the exact addr this call registered (mcpSrv is
-			// guaranteed non-nil here: qwenMCPName is only set after a
-			// successful registerQwenMCP above, using this same mcpSrv) —
-			// see deregisterQwenMCP's doc for why an unconditional delete
-			// is unsafe.
-			defer deregisterQwenMCP(qwenMCPName, mcpSrv.addr)
-		}
-		if geminiMCPName != "" {
-			defer deregisterGeminiMCP(geminiMCPName, mcpSrv.addr)
-		}
-
-		// Release tree-teardown state on every exit path. On Windows
-		// this closes the KILL_ON_JOB_CLOSE job handle, killing any
-		// straggler descendants still inside the job; it must run
-		// after the wait below, hence the registration order (defers
-		// are LIFO).
-		defer func() {
-			session.UntrackProcessTree(childPid)
-			session.UnregisterChildGroup(m.dataDir, sessionID, childPid)
-		}()
-		// Ensure the child process is reaped and its output fds are cleaned up
-		// on EVERY exit path — including early returns from ctx-cancel and
-		// yield-false. proc.wait() is idempotent (sync.Once internally), so
-		// calling it here in addition to the explicit calls in the normal and
-		// scanErr paths below is safe: the second call is a no-op. Without
-		// this defer, the ctx-cancel and yield-false paths would skip Wait()
-		// entirely, leaving a zombie process and leaking the StdoutPipe/PTY fd.
-		defer func() { _, _ = proc.wait() }()
-
-		// Kill the subprocess immediately when ctx is cancelled, even while
-		// scanner.Scan() is blocking between CLI output lines (e.g. during a
-		// long MCP tool call). Without this goroutine the cancellation would
-		// only be observed at the next ctx.Done() check inside the scan loop,
-		// which requires a new line to arrive first.
+		defer visibleCleanup()
+		defer func() { _, _ = legacyWait() }()
 		killDone := make(chan struct{})
 		defer close(killDone)
 		go func() {
 			select {
 			case <-ctx.Done():
-				proc.kill()
+				retained.legacyKill()
 			case <-killDone:
 			}
 		}()
 
 		const textID = "0"
 		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: textID}) {
-			proc.kill()
+			retained.legacyKill()
 			return
 		}
 
@@ -795,7 +676,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 		for !scanDone {
 			select {
 			case <-ctx.Done():
-				proc.kill()
+				retained.legacyKill()
 				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: ctx.Err()}) //nolint:errcheck
 				return
 
@@ -805,24 +686,28 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				if ev.name != "" {
 					// start event
 					if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolInputStart, ID: id, ToolCallName: ev.name}) {
-						proc.kill()
+						retained.legacyKill()
 						return
 					}
 					if ev.input != "" {
 						if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolInputDelta, ID: id, Delta: ev.input}) {
-							proc.kill()
+							retained.legacyKill()
 							return
 						}
 					}
 				} else {
 					// end event
 					if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolInputEnd, ID: id}) {
-						proc.kill()
+						retained.legacyKill()
 						return
 					}
 				}
 
-			case res := <-scanCh:
+			case <-retained.ready(linesSeen):
+				res, ok := retained.next(ctx, linesSeen)
+				if !ok {
+					continue
+				}
 				if res.done {
 					scanDone = true
 					scanErr = res.err
@@ -873,7 +758,7 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 				}
 
 				if !yield(part) {
-					proc.kill()
+					retained.legacyKill()
 					return
 				}
 			}
@@ -881,25 +766,25 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 
 		// os.ErrClosed ("read |0: file already closed") is a benign
 		// end-of-stream signal, not a real I/O failure. cmd.Wait() is no
-		// longer started eagerly (it now runs lazily from proc.wait(), only
+		// longer started eagerly (it now runs lazily from legacyWait(), only
 		// after the scanner itself reaches scanDone), so this can no longer be
 		// caused by a concurrent Wait() racing the scanner's read. It is kept
 		// as a defensive, platform-agnostic classification: some OS/exec
 		// implementations can still surface a "file already closed" read
 		// error as part of normal teardown once the child has exited. Treat
-		// it like EOF and fall through to the normal proc.wait() path, which
+		// it like EOF and fall through to the normal legacyWait() path, which
 		// still surfaces a genuine error if the child exited non-zero.
 		if scanErr != nil && !errors.Is(scanErr, io.EOF) && !errors.Is(scanErr, os.ErrClosed) {
 			// PTY master returns EIO (Unix) or similar when child exits.
 			// Treat any scanner error in PTY mode as normal end-of-stream.
 			if !proc.usingPTY {
-				_, _ = proc.wait()
+				_, _ = legacyWait()
 				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: scanErr}) //nolint:errcheck
 				return
 			}
 		}
 
-		stderr, waitErr := proc.wait()
+		stderr, waitErr := legacyWait()
 		// Fork patch (operator UX): also log stderr content (clipped) and
 		// total lines seen on stdout. The original log said "err=null
 		// stderrLen=0" for the silent-claude-exit bug which gave the
@@ -941,5 +826,6 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 			FinishReason: fantasy.FinishReasonStop,
 			Usage:        finalUsage,
 		})
-	}, nil
+	}
+	return retained, nil
 }

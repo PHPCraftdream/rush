@@ -92,7 +92,7 @@ func (t *stallDetacherTool) RestrictedRunAction() string {
 // signal. Normal completions are indistinguishable from an unwrapped Run.
 func (t *stallDetacherTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	name := t.inner.Info().Name
-	if stallDetachExcludedTools[name] {
+	if isBatchManagedCall(ctx) || stallDetachExcludedTools[name] {
 		return t.inner.Run(ctx, call)
 	}
 	// The detached run must outlive the triggering turn's ctx (mirroring

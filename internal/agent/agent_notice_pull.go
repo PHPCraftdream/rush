@@ -24,26 +24,51 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 		return nil
 	}
 	store := a.asyncJobs.store
-
-	jobPulled, err := store.PullJobNotices(ctx, a.messages, sessionID, buildJobNoticeMessageParams)
-	if err != nil {
-		slog.Warn("notice pull: listing pending async job notices failed", "session_id", sessionID, "err", err)
-	}
 	// claims[i] is the async_jobs claim id of pulled[i] ("" for a
-	// session_notices row): the reaction chain guard's key (#1113).
-	claims := make([]string, 0, len(jobPulled))
-	for _, p := range jobPulled {
-		pulled = append(pulled, p.Message)
-		claims = append(claims, p.ClaimID)
-	}
-
-	noticePulled, err := store.PullSessionNotices(ctx, a.messages, sessionID, buildSessionNoticeMessageParams)
-	if err != nil {
-		slog.Warn("notice pull: listing pending session notices failed", "session_id", sessionID, "err", err)
-	}
-	for _, p := range noticePulled {
-		pulled = append(pulled, p.Message)
-		claims = append(claims, "")
+	// session_notices row or a batch notice): the reaction chain guard's
+	// key (#1113). chainHasClaim("") is false, so the "" claims are safe.
+	claims := make([]string, 0, 8)
+	if batchFlagEnabled() {
+		// Flag on: batch completion notices plus pending session notices,
+		// both through the node-backed facts; NO legacy void queries (the
+		// async_jobs GetAsyncJob/ListRunningAsyncJobsForOwners reads never
+		// run) and no async_jobs job-notice pull (batch mode never writes
+		// the old table).
+		if facts := coordinatorBatchCutoverFacts(a.asyncJobs.coord); facts != nil {
+			bp, err := facts.PullBatchNotices(ctx, a.messages, sessionID)
+			if err != nil {
+				slog.Warn("notice pull: batch notice pull failed", "session_id", sessionID, "err", err)
+			}
+			for _, p := range bp {
+				pulled = append(pulled, p.Message)
+				claims = append(claims, "")
+			}
+			sp, err := facts.PullPendingSessionNotices(ctx, a.messages, sessionID, buildSessionNoticeMessageParams)
+			if err != nil {
+				slog.Warn("notice pull: batch session notice pull failed", "session_id", sessionID, "err", err)
+			}
+			for _, p := range sp {
+				pulled = append(pulled, p.Message)
+				claims = append(claims, "")
+			}
+		}
+	} else {
+		jobPulled, err := pullJobNoticesForMode(ctx, store, a.messages, sessionID)
+		if err != nil {
+			slog.Warn("notice pull: listing pending async job notices failed", "session_id", sessionID, "err", err)
+		}
+		for _, p := range jobPulled {
+			pulled = append(pulled, p.Message)
+			claims = append(claims, p.ClaimID)
+		}
+		noticePulled, err := store.PullSessionNotices(ctx, a.messages, sessionID, buildSessionNoticeMessageParams)
+		if err != nil {
+			slog.Warn("notice pull: listing pending session notices failed", "session_id", sessionID, "err", err)
+		}
+		for _, p := range noticePulled {
+			pulled = append(pulled, p.Message)
+			claims = append(claims, "")
+		}
 	}
 	// Doc sec.3.4: moving a notice into history is progress for the
 	// supervision countdown -- except a supervision check-in itself, which
@@ -56,13 +81,24 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 		if m.NoticeKind == noticeKindSupervision {
 			continue
 		}
-		if coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {
+		if claims[i] != "" && coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {
 			continue
 		}
 		a.asyncJobs.recordProgress(sessionID)
 		break
 	}
 	return pulled
+}
+
+// pullJobNoticesForMode pulls async_jobs job notices on the ledger path
+// only. Flag on, job notices are ledger-owned: batch mode never inserts
+// async_jobs rows, so the old-table read is skipped (PullSessionNotices
+// always runs -- session_notices is retained notice infrastructure).
+func pullJobNoticesForMode(ctx context.Context, store *session.AsyncJobStore, messages message.Service, sessionID string) ([]session.PulledNotice, error) {
+	if batchFlagEnabled() {
+		return nil, nil
+	}
+	return store.PullJobNotices(ctx, messages, sessionID, buildJobNoticeMessageParams)
 }
 
 // pullPendingNoticesForStep is PrepareStep's step-boundary pull (doc
@@ -121,5 +157,38 @@ func buildSessionNoticeMessageParams(row session.SessionNoticeRow) message.Creat
 		AutoResumed:         true,
 		BackgroundJobNotice: true,
 		NoticeKind:          kind,
+	}
+}
+
+// buildBatchNoticeMessageParams converts a pulled batch_nodes selected
+// notice row into the history message's params, mirroring
+// buildJobNoticeMessageParams. Batch notices carry NO tool name (batch
+// leaves resolve by payload, not by tool identity) and no timeout seconds:
+// the row's own notice_kind/state/cause and the root's outcome summary are
+// the single source of truth.
+func buildBatchNoticeMessageParams(row session.BatchNoticeRow) message.CreateMessageParams {
+	completion := AsyncCompletion{
+		ToolCallID: row.ToolCallID,
+		ToolName:   "",
+		Content:    row.OutcomeSummary,
+		IsError:    row.State == "failed" || row.OutcomeCode == "failed",
+		TimedOut:   row.State == "timed_out",
+		Stopped:    row.Cause == "stop",
+		Cancelled:  row.Cause == "stop" && row.State == "cancelled",
+	}
+	if row.Cause == "host_closing" {
+		completion.Interrupted = true
+	}
+	origin := message.OriginWeb
+	if row.OriginCLI {
+		origin = message.OriginCLI
+	}
+	return message.CreateMessageParams{
+		Role:                message.User,
+		Parts:               []message.ContentPart{message.TextContent{Text: FormatAsyncCompletion(completion)}},
+		AutoResumed:         true,
+		BackgroundJobNotice: true,
+		NoticeKind:          row.Kind,
+		Origin:              origin,
 	}
 }

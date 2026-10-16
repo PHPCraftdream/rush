@@ -297,6 +297,94 @@ export interface SessionLiveWorkPayload {
   sessionID: string;
   commands: LiveWorkItem[];
   agents: LiveWorkItem[];
+  // R12-C, additive, mirrors the server's *bool omitempty field: set ONLY
+  // on the batch-runtime ON path (true = full read, false = partial read).
+  // Absent = flag-off server, whose wire bytes carry no `complete` at all.
+  complete?: boolean;
+}
+
+// ─── Batch work (R15a, inert unless RUSH_BATCH_RUNTIME is on) ───────────────
+//
+// Structured batch-node wire, mirroring internal/server/handlers_batch.go's
+// BatchWorkSnapshotWire (v: 1). Consumed by web/src/batchWork.ts. No UI
+// component renders these yet (R15b).
+
+export interface BatchWorkCounts {
+  pending: number;
+  starting: number;
+  running: number;
+  cancelling: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  timed_out: number;
+  interrupted: number;
+  skipped: number;
+  active: number;
+}
+
+export interface BatchWorkDelivery {
+  selected: number;
+  pending: number;
+  delivered: number;
+}
+
+export interface BatchWorkNode {
+  nodeID: string;
+  parentID: string;
+  kind: string;
+  taskKind: string;
+  toolCallID: string;
+  state: string;
+  cause: string;
+  ordinal: number;
+  depth: number;
+  childSessionID: string;
+  host: string;
+  outcomeCode: string;
+  outcomeSummary: string;
+  outcomeRef: string;
+}
+
+export interface BatchWorkRoot {
+  rootID: string;
+  ownerSessionID: string;
+  toolCallID: string;
+  kind: string;
+  taskKind: string;
+  state: string;
+  cause: string;
+  startedAt: number;
+  host: string;
+  complete: boolean;
+  counts: BatchWorkCounts;
+  delivery: BatchWorkDelivery;
+  nodes: BatchWorkNode[];
+}
+
+export interface BatchWorkCompletion {
+  rootID: string;
+  nodeID: string;
+  outcomeCode: string;
+  outcomeRef: string;
+  // R12-C, root completions only (BatchCompletionWire's omitempty pair):
+  // the terminal root's state and result summary, read from the structured
+  // batch_nodes history projection. Absent on node completions inside live
+  // roots.
+  state?: string;
+  outcomeSummary?: string;
+  // R12-C, root completions only (the Go field is omitempty): the terminal
+  // root's own tool call identity, used to join when no legacy prose
+  // metadata exists for the root. Absent on node completions.
+  toolCallID?: string;
+}
+
+export interface BatchWorkSnapshot {
+  v: number;
+  sessionID: string;
+  complete: boolean;
+  roots: BatchWorkRoot[];
+  completions: BatchWorkCompletion[];
 }
 
 // ─── Wake schedules panel (stage 5b) ────────────────────────────────────────

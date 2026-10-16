@@ -546,27 +546,6 @@ func (l *workLedger) abort(job *asyncJob) {
 	}
 }
 
-// awaitSync blocks until job's outcome is ready (deliverLocked closed
-// job.done) or ctx is done. job.sync must be true. Reads job.result under
-// l.mu -- deliverLocked writes it (via transitionToTerminal) under the same
-// lock before closing done, so there is no torn read.
-func (l *workLedger) awaitSync(ctx context.Context, job *asyncJob) (jobResult, error) {
-	select {
-	case <-job.done:
-		l.mu.Lock()
-		res := job.result
-		l.mu.Unlock()
-		return res, nil
-	case <-ctx.Done():
-		// The job's own executor context is EITHER ctx itself (sync path,
-		// §4.2) or derived from it -- cancelling ctx already cancels the
-		// executor, which will reach finalize/deliverLocked on its own and
-		// eventually close job.done. This branch does not need to cancel
-		// anything itself; it only stops THIS caller from waiting further.
-		return jobResult{}, ctx.Err()
-	}
-}
-
 // setShellID records the background shell id backing a running command job,
 // as soon as asyncTool.awaitShell learns it from the inner tool's response
 // metadata. No-op if the job already finished/was removed (e.g. a fast

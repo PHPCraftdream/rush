@@ -19,7 +19,7 @@ import (
 func TestTurnStallToolDetachesAtWarnThreshold(t *testing.T) {
 	prev := turnStallPolicy.Load()
 	installTurnStallPolicy()
-	t.Cleanup(func() { turnStallPolicy.Store(prev) })
+	t.Cleanup(func() { restoreTurnStallPolicy(prev) })
 	t0 := time.Now()
 	set := installFakeStallNow(t)
 	set(t0)

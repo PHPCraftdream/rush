@@ -173,7 +173,11 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				clampNotice = fmt.Sprintf("(timeout_seconds %d clamped to %d)\n", n, runCommandMaxTimeoutSeconds)
 				n = runCommandMaxTimeoutSeconds
 			}
-			runCtx, cancel := context.WithTimeout(ctx, time.Duration(n)*time.Second)
+			runCtx := ctx
+			cancel := func() {}
+			if argvLeafFromContext(ctx) == nil {
+				runCtx, cancel = context.WithTimeout(ctx, time.Duration(n)*time.Second)
+			}
 			defer cancel()
 
 			sessionID := GetSessionFromContext(ctx)
@@ -201,7 +205,13 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			}
 
 			startTime := time.Now()
-			cmd := platform.Command(runCtx, params.Program, params.Args...)
+			// R7b lifetime seam: only after the same shared guards and permission.
+			leaf := argvLeafFromContext(ctx)
+			commandCtx := runCtx
+			if leaf != nil {
+				commandCtx = context.WithoutCancel(ctx)
+			}
+			cmd := platform.Command(commandCtx, params.Program, params.Args...)
 			cmd.Dir = execDir
 			buf := newRunCommandOutputBuffer(0)
 			cmd.Stdout = buf
@@ -211,14 +221,18 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			configureRunCommandProcess(cmd)
 			execErr := cmd.Start()
 			if execErr == nil {
-				// Registers buf with the work ledger (via async_tool.go's
-				// context sink) WHILE the process is still running, so
-				// job_output can read progressive output and job_kill's
-				// stopped notice can quote it -- see LiveOutputBuffer's doc.
-				if sink := LiveOutputSinkFromContext(ctx); sink != nil {
-					sink(buf)
+				if leaf == nil {
+					// Registers buf with the work ledger (via async_tool.go's
+					// context sink) WHILE the process is still running, so
+					// job_output can read progressive output and job_kill's
+					// stopped notice can quote it -- see LiveOutputBuffer's doc.
+					if sink := LiveOutputSinkFromContext(ctx); sink != nil {
+						sink(buf)
+					}
+					execErr = cmd.Wait()
+				} else {
+					execErr = runArgvLeaf(ctx, leaf, cmd, buf)
 				}
-				execErr = cmd.Wait()
 			}
 			endTime := time.Now()
 

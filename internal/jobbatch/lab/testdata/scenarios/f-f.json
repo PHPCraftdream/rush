@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "limits": {
+    "max_concurrent": 1,
+    "max_depth": 8,
+    "max_nodes": 64
+  },
+  "runner": {
+    "control_timeout_ms": 1000,
+    "record_retention": 128
+  },
+  "wait_bound_ms": 10000,
+  "payloads": {
+    "p": {
+      "kind": "controlled"
+    }
+  },
+  "script": [
+    {
+      "action": "submit",
+      "ref": "ff-A",
+      "root": "A",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "all",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "A.1",
+      "bind": "a1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "a1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "A.1",
+      "state": "running"
+    },
+    {
+      "action": "close",
+      "async": "c",
+      "expect": "ok"
+    },
+    {
+      "action": "await_stop",
+      "attempt": "a1",
+      "call": 1
+    },
+    {
+      "action": "complete",
+      "attempt": "a1",
+      "state": "interrupted"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "A.1"
+    },
+    {
+      "action": "join",
+      "name": "c"
+    }
+  ],
+  "expect": {
+    "roots": [
+      {
+        "id": "A",
+        "state": "interrupted"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "A.1",
+        "starts": 1,
+        "accepted": 1,
+        "stops": 1,
+        "disposes": 1
+      }
+    ],
+    "exit_code": 1
+  }
+}

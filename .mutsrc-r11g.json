@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "task": "R11G",
+  "mutations": [
+    {
+      "id": "r11g_validate_disk_refusal_disabled",
+      "file": "internal/agent/batch_invocation.go",
+      "needle": "if inv.Policy.CustomDisk != \"\" || inv.Policy.DiskProvider {",
+      "replacement": "if false && (inv.Policy.CustomDisk != \"\" || inv.Policy.DiskProvider) {",
+      "package": "internal/agent",
+      "test": "TestBatchInvocationValidateRejectsDiskProvider",
+      "purpose": "Mutation anchor ensuring invocation validation refuses non-durable disk policy before admission.",
+      "expected_assertion": "disk provider policy must refuse before ingress admission"
+    },
+    {
+      "id": "r11g_executor_disk_refusal_disabled",
+      "file": "internal/agent/batch_exec.go",
+      "needle": "if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != \"\") {",
+      "replacement": "if false && p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != \"\") {",
+      "package": "internal/agent",
+      "test": "TestBatchExecutorRejectsDiskMarkedPayload",
+      "purpose": "Mutation anchor ensuring executor admission rejects an alternate disk-marked payload before starting a leaf.",
+      "expected_assertion": "executor admission must refuse disk-backed payload before leaf start"
+    },
+    {
+      "id": "r11g_child_binding_unwired",
+      "file": "internal/agent/batch_install_agent_driver.go",
+      "needle": "runCtx = withBatchAgentLifecycle(runCtx, batchAgentLifecycle{BindChildSession: host.BindChildSession, NoChildSelected: host.NoChildSelected})",
+      "replacement": "_ = host.BindChildSession\n\trunCtx2 := runCtx\n\t_ = runCtx2\n\t_ = host.NoChildSelected",
+      "package": "internal/agent",
+      "test": "TestBatchQuestionDurableNoticeExactlyOnce",
+      "purpose": "Mutation anchor ensuring the flagged driver binds the actual child session onto the incarnation request before the delegation runs.",
+      "expected_assertion": "the answer must be routed to the SAME node identity the question was published under"
+    },
+    {
+      "id": "r11g_live_reader_blind",
+      "file": "internal/agent/batch_install_policy.go",
+      "needle": "return res.HasLive(), res.Complete",
+      "replacement": "return false, res.Complete",
+      "package": "internal/agent",
+      "test": "TestBatchCoordinatorDescendantsUsesChildOwnerTree",
+      "purpose": "Mutation anchor ensuring the flagged descendant reader reports live child-owned work through the real BatchLiveForOwner read.",
+      "expected_assertion": "real owner-tree read for child state must be complete"
+    },
+    {
+      "id": "r11g_question_header_dedup_open",
+      "file": "internal/session/batch_question.go",
+      "needle": "WHERE NOT EXISTS (SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)",
+      "replacement": "WHERE (SELECT COUNT(*) FROM session_notices) >= 0",
+      "package": "internal/session",
+      "test": "TestBatchQuestionDurableNoticeExactlyOnce",
+      "purpose": "Mutation anchor ensuring the durable publisher inserts at most one child_question row per exact identity header.",
+      "expected_assertion": "concurrent identical publishes must produce exactly one durable notice row"
+    },
+    {
+      "id": "r11g_depth_context_zeroed",
+      "file": "internal/agent/batch_install_question.go",
+      "needle": "depth := batchAgentQuestionDepth(ctx)",
+      "replacement": "depth := 0",
+      "package": "internal/agent",
+      "test": "TestBatchQuestionWrapperDelegatesAtStampedDepth",
+      "purpose": "Mutation anchor ensuring the flagged ask wrapper asks at the trusted context-stamped nesting depth.",
+      "expected_assertion": "the wrapper must ask at the stamped trusted depth"
+    }
+  ]
+}

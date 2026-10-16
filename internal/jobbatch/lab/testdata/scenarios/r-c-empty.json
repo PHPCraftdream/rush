@@ -1,0 +1,4 @@
+{"version":1,"limits":{"max_concurrent":1,"max_depth":8,"max_nodes":64},"runner":{"control_timeout_ms":1000,"record_retention":128},"wait_bound_ms":10000,"payloads":{"p":{"kind":"controlled"}},"script":[
+{"action":"submit","ref":"rc-Z","root":"Z","spec":{"batch":{"mode":"parallel","notify":"all","items":[{"batch":{"mode":"sequential","items":[]}},{"batch":{"mode":"parallel","items":[{"batch":{"mode":"parallel","items":[]}}]}}]}}},
+{"action":"add","ref":"rc-add-Z2","parent":"Z.2","items":[{"task":{"payload_ref":"p"}}],"expect_error":"terminal"},{"action":"close","expect":"ok","timeout_ms":1000}],
+"expect":{"roots":[{"id":"Z","state":"completed","counts":{"pending":0,"active":0,"completed":0,"failed":0,"cancelled":0,"timed_out":0,"interrupted":0,"skipped":0}}],"nodes":[{"id":"Z.1","state":"completed"},{"id":"Z.2","state":"completed"},{"id":"Z.2.1","state":"completed"}],"notices":{"Z":[{"node":"Z","state":"completed"}]},"max_active":0,"exit_code":0}}

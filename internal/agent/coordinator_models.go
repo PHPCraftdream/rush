@@ -612,7 +612,8 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]f
 	fail := func(err error) ([]fantasy.AgentTool, error) {
 		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
 		if required {
-			return nil, fmt.Errorf("%w: %v", ErrScopedCallToolsUnavailable, err)
+			// Wrap both: callers match the cause (e.g. ErrDiskProviderNotDurable).
+			return nil, fmt.Errorf("%w: %w", ErrScopedCallToolsUnavailable, err)
 		}
 		return nil, nil
 	}

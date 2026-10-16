@@ -216,6 +216,15 @@ type AsyncHostStore interface {
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
 }
 
+// hostLockStatusFromLockStatus maps a filelock.LockStatus verdict onto
+// session.HostLockStatus. The two types have IDENTICAL ordering and
+// meaning (Unknown=0, Alive, Dead); this adapter exists only because
+// the probe primitive itself lives in internal/filelock (internal/db
+// needs it and cannot import internal/session).
+func hostLockStatusFromLockStatus(s filelock.LockStatus) HostLockStatus {
+	return HostLockStatus(s)
+}
+
 // ProbeHostLockShared answers "is the process behind lockPath alive?" via
 // the SHARED, non-acquiring probe (doc sec.5 step 7 / sec.3.8's "readers
 // between processes"): unlike ProbeHostLock, it never takes the EXCLUSIVE
@@ -224,38 +233,19 @@ type AsyncHostStore interface {
 // anyone else. Winning the SHARED lock is kernel-attested proof no
 // exclusive holder exists right now (dead); contention
 // (EWOULDBLOCK/EAGAIN on POSIX, ERROR_LOCK_VIOLATION/ERROR_SHARING_VIOLATION
-// on Windows -- isLockContentionError) means alive; anything else is
-// unknown. The probe does not create the file, and releases its own shared
-// lock before returning in every case -- callers never receive a lock to
-// manage, and a genuine holder is never disturbed.
+// on Windows) means alive; anything else is unknown. The probe does not
+// create the file, and releases its own shared lock before returning --
+// callers never receive a lock to manage, and a genuine holder is never
+// disturbed.
+//
+// The primitive itself lives in filelock.ProbeShared; this wrapper only
+// translates the verdict type and returns the error unchanged.
 func ProbeHostLockShared(lockPath string) (HostLockStatus, error) {
-	// A14: same read-only rationale as ProbeHostLock.
-	f, err := os.OpenFile(lockPath, os.O_RDONLY, 0o644)
+	status, err := filelock.ProbeShared(lockPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return HostStatusDead, nil
-		}
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): open %s: %w", lockPath, err)
+		return HostStatusUnknown, err
 	}
-	defer f.Close()
-	// See ProbeHostLock's identical guard for why this check matters now
-	// that both probes open read-only.
-	if info, statErr := f.Stat(); statErr == nil && info.IsDir() {
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): %s is a directory", lockPath)
-	}
-	if err := tryLockFileShared(f); err != nil {
-		if isLockContentionError(err) {
-			return HostStatusAlive, nil
-		}
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): lock %s: %w", lockPath, err)
-	}
-	// Won the shared lock: no exclusive holder exists right now. Release
-	// immediately (doc: "release the shared lock right after the probe") --
-	// this probe never holds anything past its own return.
-	if err := unlockFile(f); err != nil {
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): unlock %s: %w", lockPath, err)
-	}
-	return HostStatusDead, nil
+	return hostLockStatusFromLockStatus(status), nil
 }
 
 // ProbeHostShared is ProbeHostLockShared scoped to dataDir/hostID, with the

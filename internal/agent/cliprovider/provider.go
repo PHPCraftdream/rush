@@ -213,14 +213,16 @@ func (p *cliProvider) LanguageModel(_ context.Context, modelID string) (fantasy.
 }
 
 type cliModel struct {
-	spec        CLISpec
-	mcpProxy    ExternalMCPProxy
-	cliSessions *csync.Map[string, cliSessionEntry]
-	workingDir  string
-	dataDir     string
-	yoloFn      func() bool
-	perms       permission.Service
-	sessions    session.Service
+	streamProcess        func(bool) procHandle
+	streamVisibleCleanup func()
+	spec                 CLISpec
+	mcpProxy             ExternalMCPProxy
+	cliSessions          *csync.Map[string, cliSessionEntry]
+	workingDir           string
+	dataDir              string
+	yoloFn               func() bool
+	perms                permission.Service
+	sessions             session.Service
 }
 
 func (m *cliModel) Provider() string { return ProviderID }

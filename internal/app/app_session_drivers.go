@@ -21,16 +21,28 @@ import (
 // distinct host. The whole table is read in ONE statement on the read pool
 // (never per session, never on the writer connection): it holds one row per
 // running or crashed-uncleaned loop, and the maintenance sweep purges dead
-// hosts' rows. An App without an AsyncJobStore or a database handle answers
-// an empty map.
+// hosts' rows. An App without an AsyncJobStore (flag off) or a database
+// handle answers an empty map. Flag ON (RUSH_BATCH_RUNTIME): liveness is
+// the shared lock probe and the AsyncJobStore is never consulted.
 //
 // The statement is a plain read here rather than a store method because the
 // session store exposes only the per-session ForeignLiveDriver, which also
 // hides this process's own host's marker.
 func (app *App) LiveSessionDrivers(ctx context.Context) (map[string]session.SessionDriver, error) {
+	cutOn := batchCutoverOn()
 	store := app.asyncJobStore
-	if store == nil {
+	if store == nil && !cutOn {
 		return nil, nil
+	}
+	liveness := func(hostID string) session.HostLockStatus {
+		if store == nil {
+			return session.HostStatusUnknown
+		}
+		return store.HostLiveness(hostID)
+	}
+	if cutOn {
+		// R12-F: the shared, non-acquiring probe -- never the AsyncJobStore.
+		liveness = app.batchCutoverHostLiveness()
 	}
 	conn := app.readDB
 	if conn == nil && app.DB != nil {
@@ -53,7 +65,7 @@ func (app *App) LiveSessionDrivers(ctx context.Context) (map[string]session.Sess
 		}
 		st, ok := status[d.HostID]
 		if !ok {
-			st = store.HostLiveness(d.HostID)
+			st = liveness(d.HostID)
 			status[d.HostID] = st
 		}
 		if st == session.HostStatusDead {

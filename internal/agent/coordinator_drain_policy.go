@@ -153,7 +153,12 @@ func (c *coordinator) drainDecision(ctx context.Context, sessionID string, spent
 	if c.asyncJobs == nil {
 		return false, drainVerdict{}, nil
 	}
-	debt, err = c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: the debt fact comes from batch node reads.
+		debt, err = facts.SelectedDebtExists(ctx, sessionID)
+	} else {
+		debt, err = c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	}
 	if err != nil || !debt {
 		return false, drainVerdict{}, err
 	}
@@ -199,6 +204,14 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 	}
 	if sess.ParentSessionID == "" {
 		return false, nil
+	}
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: delegation identity composes the parent's live tree scan
+		// with the ALL-roots history read -- a node under the parent naming
+		// this child, live or historical. The historical half preserves the
+		// released-child rule 7: the identity outlives the delegation's
+		// completion. An unreadable read fails closed as delegated.
+		return facts.DelegationChildEver(ctx, sess.ParentSessionID, sessionID)
 	}
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		// No durable store to confirm identity against (bare test fixture)
@@ -246,7 +259,15 @@ func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID st
 	if c.asyncJobs.store == nil {
 		return false, nil
 	}
-	hasJobDebt, noticeKinds, err := c.asyncJobs.store.PendingInclusiveDebtSummary(ctx, sessionID)
+	var hasJobDebt bool
+	var noticeKinds []string
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: the debt summary comes from batch node reads; the kind
+		// constants are the same session_notices vocabulary.
+		hasJobDebt, noticeKinds, err = facts.PendingInclusiveDebtSummary(ctx, sessionID)
+	} else {
+		hasJobDebt, noticeKinds, err = c.asyncJobs.store.PendingInclusiveDebtSummary(ctx, sessionID)
+	}
 	if err != nil {
 		return false, err
 	}

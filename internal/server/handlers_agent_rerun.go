@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,9 +12,19 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+// batchRerunReconcile is the flag-on rerun truncation: the R10c node-row
+// reconciliation (session.BatchStore.BatchRerunReconcile) over the SAME
+// params the legacy rerunTruncate seam takes, so a flag flip changes only
+// WHICH durable authority commits the truncation, not the handler's commit
+// shape. Seam var mirrors rerunTruncate (handlers_agent.go) for tests.
+var batchRerunReconcile = func(ctx context.Context, writer *sql.DB, messages message.Service, p session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
+	return session.NewBatchStore(writer).BatchRerunReconcile(ctx, messages, p)
+}
 
 // handleRerunMessage is an atomic "retry from this user message": it cancels
 // any in-flight agent run, waits for idle, deletes every message created AFTER
@@ -289,9 +300,25 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// context forever. On any error the transaction rolled back: history,
 	// jobs and notices are exactly as before, no job was stopped, no turn is
 	// started, and the deferred releases free the reservation and the probe.
-	trunc, truncErr := rerunTruncate(deleteCtx, a.DB(), a.Messages, session.RerunTruncateParams{
-		Owner: sessionID, TargetID: targetMsg.ID, TailIDs: tailIDs,
-	})
+	// Flag ON: the SAME transaction shape commits over batch_nodes (R10c
+	// BatchRerunReconcile) and the Voided set carries exact root incarnations;
+	// flag OFF: the legacy async_jobs truncation, byte-for-byte as before.
+	var trunc session.RerunTruncation
+	var batchVoided []session.BatchRerunVoidedNode
+	var truncErr error
+	if config.BatchRuntimeEnabled() {
+		var batchTrunc session.BatchRerunTruncation
+		batchTrunc, truncErr = batchRerunReconcile(deleteCtx, a.DB(), a.Messages, session.RerunTruncateParams{
+			Owner: sessionID, TargetID: targetMsg.ID, TailIDs: tailIDs,
+		})
+		if truncErr == nil {
+			batchVoided = batchTrunc.Voided
+		}
+	} else {
+		trunc, truncErr = rerunTruncate(deleteCtx, a.DB(), a.Messages, session.RerunTruncateParams{
+			Owner: sessionID, TargetID: targetMsg.ID, TailIDs: tailIDs,
+		})
+	}
 	if truncErr != nil {
 		if errors.Is(truncErr, session.ErrRerunTargetGone) {
 			slog.Warn("ws: rerun: target message no longer exists at truncation",
@@ -426,14 +453,34 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if rerunPostTruncateSeam != nil {
 		rerunPostTruncateSeam()
 	}
-	go func(coord agent.Coordinator, voided []session.VoidedAsyncJob) {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("ws: rerun: stopping the voided jobs panicked", "sessionID", sessionID, "panic", r)
-			}
-		}()
-		coord.StopRerunJobs(deleteCtx, sessionID, voided)
-	}(a.AgentCoordinator, trunc.Voided)
+	if config.BatchRuntimeEnabled() {
+		// Flag ON: stop the exact incarnations the committed node-row
+		// reconciliation routed for retirement (agent.BatchRerunStopper, an
+		// optional interface so coordinator fakes stay untouched). Same
+		// detached-goroutine contract as the flag-off branch below.
+		if stopper, ok := a.AgentCoordinator.(agent.BatchRerunStopper); ok {
+			go func(stop agent.BatchRerunStopper, voided []session.BatchRerunVoidedNode) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("ws: rerun: stopping the voided batch incarnations panicked", "sessionID", sessionID, "panic", r)
+					}
+				}()
+				stop.BatchRerunStopVoided(deleteCtx, sessionID, voided)
+			}(stopper, batchVoided)
+		} else {
+			slog.Warn("ws: rerun: flag-on coordinator does not implement agent.BatchRerunStopper; voided incarnations retire by delivery fencing only",
+				"sessionID", sessionID, "voided", len(batchVoided))
+		}
+	} else {
+		go func(coord agent.Coordinator, voided []session.VoidedAsyncJob) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("ws: rerun: stopping the voided jobs panicked", "sessionID", sessionID, "panic", r)
+				}
+			}()
+			coord.StopRerunJobs(deleteCtx, sessionID, voided)
+		}(a.AgentCoordinator, trunc.Voided)
+	}
 
 	// 4. Re-arm Phase 4 autonomy.
 	a.AgentCoordinator.ResetAutoResumeCounter(sessionID)

@@ -849,7 +849,7 @@ func NewSessionAgent(
 		sessions:                   opts.Sessions,
 		messages:                   opts.Messages,
 		disableAutoSummarize:       opts.DisableAutoSummarize,
-		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(opts.Tools, opts.RestrictedRuns))),
+		tools:                      csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
 		asyncJobs:                  opts.AsyncJobs,
 		onSessionIdle:              opts.OnSessionIdle,
 		isYolo:                     opts.IsYolo,
@@ -888,7 +888,7 @@ func (a *sessionAgent) SetModels(smart Model, fast Model) {
 // for error logging: these two are the only doors tools have into a
 // sessionAgent, so covering both means no assembly site can forget to.
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(tools, a.restrictedRuns)))
+	a.tools.SetSlice(decorateSessionTools(tools, a.restrictedRuns))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

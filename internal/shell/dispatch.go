@@ -199,7 +199,12 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	cmdArgs = append(cmdArgs, scriptPath)
 	cmdArgs = append(cmdArgs, args[1:]...)
 
-	cmd := platform.Command(ctx, interpreter, cmdArgs...)
+	commandCtx := ctx
+	stops, retained := ctx.Value(retainedStopKey{}).(*retainedStops)
+	if retained {
+		commandCtx = context.WithoutCancel(ctx)
+	}
+	cmd := platform.Command(commandCtx, interpreter, cmdArgs...)
 	hc := interp.HandlerCtx(ctx)
 	cmd.Dir = hc.Dir
 	cmd.Env = execEnvList(hc.Env)
@@ -208,6 +213,10 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	cmd.Stderr = hc.Stderr
 	isolateProcess(cmd)
 
+	if retained {
+		err := runRetainedProcess(ctx, cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, nil)
+		return retainedCommandResult(ctx, hc.Stderr, err)
+	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

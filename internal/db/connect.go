@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 )
 
 var pragmas = map[string]string{
@@ -232,7 +234,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	beginLifecycleOperation()
 	defer endLifecycleOperation()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 
 	// Resolve to an absolute path so that different relative paths to
 	// the same file share a single connection.
@@ -385,7 +387,7 @@ func ReleaseConn(conn *sql.DB) error {
 }
 
 func releasePath(dataDir string) error {
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath
@@ -464,7 +466,7 @@ func ReleaseAll(dataDir string) error {
 	beginLifecycleOperation()
 	defer endLifecycleOperation()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath

@@ -80,6 +80,7 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 	// Wrap the service to block on reads
 	blockingSvc := &blockingReadsService{Service: svc}
 	blockCh := make(chan struct{})
+	const stopGrace = 300 * time.Millisecond
 
 	// Enqueue a durable call so tick() has work to do
 	idempotencyKey := "p1-1-main-loop-timeout-probe"
@@ -98,6 +99,7 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 		PumpInstanceID: "p1-1-main-loop-timeout-pump",
 		TestTick:       func() time.Duration { return 10 * time.Millisecond },
 		TestLeaseTTL:   100 * time.Millisecond,
+		TestStopGrace:  func() time.Duration { return stopGrace },
 	})
 	pump.Start()
 
@@ -119,7 +121,10 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 		return blockingSvc.blockedCount.Load() > 0
 	}, 5*time.Second, 10*time.Millisecond, "tick() must have entered the blocked read before Stop() is called")
 
-	// Call Stop() and verify it returns within 5 seconds despite the hung tick
+	// Call Stop() and verify it returns after the grace window despite the
+	// hung tick. The window is a short seam value, so the only wall-clock
+	// bound is the generous "not unbounded" ceiling below, which scheduling
+	// jitter under load cannot reach.
 	start := time.Now()
 	stopReturned := make(chan bool)
 	go func() {
@@ -130,12 +135,10 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 	case stillBusy := <-stopReturned:
 		elapsed := time.Since(start)
 		t.Logf("Stop() returned after %v with stillBusy=%v", elapsed, stillBusy)
-		// Stop() should return within ~5 seconds (the grace period)
-		// Allow some margin for goroutine scheduling and test overhead
-		require.LessOrEqual(t, elapsed, 6*time.Second, "Stop() should return within 5-second grace period even with hung tick")
+		require.GreaterOrEqual(t, elapsed, stopGrace, "Stop() must wait out the grace window before forcing shutdown")
 		require.True(t, stillBusy, "Stop() should return true (forced) when main loop doesn't exit")
-	case <-time.After(10 * time.Second):
-		t.Fatal("Stop() did not return within 10 seconds - main loop wait is unbounded (missing timeout)")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Stop() did not return within 30 seconds - main loop wait is unbounded (missing timeout)")
 	}
 
 	// Unblock the DB read to clean up

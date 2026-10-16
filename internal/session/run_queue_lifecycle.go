@@ -53,7 +53,11 @@ func (p *RunQueuePump) Stop() bool {
 	// keep the total shutdown time bounded to 5s, not 10s (P1-1). Without this,
 	// a hung tick() DB call (stuck disk/filesystem) would make Stop() hang
 	// forever, breaking the "bounded shutdown" guarantee in App.Shutdown.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	grace := 5 * time.Second
+	if p.cfg.TestStopGrace != nil {
+		grace = p.cfg.TestStopGrace()
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), grace)
 	defer shutdownCancel()
 
 	workerDone := make(chan struct{})

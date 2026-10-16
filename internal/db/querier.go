@@ -19,10 +19,14 @@ type Querier interface {
 	// under a pathological scheduling stall) could Ack a row a DIFFERENT,
 	// currently-live executor now owns, deleting work out from under it.
 	AckRunQueueEntry(ctx context.Context, arg AckRunQueueEntryParams) (string, error)
+	// Engine sequences can skip for a root; advance atomically with all projections.
+	AdvanceBatchRootSequence(ctx context.Context, arg AdvanceBatchRootSequenceParams) (int64, error)
 	// loop: occurrence advances and next_run_at moves to the FIRST schedule
 	// boundary strictly after the fired one that is >= the fire time (computed
 	// by the caller from the SCHEDULED time, never from the fire time -- SCHED-3).
 	AdvanceLoopWakeOccurrence(ctx context.Context, arg AdvanceLoopWakeOccurrenceParams) (int64, error)
+	// Compose with the owning loop's projection; an answer is not termination.
+	AnswerBatchControlRequest(ctx context.Context, arg AnswerBatchControlRequestParams) (int64, error)
 	// B14/A14b fix: a (owner_session_id, tool_call_id) key whose row is already
 	// HISTORY (state != 'running' AND delivery IN ('done', 'void')) is renamed
 	// out of the active key namespace so a REUSED tool_call_id (a provider that
@@ -67,6 +71,103 @@ type Querier interface {
 	// was wasted for nothing. session_notices carries no announced concept
 	// (doc sec.3.2: it has no ack gate), so its branch is unchanged.
 	AsyncReactionDebtExists(ctx context.Context, owner string) (sql.NullBool, error)
+	// Dispose legacy bound session_notices superseded by a selected node notice:
+	// void exactly once (delivery IN ('pending','done') makes a second call a
+	// no-op) and drop the wake so the debt reader cannot count them again.
+	BatchDisposeBoundNoticesByToolCallID(ctx context.Context, arg BatchDisposeBoundNoticesByToolCallIDParams) (int64, error)
+	// Delivery reconciliation (R10c, D-R10c-3): every selected node whose notice
+	// message was deleted leaves 'done' and 'pending' as a fresh pending with the
+	// dead message reference and attempt counters cleared, so the next pull
+	// delivers against surviving history and debt accounting cannot key a deleted
+	// message id. 'none' (never selected) and 'void' are untouched by design.
+	BatchHistoryRependNodesByDeletedNoticeMessages(ctx context.Context, arg BatchHistoryRependNodesByDeletedNoticeMessagesParams) (int64, error)
+	// Activity snapshot input (R10c): every root incarnation of an owner,
+	// terminal included, oldest first. Delivery/debt columns stay on the root
+	// rows for the readers; node bodies come from BatchLevelNodes (batch_read.sql).
+	BatchHistoryRootsForOwner(ctx context.Context, owner string) ([]BatchNode, error)
+	// sessions audit/jobs counts over all incarnations of an owner, tasks only.
+	BatchHistoryStateCounts(ctx context.Context, owner string) ([]BatchHistoryStateCountsRow, error)
+	// One statement observes the root and its entire incarnation consistently.
+	BatchLevelNodes(ctx context.Context, arg BatchLevelNodesParams) ([]BatchNode, error)
+	// Legacy bound session_notices for one root's tool call, for disposal reads.
+	BatchListBoundNoticesByToolCallID(ctx context.Context, arg BatchListBoundNoticesByToolCallIDParams) ([]SessionNotice, error)
+	// Return all nodes of nonterminal roots, including settled delegation links.
+	BatchLiveNodesForOwners(ctx context.Context, owners []string) ([]BatchNode, error)
+	// Shared snapshot guard for attempt increments and failure closure.
+	BatchOutboxAccountNode(ctx context.Context, arg BatchOutboxAccountNodeParams) (int64, error)
+	BatchOutboxAccountNotice(ctx context.Context, arg BatchOutboxAccountNoticeParams) (int64, error)
+	// Ack election is independent of execution state; both fields change together.
+	BatchOutboxAnnounce(ctx context.Context, arg BatchOutboxAnnounceParams) (int64, error)
+	BatchOutboxClearFailure(ctx context.Context, arg BatchOutboxClearFailureParams) (int64, error)
+	BatchOutboxDebtNodes(ctx context.Context, owner string) ([]BatchNode, error)
+	BatchOutboxDebtNotices(ctx context.Context, owner string) ([]SessionNotice, error)
+	BatchOutboxFailedNodes(ctx context.Context, owner string) ([]BatchNode, error)
+	// Only an unannounced one-task root can elect its result as completion.
+	BatchOutboxInlineElect(ctx context.Context, arg BatchOutboxInlineElectParams) (BatchNode, error)
+	BatchOutboxNameMessage(ctx context.Context, arg BatchOutboxNameMessageParams) (int64, error)
+	BatchOutboxPending(ctx context.Context, owner string) ([]BatchNode, error)
+	// Recheck the root gate and oldest outstanding notice under the writer lock.
+	BatchOutboxPull(ctx context.Context, arg BatchOutboxPullParams) (BatchNode, error)
+	BatchOutboxReactNodes(ctx context.Context, arg BatchOutboxReactNodesParams) (int64, error)
+	BatchOutboxSetAnnouncementMessage(ctx context.Context, arg BatchOutboxSetAnnouncementMessageParams) (int64, error)
+	BatchOutboxWakeZero(ctx context.Context, arg BatchOutboxWakeZeroParams) (int64, error)
+	BatchRecoveryCloseControls(ctx context.Context, arg BatchRecoveryCloseControlsParams) (int64, error)
+	// Obtain the writer BEFORE snapshot reads; independent stores serialize here.
+	BatchRecoveryElect(ctx context.Context, arg BatchRecoveryElectParams) (BatchNode, error)
+	// Preserve latched causes, terminal outcomes and all existing outbox columns.
+	BatchRecoveryInterrupt(ctx context.Context, arg BatchRecoveryInterruptParams) (int64, error)
+	// No descendant cascade and no replacement of a preselected root notice.
+	BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoticeParams) (int64, error)
+	// Include terminal ancestors with live descendants and terminal unannounced leaks.
+	BatchRecoveryRoots(ctx context.Context) ([]BatchNode, error)
+	// D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' (and
+	// wake=1) on a notice_selected=0 row, so an ordinary live root has NO selected
+	// terminal notice and a void WRITE here would violate the schema. Pure
+	// SELECT instead: still-nonterminal announced roots whose announce message
+	// the rerun deleted are returned so the caller retires them via post-commit
+	// stop routing (mirrors legacy TruncateForRerun, which voids running rows
+	// regardless of state). Kept distinct by root_id from the void-write arm.
+	BatchRerunLiveRootsByAnnounceMessageIDs(ctx context.Context, arg BatchRerunLiveRootsByAnnounceMessageIDsParams) ([]BatchNode, error)
+	// Legacy-arm counterpart: never-acked live roots (announce_message_id IS
+	// NULL, the same I5 guard) matched by the deleted tail's tool_call_id,
+	// returned for stop routing only -- no void write (see
+	// BatchRerunLiveRootsByAnnounceMessageIDs).
+	BatchRerunLiveRootsByToolCallIDs(ctx context.Context, arg BatchRerunLiveRootsByToolCallIDsParams) ([]BatchNode, error)
+	// Selected-node delivery reconciliation: a done node whose own notice
+	// message was deleted goes back to pending so the next turn pulls it again.
+	// The dead message reference is cleared and the attempt counters reset
+	// (mirrors BatchHistoryRependNodesByDeletedNoticeMessages), so the next
+	// pull names a FRESH message and can never fail its CAS forever.
+	// The delivery='done' guard keeps a retried rerun from resurrecting a void.
+	BatchRerunRependNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunRependNodesByNoticeMessageIDsParams) (int64, error)
+	// Void every selected node whose notice message was deleted; runs AFTER the
+	// repend so a node matching both ends void. Void is written once: the
+	// delivery != 'void' predicate keeps a second pass a 0-row no-op.
+	BatchRerunVoidNodesByNoticeMessageIDs(ctx context.Context, arg BatchRerunVoidNodesByNoticeMessageIDsParams) (int64, error)
+	// Nodes of roots the rerun voided (announce or legacy arm) end void -- ALL of
+	// them, not only those whose message id matches the deleted set: the repend
+	// above clears notice_message_id, so a message-id match would miss a
+	// re-pended node of a voided root and leave an old-branch notice pending.
+	// Void is written once: delivery != 'void' keeps a second pass a no-op. The
+	// notice_selected = 1 guard keeps the write inside the schema CHECK (an
+	// unselected row cannot take delivery='void').
+	BatchRerunVoidNodesOfVoidedRoots(ctx context.Context, arg BatchRerunVoidNodesOfVoidedRootsParams) (int64, error)
+	// Roots whose "started" tool-result message was deleted are voided before
+	// their pending/done notice can surface; still-nonterminal rows are returned
+	// so the caller stops their executors only after this transaction commits.
+	BatchRerunVoidRootsByAnnounceMessageIDs(ctx context.Context, arg BatchRerunVoidRootsByAnnounceMessageIDsParams) ([]BatchNode, error)
+	// Legacy arm: roots with no announce message yet (never acked), matched by
+	// the deleted tail's tool_call_id. The IS NULL guard means a root that named
+	// its announce message is never matched by a provider-reused call id.
+	BatchRerunVoidRootsByToolCallIDs(ctx context.Context, arg BatchRerunVoidRootsByToolCallIDsParams) ([]BatchNode, error)
+	// Atomic reset (R10c): the refusal check lives in the same caller
+	// transaction; once it passes, this removes every incarnation of the owner.
+	// Self/parent root FKs and batch_control_requests cascade.
+	BatchResetDeleteOwnerNodes(ctx context.Context, ownerSessionID string) (int64, error)
+	// Count and purge both consume this exact whole-root predicate.
+	BatchRetentionRoots(ctx context.Context, cutoff int64) ([]BatchNode, error)
+	// Acquire write ownership before evaluating retention; no history is deleted.
+	BatchRetentionWriter(ctx context.Context) error
 	// `sessions reset` (R8A-3 sibling): no active schedule may survive a wiped
 	// history. Done/cancelled rows are history and stay.
 	CancelAllWakeSchedulesForOwner(ctx context.Context, arg CancelAllWakeSchedulesForOwnerParams) (int64, error)
@@ -139,6 +240,9 @@ type Querier interface {
 	// computed over a fraction of it.
 	CountMessagesMissingUsageInRange(ctx context.Context, arg CountMessagesMissingUsageInRangeParams) (int64, error)
 	CountSessionNoticesOlderThan(ctx context.Context, updatedAt int64) (int64, error)
+	// The FK binds the request to the node's owner, host and root incarnation;
+	// runner_id copies the owning node's incarnation so answers are fenced.
+	CreateBatchControlRequest(ctx context.Context, arg CreateBatchControlRequestParams) (BatchControlRequest, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	// pending_injects is the cross-process inject queue for `rush sessions
@@ -179,6 +283,30 @@ type Querier interface {
 	// table's own column needs only ONE real parameter and sidesteps the bug
 	// entirely.
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
+	// Host-row deletion guard, re-pointed from jobs to nodes. OLD semantics
+	// (DeleteAsyncHostIfNoJobs in async_jobs.sql) deleted the host row only when
+	// ZERO async_jobs rows of ANY state referenced it -- terminal/delivered rows
+	// still counted, exactly like running ones, until a separate retention pass
+	// purged them.
+	//
+	// NEW semantics (requested R12-D change, the batch-world equivalent of "no
+	// live nodes owned by the host"): the host row is deleted only when the host
+	// owns ZERO LIVE batch_nodes rows (state in the live set
+	// pending/starting/running/cancelling). Terminal node history alone does NOT
+	// retain the host row -- a deliberate, requested semantic change from the
+	// old all-states rule. The batch retention pass (DeleteBatchSubtree and
+	// friends) is what eventually clears terminal history; after it removes the
+	// last row, this guard can reap the host row. The live-set constants match
+	// idx_batch_nodes_host_live's partial index WHERE clause.
+	//
+	// The subquery is correlated against async_hosts.id (not a second bound
+	// parameter), same sqlc-SQLite-plugin workaround as DeleteAsyncHostIfNoJobs:
+	// correlating on the outer table's own column needs only ONE real parameter
+	// and sidesteps the repeated-placeholder rewrite bug (confirmed against
+	// sqlc v1.30.0, see the async_jobs.sql comment).
+	DeleteAsyncHostIfNoNodes(ctx context.Context, id string) (int64, error)
+	// Same-incarnation parent/root FKs cascade descendants and controls.
+	DeleteBatchSubtree(ctx context.Context, arg DeleteBatchSubtreeParams) (int64, error)
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMessage(ctx context.Context, id string) error
 	// task #595 (P1-1 of the 2026-08-19 static follow-up review): plain
@@ -282,6 +410,7 @@ type Querier interface {
 	// Same lease-keyed CAS as CompleteOnceWakeSchedule.
 	FinishLoopWakeSchedule(ctx context.Context, arg FinishLoopWakeScheduleParams) (int64, error)
 	GetAsyncHost(ctx context.Context, id string) (AsyncHost, error)
+	GetAsyncHostRow(ctx context.Context, id string) (AsyncHost, error)
 	GetAsyncJob(ctx context.Context, arg GetAsyncJobParams) (AsyncJob, error)
 	// Debt-snapshot row lookup (R2A-4): a snapshot names a row by its claim_id,
 	// which survives the archive-on-reuse rename of tool_call_id -- a lookup by
@@ -290,6 +419,14 @@ type Querier interface {
 	// identity of its own, so those keep matching by tool_call_id too.
 	GetAsyncJobByClaimID(ctx context.Context, arg GetAsyncJobByClaimIDParams) (AsyncJob, error)
 	GetAverageResponseTime(ctx context.Context) (int64, error)
+	GetBatchControlRequest(ctx context.Context, arg GetBatchControlRequestParams) (BatchControlRequest, error)
+	GetBatchNode(ctx context.Context, arg GetBatchNodeParams) (BatchNode, error)
+	GetBatchRoot(ctx context.Context, arg GetBatchRootParams) (BatchNode, error)
+	// Queries for the R11B CommitHook adapter and Runner incarnation fencing.
+	// New queries only; shared node/control statements stay in their own files.
+	// Resolve the owner of any projected root, including roots this Runner only
+	// touches through admission; the caller fences host and incarnation itself.
+	GetBatchRootIdentity(ctx context.Context, rootID string) (GetBatchRootIdentityRow, error)
 	// call_tree_activity.sql: freshest message activity across a session's whole
 	// descendant call tree (root + every sub-agent session reachable via
 	// parent_session_id), in ONE recursive-CTE query per root.
@@ -319,6 +456,8 @@ type Querier interface {
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
 	GetFileRead(ctx context.Context, arg GetFileReadParams) (ReadFile, error)
 	GetHourDayHeatmap(ctx context.Context) ([]GetHourDayHeatmapRow, error)
+	// Hash comparison belongs to the caller; mismatches must not start new work.
+	GetLiveBatchRoot(ctx context.Context, arg GetLiveBatchRootParams) (BatchNode, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	// Get the oldest pending entry for a session (for transactional lease).
 	GetOldestPendingRunQueueEntryForSession(ctx context.Context, sessionID string) (SessionRunQueue, error)
@@ -449,6 +588,8 @@ type Querier interface {
 	// rowid is the tie-breaker: see ListUserMessagesBySession above - identical
 	// reasoning applies across all sessions, not just one.
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// Test/diagnostic reader, job-independent twin of ListAsyncHosts.
+	ListAsyncHostRows(ctx context.Context) ([]AsyncHost, error)
 	// Test/diagnostic reader: no production caller, no `sessions hosts` command.
 	// `label` is the registrant's App label ("app" at both NewAsyncJobStore call
 	// sites), display-only bookkeeping.
@@ -457,8 +598,15 @@ type Querier interface {
 	// async_jobs rows of ANY state. Caller still must verify the lock file
 	// itself is gone/dead before treating a host as reapable.
 	ListAsyncHostsWithNoJobs(ctx context.Context) ([]AsyncHost, error)
+	// Retention candidates, nodes-based twin of ListAsyncHostsWithNoJobs (doc
+	// sec.3.7): host rows owning zero LIVE batch_nodes rows (same live-set rule
+	// as DeleteAsyncHostIfNoNodes above). Caller still must verify the lock file
+	// itself is gone/dead before treating a host as reapable.
+	ListAsyncHostsWithNoNodes(ctx context.Context) ([]AsyncHost, error)
 	// Reader for `sessions jobs`/`sessions why`.
 	ListAsyncJobsForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
+	ListBatchChildren(ctx context.Context, arg ListBatchChildrenParams) ([]BatchNode, error)
+	ListBatchNodes(ctx context.Context, arg ListBatchNodesParams) ([]BatchNode, error)
 	// task #774: startup recovery (app.recoverInterruptedTurns) used to call
 	// Sessions.ListAll then, for EVERY session, Messages.List (the full message
 	// history) just to find the last assistant message. Measured on a real dev
@@ -525,6 +673,8 @@ type Querier interface {
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
+	ListLiveBatchRootsForHost(ctx context.Context, hostID string) ([]BatchNode, error)
+	ListLiveBatchRootsForOwner(ctx context.Context, ownerSessionID string) ([]BatchNode, error)
 	// rowid is the tie-breaker: created_at is stored in SECONDS, so a single agent
 	// turn produces dozens of rows with an identical created_at. Without a total
 	// order SQLite does not guarantee a stable order among those ties. This is the
@@ -583,6 +733,7 @@ type Querier interface {
 	// Candidates for the drain's pull (doc sec.3.3): announced=1 is required --
 	// an unannounced job never produces a notice (DUR-7).
 	ListPendingAsyncJobNoticesForOwner(ctx context.Context, ownerSessionID string) ([]AsyncJob, error)
+	ListPendingBatchControlRequests(ctx context.Context, arg ListPendingBatchControlRequestsParams) ([]BatchControlRequest, error)
 	ListPendingInjectsBySession(ctx context.Context, sessionID string) ([]PendingInject, error)
 	// Get all pending outbox entries for recovery (scanned by pump).
 	ListPendingOrphanOutboxEntries(ctx context.Context) ([]OrphanCallOutbox, error)
@@ -697,6 +848,10 @@ type Querier interface {
 	// must not make an active schedule vanish from the timer, and must not send
 	// a linked process to a due moment it can never claim either.
 	NextDueWakeScheduleAt(ctx context.Context, arg NextDueWakeScheduleAtParams) (interface{}, error)
+	// Projects the loop's accepted view, not a competing terminal-state decision.
+	// COALESCE preserves envelope, reference and child-session facts written by
+	// earlier events; the caller passes NULL to keep the current value.
+	ProjectBatchNode(ctx context.Context, arg ProjectBatchNodeParams) (int64, error)
 	// The pull UPDATE...RETURNING (doc sec.3.3): one transaction per notice --
 	// caller does this, then INSERTs the history message, then stores
 	// notice_message_id via SetAsyncJobNoticeMessageID, all in the SAME tx. 0
@@ -752,6 +907,21 @@ type Querier interface {
 	// display-only bookkeeping, created once per process lifetime alongside the
 	// OS lock file. Never consulted to decide liveness.
 	RegisterAsyncHost(ctx context.Context, arg RegisterAsyncHostParams) (AsyncHost, error)
+	// RETAINED host queries (package R12-D chunk 1): host-only bookkeeping,
+	// job-independent. async_jobs lives in async_jobs.sql and is dropped by a
+	// later package (R12-H); these are the NEW-name equivalents of that file's
+	// host section (RegisterAsyncHost/GetAsyncHost/ListAsyncHosts/
+	// DeleteAsyncHostIfNoJobs/ListAsyncHostsWithNoJobs), re-pointed at
+	// batch_nodes so the retained host lifecycle outlives the job table.
+	//
+	// Naming: the *Row/*s suffixes mark "host row readers/writers" and keep the
+	// generated method names distinct from the async_jobs.sql originals -- both
+	// sets are generated onto the same db.Queries struct.
+	// Same lazy-registration shape as async_jobs.sql's RegisterAsyncHost (doc
+	// sec.3.6): the host row is display-only bookkeeping, created once per
+	// process lifetime alongside the OS lock file. Never consulted to decide
+	// liveness.
+	RegisterAsyncHostRow(ctx context.Context, arg RegisterAsyncHostRowParams) (AsyncHost, error)
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
 	// Extend a lease expiry while its owner is still genuinely working on it,
 	// or to back off a lease without counting a failed attempt. Scoped to
@@ -808,6 +978,10 @@ type Querier interface {
 	// one. Runs in the archive's own transaction, before the fresh claim
 	// inserts, so every notice matching the old text belongs to the old row.
 	RepointSessionNoticesJobToolCallID(ctx context.Context, arg RepointSessionNoticesJobToolCallIDParams) (int64, error)
+	// Reserve every accepted node in one caller-owned transaction before dispatch.
+	ReserveBatchNode(ctx context.Context, arg ReserveBatchNodeParams) (BatchNode, error)
+	// Same transaction as settlement; announcement/history is deferred to R8.
+	SelectBatchNodeNotice(ctx context.Context, arg SelectBatchNodeNoticeParams) (int64, error)
 	// The session_notices half (AsyncReactionDebtExists' second branch; the
 	// table has no announced concept, doc sec.3.2).
 	SessionNoticeDebtOwners(ctx context.Context, ownerIds []string) ([]string, error)
@@ -970,6 +1144,9 @@ type Querier interface {
 	// predicate below is a no-op for them (always matches whatever is already
 	// there) and their pre-A11 "any running row matches" behavior is unchanged.
 	TransitionAsyncJobTerminalPreserveVoid(ctx context.Context, arg TransitionAsyncJobTerminalPreserveVoidParams) (AsyncJob, error)
+	// Rootless lifecycle checkpoint for one (host, incarnation). Lower or equal
+	// sequences are ignored; 0 is never written (Runner sequences start at 1).
+	UpdateBatchRunnerCheckpoint(ctx context.Context, arg UpdateBatchRunnerCheckpointParams) (int64, error)
 	// task #595: was :exec (rows-affected discarded). The terminal write path in
 	// message.Service.Update used to hardcode rowsAffected = 1 for this branch,
 	// which was true for the normal case (the row exists, one row updates) but

@@ -572,6 +572,11 @@ var nestedAgentToolWarnOnce sync.Once
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
 // first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
+	return built.tools, err
+}
+
+func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 	agent = c.applyCallFolderScope(ctx, agent)
@@ -647,7 +652,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		} else {
 			agentTool, err := c.agentTool(ctx)
 			if err != nil {
-				return nil, err
+				return policyToolBuild{}, err
 			}
 			allTools = append(allTools, agentTool)
 		}
@@ -656,7 +661,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := c.agenticFetchTool(ctx, fetchClient(30*time.Second))
 		if err != nil {
-			return nil, err
+			return policyToolBuild{}, err
 		}
 		allTools = append(allTools, agenticFetchTool)
 	}
@@ -775,11 +780,23 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 		}
 	}
 
-	// GetMCPTools reads the live mcp.Tools() registry, not cfg -- see this
-	// function's doc comment for why that is deliberate. agent.AllowedMCP
-	// below IS from the pinned cfg/agent, so the allow-list decision itself
-	// is consistent with the rest of this build; only the candidate tool set
-	// it is applied to can be from a different generation.
+	if batchFlagEnabled() {
+		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
+			for _, name := range batchControlAvailability(filteredTools) {
+				if name == tools.AwaitTasksToolName {
+					for i, tool := range filteredTools {
+						if tool.Info().Name == name {
+							filteredTools[i] = tools.NewBatchAwaitTasksTool(c)
+						}
+					}
+					continue
+				}
+				filteredTools = append(filteredTools, newBatchControlPlaceholder(name))
+			}
+		}
+	}
+
+	// GetMCPTools reads the live MCP tool registry; apply the configured MCP allowlist below.
 	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
@@ -806,28 +823,79 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	filteredTools = c.wrapAsyncTools(filteredTools)
+	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent)
+}
 
+// finishToolAssembly is the final construction boundary. Flag OFF (no batch
+// binding): the historical branch, byte-for-byte — async wrappers, then
+// hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
+// restrictions run once here, then every batch-admissible work tool is
+// re-armed through the ONE authority (batchRuntime.Invoke) and the old
+// async/stall wrappers are NOT installed.
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool) (policyToolBuild, error) {
+	if bind := coordinatorBatchBindingFor(c); bind != nil {
+		allowedControls := batchControlAvailability(filteredTools)
+		filteredTools = withoutBatchControlPlaceholders(filteredTools)
+		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
+		built, err := newBatchWorkToolBuild(bind, filteredTools)
+		if err != nil {
+			return policyToolBuild{}, err
+		}
+		if batchFlagEnabled() && bind.controls != nil {
+			allowed := allowedControls
+			if len(allowed) > 0 {
+				registry, err := bind.ingress.Registry(built.registryID)
+				if err != nil {
+					return policyToolBuild{}, err
+				}
+				inv := BatchInvocation{
+					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
+					BackgroundEscape: batchEscapeNever,
+					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(filteredTools)},
+				}
+				inv.SessionID = tools.GetSessionFromContext(ctx)
+				inv.MessageID = tools.GetMessageFromContext(ctx)
+				inv.CallID = ""
+				inv.Policy.MessageID = inv.MessageID
+				inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
+				inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+				if inv.WaiterRank == 0 {
+					inv.WaiterRank = batchGroupRanks[batchGroupDefault]
+				}
+				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
+				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
+				if opts := callOptionsFrom(ctx); opts != nil && tools.HasDiskProvider(opts.DiskProvider) {
+					return policyToolBuild{}, ErrDiskProviderNotDurable
+				}
+				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
+				if err != nil {
+					return policyToolBuild{}, err
+				}
+				for _, control := range controls {
+					if control.Info().Name == tools.AwaitTasksToolName {
+						continue
+					}
+					if slices.Contains(allowed, control.Info().Name) {
+						built.tools = append(built.tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{control}, restrictedRunAuthorizer(c.permissions)), hookRunner, isSubAgent)[0])
+					}
+				}
+			}
+		}
+		return built, nil
+	}
+	filteredTools = c.wrapAsyncTools(filteredTools)
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
 	// applied outside this wrapper below so PreToolUse runs first.
-	filteredTools = wrapToolsWithRestrictedRun(filteredTools, restrictedRunAuthorizer(c.permissions))
+	filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
 	// Wrap tools with hook interception for the top-level agent only.
 	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
 	// without hook interception to avoid firing the user's hook N times
 	// per delegated turn. The top-level invocation of the sub-agent tool
 	// itself is still wrapped from the coder's side.
-	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
 	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
 	// turn any blocked synchronous Run into an immediate job-id result.
 	filteredTools = wrapToolsWithStallDetach(filteredTools)
-
-	// Error logging is NOT applied here. It used to be, and that was the
-	// bug: this function is only one of the places a tool slice is built,
-	// so agentic_fetch's own tools were never covered. NewSessionAgent and
-	// SetTools wrap instead — every slice reaches the agent through one of
-	// them, and the wrapper still ends up outermost, since what they wrap
-	// is the already-hooked slice returned here. See logged_tool.go.
-	return filteredTools, nil
+	return newPolicyToolBuild(filteredTools), nil
 }

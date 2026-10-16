@@ -262,6 +262,21 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	// notifyWG joins the async-completion wake goroutines, so a caller (a
+	// test, a shutdown) can wait for their last store access.
+	notifyWG sync.WaitGroup
+	// callbackMu fences release/notification registration against shutdown Wait.
+	// The context is lazy so bare coordinator fixtures retain the same lifecycle.
+	callbackMu      sync.Mutex
+	callbackClosing bool
+	callbackCtx     context.Context
+	callbackCancel  context.CancelFunc
+	releaseWG       sync.WaitGroup
+	// Signal-only lifecycle seams; nil in production, installed before use.
+	releaseCallbackHook   func(context.Context)
+	notifyCallbackHook    func(context.Context)
+	callbackAfterWaitHook func()
+	callbackJoinTimeout   func() <-chan time.Time
 	// asyncJobs is the single in-memory work ledger: plain async jobs
 	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
 	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.
@@ -271,6 +286,11 @@ type coordinator struct {
 	// second SessionAgent for its OS session lock. See
 	// coordinator_subagent_drivers.go.
 	subAgentDrivers *subAgentDriverRegistry
+
+	// batchDriverClaimer overrides asyncJobs.store as the durable
+	// session-driver-marker store (flag-ON: session.HostStore); nil keeps
+	// the legacy path. See batch_cutover_driver.go.
+	batchDriverClaimer BatchDriverClaimer
 
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via

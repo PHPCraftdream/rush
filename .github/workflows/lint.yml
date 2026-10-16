@@ -103,3 +103,6 @@ jobs:
       - name: oxlint
         working-directory: web
         run: pnpm lint
+      - name: web unit tests (node --test)
+        working-directory: web
+        run: node --test src/*.test.ts

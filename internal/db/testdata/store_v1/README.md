@@ -1,0 +1,1 @@
+`ListNewFiles` (internal/db/sql/files.sql) queries a nonexistent `files.is_new` column and has no production or test caller. It is left in place in H3 because CI regenerates sqlc output and fails on drift; H4 removes the query together with the regenerated DB files as part of the dependency-closed sqlc update.

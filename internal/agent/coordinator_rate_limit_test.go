@@ -241,17 +241,24 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 // makes the wait run to completion and this test goes red.
 func TestRunInternal_RateLimitWaitContextDeadline(t *testing.T) {
 	shrinkRateLimitVars(t, time.Minute, time.Minute, time.Hour, 10*time.Millisecond, time.Millisecond)
-	// The deadline starts at the first provider call: a cold setup slower
-	// than the deadline would otherwise expire it before the wait begins.
+	// Cancel at the wait notification, after retry evidence has been read.
+	// Cancelling in the provider can instead abort those DB reads and return
+	// the original 429 without ever entering waitRateLimit.
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	_, calls, _, err := rateLimitLoopRun(t, ctx, "test-rl-ctx-deadline", nil,
+	waits := 0
+	_, calls, _, err := rateLimitLoopRunWith(t, ctx, "test-rl-ctx-deadline", nil,
+		func(c *coordinator) {
+			c.SetRateLimitNotify(func(_ string, _ time.Time, attempt int) {
+				waits++
+				require.Equal(t, 1, attempt)
+				cancel()
+			})
+		},
 		func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			if n == 0 {
-				time.AfterFunc(300*time.Millisecond, cancel)
-			}
-			return rateLimitErrorAttempt(t, env, sess, context.WithoutCancel(callCtx), call, rateLimit429Err())
+			return rateLimitErrorAttempt(t, env, sess, callCtx, call, rateLimit429Err())
 		})
+	require.Equal(t, 1, waits, "the rate-limit wait must actually be reached")
 	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, 1, calls)
 }

@@ -25,6 +25,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -91,6 +92,18 @@ type jobsJSONItem struct {
 	ResultSummary  string `json:"result_summary,omitempty"`
 	ResultIsError  bool   `json:"result_is_error,omitempty"`
 	Hint           string `json:"hint,omitempty"`
+	// Batch read fields (R12-B, flag ON only): additive, zero on the legacy
+	// path so the flag-OFF wire shape stays byte-identical.
+	BatchRootID              string `json:"batch_root_id,omitempty"`
+	BatchHeld                bool   `json:"batch_held,omitempty"`
+	BatchCancelling          bool   `json:"batch_cancelling,omitempty"`
+	BatchAwaitingTermination bool   `json:"batch_awaiting_termination,omitempty"`
+	BatchAwaitingAnswer      bool   `json:"batch_awaiting_answer,omitempty"`
+	BatchDebt                int64  `json:"batch_debt,omitempty"`
+	BatchTasksPending        int    `json:"batch_tasks_pending,omitempty"`
+	BatchTasksActive         int    `json:"batch_tasks_active,omitempty"`
+	BatchTasksDone           int    `json:"batch_tasks_done,omitempty"`
+	BatchUnknown             bool   `json:"batch_unknown,omitempty"`
 }
 
 func sessionsJobsCmdRun(cmd *cobra.Command, args []string) error {
@@ -105,6 +118,13 @@ func sessionsJobsCmdRun(cmd *cobra.Command, args []string) error {
 	sess, err := resolveSessionID(cmd.Context(), a.Sessions, args[0])
 	if err != nil {
 		return err
+	}
+
+	// R12-B: with the batch runtime on, the batch node rows are the
+	// authority; read them through the session read APIs instead of the
+	// legacy async_jobs ledger. Flag off: the legacy path below is unchanged.
+	if config.BatchRuntimeEnabled() {
+		return renderSessionsJobsBatch(cmd.Context(), a, a.Config().Options.DataDirectory, sess.ID, asJSON)
 	}
 
 	store := a.AsyncJobStore()
