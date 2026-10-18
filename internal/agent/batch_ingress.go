@@ -116,13 +116,33 @@ func (r *batchRuntime) invokeFresh(ctx context.Context, inv BatchInvocation, spe
 	if err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("batch attach: %w", err)
 	}
+	if attached && inv.Policy.DiskBindingID != "" {
+		if r.cfg.RootLeases == nil || !r.cfg.RootLeases.matches(root, inv.Policy.DiskBindingID, inv.RegistryID) {
+			return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
+		}
+	}
 	if !attached {
 		root, err = r.submit(ctx, inv, spec, hash, callID)
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
 	}
-	return r.cfg.Delivery.DeliverBatch(ctx, root, inv)
+	resp, err := r.cfg.Delivery.DeliverBatch(ctx, root, inv)
+	// Accepted physical work cannot be preempted by caller cancellation
+	// (R12-H2 §1.2: physical I/O Stop cannot preempt). The first caller's
+	// cancellation Stops the root once (deliverSync) and returns its ctx
+	// error, but the call's owner scope must NOT unwind beneath the still
+	// executing root: re-wait WITHOUT the caller's cancellation for the
+	// root's real completion, so the call/construction owners are released
+	// only after the physical settle — never by a waiter leaving early.
+	if err != nil && ctx.Err() != nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		resp, err = r.cfg.Delivery.DeliverBatch(context.WithoutCancel(ctx), root, inv)
+	}
+	// Settled roots stay RETAINED by the engine by design (design §1.2): no
+	// per-call release happens here — execution owners release only at
+	// physical Dispose (Runner.Release/cleanup).
+	return resp, err
 }
 
 // submit admits and starts the one-item root. Admission (ValidateSubmit) runs
@@ -133,12 +153,63 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	if err := ValidateSubmit(r.cfg.Profile, waiter, nil, spec, r.cfg.MaxDepth, r.cfg.MaxNodes, r.cfg.Resolver); err != nil {
 		return "", fmt.Errorf("%w: %w", errBatchSubmitBeforeInvalid, err)
 	}
-	id, err := r.cfg.Runner.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: callID})
+	// Root owner: acquired BEFORE Submit with the already-minted root ID;
+	// it covers accepted-but-not-started children. Released on definite
+	// rejection below; a successful Submit keeps it and the Done watcher
+	// releases it when no further child can start.
+	rootOwned := false
+	if inv.RegistryID != "" {
+		if r.cfg.RootLeases == nil {
+			return "", ErrDiskProviderUnavailable
+		}
+		if err := r.cfg.RootLeases.acquire(root, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
+			return "", err
+		}
+		rootOwned = true
+	}
+	releaseRoot := func() {
+		if rootOwned {
+			r.cfg.RootLeases.release(root, inv.Policy.DiskBindingID, inv.RegistryID)
+		}
+	}
+	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: callID}
+	var id jobbatch.ID
+	var batch *jobbatch.Batch
+	var err error
+	if rootOwned {
+		bound, ok := r.cfg.Runner.(batchBoundRunnerHandle)
+		if !ok {
+			releaseRoot()
+			return "", ErrDiskProviderUnavailable
+		}
+		id, batch, err = bound.SubmitBound(ctx, request)
+	} else {
+		id, err = r.cfg.Runner.Submit(ctx, request)
+	}
 	if err != nil {
+		releaseRoot()
 		return "", fmt.Errorf("batch submit: %w", err)
 	}
 	if id != root {
+		releaseRoot()
 		return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", id, root)
+	}
+	if rootOwned {
+		if batch == nil {
+			releaseRoot()
+			return "", ErrDiskProviderUnavailable
+		}
+		if batch.ID() != root {
+			releaseRoot()
+			return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", batch.ID(), root)
+		}
+		release, ok := r.cfg.Runner.(batchReleaseHandle)
+		if !ok {
+			return "", ErrDiskProviderUnavailable
+		}
+		if err := r.cfg.RootLeases.adopt(root, batch.Done(), inv.Policy.DiskBindingID, inv.RegistryID, release.Release); err != nil {
+			return "", err
+		}
 	}
 	_ = hash // The commit hook reserves (root, callID, hash) atomically in R11B.
 	return root, nil

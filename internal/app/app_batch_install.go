@@ -32,7 +32,10 @@ const appBatchDrainTimeout = 5 * time.Second
 // in production; production code must never set it.
 var batchRuntimeConfigHook func(*BatchRuntimeConfig)
 
-// installBatchRuntime builds the batch runtime from App-owned resources and
+// batchInstallDepsHook is a test-only, per-install dependency decorator.
+// Nil in production; tests restore it immediately after New returns.
+var batchInstallDepsHook func(*agent.BatchInstallDeps)
+
 // arms its fault watcher. It fails closed: any missing resource surfaces as
 // a New error — the process never silently continues with a half-installed
 // runtime. Caller must have checked the flag and non-nil asyncJobStore.
@@ -57,7 +60,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	factory, err := newBatchRuntimeFactory(app, agent.BatchInstallDeps{
+	deps := agent.BatchInstallDeps{
 		// R11F round-2 (P1-1) decision — delivery ownership: the install
 		// carries NO fixed owner. Owner=host was an FK violation on the
 		// first Submit (batch_nodes.owner_session_id REFERENCES
@@ -67,11 +70,12 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		// and elections fence by the invocation's session
 		// (batchDeliveryImpl.owner); Host stays ONLY the fence identity.
 		Host: host, RunnerID: uuid.NewString(),
-		// R11F (M3) coordinator seams — AgentDeps (with the P1-5b
-		// store-backed descendant reader) and the non-reentrant MCP resolver
-		// are wired by the factory defaults above, so the reader is built
-		// from the App's own writer pool and data directory.
-	})
+		DiskBindings: agent.NewDiskProviderRegistry(),
+	}
+	if batchInstallDepsHook != nil {
+		batchInstallDepsHook(&deps)
+	}
+	factory, err := newBatchRuntimeFactory(app, deps)
 	if err != nil {
 		return err
 	}
@@ -91,11 +95,14 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	// R11F (M3): the exported one-authority ingress seam over the installed
 	// runtime; InitCoderAgent binds it to the coordinator.
-	app.batchWorkIngress, err = agent.NewBatchWorkIngress(install.Runtime, factory.deps.Registries)
+	app.batchWorkIngress, err = agent.NewBatchWorkIngressWithDiskBindings(install.Runtime, factory.deps.Registries, install.DiskBindings)
 	if err != nil {
 		return err
 	}
-	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver)
+	// R12-H2 P1-2/P1-4: bind the ingress into the runtime so batchLeafEnv
+	// carries it — without this, provider-bound delegation fails closed.
+	agent.BindRuntimeIngress(install.Runtime, app.batchWorkIngress)
+	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver, install.RootLeases)
 	app.batchLiveReader = factory.live
 	// Wire the R11E release seams onto the gate BEFORE the watcher starts:
 	// RetainHostIdentity mirrors the flag-off forced path's CloseKeepLock,
@@ -106,12 +113,23 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		// pins the OS lock, Close deletes via DeleteAsyncHostIfNoNodes,
 		// never async_jobs.
 		rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
-		rt.cfg.ReleaseHostIdentity = app.batchHostRelease
+		rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
+			// R12-H2 §1.3: residual construction scopes close AFTER the
+			// disposal drain and BEFORE host/writer release (the gate's
+			// release order is host, then writer). Forced shutdown and the
+			// fault fence never reach this seam, so the manager's remaining
+			// owners are retained until process exit.
+			app.drainResidualConstructions()
+			return app.batchHostRelease(ctx)
+		}
 	} else {
 		rt.cfg.RetainHostIdentity = app.asyncJobStore.CloseKeepLock
-		rt.cfg.ReleaseHostIdentity = app.asyncJobStore.Close
+		rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
+			app.drainResidualConstructions()
+			return app.asyncJobStore.Close(ctx)
+		}
 	}
-	rt.cfg.ReleaseWriter = func(context.Context) error {
+	rt.cfg.ReleaseWriter = func(ctx context.Context) error {
 		return app.releaseBatchWriter()
 	}
 	if batchRuntimeConfigHook != nil {
@@ -124,6 +142,16 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	rt.Start()
 	slog.Info("app: batch runtime installed", "host", host)
 	return nil
+}
+
+// drainResidualConstructions closes residual construction scopes on the
+// graceful path only: construction records whose only remaining owners are
+// their Construction pins are dropped (R12-H2 §1.3) — the forced path never
+// calls this, retaining the manager and its owners until process exit.
+func (app *App) drainResidualConstructions() {
+	if app.batchInstall != nil {
+		app.batchInstall.DrainDiskBindings()
+	}
 }
 
 // releaseBatchWriter releases this App's pooled DB references exactly like

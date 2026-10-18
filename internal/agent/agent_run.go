@@ -616,6 +616,11 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// acquired once above instead of re-acquiring them. runCtx (not the
 	// original ctx) is passed through so runCancel — registered as the
 	// busy slot's CancelFunc — actually reaches every turn's genCtx.
+	// R12-H2a round 2: the Run's FIRST call's build scope is closed by the
+	// entry-point defers; any call this loop POPS from the mailbox drain (a
+	// queued `next` or an interrupt replacement) carries its OWN scope,
+	// closed at that turn's end below.
+	originCallOpts := call.CallOptions
 	for {
 		// Test-only seam (#289): fires strictly after any end-of-turn drain
 		// has already released mb.mu and strictly before this iteration's
@@ -704,6 +709,17 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		att := a.newDrainAttempt(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
+		// R12-H2a round 2: a popped replacement/queued call carries its OWN
+		// build-resource scope; close it when this turn finishes so its
+		// constructions release with the turn that used them (the durable
+		// path already does this in RunSessionAgentCall). Pointer identity
+		// against the Run's first call guarantees that call's scope is never
+		// closed early here.
+		if call.CallOptions != nil && call.CallOptions != originCallOpts && call.onQueueResolved == nil {
+			if sc := call.CallOptions.buildScope; sc != nil {
+				sc.close()
+			}
+		}
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}

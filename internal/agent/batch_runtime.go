@@ -22,7 +22,14 @@ type batchRunnerHandle interface {
 	Stop(ctx context.Context, id jobbatch.ID) error
 }
 
-// batchModelRunner is the optional control-plane view over the same Runner.
+type batchBoundRunnerHandle interface {
+	SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error)
+}
+
+type batchReleaseHandle interface {
+	Release(context.Context, jobbatch.ID) error
+}
+
 type batchModelRunner interface {
 	Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error)
 	Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error)
@@ -77,6 +84,16 @@ type batchRuntimeConfig struct {
 	Delivery batchDelivery
 	// Runner is the engine handle; nil until R11F binds it.
 	Runner batchRunnerHandle
+	// DiskBindings supplies validated process-bound providers to the executor.
+	DiskBindings *DiskProviderRegistry
+	// Ingress is the App-owned BatchWorkIngress carried into every leaf env
+	// (R12-H2 P1-4) so the agent family driver resolves pinned leaves
+	// through the invocation's own authority instead of the process-global
+	// binding. Optional; bound after construction via setIngress (safe:
+	// called before the runtime ever Invokes, and guarded by the mutex).
+	Ingress       BatchWorkIngress
+	RootLeases    *batchRootLeaseStore
+	RegistryCount func() int
 	// MaxDepth and MaxNodes are the admission budgets; zero selects the
 	// defaults below.
 	MaxDepth, MaxNodes int
@@ -150,14 +167,41 @@ func (r *batchRuntime) bindRunner(runner batchRunnerHandle) error {
 	return nil
 }
 
+// setIngress binds the App-owned ingress (R12-H2 P1-4). Mutex-guarded, so
+// it is safe even after Start, though production wiring calls it during
+// install, before the runtime ever Invokes.
+func (r *batchRuntime) setIngress(ingress BatchWorkIngress) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg.Ingress = ingress
+}
+
+// ingress reads the App-owned ingress under the same mutex as setIngress,
+// so a LeafEnv built before BindRuntimeIngress still sees the binding
+// lazily at invocation time.
+func (r *batchRuntime) ingress() BatchWorkIngress {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg.Ingress
+}
+
 // LeafEnv builds the executor environment whose leaf resolution is keyed by
 // the payload's pinned registry identity (batchLeafLookupID), never by
 // session, closing the section-3 collision gap.
 func (r *batchRuntime) LeafEnv() batchLeafEnv {
-	return batchLeafEnv{Leaves: r.cfg.Leaves}
+	return batchLeafEnv{Leaves: r.cfg.Leaves, DiskBindings: r.cfg.DiskBindings, Ingress: r.ingress}
 }
 
-// batchRootID mints a fresh caller-supplied root identity.
+func (r *batchRuntime) RegistryCount() int {
+	if r == nil {
+		return 0
+	}
+	if r.cfg.RegistryCount == nil {
+		return -1
+	}
+	return r.cfg.RegistryCount()
+}
+
 func batchRootID() jobbatch.ID { return jobbatch.ID(uuid.NewString()) }
 
 // finishCall removes the in-flight entry — singleflight deduplicates only

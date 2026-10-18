@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -21,8 +22,10 @@ type batchAgentRunRequest struct {
 	Input      json.RawMessage
 	// R11F (M3): the invocation's pinned registry identity (leaf resolution
 	// through the ingress) and enclosing message id (child-session creation).
-	RegistryID string
-	MessageID  string
+	RegistryID    string
+	MessageID     string
+	DiskBindingID string
+	Policy        *batchLeafPolicyContext
 	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
 	// Dispatch resolves the pinned leaf by this name and names the call
 	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
@@ -30,6 +33,11 @@ type batchAgentRunRequest struct {
 	Tool            string
 	ChildSessionID  string
 	NoChildSelected bool
+	// R12-H2 P1-4: the App-owned ingress carried in the leaf env, so the
+	// driver resolves the pinned leaf through THIS invocation's authority —
+	// never the process-global binding. Nil keeps the driver's flag-off
+	// fallback (tests), except on the provider path where it fails closed.
+	Ingress BatchWorkIngress
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
@@ -96,7 +104,16 @@ func newBatchAgentFamily(deps batchAgentDeps) batchLeafFamily {
 
 var _ batchLeafFamily = batchAgentFamily{}
 
-func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+// callIngress resolves the env's lazy ingress nil-safely: non-agent-family
+// envs may carry no Ingress at all.
+func callIngress(env batchLeafEnv) BatchWorkIngress {
+	if env.Ingress == nil {
+		return nil
+	}
+	return env.Ingress()
+}
+
+func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -105,14 +122,17 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 		messageID = p.Policy.MessageID
 	}
 	req := batchAgentRunRequest{
-		NodeID:     l.ID,
-		Token:      l.Token,
-		SessionID:  p.SessionID,
-		ToolCallID: p.ToolCallID,
-		Input:      p.Input,
-		RegistryID: p.RegistryID,
-		MessageID:  messageID,
-		Tool:       p.Tool,
+		NodeID: l.ID, Token: l.Token, SessionID: p.SessionID,
+		ToolCallID: p.ToolCallID, Input: p.Input,
+		RegistryID: p.RegistryID, MessageID: messageID,
+		DiskBindingID: func() string {
+			if p.Policy != nil {
+				return p.Policy.DiskBindingID
+			}
+			return ""
+		}(),
+		Policy: p.Policy, Tool: p.Tool,
+		Ingress: callIngress(env),
 	}
 	e := &batchAgentExecution{
 		deps:        f.deps,
@@ -124,6 +144,26 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
+	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
+		cancel()
+		return nil, ErrDiskProviderUnavailable
+	}
+	// R12-H2 P1-4: carry the App-owned binding registry into the driver so
+	// WithCallOptions/diskBinding and any re-registration resolve
+	// through the SAME instance (never a process global). env.DiskBindings
+	// is injected by the runtime's LeafEnv.
+	runCtx = withDiskProviderRegistry(runCtx, env.DiskBindings)
+	if p.diskProvider != nil && p.Policy != nil {
+		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
+		// R12-H2 P1-4: stamp the provider the way generic leaves do
+		// (batchLeafRunContext), so batchDiskProviderFrom(runCtx) works in
+		// the driver. NOT batchLeafRunContext — it would re-stamp
+		// session/message, which the agent family sets below.
+		runCtx = context.WithValue(runCtx, batchDiskProviderContextKey{}, p.diskProvider)
+	}
+	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
+	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
+	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: p.RegistryID, MessageID: messageID})
 	turn, err := e.launch(runCtx)
 	if err != nil {
 		cancel()
@@ -367,7 +407,10 @@ func (e *batchAgentExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 }
 
 // Dispose waits for the late kill (driver exit) and the watcher, then
-// releases the generation state: the question channel and retained output.
+// releases generation state. It deliberately does NOT release the
+// execution owner: the interface-preserving physical-Dispose wrapper
+// (batch_exec_binding.go) is the ONLY execution-owner releaser, and only
+// after this disposal — including the child-driver exit drain — succeeded.
 func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-e.finished:

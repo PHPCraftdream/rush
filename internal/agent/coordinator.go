@@ -297,6 +297,13 @@ type coordinator struct {
 	// SetWakeScheduleStore from internal/app; nil until then.
 	wakeScheduler *wakeScheduler
 
+	// sharedBuildScopeMu/sharedBuildScope guard the coordinator-level build
+	// scope for tool assemblies WITHOUT trusted call state (the shared
+	// session toolset). Per-call builds always use the call's own scope;
+	// this one is never used for a custom-provider construction.
+	sharedBuildScopeMu sync.Mutex
+	sharedBuildScope   *buildResourceScope
+
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
 	mcpOwner *mcp.Owner
@@ -526,6 +533,14 @@ func NewCoordinator(
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// R12-H2a round 2: resolution builds this call's toolset into the
+	// trusted call state's build-resource scope before runInternal runs, so
+	// every return from here — resolution failure included — must release
+	// it. Close is idempotent; runInternal's own defer double-closes
+	// harmlessly.
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}

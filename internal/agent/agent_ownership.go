@@ -482,7 +482,11 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			if callCarriesDiskProvider(call) {
 				slog.Error("agent: refusing to durably enqueue a call carrying a caller-supplied disk provider",
 					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
-				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+				if call.CallOptions.DiskBindingID != "" {
+					callErrs[i] = fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued (session=%s)", ErrDiskProviderUnavailable, call.SessionID)
+				} else {
+					callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+				}
 				return
 			}
 			if call.Credentials != nil {

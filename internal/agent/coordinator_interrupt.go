@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
@@ -348,6 +349,14 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	} else {
 		// An idle session has no active policy snapshot. Resolve a fresh call
 		// from the tick context, as the normal detached path does.
+		// An independently owned scope is needed only while building the durable
+		// record. No live tool registry crosses serialization, so it is released
+		// on every exit after the scope is created.
+		if callOptionsFrom(ctx) != nil {
+			ownedCtx, ownedScope := ownDeferredCallScope(ctx)
+			ctx = ownedCtx
+			defer ownedScope.close()
+		}
 		pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
 		if resolveErr != nil {
 			return false, fmt.Errorf("failed to resolve session models for interrupt tick: %w", resolveErr)
@@ -366,8 +375,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// would durably enqueue a row that a restart could only replay onto
 	// the REAL disk.
 	if callCarriesDiskProvider(call) {
-		slog.Error("coordinator: refusing to durably enqueue an interrupt-inject call carrying a caller-supplied disk provider",
-			"session_id", sessionID, "logical_call_id", call.LogicalCallID)
+		if call.CallOptions.DiskBindingID != "" {
+			return false, fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued", ErrDiskProviderUnavailable)
+		}
 		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
 	}
 
@@ -526,6 +536,15 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err := c.readyWg.Wait(); err != nil {
 		return err
 	}
+	var scopeTransferred bool
+	ctx, ownedScope := ownDeferredCallScope(ctx)
+	if ownedScope != nil {
+		defer func() {
+			if !scopeTransferred {
+				ownedScope.close()
+			}
+		}()
+	}
 	var pinned *resolvedOverrides
 	if smart != nil || fast != nil {
 		resolved, applyErr := c.applyModelOverrides(ctx, smart, fast)
@@ -547,6 +566,11 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err != nil {
 		return err
 	}
+	if ownedScope != nil {
+		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+	}
+	// The owned scope was established before resolution and is carried through
+	// buildCall; do not replace it with a fresh, empty scope here.
 	// InterruptAndReplace atomically records call as the replacement the
 	// current owner runs next and cancels only the in-flight generation
 	// (design §4) — replacing the QueueMessage+Cancel two-step that P0-2
@@ -558,6 +582,8 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 		if err := c.startDetachedRun(ctx, call); err != nil {
 			return fmt.Errorf("failed to enqueue interrupt for idle session %s: %w", sessionID, err)
 		}
+	} else {
+		scopeTransferred = true
 	}
 	return nil
 }

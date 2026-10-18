@@ -127,7 +127,8 @@ func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbat
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
 		Executor: executor,
 		Profile:  profile, Registries: registries,
-		Store: session.NewBatchStore(conn), Messages: message.NewService(q), Sessions: session.NewService(q, conn),
+		DiskBindings: NewDiskProviderRegistry(),
+		Store:        session.NewBatchStore(conn), Messages: message.NewService(q), Sessions: session.NewService(q, conn),
 		// Round-2 P1-7 item 6: NewRunner fails closed on zero limits.
 		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
@@ -140,6 +141,10 @@ func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbat
 		t.Fatalf("InstallBatchRuntime: %v", err)
 	}
 	t.Cleanup(func() { _ = install.Runner.Close(context.Background()) })
+	// R12-H2 §1.2: the executor's Execution owner (and the root lease) name
+	// the pinned registry's construction record; hold its Construction owner
+	// for the env lifetime exactly as the real call/build scope would.
+	pinTestConstruction(t, install.DiskBindings, registryID)
 	return &batchInventoryEnv{
 		t: t, conn: conn, store: session.NewBatchStore(conn), q: q,
 		sessionID: sessionID, install: install, registries: registries,
@@ -155,7 +160,7 @@ func inventoryBindProcess(t *testing.T, env *batchInventoryEnv) {
 	if err != nil {
 		t.Fatalf("ingress: %v", err)
 	}
-	setProcessBatchBindingForTest(t, &batchCoordinatorBinding{ingress: ingress})
+	setProcessBatchBindingForTest(t, &batchCoordinatorBinding{ingress: ingress, diskBindings: env.install.DiskBindings})
 }
 
 // inventoryAgentDeps wires the R7c coordinator agent-family seams with a

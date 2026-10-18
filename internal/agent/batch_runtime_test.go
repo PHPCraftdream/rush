@@ -22,12 +22,23 @@ func testRuntimeConfig() batchRuntimeConfig {
 	if err != nil {
 		panic(err)
 	}
+	// submit()'s root-owning bound path (RegistryID != "") fails closed
+	// without a root lease store whose capability manager has the pinned
+	// registry construction recorded. Unit fixtures invoke under reg-1
+	// (shared) and reg-a/reg-b (policy-collision fixture).
+	caps := NewDiskProviderRegistry()
+	for _, registryID := range []string{"reg-1", "reg-a", "reg-b"} {
+		if err := caps.acquireConstruction("", registryID, "construction-"+registryID); err != nil {
+			panic(err)
+		}
+	}
 	return batchRuntimeConfig{
-		Host:     "host-1",
-		RunnerID: "runner-1",
-		Profile:  profile,
-		Leaves:   func(string) (*policyLeafRegistry, error) { return nil, errors.New("unused") },
-		Attach:   newFakeAttach(),
+		Host:       "host-1",
+		RunnerID:   "runner-1",
+		Profile:    profile,
+		Leaves:     func(string) (*policyLeafRegistry, error) { return nil, errors.New("unused") },
+		Attach:     newFakeAttach(),
+		RootLeases: NewBatchRootLeaseStore(caps),
 	}
 }
 

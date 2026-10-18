@@ -53,11 +53,23 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+	if opts := callOptionsFrom(ctx); opts != nil {
+		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
+			// The binding handle is immutable and minted with the trusted
+			// call state; nothing re-mints through a copied options object.
+			if opts.DiskBindingID == "" {
+				return BatchInvocation{}, fmt.Errorf(
+					"%w: a custom disk provider must carry its binding handle before the call options are shared",
+					ErrDiskProviderUnavailable)
+			}
+			inv.Policy.DiskBindingID = opts.DiskBindingID
+		}
+		inv.Policy.DiskProvider = inv.Policy.DiskBindingID != ""
+	}
 	inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
 	inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
-	if opts := callOptionsFrom(ctx); opts != nil && tools.HasDiskProvider(opts.DiskProvider) {
-		return BatchInvocation{}, ErrDiskProviderNotDurable
-	}
+	// A template-pinned DiskBindingID propagates verbatim: nested batches
+	// and Add inherit the binding, never re-resolving to another provider.
 	return inv, nil
 }
 

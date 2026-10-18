@@ -44,6 +44,7 @@ func TestBatchCLIStopSubprocessAppliesOnlyNestedLeaf(t *testing.T) {
 		Host: fixture.host, RunnerID: "r14-test-runner", Profile: profile,
 		Registries: agent.NewBatchLeafRegistryStore(), Store: session.NewBatchStore(conn),
 		Messages: message.NewService(queries), Executor: executor,
+		DiskBindings:  agent.NewDiskProviderRegistry(),
 		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	})
