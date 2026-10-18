@@ -125,7 +125,7 @@ func (m *mailboxLikeCoordinator) SetAllowPeakHours(allow bool)                  
 func (m *mailboxLikeCoordinator) SetPersistentMode(persistent bool)                {}
 func (m *mailboxLikeCoordinator) ResetAutoResumeCounter(sessionID string)          {}
 
-func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 

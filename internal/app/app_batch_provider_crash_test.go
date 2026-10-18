@@ -327,7 +327,7 @@ func TestAppBatchProviderCrashAfterCompletionSubprocess(t *testing.T) {
 	// BEFORE its run starts (the done signal only appears after commit).
 	var hostID, sessionID string
 	require.Eventually(t, func() bool {
-		hostID, sessionID = f.childInfoFields()
+		sessionID, hostID = f.childInfoFields()
 		return hostID != "" && sessionID != ""
 	}, 90*time.Second, 50*time.Millisecond, "the child must publish its identity info file")
 	var rootID string
