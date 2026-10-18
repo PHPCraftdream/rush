@@ -127,10 +127,9 @@ func TestRebuildSessionAgentCall_EnvelopedRowWithDeadBinding_TerminalUnavailable
 	call, err := coord.RebuildSessionAgentCall(t.Context(), "row-dead", data)
 	require.Error(t, err)
 	require.Equal(t, SessionAgentCall{}, call)
-	require.ErrorIs(t, err, ErrCallAlreadyAttempted,
-		"the dead-binding refusal must be terminal so the pump dead-letters the row instead of spinning")
 	var alreadyAttempted *ErrCallAlreadyAttempted
-	require.ErrorAs(t, err, &alreadyAttempted)
+	require.ErrorAs(t, err, &alreadyAttempted,
+		"the dead-binding refusal must be terminal so the pump dead-letters the row instead of spinning")
 	require.ErrorIs(t, alreadyAttempted.Err, ErrDiskProviderUnavailable,
 		"the wrapped cause must stay classifiable as disk-provider-unavailable")
 }
@@ -278,10 +277,9 @@ func TestRebuildSessionAgentCall_UnmarkedRowOnFencedSession_TerminalWithoutLiveB
 	call, err := coord.RebuildSessionAgentCall(ctx, "row-unmarked", data)
 	require.Error(t, err)
 	require.Equal(t, SessionAgentCall{}, call)
-	require.ErrorIs(t, err, ErrCallAlreadyAttempted,
-		"the unmarked-row refusal must be terminal so the pump dead-letters the row instead of spinning")
 	var alreadyAttempted *ErrCallAlreadyAttempted
-	require.ErrorAs(t, err, &alreadyAttempted)
+	require.ErrorAs(t, err, &alreadyAttempted,
+		"the unmarked-row refusal must be terminal so the pump dead-letters the row instead of spinning")
 	require.ErrorIs(t, alreadyAttempted.Err, ErrDiskProviderUnavailable,
 		"the wrapped cause must stay classifiable as disk-provider-unavailable")
 }
