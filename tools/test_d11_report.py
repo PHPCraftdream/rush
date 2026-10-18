@@ -172,6 +172,30 @@ class D11ReportTests(unittest.TestCase):
         refresh(candidates["legacy-bash"])
         with self.assertRaises(ValueError): d11_report.evaluate(baselines, candidates)
 
+    # Trace: two-round summaries rebuilt with matching measured_call_ids (8 identities = 8 attempts)
+    # reach the round gate itself instead of dying earlier on the identity-count check.
+    def test_minimum_rounds_gate_with_consistent_identities(self):
+        baselines = {name: mode_summary("baseline", name, rounds=(1, 2)) for name in d11_report.WORKLOADS}
+        candidates = {name: mode_summary("candidate", name, rounds=(1, 2)) for name in d11_report.WORKLOADS}
+        with self.assertRaisesRegex(ValueError, "at least three sequential and three contention rounds"):
+            d11_report.evaluate(baselines, candidates)
+
+    # Trace: a median round ratio of exactly 0.80 passes the inclusive gate; anything below fails.
+    def test_throughput_median_ratio_exact_boundary(self):
+        baselines, candidates = pair()
+        for r in ROUNDS:
+            find_run(candidates["legacy-bash"], "contention-%d" % r)["calls_per_sec"] = 80.0
+        refresh(candidates["legacy-bash"])
+        result = d11_report.evaluate(baselines, candidates)
+        self.assertTrue(result["gates"]["legacy-bash.throughput"])  # median(0.8, 0.8, 0.8) = 0.8 >= .8
+        self.assertEqual(0.8, result["workloads"]["legacy-bash"]["throughput_ratio_median"])
+        baselines, candidates = pair()
+        for r in ROUNDS:
+            find_run(candidates["legacy-bash"], "contention-%d" % r)["calls_per_sec"] = 79.99
+        refresh(candidates["legacy-bash"])
+        result = d11_report.evaluate(baselines, candidates)
+        self.assertFalse(result["gates"]["legacy-bash.throughput"])  # median ratio 0.7999 < .8
+
     # Trace: the throughput gate keys on the median round ratio, not the mean.
     def test_median_ratio_gate_uses_median(self):
         baselines, candidates = pair()
@@ -214,6 +238,10 @@ class D11ReportTests(unittest.TestCase):
         baselines, candidates = pair()
         candidates["legacy-bash"]["off_wait_path"] = "different"
         with self.assertRaisesRegex(ValueError, "call origin / wait path"):
+            d11_report.evaluate(baselines, candidates)
+        baselines, candidates = pair()
+        baselines["legacy-bash"]["off_wait_path"] = "baseline-only-disagreement"
+        with self.assertRaisesRegex(ValueError, "wait path"):
             d11_report.evaluate(baselines, candidates)
 
     # Trace: a 100 ms polling quantum in either mode must trip the cross-workload p50 bound of 20 ms.

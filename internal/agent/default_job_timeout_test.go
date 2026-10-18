@@ -44,6 +44,30 @@ func defaultTimeoutLedger(t *testing.T, onDone func(AsyncCompletion)) (*workLedg
 	return l, &coordinator{asyncJobs: l, subAgentDrivers: newSubAgentDriverRegistry(), sessions: stubChildSessions{}}
 }
 
+// barrier is the async-teardown synchronisation every test that arms a
+// real executor needs: it registers (LIFO, so it runs BEFORE the store/pool
+// cleanups newTestAsyncJobStore registered) a cleanup that first opens the
+// release gate, then waits -- bounded, only the failure path should hit the
+// timeout -- on `settled`, the channel closed by the SAME completion the
+// production code signals: workLedger.onWebDone, which commitAndDeliver
+// invokes only after commitTransition's durable store.Transition write has
+// landed (work_ledger_transition.go). Without it, a failed assertion would
+// unblock the executor and immediately tear persistence down under an
+// in-flight transition, and the secondary SQLite/Windows TempDir cleanup
+// failure would mask the real failure.
+func barrier(t *testing.T, release func(), settled <-chan struct{}) {
+	t.Helper()
+	t.Cleanup(func() {
+		release()
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			// Bounded: the real failure is already reported by the
+			// assertions; never hang teardown on it.
+		}
+	})
+}
+
 // blockingInner is a stand-in bash/run_command process that blocks until its
 // ctx is cancelled (the timeout kill path) or release closes.
 func blockingInner(release <-chan struct{}) fantasy.AgentTool {
@@ -63,9 +87,14 @@ func blockingInner(release <-chan struct{}) fantasy.AgentTool {
 func TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 1)
-	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) { delivered <- c })
+	settled := make(chan struct{})
+	var settleOnce sync.Once
+	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) {
+		delivered <- c
+		settleOnce.Do(func() { close(settled) })
+	})
 	release := make(chan struct{})
-	defer close(release)
+	var releaseOnce sync.Once
 	inner := fantasy.NewAgentTool(tools.BashToolName, "Run a command", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		<-ctx.Done()
 		return fantasy.ToolResponse{}, ctx.Err()
@@ -77,6 +106,7 @@ func TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut(t *testing.T) {
 
 	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.BashToolName, Input: `{}`})
 	require.NoError(t, err)
+	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, settled)
 	require.Contains(t, resp.Content, "started")
 	l.acknowledged(jobOf(l, "session", "call"))
 
@@ -138,16 +168,21 @@ func TestDefaultJobTimeout_ExplicitTimeoutBeatsDefault(t *testing.T) {
 func TestDefaultJobTimeout_NoDefaultArmsNoDeadline(t *testing.T) {
 	t.Parallel()
 	completed := make(chan AsyncCompletion, 1)
-	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) { completed <- c })
+	settled := make(chan struct{})
+	var settleOnce sync.Once
+	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) {
+		completed <- c
+		settleOnce.Do(func() { close(settled) })
+	})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	wrapped := &asyncTool{inner: blockingInner(release), coordinator: coord, name: tools.BashToolName}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallOrigin(ctx, message.OriginCLI)
 
 	_, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.BashToolName, Input: `{}`})
 	require.NoError(t, err)
+	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, settled)
 	job := jobOf(l, "session", "call")
 	require.NotNil(t, job)
 	require.True(t, job.deadline.IsZero(), "no default configured: the job must have no deadline")
@@ -169,10 +204,13 @@ func TestDefaultJobTimeout_NoDefaultArmsNoDeadline(t *testing.T) {
 // on the call.
 func TestDefaultJobTimeout_DelegationUntouchedByDefault(t *testing.T) {
 	t.Parallel()
-	l, coord := defaultTimeoutLedger(t, nil)
+	settled := make(chan struct{})
+	var settleOnce sync.Once
+	l, coord := defaultTimeoutLedger(t, func(_ AsyncCompletion) {
+		settleOnce.Do(func() { close(settled) })
+	})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	inner := fantasy.NewAgentTool(tools.AgenticFetchToolName, "Fetch", func(_ context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		<-release
 		return fantasy.NewTextResponse("fetched"), nil
@@ -185,25 +223,12 @@ func TestDefaultJobTimeout_DelegationUntouchedByDefault(t *testing.T) {
 
 	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.AgenticFetchToolName, Input: `{}`})
 	require.NoError(t, err)
+	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, settled)
 	require.Contains(t, resp.Content, "started")
 	job := jobOf(l, "session", "call")
 	require.NotNil(t, job)
 	require.True(t, job.deadline.IsZero(), "a delegation must never inherit the bash/run_command default")
 	releaseOnce.Do(func() { close(release) })
-	// The executor goroutine commits the finished job to the store
-	// (commitTransition) only after the release channel unblocks it; wait for
-	// that commit to land before returning, or db.Release's pool close races
-	// the in-flight store.Transition and Windows' TempDir RemoveAll fails on
-	// the still-open rush.db handle.
-	require.Eventually(t, func() bool {
-		j := jobOf(l, "session", "call")
-		if j == nil {
-			return true // dropped from the map: commit already terminal/gone
-		}
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		return j.state.terminal()
-	}, 5*time.Second, 10*time.Millisecond, "the executor must commit the finished delegation before teardown")
 }
 
 // TestDefaultJobTimeout_CallOptionsWinOverConfig: the run's CallOptions
