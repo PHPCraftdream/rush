@@ -23,9 +23,15 @@ package agent
 //	  application in roleSlotOverride: the effort falls back to the
 //	  resolved slot's (empty), so the ReasoningEffort assertions fail.
 //	TestRunSubAgent_DispatchRefreshesWorkerSlot — delete the dispatch-time
-//	  refresh block in coordinator_subagents.go (:199-204): the mock's
-//	  parent-turn-start model (w1) reaches the dispatched SessionAgentCall
-//	  instead of the live slot's w2.
+//	  refresh block in coordinator_subagents.go (:199-204), or drop its
+//	  params.slotModel conjunct: the mock's parent-turn-start model (w1)
+//	  reaches the dispatched SessionAgentCall instead of the live slot's
+//	  w2.
+//	TestRunSubAgent_NonSlotDispatchKeepsModel — delete the
+//	  `params.slotModel &&` gate (refreshing EVERY sub-agent at dispatch,
+//	  the pre-round-4 behaviour): the agentic_fetch-shaped non-slot
+//	  dispatch is rebuilt from the swapped slot (w1 → w2) and the w1
+//	  assertion fails.
 //	TestSubAgentDispatchRefreshesWorkerSlot — drop the dispatch-time
 //	  refresh: refreshSubAgentSlotModel always returns (model, false),
 //	  so the `ok` assertion on the stale-model case fails.
@@ -320,8 +326,13 @@ func TestRoleSlotOverride_CarriesExplicitEffort(t *testing.T) {
 // (runSubAgent) is rebuilt from the live worker slot, not the mock's
 // parent-turn-start build. Mirrors
 // TestRunSubAgent_CredentialWorkerFallbackUsesTenantSmart's harness.
+// The subAgentParams literal carries slotModel: true — this represents the
+// AGENT TOOL's dispatch path (agent_tool.go builds its child from the
+// buildAgent role-slot cascade), the only path the dispatch-time refresh
+// applies to.
 // Revert-check: deleting the dispatch-time refresh block in
-// coordinator_subagents.go (:199-204) leaves the mock's w1 on the
+// coordinator_subagents.go (:199-204), or dropping its params.slotModel
+// conjunct, leaves the mock's w1 on the
 // dispatched SessionAgentCall, failing the w2 assertion.
 func TestRunSubAgent_DispatchRefreshesWorkerSlot(t *testing.T) {
 	hbIsolateEnv(t)
@@ -354,11 +365,57 @@ func TestRunSubAgent_DispatchRefreshesWorkerSlot(t *testing.T) {
 	ctx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeSmart})
 	resp, err := coord.runSubAgent(ctx, subAgentParams{
 		Agent: agent, SessionID: parent.ID, AgentMessageID: "msg-1", ToolCallID: "call-1",
-		Prompt: "go", SessionTitle: "Dispatch refresh",
+		Prompt: "go", SessionTitle: "Dispatch refresh", slotModel: true,
 	})
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
 	require.Equal(t, "w2", observed.SmartModel.ModelCfg.Model)
+}
+
+// TestRunSubAgent_NonSlotDispatchKeepsModel pins the agentic_fetch shape:
+// a dispatch whose params.Agent model was NOT built from a config role slot
+// (slotModel false, like agentic_fetch_tool.go's fast-built child) must NOT
+// be refreshed at dispatch time — it keeps the model its parent turn
+// started with. Mutation caught: deleting the `params.slotModel &&` gate in
+// coordinator_subagents.go's refresh block refreshes every sub-agent, this
+// dispatch is rebuilt w1 → w2, and the w1 assertion fails.
+func TestRunSubAgent_NonSlotDispatchKeepsModel(t *testing.T) {
+	hbIsolateEnv(t)
+	env := testEnv(t)
+	prov := "role-prov"
+	coord := newTestCoordinator(t, env, prov, config.ProviderConfig{
+		ID:   prov,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "w1", Name: "W1", DefaultMaxTokens: 4096},
+			{ID: "w2", Name: "W2", DefaultMaxTokens: 4096},
+		},
+	})
+	coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "w1"}
+
+	parent, err := env.sessions.Create(t.Context(), "non-slot-dispatch")
+	require.NoError(t, err)
+
+	var observed SessionAgentCall
+	agent := newMockAgent(prov, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		observed = call
+		return agentResultWithText("stable non-slot dispatch"), nil
+	})
+	// The mock's model represents the fast-built child at the PARENT TURN's
+	// start (agentic_fetch's shape), not a role-slot build.
+	agent.model = Model{ModelCfg: config.SelectedModel{Provider: prov, Model: "w1"}}
+
+	// The worker slot swaps mid-turn; a non-slot dispatch must ignore it.
+	coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "w2"}
+	ctx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeSmart})
+	resp, err := coord.runSubAgent(ctx, subAgentParams{
+		Agent: agent, SessionID: parent.ID, AgentMessageID: "msg-1", ToolCallID: "call-1",
+		Prompt: "go", SessionTitle: "Non-slot dispatch", // slotModel deliberately false
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.Equal(t, "w1", observed.SmartModel.ModelCfg.Model,
+		"a non-slot sub-agent keeps its parent-turn-start model; no dispatch-time refresh")
 }
 
 // TestSubAgentDispatchRefreshesWorkerSlot is D3: refreshSubAgentSlotModel

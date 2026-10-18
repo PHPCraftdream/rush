@@ -111,22 +111,49 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 		return application.Store().Config().Models[config.SelectedModelTypeSmart].Model == "probe-b"
 	}, 5*time.Second, 10*time.Millisecond, "the poll-driven reload must adopt the foreign-written smart model")
 
-	// Negative case, adoption-then-assert: an unrelated config write must
+	// Negative case, baseline→settler→count. An unrelated config write must
 	// not fire OnModelsChanged and must not produce a new EventConfig frame.
-	// We do NOT race the poller: first the write is made, then we WAIT for
-	// the poller to have PROCESSED it (Options.Debug flips true). Only then
-	// do we drain and open the absence window — so the one reload that
-	// could have emitted a mutant frame is guaranteed to have completed and
-	// buffered any such frame in client.send before we count.
+	// We do NOT race the poller:
+	//  1. drain everything buffered now (frames of the earlier positive change);
+	//  2. the unrelated write (options.debug), waited out until adopted;
+	//  3. a SECOND known-positive model change (probe-b → probe, a real
+	//     models diff that fires OnModelsChanged) publishes a settler frame,
+	//     which we block on with waitForEvent. FIFO proof: hub fan-out
+	//     appends to the client's buffered channel in broadcast order
+	//     (hub.go:497-513), so anything enqueued BEFORE the settler —
+	//     including any mutant frame from the debug reload — is already in
+	//     client.send when the settler is received. The coalescing
+	//     buffer-1 cannot merge them either: the forwarder drains the debug
+	//     ping seconds before the second change is published (separate
+	//     poller cycles).
+	//  4. the first EventConfig after the drain must BE the settler (a mutant
+	//     debug-reload frame would arrive first and carry probe-b), and no
+	//     further EventConfig may follow it.
+	countConfigEvents(client.send) // drain: frames of the positive change above are not under test
 	require.NoError(t, foreign.SetConfigFields(config.ScopeGlobal, map[string]any{"options.debug": true}))
 	require.Eventually(t, func() bool {
 		o := application.Store().Config().Options
 		return o != nil && o.Debug
 	}, 20*time.Second, 10*time.Millisecond, "the poller must adopt the unrelated write before the negative window opens")
-	_ = countConfigEvents(client.send)
-	newConfigs := countConfigEventsWithin(t, client, 2*time.Second)
-	require.Zero(t, newConfigs,
-		"an unrelated config write must not produce a new EventConfig frame")
+
+	// Settler: a second, known-positive models change orders the negative
+	// window behind a delivered frame.
+	require.NoError(t, foreign.UpdatePreferredModels(config.ScopeGlobal, map[config.SelectedModelType]config.SelectedModel{
+		config.SelectedModelTypeSmart: {Provider: "copilot", Model: "probe"},
+	}))
+	settler := waitForEvent(t, client, EventConfig, 12*time.Second)
+	require.NotNil(t, settler, "the second models change must deliver a settler EventConfig")
+	var settlerWire ConfigWire
+	require.NoError(t, json.Unmarshal(settler.Payload, &settlerWire))
+	require.Equal(t, "probe", settlerWire.Models["smart"].Model,
+		"the settler frame must carry the reverted smart model")
+
+	// waitForEvent returned the FIRST EventConfig after the drain: a mutant frame
+	// from the debug reload (carrying probe-b) would have arrived first and failed
+	// the settler-model assertion above. Nothing may follow the settler either.
+	after := countConfigEvents(client.send)
+	require.Zero(t, after,
+		"no EventConfig may follow the settler; an extra frame means an unrelated reload broadcast")
 }
 
 // waitForEvent drains the client channel until one frame of the wanted type
@@ -163,24 +190,4 @@ func countConfigEvents(send <-chan []byte) int {
 			return count
 		}
 	}
-}
-
-// countConfigEventsWithin counts EventConfig frames arriving within the
-// window; used for the negative assertion, where "no frame EVER arrives" is
-// the property under test regardless of poller timing.
-func countConfigEventsWithin(t *testing.T, client *Client, within time.Duration) int {
-	t.Helper()
-	count := 0
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		select {
-		case raw := <-client.send:
-			var env WSMessage
-			if json.Unmarshal(raw, &env) == nil && env.Type == EventConfig {
-				count++
-			}
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
-	return count
 }

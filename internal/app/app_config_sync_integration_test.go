@@ -101,9 +101,9 @@ func newRoleModelSyncApp(t *testing.T) roleModelSyncApp {
         {"id":"fast-default","context_window":200000,"default_max_tokens":1000},
         {"id":"smart-x","context_window":200000,"default_max_tokens":1000},
         {"id":"smart-2","context_window":200000,"default_max_tokens":1000},
-        {"id":"worker-default","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["high"]},
-        {"id":"worker-2","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["high"]},
-        {"id":"reviewer-default","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["high"]}
+        {"id":"worker-default","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["low","medium","high"]},
+        {"id":"worker-2","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["low","medium","high"]},
+        {"id":"reviewer-default","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["low","medium","high"]}
       ]
     }
   },
@@ -173,12 +173,18 @@ type runOutcome struct {
 
 // waitForModelRequest reads the next recorded provider request within the
 // deadline, returning the full recorded request (model + reasoning effort).
-func waitForModelRequest(t *testing.T, requests <-chan roleModelSyncRequest, within time.Duration) roleModelSyncRequest {
+// The optional onTimeout hook runs right before the Fatalf, so a call site
+// with an outcome channel can report a fast refusal (e.g. FailIfSessionBusy)
+// instead of masking it behind a bare timeout.
+func waitForModelRequest(t *testing.T, requests <-chan roleModelSyncRequest, within time.Duration, onTimeout ...func()) roleModelSyncRequest {
 	t.Helper()
 	select {
 	case req := <-requests:
 		return req
 	case <-time.After(within):
+		for _, hook := range onTimeout {
+			hook()
+		}
 		t.Fatalf("no provider request arrived within %s", within)
 		return roleModelSyncRequest{}
 	}
@@ -205,7 +211,7 @@ func TestRoleModelHotReload_NextTurnUsesNewSmart(t *testing.T) {
 		})
 		turn1 <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-default", waitForModelRequest(t, h.requests, 12*time.Second).Model)
+	require.Equal(t, "smart-default", waitForModelRequest(t, h.requests, 30*time.Second).Model)
 	h.closeRelease()
 	outcome := <-turn1
 	require.NoError(t, outcome.err)
@@ -233,7 +239,18 @@ func TestRoleModelHotReload_NextTurnUsesNewSmart(t *testing.T) {
 		})
 		turn2 <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	// The 30s deadline + onTimeout diagnostic: a slow CI path (history
+	// reload, model rebuild after adoption, prompt build) must fit, and a
+	// turn-2 refusal (e.g. FailIfSessionBusy) must surface its error instead
+	// of dying as a bare timeout.
+	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 30*time.Second, func() {
+		select {
+		case o := <-turn2:
+			t.Fatalf("no provider request within 30s; turn 2 outcome err=%v", o.err)
+		default:
+			t.Fatalf("no provider request within 30s; turn 2 still running")
+		}
+	}).Model,
 		"the next turn must run on the reloaded smart model")
 	// release is already closed, so the SSE handler unblocks immediately.
 	outcome = <-turn2
@@ -266,7 +283,7 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		})
 		pinned <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 30*time.Second).Model,
 		"the session-pinned smart model must win over config")
 	h.closeRelease()
 	outcome := <-pinned
@@ -296,7 +313,7 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		})
 		pinnedAgain <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 30*time.Second).Model,
 		"the pinned session keeps its explicit choice after the reload")
 	outcome = <-pinnedAgain
 	require.NoError(t, outcome.err)
@@ -315,7 +332,7 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		})
 		fresh <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 30*time.Second).Model,
 		"a fresh session must run on the reloaded smart model")
 	outcome = <-fresh
 	require.NoError(t, outcome.err)
@@ -344,7 +361,7 @@ func TestRoleModelHotReload_InFlightKeepsPinnedModel(t *testing.T) {
 		})
 		turn1 <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-default", waitForModelRequest(t, h.requests, 12*time.Second).Model)
+	require.Equal(t, "smart-default", waitForModelRequest(t, h.requests, 30*time.Second).Model)
 
 	// The reload publishes while turn 1 is blocked mid-response.
 	require.NoError(t, h.foreign.UpdatePreferredModels(config.ScopeWorkspace, map[config.SelectedModelType]config.SelectedModel{
@@ -372,7 +389,7 @@ func TestRoleModelHotReload_InFlightKeepsPinnedModel(t *testing.T) {
 		})
 		turn2 <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 30*time.Second).Model,
 		"the turn after the in-flight one must run on the reloaded smart model")
 	outcome = <-turn2
 	require.NoError(t, outcome.err)
@@ -385,11 +402,32 @@ func TestRoleModelHotReload_InFlightKeepsPinnedModel(t *testing.T) {
 // session's smart/fast fields. A SECOND turn of the same session proves the
 // slot is resolved live PER TURN (a mutant caching the turn-1 resolution or
 // persisting it fails), and the reasoning effort is asserted END TO END off
-// the actual provider request body ("high" on worker turns, empty on the
-// smart-role turn), so deleting the WithRoleReasoningEffort producer fails.
+// the actual provider request body ("high" on explicit-effort worker turns,
+// "low" (levels[0]) on the no-effort worker run, empty on the smart-role
+// turn), so deleting the WithRoleReasoningEffort producer (app_run_setup.go
+// :465-471) empties ModelCfg.ReasoningEffort → effectiveReasoningEffort
+// falls back to "low" → the Equal("high") assertions below fail. The
+// fixture's reasoning_levels are ["low","medium","high"], so "high" on the
+// wire is attributable ONLY to the explicit --effort, not the default.
+// The persistence assertions compare against a NO-EFFORT BASELINE: fresh
+// session rows carry DB DEFAULT 'medium' for fast_model_reasoning_effort
+// (internal/db/testdata/store_v1/20261015000001_store_v1_initial.sql:22;
+// smart_model_id has no default), so "not persisted" means "unchanged from
+// what the session carries without any --effort", and NotEqual("high")
+// pins that --effort high never lands on the row.
 func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 	h := newRoleModelSyncApp(t)
 	sess := createRoleSyncSession(t, h.app, "worker-role-live")
+
+	// No-effort baseline: what the fresh session row carries BEFORE any
+	// worker run — fast_model_reasoning_effort defaults to 'medium' in the
+	// DB, so persistence is judged by "unchanged", not by "empty".
+	baseline, err := h.app.Sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	baselineFast := baseline.FastModelReasoningEffort
+	// baselineSmart := baseline.SmartModelID is deliberately not recorded:
+	// smart_model_id has no DB default (schema above), so the Empty
+	// assertions on it stay valid without a baseline.
 
 	workerTurn := make(chan runOutcome, 1)
 	go func() {
@@ -405,7 +443,7 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 		})
 		workerTurn <- runOutcome{result: result, err: err}
 	}()
-	firstReq := waitForModelRequest(t, h.requests, 12*time.Second)
+	firstReq := waitForModelRequest(t, h.requests, 30*time.Second)
 	require.Equal(t, "worker-default", firstReq.Model,
 		"the worker role must resolve the live worker slot, not the smart one")
 	require.Equal(t, "high", firstReq.ReasoningEffort,
@@ -417,7 +455,8 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 	stored, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, stored.SmartModelID, "a role-derived model must not be persisted")
-	require.Empty(t, stored.FastModelReasoningEffort, "the explicit effort must not be persisted for a worker run")
+	require.Equal(t, baselineFast, stored.FastModelReasoningEffort, "the run must not change the persisted fast effort: --effort high must not land on the session")
+	require.NotEqual(t, "high", stored.FastModelReasoningEffort, "--effort high must not be persisted onto the fast slot")
 
 	// A foreign write to the worker slot is adopted live; the next worker
 	// run picks it up, while a smart-role run stays on the smart slot.
@@ -445,7 +484,7 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 		})
 		secondWorkerTurn <- runOutcome{result: result, err: err}
 	}()
-	secondReq := waitForModelRequest(t, h.requests, 12*time.Second)
+	secondReq := waitForModelRequest(t, h.requests, 30*time.Second)
 	require.Equal(t, "worker-2", secondReq.Model,
 		"a role run resolves the slot live per turn without persisting anything")
 	require.Equal(t, "high", secondReq.ReasoningEffort,
@@ -457,7 +496,8 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 	stored, err = h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, stored.SmartModelID, "a role-derived model must not be persisted")
-	require.Empty(t, stored.FastModelReasoningEffort, "the explicit effort must not be persisted for a worker run")
+	require.Equal(t, baselineFast, stored.FastModelReasoningEffort, "the run must not change the persisted fast effort: --effort high must not land on the session")
+	require.NotEqual(t, "high", stored.FastModelReasoningEffort, "--effort high must not be persisted onto the fast slot")
 
 	workerSess := createRoleSyncSession(t, h.app, "worker-after-reload")
 	workerOut := make(chan runOutcome, 1)
@@ -465,7 +505,11 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 		result, err := h.app.ExecuteRun(context.Background(), RunRequest{
 			Prompt:            "worker turn two",
 			ContinueSessionID: workerSess.ID,
-			Overrides:         RunOverrides{ModelRole: config.SelectedModelTypeWorker, ReasoningEffort: "high"},
+			// NO ReasoningEffort: the no-effort fallback proves the levels
+			// list's first element reaches the wire, so the "high"
+			// assertions above are attributable to the explicit --effort,
+			// not the default.
+			Overrides:         RunOverrides{ModelRole: config.SelectedModelTypeWorker},
 			Mode:              RunModeJSON,
 			Stdout:            io.Discard,
 			Stderr:            io.Discard,
@@ -474,8 +518,11 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 		})
 		workerOut <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "worker-2", waitForModelRequest(t, h.requests, 12*time.Second).Model,
+	noEffortReq := waitForModelRequest(t, h.requests, 30*time.Second)
+	require.Equal(t, "worker-2", noEffortReq.Model,
 		"the next worker run must use the reloaded worker slot")
+	require.Equal(t, "low", noEffortReq.ReasoningEffort,
+		"the no-effort fallback proves the levels list's first element reaches the wire, so the 'high' assertions above are attributable to the explicit --effort, not the default")
 	outcome = <-workerOut
 	require.NoError(t, outcome.err)
 
@@ -494,10 +541,13 @@ func TestRoleModelHotReload_WorkerRoleLiveAndNotPersisted(t *testing.T) {
 		})
 		smartOut <- runOutcome{result: result, err: err}
 	}()
-	smartReq := waitForModelRequest(t, h.requests, 12*time.Second)
+	smartReq := waitForModelRequest(t, h.requests, 30*time.Second)
 	require.Equal(t, "smart-default", smartReq.Model,
 		"a smart-role run must stay on the smart slot")
 	require.Empty(t, smartReq.ReasoningEffort,
+		// smart-default stays NON-reasoning (no can_reason): a can_reason
+		// entry would fall back to its levels[0]; keeping it non-reasoning
+		// keeps this empty assertion meaningful.
 		"a smart-role run without an explicit effort must send no reasoning_effort")
 	outcome = <-smartOut
 	require.NoError(t, outcome.err)
