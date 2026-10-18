@@ -57,6 +57,9 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 	// holds the inherited write end.
 	cmd.Stdout = writer
 	require.NoError(t, cmd.Start())
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
 
 	grandpid := 0
 	waited := false

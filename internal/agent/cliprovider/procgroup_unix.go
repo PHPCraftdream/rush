@@ -133,10 +133,10 @@ func killChildProcessPid(pid int) error {
 		return os.ErrProcessDone
 	}
 	err := syscall.Kill(-pid, syscall.SIGKILL)
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		return nil
-	case err == syscall.ESRCH:
+	case syscall.ESRCH:
 		return os.ErrProcessDone
 	default:
 		return err
