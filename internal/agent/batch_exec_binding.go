@@ -25,27 +25,19 @@ func (e *batchBindingExecution) Stop(ctx context.Context) error {
 	return e.Execution.Stop(ctx)
 }
 
-func (e *batchBindingExecution) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
-	if e.output == nil {
-		return jobbatch.OutputChunk{}, jobbatch.ErrNotStarted
-	}
-	return e.output.ReadOutput(ctx, cursor)
-}
-
-func (e *batchBindingExecution) Inject(ctx context.Context, msg json.RawMessage) error {
-	if e.messenger == nil {
-		return jobbatch.ErrNotStarted
-	}
-	return e.messenger.Inject(ctx, msg)
-}
+// The base type deliberately advertises ONLY Execution + Disposer: ReadOutput
+// and Inject live on the specialized wrappers below, so an execution without
+// output/inject support no longer satisfies jobbatch.OutputReader/Messenger.
 
 func (e *batchBindingExecution) Dispose(ctx context.Context) error {
-	if e.disposer == nil {
-		return jobbatch.ErrNotStarted
+	if e.disposer != nil {
+		if err := e.disposer.Dispose(ctx); err != nil {
+			return err
+		}
 	}
-	if err := e.disposer.Dispose(ctx); err != nil {
-		return err
-	}
+	// A nil disposer means a foreign execution without Disposer support;
+	// Start already returned this execution, so the binding lease must
+	// still be released.
 	e.once.Do(func() {
 		if e.release != nil {
 			e.release()
@@ -57,8 +49,13 @@ func (e *batchBindingExecution) Dispose(ctx context.Context) error {
 var (
 	_ jobbatch.Execution    = (*batchBindingExecution)(nil)
 	_ jobbatch.Disposer     = (*batchBindingExecution)(nil)
-	_ jobbatch.OutputReader = (*batchBindingExecution)(nil)
-	_ jobbatch.Messenger    = (*batchBindingExecution)(nil)
+	_ jobbatch.Disposer     = (*batchBindingExecutionWithOutput)(nil)
+	_ jobbatch.Disposer     = (*batchBindingExecutionWithMessenger)(nil)
+	_ jobbatch.Disposer     = (*batchBindingExecutionWithBoth)(nil)
+	_ jobbatch.OutputReader = (*batchBindingExecutionWithOutput)(nil)
+	_ jobbatch.Messenger    = (*batchBindingExecutionWithMessenger)(nil)
+	_ jobbatch.OutputReader = (*batchBindingExecutionWithBoth)(nil)
+	_ jobbatch.Messenger    = (*batchBindingExecutionWithBoth)(nil)
 )
 
 func newBatchBindingExecution(execution jobbatch.Execution, release func()) jobbatch.Execution {

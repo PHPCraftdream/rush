@@ -84,7 +84,11 @@ func batchOwnedControl(t *testing.T, env *batchInventoryEnv, p *BatchProfile) *i
 	t.Helper()
 	runner, ok := any(env.install.RunnerHandle).(batchModelRunner)
 	require.True(t, ok, "installed runner handle must expose model controls")
-	return &installedBatchModelControl{runner: runner, store: env.store, live: session.NewBatchLiveReader(db.New(env.conn), ""), sessions: batchTestSessions(env.sessionID), host: env.install.Runtime.cfg.Host, runnerID: env.install.Runtime.cfg.RunnerID, profile: p, maxDepth: 8, maxNodes: 64}
+	// R12-H2 §1.2: Run/Add acquire and validate the Root owner through a
+	// WORKING BatchRootLeaseStore — the install's own store over the
+	// install's App-owned capability manager (whose construction record the
+	// env pins). A control without one refuses every Run/Add.
+	return &installedBatchModelControl{runner: runner, delivery: env.install.Delivery, store: env.store, live: session.NewBatchLiveReader(db.New(env.conn), ""), sessions: batchTestSessions(env.sessionID), host: env.install.Runtime.cfg.Host, runnerID: env.install.Runtime.cfg.RunnerID, profile: p, rootLeases: env.install.Runtime.cfg.RootLeases, maxDepth: 8, maxNodes: 64}
 }
 
 func batchTestModelInv(env *batchInventoryEnv, call string) BatchInvocation {
@@ -118,7 +122,7 @@ func TestInstalledModelControlRunAdmissionAndDelivery(t *testing.T) {
 	for _, notify := range []string{"", "each"} {
 		t.Run("notify-"+notify, func(t *testing.T) {
 			env := newBatchInventoryEnv(t, "view")
-			c := NewInstalledBatchModelControl(env.install.RunnerHandle, env.install.Delivery, env.store, session.NewBatchLiveReader(db.New(env.conn), ""), batchTestSessions(env.sessionID), env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, batchControlProfile(t), nil).(*installedBatchModelControl)
+			c := NewInstalledBatchModelControl(env.install.RunnerHandle, env.install.Delivery, env.store, session.NewBatchLiveReader(db.New(env.conn), ""), batchTestSessions(env.sessionID), env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, batchControlProfile(t), nil, env.install.Runtime.cfg.RootLeases).(*installedBatchModelControl)
 			inv := batchTestModelInv(env, "real-run-"+notify)
 			reg, err := env.registries.Resolve(env.registryID)
 			require.NoError(t, err)
@@ -154,26 +158,39 @@ func TestInstalledModelControlRunMatchesOneItemNotifyAll(t *testing.T) {
 }
 
 func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
-	// The Add fence rejects terminal roots, so the seed item must stay live
-	// while Add runs: hold the executor (the gating pattern the other
-	// live-required control tests use) or the instant-settle default settles
-	// the one-item root before Add and the precondition legitimately rejects.
+	// R12-H2a (P1-2): the root is created through the REAL model control
+	// Run (not a direct RunnerHandle.Submit), so the root-lease store
+	// records the Run-created root's identity — the ordinary OS-disk empty
+	// binding under the invocation's registry — and Add's matches fence
+	// accepts it. The gating executor keeps the one-item root live while
+	// Add runs: the fence rejects terminal roots, and the detached delivery
+	// means Run returns before the held leaf settles.
 	gate := newGatingInstallExecutor("held")
 	t.Cleanup(gate.letGo)
 	env := newBatchInventoryEnvWithExecutor(t, "view", gate)
-	root := jobbatch.ID("ancestor-root-r13")
-	task := batchTestLeaf(batchKindGeneric, "view", "").Task
-	_ = batchOwnerTree(t, env, root, []jobbatch.Spec{{Task: task}}, "ancestor-call")
-	rows := map[string]session.Session{env.sessionID: {ID: env.sessionID}, "direct-child": {ID: "direct-child", ParentSessionID: env.sessionID}, "grandchild": {ID: "grandchild", ParentSessionID: "direct-child"}, "other": {ID: "other"}}
+	started := make(chan struct{}, 1)
+	gate.started = started
 	c := batchOwnedControl(t, env, batchControlProfile(t))
+	rows := map[string]session.Session{env.sessionID: {ID: env.sessionID}, "direct-child": {ID: "direct-child", ParentSessionID: env.sessionID}, "grandchild": {ID: "grandchild", ParentSessionID: "direct-child"}, "other": {ID: "other"}}
 	c.sessions = testBatchSessions{rows: rows}
-	inv := batchTestModelInv(env, "nested-add")
-	inv.SessionID = "grandchild"
+	reg, err := env.registries.Resolve(env.registryID)
+	require.NoError(t, err)
+	inv := batchTestModelInv(env, "run-seed-call")
+	root, err := c.Run(env.ctx, inv, reg, batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+	require.NoError(t, err)
+	require.NotEmpty(t, root)
+	select {
+	case <-started:
+	case <-env.ctx.Done():
+		t.Fatal("seed task did not enter held Start")
+	}
+	addInv := batchTestModelInv(env, "nested-add")
+	addInv.SessionID = "grandchild"
 	items := []batchModelItem{{Batch: &batchModelSpec{Mode: "sequential", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}}}}
-	ids, err := c.Add(env.ctx, "grandchild", string(root), "", inv, modelRegistry("view"), items)
+	ids, err := c.Add(env.ctx, "grandchild", string(root), "", addInv, reg, items)
 	require.NoError(t, err)
 	require.Len(t, ids, 1)
-	_, err = c.Add(env.ctx, "other", string(root), "", inv, modelRegistry("view"), items)
+	_, err = c.Add(env.ctx, "other", string(root), "", addInv, reg, items)
 	require.Error(t, err)
 }
 
@@ -233,29 +250,23 @@ func TestInstalledModelControlAddNotifyEachOutbox(t *testing.T) {
 	env := newBatchInventoryEnvWithExecutor(t, "view", gate)
 	started := make(chan struct{}, 2)
 	gate.started = started
-	root := jobbatch.ID("notify-each-add-root")
-	task := batchTestLeaf(batchKindGeneric, "view", "").Task
-	// The root's explicit NotifyEach mode must survive reservation, then govern
-	// notices selected for items appended later through the model control.
-	payload := []byte(`{}`)
-	task.Payload = payload
-	payloadForOwner := func(id string) []byte {
-		p, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: id, SessionID: env.sessionID, Input: json.RawMessage(`{}`), RegistryID: env.registryID})
-		require.NoError(t, err)
-		return p
-	}
-	task.Payload = payloadForOwner("seed-call")
-	_, err := env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{Root: root, Ref: "seed-call", Spec: jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyEach, Items: []jobbatch.Spec{{Task: task}}}}})
+	// R12-H2a (P1-2): the root is seeded through the REAL model control Run
+	// so the root-lease store records the Run-created root's identity for
+	// the later Add's matches fence; the explicit NotifyEach mode survives
+	// reservation and governs notices for items appended later.
+	c := batchOwnedControl(t, env, batchControlProfile(t))
+	reg, err := env.registries.Resolve(env.registryID)
 	require.NoError(t, err)
+	seedInv := batchTestModelInv(env, "seed-run-call")
+	root, err := c.Run(env.ctx, seedInv, reg, batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+	require.NoError(t, err)
+	require.NotEmpty(t, root)
 	select {
 	case <-started:
 	case <-env.ctx.Done():
 		t.Fatal("seed task did not enter held Start")
 	}
-	c := batchOwnedControl(t, env, batchControlProfile(t))
 	inv := batchTestModelInv(env, "later-add-call")
-	reg, err := env.registries.Resolve(env.registryID)
-	require.NoError(t, err)
 	ids, err := c.Add(env.ctx, env.sessionID, string(root), "", inv, reg, []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}})
 	require.NoError(t, err)
 	require.Len(t, ids, 1)

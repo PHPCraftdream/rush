@@ -115,8 +115,9 @@ func newBatchP1Env(t *testing.T, leaf fantasy.AgentTool, extraLeaves ...fantasy.
 	install, err := InstallBatchRuntime(ctx, BatchInstallDeps{
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
 		Profile: profile, Registries: registries,
-		Store:    session.NewBatchStore(conn),
-		Messages: message.NewService(q),
+		DiskBindings: NewDiskProviderRegistry(),
+		Store:        session.NewBatchStore(conn),
+		Messages:     message.NewService(q),
 		// R11F P1-1: NO Owner — the commit hook resolves it per invocation
 		// from the spec payload; Owner=host would be an FK violation.
 		// Round-2 P1-7 item 6: NewRunner also fails closed on zero limits.
@@ -127,6 +128,10 @@ func newBatchP1Env(t *testing.T, leaf fantasy.AgentTool, extraLeaves ...fantasy.
 		t.Fatalf("InstallBatchRuntime: %v", err)
 	}
 	t.Cleanup(func() { _ = install.Runner.Close(context.Background()) })
+	// R12-H2 §1.2: hold the pinned registry's Construction owner for the env
+	// lifetime (the real call/build scope does this); the executor's
+	// Execution owner fails closed without it.
+	pinTestConstruction(t, install.DiskBindings, registryID)
 	return &batchP1Env{
 		t: t, conn: conn, store: session.NewBatchStore(conn), q: q,
 		sessionID: sessionID, install: install, registries: registries,
@@ -299,7 +304,8 @@ func TestBatchLoadDoneWithoutLiveHandle(t *testing.T) {
 	fresh, err := InstallBatchRuntime(env.ctx, BatchInstallDeps{
 		Host: "host-2", RunnerID: "runner-2",
 		Profile: profile, Registries: env.registries,
-		Store: env.store, Messages: message.NewService(env.q),
+		DiskBindings: NewDiskProviderRegistry(),
+		Store:        env.store, Messages: message.NewService(env.q),
 		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,
 	})
@@ -346,7 +352,7 @@ func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
 	// nil-reader fail-closed shape is asserted separately below.
 	deps := CoordinatorBatchAgentDeps()
 	deps.Descendants = batchCompleteDescendantsReader{}
-	executor := newBatchExecutor(batchLeafEnv{Leaves: env.registries.Resolve}, newBatchExecutorFamilies(deps))
+	executor := newBatchExecutor(batchLeafEnv{Leaves: env.registries.Resolve, DiskBindings: env.install.DiskBindings}, newBatchExecutorFamilies(deps))
 	for _, name := range []string{AgentToolName, "agentic_fetch"} {
 		payload, err := json.Marshal(batchLeafPayload{
 			Tool: name, ToolCallID: "call-" + name, SessionID: env.sessionID,
@@ -528,7 +534,12 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 	if err := registries.Register("reg-policy", reg.leaves); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	executor := newBatchExecutor(batchLeafEnv{Leaves: registries.Resolve}, newBatchExecutorFamilies(batchAgentDeps{}))
+	// R12-H2 §1.2: Start acquires an Execution owner for the payload's
+	// RegistryID, which fails closed without a DiskBindings manager and a
+	// pinned CONSTRUCTION record naming the registry.
+	bindings := NewDiskProviderRegistry()
+	pinTestConstruction(t, bindings, "reg-policy")
+	executor := newBatchExecutor(batchLeafEnv{Leaves: registries.Resolve, DiskBindings: bindings}, newBatchExecutorFamilies(batchAgentDeps{}))
 
 	pinned := batchLeafPolicyContext{
 		RegistryID: "reg-policy", MessageID: "pinned-msg", SupportsImages: true,

@@ -33,6 +33,11 @@ type batchAgentRunRequest struct {
 	Tool            string
 	ChildSessionID  string
 	NoChildSelected bool
+	// R12-H2 P1-4: the App-owned ingress carried in the leaf env, so the
+	// driver resolves the pinned leaf through THIS invocation's authority —
+	// never the process-global binding. Nil keeps the driver's flag-off
+	// fallback (tests), except on the provider path where it fails closed.
+	Ingress BatchWorkIngress
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
@@ -99,6 +104,15 @@ func newBatchAgentFamily(deps batchAgentDeps) batchLeafFamily {
 
 var _ batchLeafFamily = batchAgentFamily{}
 
+// callIngress resolves the env's lazy ingress nil-safely: non-agent-family
+// envs may carry no Ingress at all.
+func callIngress(env batchLeafEnv) BatchWorkIngress {
+	if env.Ingress == nil {
+		return nil
+	}
+	return env.Ingress()
+}
+
 func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -118,31 +132,34 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			return ""
 		}(),
 		Policy: p.Policy, Tool: p.Tool,
+		Ingress: callIngress(env),
 	}
 	e := &batchAgentExecution{
-		deps:         f.deps,
-		req:          req,
-		leaseRelease: p.leaseRelease,
-		scope:        newBatchAgentScope(),
-		driverDone:   make(chan struct{}),
-		watcherDone:  make(chan struct{}),
-		finished:     make(chan struct{}),
+		deps:        f.deps,
+		req:         req,
+		scope:       newBatchAgentScope(),
+		driverDone:  make(chan struct{}),
+		watcherDone: make(chan struct{}),
+		finished:    make(chan struct{}),
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
 	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
 		cancel()
-		if p.leaseRelease != nil {
-			p.leaseRelease()
-		}
 		return nil, ErrDiskProviderUnavailable
 	}
+	// R12-H2 P1-4: carry the App-owned binding registry into the driver so
+	// WithCallOptions/diskBinding and any re-registration resolve
+	// through the SAME instance (never a process global). env.DiskBindings
+	// is injected by the runtime's LeafEnv.
+	runCtx = withDiskProviderRegistry(runCtx, env.DiskBindings)
 	if p.diskProvider != nil && p.Policy != nil {
-		runCtx = WithCallOptions(runCtx, &CallOptions{
-			DiskProvider: p.diskProvider, DiskBindingID: p.Policy.DiskBindingID,
-			diskBindingID:       p.Policy.DiskBindingID,
-			diskBindingRegistry: env.DiskBindings,
-		})
+		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
+		// R12-H2 P1-4: stamp the provider the way generic leaves do
+		// (batchLeafRunContext), so batchDiskProviderFrom(runCtx) works in
+		// the driver. NOT batchLeafRunContext — it would re-stamp
+		// session/message, which the agent family sets below.
+		runCtx = context.WithValue(runCtx, batchDiskProviderContextKey{}, p.diskProvider)
 	}
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
@@ -217,7 +234,6 @@ type batchAgentExecution struct {
 	finished         chan struct{}  // Closed once, when the scope result is fixed.
 	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
 	questionSequence uint64
-	leaseRelease     func()
 }
 
 var (
@@ -391,7 +407,10 @@ func (e *batchAgentExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 }
 
 // Dispose waits for the late kill (driver exit) and the watcher, then
-// releases generation state and the retained provider/registry lease.
+// releases generation state. It deliberately does NOT release the
+// execution owner: the interface-preserving physical-Dispose wrapper
+// (batch_exec_binding.go) is the ONLY execution-owner releaser, and only
+// after this disposal — including the child-driver exit drain — succeeded.
 func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-e.finished:
@@ -410,18 +429,12 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 		return ctx.Err()
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.disposed {
-		e.mu.Unlock()
 		return nil
 	}
 	e.disposed = true
 	e.content = nil
-	leaseRelease := e.leaseRelease
-	e.leaseRelease = nil
-	e.mu.Unlock()
-	if leaseRelease != nil {
-		leaseRelease()
-	}
 	return nil
 }
 

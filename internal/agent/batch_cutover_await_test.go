@@ -174,12 +174,18 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 	if agentDeps.Runs != nil {
 		agentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: session.NewBatchStore(conn)}
 	}
+	// R12-H2 §1.2: the executor's Execution owner names the pinned
+	// registry's construction record; hold its Construction owner for the
+	// env lifetime exactly as the real call/build scope would.
+	caps := NewDiskProviderRegistry()
+	pinTestConstruction(t, caps, registryID)
 	install, err := InstallBatchRuntime(ctx, BatchInstallDeps{
 		Host: "host-" + uuid.NewString(), RunnerID: "runner-" + uuid.NewString(),
 		Profile: profile, Registries: registries,
-		Store: session.NewBatchStore(conn), Messages: message.NewService(q),
+		DiskBindings: caps,
+		Store:        session.NewBatchStore(conn), Messages: message.NewService(q),
 		Limits: limits, CommitTimeout: time.Second, ControlTimeout: time.Second,
-		RecordRetention: 64, Executor: gatedExecutor(wrapExecutor, registries, agentDeps),
+		RecordRetention: 64, Executor: gatedExecutor(wrapExecutor, registries, agentDeps, caps),
 		AgentDeps: agentDeps,
 	})
 	if err != nil {

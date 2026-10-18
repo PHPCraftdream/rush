@@ -27,7 +27,7 @@ func batchFactoryApp(t *testing.T) *App {
 }
 
 func batchFactoryDeps() agent.BatchInstallDeps {
-	return agent.BatchInstallDeps{Host: "host", RunnerID: "runner-1", Owner: "owner"}
+	return agent.BatchInstallDeps{Host: "host", RunnerID: "runner-1", Owner: "owner", DiskBindings: agent.NewDiskProviderRegistry()}
 }
 
 func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {

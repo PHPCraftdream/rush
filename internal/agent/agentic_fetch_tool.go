@@ -66,6 +66,15 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 		tools.AgenticFetchToolName,
 		agenticFetchToolDescription,
 		func(ctx context.Context, params tools.AgenticFetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			// R12-H2a (P1-3): stamp the coordinator's OWN batch binding's
+			// ingress into the sub-agent context so the delegated child run
+			// (and the leaf invocation context it derives) resolves private
+			// fetch dispatch through the ONE per-App authority instead of the
+			// eliminated process-global fallback. No binding, no stamp — the
+			// private tools keep their legacy in-process behavior.
+			if ingress := coordinatorPrivateFetchIngress(c); ingress != nil {
+				ctx = context.WithValue(ctx, privateFetchIngressKey{}, ingress)
+			}
 			validationResult, err := validateAgenticFetchParams(ctx, params)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -182,7 +191,19 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				tools.NewViewTool(c.permissions, c.filetracker, nil, tmpDir),
 			}
 
-			fetchBuild := buildPrivateFetchTools(ctx, fetchTools, restrictedRunAuthorizer(c.permissions))
+			// R12-H2a round 2: the private build pins its construction in an
+			// EXPLICIT scope — the child incarnation's own scope when this
+			// runs as a batch agent leaf (the driver stamps one onto the run
+			// context), otherwise a handler-local scope closed when the
+			// fetch returns (the handler blocks until the delegated child
+			// completes). The coordinator's shared scope is no longer a
+			// fallback here.
+			scope := callBuildScopeFrom(ctx)
+			if scope == nil {
+				scope = newBuildResourceScope()
+				defer scope.close()
+			}
+			fetchBuild := buildPrivateFetchTools(ctx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's

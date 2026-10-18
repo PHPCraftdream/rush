@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/term"
+	"github.com/google/uuid"
 )
 
 // prepareAdmittedRun performs ExecuteRun's admission-time session writes
@@ -66,6 +67,10 @@ type runExecSetup struct {
 
 	failIfSessionBusy bool
 	callOpts          *agent.CallOptions
+	// callBindingRelease releases the Call owner of callOpts's immutable
+	// disk binding (nil when the run carries no custom provider). ExecuteRun
+	// defers it: the outer release point of the SDK invocation.
+	callBindingRelease func()
 }
 
 // prepareExecuteRun performs ExecuteRun's request-to-config setup: context
@@ -105,9 +110,19 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 
 	ctx, cancel = context.WithCancel(ctx)
 	ok := false
+	// callBindingRelease is the Call owner's rollback, installed IMMEDIATELY
+	// after registration below (R12-H2 §1.2): setup failure releases here,
+	// success hands it to ExecuteRun's outer release defer.
+	var callBindingRelease func()
 	defer func() {
 		if !ok {
 			cancel()
+			// Call-owner rollback right after registration: a setup
+			// failure after the binding was minted releases it here
+			// (R12-H2 §1.2), never only via the caller's outer defer.
+			if callBindingRelease != nil {
+				callBindingRelease()
+			}
 		}
 	}()
 
@@ -235,6 +250,15 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		}
 	}
 
+	// R12-H2a (P0): a typed-nil DiskProvider override (a non-nil interface
+	// holding a nil concrete value) passes tools.HasDiskProvider but panics
+	// on its first method call — which would happen inside the folder-scope
+	// canonicalization below, AFTER partial setup work. Reject it here,
+	// before any disk-touching work (canonicalization, provider traffic).
+	if err := agent.EnsureUsableDiskProvider(overrides.DiskProvider); err != nil {
+		return nil, cancel, nil, err
+	}
+
 	// R14-2 (P0, SDK review round 14): a config with no real workspace
 	// (sdk.ModeLibrary with no WorkingDir) must never resolve per-call
 	// FolderScopes against the real OS disk. The R6-1 sentinel guard
@@ -348,8 +372,11 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// another turn, even if the caller didn't ask for FailIfSessionBusy.
 	// Queueing is what creates the orphan-restart risk Layers 1/2 refuse
 	// outright — forcing fail-fast here means a provider-carrying call
-	// never reaches that path in the first place.
-	failIfSessionBusy := req.FailIfSessionBusy || tools.IsCustomDiskProvider(overrides.DiskProvider)
+	// never reaches that path in the first place. This applies to EVERY
+	// DiskProvider override (nil means no provider), including the
+	// canonical OS disk; a typed-nil provider was already rejected above
+	// by EnsureUsableDiskProvider, so HasDiskProvider is safe here.
+	failIfSessionBusy := req.FailIfSessionBusy || tools.HasDiskProvider(overrides.DiskProvider)
 
 	// R1-1 (P0): build this run's IMMUTABLE per-call execution context
 	// and attach it to the run's context. Everything below that used to
@@ -413,12 +440,24 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		if app.batchInstall == nil || app.batchInstall.DiskBindings == nil {
 			return nil, cancel, nil, agent.ErrDiskProviderUnavailable
 		}
-		bindingID, err := agent.EnsureCallDiskBinding(callOpts, app.batchInstall.DiskBindings)
+		// R12-H2 §1.2: the Call owner is acquired ONCE when the trusted
+		// call state is created, before any provider-backed tool is
+		// constructed; the immutable binding handle rides the SAME options
+		// value (the rest of the per-call policy is preserved).
+		_, release, err := agent.BindCallDiskProvider(
+			app.batchInstall.DiskBindings, overrides.DiskProvider, uuid.NewString(), callOpts)
 		if err != nil {
 			return nil, cancel, nil, err
 		}
-		callOpts.DiskBindingID = bindingID
+		// Rollback installed IMMEDIATELY after registration: any later
+		// setup failure releases the Call owner here, and the ExecuteRun
+		// defer is only the outer release point on success.
+		callBindingRelease = release
 	}
+	// Every ExecuteRun call owns a build-resource scope for its tool
+	// constructions (R12-H2 §1.2) — ordinary calls included; provider calls
+	// got theirs with the binding handle above.
+	agent.EnsureCallBuildScope(callOpts)
 	// Turn-stall policy: resolve --stall-timeout (default 30m) onto this call.
 	applyTurnStallCallTimeout(callOpts, app.config.Config().Options)
 	ctx = agent.WithCallOptions(ctx, callOpts)
@@ -483,5 +522,6 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		folderScopeSpec:        folderScopeSpec,
 		failIfSessionBusy:      failIfSessionBusy,
 		callOpts:               callOpts,
+		callBindingRelease:     callBindingRelease,
 	}, nil
 }

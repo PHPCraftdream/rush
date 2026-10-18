@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/google/uuid"
 )
 
 // Batch leaf kinds. R11 owns the tool-name -> kind -> group -> rank mapping;
@@ -37,14 +39,19 @@ type batchLeafPayload struct {
 	// diskProvider is the in-process resolution of Policy.DiskBindingID,
 	// stamped by the executor router before family start; never serialized.
 	diskProvider tools.DiskProvider `json:"-"`
-	leaseRelease func()
 }
 
 type batchLeafEnv struct {
 	// Leaves resolves a pinned policy-leaf registry by identity.
 	Leaves       func(sessionID string) (*policyLeafRegistry, error)
 	DiskBindings *DiskProviderRegistry
-	PinLease     func(registryID string) (func(), error)
+	// Ingress lazily resolves the App-owned BatchWorkIngress (R12-H2 P1-4):
+	// the agent family passes it onto the run request so the driver resolves
+	// pinned leaves through the invocation's authority, never the process
+	// global. It is a function because the ingress is bound to the runtime
+	// only after install (BindRuntimeIngress); an eager value copy would
+	// capture nil forever.
+	Ingress func() BatchWorkIngress
 }
 
 // batchLeafFamily executes one kind. start follows jobbatch.Executor.Start:
@@ -77,8 +84,9 @@ func (e *batchStartError) Unwrap() error { return e.err }
 // batchExecutor is the Rush jobbatch.Executor: it routes a launch to the family
 // registered for its kind. It is inert until R11 wires it to a Runner.
 type batchExecutor struct {
-	env      batchLeafEnv
-	families map[string]batchLeafFamily
+	env               batchLeafEnv
+	families          map[string]batchLeafFamily
+	decorateExecution func(jobbatch.Execution) jobbatch.Execution
 }
 
 var _ jobbatch.Executor = (*batchExecutor)(nil)
@@ -101,55 +109,75 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") && p.Policy.DiskBindingID == "" {
 		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
 	}
-	if p.Policy != nil && p.Policy.DiskBindingID != "" {
-		if e.env.DiskBindings == nil || p.RegistryID == "" {
+	// Execution owner (R12-H2 §1.2): acquired BEFORE resolving leaves or
+	// starting any side effect. One key per accepted execution — instance
+	// is a fresh unique id, the key names the construction the execution
+	// needs and retains the binding. It is released ONLY by the
+	// interface-preserving physical-Dispose wrapper (batch_exec_binding.go),
+	// after provider operations/readers and the child-driver exit drain;
+	// never on Stop acknowledgement. A disposal timeout/error retains the
+	// owner, so start-error paths are the only early releasers here.
+	var execRelease func()
+	if p.RegistryID != "" {
+		if e.env.DiskBindings == nil {
 			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
 		}
-		if e.env.PinLease == nil {
-			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
-		}
-		releaseRegistry, err := e.env.PinLease(p.RegistryID)
-		if err != nil {
-			return nil, &batchStartError{batchCodeNoBinding, err}
-		}
-		releaseLease := releaseRegistry
-		registry, err := e.env.Leaves(p.RegistryID)
-		if err != nil || registry == nil || !registry.hasToolset(p.Policy.RestrictedToolset) {
-			if err == nil {
-				err = ErrDiskProviderUnavailable
+		bindingID := ""
+		if p.Policy != nil {
+			bindingID = p.Policy.DiskBindingID
+			if bindingID != "" {
+				if _, err := e.env.DiskBindings.Lookup(bindingID); err != nil {
+					return nil, &batchStartError{batchCodeNoBinding, err}
+				}
 			}
-			releaseLease()
+		}
+		execKey := diskOwnerKey{kind: diskOwnerExecution, instance: uuid.NewString(), bindingID: bindingID, registryID: p.RegistryID}
+		if err := e.env.DiskBindings.acquire(execKey); err != nil {
 			return nil, &batchStartError{batchCodeNoBinding, err}
 		}
-		leaf, err := registry.resolve(p.Tool)
-		if err != nil {
-			releaseLease()
-			return nil, &batchStartError{batchCodeNoBinding, err}
+		var once sync.Once
+		execRelease = func() { once.Do(func() { e.env.DiskBindings.release(execKey) }) }
+		if bindingID != "" {
+			registry, err := e.env.Leaves(p.RegistryID)
+			if err != nil || registry == nil || !registry.hasToolset(p.Policy.RestrictedToolset) {
+				if err == nil {
+					err = ErrDiskProviderUnavailable
+				}
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			leaf, err := registry.resolve(p.Tool)
+			if err != nil {
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			_ = leaf
+			provider, err := e.env.DiskBindings.Lookup(bindingID)
+			if err != nil {
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			p.diskProvider = provider
 		}
-		_ = leaf
-		provider, releaseProvider, err := e.env.DiskBindings.Acquire(p.Policy.DiskBindingID)
-		if err != nil {
-			releaseLease()
-			return nil, &batchStartError{batchCodeNoBinding, err}
-		}
-		p.diskProvider = provider
-		p.leaseRelease = func() { releaseProvider(); releaseLease() }
 	}
 	execution, err := family.start(ctx, e.env, l, p, report)
 	if err != nil {
-		if p.leaseRelease != nil {
-			p.leaseRelease()
+		if execRelease != nil {
+			execRelease()
 		}
 		return nil, err
 	}
 	if execution == nil {
-		if p.leaseRelease != nil {
-			p.leaseRelease()
+		if execRelease != nil {
+			execRelease()
 		}
 		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
 	}
-	if p.leaseRelease != nil {
-		return newBatchBindingExecution(execution, p.leaseRelease), nil
+	if e.decorateExecution != nil {
+		execution = e.decorateExecution(execution)
+	}
+	if execRelease != nil {
+		return newBatchBindingExecution(execution, execRelease), nil
 	}
 	return execution, nil
 }

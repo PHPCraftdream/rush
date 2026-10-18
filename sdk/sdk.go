@@ -166,13 +166,13 @@ func OSDiskProvider() DiskProvider { return tools.OSDisk() }
 // already-closed channel instead (see their docs).
 var ErrClientClosed = errors.New("sdk: client is closed")
 
-// ErrSessionBusy, ErrDiskProviderNotDurable, and ErrDiskProviderUnavailable are stable re-exports
-// of the sentinel errors Run/RunWithCredentials wrap. Aliased because
-// internal/agent is not importable by external consumers.
+// ErrSessionBusy and ErrDiskProviderNotDurable are stable re-exports of the
+// sentinel errors Run/RunWithCredentials wrap. Aliased because
+// internal/agent is not importable by external consumers. The third sentinel
+// of the trio, ErrDiskProviderUnavailable, lives in sentinels.go.
 var (
-	ErrSessionBusy             = agent.ErrSessionBusy
-	ErrDiskProviderNotDurable  = agent.ErrDiskProviderNotDurable
-	ErrDiskProviderUnavailable = agent.ErrDiskProviderUnavailable
+	ErrSessionBusy            = agent.ErrSessionBusy
+	ErrDiskProviderNotDurable = agent.ErrDiskProviderNotDurable
 )
 
 // Structured-event aliases onto the same raw types the web UI's WS layer

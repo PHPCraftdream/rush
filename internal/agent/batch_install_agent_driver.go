@@ -29,8 +29,21 @@ type batchCoordinatorAgentRuns struct{}
 // its own pinned leaf and names the call agentic_fetch; an empty name fails
 // closed.
 func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
-	bind := processCoordinatorBatchBinding()
-	if bind == nil {
+	// R12-H2 P1-4: resolve the pinned leaf through the App-owned ingress
+	// carried on the request (the invocation's own authority). The
+	// process-global binding is only a fallback for flag-off-adjacent
+	// fixtures — NEVER for provider-bound work: a bound incarnation with no
+	// request ingress fails closed instead of touching process state.
+	ingress := req.Ingress
+	if ingress == nil {
+		if req.DiskBindingID != "" {
+			return nil, ErrDiskProviderUnavailable
+		}
+		if bind := processCoordinatorBatchBinding(); bind != nil {
+			ingress = bind.ingress
+		}
+	}
+	if ingress == nil {
 		return nil, errBatchCoordinatorNotBound
 	}
 	if req.RegistryID == "" {
@@ -40,7 +53,7 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 		// P1-3: fail closed rather than silently dispatching "agent".
 		return nil, fmt.Errorf("%w: batch agent incarnation without a recorded tool name", errBatchUnknownTool)
 	}
-	leaf, err := bind.ingress.ResolveLeaf(req.RegistryID, req.Tool)
+	leaf, err := ingress.ResolveLeaf(req.RegistryID, req.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -57,20 +70,26 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds
 	// to THIS invocation's pinned registry (never the latest one).
 	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID})
+	var childScope *buildResourceScope
 	if req.DiskBindingID != "" {
 		provider := batchDiskProviderFrom(ctx)
 		if provider == nil {
 			cancel()
 			return nil, ErrDiskProviderUnavailable
 		}
-		runCtx = WithCallOptions(runCtx, &CallOptions{
-			DiskProvider: provider, DiskBindingID: req.DiskBindingID,
-			diskBindingRegistry: batchDiskRegistryFromContext(ctx),
-		})
+		co := boundCallOptions(provider, req.DiskBindingID, batchDiskRegistryFromContext(ctx))
+		// R12-H2a round 2: the child incarnation owns its OWN
+		// build-resource scope (design §1.2): private-fetch constructions
+		// pin into it and release exactly when this incarnation's turn
+		// finishes below — never into the coordinator's shared scope.
+		co.buildScope = newBuildResourceScope()
+		childScope = co.buildScope
+		runCtx = WithCallOptions(runCtx, co)
 	}
 	call := fantasy.ToolCall{ID: req.ToolCallID, Name: req.Tool, Input: string(req.Input)}
 	turn := &batchCoordinatorAgentTurn{cancel: cancel, done: make(chan struct{}), exit: make(chan struct{})}
 	go func() {
+		defer childScope.close()
 		defer close(turn.exit)
 		defer close(turn.done)
 		resp, runErr := func() (resp fantasy.ToolResponse, err error) {

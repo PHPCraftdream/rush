@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeBatchIngress records every ingress crossing so the inventory tests can
@@ -117,7 +118,9 @@ func batchCallCtx(sessionID string) context.Context {
 // nothing about the installed system.
 func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	fake := &fakeBatchIngress{}
-	bind := &batchCoordinatorBinding{ingress: fake}
+	// R12-H2 §1.2: the build takes the pinned registry's Construction owner
+	// in the app-owned capability manager, so the binding must carry one.
+	bind := &batchCoordinatorBinding{ingress: fake, diskBindings: NewDiskProviderRegistry()}
 	work := []string{
 		"bash", "run_command", "agent", "agentic_fetch",
 		"mcp_files__read", "view", "edit", "write", "glob", "grep", "ls",
@@ -133,7 +136,7 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	}
 	list := batchTestTools(append(append([]string{}, work...), controls...)...)
 
-	built, err := newBatchWorkToolBuild(bind, list)
+	built, err := newBatchWorkToolBuild(bind, list, newBuildResourceScope(), false)
 	if err != nil {
 		t.Fatalf("newBatchWorkToolBuild: %v", err)
 	}
@@ -410,28 +413,116 @@ func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 }
 
 // TestPrivateFetchArmsThroughIngress: agentic_fetch's private tools resolve
-// their pinned leaves through the same ingress when the batch runtime is
-// bound (process binding), with the agentic_fetch origin.
+// their pinned leaves through the same ingress when the App-owned ingress is
+// stamped into the trusted build context (R12-H2 §1.3: ONLY an explicit
+// binding — the process-global fallback is gone), with the agentic_fetch
+// origin.
 func TestPrivateFetchArmsThroughIngress(t *testing.T) {
-	fake := &fakeBatchIngress{}
-	restore := processBatchBinding.Swap(&batchCoordinatorBinding{ingress: fake})
-	defer processBatchBinding.Store(restore)
+	// A REAL ingress over a REAL install (real runner, executor and
+	// delivery): the arming path takes the pinned registry's Construction
+	// owner in the App-owned capability manager, so a fake ingress no longer
+	// suffices, and the run must cross the real Invoke end to end.
+	env := newBatchInventoryEnv(t, "view")
+	// Record the runner-minted root so this test can drive the REAL
+	// execution-owner release trigger (Runner.Release) after the run.
+	runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+	env.install.Runtime.cfg.Runner = runner
+	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
 
 	list := batchTestTools("view", "grep")
-	built := buildPrivateFetchTools(context.Background(), list, nil)
+	ctx := withPrivateFetchBuildIngress(context.Background(), ingress)
+	built := buildPrivateFetchTools(ctx, list, nil, newBuildResourceScope())
 	for i, tool := range built.tools {
 		if _, ok := tool.(*privateFetchIngressTool); !ok {
 			t.Fatalf("private tool %d not ingress-armed (%T)", i, tool)
 		}
 	}
-	resp, err := built.tools[0].Run(batchCallCtx("sess-1"), fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
+	resp, err := built.tools[0].Run(batchCallCtx(env.sessionID), fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if resp.Content != "ok" || fake.invokes != 1 {
-		t.Fatalf("response %q crossings %d", resp.Content, fake.invokes)
+	if resp.Content != "ok" {
+		t.Fatalf("response %q, want the real ingress-delivered leaf envelope", resp.Content)
 	}
-	if fake.origin != "agentic_fetch" {
-		t.Fatalf("origin %q", fake.origin)
+	// The pin took its Construction owner in the App manager, and the run's
+	// bound root holds Root+Execution owners naming the same registry, so
+	// the owner set is non-empty while everything is live.
+	caps := env.install.DiskBindings
+	if caps.ownerCount() == 0 {
+		t.Fatal("the pin must hold a Construction owner while the build scope is open")
 	}
+	// REAL execution-owner release trigger (R12-H2 §1.2): the run's root
+	// settled (Batch.Done released the Root owner) and the adopted Done
+	// watcher (batchRootLeaseStore.adopt) called the Runner's Release
+	// AUTOMATICALLY — the fixture must NOT Release the adopted root itself;
+	// the physical-Dispose wrapper already dropped the Execution owner.
+	if n := len(runner.recordedRoots()); n != 1 {
+		t.Fatalf("expected one bound root for the private-fetch run, got %d", n)
+	}
+	// The oracle is the CONSTRUCTION this build owns: after the graceful
+	// residual drain removes the Construction owner and the execution
+	// dispose drops the last owner naming the registry, the construction
+	// record is deleted and the pinned registry identity is unresolvable.
+	caps.releaseResidualConstructions()
+	require.Eventually(t, func() bool {
+		_, err := env.registries.Resolve(built.registryID)
+		return err != nil
+	}, 5*time.Second, time.Millisecond,
+		"the construction record must die once no owner names its registry")
+}
+
+// TestPrivateFetchCustomProviderPassesExecutorAdmission: a CUSTOM disk
+// provider carried through the trusted call state (BindCallDiskProvider) on
+// the PRIVATE-FETCH route passes the executor's hasToolset admission
+// (batch_exec.go:139-146) end to end, through the PRODUCTION wiring: the
+// coordinator binding's ingress is stamped the way agenticFetchTool stamps
+// it (agentic_fetch_tool.go), and armPrivateFetchIngress stamps the Policy
+// template with the REAL batchToolsetFingerprint of the pinned build — NOT
+// the registry id. Regression oracle: reverting the fingerprint to the
+// registry id (or dropping the production ingress stamp in agenticFetchTool)
+// makes the binding-carrying payload FAIL hasToolset, so the executor
+// refuses admission and the provider-marked payload falls out of the batch
+// authority with ErrDiskProviderUnavailable.
+func TestPrivateFetchCustomProviderPassesExecutorAdmission(t *testing.T) {
+	env := newBatchInventoryEnv(t, "view")
+	// Count the bound submission so the run is proven to have crossed the
+	// REAL Runner through SubmitBound (a root-owning bound run).
+	runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+	env.install.Runtime.cfg.Runner = runner
+	inventoryBindProcess(t, env)
+	// PRODUCTION wiring (agentic_fetch_tool.go): resolve the coordinator
+	// binding's OWN ingress and stamp it into the private-fetch build
+	// context under privateFetchIngressKey{}.
+	ingress := processCoordinatorBatchBinding().ingress
+	if ingress == nil {
+		t.Fatal("no coordinator binding ingress after inventoryBindProcess")
+	}
+	// A non-comparable custom provider through the trusted call state is a
+	// SUPPORTED provider: the binding handle is the opaque minted ID.
+	opts, release := bindTestCallDiskProvider(t, env,
+		bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"private-fetch"}})
+	defer release()
+	ctx := WithCallOptions(withPrivateFetchBuildIngress(batchCallCtx(env.sessionID), ingress), opts)
+
+	built := buildPrivateFetchTools(ctx, batchTestTools("view"), nil, EnsureCallBuildScope(opts))
+	for i, tool := range built.tools {
+		if _, ok := tool.(*privateFetchIngressTool); !ok {
+			t.Fatalf("private tool %d not ingress-armed (%T)", i, tool)
+		}
+	}
+	resp, runErr := built.tools[0].Run(ctx, fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
+	require.NoError(t, runErr, "the custom-provider private payload must pass executor admission")
+	require.False(t, resp.IsError, "leaf response: %s", resp.Content)
+	require.Positive(t, runner.submitsBound, "the binding-carrying payload submitted through SubmitBound")
+	require.Positive(t, runner.submits, "the run reached the real Runner")
+}
+
+// withPrivateFetchBuildIngress stamps the App-owned ingress into the trusted
+// build context — the ONLY resolution the private fetch build accepts
+// (R12-H2 §1.3: the process-global fallback is eliminated).
+func withPrivateFetchBuildIngress(ctx context.Context, ingress BatchWorkIngress) context.Context {
+	return context.WithValue(ctx, privateFetchIngressKey{}, ingress)
 }

@@ -59,25 +59,25 @@ func TestDiskProviderRegistryBindingLifecycle(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrDiskProviderUnavailable)
 
-	reg1.ReleaseProvider(id)
+	// Owner-key semantics (R12-H2 §1): the binding dies when its owner set
+	// empties; a Call owner keeps it alive, releasing the key deletes it.
+	release, err := reg1.bindCallOwner(id)
+	require.NoError(t, err)
 	_, err = reg1.Lookup(id)
-	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
-	_, _, err = reg1.AcquireProvider(id)
+	require.NoError(t, err)
+	release()
+	_, err = reg1.Lookup(id)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 }
 
-func TestDiskProviderRegistryReferenceRetainsOwner(t *testing.T) {
-	reg := NewDiskProviderRegistry()
-	id, err := reg.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"retained"}})
-	require.NoError(t, err)
-	_, release, err := reg.AcquireProvider(id)
-	require.NoError(t, err)
-	reg.ReleaseProvider(id)
-	_, err = reg.Lookup(id)
-	require.NoError(t, err)
-	release()
-	_, err = reg.Lookup(id)
-	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
+// bindCallOwner acquires one Call owner key for the binding (test seam of
+// the trusted-call-state acquisition).
+func (m *diskCapabilityManager) bindCallOwner(bindingID string) (func(), error) {
+	key := diskOwnerKey{kind: diskOwnerCall, instance: "test-" + bindingID, bindingID: bindingID}
+	if err := m.acquire(key); err != nil {
+		return nil, err
+	}
+	return func() { m.release(key) }, nil
 }
 
 func TestDiskProviderRegistryNilInstanceAndUnavailableSentinel(t *testing.T) {

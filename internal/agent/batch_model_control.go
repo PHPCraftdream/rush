@@ -28,7 +28,6 @@ type installedBatchModelControl struct {
 	profile            *BatchProfile
 	resolver           batchMCPCapabilityResolver
 	rootLeases         *batchRootLeaseStore
-	leafRegistryRefs   *batchLeafRegistryLeaseStore
 	maxDepth, maxNodes int
 }
 
@@ -38,7 +37,6 @@ func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelD
 	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
 	if len(leases) > 0 {
 		control.rootLeases = leases[0]
-		control.leafRegistryRefs = leases[0].registries
 	}
 	return control
 }
@@ -71,23 +69,32 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if err = ValidateSubmit(c.profile, batchRankContext{Rank: inv.WaiterRank, Root: root}, nil, spec, c.maxDepth, c.maxNodes, c.resolver); err != nil {
 		return "", err
 	}
-	var pending *batchRootLeasePending
-	if inv.Policy.DiskBindingID != "" {
+	// Root owner: acquired BEFORE Submit with the already-minted root ID;
+	// it covers accepted-but-not-started children. Released on definite
+	// rejection below; a successful Submit keeps it and the Done watcher
+	// releases it when no further child can start.
+	rootOwned := false
+	if inv.RegistryID != "" {
 		if c.rootLeases == nil {
 			return "", ErrDiskProviderUnavailable
 		}
-		pending, err = c.rootLeases.acquire(inv.Policy.DiskBindingID, inv.RegistryID)
-		if err != nil {
+		if err := c.rootLeases.acquire(root, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
 			return "", err
+		}
+		rootOwned = true
+	}
+	releaseRoot := func() {
+		if rootOwned {
+			c.rootLeases.release(root, inv.Policy.DiskBindingID, inv.RegistryID)
 		}
 	}
 	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: inv.CallID}
 	var id jobbatch.ID
 	var batch *jobbatch.Batch
-	if pending != nil {
+	if rootOwned {
 		bound, ok := c.runner.(batchBoundRunnerHandle)
 		if !ok {
-			pending.release()
+			releaseRoot()
 			return "", ErrDiskProviderUnavailable
 		}
 		id, batch, err = bound.SubmitBound(ctx, request)
@@ -95,27 +102,27 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 		id, err = c.runner.Submit(ctx, request)
 	}
 	if err != nil {
-		if pending != nil {
-			pending.release()
-		}
+		releaseRoot()
 		return "", err
 	}
 	if id != root {
-		if pending != nil {
-			pending.release()
-		}
+		releaseRoot()
 		return "", fmt.Errorf("runner root %q differs from requested %q", id, root)
 	}
-	if pending != nil {
+	if rootOwned {
 		if batch == nil {
-			pending.release()
+			releaseRoot()
 			return "", ErrDiskProviderUnavailable
 		}
 		if batch.ID() != root {
-			pending.release()
+			releaseRoot()
 			return "", fmt.Errorf("runner root %q differs from requested %q", batch.ID(), root)
 		}
-		if err := c.rootLeases.adopt(root, batch.Done(), pending); err != nil {
+		release, ok := c.runner.(batchReleaseHandle)
+		if !ok {
+			return "", ErrDiskProviderUnavailable
+		}
+		if err := c.rootLeases.adopt(root, batch.Done(), inv.Policy.DiskBindingID, inv.RegistryID, release.Release); err != nil {
 			return "", err
 		}
 	}

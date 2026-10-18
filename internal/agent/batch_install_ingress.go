@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,9 @@ type batchWorkIngress struct {
 	rt           *batchRuntime
 	registries   *BatchLeafRegistryStore
 	diskBindings *DiskProviderRegistry
+	// caps is the same App-owned capability manager (typed alias); it owns
+	// construction records and the owner set (R12-H2 §1).
+	caps *diskCapabilityManager
 }
 
 var errBatchWorkIngressDeps = errors.New("batch work ingress: runtime and pinned registry store are required")
@@ -62,7 +66,7 @@ func NewBatchWorkIngress(rt *batchRuntime, registries *BatchLeafRegistryStore) (
 	if rt == nil || registries == nil || rt.cfg.DiskBindings == nil {
 		return nil, errBatchWorkIngressDeps
 	}
-	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: rt.cfg.DiskBindings}, nil
+	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: rt.cfg.DiskBindings, caps: rt.cfg.DiskBindings}, nil
 }
 
 // NewBatchWorkIngressWithDiskBindings injects the owning App's provider
@@ -72,7 +76,7 @@ func NewBatchWorkIngressWithDiskBindings(rt *batchRuntime, registries *BatchLeaf
 		return nil, errBatchWorkIngressDeps
 	}
 	rt.cfg.DiskBindings = bindings
-	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: bindings}, nil
+	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: bindings, caps: bindings}, nil
 }
 
 func (b *batchWorkIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -85,11 +89,13 @@ func (b *batchWorkIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string,
 		return "", errors.New("batch work ingress: nil leaf registry")
 	}
 	id := uuid.NewString()
+	// Identity index registration only — deliberately NO ownership
+	// operation here. Retention is expressed exclusively through typed
+	// owner keys in the App capability manager: the caller (tool build or
+	// private-fetch arming) takes the Construction owner atomically with
+	// this pin and registers its release in the call/build scope; the
+	// entry is deleted when no owner names the registry any more.
 	if err := b.registries.Register(id, registry); err != nil {
-		return "", err
-	}
-	if err := b.registries.Retain(id); err != nil {
-		b.registries.Release(id)
 		return "", err
 	}
 	return id, nil
@@ -187,19 +193,46 @@ func coordinatorBatchBindingFor(c *coordinator) *batchCoordinatorBinding {
 	return bind.(*batchCoordinatorBinding)
 }
 
+// coordinatorPrivateFetchIngress returns the coordinator's OWN batch
+// binding's ingress (the per-App explicit binding), or nil when the
+// coordinator has no binding (flag-off). R12-H2a (P1-3): the agentic_fetch
+// tool stamps THIS ingress — never the process-global binding — into the
+// sub-agent build context so delegated private-fetch dispatch goes through
+// the ONE per-App authority.
+func coordinatorPrivateFetchIngress(c *coordinator) BatchWorkIngress {
+	if bind := coordinatorBatchBindingFor(c); bind != nil {
+		return bind.ingress
+	}
+	return nil
+}
+
 // processCoordinatorBatchBinding returns the process-wide binding or nil.
 func processCoordinatorBatchBinding() *batchCoordinatorBinding {
 	return processBatchBinding.Load()
 }
 
+// BindRuntimeIngress attaches the App-owned ingress to one install's
+// runtime (R12-H2 P1-4) so every leaf env carries it and the agent-family
+// driver resolves pinned leaves through the invocation's own authority
+// instead of the process-global binding. Called from the app during
+// install, before the runtime ever Invokes.
+func BindRuntimeIngress(rt *batchRuntime, ingress BatchWorkIngress) {
+	if rt == nil || ingress == nil {
+		return
+	}
+	rt.setIngress(ingress)
+}
+
 // invokeBatchWithCallContext fills the invocation's per-call identity from
 // the call-time context (session, message, model, image support) and hands
 // it to the ONE authority. Missing identity fails closed inside Validate.
-// A call option carrying a custom (non-OS) DiskProvider registers a fresh
-// process binding (registerDiskBinding) and stamps its opaque ID into the
-// policy; the ID joins the canonical spec payload hash, so live attach with
-// a different binding is rejected. A template pinning a binding already
-// keeps it verbatim (nested/Add inheritance never re-resolves).
+// A call option carrying a custom (non-OS) DiskProvider carries its
+// IMMUTABLE binding handle (minted when the trusted call state was
+// created); its opaque ID is stamped into the policy — the ID joins the
+// canonical spec payload hash, so live attach with a different binding is
+// rejected. A template pinning a binding already keeps it verbatim
+// (nested/Add inheritance never re-resolves). A custom provider without a
+// handle fails closed; nothing re-mints through a copied options object.
 func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, tpl BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	inv := tpl
 	inv.SessionID = tools.GetSessionFromContext(ctx)
@@ -211,11 +244,12 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	if opts := callOptionsFrom(ctx); opts != nil {
 		ctx = withDiskProviderRegistry(ctx, registryForIngress(ingress))
 		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
-			bindingID, err := EnsureCallDiskBinding(opts, batchDiskRegistryFromContext(ctx))
-			if err != nil {
-				return fantasy.ToolResponse{}, err
+			if opts.DiskBindingID == "" {
+				return fantasy.ToolResponse{}, fmt.Errorf(
+					"%w: a custom disk provider must carry its binding handle before the call options are shared",
+					ErrDiskProviderUnavailable)
 			}
-			inv.Policy.DiskBindingID = bindingID
+			inv.Policy.DiskBindingID = opts.DiskBindingID
 		}
 		inv.Policy.DiskProvider = inv.Policy.DiskBindingID != ""
 	}

@@ -197,9 +197,9 @@ func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content, marker = "scoped/slice-provider.txt", "slice-provider-content", "BATCH_SLICE_DISK_OK"
 	disk := newBatchSDKSliceDisk()
-	disk.state.mu.Lock()
-	disk.state.dirs[filepath.Join(workDir, "scoped")] = true
-	disk.state.mu.Unlock()
+	// MkdirAll seeds the scoped dir AND all of its ancestors in the fake, so
+	// the fs_write ancestor walk inside fs_write.go stays inside the grant.
+	require.NoError(t, disk.MkdirAll(nil, filepath.Join(workDir, "scoped"), 0o755))
 	srv := diskProviderWriteThenReadServer(t, path, content, marker)
 	writeProbeRushJSON(t, workDir, srv.URL)
 	client, err := sdk.Open(context.Background(), sdk.Options{WorkingDir: workDir})

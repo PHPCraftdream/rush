@@ -42,14 +42,15 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatc
 		runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
 	}
 	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
+	// R12-H2 P1-4: batchLeafRunContext does NOT stamp the binding registry;
+	// carry the App-owned registry so leaf-side binding resolution /
+	// batchDiskRegistryFromContext resolve the SAME instance, never a
+	// process global.
+	runCtx = withDiskProviderRegistry(runCtx, env.DiskBindings)
 	if p.diskProvider != nil && p.Policy != nil {
-		runCtx = WithCallOptions(runCtx, &CallOptions{
-			DiskProvider: p.diskProvider, DiskBindingID: p.Policy.DiskBindingID,
-			diskBindingID:       p.Policy.DiskBindingID,
-			diskBindingRegistry: env.DiskBindings,
-		})
+		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
 	}
-	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{}), leaseRelease: p.leaseRelease}
+	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{})}
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
 	go e.run(runCtx, leaf, call, report)
 	return e, nil
@@ -66,14 +67,13 @@ func batchControlTarget(name string) bool {
 }
 
 type batchGenericExecution struct {
-	mu           sync.Mutex
-	cancel       context.CancelFunc
-	done         chan struct{}
-	stopped      bool
-	finished     bool
-	disposed     bool
-	leaseRelease func()
-	content      []byte
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopped  bool
+	finished bool
+	disposed bool
+	content  []byte
 }
 
 var (

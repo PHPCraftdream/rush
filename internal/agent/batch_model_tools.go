@@ -55,11 +55,14 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
 	if opts := callOptionsFrom(ctx); opts != nil {
 		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
-			bindingID, err := EnsureCallDiskBinding(opts, batchDiskRegistryFromContext(ctx))
-			if err != nil {
-				return BatchInvocation{}, err
+			// The binding handle is immutable and minted with the trusted
+			// call state; nothing re-mints through a copied options object.
+			if opts.DiskBindingID == "" {
+				return BatchInvocation{}, fmt.Errorf(
+					"%w: a custom disk provider must carry its binding handle before the call options are shared",
+					ErrDiskProviderUnavailable)
 			}
-			inv.Policy.DiskBindingID = bindingID
+			inv.Policy.DiskBindingID = opts.DiskBindingID
 		}
 		inv.Policy.DiskProvider = inv.Policy.DiskBindingID != ""
 	}

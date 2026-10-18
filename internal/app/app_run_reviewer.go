@@ -921,7 +921,7 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 // overridden on purpose (TestReviewerCallOptionsCarryEveryPrimaryField keeps a
 // future field from being forgotten).
 func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
-	return &agent.CallOptions{
+	opts := &agent.CallOptions{
 		ModelRole:                   config.SelectedModelTypeReviewer,
 		DisableSubAgents:            true,
 		TimeoutExtendsOnProgress:    primary.TimeoutExtendsOnProgress,
@@ -943,5 +943,21 @@ func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 		FailIfSessionBusy: primary.FailIfSessionBusy,
 		FolderScope:       primary.FolderScope,
 		DiskProvider:      primary.DiskProvider,
+		// H2a §1.2 borrow semantics: a reviewer follow-up on a
+		// provider-dependent invocation keeps the SAME binding (the
+		// caller's trusted identity, borrowed as an immutable handle — no
+		// new owner is acquired, the caller's Call owner retains it) so its
+		// work never falls back to OS disk. buildScope is deliberately NOT
+		// shared: the review turn's tool builds own their scope via the
+		// normal per-call setup.
+		DiskBindingID: primary.DiskBindingID,
 	}
+	opts.BorrowDiskBindingFrom(primary)
+	// R12-H2a round 2: the review turn owns its OWN build-resource scope
+	// (the borrow copies the immutable binding handle, never the primary's
+	// scope). finishToolAssembly refuses a custom provider without one, and
+	// RunWithOverrides' entry defer closes this scope when the review turn
+	// returns, releasing its constructions.
+	agent.EnsureCallBuildScope(opts)
+	return opts
 }

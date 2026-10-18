@@ -23,7 +23,6 @@ package agent
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
@@ -37,10 +36,21 @@ import (
 // of every field means "unset — fall back to the legacy shared-state
 // path", matching how RunOverrides' zero values mean "no override" today.
 type CallOptions struct {
-	// diskBindingMu guards this immutable run's once-registered binding.
-	diskBindingMu       sync.Mutex
-	diskBindingRegistry *diskProviderRegistry
-	diskBindingID       string
+	// diskBinding carries this immutable run's once-minted binding HANDLE
+	// behind a pointer so copying a CallOptions value borrows (never
+	// re-mints or clears) it (callDiskBinding, disk_provider_call.go). It
+	// is initialized by BindCallDiskProvider when the trusted call state is
+	// created — before the options are shared — and only the explicit
+	// Call-owner token returned there releases it.
+	diskBinding *callDiskBinding
+
+	// buildScope is this trusted call state's closeable build-resource
+	// scope (buildResourceScope, disk_provider_capability.go): every
+	// construction pin performed for the call registers its Construction
+	// release here, and the scope is closed on resolution failure, call
+	// rejection, queue cancellation or final call completion. Copies of
+	// the options borrow the same scope.
+	buildScope *buildResourceScope
 
 	// ModelRole is the named model slot driving this run (smart, fast,
 	// worker, reviewer). Read by workerSubAgentActiveForCall to decide
@@ -255,11 +265,27 @@ type callOptionsContextKey struct{}
 // point gets the same answer, and a scoped call's coder prompt always
 // matches the scoped toolset built from the same CallOptions.
 func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
+	if o != nil && o.buildScope == nil {
+		EnsureCallBuildScope(o)
+	}
 	scoped := o != nil && o.FolderScope != nil
 	return context.WithValue(
 		prompt.WithFolderScoped(ctx, scoped),
 		callOptionsContextKey{}, o,
 	)
+}
+
+// ownDeferredCallScope copies trusted per-call options for a deferred call
+// and gives that copy a fresh build-resource scope. The binding handle stays
+// borrowed and immutable; the caller's options are never modified.
+func ownDeferredCallScope(ctx context.Context) (context.Context, *buildResourceScope) {
+	opts := callOptionsFrom(ctx)
+	if opts == nil {
+		return ctx, nil
+	}
+	owned := *opts
+	owned.buildScope = newBuildResourceScope()
+	return WithCallOptions(ctx, &owned), owned.buildScope
 }
 
 // callOptionsFrom returns the per-call options carried by ctx, or nil when
@@ -268,6 +294,16 @@ func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
 func callOptionsFrom(ctx context.Context) *CallOptions {
 	o, _ := ctx.Value(callOptionsContextKey{}).(*CallOptions)
 	return o
+}
+
+// callBuildScopeFrom returns the trusted call state's build-resource scope
+// carried by ctx (nil for legacy contexts without per-call options). Tool
+// construction registers its Construction releases in this scope.
+func callBuildScopeFrom(ctx context.Context) *buildResourceScope {
+	if opts := callOptionsFrom(ctx); opts != nil {
+		return EnsureCallBuildScope(opts)
+	}
+	return nil
 }
 
 // watchdogTimeoutPolicyForCall resolves the stream watchdog's

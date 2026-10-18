@@ -12,111 +12,140 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBatchRootLeaseProvisionalFailureAndCallOwnerRelease(t *testing.T) {
-	providerRegistry := NewDiskProviderRegistry()
-	provider := bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"provisional"}}
-	binding, err := providerRegistry.RegisterProvider(provider)
-	require.NoError(t, err)
+// newRootLeaseTestManager pins one construction under registryID in caps,
+// wires the identity-index drop hook and builds the root identity store.
+// The returned release drops the construction's own owner.
+func newRootLeaseTestManager(t *testing.T, caps *DiskProviderRegistry, registryID string) (*batchRootLeaseStore, *BatchLeafRegistryStore, func()) {
+	t.Helper()
 	registries := NewBatchLeafRegistryStore()
-	registryID := "root-lease-provisional"
+	caps.setRegistryDrop(registries.Delete)
 	rootRegistry := &policyLeafRegistry{entries: map[string]policyLeafEntry{}}
 	require.NoError(t, registries.Register(registryID, rootRegistry))
-	refs := newBatchLeafRegistryLeaseStore(registries)
-	store := newBatchRootLeaseStore(providerRegistry, refs)
-	failed, err := store.acquire(binding, registryID)
-	require.NoError(t, err)
-	require.NotNil(t, failed)
-	_, err = providerRegistry.Lookup(binding)
-	require.NoError(t, err) // Provisional ref holds alongside call owner.
-	failed.release()
-	_, err = providerRegistry.Lookup(binding)
-	require.NoError(t, err) // Failed-submit release leaves call owner intact.
-	providerRegistry.ReleaseProvider(binding)
-	_, err = providerRegistry.Lookup(binding)
-	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
-	_, err = registries.Resolve(registryID)
-	require.Error(t, err) // Failed provisional owner did not leak a registry ref.
+	require.NoError(t, caps.acquireConstruction("", registryID, "construction-"+registryID))
+	store := newBatchRootLeaseStore(caps)
+	return store, registries, func() {
+		caps.release(diskOwnerKey{kind: diskOwnerConstruction, instance: "construction-" + registryID, registryID: registryID})
+	}
 }
 
-func TestBatchRootLeaseAdoptsClosedDoneAndReleasesOnlyRootOwner(t *testing.T) {
-	providerRegistry := NewDiskProviderRegistry()
-	binding, err := providerRegistry.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"root"}})
+// pinTestConstruction publishes the construction record for registryID and
+// holds one Construction owner for the fixture's lifetime — the same thing
+// the call/build scope of a real trusted call state does between the pin and
+// the scope close. Fixtures that submit payloads naming registryID need it:
+// the executor's Execution owner and the root lease fail closed when no
+// construction record names the registry. The returned closure releases the
+// owner explicitly (idempotent); the t.Cleanup release is the safety net for
+// fixtures that never assert deletion.
+func pinTestConstruction(t *testing.T, caps *DiskProviderRegistry, registryID string) func() {
+	t.Helper()
+	require.NoError(t, caps.acquireConstruction("", registryID, "construction-"+registryID))
+	release := func() {
+		caps.release(diskOwnerKey{kind: diskOwnerConstruction, instance: "construction-" + registryID, registryID: registryID})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+func registerTestBinding(t *testing.T, caps *DiskProviderRegistry, tag string) string {
+	t.Helper()
+	binding, err := caps.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{tag}})
 	require.NoError(t, err)
-	registries := NewBatchLeafRegistryStore()
-	registryID := "root-lease-accepted"
-	rootRegistry := &policyLeafRegistry{entries: map[string]policyLeafEntry{}}
-	require.NoError(t, registries.Register(registryID, rootRegistry))
-	refs := newBatchLeafRegistryLeaseStore(registries)
-	store := newBatchRootLeaseStore(providerRegistry, refs)
+	return binding
+}
+
+func TestBatchRootOwnerRejectedSubmitReleasesOnlyRootOwner(t *testing.T) {
+	caps := NewDiskProviderRegistry()
+	binding := registerTestBinding(t, caps, "provisional")
+	store, registries, releaseConstruction := newRootLeaseTestManager(t, caps, "root-lease-provisional")
+	root := jobbatch.ID("root-rejected")
+	require.NoError(t, store.acquire(root, binding, "root-lease-provisional"))
+	_, err := caps.Lookup(binding)
+	require.NoError(t, err) // The Root owner holds the binding before Submit.
+	store.release(root, binding, "root-lease-provisional")
+	_, err = caps.Lookup(binding)
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable) // Definite rejection drops the Root owner.
+	_, err = registries.Resolve("root-lease-provisional")
+	require.NoError(t, err) // The construction owner still holds the registry.
+	releaseConstruction()
+	_, err = registries.Resolve("root-lease-provisional")
+	require.Error(t, err) // No owner names the registry any more: record deleted.
+}
+
+func TestBatchRootOwnerBridgesToSettlement(t *testing.T) {
+	caps := NewDiskProviderRegistry()
+	binding := registerTestBinding(t, caps, "root")
+	store, registries, releaseConstruction := newRootLeaseTestManager(t, caps, "root-lease-accepted")
 	root := jobbatch.ID("root-accepted")
-
-	pending, err := store.acquire(binding, registryID)
+	require.NoError(t, store.acquire(root, binding, "root-lease-accepted"))
+	_, err := caps.Lookup(binding)
+	require.NoError(t, err) // The accepted Root owner holds the binding.
+	resolved, err := registries.Resolve("root-lease-accepted")
 	require.NoError(t, err)
-	providerRegistry.ReleaseProvider(binding) // Simulate call-owner defer.
-	_, err = providerRegistry.Lookup(binding)
-	require.NoError(t, err) // Root lease bridges call owner to settlement.
+	require.NotNil(t, resolved)
 	done := make(chan struct{})
-	close(done) // Settlement racing ahead of adopt is safe.
-	require.NoError(t, store.adopt(root, done, pending))
+	require.NoError(t, store.adopt(root, done, binding, "root-lease-accepted", nil))
 
-	_, err = providerRegistry.Lookup(binding)
-	require.NoError(t, err)
-	resolved, err := registries.Resolve(registryID)
-	require.NoError(t, err)
-	require.Same(t, rootRegistry, resolved)
-}
-
-func TestBatchRootLeaseDuplicateAndMismatchAdoption(t *testing.T) {
-	providerRegistry := NewDiskProviderRegistry()
-	binding1, err := providerRegistry.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"one"}})
-	require.NoError(t, err)
-	binding2, err := providerRegistry.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"two"}})
-	require.NoError(t, err)
-	registries := NewBatchLeafRegistryStore()
-	registryID := "root-lease-duplicate"
-	rootRegistry := &policyLeafRegistry{entries: map[string]policyLeafEntry{}}
-	require.NoError(t, registries.Register(registryID, rootRegistry))
-	refs := newBatchLeafRegistryLeaseStore(registries)
-	store := newBatchRootLeaseStore(providerRegistry, refs)
-	root := jobbatch.ID("root-shared")
-	done := make(chan struct{})
-	first, err := store.acquire(binding1, registryID)
-	require.NoError(t, err)
-	require.NoError(t, store.adopt(root, done, first))
-	duplicate, err := store.acquire(binding1, registryID)
-	require.NoError(t, err)
-	require.NoError(t, store.adopt(root, done, duplicate))
-	_, err = providerRegistry.Lookup(binding1)
-	require.NoError(t, err) // Duplicate adoption released only its extra ref.
-	mismatch, err := store.acquire(binding2, registryID)
-	require.NoError(t, err)
-	require.ErrorIs(t, store.adopt(root, done, mismatch), ErrDiskProviderUnavailable)
-	require.True(t, store.matches(root, binding1, registryID))
-	close(done)
+	close(done) // Settlement: Done means no further child can start.
 	require.Eventually(t, func() bool {
-		_, lookupErr := providerRegistry.Lookup(binding)
+		_, lookupErr := caps.Lookup(binding)
 		return errors.Is(lookupErr, ErrDiskProviderUnavailable)
 	}, time.Second, time.Millisecond)
-	resolved, err := registries.Resolve(registryID)
-	require.NoError(t, err)
-	require.Same(t, rootRegistry, resolved) // Registry owner survives root lease.
+	_, err = registries.Resolve("root-lease-accepted")
+	require.NoError(t, err) // The construction owner is independent of the root.
+	releaseConstruction()
+	_, err = registries.Resolve("root-lease-accepted")
+	require.Error(t, err)
 }
 
-func TestBatchExecutionLeaseIsRetainedUntilDispose(t *testing.T) {
-	providerRegistry := NewDiskProviderRegistry()
-	binding, err := providerRegistry.RegisterProvider(bindingTestNonComparable{DiskProvider: tools.OSDisk(), tags: []string{"execution"}})
+func TestBatchRootOwnerDuplicateAndMismatchAdoption(t *testing.T) {
+	caps := NewDiskProviderRegistry()
+	binding1 := registerTestBinding(t, caps, "one")
+	binding2 := registerTestBinding(t, caps, "two")
+	store, _, releaseConstruction := newRootLeaseTestManager(t, caps, "root-lease-duplicate")
+	root := jobbatch.ID("root-shared")
+	done := make(chan struct{})
+	require.NoError(t, store.acquire(root, binding1, "root-lease-duplicate"))
+	require.NoError(t, store.adopt(root, done, binding1, "root-lease-duplicate", nil))
+	// Repeated acquisition of the SAME key is idempotent (R12-H2 §1.1).
+	require.NoError(t, store.acquire(root, binding1, "root-lease-duplicate"))
+	_, err := caps.Lookup(binding1)
 	require.NoError(t, err)
-	_, release, err := providerRegistry.Acquire(binding)
-	require.NoError(t, err)
-	providerRegistry.ReleaseProvider(binding) // Drop the call owner.
-	wrapped := newBatchBindingExecution(testBatchLeaseExecution{}, release)
-	_, err = providerRegistry.Lookup(binding)
-	require.NoError(t, err)
-	_, _, err := providerRegistry.Acquire(binding)
-	require.NoError(t, err)
+	// A different binding for the same root is a mismatch: refused, and no
+	// replacement root owner is acquired.
+	require.ErrorIs(t, store.acquire(root, binding2, "root-lease-duplicate"), ErrDiskProviderUnavailable)
+	_, err = caps.Lookup(binding2)
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable) // The mismatch took no owner.
+	require.True(t, store.matches(root, binding1, "root-lease-duplicate"))
+	close(done)
+	require.Eventually(t, func() bool {
+		_, lookupErr := caps.Lookup(binding1)
+		return errors.Is(lookupErr, ErrDiskProviderUnavailable)
+	}, time.Second, time.Millisecond)
+	releaseConstruction()
+}
+
+func TestBatchExecutionOwnerIsRetainedUntilDispose(t *testing.T) {
+	caps := NewDiskProviderRegistry()
+	binding := registerTestBinding(t, caps, "execution")
+	_, _, releaseConstruction := newRootLeaseTestManager(t, caps, "exec-lease")
+	defer releaseConstruction()
+	// Execution owner, acquired by batchExecutor.Start BEFORE side effects;
+	// released ONLY by the physical-Dispose wrapper.
+	execKey := diskOwnerKey{kind: diskOwnerExecution, instance: "exec-1", bindingID: binding, registryID: "exec-lease"}
+	require.NoError(t, caps.acquire(execKey))
+	var once bool
+	wrapped := newBatchBindingExecution(testBatchLeaseExecution{}, func() {
+		if once {
+			return
+		}
+		once = true
+		caps.release(execKey)
+	})
+	_, err := caps.Lookup(binding)
+	require.NoError(t, err) // The execution owner holds the binding.
 	require.NoError(t, wrapped.(jobbatch.Disposer).Dispose(context.Background()))
-	_, err = providerRegistry.Lookup(binding)
-	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
+	_, err = caps.Lookup(binding)
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable) // The wrapper is the sole releaser.
 }
 
 type testBatchLeaseExecution struct{}

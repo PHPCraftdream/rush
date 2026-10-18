@@ -572,6 +572,10 @@ var nestedAgentToolWarnOnce sync.Once
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
 // first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	if opts := callOptionsFrom(ctx); opts != nil && callBuildScopeFrom(ctx) == nil {
+		EnsureCallBuildScope(opts)
+		defer opts.buildScope.close()
+	}
 	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
 	return built.tools, err
 }
@@ -826,6 +830,17 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent)
 }
 
+// sharedBuildScopeFor lazily creates the coordinator-level build scope for
+// tool assemblies without trusted call state (the shared session toolset).
+func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
+	c.sharedBuildScopeMu.Lock()
+	defer c.sharedBuildScopeMu.Unlock()
+	if c.sharedBuildScope == nil {
+		c.sharedBuildScope = newBuildResourceScope()
+	}
+	return c.sharedBuildScope
+}
+
 // finishToolAssembly is the final construction boundary. Flag OFF (no batch
 // binding): the historical branch, byte-for-byte — async wrappers, then
 // hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
@@ -837,16 +852,56 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 		allowedControls := batchControlAvailability(filteredTools)
 		filteredTools = withoutBatchControlPlaceholders(filteredTools)
 		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
-		built, err := newBatchWorkToolBuild(bind, filteredTools)
-		if err != nil {
+		// Construction ownership (R12-H2 §1.2): the build's pins register
+		// in the trusted call state's build-resource scope. A build WITHOUT
+		// trusted call state (the coordinator's shared toolset) uses the
+		// coordinator's shared scope; a custom provider whose options carry
+		// no scope has NO fallback and fails closed.
+		scope := callBuildScopeFrom(ctx)
+		if scope == nil {
+			if opts := callOptionsFrom(ctx); opts != nil && tools.IsCustomDiskProvider(opts.DiskProvider) {
+				return policyToolBuild{}, fmt.Errorf(
+					"%w: a custom disk provider must carry its binding handle before the call options are shared",
+					ErrDiskProviderUnavailable)
+			}
+		}
+		// shared tracks whether the build carries NO trusted call state
+		// (the coordinator's eager default toolset). Design §1.2: bare
+		// builders create AND close a scope — no process-lifetime
+		// fallback. The shared build therefore runs under an EPHEMERAL
+		// scope (closed at assembly end, pinning nothing) and DEFERS its
+		// registry publication + Construction ownership to first dispatch
+		// (batchIngressTool.ensurePinned).
+		shared := scope == nil
+		deferred := shared
+		if shared {
+			scope = newBuildResourceScope()
+			defer scope.close()
+		}
+		// failBuildScope closes the CALL's scope on a build-then-error
+		// sequence (R12-H2a P1-1): newBatchWorkToolBuild succeeded and pinned
+		// construction owners into it, so a later failure (registry resolve,
+		// custom-provider handle, InstallBatchModelControls) must not leak
+		// them past this assembly boundary.
+		failBuildScope := func(err error) (policyToolBuild, error) {
+			if !shared {
+				scope.close()
+			}
 			return policyToolBuild{}, err
 		}
-		if batchFlagEnabled() && bind.controls != nil {
+		built, err := newBatchWorkToolBuild(bind, filteredTools, scope, deferred)
+		if err != nil {
+			return failBuildScope(err)
+		}
+		// A deferred (shared default toolset) build has no published
+		// registry identity until first dispatch, so the model controls
+		// install per-call, never in the shared build.
+		if batchFlagEnabled() && bind.controls != nil && !deferred {
 			allowed := allowedControls
 			if len(allowed) > 0 {
 				registry, err := bind.ingress.Registry(built.registryID)
 				if err != nil {
-					return policyToolBuild{}, err
+					return failBuildScope(err)
 				}
 				inv := BatchInvocation{
 					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
@@ -864,26 +919,25 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				}
 				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
 				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
-				// A custom (non-OS) call provider pins a fresh process
-				// binding into the template: coordinator-originated batch
-				// work carries the binding instead of being refused.
+				// A custom (non-OS) call provider carries its IMMUTABLE
+				// binding handle, minted when the trusted call state was
+				// created (BindCallDiskProvider) — never lazily here: a
+				// copied options object must not re-mint a binding, and a
+				// custom provider without one fails closed.
 				if opts := callOptionsFrom(ctx); opts != nil {
 					ctx = withDiskProviderRegistry(ctx, bind.diskBindings)
 					if bindingID := opts.DiskBindingID; bindingID != "" {
 						inv.Policy.DiskBindingID = bindingID
 						inv.Policy.DiskProvider = true
 					} else if tools.IsCustomDiskProvider(opts.DiskProvider) {
-						bindingID, err := EnsureCallDiskBinding(opts, bind.diskBindings)
-						if err != nil {
-							return policyToolBuild{}, err
-						}
-						inv.Policy.DiskBindingID = bindingID
-						inv.Policy.DiskProvider = true
+						return failBuildScope(fmt.Errorf(
+							"%w: a custom disk provider must carry its binding handle before the call options are shared",
+							ErrDiskProviderUnavailable))
 					}
 				}
 				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
 				if err != nil {
-					return policyToolBuild{}, err
+					return failBuildScope(err)
 				}
 				for _, control := range controls {
 					if control.Info().Name == tools.AwaitTasksToolName {
