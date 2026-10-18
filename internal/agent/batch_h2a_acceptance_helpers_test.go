@@ -182,6 +182,14 @@ func newH2aGatedInstallWithLeafWrap(t *testing.T, wrap func(fantasy.AgentTool) f
 	t.Cleanup(func() {
 		require.NoError(t, install.Runner.Close(context.Background()))
 	})
+	// Registered AFTER the Close cleanup so LIFO runs it BEFORE Close: on an
+	// assertion failure a leaf/provider can still be parked in the gate, and
+	// Close must never wait behind a gated execution. Both letGo are
+	// idempotent.
+	t.Cleanup(func() {
+		capture.letGo()
+		fake.letGo()
+	})
 	realDir := t.TempDir()
 	targetPath := filepath.ToSlash(filepath.Join(realDir, "out.txt"))
 	require.NoError(t, os.WriteFile(filepath.FromSlash(targetPath), []byte(h2aSentinel), 0o644))

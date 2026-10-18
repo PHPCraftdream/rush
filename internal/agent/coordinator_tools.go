@@ -925,7 +925,6 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				// copied options object must not re-mint a binding, and a
 				// custom provider without one fails closed.
 				if opts := callOptionsFrom(ctx); opts != nil {
-					ctx = withDiskProviderRegistry(ctx, bind.diskBindings)
 					if bindingID := opts.DiskBindingID; bindingID != "" {
 						inv.Policy.DiskBindingID = bindingID
 						inv.Policy.DiskProvider = true

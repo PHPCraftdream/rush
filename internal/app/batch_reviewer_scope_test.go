@@ -128,6 +128,9 @@ func TestReviewerPassCustomProviderBuildsAndReleasesConstruction(t *testing.T) {
 
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
+	// Pair the refCounted pool handle (check_db_release_pairing.sh). Registered
+	// BEFORE the Shutdown cleanup so LIFO runs it AFTER Shutdown.
+	t.Cleanup(func() { _ = db.Release(dataDir) })
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)

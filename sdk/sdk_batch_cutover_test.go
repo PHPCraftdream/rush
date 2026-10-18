@@ -199,7 +199,7 @@ func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 	disk := newBatchSDKSliceDisk()
 	// MkdirAll seeds the scoped dir AND all of its ancestors in the fake, so
 	// the fs_write ancestor walk inside fs_write.go stays inside the grant.
-	require.NoError(t, disk.MkdirAll(nil, filepath.Join(workDir, "scoped"), 0o755))
+	require.NoError(t, disk.MkdirAll(context.Background(), filepath.Join(workDir, "scoped"), 0o755))
 	srv := diskProviderWriteThenReadServer(t, path, content, marker)
 	writeProbeRushJSON(t, workDir, srv.URL)
 	client, err := sdk.Open(context.Background(), sdk.Options{WorkingDir: workDir})
@@ -233,8 +233,8 @@ func TestSDKBatchRuntimeTwoClientsIsolateEqualPaths(t *testing.T) {
 	const path = "scoped/shared.txt"
 	const markerA, markerB = "BATCH_CLIENT_A_OK", "BATCH_CLIENT_B_OK"
 	fakeA, fakeB := newBatchSDKSliceDisk(), newBatchSDKSliceDisk()
-	require.NoError(t, fakeA.MkdirAll(nil, filepath.Join(workA, "scoped"), 0o755))
-	require.NoError(t, fakeB.MkdirAll(nil, filepath.Join(workB, "scoped"), 0o755))
+	require.NoError(t, fakeA.MkdirAll(context.Background(), filepath.Join(workA, "scoped"), 0o755))
+	require.NoError(t, fakeB.MkdirAll(context.Background(), filepath.Join(workB, "scoped"), 0o755))
 	const contentA, contentB = "same-path-A", "same-path-B"
 	barrier := make(chan struct{})
 	var arrived atomic.Int64

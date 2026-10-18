@@ -590,7 +590,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
 	}
-	var executor jobbatch.Executor = deps.Executor
+	executor := deps.Executor
 	if executor == nil {
 		built := newBatchExecutor(env, newBatchExecutorFamilies(deps.AgentDeps))
 		built.decorateExecution = deps.DecorateExecution

@@ -359,6 +359,11 @@ func newShutdownAcceptanceAppWithDecorator(t *testing.T, forced bool, handler ht
 
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
+	// Pair the refCounted pool handle (check_db_release_pairing.sh). Registered
+	// BEFORE the Shutdown cleanup so LIFO runs it AFTER Shutdown; on the
+	// graceful path Shutdown already dropped the pool entry (benign no-op),
+	// and on the forced path (Shutdown skips Release) it closes the entry.
+	t.Cleanup(func() { _ = db.Release(dataDir) })
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(func() { application.Shutdown() })
@@ -583,7 +588,11 @@ func TestShutdownForcedPreservesHostLockWriterAndProvider(t *testing.T) {
 
 func probeHostInChild(t *testing.T, dataDir, hostID string) session.HostLockStatus {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestShutdownHostProbeHelper$")
+	// The bounded context is the mechanism that bounds the helper: if the
+	// subprocess probe hangs, CombinedOutput returns when the context fires.
+	probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, os.Args[0], "-test.run=^TestShutdownHostProbeHelper$")
 	cmd.Env = append(os.Environ(), "RUSH_SHUTDOWN_HOST_PROBE=1", "RUSH_SHUTDOWN_DATA_DIR="+dataDir, "RUSH_SHUTDOWN_HOST_ID="+hostID)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "subprocess host probe: %s", output)
