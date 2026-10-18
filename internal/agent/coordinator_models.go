@@ -280,6 +280,9 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// was ExecuteRun's per-run UpdateModels, whose SetTools overwrote the
 	// ONE shared toolset every in-flight turn re-read at every step.
 	if wantTools {
+		if opts := callOptionsFrom(ctx); opts != nil {
+			EnsureCallBuildScope(opts)
+		}
 		tools, err := c.pinCallTools(ctx, cfg)
 		if err != nil {
 			return nil, err
@@ -610,6 +613,15 @@ var pinCallToolsReadyGateSeam func()
 func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]fantasy.AgentTool, error) {
 	required := scopedCallToolsRequired(ctx)
 	fail := func(err error) ([]fantasy.AgentTool, error) {
+		// R12-H2a round 2: a failure AFTER buildTools has already pinned
+		// construction owners into the call's build scope (the empty-
+		// toolset refusal, the ready-gate drain error) must not leak
+		// them. Only the CALL's own scope is closed: callBuildScopeFrom
+		// returns nil for bare contexts, so the coordinator's shared
+		// scope is never touched here.
+		if scope := callBuildScopeFrom(ctx); scope != nil {
+			scope.close()
+		}
 		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
 		if required {
 			// Wrap both: callers match the cause (e.g. ErrDiskProviderNotDurable).

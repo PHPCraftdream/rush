@@ -86,6 +86,24 @@ func (f *fakeBatchRunner) Submit(ctx context.Context, req jobbatch.SubmitRequest
 
 func (f *fakeBatchRunner) Stop(context.Context, jobbatch.ID) error { return nil }
 
+// Release satisfies the batchReleaseHandle seam that submit() asserts on the
+// installed runner after a bound submit (batch_ingress.go). The fixture has
+// no inner real runner to forward to, so it returns nil, mirroring the fake
+// Submit/Stop semantics; the ingress assertion itself stays untouched (an
+// omitted Release here fails the bound path with ErrDiskProviderUnavailable).
+func (f *fakeBatchRunner) Release(context.Context, jobbatch.ID) error { return nil }
+
+// SubmitBound satisfies submit()'s root-owning bound path: an invocation
+// with a non-empty RegistryID requires the runner to implement
+// batchBoundRunnerHandle and to return a Batch whose ID matches the
+// requested root (adopt arms the root-lease watcher on its Done channel).
+func (f *fakeBatchRunner) SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error) {
+	if _, err := f.Submit(ctx, req); err != nil {
+		return "", nil, err
+	}
+	return req.Root, jobbatch.NewTestBatch(req.Root), nil
+}
+
 func (f *fakeBatchRunner) setErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

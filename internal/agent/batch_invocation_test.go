@@ -31,24 +31,44 @@ func testInvocation() BatchInvocation {
 	}
 }
 
-func TestBatchInvocationValidateRejectsDiskProvider(t *testing.T) {
+// TestBatchInvocationValidateProviderMarkersExecutorEnforced pins Validate as
+// a well-formedness gate only: provider/custom-disk markers without a binding
+// id are admitted here, and enforcement happens later — the executor rejects a
+// provider-marked payload without a binding id (batch_exec.go), and the batch
+// install ingress rejects DiskProvider=true with an empty binding id
+// (batch_install_ingress.go).
+func TestBatchInvocationValidateProviderMarkersExecutorEnforced(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		edit func(*BatchInvocation)
-	}{
-		{"provider marker", func(inv *BatchInvocation) { inv.Policy.DiskProvider = true }},
-		{"custom disk", func(inv *BatchInvocation) { inv.Policy.CustomDisk = " disk " }},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			inv := testInvocation()
-			tc.edit(&inv)
-			require.ErrorIs(t, inv.Validate(), ErrDiskProviderNotDurable,
-				"disk provider policy must refuse before ingress admission")
-		})
-	}
+	t.Run("provider marker without binding", func(t *testing.T) {
+		t.Parallel()
+		inv := testInvocation()
+		inv.Policy.DiskProvider = true
+		// Admission is not the enforcement point: Validate checks
+		// well-formedness only (batch_invocation.go); the executor's
+		// provider/binding check (batch_exec.go) owns this refusal.
+		require.NoError(t, inv.Validate())
+	})
+	t.Run("custom disk without binding", func(t *testing.T) {
+		t.Parallel()
+		inv := testInvocation()
+		inv.Policy.CustomDisk = " disk "
+		// Admission is not the enforcement point: Validate checks
+		// well-formedness only (batch_invocation.go); the executor's
+		// provider/binding check (batch_exec.go) owns this refusal.
+		require.NoError(t, inv.Validate())
+	})
+	t.Run("malformed binding id", func(t *testing.T) {
+		t.Parallel()
+		inv := testInvocation()
+		inv.Policy.DiskBindingID = "bad id"
+		require.ErrorIs(t, inv.Validate(), errBatchBadDiskBinding)
+	})
+	t.Run("well-formed binding id accepted", func(t *testing.T) {
+		t.Parallel()
+		inv := testInvocation()
+		inv.Policy.DiskBindingID = "bind-1"
+		require.NoError(t, inv.Validate())
+	})
 }
 
 func TestBatchInvocationValidateAcceptsComplete(t *testing.T) {

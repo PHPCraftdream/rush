@@ -42,6 +42,7 @@ var (
 	errBatchBadDeliveryMode     = errors.New("batch invocation: unknown delivery mode")
 	errBatchBadEscapePolicy     = errors.New("batch invocation: unknown background-escape policy")
 	errBatchBadWaiterRank       = errors.New("batch invocation: waiter rank outside the closed profile ranks")
+	errBatchBadDiskBinding      = errors.New("batch invocation: malformed disk binding id")
 	errBatchNilLeaf             = errors.New("batch invocation: nil leaf tool")
 	errBatchNilInput            = errors.New("batch invocation: nil tool input")
 	errBatchInvocationMismatch  = errors.New("batch invocation: input hash mismatch for a live tool call")
@@ -62,15 +63,20 @@ var (
 // pinned registry identity, the folder scope, the restricted-run allowlist
 // and the custom disk identity).
 type batchLeafPolicyContext struct {
-	RegistryID        string                       `json:"registry_id"`
-	MessageID         string                       `json:"message_id,omitempty"`
-	SupportsImages    bool                         `json:"supports_images,omitempty"`
-	ModelName         string                       `json:"model_name,omitempty"`
-	FolderScope       *permission.FolderScopeSpec  `json:"folder_scope,omitempty"`
-	RunAllowlist      *permission.RunAllowlistSpec `json:"run_allowlist,omitempty"`
-	CustomDisk        string                       `json:"custom_disk,omitempty"`
-	DiskProvider      bool                         `json:"disk_provider,omitempty"`
-	RestrictedToolset string                       `json:"restricted_toolset"`
+	RegistryID     string                       `json:"registry_id"`
+	MessageID      string                       `json:"message_id,omitempty"`
+	SupportsImages bool                         `json:"supports_images,omitempty"`
+	ModelName      string                       `json:"model_name,omitempty"`
+	FolderScope    *permission.FolderScopeSpec  `json:"folder_scope,omitempty"`
+	RunAllowlist   *permission.RunAllowlistSpec `json:"run_allowlist,omitempty"`
+	CustomDisk     string                       `json:"custom_disk,omitempty"`
+	DiskProvider   bool                         `json:"disk_provider,omitempty"`
+	// DiskBindingID is the REQUIRED process-bound provider binding
+	// (disk_provider_binding.go) when this invocation carries a custom
+	// DiskProvider; empty means no custom disk. Liveness is the
+	// executor's job; the ID flows into the canonical spec payload hash.
+	DiskBindingID     string `json:"disk_binding_id,omitempty"`
+	RestrictedToolset string `json:"restricted_toolset"`
 }
 
 // batchDeliveryChoice is the mode/window pair R11D elects on.
@@ -153,8 +159,12 @@ func (inv *BatchInvocation) Validate() error {
 	inv.Policy.RestrictedToolset = strings.TrimSpace(inv.Policy.RestrictedToolset)
 	inv.Policy.ModelName = strings.TrimSpace(inv.Policy.ModelName)
 	inv.Policy.CustomDisk = strings.TrimSpace(inv.Policy.CustomDisk)
-	if inv.Policy.CustomDisk != "" || inv.Policy.DiskProvider {
-		return fmt.Errorf("%w", ErrDiskProviderNotDurable)
+	inv.Policy.DiskBindingID = strings.TrimSpace(inv.Policy.DiskBindingID)
+	// A non-empty binding ID is a required process binding: Validate checks
+	// well-formedness only; liveness is resolved by the executor before any
+	// leaf side effect (batch_exec.go).
+	if inv.Policy.DiskBindingID != "" && !batchWellFormedBindingID(inv.Policy.DiskBindingID) {
+		return fmt.Errorf("%w: binding id %q", errBatchBadDiskBinding, inv.Policy.DiskBindingID)
 	}
 	if inv.SessionID == "" {
 		return fmt.Errorf("%w", errBatchMissingSessionID)
@@ -197,15 +207,31 @@ func (inv *BatchInvocation) Validate() error {
 	return nil
 }
 
+// batchWellFormedBindingID checks binding-ID well-formedness only: opaque,
+// bounded, whitespace-free. Liveness is the executor's job.
+func batchWellFormedBindingID(id string) bool {
+	if len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // batchLeafRunContext rebuilds the executor run context from the invocation's
 // immutable policy transport: every value batch_exec_generic.go copies today,
-// plus the folder scope, restricted-run allowlist and custom disk it loses.
-// R11F replaces the three-value copy in the families with this single arming
-// point, so no executor ever falls back to a session-keyed policy lookup.
+// disk provider closure pinned at caller tool-build time. Executor resolves
+// and validates the binding; it never reconstructs these ordinary leaves.
 func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Context {
 	ctx := context.WithValue(base, tools.SessionIDContextKey, p.SessionID)
 	if p.Policy == nil {
 		return ctx
+	}
+	if p.diskProvider != nil {
+		ctx = context.WithValue(ctx, batchDiskProviderContextKey{}, p.diskProvider)
 	}
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, p.Policy.MessageID)
 	ctx = context.WithValue(ctx, tools.SupportsImagesContextKey, p.Policy.SupportsImages)
@@ -226,4 +252,14 @@ type (
 	batchFolderScopeContextKey  struct{}
 	batchRunAllowlistContextKey struct{}
 	batchCustomDiskContextKey   struct{}
+	// batchDiskProviderContextKey carries the resolved process-bound
+	// DiskProvider for a pinned leaf run.
+	batchDiskProviderContextKey struct{}
 )
+
+// batchDiskProviderFrom returns the resolved binding provider carried by a
+// pinned leaf run context, or nil (no binding required).
+func batchDiskProviderFrom(ctx context.Context) tools.DiskProvider {
+	p, _ := ctx.Value(batchDiskProviderContextKey{}).(tools.DiskProvider)
+	return p
+}

@@ -26,6 +26,13 @@ func fillCallOptions(t *testing.T) *agent.CallOptions {
 	v := reflect.ValueOf(opts).Elem()
 	for i := range v.NumField() {
 		f, name := v.Field(i), v.Type().Field(i).Name
+		// The unexported binding-handle/build-scope fields (diskBinding,
+		// buildScope) are managed by the agent capability layer
+		// (BindCallDiskProvider): they are not part of the per-field copy
+		// contract under test and cannot be reflect-set (unexported).
+		if !f.CanSet() {
+			continue
+		}
 		switch f.Kind() {
 		case reflect.Bool:
 			f.SetBool(true)
@@ -70,6 +77,12 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	pv, gv := reflect.ValueOf(*primary), reflect.ValueOf(*got)
 	for i := range pv.NumField() {
 		name := pv.Type().Field(i).Name
+		// Unexported fields (the capability layer's binding handle and
+		// build scope) panic on Interface() and are not part of the
+		// per-field copy contract under test — skip them.
+		if !pv.Field(i).CanInterface() {
+			continue
+		}
 		if overridden[name] {
 			require.NotEqual(t, pv.Field(i).Interface(), gv.Field(i).Interface(), "%s is overridden on purpose", name)
 			continue

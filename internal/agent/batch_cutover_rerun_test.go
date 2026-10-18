@@ -135,7 +135,8 @@ func newBatchRerunCutoverFx(t *testing.T) *batchRerunCutoverFx {
 	install, err := InstallBatchRuntime(ctx, BatchInstallDeps{
 		Host: "host-a", RunnerID: "runner-1", Profile: profile,
 		Registries: registries, Store: store, Messages: messages,
-		Executor: exec,
+		DiskBindings: NewDiskProviderRegistry(),
+		Executor:     exec,
 		// Engine budgets: jobbatch.NewRunner fails closed on zero values, so
 		// the fixture mirrors the production factory defaults
 		// (internal/app/batch_install_factory.go).

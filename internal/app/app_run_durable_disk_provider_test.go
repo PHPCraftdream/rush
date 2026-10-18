@@ -46,6 +46,8 @@ func TestExecuteRunOrphanedDiskProviderCallIsNeverEnqueued(t *testing.T) {
 		started   = make(chan struct{})
 		startOnce sync.Once
 	)
+	closeOnce := sync.Once{}
+	closeGate := func() { closeOnce.Do(func() { close(gate) }) }
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -76,6 +78,12 @@ func TestExecuteRunOrphanedDiskProviderCallIsNeverEnqueued(t *testing.T) {
 	}
 
 	application, sessionID := newAdmissionRaceApp(t, handler)
+
+	// Register the gate close AFTER newAdmissionRaceApp: t.Cleanup runs
+	// LIFO, so this must run BEFORE the app's shutdown cleanup — the
+	// server close blocks on the still-gated owner handler and would hang
+	// otherwise.
+	t.Cleanup(closeGate)
 
 	// Only the disk-provider call carries DiskProvider + a FolderScope (a
 	// DiskProvider requires a scope, one of #859's hard-error
@@ -135,7 +143,7 @@ func TestExecuteRunOrphanedDiskProviderCallIsNeverEnqueued(t *testing.T) {
 
 	// Let the owner finish cleanly and confirm nothing shows up later
 	// either (defense in depth).
-	close(gate)
+	closeGate()
 	select {
 	case o := <-outcomes:
 		require.Equal(t, 1, o.idx)

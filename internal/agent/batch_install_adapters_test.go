@@ -90,7 +90,8 @@ func installTestDeps(t *testing.T, store *session.BatchStore, conn *sql.DB, cont
 	return BatchInstallDeps{
 		Host: "host", RunnerID: "runner-1", Owner: "owner",
 		Profile: profile, Registries: NewBatchLeafRegistryStore(),
-		Store: store, Messages: message.NewService(db.New(conn)),
+		DiskBindings: NewDiskProviderRegistry(),
+		Store:        store, Messages: message.NewService(db.New(conn)),
 		Executor: installFakeExecutor{content: content}, DonePoll: time.Millisecond,
 		// R11F round-2 (P1-7 item 6): jobbatch.NewRunner fails closed on zero
 		// budgets AND on zero limits (engine.go validate), so every adapter

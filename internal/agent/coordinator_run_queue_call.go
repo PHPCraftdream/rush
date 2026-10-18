@@ -168,6 +168,10 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
+		// The rebuilt call is a bare internal call builder: it owns a fresh
+		// build-resource scope (R12-H2 §1.2 — no process-lifetime fallback),
+		// closed when RunSessionAgentCall's execution ends or fails.
+		EnsureCallBuildScope(rebuiltCallOptions)
 	}
 	if data.FolderScopeSpec != nil {
 		var compiledScope permission.FolderScope
@@ -349,6 +353,9 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		cfg, _ := c.cfg.Snapshot()
 		scopedTools, err := c.pinCallTools(ctx, cfg)
 		if err != nil {
+			// Assembly error: the build scope closes here, releasing this
+			// call's construction owners (R12-H2 §1.2).
+			call.CallOptions.buildScope.close()
 			return nil, fmt.Errorf(
 				"failed to build the rebuilt call's tool-shaping toolset; refusing to restart the turn on the shared unscoped toolset: %w", err)
 		}
@@ -371,6 +378,13 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		stopTicker()
 		<-tickerDone
 	}()
+
+	// queued-call-owned scopes are closed by the call resolution hook when
+	// rejected, superseded, or completed. Durable rebuilt scopes remain owned
+	// here and close on every return.
+	if call.CallOptions != nil && call.onQueueResolved == nil {
+		defer call.CallOptions.buildScope.close()
+	}
 
 	return c.currentAgent.Run(ctx, call)
 }

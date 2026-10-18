@@ -88,7 +88,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 			return fantasy.NewTextResponse("ok"), nil
 		}))
 	}
-	bind := &batchCoordinatorBinding{ingress: &fakeBatchIngress{}, controls: modelControlInventory{tools: controls}}
+	bind := &batchCoordinatorBinding{ingress: &fakeBatchIngress{}, controls: modelControlInventory{tools: controls}, diskBindings: NewDiskProviderRegistry()}
 	coordinatorBatchBindings.Store(c, bind)
 	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
 	tools := batchTestTools("bash", "job_output", "job_kill")
@@ -97,7 +97,17 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 			tools = append(tools, newBatchControlPlaceholder(name))
 		}
 	}
-	built, err := c.finishToolAssembly(context.Background(), tools, nil, false)
+	// Round-2 construction ownership: a build with trusted call state runs
+	// non-deferred, which is the only path that installs the model controls
+	// in the assembled tools (the shared default toolset defers controls to
+	// per-call install). Mint trusted call state with its own build scope,
+	// matching the production per-call assembly context.
+	callOpts := &CallOptions{}
+	scope := EnsureCallBuildScope(callOpts)
+	require.NotNil(t, scope, "the trusted call state carries its own build scope")
+	defer scope.close()
+	ctx := WithCallOptions(batchCallCtx("flagged-assembly"), callOpts)
+	built, err := c.finishToolAssembly(ctx, tools, nil, false)
 	require.NoError(t, err)
 	var names []string
 	for _, tool := range built.tools {

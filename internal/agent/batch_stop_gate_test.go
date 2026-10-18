@@ -82,10 +82,12 @@ func (e *gatedStopExecution) Dispose(ctx context.Context) error {
 // gatedExecutor builds the DEFAULT batch executor over the pinned registry
 // (the same construction InstallBatchRuntime performs for a nil Executor,
 // with the caller's agent deps) and applies the test's wrap. The install
-// path builds its executor outside when one is supplied, so agent deps and
-// their publisher must be wired by the env constructor (newCutoverEnvDeps).
-func gatedExecutor(wrap func(jobbatch.Executor) jobbatch.Executor, registries *BatchLeafRegistryStore, agentDeps BatchAgentDeps) jobbatch.Executor {
-	base := newBatchExecutor(batchLeafEnv{Leaves: registries.Resolve}, newBatchExecutorFamilies(agentDeps))
+// path builds its executor outside when one is supplied, so agent deps, their
+// publisher and the App-owned capability manager must be wired by the env
+// constructor (newCutoverEnvDeps): the executor's Execution owner is acquired
+// in Start against THIS manager (R12-H2 §1.2).
+func gatedExecutor(wrap func(jobbatch.Executor) jobbatch.Executor, registries *BatchLeafRegistryStore, agentDeps BatchAgentDeps, bindings *DiskProviderRegistry) jobbatch.Executor {
+	base := newBatchExecutor(batchLeafEnv{Leaves: registries.Resolve, DiskBindings: bindings}, newBatchExecutorFamilies(agentDeps))
 	if wrap == nil {
 		return base
 	}

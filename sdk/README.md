@@ -344,21 +344,8 @@ Boundaries to know:
   to do, and is not a defence against a hostile model that has other
   tools. The `FolderScope` ACL is still what limits which paths the
   model may name.
-- **Per-call only, never persisted** — same as `FolderScopes` above: a
-  later run on the same `ContinueSessionID` without `DiskProvider` is an
-  ordinary run against the real disk.
-- **Never survives a durable restart, by design — unlike `FolderScopes`
-  above.** A `DiskProvider` is arbitrary in-process Go code (often a
-  closure over host state — an open DB handle, an HTTP client, an
-  in-memory map) with no serializable form at all, so there is nothing
-  to persist and recompile the way a folder scope's spec is. A call
-  carrying one is refused outright rather than durably queued: if it
-  cannot execute immediately (in-process) it is dropped with an error
-  wrapping `sdk.ErrDiskProviderNotDurable`, never silently replayed
-  onto the real disk after a restart. Combine with
-  `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
-  it already) so you get a fast, synchronous refusal instead of a
-  swallowed one.
+- **Per-call provider identity.** A run without an explicit provider must not be assumed safe to continue an earlier provider-backed session: until durable session-requirement metadata is implemented, only batch execution itself is supported; automatic cross-run continuation remains blocked work.
+- **Supported by the batch runtime as a process-bound capability.** Rush borrows the provider and does not close it. Keep it usable until associated executions—including detached work and held delegations—have actually terminated and disposed. Cancellation requests are not proof that provider operations stopped; SDK Run/wait returning does not end detached work. Concurrent calls may overlap, so providers need concurrency safety. Crashes never resume old provider-backed work; explicitly supply a provider on a new SDK run. Missing bindings fail with `sdk.ErrDiskProviderUnavailable`, never OS-disk fallback. Durable automatic cross-run/session continuation requirement persistence is not yet implemented; do not continue provider-backed sessions without explicitly supplying the provider. FolderScope and command-tool safety floors above remain in force.
 - **An ephemeral library-mode session (see "Library mode" above) has no
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply

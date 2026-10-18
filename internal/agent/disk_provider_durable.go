@@ -22,10 +22,18 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
-// ErrDiskProviderNotDurable is returned instead of enqueueing (or
-// rebuilding) a call that carries a caller-supplied DiskProvider.
+// ErrDiskProviderNotDurable is returned only for a forbidden durable
+// handoff / rebuild of a provider-dependent session call. It no longer
+// classifies an ordinary valid provider-backed batch invocation: those
+// carry a process-bound binding (disk_provider_binding.go) instead.
 var ErrDiskProviderNotDurable = errors.New(
 	"agent: a call with a caller-supplied disk provider cannot be durably queued")
+
+// ErrDiskProviderUnavailable is returned when batch work requires a
+// process-bound disk binding that is no longer registered (released,
+// drained, or lost to a restart). It never falls back to OS disk.
+var ErrDiskProviderUnavailable = errors.New(
+	"agent: the process-bound disk provider for this work is no longer available")
 
 // ErrCredentialSetNotDurable is returned when a process-local tenant
 // credential bundle reaches a durable handoff path.
