@@ -124,3 +124,18 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 	// Concurrent publications force another check even after successful adoption.
 	st.settled = settled && s.Generation() == sn.generation
 }
+
+// StopOAuthDiskSync cancels the poller and joins it together with any OAuth
+// journal workers on the shared worker goroutines. It is idempotent, and a
+// later StartOAuthDiskSync is refused.
+func (s *ConfigStore) StopOAuthDiskSync() {
+	s.stopOAuthJournalWorkers()
+}
+
+// OAuthDiskSyncRunning reports whether the OAuth disk-sync poller goroutine
+// is running: started, not stopped, and not refused after a stop.
+func (s *ConfigStore) OAuthDiskSyncRunning() bool {
+	s.oauthWorkerMu.Lock()
+	defer s.oauthWorkerMu.Unlock()
+	return s.oauthDiskSyncStarted && s.oauthWorkerCtx != nil && s.oauthWorkerCtx.Err() == nil
+}

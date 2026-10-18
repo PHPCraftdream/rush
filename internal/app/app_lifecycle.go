@@ -336,6 +336,14 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		result.Forced = true
 	}
 
+	// D6 (docs/plans/2026-10-15-role-models-hot-reload.md): stop and join the
+	// OAuth disk-sync poller and its journal workers synchronously BEFORE the
+	// parallel cleanupFuncs batch, so no adoption or journal recovery runs
+	// against closing resources. Idempotent; nil for bare App literals.
+	if app.config != nil {
+		app.config.StopOAuthDiskSync()
+	}
+
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 
