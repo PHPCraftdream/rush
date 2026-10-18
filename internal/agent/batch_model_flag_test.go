@@ -69,9 +69,11 @@ func TestBatchControlsOnlyAppearWhenAllowedInPinnedToolset(t *testing.T) {
 	// native controls. A revert to the pre-H1 job_output/job_kill presence
 	// lookups fails right here.
 	require.Empty(t, batchControlAvailability(batchTestTools("job_output", "job_kill"), nil))
-	require.Equal(t, []string{"batch_status", "batch_output"},
+	// "view" is a work leaf, so run/add are offered alongside whichever
+	// read/stop controls the final AllowedTools grants by name.
+	require.Equal(t, []string{"batch_run", "batch_add", "batch_status", "batch_output"},
 		batchControlAvailability(batchTestTools("view"), []string{"batch_status", "batch_output"}))
-	require.Equal(t, []string{"batch_stop"},
+	require.Equal(t, []string{"batch_run", "batch_add", "batch_stop"},
 		batchControlAvailability(batchTestTools("view"), []string{"batch_stop"}))
 	// D1/D10 allow explicit batches of work the pinned role can already run;
 	// without a by-name grant the view-only leaf registry is not widened.
