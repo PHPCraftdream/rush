@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -194,12 +195,23 @@ func providerCrashAnnouncedRoot(
 	t.Helper()
 	var found db.BatchNode
 	var payload providerCrashLeafPayload
+	var seen atomic.Value
+	seen.Store("no poll completed")
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("last observed live roots for host %s: %v", host, seen.Load())
+		}
+	})
 	require.Eventually(t, func() bool {
 		roots, err := store.LiveRootsForHost(ctx, host)
 		if err != nil {
+			seen.Store("LiveRootsForHost: " + err.Error())
 			return false
 		}
+		summary := []string{"roots=" + strconv.Itoa(len(roots))}
+		defer func() { seen.Store(strings.Join(summary, "; ")) }()
 		for _, r := range roots {
+			summary = append(summary, "root "+r.RootID+" state="+r.State+" announced="+strconv.FormatInt(r.Announced, 10))
 			if r.Announced != 1 {
 				continue
 			}
@@ -207,17 +219,21 @@ func providerCrashAnnouncedRoot(
 			// no task payload, the leaf task rides on a child node.
 			snapshot, err := store.Read(ctx, r.OwnerSessionID, r.RootID)
 			if err != nil {
+				summary = append(summary, "read: "+err.Error())
 				continue
 			}
 			for _, node := range snapshot.Nodes {
+				summary = append(summary, "node "+node.NodeID+" state="+node.State+" payload="+strconv.FormatBool(node.TaskPayload.Valid))
 				if !node.TaskPayload.Valid {
 					continue
 				}
 				var p providerCrashLeafPayload
 				if json.Unmarshal([]byte(node.TaskPayload.String), &p) != nil {
+					summary = append(summary, "payload undecodable")
 					continue
 				}
 				if p.RegistryID == "" && p.Policy.DiskBindingID == "" {
+					summary = append(summary, "payload has no registry/binding identity: "+node.TaskPayload.String)
 					continue
 				}
 				found, payload = r, p
@@ -253,6 +269,18 @@ func TestAppBatchProviderCrashSubprocess(t *testing.T) {
 	}
 	f := newProviderCrashFixture(t)
 	launchProviderCrashChild(t, f, "1")
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		// Stop the child so its captured output can be read race-free.
+		_ = f.cmd.Process.Kill()
+		select {
+		case <-f.waitErr:
+		case <-time.After(5 * time.Second):
+		}
+		t.Logf("child output: %s%s", f.output.String(), f.childReason())
+	})
 
 	// Step 4: wait for the signal file; ONLY THEN verify the announced
 	// running root and the alive host probe before killing the child.
