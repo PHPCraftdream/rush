@@ -491,23 +491,11 @@ func batchOutboxFailedNodesServed(ctx context.Context, dbtx db.DBTX, owner strin
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		qrows, err := dbtx.QueryContext(ctx, stmt, args...)
+		got, err := scanBatchFailedNodeRows(ctx, dbtx, stmt, args)
 		if err != nil {
 			return nil, err
 		}
-		for qrows.Next() {
-			var row batchFailedNodeRow
-			if err := qrows.Scan(&row.RootID, &row.NodeID, &row.NoticeSeq, &row.NoticeOrd, &row.Outcome); err != nil {
-				qrows.Close()
-				return nil, err
-			}
-			rows = append(rows, row)
-		}
-		if err := qrows.Err(); err != nil {
-			qrows.Close()
-			return nil, err
-		}
-		qrows.Close()
+		rows = append(rows, got...)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].RootID != rows[j].RootID {
@@ -576,3 +564,22 @@ func (s *BatchStore) BatchReactionSetWakeZeroForOwners(ctx context.Context, owne
 
 // A missing history message cannot justify closing visible reaction debt.
 var errBatchReactionMessageGone = errors.New("batch reaction message disappeared")
+
+// scanBatchFailedNodeRows runs one failed-node chunk SELECT and scans it; the
+// rows are closed by defer on every path.
+func scanBatchFailedNodeRows(ctx context.Context, dbtx db.DBTX, stmt string, args []any) ([]batchFailedNodeRow, error) {
+	qrows, err := dbtx.QueryContext(ctx, stmt, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer qrows.Close()
+	var out []batchFailedNodeRow
+	for qrows.Next() {
+		var row batchFailedNodeRow
+		if err := qrows.Scan(&row.RootID, &row.NodeID, &row.NoticeSeq, &row.NoticeOrd, &row.Outcome); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, qrows.Err()
+}

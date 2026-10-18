@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -25,7 +26,22 @@ type batchSQLLog struct {
 	mu          sync.Mutex
 	entries     []batchSQLLogEntry
 	invocations map[string]int
+	txEvents    []string
 	Intercept   func(query string, invocation int) bool
+}
+
+func (l *batchSQLLog) recordTxEvent(e string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.txEvents = append(l.txEvents, e)
+}
+
+func (l *batchSQLLog) txEventsSnapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.txEvents))
+	copy(out, l.txEvents)
+	return out
 }
 
 func (l *batchSQLLog) add(query string, args []driver.NamedValue) {
@@ -101,10 +117,33 @@ type batchSQLLogConn struct {
 // BeginTx forwards driver.ConnBeginTx: database/sql refuses read-only
 // transactions on a conn that does not implement it.
 func (c *batchSQLLogConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if bt, ok := c.Conn.(driver.ConnBeginTx); ok {
-		return bt.BeginTx(ctx, opts)
+	bt, ok := c.Conn.(driver.ConnBeginTx)
+	if !ok {
+		return nil, errors.New("sqllog: the wrapped driver does not implement driver.ConnBeginTx")
 	}
-	return c.Conn.Begin()
+	inner, err := bt.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	c.log.recordTxEvent("begin")
+	return &batchSQLLogTx{Tx: inner, log: c.log}, nil
+}
+
+// batchSQLLogTx records Commit/Rollback through the log so tests can assert
+// the dispatch's begin/rollback ordering.
+type batchSQLLogTx struct {
+	driver.Tx
+	log *batchSQLLog
+}
+
+func (t *batchSQLLogTx) Commit() error {
+	t.log.recordTxEvent("commit")
+	return t.Tx.Commit()
+}
+
+func (t *batchSQLLogTx) Rollback() error {
+	t.log.recordTxEvent("rollback")
+	return t.Tx.Rollback()
 }
 
 func (c *batchSQLLogConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -121,40 +160,12 @@ func (c *batchSQLLogConn) QueryContext(ctx context.Context, query string, args [
 	if c.log.shouldIntercept(query) {
 		return &batchSQLEmptyRows{}, nil
 	}
-	if queryer, ok := c.Conn.(driver.QueryerContext); ok {
-		return queryer.QueryContext(ctx, query, args)
+	queryer, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		// database/sql falls back to Prepare on the wrapped conn.
+		return nil, driver.ErrSkip
 	}
-	stmt, err := c.Conn.Prepare(query)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := stmt.Query(namedValuesToValues(args))
-	if err != nil {
-		_ = stmt.Close()
-		return nil, err
-	}
-	return &batchSQLLogRows{Rows: rows, stmt: stmt}, nil
-}
-
-func namedValuesToValues(args []driver.NamedValue) []driver.Value {
-	out := make([]driver.Value, len(args))
-	for i, arg := range args {
-		out[i] = arg.Value
-	}
-	return out
-}
-
-// batchSQLLogRows keeps the prepared statement alive until the caller closes
-// the rows (Prepare-fallback path only).
-type batchSQLLogRows struct {
-	driver.Rows
-	stmt driver.Stmt
-}
-
-func (r *batchSQLLogRows) Close() error {
-	err := r.Rows.Close()
-	_ = r.stmt.Close()
-	return err
+	return queryer.QueryContext(ctx, query, args)
 }
 
 type batchSQLLogConnector struct {

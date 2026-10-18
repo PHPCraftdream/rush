@@ -125,8 +125,7 @@ func batchServedInterleave(t *testing.T, s *BatchStore, conn, raw *sql.DB, ctx c
 	reader := batchReadTestReader(t, conn)
 	reader.TxStarter = conn
 	var fired bool
-	var hook func()
-	hook = func() {
+	hook := func() {
 		if fired {
 			return
 		}
@@ -285,45 +284,93 @@ func explainPlanArgs(t *testing.T, conn *sql.DB, ctx context.Context, query stri
 // exact substring (internal/db/batch_nodes.sql.go).
 const batchListNodeReadNeedle = "WHERE root_id = ?1 AND owner_session_id = ?2"
 
+// The roots-list SQL (generated ListLiveBatchRootsForOwner) is identified by
+// its state filter, unique among the captured statements in these tests.
+const batchRootListNeedle = "state IN ('pending', 'starting', 'running', 'cancelling')"
+
 // TestBatchLiveRootVanishRetriesOnFreshSnapshot: the first node read of the
 // listed root returns no rows (errBatchLiveRootVanished); the dispatch's
-// fresh-snapshot retry must recover to a complete result with the root's
-// own identity. MUTATION: deleting the retry loop (batch_read_live.go, the
-// attempt loop) makes the first attempt's error terminal -> Complete=false
-// -> the Complete assertion fails.
+// fresh-snapshot retry must recover on a NEW transaction that SEES changes
+// committed after the first attempt. Between attempt 1's rollback and
+// attempt 2's roots list the test commits a second root (B); attempt 2 must
+// list both roots — B's presence proves the retry re-listed on a fresh
+// snapshot. Transaction observables: the driver-level tx event log must read
+// begin, rollback, begin, rollback (one rollback per attempt, the retry in a
+// NEW tx). MUTATIONS caught — retry inside the SAME transaction (B invisible
+// -> the Len(Own, 2) assertion fails); no rollback between attempts (the
+// event sequence differs); unbounded retry (the begin count/event count
+// differ).
 func TestBatchLiveRootVanishRetriesOnFreshSnapshot(t *testing.T) {
 	s, _, _, ctx, dataDir := batchServedTestEnv(t)
 	root := batchReserveForOwner(t, s, ctx, "owner", "vanish-retry")
 	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	raw, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	reader := batchReadTestReader(t, logDB)
 	reader.TxStarter = logDB
 	log.Intercept = func(query string, invocation int) bool {
-		return strings.Contains(query, batchListNodeReadNeedle) && invocation == 1
+		// Suppress the FIRST node read -> the vanish -> the retry.
+		if strings.Contains(query, batchListNodeReadNeedle) {
+			return invocation == 1
+		}
+		// The SECOND roots-list execution is attempt 2's first read: its tx
+		// snapshot begins with this query. Commit root B right before it: a
+		// fresh snapshot lists both roots; a reused attempt-1 snapshot (fixed
+		// before B existed) lists only A.
+		if strings.Contains(query, batchRootListNeedle) && invocation == 2 {
+			batchReserveForOwner(t, NewBatchStore(raw), ctx, "owner", "vanish-retry-b")
+		}
+		return false
 	}
 	t.Cleanup(func() { log.Intercept = nil })
 	res := reader.BatchLiveForOwner(ctx, "owner")
 	require.NoError(t, res.Err)
 	require.True(t, res.Complete)
-	require.True(t, res.HasLive())
-	require.Len(t, res.Own, 1)
-	require.Equal(t, root, res.Own[0].Ref.RootID)
+	require.Len(t, res.Own, 2, "attempt 2 must see the fresh snapshot: both roots")
+	rootIDs := make(map[string]bool, len(res.Own))
+	for _, n := range res.Own {
+		rootIDs[n.Ref.RootID] = true
+	}
+	require.True(t, rootIDs[root], "the original root stays in the fresh snapshot")
+	// Transaction observables: exactly one begin+rollback per attempt, in
+	// that order — the first attempt's tx is rolled back before the retry
+	// begins.
+	require.Equal(t, []string{"begin", "rollback", "begin", "rollback"}, log.txEventsSnapshot())
+	// Node reads are per listed root: attempt 1 lists one root (its read is
+	// suppressed), attempt 2 lists both roots and reads each - three in total.
+	require.Equal(t, 3, batchSQLLogCountContaining(log, batchListNodeReadNeedle), "one suppressed read in attempt 1, one per root in attempt 2")
 }
 
 // TestBatchLiveRootVanishNeverCompletesEmpty: EVERY node read is suppressed;
 // after the one retry the result must stay INCOMPLETE with the vanish error —
-// never a silently complete empty scope. MUTATIONS: (a) deleting the
-// len(nodes)==0 guard in batchLiveNodesForOwnersServed silently completes an
-// empty scope -> Complete=true/HasLive=false -> both assertions fail;
-// (b) deleting the retry does NOT fail this test (it catches the retry via
-// the test above).
+// never a silently complete empty scope. Transaction observables pin the
+// bounded retry at the driver level: exactly two begin/rollback pairs and
+// exactly TWO node reads — never a third attempt, never a complete-empty
+// scope. MUTATIONS — deleting the len(nodes)==0 guard in
+// batchLiveNodesForOwnersServed silently completes an empty scope ->
+// the Err/Complete/HasLive asserts fail; an unbounded retry (or deleting the
+// rollback between attempts) fails the event/node-read count asserts.
 func TestBatchLiveRootVanishNeverCompletesEmpty(t *testing.T) {
 	s, _, _, ctx, dataDir := batchServedTestEnv(t)
+	ctx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
 	batchReserveForOwner(t, s, ctx, "owner", "vanish-empty")
 	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
 	reader := batchReadTestReader(t, logDB)
 	reader.TxStarter = logDB
+	reads := 0
 	log.Intercept = func(query string, _ int) bool {
-		return strings.Contains(query, batchListNodeReadNeedle)
+		if !strings.Contains(query, batchListNodeReadNeedle) {
+			return false
+		}
+		// An unbounded retry would loop forever: cancel on the third read so the
+		// mutation fails the count assertions instead of hanging the test.
+		reads++
+		if reads > 2 {
+			cancel()
+		}
+		return true
 	}
 	t.Cleanup(func() { log.Intercept = nil })
 	res := reader.BatchLiveForOwner(ctx, "owner")
@@ -331,4 +378,6 @@ func TestBatchLiveRootVanishNeverCompletesEmpty(t *testing.T) {
 	require.ErrorIs(t, res.Err, errBatchLiveRootVanished)
 	require.False(t, res.Complete, "a vanished root must never read as complete")
 	require.True(t, res.HasLive(), "incomplete stays conservatively live")
+	require.Equal(t, []string{"begin", "rollback", "begin", "rollback"}, log.txEventsSnapshot())
+	require.Equal(t, 2, batchSQLLogCountContaining(log, batchListNodeReadNeedle), "exactly TWO attempts, then stop: never a third attempt, never a complete-empty scope")
 }

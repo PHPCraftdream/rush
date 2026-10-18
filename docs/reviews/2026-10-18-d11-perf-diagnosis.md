@@ -184,6 +184,17 @@ catches. Only what the trace proves is claimed.
    - TestBatchDescendantsLiveUsesTxDispatch
      (batch_descendants_tx_test.go:16): the descendant closure crosses the
      same transactional dispatch — begins 1 then 2.
+
+  Exact capture set of the plan test: the transactional live read's roots
+  SELECT and per-root nodes SELECT; the reaction tx's react UPDATE,
+  ClearFailure roots SELECT and its chunked root_id IN UPDATE; the
+  pending-inclusive debt SELECT (batchDebtNodesVoidAwareSQL); and the
+  FailedNodes rewrite's roots SELECT and root_id IN SELECT. Recorded by the SQL-log shim but EXCLUDED from EXPLAIN (the plan input is
+  filtered to statements that mention batch_nodes): the messages-table
+  statements (GetMessage/UpdateTx) and the session_notices statements. NOT
+  executed at all: the join fallback (only on TxStarter-less readers). The
+  FailedNodes rewrite is captured and asserted SCAN-free only; reverting it to
+  an owner-wide query that still plans without a scan would pass.
 7. Lazy live-scope read (batch_cutover_facts_node.go:93-102 liveResult via
    the reader only; comment :450-456): the pull consults the live scope
    only for a pending SUPERVISION row; liveResult routes through
