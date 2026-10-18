@@ -72,7 +72,7 @@ func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeSche
 	}, time.Now())
 	require.NoError(t, err)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetWakeScheduleStoreForTest(wake)
 	return a, wake, sess.ID, row.ID
 }

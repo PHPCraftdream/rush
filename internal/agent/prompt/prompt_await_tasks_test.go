@@ -42,6 +42,8 @@ func TestBuild_AwaitTasksRule_TracksWorkerAvailable(t *testing.T) {
 
 	without, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
 	require.NoError(t, err)
-	require.NotContains(t, without, "await_tasks",
+	require.NotContains(t, without, awaitTasksRuleLine,
+		"without a worker the whole orchestrator block (the rule with it) is absent")
+	require.NotContains(t, without, "Orchestrator mode",
 		"without a worker the whole orchestrator block (the rule with it) is absent")
 }
