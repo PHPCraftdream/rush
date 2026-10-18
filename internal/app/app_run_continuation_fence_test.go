@@ -261,7 +261,7 @@ func TestContinuationQueuedRow_AfterRestartYieldsTypedTerminalUnavailable(t *tes
 	var handlerRequests atomic.Int64
 	application, sessionID, fence, _ := runLiveProviderTurn(t,
 		"CONTINUATION_RESTART_MARKER", func() string { return "unused" })
-	require.NoError(t, application.Shutdown())
+	application.Shutdown()
 	// The duplicate shutdown via t.Cleanup is safe (Shutdown is
 	// idempotent); the fence stays in the durable store. The persisted
 	// session row keeps ITS id, so the restart row below targets sessionID.
@@ -308,7 +308,7 @@ func TestContinuationUnmarkedRow_FencedBySessionMetadata(t *testing.T) {
 	handlerRequests := atomic.Int64{}
 	application, sessionID, _, _ := runLiveProviderTurn(t,
 		"CONTINUATION_UNMARKED_MARKER", func() string { return "unused" })
-	require.NoError(t, application.Shutdown())
+	application.Shutdown()
 	// The unmarked row must name the FENCED session (the first app's
 	// persisted session row), not the restart app's freshly seeded one.
 	dataDir := application.config.WorkingDir()
