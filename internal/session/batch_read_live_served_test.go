@@ -37,7 +37,7 @@ func batchServedTestEnv(t *testing.T) (*BatchStore, *sql.DB, *sql.DB, context.Co
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner2"))
 	// An independent handle: it can commit between the served read's
 	// statements even while the writer connection holds the read transaction.
-	raw, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db"))
+	raw, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	return NewBatchStore(conn), conn, raw, ctx, dataDir
@@ -166,9 +166,19 @@ func TestBatchLiveServedReadIsSnapshotConsistent(t *testing.T) {
 
 // TestBatchHotStatementsPlanWithoutScans EXPLAIN QUERY PLANs every batch_nodes
 // statement captured from REAL production code paths at the driver level (the
-// shim in batch_sqllog_test.go): the transactional live read and
-// BatchReactionMarkReactedWithMessageUpdate — no copied SQL anywhere.
+// shim in batch_sqllog_test.go): the transactional live read,
+// BatchReactionMarkReactedWithMessageUpdate (react UPDATE, ClearFailure roots
+// SELECT and its chunked UPDATE), the pending-inclusive debt read and the
+// FailedNodes listing — no copied SQL anywhere. Per-statement assertion: every
+// SELECT/UPDATE on these paths is owner/root-keyed, so its plan must contain a
+// SEARCH under its production alias (n/r) and NEVER any SCAN line under any
+// alias (SQLite EXPLAIN prints the alias, so a bare "SCAN batch_nodes" needle
+// would evade "SCAN n").
 // MUTATION TRACES:
+//   - dropping the debt SELECT's verbatim `delivery != 'void'` term, or the
+//     react UPDATE's, changes the captured statement for THAT statement's own
+//     plan assertion — the debt and react statements are captured and
+//     EXPLAINed individually here;
 //   - reverting BatchLiveForSessions' dispatch to the nontransactional served
 //     helper removes the BeginTx — no plan change; that revert is caught by
 //     TestBatchLiveServedReadIsSnapshotConsistent's identity/Complete asserts;
@@ -176,19 +186,25 @@ func TestBatchLiveServedReadIsSnapshotConsistent(t *testing.T) {
 //     its plan scans batch_nodes and fails THIS test;
 //   - reverting the reaction tx's ClearFailure call to the generated
 //     owner-wide UPDATE captures that UPDATE — its plan scans batch_nodes and
-//     fails THIS test.
+//     fails THIS test;
+//   - reverting the FailedNodes rewrite is NOT caught here: that statement's
+//     plan is asserted only as SCAN-free, so a scan-avoiding revert would pass.
 func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	t.Parallel()
 	s, conn, _, ctx, dataDir := batchServedTestEnv(t)
 	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
-	// Live-read capture: a production reader over the logging DB, dispatched
-	// through the transactional path (TxStarter set).
+	// Live-read capture FIRST: a production reader over the logging DB,
+	// dispatched through the transactional path (TxStarter set), over a
+	// SEEDED live root — so both ListLiveBatchRootsForOwner and the per-root
+	// ListBatchNodes are captured with real rows.
+	root := batchReserveForOwner(t, s, ctx, "owner", "plan-root")
 	reader := NewBatchLiveReader(db.New(logDB), dataDir)
 	reader.IsOwnHost = func(string) bool { return false }
 	reader.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusAlive, nil }
 	reader.TxStarter = logDB
 	live := reader.BatchLiveForOwner(ctx, "owner")
 	require.True(t, live.Complete)
+	require.True(t, live.HasLive())
 	// Reaction capture: the exact seeding of the "clear failed" scenario in
 	// TestBatchOutboxFailureMarkerRollbackAndReactionRollback — a root
 	// reserved, settled with a notice, and announced (no injected failure, so
@@ -201,6 +217,24 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	require.NoError(t, err)
 	countingStore := NewBatchStore(logDB)
 	require.NoError(t, countingStore.BatchReactionMarkReactedWithMessageUpdate(ctx, m, "owner", msg))
+	// Failed-row seed so the FailedNodes rewrite has a hit, then drive BOTH
+	// public reads: the pending-inclusive debt SELECT (batchDebtNodesVoidAwareSQL)
+	// and the FailedNodes listing.
+	_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET reacted_failed = 1 WHERE owner_session_id = 'owner'")
+	require.NoError(t, err)
+	debt, err := countingStore.BatchReactionPendingInclusiveDebtRows(ctx, "owner")
+	require.NoError(t, err)
+	require.NotEmpty(t, debt.Nodes, "the debt statement must run with rows")
+	failed, err := countingStore.BatchReactionListReactedFailedText(ctx, "owner")
+	require.NoError(t, err)
+	require.NotEmpty(t, failed)
+	found := false
+	for _, f := range failed {
+		if f.RootID == root {
+			found = true
+		}
+	}
+	require.True(t, found, "failed list must contain the reserved root %s", root)
 
 	plans := ""
 	for _, entry := range batchSQLLogBatchNodes(log) {
@@ -210,7 +244,12 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 			continue
 		}
 		plan := explainPlanArgs(t, conn, ctx, entry.Query, entry.Args)
-		require.NotContains(t, plan, "SCAN batch_nodes", "captured statement scans batch_nodes: %s", entry.Query)
+		require.NotEmpty(t, plan, "empty EXPLAIN plan for %q", entry.Query)
+		// Reject ANY SCAN line under ANY alias: production aliases the table
+		// as n/r, so "SCAN n" would evade a "SCAN batch_nodes" needle. Every
+		// statement on these paths is owner/root-keyed and must plan as a
+		// SEARCH.
+		require.NotContains(t, plan, "SCAN", "statement %q has a full-table SCAN under some alias; plan:\n%s", entry.Query, plan)
 		plans += plan + "\n"
 	}
 	// The union of plans must serve from the three hot indexes; joined so the
@@ -222,7 +261,7 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 
 func explainPlanArgs(t *testing.T, conn *sql.DB, ctx context.Context, query string, args []driver.NamedValue) string {
 	t.Helper()
-	values := make([]driver.Value, len(args))
+	values := make([]any, len(args))
 	for i, arg := range args {
 		values[i] = arg.Value
 	}
@@ -238,4 +277,56 @@ func explainPlanArgs(t *testing.T, conn *sql.DB, ctx context.Context, query stri
 	}
 	require.NoError(t, rows.Err())
 	return strings.Join(details, "\n")
+}
+
+// The per-root node read's SQL (generated ListBatchNodes) contains this
+// exact substring (internal/db/batch_nodes.sql.go).
+const batchListNodeReadNeedle = "WHERE root_id = ?1 AND owner_session_id = ?2"
+
+// TestBatchLiveRootVanishRetriesOnFreshSnapshot: the first node read of the
+// listed root returns no rows (errBatchLiveRootVanished); the dispatch's
+// fresh-snapshot retry must recover to a complete result with the root's
+// own identity. MUTATION: deleting the retry loop (batch_read_live.go, the
+// attempt loop) makes the first attempt's error terminal -> Complete=false
+// -> the Complete assertion fails.
+func TestBatchLiveRootVanishRetriesOnFreshSnapshot(t *testing.T) {
+	s, _, _, ctx, dataDir := batchServedTestEnv(t)
+	root := batchReserveForOwner(t, s, ctx, "owner", "vanish-retry")
+	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	reader := batchReadTestReader(t, logDB)
+	reader.TxStarter = logDB
+	log.Intercept = func(query string, invocation int) bool {
+		return strings.Contains(query, batchListNodeReadNeedle) && invocation == 1
+	}
+	t.Cleanup(func() { log.Intercept = nil })
+	res := reader.BatchLiveForOwner(ctx, "owner")
+	require.NoError(t, res.Err)
+	require.True(t, res.Complete)
+	require.True(t, res.HasLive())
+	require.Len(t, res.Own, 1)
+	require.Equal(t, root, res.Own[0].Ref.RootID)
+}
+
+// TestBatchLiveRootVanishNeverCompletesEmpty: EVERY node read is suppressed;
+// after the one retry the result must stay INCOMPLETE with the vanish error —
+// never a silently complete empty scope. MUTATIONS: (a) deleting the
+// len(nodes)==0 guard in batchLiveNodesForOwnersServed silently completes an
+// empty scope -> Complete=true/HasLive=false -> both assertions fail;
+// (b) deleting the retry does NOT fail this test (it catches the retry via
+// the test above).
+func TestBatchLiveRootVanishNeverCompletesEmpty(t *testing.T) {
+	s, _, _, ctx, dataDir := batchServedTestEnv(t)
+	batchReserveForOwner(t, s, ctx, "owner", "vanish-empty")
+	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	reader := batchReadTestReader(t, logDB)
+	reader.TxStarter = logDB
+	log.Intercept = func(query string, _ int) bool {
+		return strings.Contains(query, batchListNodeReadNeedle)
+	}
+	t.Cleanup(func() { log.Intercept = nil })
+	res := reader.BatchLiveForOwner(ctx, "owner")
+	require.NotNil(t, res.Err)
+	require.ErrorIs(t, res.Err, errBatchLiveRootVanished)
+	require.False(t, res.Complete, "a vanished root must never read as complete")
+	require.True(t, res.HasLive(), "incomplete stays conservatively live")
 }

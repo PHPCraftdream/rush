@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -21,8 +22,10 @@ type batchSQLLogEntry struct {
 }
 
 type batchSQLLog struct {
-	mu      sync.Mutex
-	entries []batchSQLLogEntry
+	mu          sync.Mutex
+	entries     []batchSQLLogEntry
+	invocations map[string]int
+	Intercept   func(query string, invocation int) bool
 }
 
 func (l *batchSQLLog) add(query string, args []driver.NamedValue) {
@@ -32,6 +35,26 @@ func (l *batchSQLLog) add(query string, args []driver.NamedValue) {
 	defer l.mu.Unlock()
 	l.entries = append(l.entries, batchSQLLogEntry{Query: query, Args: copied})
 }
+
+// shouldIntercept counts the query's nth execution (first = 1) and consults
+// Intercept; nil Intercept never intercepts.
+func (l *batchSQLLog) shouldIntercept(query string) bool {
+	l.mu.Lock()
+	if l.invocations == nil {
+		l.invocations = make(map[string]int)
+	}
+	l.invocations[query]++
+	n := l.invocations[query]
+	l.mu.Unlock()
+	return l.Intercept != nil && l.Intercept(query, n)
+}
+
+// batchSQLEmptyRows satisfies driver.Rows with zero columns and no rows.
+type batchSQLEmptyRows struct{}
+
+func (batchSQLEmptyRows) Columns() []string              { return nil }
+func (batchSQLEmptyRows) Close() error                   { return nil }
+func (batchSQLEmptyRows) Next(dest []driver.Value) error { return io.EOF }
 
 func (l *batchSQLLog) snapshot() []batchSQLLogEntry {
 	l.mu.Lock()
@@ -95,6 +118,9 @@ func (c *batchSQLLogConn) ExecContext(ctx context.Context, query string, args []
 
 func (c *batchSQLLogConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.log.add(query, args)
+	if c.log.shouldIntercept(query) {
+		return &batchSQLEmptyRows{}, nil
+	}
 	if queryer, ok := c.Conn.(driver.QueryerContext); ok {
 		return queryer.QueryContext(ctx, query, args)
 	}
@@ -163,8 +189,7 @@ func (d batchSQLLogDriver) Open(name string) (driver.Conn, error) {
 func newBatchSQLLogDB(t *testing.T, dsn string) (*sql.DB, *batchSQLLog) {
 	t.Helper()
 	log := &batchSQLLog{}
-	conn, err := sql.OpenDB(&batchSQLLogConnector{dsn: dsn, log: log})
-	require.NoError(t, err)
+	conn := sql.OpenDB(&batchSQLLogConnector{dsn: dsn, log: log})
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	return conn, log
 }

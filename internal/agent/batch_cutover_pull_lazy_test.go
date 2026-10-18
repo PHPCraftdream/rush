@@ -70,7 +70,7 @@ func TestBatchPullPendingNoticesDeliversWithoutLiveRead(t *testing.T) {
 
 func TestBatchPullSupervisionOpenScopeDelivers(t *testing.T) {
 	env, facts, counting := newBatchPullEnv(t)
-	batchPullReserveLiveRoot(t, env)
+	_ = batchPullReserveLiveRoot(t, env)
 	now := time.Now().Unix()
 	_, err := env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
 		Owner: env.sessionID, Kind: session.NoticeKindSupervision, Text: "check-in", Wake: 1,
@@ -101,9 +101,9 @@ func TestBatchPullSupervisionClosedScopeVoids(t *testing.T) {
 	require.Equal(t, "void", delivery)
 }
 
-func batchPullReserveLiveRoot(t *testing.T, env *cutoverEnv) {
+func batchPullReserveLiveRoot(t *testing.T, env *cutoverEnv) string {
 	t.Helper()
-	_, err := env.store.Reserve(env.ctx, session.BatchReservation{
+	res, err := env.store.Reserve(env.ctx, session.BatchReservation{
 		Owner: env.sessionID, Host: "host", RunnerID: "runner", ToolCallID: "call-live",
 		InputHash: "hash", Sequence: 1,
 		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
@@ -115,4 +115,5 @@ func batchPullReserveLiveRoot(t *testing.T, env *cutoverEnv) {
 		}}}},
 	})
 	require.NoError(t, err)
+	return res.Snapshot.Root.RootID
 }

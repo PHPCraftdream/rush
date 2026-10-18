@@ -6,9 +6,11 @@ package agent
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -43,4 +45,33 @@ func TestBatchDescendantsLiveUsesTxDispatch(t *testing.T) {
 	require.True(t, gotLive)
 	require.True(t, complete)
 	require.Equal(t, 2, counting.begins)
+}
+
+// TestBatchDescendantsLiveInterleavesPurge: a purge of the only live root
+// landing between the descendant closure's root list and its node reads must
+// not turn the closure's answer into a complete-empty scope — the read tx
+// preserves the purged root's rows. The purge runs through a SECOND pool
+// with production pragmas (foreign_keys ON cascades the subtree); the
+// single-connection env pool is held by the open read tx and must not be
+// touched inside the seam. MUTATION: dispatching the closure through the
+// nontransactional two-step helper lets the purge land between the
+// statements -> complete-empty -> gotLive=false -> the gotLive assertion
+// fails.
+func TestBatchDescendantsLiveInterleavesPurge(t *testing.T) {
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, &countingTool{name: "view"})
+	counting := &batchPullCountingTxStarter{DB: env.conn}
+	env.live.TxStarter = counting
+	root := batchPullReserveLiveRoot(t, env)
+	raw, err := sql.Open("sqlite", filepath.Join(env.dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	restore := session.SetBatchLiveServedSeamForTest(func() {
+		rawStore := session.NewBatchStore(raw)
+		require.NoError(t, rawStore.DeleteRoot(env.ctx, env.sessionID, "host", root))
+	})
+	defer restore()
+	deps := CoordinatorBatchAgentDepsWithLive(env.live)
+	gotLive, complete := deps.Descendants.DescendantsLive(env.ctx, batchAgentRunRequest{ChildSessionID: env.sessionID})
+	require.True(t, gotLive, "the snapshot must still show the purged root")
+	require.True(t, complete, "the transactional read must not report the purge as a closed scope")
 }

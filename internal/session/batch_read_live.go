@@ -21,6 +21,19 @@ const (
 // (the readTurnFactsGateSeam precedent in internal/agent).
 var batchLiveServedSeam atomic.Pointer[func()]
 
+// SetBatchLiveServedSeamForTest arms the served-read seam for cross-package
+// tests (internal/agent) and returns the restore func. Production never
+// calls it; the seam stays nil there.
+func SetBatchLiveServedSeamForTest(hook func()) (restore func()) {
+	if hook == nil {
+		batchLiveServedSeam.Store(nil)
+		return func() {}
+	}
+	h := hook
+	batchLiveServedSeam.Store(&h)
+	return func() { batchLiveServedSeam.Store(nil) }
+}
+
 // BatchLiveTxStarter opens the read-only transactions the batch live read
 // runs inside. Satisfied by *sql.DB; *sql.Tx cannot begin nested
 // transactions.

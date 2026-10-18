@@ -14,9 +14,10 @@ schema-free WITHOUT a migration; tests re-bound to production (driver-level
 SQL capture, public-entry interleaving, TxStarter-layer counting,
 whole-result order). Round 3 status was overclaimed; round 4 supersedes it.
 
-EXECUTED-EVIDENCE STATEMENT: nothing was executed locally in any round,
-including round 4 (the operator regime forbids compilation and tests on this
-machine). The profile numbers are CI artifacts; every plan class below is a
+EXECUTED-EVIDENCE STATEMENT: formatting (gofumpt/gofmt) and the static
+.githooks guards were run locally every round, including round 4; what never
+ran locally in any round is compilation, tests or benchmarks (the operator
+regime forbids them on this machine). The profile numbers are CI artifacts; every plan class below is a
 STATIC reading of the schema's indexes and predicates — "static trace; CI
 pending". The CI dispatch (build + vet + lint + the EXPLAIN-plan and behavior
 tests) is the only oracle that confirms them; no claim here is verified before CI

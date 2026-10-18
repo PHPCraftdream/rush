@@ -544,9 +544,7 @@ func (s *BatchStore) BatchReactionListReactedFailedText(ctx context.Context, own
 		return nil, err
 	}
 	var out []BatchReactedFailedText
-	for _, n := range nodes {
-		out = append(out, BatchReactedFailedText{RootID: n.RootID, NodeID: n.NodeID, Text: n.OutcomeSummary})
-	}
+	out = append(out, nodes...)
 	for _, n := range notices {
 		out = append(out, BatchReactedFailedText{NoticeID: n.ID, Text: n.Text})
 	}
