@@ -65,10 +65,21 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 		return nil
 	}
 
-	call, buildErr := c.drainCallFor(ctx, sessionID)
+	call, prep, buildErr := c.drainCallFor(ctx, sessionID)
 	if buildErr != nil {
+		// R12-H2b §2.3: a binding-loss refusal must NOT re-spin the 60s
+		// recheck pass — the binding cannot come back on a timer; a newly
+		// admitted explicit epoch re-evaluates on its own.
+		if errors.Is(buildErr, ErrDiskProviderUnavailable) {
+			c.clearFromRecheckSet(sessionID)
+		}
 		c.noteDrainRefused(sessionID, buildErr)
 		return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
+	}
+	// The Continuation owner lives exactly across the dispatch: released
+	// on every exit from here, including the Run-error path.
+	if prep != nil {
+		defer prep.release()
 	}
 	if _, runErr := c.agentFor(sessionID).Run(ctx, call); runErr != nil {
 		slog.Warn("drain call failed after its underlying notice was committed",

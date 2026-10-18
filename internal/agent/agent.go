@@ -369,6 +369,16 @@ type SessionAgentCall struct {
 	// legacy in-process callers, and pre-migration durable rows.
 	FolderScopeSpec *permission.FolderScopeSpec
 
+	// DiskRequirement is the process-bound execution requirement THIS call
+	// must run under (R12-H2b): the opaque binding ID (with the
+	// serializable policy baseline) a continuation restores or refuses.
+	// It is stamped at admission and round-trips through
+	// SessionAgentCallData so every continuation carries its own identity
+	// instead of inheriting "the latest provider for the session". nil for
+	// ordinary OS-disk calls. Unlike CallOptions (json:"-") this IS
+	// serialized: ToSessionAgentCallData persists it on the durable row.
+	DiskRequirement *session.SessionExecutionRequirement
+
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already
 	// owned by another in-process turn, mailbox.submit does NOT append this
@@ -831,6 +841,14 @@ type sessionAgent struct {
 	// ever armed.
 	runAllowlists  permission.SessionRunAllowlistManager
 	restrictedRuns permission.RestrictedRunAuthorizer
+
+	// diskCaps is the coordinator's App-owned capability manager, wired at
+	// construction via SessionAgentOptions.diskCaps (R12-H2b §2.4): the
+	// durable enqueue producer (restartOrphanedWithRetry) holds row-keyed
+	// Continuation owners through it so a queued provider-backed call's
+	// binding cannot be pruned before the pump rebuilds. Nil on bare
+	// fixtures.
+	diskCaps *DiskProviderRegistry
 }
 
 // SessionAgentOptions is defined in agent_options.go (pure move, phase-4
@@ -876,6 +894,7 @@ func NewSessionAgent(
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,
 		titleGenerationMaxDuration: opts.TitleGenerationMaxDuration,
 		titleGens:                  newTitleGenRegistry(),
+		diskCaps:                   opts.diskCaps,
 	}
 }
 

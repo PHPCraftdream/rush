@@ -142,7 +142,7 @@ func (m *mockCoordinatorForShutdown) ResetAutoResumeCounter(sessionID string) {
 	panic("unexpected: Shutdown does not call ResetAutoResumeCounter")
 }
 
-func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	panic("unexpected: Shutdown does not call RebuildSessionAgentCall")
 }
 

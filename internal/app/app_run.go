@@ -18,6 +18,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -195,6 +196,24 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 				app.AgentCoordinator.ReleaseExclusive(sess.ID, reservedEpoch, reservedCancel)
 			}
 		}()
+	}
+
+	// R12-H2b §2.2: persist the session execution fence UNDER exclusive
+	// admission, before the first provider-dependent model turn. A provider
+	// run that cannot durably record its requirement must not start: a later
+	// continuation rebuilding against a missing fence would silently fall
+	// back to the OS disk — the exact promotion this fence exists to prevent.
+	if setup.callBindingRelease != nil {
+		reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore)
+		if !ok {
+			return nil, fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
+		}
+		if setup.callOpts == nil || setup.callOpts.Requirement == nil {
+			return nil, fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
+		}
+		if err := reqStore.StoreSessionExecutionRequirement(ctx, sess.ID, *setup.callOpts.Requirement); err != nil {
+			return nil, fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+		}
 	}
 
 	// R3-3: mutCtx governs every pre-handoff session mutation below. On

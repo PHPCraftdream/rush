@@ -66,7 +66,13 @@ func callFromActive(active SessionAgentCall) SessionAgentCall {
 // delegation launched with, doc sec.3.4), a root/non-driver session
 // resolves its own pinned models exactly like an ordinary wake turn does
 // today (wakeNoticeCall's non-driver branch, which this replaces).
-func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, error) {
+// R12-H2b §2.3: both branches resolve the session's execution fence
+// FIRST — the returned preparedContinuation holds the Continuation owner
+// across the dispatch window (the caller releases it after Run returns),
+// and its requirement is stamped onto the drain call (and, on the root
+// branch, onto the ctx so the pinned toolset is provider-backed). A lost
+// binding fails closed typed before anything runs.
+func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
 		// wake re-inherits the driver's parentSessionID's allowlist baseline
@@ -79,11 +85,27 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		}
 		call := newDrainCall(driver.callFor(""))
 		c.freshenDrainClient(ctx, &call)
-		return call, nil
+		prep, prepErr := c.PrepareContinuation(ctx, sessionID, requirementFromCall(call))
+		if prepErr != nil {
+			return SessionAgentCall{}, nil, prepErr
+		}
+		prep.applyTo(&call)
+		return call, prep, nil
+	}
+	// Root branch: resolve the fence BEFORE model resolution so the pinned
+	// toolset is built with the provider already on the ctx (R12-H2b §2.3).
+	prep, prepErr := c.PrepareContinuation(ctx, sessionID, nil)
+	if prepErr != nil {
+		return SessionAgentCall{}, nil, prepErr
+	}
+	if prep != nil {
+		capOpts := &CallOptions{}
+		prep.applyToOptions(capOpts)
+		ctx = WithCallOptions(ctx, capOpts)
 	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return SessionAgentCall{}, err
+		return SessionAgentCall{}, nil, err
 	}
 	// A reaction after a long job may find the OAuth token expired: refresh it
 	// BEFORE the call is built (the web and child Drains bypass runInternal,
@@ -93,14 +115,18 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", sessionID, "error", refreshErr)
 	} else if refreshed {
 		if pinned, err = c.resolveSessionModels(ctx, sessionID); err != nil {
-			return SessionAgentCall{}, err
+			return SessionAgentCall{}, nil, err
 		}
 	}
 	call, err := c.buildCall(ctx, sessionID, "", pinned, nil)
 	if err != nil {
-		return SessionAgentCall{}, err
+		return SessionAgentCall{}, nil, err
 	}
-	return newDrainCall(call), nil
+	call = newDrainCall(call)
+	// Idempotent stamping: keeps DiskRequirement on the struct itself even
+	// though the ctx-carried options already carry it (R12-H2b §2.3).
+	prep.applyTo(&call)
+	return call, prep, nil
 }
 
 // reminderBeforeTail moves preparePrompt's trailing todo reminder in front

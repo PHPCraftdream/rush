@@ -192,6 +192,12 @@ type CallOptions struct {
 	// immutable CallOptions incarnation. It is internal trusted runtime
 	// metadata and is never serialized with session calls.
 	DiskBindingID string
+	// Requirement is the durable execution requirement envelope stamped
+	// onto this trusted call state at admission (R12-H2b): the fence
+	// row's identity this invocation established. Copies of the options
+	// borrow the pointer; it is immutable after construction. nil for
+	// ordinary calls.
+	Requirement *session.SessionExecutionRequirement
 }
 
 type sessionModelPersistenceContextKey struct{}

@@ -344,8 +344,26 @@ Boundaries to know:
   to do, and is not a defence against a hostile model that has other
   tools. The `FolderScope` ACL is still what limits which paths the
   model may name.
-- **Per-call provider identity.** A run without an explicit provider must not be assumed safe to continue an earlier provider-backed session: until durable session-requirement metadata is implemented, only batch execution itself is supported; automatic cross-run continuation remains blocked work.
-- **Supported by the batch runtime as a process-bound capability.** Rush borrows the provider and does not close it. Keep it usable until associated executions—including detached work and held delegations—have actually terminated and disposed. Cancellation requests are not proof that provider operations stopped; SDK Run/wait returning does not end detached work. Concurrent calls may overlap, so providers need concurrency safety. Crashes never resume old provider-backed work; explicitly supply a provider on a new SDK run. Missing bindings fail with `sdk.ErrDiskProviderUnavailable`, never OS-disk fallback. Durable automatic cross-run/session continuation requirement persistence is not yet implemented; do not continue provider-backed sessions without explicitly supplying the provider. FolderScope and command-tool safety floors above remain in force.
+- **Per-call provider identity.** A run without an explicit provider is
+  never assumed safe to continue an earlier provider-backed session. A
+  provider-backed SDK run persists a session execution requirement (the
+  fence) at admission; same-process continuations (durable queued turns,
+  drains/wakes, reviewer follow-ups) restore the exact binding, never
+  "the latest provider for the session".
+- **Supported by the batch runtime as a process-bound capability.** Rush
+  borrows the provider and does not close it. Keep it usable until
+  associated executions—including detached work and held delegations—
+  have actually terminated and disposed. Cancellation requests are not
+  proof that provider operations stopped; SDK Run/wait returning does
+  not end detached work. Concurrent calls may overlap, so providers
+  need concurrency safety. Crashes never resume old provider-backed
+  work: after a restart, provider-dependent continuations fail closed
+  with `sdk.ErrDiskProviderUnavailable` — terminally for durable rows,
+  never replayed onto the OS disk — and a new SDK run supplying a
+  provider establishes a new epoch. Ordinary turns and unmarked
+  continuations of a fenced session are refused, never downgraded to
+  the real disk. FolderScope and command-tool safety floors above
+  remain in force.
 - **An ephemeral library-mode session (see "Library mode" above) has no
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply

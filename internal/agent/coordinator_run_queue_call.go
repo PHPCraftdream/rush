@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/google/uuid"
 )
 
 // RebuildSessionAgentCall reconstructs a full SessionAgentCall from SessionAgentCallData
@@ -23,22 +24,68 @@ import (
 // ProviderOptions/Temperature/TopP/TopK/FrequencyPenalty/PresencePenalty are NOT
 // reconstructed here — they are pure functions of (Model, ProviderConfig) computed
 // via mergeCallOptions during normal execution path.
-func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (SessionAgentCall, error) {
-	// Layer 2 (belt and braces, design doc §7.3): every current producer
-	// already refuses to enqueue a disk-provider-carrying call (Layer 1),
-	// so this should be unreachable in practice — but a row marked
-	// HostDiskProvider must NEVER be rebuilt: the provider itself has no
-	// serializable form, so "rebuilding" it can only mean silently
-	// falling back to the real disk, exactly the silent restart
-	// promotion this whole feature exists to prevent. Wrapped in
-	// ErrCallAlreadyAttempted so the pump treats it as TERMINAL — no
-	// retry loop on a row that can never succeed differently.
-	if data.HostDiskProvider {
-		slog.Error("agent: refusing to rebuild a durable row marked host-disk-provider; its DiskProvider had no serializable form and rebuilding it would silently restart the turn on the real disk",
+//
+// R12-H2b §2.2 fence transfer: rowID is the leased run-queue entry's durable
+// id ("" for callers without one — the row-keyed Continuation holder release
+// then becomes a no-op). A row carrying a DiskRequirement resolves/acquires
+// its fence BEFORE scope canonicalization or any other step; a legacy row
+// marked HostDiskProvider with NO envelope fails closed terminal. A row
+// with neither envelope nor HostDiskProvider mark still consults the fence
+// with a nil source: a newly originated session-level continuation gets its
+// baseline from the persisted session metadata (§2.2), so a fenced session
+// cannot be restarted on the OS disk by an unmarked row. On success
+// the Continuation owner transfers to a fresh Call owner registered on the
+// rebuilt call's build scope; on ANY failure after acquisition both the prep
+// token and the row-keyed holder are released, so a refused row never leaks
+// the binding pin.
+func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (SessionAgentCall, error) {
+	// R12-H2b §2.2: a legacy row says a provider rode the call, but the
+	// envelope that names it does not exist — rebuilding could only mean
+	// OS disk. Terminal, so the pump never retries a row that can never
+	// succeed differently.
+	if data.DiskRequirement == nil && data.HostDiskProvider {
+		slog.Error("agent: refusing to rebuild a durable row marked host-disk-provider but carrying no resolvable execution requirement; rebuilding it would silently restart the turn on the real disk",
 			"session_id", data.SessionID, "logical_call_id", data.LogicalCallID)
 		return SessionAgentCall{}, &ErrCallAlreadyAttempted{
-			Err: fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, data.SessionID),
+			Err: fmt.Errorf("%w: durable row is marked host-disk-provider but carries no resolvable execution requirement (session=%s)", ErrDiskProviderUnavailable, data.SessionID),
 		}
+	}
+
+	// R12-H2b §2.2: resolve and acquire the fence FIRST, before scope
+	// canonicalization or model/tool work, so the binding cannot be pruned
+	// under the rebuild. The row-keyed Continuation holder (held by the
+	// durable producer since enqueue) is released here in BOTH outcomes —
+	// transfer-to-call below, or any refusal after this point.
+	var prep *preparedContinuation
+	if data.DiskRequirement != nil {
+		resolved, prepErr := c.PrepareContinuation(ctx, data.SessionID, data.DiskRequirement)
+		if prepErr != nil {
+			releaseDurableContinuationOwner(c.diskCaps, data.DiskRequirement.BindingID, rowID)
+			return SessionAgentCall{}, &ErrCallAlreadyAttempted{
+				Err: fmt.Errorf("%w: durable row's disk provider is unavailable (session=%s): %s", ErrDiskProviderUnavailable, data.SessionID, prepErr),
+			}
+		}
+		prep = resolved
+	} else if !data.HostDiskProvider {
+		// R12-H2b §2.2 / acceptance 14: a provider-less unmarked continuation
+		// is fenced by the persisted session metadata. An unfenced session
+		// resolves (nil, nil) and leaves prep nil, so the rebuild is unchanged
+		// beyond one PK SELECT.
+		resolved, prepErr := c.PrepareContinuation(ctx, data.SessionID, nil)
+		if prepErr != nil {
+			return SessionAgentCall{}, &ErrCallAlreadyAttempted{
+				Err: fmt.Errorf("%w: unmarked continuation of a fenced session cannot resolve its provider (session=%s): %s", ErrDiskProviderUnavailable, data.SessionID, prepErr),
+			}
+		}
+		prep = resolved
+	}
+	releasePrep := func() {
+		if prep == nil {
+			return
+		}
+		bindingID := prep.requirement.BindingID
+		prep.release()
+		releaseDurableContinuationOwner(c.diskCaps, bindingID, rowID)
 	}
 
 	var smartModel, fastModel Model
@@ -64,6 +111,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// Build both models (buildModelsFromCfg requires both)
 	smartModel, fastModel, err = c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
 	if err != nil {
+		releasePrep()
 		return SessionAgentCall{}, fmt.Errorf("failed to rebuild models from config: %w", err)
 	}
 
@@ -135,9 +183,13 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	// canonicalized before persisting, see ExecuteRun), so it is
 	// canonicalized here with the SAME resolveScopedPath algorithm every
 	// REQUESTED item path goes through, exactly like the initial in-process
-	// compile does. A DiskProvider never survives the durable queue (see
-	// CallOptions.DiskProvider's doc comment), so every rebuilt scope is
-	// canonicalized against the real disk (nil disk argument).
+	// compile does.
+	//
+	// R12-H2b §2.2: a rebuilt call that carries a fence canonicalizes its
+	// scope WITH the resolved provider, not against the real disk — the
+	// nil disk argument was only correct while no provider could survive
+	// the queue. prep was acquired at the top, so the provider is live
+	// here; the OS-disk (nil) argument stays for every unfenced row.
 	//
 	// R5-3 (P0 security review): this used to be the ONLY thing
 	// rebuiltCallOptions ever carried — a rebuilt call's DisableSubAgents,
@@ -162,6 +214,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 		var err error
 		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
 		if err != nil {
+			releasePrep()
 			return SessionAgentCall{}, fmt.Errorf(
 				"RebuildSessionAgentCall: refusing durable row with an incompatible CallOptionsSpec: %w", err)
 		}
@@ -175,8 +228,12 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	}
 	if data.FolderScopeSpec != nil {
 		var compiledScope permission.FolderScope
+		var canonDisk tools.DiskProvider
+		if prep != nil {
+			canonDisk = prep.provider
+		}
 		canonSpec, canonErr := tools.CanonicalizeFolderScopeSpec(
-			ctx, nil, *fromSessionFolderScopeSpec(data.FolderScopeSpec))
+			ctx, canonDisk, *fromSessionFolderScopeSpec(data.FolderScopeSpec))
 		if canonErr != nil {
 			slog.Error("RebuildSessionAgentCall: the durable row's folder-scope spec failed to canonicalize; scoping the rebuilt turn to deny-everything",
 				"session_id", data.SessionID, "err", canonErr)
@@ -193,15 +250,43 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, data session.
 	if rebuiltCallOptions != nil && rebuiltCallOptions.FolderScope != nil {
 		replayCtx := WithCallOptions(ctx, rebuiltCallOptions)
 		if err := c.rejectScopedCallOnCLIProvider(replayCtx, "smart", smartProviderCfg); err != nil {
+			releasePrep()
 			return SessionAgentCall{}, err
 		}
 		if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok && workerModelCfg.Model != "" {
 			if workerProviderCfg, ok := cfg.Providers.Get(workerModelCfg.Provider); ok {
 				if err := c.rejectScopedCallOnCLIProvider(replayCtx, "worker", workerProviderCfg); err != nil {
+					releasePrep()
 					return SessionAgentCall{}, err
 				}
 			}
 		}
+	}
+
+	// R12-H2b §2.2 fence transfer: every fallible rebuild step has passed.
+	// Bind a fresh Call owner to the fence's live binding, register its
+	// release on the rebuilt call's build scope (closed by
+	// RunSessionAgentCall when the call's execution ends or fails), stamp
+	// the requirement, and release both the prep token and the row-keyed
+	// holder — the transfer is complete.
+	if prep != nil {
+		if rebuiltCallOptions == nil {
+			rebuiltCallOptions = &CallOptions{}
+		}
+		EnsureCallBuildScope(rebuiltCallOptions)
+		requirement := prep.requirement
+		opts, callRelease, bindErr := bindExistingCallDiskBinding(c.diskCaps, requirement.BindingID, uuid.NewString(), rebuiltCallOptions)
+		if bindErr != nil {
+			releasePrep()
+			return SessionAgentCall{}, &ErrCallAlreadyAttempted{
+				Err: fmt.Errorf("%w: durable row's disk provider could not be re-bound (session=%s): %s", ErrDiskProviderUnavailable, data.SessionID, bindErr),
+			}
+		}
+		opts.Requirement = &requirement
+		opts.buildScope.register(callRelease)
+		rebuiltCallOptions = opts
+		prep.release()
+		releaseDurableContinuationOwner(c.diskCaps, requirement.BindingID, rowID)
 	}
 
 	return SessionAgentCall{

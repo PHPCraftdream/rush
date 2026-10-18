@@ -174,6 +174,15 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	// R12-H2b §2.3: wire the durable session-execution-fence store so
+	// continuations resolve the fence through the same session service; a
+	// service that does not implement the store simply means no fence.
+	if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+		if err := agent.SetCoordinatorExecutionRequirementStore(app.AgentCoordinator, reqStore); err != nil {
+			slog.Error("Failed to bind session execution requirement store", "err", err)
+			return err
+		}
+	}
 	// R11F (M3): bind the coordinator to the flag-on batch runtime. After
 	// this every tool build re-arms its work tools through the ONE ingress
 	// authority and the old async/stall wrappers are not installed; flag-off

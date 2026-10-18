@@ -142,6 +142,12 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	// drained much later under a DIFFERENT turn's context, so the sender's
 	// origin must travel on the call struct itself.
 	call.Origin = CallOriginFrom(ctx)
+	// R12-H2b §2.2: a run armed with an execution requirement envelope
+	// stamps it onto the built call so durable producers can persist and
+	// carry it (diskRequirementForCall reads this field first).
+	if callOpts != nil && callOpts.Requirement != nil {
+		call.DiskRequirement = callOpts.Requirement
+	}
 	// Pinning matters more here than in runInternal: this call is QUEUED as a
 	// replacement and may not start for a while, so the gap between "options
 	// computed" and "turn starts" is unbounded rather than a few lines.
@@ -204,6 +210,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
 	callOpts := callOptionsFrom(ctx)
+	// R12-H2b §2.4 ordinary/idle rebuilt calls — do not rely on the
+	// request carrying options: a session with a persisted fence must not
+	// run a turn that cannot name a live binding. Before any
+	// provider-sensitive model/tool resolution.
+	if err := c.guardTurnDiskFence(ctx, sessionID, callOpts); err != nil {
+		return nil, c.drainRefused(ctx, sessionID, err)
+	}
 	// R12-H2a (P1-1): the NORMAL run path builds its tools into this call's
 	// build-resource scope (resolveSessionModels → pinCallTools → buildTools
 	// → newBatchWorkToolBuild registers construction pins in the scope), and

@@ -63,7 +63,10 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 	// This requires rebuilding the full Model from the serialized ModelCfg,
 	// which only the coordinator can do (it has access to provider configs
 	// and catwalk registry). Delegate to coordinator.RebuildSessionAgentCall.
-	call, err := coord.RebuildSessionAgentCall(ctx, callData)
+	// The pump stamps the leased row's durable id onto the context
+	// (R12-H2b §2.4) so the rebuild can release the row-keyed Continuation
+	// holder; callers outside the pump pass "".
+	call, err := coord.RebuildSessionAgentCall(ctx, session.RunQueueRowIDFrom(ctx), callData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rebuild session agent call: %w", err)
 	}

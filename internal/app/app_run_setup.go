@@ -454,6 +454,13 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// defer is only the outer release point on success.
 		callBindingRelease = release
 	}
+	// R12-H2b §2.2: stamp the requirement envelope this invocation
+	// establishes onto the trusted call state. The fence ROW is persisted
+	// under exclusive admission (ExecuteRun, after ReserveExclusive); the
+	// stamp rides the same immutable options value from here on. Owner is
+	// informational until H4 makes it authoritative.
+	callOpts.Requirement = agent.BuildSessionExecutionRequirement(
+		callOpts.DiskBindingID, "app", time.Now().UnixNano(), folderScopeSpec, runSpec, callOpts)
 	// Every ExecuteRun call owns a build-resource scope for its tool
 	// constructions (R12-H2 §1.2) — ordinary calls included; provider calls
 	// got theirs with the binding handle above.
