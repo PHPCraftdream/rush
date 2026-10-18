@@ -172,6 +172,21 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 		}); err != nil {
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: repend nodes: %w", err)
 		}
+		// R12-EF fix F2: the session_notices half of the legacy truncation
+		// (TruncateForRerun's step 3, async_job_rerun.go) -- session_notices
+		// stays live under the flag (R12-D), so a delivered notice whose
+		// message the rerun deleted is re-pended for the new branch, and a
+		// wake_failed marker of the deleted branch is voided instead.
+		if _, err = q.RependSessionNoticesByMessageIDs(ctx, db.RependSessionNoticesByMessageIDsParams{
+			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
+		}); err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: repend session notices: %w", err)
+		}
+		if _, err = q.VoidWakeFailedNoticesByMessageIDs(ctx, db.VoidWakeFailedNoticesByMessageIDsParams{
+			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
+		}); err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void wake_failed notices: %w", err)
+		}
 	}
 	// Voided roots ONCE, after the repend loop: void every selected, not-yet-
 	// void node inside a voided root regardless of its (cleared) message id.
@@ -179,6 +194,13 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 		UpdatedAt: now, Owner: p.Owner,
 	}); err != nil {
 		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void nodes of voided roots: %w", err)
+	}
+	// R12-EF fix F3: the question channel of a retired subtree ends void too
+	// -- a child_question notice of a void-delivery root is never delivered
+	// by the new branch. Runs after the node void above, so roots this very
+	// transaction retired are matched; any SQL error rolls the reconcile back.
+	if err = batchRerunVoidChildQuestionsOfVoidRoots(ctx, tx, p.Owner, now); err != nil {
+		return BatchRerunTruncation{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: commit: %w", err)
