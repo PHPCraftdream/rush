@@ -74,6 +74,7 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 		cps := float64(concPhase.Attempts) / concPhase.Elapsed.Seconds()
 		throughput += cps
 		runs = append(runs, entry(fmt.Sprintf("contention-%d", round), concPhase, cps))
+		d11LogRoundState(t, e, round)
 		warmErr += warm.Errors + warmConc.Errors
 		require.Equal(t, warm.Attempts, len(warm.Values))
 		require.Equal(t, warmConc.Attempts, len(warmConc.Values))
