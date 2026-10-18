@@ -394,10 +394,13 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 // nor launch anything: reading a background job's buffered output and
 // managing the todo list. Every other tool (edit/write/view/grep and
 // friends, a bash/run_command call with substance, a delegation, job_kill)
-// is progress for the reaction chain guard (#1113).
+// is progress for the reaction chain guard (#1113). batch_status/batch_output
+// (flag on) are job_output's polling twins -- neutral the same way.
 var chainNeutralTools = map[string]struct{}{
 	tools.JobOutputToolName: {},
 	tools.TodosToolName:     {},
+	"batch_status":          {},
+	"batch_output":          {},
 }
 
 // recordChainEvidence feeds the reaction chain guard (#1113) from this

@@ -245,7 +245,7 @@ func (c *coordinator) buildToolsAgentConfigForCall(ctx context.Context, cfg *con
 	if isSubAgent {
 		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
 		copy(allowed, agent.AllowedTools)
-		for _, name := range workerToolNames {
+		for _, name := range workerLayeredToolNames() {
 			if !slices.Contains(allowed, name) {
 				allowed = append(allowed, name)
 			}
@@ -341,7 +341,8 @@ var folderScopeEscapeHatchTools = map[string]struct{}{
 // bypass any filesystem scope. They stay only when the scope says so
 // (FolderScope.KeepsCommandTools, set by the run plumbing from the
 // restricted-run bash allowlist): keeping them is a deliberate grant,
-// not a default.
+// not a default. (flag on: plus the native batch controls,
+// folderScopeCommandToolsBatch)
 var folderScopeCommandTools = map[string]struct{}{
 	tools.BashToolName: {}, tools.RunCommandToolName: {},
 	tools.JobOutputToolName: {}, tools.JobKillToolName: {},
@@ -392,6 +393,7 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 	}
 	scope := *opts.FolderScope
 
+	commandTools := folderScopeCommandToolSet()
 	stripped := make([]string, 0, len(agent.AllowedTools))
 	for _, name := range agent.AllowedTools {
 		if _, ok := folderScopeLegacyFileTools[name]; ok {
@@ -400,7 +402,7 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 		if _, ok := folderScopeEscapeHatchTools[name]; ok {
 			continue
 		}
-		if _, ok := folderScopeCommandTools[name]; ok && !scope.KeepsCommandTools() {
+		if _, ok := commandTools[name]; ok && !scope.KeepsCommandTools() {
 			continue
 		}
 		if _, ok := folderScopeOpForTool[name]; ok {
@@ -784,9 +786,10 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		}
 	}
 
+	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
 	if batchFlagEnabled() {
 		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
-			for _, name := range batchControlAvailability(filteredTools) {
+			for _, name := range allowedControls {
 				if name == tools.AwaitTasksToolName {
 					for i, tool := range filteredTools {
 						if tool.Info().Name == name {
@@ -827,7 +830,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent)
+	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowedControls)
 }
 
 // sharedBuildScopeFor lazily creates the coordinator-level build scope for
@@ -846,10 +849,12 @@ func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
 // hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
 // restrictions run once here, then every batch-admissible work tool is
 // re-armed through the ONE authority (batchRuntime.Invoke) and the old
-// async/stall wrappers are NOT installed.
-func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool) (policyToolBuild, error) {
+// async/stall wrappers are NOT installed. allowed is the build's control
+// grant list: batchControlAvailability over the final filtered tools and
+// AllowedTools, computed once in buildPolicyTools.
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string) (policyToolBuild, error) {
 	if bind := coordinatorBatchBindingFor(c); bind != nil {
-		allowedControls := batchControlAvailability(filteredTools)
+		allowedControls := allowed
 		filteredTools = withoutBatchControlPlaceholders(filteredTools)
 		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
 		// Construction ownership (R12-H2 §1.2): the build's pins register

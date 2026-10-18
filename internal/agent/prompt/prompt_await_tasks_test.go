@@ -47,3 +47,40 @@ func TestBuild_AwaitTasksRule_TracksWorkerAvailable(t *testing.T) {
 	require.NotContains(t, without, "Orchestrator mode",
 		"without a worker the whole orchestrator block (the rule with it) is absent")
 }
+
+// TestBuild_WorkerWaitRule_NamesNativePollToolWhenBatchOn pins the R12-H1
+// flag-conditional coder.md.tpl wait rule: with RUSH_BATCH_RUNTIME on the
+// orchestrator wait rule must name the NATIVE poll tool (batch_output) and
+// must not render the legacy job_output name.
+func TestBuild_WorkerWaitRule_NamesNativePollToolWhenBatchOn(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+	store := testConfigStore(t)
+	cfg := store.Config()
+	cfg.Models[config.SelectedModelTypeWorker] = registerProvider(cfg, "worker-provider", "worker-model", 200_000)
+
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), true)
+	require.NoError(t, err)
+	require.Contains(t, got, "never repeated `inspect_agent`/`batch_output` polling",
+		"with the batch runtime on the orchestrator wait rule must name the native poll tool")
+	require.NotContains(t, got, "`job_output` polling",
+		"the legacy poll tool name must not render while the batch runtime is on")
+}
+
+// TestBuild_WorkerWaitRule_KeepsLegacyPollToolWhenBatchOff pins the flag-off
+// byte-compat half: with RUSH_BATCH_RUNTIME off the wait rule keeps the
+// historical job_output wording untouched.
+func TestBuild_WorkerWaitRule_KeepsLegacyPollToolWhenBatchOff(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	store := testConfigStore(t)
+	cfg := store.Config()
+	cfg.Models[config.SelectedModelTypeWorker] = registerProvider(cfg, "worker-provider", "worker-model", 200_000)
+
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), true)
+	require.NoError(t, err)
+	require.Contains(t, got, "never repeated `inspect_agent`/`job_output` polling",
+		"flag off must keep the historical wait-rule wording byte-identical")
+}
