@@ -11,8 +11,19 @@ Revision 2 (post-review): reviewer findings P1-1..P2-4 closed.
 TestHandleListSessions_LiveWorkAnnotationIsBatched is reverted to the
 pre-port state (d1a043ea) and moved to QUESTIONS (value-flow contradiction
 with handlers_sessions_batch_cutover_test.go:112-117). Pins re-dispositioned
-into the H4 table below. Audit DDL gated on the flag. Every green claim here
-is a STATIC derivation; CI pending.
+into the H4 table below. Audit DDL gated on the flag.
+
+Revision 3 (round-3 review): the round-2 P1 (unused "context" import in
+internal/server/livework_seed_test.go) is fixed. P2-1: batchRuntimeFacts now
+degrades a configless App (nil DB func / nil handle) to an EXPLICIT UNKNOWN
+facts map (unavailableBatchFacts), never to the flag-off nil, so an
+unreadable batch can no longer render "at rest". P2-2: a new flag-ON
+instrumentation test (internal/server/descendant_work_batch_on_test.go)
+pins the chunked batch live walk through the batchSourceFor seam. P2-3:
+doc corrections applied (cancel-purge narrative trimmed to the observed
+fact, debt-read claim corrected, "second connection handle" wording
+replaced with the db.Connect pooled-handle truth). Every green claim here
+remains a STATIC derivation; CI pending — nothing is verified green.
 
 ## F8 — internal/cmd sessions commands
 
@@ -43,6 +54,13 @@ Production fixes (the flag-ON consumer had regressed user-facing behavior):
    `reset --force` would have wiped a session a loop still drives (the
    R8A-3 bug). The flag-ON path now refuses through the same
    resetRefusedError message before calling the batch reset.
+4. batchRuntimeFacts (internal/cmd/sessions_batch_read.go): flag off → nil
+   (callers keep the legacy path; renderSessionsJobsBatch's nil branch now
+   means flag-off ONLY). Flag ON with a configless App (nil DB func or nil
+   handle) → an explicit unknown facts map (unavailableBatchFacts, one
+   Unknown+Live entry per id), so the configless flag-ON renders the
+   unknown item / "batch unknown (incomplete read)" — never "at rest" on
+   unreadable evidence.
 
 Dual-mode helpers (one shared set per package): claimOwnJob /
 claimDelegation / finishOwnJob converted to take *app.App and seed the
@@ -90,18 +108,13 @@ QUESTIONS (left untouched; red under the flag, missing behaviour named):
   and batch retention deliberately never purges session_notices
   (internal/session/batch_retention.go), so the notice half of the retention
   rule has no flag-ON equivalent yet.
-- TestSessionsCancel_PurgesQueuedWork: fixture-level race with the test's
-  own RunQueuePumps (app.New starts one on every full app —
-  internal/app/app.go — NOT flag-gated; the flag widens the window because
-  installBatchRuntime runs synchronously in each of the test's ~4 app
-  builds, past the pump's 3s tick). Cause NOT established. The seed, cancel
-  and verify apps each start a RunQueuePump (app.New starts one whenever a
-  data dir is set and the agent config resolves — internal/app/app.go:572-579),
-  and a pump ticks immediately on start
-  (internal/session/run_queue_lifecycle.go:149-150), so several pumps race
-  the purge; which of them keeps or re-writes the row under the flag was not
-  derived. Needs a test seam (pump disable/interval) or a single-app fixture;
-  no production change is indicated.
+- TestSessionsCancel_PurgesQueuedWork: red under the flag (the observed
+  failure). Fact: app.New starts a RunQueuePump whenever a data dir is set
+  and the agent config resolves (internal/app/app.go:572-579), and a pump
+  ticks immediately on start
+  (internal/session/run_queue_lifecycle.go:149-150). Cause NOT established.
+  Needs a test seam (pump disable/interval) or a single-app fixture; no
+  production change is indicated.
 
 ## H4 delete candidates (pinned legacy-path tests)
 
@@ -156,8 +169,8 @@ TestHandleListSessions_LiveDescendantWorkAnnotation,
 TestHandleListSessions_LiveOwnWorkAnnotation,
 TestHandleGetSessionLiveWork_SubAgentDelegation,
 TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB (flag ON: the batch
-root is reserved through a second db.Connect handle via the production
-session.BatchStore.Reserve API),
+root is reserved through db.Connect's pooled handle for the same data
+directory, via the production session.BatchStore.Reserve API),
 TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot,
 TestLiveWorkTitles_IsolatedPerSession, TestLiveWorkTitles_InputChangeInvalidates,
 TestLiveWorkTitles_CacheAvoidsHistoryReread, TestMaybeBroadcastSessionLiveWork,
@@ -241,7 +254,11 @@ with zero assertion changes:
   BatchLiveForSessions (internal/session/batch_read_live.go:18) fetches
   every owner once with no rows and no failures, so batchLiveReplay leaves
   Complete=true with no roots; reduceBatchSessionFacts then produces no
-  root facts, no debt read, GuardDebt=false and no unfinished entries —
+  root facts, an EMPTY (not skipped) debt read —
+  BatchReactionPendingInclusiveDebtRows runs whenever the live read is
+  complete regardless of root count (sessions_batch_read.go:198-215) and
+  empty tables return an empty debt — GuardDebt=false and no unfinished
+  entries —
   the additive JSON block reports roots 0, held 0, debt 0, unknown false,
   and the text block prints the "batch runtime on: unfinished_jobs counted
   from batch_nodes (batch runtime on)" header plus one inert per-session
@@ -308,6 +325,12 @@ Expected green on the next shadow round (static derivation):
   TestHandleGetSessionLiveWork_SubAgentDelegation,
   TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB,
   TestHandleGetSessionLiveWork_AwaitingAnswerBadge,
+TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead (new,
+descendant_work_batch_on_test.go: flag-ON instrumentation over the
+batchSourceFor seam — disclosure: the list-annotation facts have no
+injectable seam in this package (App.SessionActivityBatch), so the
+annotation assertions there are uninstrumented; the countable surface is
+the flat batch snapshot reader via the batchSourceFor seam),
   TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot,
   TestLiveWorkTitles_IsolatedPerSession,
   TestLiveWorkTitles_InputChangeInvalidates,
@@ -323,18 +346,31 @@ Expected green on the next shadow round (static derivation):
   TestSessionsReset_VoidsAsyncNoticesAndDebt,
   TestSessionsReset_LiveLoopRefusesEvenWithForce,
   TestListStatus_DriverShapes (newly ported),
-  TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics (new), plus the
-  ambient why tests the nil-DB guard un-reds
-  (TestExplainSessionStatus_AtRest_CleanFinish,
-  TestExplainSessionStatus_AtRest_NoAssistantMessage,
-  TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat,
-  TestExplainSessionStatus_PIDlessRecordIsReleased,
-  TestExplainSessionStatus_NoQuestionNotice_StaysSilent) and the pre-existing
+  TestBatchRuntimeFacts_ConfiglessAppDegradesToUnknownNotPanics (reworked:
+  configless under the flag degrades to an explicit unknown),
+  TestExplainWhyBatch_EmptyReadableDBReadsAtRest (new: a readable DB with
+  no batch rows and no lock IS at rest), plus
+  TestExplainSessionStatus_NoQuestionNotice_StaysSilent — it does NOT pin
+  the env, but its app IS DB-wired (whyAwaitingTestEnv) and it asserts no
+  question section, never "at rest", so under the flag it exercises
+  explainWhyBatch and still passes — and the pre-existing
   batch-ON tests re-derived under the classifier-first list
   (TestSessionsListCmdRun_BatchFlagOnStatusAndJSON).
 - F10: the 14 ported audit tests.
+- F9 (new): TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead —
+  the flag-ON instrumentation test; seam disclosure in the F9 section
+  above.
 
 QUESTIONS (red under the flag; missing behaviour named):
+- TestExplainSessionStatus_AtRest_CleanFinish,
+  TestExplainSessionStatus_AtRest_NoAssistantMessage,
+  TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat,
+  TestExplainSessionStatus_PIDlessRecordIsReleased (sessions_why_test.go):
+  none pins the env (no t.Setenv("RUSH_BATCH_RUNTIME", ...)) and each
+  asserts "status: at rest" through a CONFIGLESS &app.App{} — under the
+  flag that why read now renders "batch unknown (incomplete read)" (the
+  conservative unknown of the P2-1 fix), not the legacy "at rest"; the
+  tests pin the legacy render.
 - TestHandleListSessions_LiveWorkAnnotationIsBatched (semantics above).
 - TestSessionsJobsCmdRun_TableAndForeignLiveHostHint, TestSessionsJobsCmdRun_JSON
   (no flag-ON host-liveness/kill-hint surface).

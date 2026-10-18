@@ -252,11 +252,11 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 
 // TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB proves the
 // snapshot reads the durable table, not this process's memory: the row is
-// written through a second connection handle acquired independently of the
-// snapshot read, so buildSessionLiveWork cannot be serving this process's
-// memory. Flag OFF the writer additionally uses a distinct host identity
-// (its lock held); flag ON the rows are batch_nodes written before the
-// snapshot is requested.
+// written through db.Connect for the same data directory — the same pooled
+// writer the reader uses — so a snapshot served from anything but the
+// durable-table state would be exposed. Flag OFF the writer additionally
+// uses a distinct host identity (its lock held); flag ON the rows are
+// batch_nodes written before the snapshot is requested.
 func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
@@ -271,9 +271,9 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 
 	dataDir := a.Config().Options.DataDirectory
 	if batchRuntimeEnabled() {
-		// The rows are written through a second connection handle acquired
-		// independently of the snapshot read: the snapshot must come from the
-		// durable batch_nodes table, not from this process's memory.
+		// The rows are written through db.Connect's pooled handle for the same
+		// data directory: the snapshot must come from the durable batch_nodes
+		// table, not from this process's memory.
 		other, err := db.Connect(ctx, dataDir)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = db.ReleaseConn(other) })

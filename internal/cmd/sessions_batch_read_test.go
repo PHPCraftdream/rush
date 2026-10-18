@@ -477,21 +477,62 @@ func TestSessionsShowCmdRun_BatchFlagOnCounts(t *testing.T) {
 // batchRuntimeFlagOnForTest was the regression tests' flag precondition
 // helper; the tests now set RUSH_BATCH_RUNTIME explicitly with t.Setenv.
 
-// TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics: a hand-built App
-// without a DB func (the &App{...} literal pattern the why unit tests use)
-// degrades to "no batch facts" under the flag — the app-layer configless
-// rule — never a panic; the why render falls back to the lock verdict.
-func TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics(t *testing.T) {
+// TestBatchRuntimeFacts_ConfiglessAppDegradesToUnknownNotPanics: a
+// hand-built App without a DB func (the &App{...} literal pattern the why
+// unit tests use) degrades under the flag to an EXPLICIT UNKNOWN, not to
+// "no batch facts": an unreadable batch must never render as idle/at rest
+// (the conservative-read rule). The why render flows into the "batch unknown
+// (incomplete read)" status, never the legacy lock-verdict "at rest".
+func TestBatchRuntimeFacts_ConfiglessAppDegradesToUnknownNotPanics(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	conn, q := newTestDB(t)
 	a := &app.App{Messages: message.NewService(q), Sessions: session.NewService(q, conn)}
 	require.Nil(t, a.DB, "precondition: no DB func wired")
 
 	got := batchRuntimeFacts(context.Background(), a, t.TempDir(), []string{"sess-x"})
-	require.Nil(t, got, "a configless App has no batch facts at all")
+	require.NotNil(t, got, "a configless App's batch facts are UNAVAILABLE (unknown), never nil under the flag")
+	f := got["sess-x"]
+	require.True(t, f.Unknown, "an unreadable read is marked unknown")
+	require.True(t, f.Live, "an unavailable read is conservatively live, never idle")
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), "sess-x", &buf))
+	require.Contains(t, buf.String(), "batch unknown",
+		"the configless flag-ON why render reports the conservative unknown")
+	require.NotContains(t, buf.String(), "status: at rest",
+		"an unreadable batch must never read as idle")
+}
+
+// TestExplainWhyBatch_EmptyReadableDBReadsAtRest: with the flag on and a
+// FULLY WIRED DB func, a readable database with no batch rows and no lock IS
+// at rest — the unknown degradation must only trigger on unreadable
+// evidence, not on a legitimately empty read. newTestDB's :memory: schema
+// has no batch tables, so this uses db.Connect (full migrations, including
+// the batch tables the live reader and the debt read query).
+//
+// Static trace: explainSessionStatus routes flag-ON to explainWhyBatch
+// (sessions_why.go:127-133); batchRuntimeFacts reads the wired DB;
+// reduceBatchSessionFacts on empty tables: BatchLiveForSessions complete
+// with zero roots, the pending-inclusive debt read (BatchReactionPendingIn
+// clusiveDebtRows, sessions_batch_read.go:198-215) runs and returns empty —
+// zero-value facts — so the status default "at rest" stands
+// (explainWhyBatch, sessions_batch_read.go:289), and printStallHeader prints
+// "status: at rest" for any non-"running" status (sessions_stall.go:125-129).
+func TestExplainWhyBatch_EmptyReadableDBReadsAtRest(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	q := db.New(conn)
+	a := &app.App{
+		Messages: message.NewService(q),
+		Sessions: session.NewService(q, conn),
+		DB:       func() *sql.DB { return conn },
+	}
+	var buf bytes.Buffer
+	require.NoError(t, explainSessionStatus(ctx, a, dataDir, "sess-empty", &buf))
 	require.Contains(t, buf.String(), "status: at rest",
-		"no DB means no durable facts: the why render degrades to the lock verdict, not a panic")
+		"a readable DB with no batch rows and no lock IS at rest")
 }
