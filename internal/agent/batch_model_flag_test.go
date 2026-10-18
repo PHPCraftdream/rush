@@ -106,7 +106,8 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	coordinatorBatchBindings.Store(c, bind)
 	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
 	tools := batchTestTools("bash", "job_output", "job_kill")
-	for _, name := range batchControlAvailability(tools, allowedBatchReadControls) {
+	granted := batchControlAvailability(tools, allowedBatchReadControls)
+	for _, name := range granted {
 		if name != "await_tasks" {
 			tools = append(tools, newBatchControlPlaceholder(name))
 		}
@@ -121,7 +122,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	require.NotNil(t, scope, "the trusted call state carries its own build scope")
 	defer scope.close()
 	ctx := WithCallOptions(batchCallCtx("flagged-assembly"), callOpts)
-	built, err := c.finishToolAssembly(ctx, tools, nil, false, allowedBatchReadControls)
+	built, err := c.finishToolAssembly(ctx, tools, nil, false, granted)
 	require.NoError(t, err)
 	var names []string
 	for _, tool := range built.tools {
