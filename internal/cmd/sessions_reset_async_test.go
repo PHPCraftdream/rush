@@ -192,7 +192,10 @@ func resetSeeded(t *testing.T, s session.Service, m message.Service, store *sess
 // guard) wipes the history of a live session; every case fails.
 func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
 	// F11 env pin: drives the LEGACY resetSessionHistory directly and asserts
-	// its legacy debris/refusal state.
+	// its legacy debris/refusal state. Under Go 1.26 a test calling t.Setenv
+	// must not be parallel, so the whole test -- parent AND subtests -- is
+	// sequential and the subtests carry no t.Parallel: the pin, not the port,
+	// changed the parallelism.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	for _, tc := range []struct {
 		name string
@@ -212,7 +215,6 @@ func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
 		}, "delegat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			a, s, m, store, _ := newRunDriverTestApp(t)
 			sess := resetSeeded(t, s, m, store, "live "+tc.name)
 			tc.hold(t, a, s, store, sess.ID)

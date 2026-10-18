@@ -7,11 +7,13 @@ fixtures. Rules honored throughout: flag-OFF behavior byte-identical; every
 assertion byte-identical (no weaken/skip/delete/special-case); no
 compilation on this machine (static checks only; CI compiles and runs).
 
-Revision 2 (post-review): reviewer findings P1-1..P2-4 closed.
+Revision 2 (round-2 work only): the P1 value-flow contradiction is resolved —
 TestHandleListSessions_LiveWorkAnnotationIsBatched is reverted to the
-pre-port state (d1a043ea) and moved to QUESTIONS (value-flow contradiction
-with handlers_sessions_batch_cutover_test.go:112-117). Pins re-dispositioned
-into the H4 table below. Audit DDL gated on the flag.
+pre-port state (d1a043ea) and moved to QUESTIONS; the three user-facing
+families were re-ported onto batch-aware fixtures (real Reserve seeding,
+flag-ON gating and dual-mode seeds/helpers), env pins re-dispositioned into
+the H4 table, and the audit DDL gated on the flag. Round-2 did NOT close
+P2-1..P2-4; see Revision 3 and Revision 4 for what actually addressed them.
 
 Revision 3 (round-3 review): the round-2 P1 (unused "context" import in
 internal/server/livework_seed_test.go) is fixed. P2-1: batchRuntimeFacts now
@@ -24,6 +26,21 @@ doc corrections applied (cancel-purge narrative trimmed to the observed
 fact, debt-read claim corrected, "second connection handle" wording
 replaced with the db.Connect pooled-handle truth). Every green claim here
 remains a STATIC derivation; CI pending — nothing is verified green.
+
+Revision 4 (round-4 review): the CI tparallel lint failure in
+TestResetSessionHistory_RefusesWhileLiveWork is fixed by deleting the
+SUBTESTS' t.Parallel (the F11 t.Setenv pin forces the whole test — parent
+and subtests — sequential under the Go 1.26 Setenv rule; the top level stays
+non-parallel by design). P2-1/P2-2: the ANNOTATION path is now instrumented
+for real over N listed sessions
+(TestHandleListSessions_AnnotationReadsBoundedInOwners,
+descendant_work_annotation_reads_on_test.go) via a counting database/sql
+driver under the hand-built &app.App{} literal seam; the round-3 snapshot
+test is renamed to say it instruments the FLAT SNAPSHOT reader
+(batchSourceFor seam). P2-4: the two remaining configless branches
+(nil App receiver, nil DB handle) are pinned
+(TestBatchRuntimeFacts_UnavailableDBVariantsMarkUnknown). P2-3: this doc's
+truth sweep applied. All checks remain static derivations; CI pending.
 
 ## F8 — internal/cmd sessions commands
 
@@ -318,6 +335,13 @@ compilation, no tests and no benchmarks ran
 locally; CI is pending. Every green claim in this document is a static
 value-flow derivation, not an observed run.
 
+Round 4: after the last edit, these changed files were re-read IN FULL:
+internal/cmd/sessions_reset_async_test.go,
+internal/cmd/sessions_batch_read_test.go,
+internal/server/descendant_work_batch_on_test.go,
+internal/server/descendant_work_annotation_reads_on_test.go (new), and this
+document.
+
 Expected green on the next shadow round (static derivation):
 
 - F9: TestHandleListSessions_LiveDescendantWorkAnnotation,
@@ -325,12 +349,11 @@ Expected green on the next shadow round (static derivation):
   TestHandleGetSessionLiveWork_SubAgentDelegation,
   TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB,
   TestHandleGetSessionLiveWork_AwaitingAnswerBadge,
-TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead (new,
-descendant_work_batch_on_test.go: flag-ON instrumentation over the
-batchSourceFor seam — disclosure: the list-annotation facts have no
-injectable seam in this package (App.SessionActivityBatch), so the
-annotation assertions there are uninstrumented; the countable surface is
-the flat batch snapshot reader via the batchSourceFor seam),
+TestHandleGetSessionLiveWork_BatchOnSnapshotReaderChunkedReads (renamed
+from TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead,
+descendant_work_batch_on_test.go: flag-ON instrumentation over the FLAT
+SNAPSHOT reader — the batchSourceFor seam, a different surface from the
+annotation handler; all assertions and the seam disclosure unchanged),
   TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot,
   TestLiveWorkTitles_IsolatedPerSession,
   TestLiveWorkTitles_InputChangeInvalidates,
@@ -349,17 +372,27 @@ the flat batch snapshot reader via the batchSourceFor seam),
   TestBatchRuntimeFacts_ConfiglessAppDegradesToUnknownNotPanics (reworked:
   configless under the flag degrades to an explicit unknown),
   TestExplainWhyBatch_EmptyReadableDBReadsAtRest (new: a readable DB with
-  no batch rows and no lock IS at rest), plus
+  no batch rows and no lock IS at rest),
+  TestBatchRuntimeFacts_UnavailableDBVariantsMarkUnknown (new, round 4:
+  the nil-App-receiver and nil-DB-handle branches of batchRuntimeFacts
+  both mark UNAVAILABLE, never nil, never idle), plus
   TestExplainSessionStatus_NoQuestionNotice_StaysSilent — it does NOT pin
   the env, but its app IS DB-wired (whyAwaitingTestEnv) and it asserts no
   question section, never "at rest", so under the flag it exercises
-  explainWhyBatch and still passes — and the pre-existing
+  explainWhyBatch and is statically expected to pass under the flag (its
+  assertions are NotContains-only and its app is DB-wired); CI pending —
+  and the pre-existing
   batch-ON tests re-derived under the classifier-first list
   (TestSessionsListCmdRun_BatchFlagOnStatusAndJSON).
 - F10: the 14 ported audit tests.
-- F9 (new): TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead —
-  the flag-ON instrumentation test; seam disclosure in the F9 section
-  above.
+- F9 (new): TestHandleGetSessionLiveWork_BatchOnSnapshotReaderChunkedReads
+  (renamed; the flat snapshot reader via the batchSourceFor seam; seam
+  disclosure in the F9 section above) and
+  TestHandleListSessions_AnnotationReadsBoundedInOwners (new,
+  descendant_work_annotation_reads_on_test.go — round 4, P2-1/P2-2: the
+  ANNOTATION path instrumented for real over N listed sessions via a
+  counting database/sql driver under the hand-built &app.App{} literal
+  seam; asserts the exact derived relation stmts == 5 + 2*N and txs == 1).
 
 QUESTIONS (red under the flag; missing behaviour named):
 - TestExplainSessionStatus_AtRest_CleanFinish,

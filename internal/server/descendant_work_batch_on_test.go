@@ -1,5 +1,7 @@
 // R12-C instrumentation, flag ON: the live-work panel's batch snapshot must
-// keep reading the delegation forest through the batchSourceFor seam in a
+// keep reading the delegation forest through the FLAT SNAPSHOT reader (the
+// batchSourceFor seam — a different surface from the list-annotation handler,
+// which descendant_work_annotation_reads_on_test.go instruments) in a
 // BFS-chunked way (about one BatchLiveNodesForOwners chunk per tree depth,
 // never one query per session), and the snapshot payload must actually carry
 // the reserved batch roots with their delegation child links. The legacy
@@ -86,7 +88,7 @@ func reserveLiveDelegationRoot(t *testing.T, ctx context.Context, a *app.App, ho
 	require.NoError(t, err)
 }
 
-func TestHandleGetSessionLiveWork_BatchOnInstrumentedChunkedRead(t *testing.T) {
+func TestHandleGetSessionLiveWork_BatchOnSnapshotReaderChunkedReads(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	require.True(t, batchRuntimeEnabled())

@@ -536,3 +536,53 @@ func TestExplainWhyBatch_EmptyReadableDBReadsAtRest(t *testing.T) {
 	require.Contains(t, buf.String(), "status: at rest",
 		"a readable DB with no batch rows and no lock IS at rest")
 }
+
+// TestBatchRuntimeFacts_UnavailableDBVariantsMarkUnknown covers the two
+// remaining configless branches of batchRuntimeFacts (round 4, P2-1
+// completion): a NIL App receiver, and a DB func that returns a nil handle.
+// Both branches must mark the facts UNAVAILABLE (Unknown + conservatively
+// Live), never nil and never "no live work" (sessions_batch_read.go:247-248,
+// :254-255) — an unreadable batch must never render as idle.
+//
+// Static trace: batchRuntimeFacts flag-ON: nil App receiver →
+// unavailableBatchFacts immediately (the nil dereference never happens);
+// nil-handle App → conn := a.DB() == nil → unavailableBatchFacts; both facts
+// maps carry Unknown+Live for every requested id; the flag-ON
+// explainSessionStatus routes to explainWhyBatch, whose f.Unknown branch
+// renders "batch unknown (incomplete read)" and never "status: at rest"
+// (sessions_batch_read.go:305-313). The nil-receiver case asserts the facts
+// map DIRECTLY: explainSessionStatus with a nil App would dereference
+// a.Messages before the batch branch could answer.
+func TestBatchRuntimeFacts_UnavailableDBVariantsMarkUnknown(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	ctx := context.Background()
+
+	t.Run("nil App receiver", func(t *testing.T) {
+		got := batchRuntimeFacts(ctx, nil, t.TempDir(), []string{"s1"})
+		require.NotNil(t, got, "UNAVAILABLE facts, never nil under the flag")
+		f := got["s1"]
+		require.True(t, f.Unknown, "the nil-App branch marks the read unknown")
+		require.True(t, f.Live, "an unavailable read is conservatively live, never idle")
+	})
+
+	t.Run("DB func returns nil", func(t *testing.T) {
+		conn, q := newTestDB(t)
+		a := &app.App{
+			Messages: message.NewService(q),
+			Sessions: session.NewService(q, conn),
+			DB:       func() *sql.DB { return nil },
+		}
+		got := batchRuntimeFacts(ctx, a, t.TempDir(), []string{"s1"})
+		require.NotNil(t, got, "UNAVAILABLE facts, never nil under the flag")
+		f := got["s1"]
+		require.True(t, f.Unknown, "the nil-handle branch marks the read unknown")
+		require.True(t, f.Live, "an unavailable read is conservatively live, never idle")
+
+		var buf bytes.Buffer
+		require.NoError(t, explainSessionStatus(ctx, a, t.TempDir(), "s1", &buf))
+		require.Contains(t, buf.String(), "batch unknown",
+			"the nil-handle flag-ON why render reports the conservative unknown")
+		require.NotContains(t, buf.String(), "status: at rest",
+			"an unreadable batch must never read as idle")
+	})
+}
