@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type fakeBatchIngress struct {
 	inv      BatchInvocation
 	reg      *policyLeafRegistry
 	leafRuns map[string]int
+	regs     map[string]*BatchLeafRegistry
 }
 
 func (f *fakeBatchIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -50,25 +52,35 @@ func (f *fakeBatchIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string,
 	defer f.mu.Unlock()
 	f.pins++
 	f.reg = registry
-	return "reg-1", nil
+	// Unique id per pin, like the production ingress: a build that pins more
+	// than once (nested sub-agent toolsets) must not collide in the disk
+	// capability manager's construction records. The first pin stays "reg-1".
+	if f.regs == nil {
+		f.regs = make(map[string]*BatchLeafRegistry)
+	}
+	id := fmt.Sprintf("reg-%d", f.pins)
+	f.regs[id] = registry
+	return id, nil
 }
 
 func (f *fakeBatchIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.reg == nil || registryID != "reg-1" {
+	reg, ok := f.regs[registryID]
+	if !ok {
 		return nil, errors.New("unknown registry")
 	}
-	return f.reg.resolve(name)
+	return reg.resolve(name)
 }
 
 func (f *fakeBatchIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.reg == nil || registryID != "reg-1" {
+	reg, ok := f.regs[registryID]
+	if !ok {
 		return nil, errors.New("unknown registry")
 	}
-	return f.reg, nil
+	return reg, nil
 }
 
 // countingTool is a bare leaf that counts its own executions.
