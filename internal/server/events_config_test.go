@@ -3,7 +3,10 @@
 // App's OWN config poller and re-broadcast to WebSocket clients as a full
 // config event, and that unrelated config writes are not. All assertions are
 // taken from the subscription side; a broadcast marker frame received after
-// registration acts as a readiness barrier (no sleeps, no polling guesses).
+// registration proves the client is registered on the hub (client delivery
+// ordering) — the model-change subscription itself is registered
+// synchronously before subscribeAndBroadcast returns, so no race remains by
+// construction (no sleeps, no polling guesses).
 
 package server
 
@@ -79,8 +82,12 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	subscribeAndBroadcast(ctx, application, hub)
 
 	// Registration barrier: a directly broadcast marker frame received by
-	// the client proves registration AND that the forwarder goroutines are
-	// running — no sleep, no readiness guesswork.
+	// the client proves the CLIENT is registered on the hub (client
+	// delivery ordering). The model-change subscription is registered
+	// synchronously inside subscribeAndBroadcast before it returns, so no
+	// model-subscription race remains by construction; the marker makes no
+	// claim about forwarder-goroutine readiness (it needn't: a publish
+	// landing before the first receive is buffered in the channel).
 	hub.Broadcast(EventSessionUpdated, session.Session{ID: "barrier"})
 	waitForEvent(t, client, EventSessionUpdated, 3*time.Second)
 
@@ -104,12 +111,19 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 		return application.Store().Config().Models[config.SelectedModelTypeSmart].Model == "probe-b"
 	}, 5*time.Second, 10*time.Millisecond, "the poll-driven reload must adopt the foreign-written smart model")
 
-	// Negative case: an unrelated config write must not fire
-	// OnModelsChanged and must not produce a new EventConfig frame. Drain
-	// everything buffered first (duplicate frames from the positive window
-	// are legal — the background poller may also have adopted the write).
-	_ = countConfigEvents(client.send)
+	// Negative case, adoption-then-assert: an unrelated config write must
+	// not fire OnModelsChanged and must not produce a new EventConfig frame.
+	// We do NOT race the poller: first the write is made, then we WAIT for
+	// the poller to have PROCESSED it (Options.Debug flips true). Only then
+	// do we drain and open the absence window — so the one reload that
+	// could have emitted a mutant frame is guaranteed to have completed and
+	// buffered any such frame in client.send before we count.
 	require.NoError(t, foreign.SetConfigFields(config.ScopeGlobal, map[string]any{"options.debug": true}))
+	require.Eventually(t, func() bool {
+		o := application.Store().Config().Options
+		return o != nil && o.Debug
+	}, 20*time.Second, 10*time.Millisecond, "the poller must adopt the unrelated write before the negative window opens")
+	_ = countConfigEvents(client.send)
 	newConfigs := countConfigEventsWithin(t, client, 2*time.Second)
 	require.Zero(t, newConfigs,
 		"an unrelated config write must not produce a new EventConfig frame")

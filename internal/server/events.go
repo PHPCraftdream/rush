@@ -125,9 +125,12 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 	// Poll-driven config changes (plan §2.4): re-broadcast the full config
 	// snapshot so web sessions that inherit their models display the new
 	// defaults. The channel is coalescing (buffer 1), so bursts of reloads
-	// cannot flood clients.
+	// cannot flood clients. The subscription is registered SYNCHRONOUSLY
+	// before the forwarder goroutine starts: once subscribeAndBroadcast
+	// returns, a poll-driven publish is guaranteed to land in ch (buffer 1)
+	// even if it fires before the goroutine's first receive.
+	ch := a.SubscribeModelsChanged(ctx)
 	go func() {
-		ch := a.SubscribeModelsChanged(ctx)
 		for range ch {
 			if wire, ok := buildConfigWire(a); ok {
 				h.Broadcast(EventConfig, wire)
