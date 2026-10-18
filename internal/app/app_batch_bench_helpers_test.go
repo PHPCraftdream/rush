@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math"
 	"net/http"
@@ -501,7 +502,7 @@ func (g *d11HealthGate) snapshot() []string {
 	return append([]string(nil), g.violations...)
 }
 
-// d11HealthHandler wraps the previous default slog handler and records health
+// d11HealthHandler wraps a text slog handler and records health
 // violations before passing records through unchanged.
 type d11HealthHandler struct {
 	inner slog.Handler
@@ -592,9 +593,17 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
 	e := &d11Env{t: t, mode: mode}
 	e.health = &d11HealthGate{}
+	// The wrapped handler must be a fresh one, never slog.Default().Handler():
+	// SetDefault routes the log package into the new default, and the stock
+	// default handler writes through the log package, so wrapping it recurses
+	// into itself and deadlocks on the log mutex.
 	previous := slog.Default()
-	slog.SetDefault(slog.New(&d11HealthHandler{inner: previous.Handler(), gate: e.health}))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	slog.SetDefault(slog.New(&d11HealthHandler{inner: slog.NewTextHandler(os.Stderr, nil), gate: e.health}))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
 	provider := newD11Provider(t, fixture, workload, &e.transitions)
 	e.provider = provider
 	store, err := config.Init(dir, dir, false)
