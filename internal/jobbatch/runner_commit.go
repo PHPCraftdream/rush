@@ -118,6 +118,28 @@ func (r *Runner) commit(t Transition) string {
 func (r *Runner) applyDurable(t Transition) (Transition, error) {
 	item := &runnerPublication{transition: t, records: r.captureRecords(t), snapshots: make(map[ID]BatchView), batches: make(map[ID]*Batch)}
 	for id := range r.feed.known {
+		if v, ok := r.engine.View(id); ok && v.State.Terminal() {
+			frozen, stored := r.frozenSnapshots[id]
+			if stored {
+				if frozen.Node.ID != "" {
+					frozen.Sequence = t.Sequence
+					item.snapshots[id] = frozen
+				}
+				continue
+			}
+			s, ok := r.engine.Snapshot(id)
+			if !ok {
+				// Task ids have no batch snapshot; cache the miss so later
+				// transitions stop calling Snapshot for them.
+				r.frozenSnapshots[id] = BatchView{}
+				continue
+			}
+			frozen = runnerCopySnapshot(s)
+			r.frozenSnapshots[id] = frozen
+			frozen.Sequence = t.Sequence
+			item.snapshots[id] = frozen
+			continue
+		}
 		if snapshot, ok := r.engine.Snapshot(id); ok {
 			item.snapshots[id] = runnerCopySnapshot(snapshot)
 		}
@@ -129,7 +151,9 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 		if cmd.Type == CommandStartLeaf {
 			ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
 			v, _ := r.engine.View(cmd.Launch.ID)
-			r.attempts[cmd.Launch.Token] = &runnerAttempt{ctx: ctx, root: v.Root, launch: cmd.Launch, cancel: cancel}
+			a := &runnerAttempt{ctx: ctx, root: v.Root, launch: cmd.Launch, cancel: cancel}
+			r.attempts[cmd.Launch.Token] = a
+			r.indexAttempt(a)
 		}
 	}
 	for _, cmd := range t.Commands {
@@ -153,7 +177,10 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 	}
 	if e.Type == EventRelease {
 		r.speculativeReleased[e.Root] = true
-		for _, h := range r.handles {
+		r.mu.Lock()
+		handles := append([]*runnerHandle(nil), r.handles...)
+		r.mu.Unlock()
+		for _, h := range handles {
 			if h.root == e.Root {
 				h.giveUp()
 			}
@@ -251,12 +278,16 @@ func (r *Runner) publish(item *runnerPublication) {
 		}
 		if t.Event.Type == EventRelease {
 			r.released[t.Event.Root] = true
+			r.pruneRootAttempts(t.Event.Root)
 			for id, v := range r.views {
 				if v.Root == t.Event.Root {
 					delete(r.views, id)
 					delete(r.snapshots, id)
+					delete(r.feed.known, id)
+					delete(r.frozenSnapshots, id)
 				}
 			}
+			delete(r.speculativeReleased, t.Event.Root)
 		}
 		r.mu.Unlock()
 		if r.requestHooks != nil && r.requestHooks.beforeAppend != nil {
@@ -317,7 +348,10 @@ func (r *Runner) failCommit(reason string) {
 		}
 	}
 	r.publicationQueue = nil
-	for _, h := range r.handles {
+	r.mu.Lock()
+	handles := append([]*runnerHandle(nil), r.handles...)
+	r.mu.Unlock()
+	for _, h := range handles {
 		h.giveUp()
 	}
 }
@@ -392,7 +426,10 @@ func (r *Runner) faultDrained() (bool, <-chan struct{}) {
 			pending = true
 		}
 	}
-	for _, h := range r.handles {
+	r.mu.Lock()
+	handles := append([]*runnerHandle(nil), r.handles...)
+	r.mu.Unlock()
+	for _, h := range handles {
 		h.giveUp()
 	}
 	_, cleanupPending, changed := r.cleanupStatus()

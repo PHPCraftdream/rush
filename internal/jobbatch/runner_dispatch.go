@@ -28,6 +28,31 @@ type runnerAttempt struct {
 	handle                 *runnerHandle
 }
 
+// indexAttempt records an attempt under its root so a durable Release can
+// prune every attempt of the root, including rejected ones. Loop-only.
+func (r *Runner) indexAttempt(a *runnerAttempt) {
+	if a.root == "" {
+		return
+	}
+	if r.attemptsByRoot == nil {
+		r.attemptsByRoot = make(map[ID]map[uint64]bool)
+	}
+	tokens := r.attemptsByRoot[a.root]
+	if tokens == nil {
+		tokens = make(map[uint64]bool)
+		r.attemptsByRoot[a.root] = tokens
+	}
+	tokens[a.launch.Token] = true
+}
+
+// pruneRootAttempts deletes every attempt of a released root. Loop-only.
+func (r *Runner) pruneRootAttempts(root ID) {
+	for token := range r.attemptsByRoot[root] {
+		delete(r.attempts, token)
+	}
+	delete(r.attemptsByRoot, root)
+}
+
 type runnerMessageKind uint8
 
 const (
@@ -57,6 +82,7 @@ func (r *Runner) dispatchStart(l Launch) {
 		v, _ := r.engine.View(l.ID)
 		a = &runnerAttempt{ctx: ctx, root: v.Root, launch: l, cancel: cancel}
 		r.attempts[l.Token] = a
+		r.indexAttempt(a)
 	}
 	if a.dispatched || a.retired {
 		return
