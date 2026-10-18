@@ -163,14 +163,24 @@ type countingStmt struct {
 
 func (s countingStmt) Close() error  { return s.inner.Close() }
 func (s countingStmt) NumInput() int { return s.inner.NumInput() }
+
+// Exec and Query are the deprecated legacy entries: route them through the
+// context variants (which count) so the inner stmt is only called via
+// driver.StmtExecContext / driver.StmtQueryContext.
 func (s countingStmt) Exec(args []driver.Value) (driver.Result, error) {
-	s.c.stmts.Add(1)
-	return s.inner.Exec(args)
+	return s.ExecContext(context.Background(), annotationNamedValues(args))
 }
 
 func (s countingStmt) Query(args []driver.Value) (driver.Rows, error) {
-	s.c.stmts.Add(1)
-	return s.inner.Query(args)
+	return s.QueryContext(context.Background(), annotationNamedValues(args))
+}
+
+func annotationNamedValues(args []driver.Value) []driver.NamedValue {
+	out := make([]driver.NamedValue, len(args))
+	for i, v := range args {
+		out[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
+	}
+	return out
 }
 
 func (s countingStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
