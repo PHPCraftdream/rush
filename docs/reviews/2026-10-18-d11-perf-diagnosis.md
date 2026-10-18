@@ -1,16 +1,22 @@
-# D11 per-call cost — diagnosis tooling + static audit (task #1424)
+# D11 per-call cost — diagnosis (tasks #1424, rounds 1-3)
 
-Round: 2026-10-18 diagnosis (no local execution permitted; benchmarks and
-profiles run in GitHub CI only). Evidence input: dispatch run 39143396851
-(d11-evidence artifact), mined statically. Tooling added this round: CPU /
-mutex / block profiles + pprof tops in the `d11-benchmark` job, and per-round
-cumulative-state log lines from the benchmark itself. Production code is NOT
-changed in this round; see section 6 for why.
+Round 1 (2026-10-18): evidence mining + static audit + CI profiling tooling
+(run 39143396851). Round 2: profiles landed (run 39152597249, job
+117749121024), decided the hypotheses, first production fixes. Round 3
+(same day): review findings closed — snapshot-consistent live read, the
+missed growth-dependent UPDATE audited and routed to DECISION NEEDED, the
+duplicate notices read removed, tests re-bound to production mutations.
 
-## 1. What the evidence run shows (all numbers from run 39143396851)
+EXECUTED-EVIDENCE STATEMENT: nothing was executed locally in any round (the
+operator regime forbids compilation and tests on this machine). The profile
+numbers are CI artifacts; every plan class below is a STATIC reading of the
+schema's indexes and predicates. The CI dispatch (build + vet + lint + the
+new EXPLAIN-plan and behavior tests) is the only oracle that confirms them.
 
-Direct-view workload (200 sequential + 160 contention calls per round, 3
-rounds, fresh sessions every round):
+## 1. Evidence (runs 39143396851 / 39152597249)
+
+Direct-view workload, 3 rounds x (200 sequential + 160 contention calls),
+fresh sessions every round:
 
 | Phase | OFF p50/p95 | ON p50/p95 | ON commits | OFF commits |
 |---|---|---|---|---|
@@ -21,216 +27,152 @@ rounds, fresh sessions every round):
 | contention-2 (cps) | 92.1 ms (84.9) | 169.1 ms (47.2) | 2880 | 2400 |
 | contention-3 (cps) | 91.0 ms (86.2) | 201.6 ms (39.4) | 2880 | 2400 |
 
-Key shapes:
+Per-round state (ON): batch_nodes 792/1584/2376 (OFF: 0); WAL ~4.2 MB flat
+both; goroutines 25 vs 21 flat; heap 16.2->24.1 MB ON vs 12.9->14.6 MB OFF.
+CPU: 44.78 s ON vs 31.82 s OFF samples (+41%), the extra almost all SQL:
+VdbeExec 8.8 s vs 2.5 s; prepare 6.2 s vs 3.7 s. Hot ON chain:
+pullPendingNotices 5.21 s -> PullPendingSessionNotices 4.78 s;
+onStepFinish 4.89 s. No jobbatch.Engine/Runner node reaches the top-50 cum
+cutoff (0.22 s). Mutex 425 ms total; block profile idle.
 
-- The candidate decays round over round; the baseline is flat (its cps even
-  improves 83.2 -> 86.2). The sequential p50 quartile medians shift as whole
-  blocks: ON round 1 quartile 1 = 31.6 ms vs round 3 quartile 1 = 36.4 ms,
-  and the per-round MINIMUM rises with it (23.3 -> 28.7 ms). This is a
-  uniform per-call slowdown growing with cumulative calls, not tail noise.
-- Sessions are fresh every round (4 sequential + 8 contention per round), so
-  per-session history stays bounded: whatever grows is cumulative process or
-  store state, not session history.
-- The commit delta is EXACTLY +3 per call in every phase, constant:
-  warmup-seq 364 vs 304 (+60/20 calls), warmup-conc 296 vs 248 (+48/16),
-  sequential 3600 vs 3000 (+600/200), contention 2880 vs 2400 (+480/160).
-  The +3 does NOT grow; the per-call latency does. The decay therefore lives
-  in per-transaction/per-operation cost growth, not in more transactions.
+Round-1 facts that still stand: ON decays per round, OFF flat; fresh
+sessions per round; the commit delta is exactly +3 per call, constant — the
+submit/started/settled checkpoint transactions, each contract-required as a
+DISTINCT committed transaction (app_batch_bench_helpers_test.go:187-189,
+tools/d11_report.py:100-103) and not mergeable (the reservation must be
+durable before dispatch). Untouched.
 
-## 2. The +3 commits per call are proven REQUIRED (not mergeable)
+## 2. Statement re-audit — onStepFinish / pull / turn-facts (round 3)
 
-Each flag-ON call commits exactly three batch checkpoint transactions:
+Plan classes: SEARCH-idx = served by a listed index (bounded); SCAN = full
+batch_nodes read (cost grows with total rows). Partial indexes only serve a
+query whose WHERE implies the index's WHERE — in practice the partial
+predicate's terms must appear verbatim; `x IN ('pending','done')` does NOT
+supply `x != 'void'`.
 
-1. Submit reservation: `batchCommitSubmit` (internal/session/batch_commit.go:89)
-   -> `store.ReserveIdentity` (batch_commit.go:119) — one transaction: the
-   `ReserveBatchNode` insert (internal/db/sql/batch_nodes.sql:4) plus the
-   `batch_runner_checkpoints` upsert, written through `BatchProjection`'s
-   checkpoint parameter (batch_commit.go:123-127).
-2. Started projection: `batchCommitProject` (batch_commit.go:244) ->
-   `store.Project` (batch_commit.go:345) — one transaction:
-   `ProjectBatchNode` + checkpoint upsert (batch_commit.go:330-335).
-3. Settled projection: same shape, plus `SelectBatchNodeNotice`
-   (batch_nodes.sql:82) and the response-envelope columns
-   (batch_commit.go:304-322) in the same transaction.
+Every qualifying step finish (persistStepFinish ->
+BatchReactionMarkReactedWithMessageUpdate, one tx):
 
-The D11 evidence contract REQUIRES these to be three distinct committed
-transactions: `validateCalls` fails on "merged checkpoint events in one
-transaction" (internal/app/app_batch_bench_helpers_test.go:187-189) and
-`validate_call_transactions` fails on "merged checkpoint transactions" /
-"one transaction contains multiple checkpoint event kinds for a call"
-(tools/d11_report.py:100-103).
-
-Merging would also change durability semantics: the submit reservation must
-be durable before executor dispatch (a crash after dispatch without a durable
-reservation leaves an undiscoverable root), started marks the dispatched
-attempt, settled persists terminal state + envelope + notice selection
-atomically. Conclusion: the +3 is the DESIGNED, budgeted cost. The defect to
-chase is the growth of per-operation cost around it (sections 4-5).
-
-## 3. Static audit of one flag-ON call — statements, tables, indexes, growth
-
-Call origin: `AgentCoordinator.Run` (internal/agent/coordinator.go:535),
-`WithCallOrigin(OriginCLI)` — the rush-run origin, both modes.
-
-Flag-ON per-call sequence (each step: statements -> table -> index -> grows
-with cumulative rows?):
-
-| Step | Statements (file:line) | Table.Index | Growth |
+| # | Statement | Plan | Grows? |
 |---|---|---|---|
-| attach probe | `BatchProbeLive` -> `GetLiveBatchRoot` (batch_nodes.sql:38) | batch_nodes.idx_batch_nodes_live_key (owner, tool_call_id) partial live | No — partial index drops settled rows; owner scope fresh per round |
-| engine Submit -> commit hook tx 1 | `ReserveBatchNode` (batch_nodes.sql:4) + checkpoint upsert | batch_nodes PK node_id; batch_runner_checkpoints PK (host_id, runner_id) | No — keyed writes |
-| Started -> commit hook tx 2 | `ProjectBatchNode` (batch_nodes.sql:66) + checkpoint | PK + (root_id, node_id, host_id, runner_id) fence | No |
-| Settled -> commit hook tx 3 | `ProjectBatchNode` + `SelectBatchNodeNotice` (batch_nodes.sql:82) + envelope + checkpoint | same | No |
-| delivery wait | in-process `Batch.Wait` (runner.go:151) or durable `LoadDone` -> `BatchDeliveryOneItemCompletion` (keyed read) | batch_nodes by root/node | No |
-| per-turn facts read | `readTurnFactsBatch` (batch_cutover_facts.go:483) -> `PendingInclusiveDebt` (batch_cutover_facts_node.go:63) -> `BatchOutboxDebtNodes` + `BatchOutboxDebtNotices` (batch_outbox.sql) | idx_batch_nodes_debt (owner, root) partial; idx_session_notices_debt partial | No — owner = fresh session |
-| notice pull / ack | `BatchOutboxPending`, `BatchOutboxPull`, `BatchOutboxNameMessage` (batch_outbox.sql) | idx_batch_nodes_pending_notice partial + PK rechecks | No — owner scope |
-| reaction/drain accounting | `BatchOutboxReactNodes`, `BatchOutboxAccountNode/Notice`, `BatchOutboxClearFailure`, `BatchOutboxFailedNodes` (batch_outbox.sql) | owner-scoped; owner partial indexes | No — owner scope |
-| retention | `BatchCountExpired`/`BatchPurgeExpired` (internal/session/batch_retention.go:12-46) | full root scan by cutoff | Not on the per-call path: 7-day GC only, invoked by GC commands |
-| async_jobs | never read flag-ON (batch_cutover_facts.go:1-8) | — | — |
+| 1 | batchOutboxReactNodesVoidAware (batch_reaction.go:81) | SEARCH idx_batch_nodes_debt (verbatim terms, round-2 fix) | no |
+| 2 | GetMessage + messages.UpdateTx (PK) | SEARCH PK | no |
+| 3 | MarkSessionNoticesReactedForOwner (owner) | SEARCH idx_session_notices_owner | no |
+| 4 | BatchOutboxClearFailure: owner + reacted_failed=1 (batch_outbox.sql:59-61, called batch_reaction.go:230) | SCAN batch_nodes | YES |
+| 5 | ClearSessionNoticesReactedFailedForOwner (owner) | SEARCH idx_session_notices_owner | no |
 
-Index sources: internal/db/migrations/20261012000001_batch_projection.sql
-(all six batch_nodes indexes), 20261012000002_batch_runner_incarnation.sql
-(checkpoints PK), 20260928000002_add_async_phase4_core.sql
-(idx_session_notices_owner_pending/_debt/_retention),
-20260929000001_add_session_notices_owner_index.sql (plain owner index),
-20260812000001_add_orphan_call_outbox.sql (status, session_id).
+Pull (3x/call: turn start agent_turn.go:384 + every step boundary
+agent_turn_step.go:113):
 
-Verdict: NO missing index on any per-call predicate. Every per-call
-statement is PK- or owner-scoped, and fresh sessions keep owner scopes
-bounded (~55 roots per sequential session, ~22 per contention session).
-Baseline issues the same message-machinery commits both modes (15/call);
-flag-ON is 15 + 3 checkpoints = 18/call. The store layer does NOT explain
-the decay by itself.
+| # | Statement | Plan | Grows? |
+|---|---|---|---|
+| 6 | batchOutboxPendingVoidAware (owner + notice_selected + delivery='pending') | SEARCH idx_batch_nodes_pending_notice; r-leg PK seek | no |
+| 7 | BatchOutboxPull CAS + NameMessage | SEARCH PK + idx_batch_nodes_parent prefix | no |
+| 8 | pending session_notices | SEARCH idx_session_notices_owner_pending | no |
+| 9 | live-scope read — ONLY when a supervision notice is pending (round-2 lazy fix) | two-step in ONE read tx: idx_batch_nodes_owner_roots + idx_batch_nodes_parent | no |
 
-## 4. Ranked hypotheses
+Turn facts (1x/call, readTurnFacts -> readTurnFactsBatch):
 
-### H1 (PROVEN defect; magnitude unproven): settled roots are never released for ordinary calls — engine/runner per-event cost grows linearly with cumulative calls
+| # | Statement | Plan | Grows? |
+|---|---|---|---|
+| 10 | batchDebtNodesVoidAware (owner + notice_selected + wake + reacted + delivery != 'void' verbatim) | SEARCH idx_batch_nodes_debt | no |
+| 11 | BatchOutboxDebtNotices (owner) | SEARCH idx_session_notices_owner; read ONCE per call (round-3 dedupe) | no |
+| 12 | foreignLiveDriver / DurableChild / RunningDelegation | session-scoped host infra; delegation reads skipped for root sessions | no |
+| 13 | LiveWorkSummary — only when SleepAll is armed | same tx two-step as #9 | no |
+| 14 | CaptureVisibleDebt (drain legs) -> both debt queries | as #10/#11 | no |
+| 15 | AttemptRows/MaxWakeAttempts (failure accounting) | GetBatchNode per ref, PK | no |
+| 16 | BatchOutboxFailedNodes: owner + notice_selected + reacted_failed=1 (batch_outbox.sql:78-80, failure paths only) | SCAN batch_nodes | YES (rare) |
 
-- The ONLY production trigger of `Runner.Release` is the root-lease Done
-  watcher: `RootLeases.adopt(root, batch.Done(), ..., release.Release)`
-  (internal/agent/batch_root_lease.go:79-95). It is armed ONLY when
-  `rootOwned` — i.e. only when `inv.RegistryID != ""`
-  (internal/agent/batch_ingress.go:160-213, gate at 197; the model-control
-  twin has the same gate, batch_model_control.go:121-125). Ordinary view/
-  bash calls (no disk-provider registry identity) never Release. The code
-  documents this as intentional: "Settled roots stay RETAINED by the engine
-  by design (design §1.2)" (batch_ingress.go:142-144).
-- Retained roots are walked on EVERY engine event. `Engine.Apply` runs, per
-  event (internal/jobbatch/engine.go:56-173): the settle loop over
-  `e.roots` (engine.go:136-140), `admit`'s candidate scan over `e.roots`
-  (internal/jobbatch/admission.go:71-90, recursion in admission.go:48-63),
-  `selectNotices`' full-tree walk of every non-released root
-  (internal/jobbatch/notice.go:3-31), and the `settledViews` full-forest
-  recursion (engine.go:148-161). `e.roots` is append-only (engine.go:68);
-  `EventRelease` removes nodes from `e.nodes` (internal/jobbatch/tree.go:86)
-  but NEVER shrinks `e.roots`.
-- Three Applies per call (Submit, Started, Settled) x ~4 walks x cumulative
-  roots: ~400 retained roots by the end of round 1, ~1200 by round 3 — the
-  exact linear-in-cumulative-calls shape the decay shows, present in BOTH
-  the sequential and contention phases.
-- Same-chain unbounded memory: `batchRunnerAdapter.started` (internal/agent/
-  batch_install_adapters.go:82) and `.owners` (internal/agent/
-  batch_cli_runtime.go:42-43) are never deleted; `Runner.released`
-  (internal/jobbatch/runner.go:323) grows forever; retained roots'
-  `attempts` entries are deleted only by the EventRelease prune
-  (runner.go:325-332); `feed.known` is cleared only at runner close
-  (runner.go:274).
-- Estimated walk cost by round 3 is real but likely ~0.2-1 ms/call —
-  probably NOT the whole +5 ms sequential p50 growth and not obviously the
-  whole contention halving. PROFILES MUST CONFIRM the CPU share
-  (Engine.Apply/admit/selectNotices/settledViews cum %, per round) before
-  the retention-policy change is made.
+Round-2's claim that the existing indexes suffice for the hot paths is
+WITHDRAWN: statements #4 and #16 have no applicable index and scan
+batch_nodes; #4 runs on every qualifying step finish even when it changes
+zero rows. No other growth-dependent statement remains on these paths.
 
-### H2 (needs profile + per-round WAL data): write-path saturation and WAL/checkpoint dynamics under +20% serialized write volume
+## 3. Fixes in the tree (rounds 2+3), each with its mutation-catching test
 
-- All batch commits serialize through the Runner's single committer
-  goroutine and loop (runner.go:138-143 committer; runner.go:218-246
-  publication/commit gating): 8-way contention makes that loop the
-  throughput ceiling, and the candidate pushes 18 vs 15 commits/call
-  (+20%) through it ON TOP of the ordinary writer.
-- A flat +20% would give a flat ~0.83 ratio; the DECAY needs per-commit
-  cost to grow. Candidate mechanism: WAL frames accumulate while the
-  auto-checkpoint (default 1000 pages) cannot complete against 8 active
-  readers; checkpoint attempts then copy an ever-larger backlog, stalling
-  every writer. The new per-round `wal_bytes`/`shm_bytes` logs and the
-  block/mutex profiles (modernc sqlite commit path) decide this.
+1. Lazy live-scope read (batch_cutover_facts_node.go:445-449, 485-495): the
+   pull reads pending session_notices first and consults the live scope only
+   for a pending SUPERVISION row. Test: TestBatchPullPendingNoticesSkipsLiveReadWhenEmpty + ...DeliversWithoutLiveRead (batch_cutover_pull_lazy_test.go) — restoring the unconditional read makes the counting Source spy see >= 1 call and the `require.Zero` assertions fail. Semantics: openScope is consumed only by the supervision void; both reads were outside any transaction before and after.
+2. Index-served live read (batch_read_live.go:215-246): the join (SCAN) is
+   replaced by two index-served statements per owner chunk —
+   ListLiveBatchRootsForOwner (idx_batch_nodes_owner_roots) + ListBatchNodes
+   per root (idx_batch_nodes_parent). Test: TestBatchLiveNodesForOwnersServedMatchesJoin — dropping the settled-root exclusion, breaking per-root ordering, or missing rows fails the set/order assertions against the join oracle on a real schema (several owners, several live roots each).
+3. Snapshot consistency (batch_read_live.go:43-59, 248-256): the two-step
+   read runs inside ONE read-only transaction (BatchLiveForSessionsTx on the
+   store writer; WAL deferred read tx). This restores the old single-statement join's snapshot semantics: a root that settles or is purged mid-read keeps its rows, a root submitted mid-read stays invisible. (A single restored statement was impossible without touching generated sqlc code: *db.Queries exposes no arbitrary-SQL escape hatch.) Busy/locked path: one deferred read tx on the same single-connection writer the live reads already share — no new lock class, same busy_timeout. An empty per-root node result cannot occur inside the tx: a root row is its own first node, and a purge by another connection cannot move the tx's snapshot. Test: TestBatchLiveServedReadIsSnapshotConsistent (batch_read_live_served_test.go:139) — a test-only seam (batchLiveServedSeam, batch_read_live.go:17-19) sits exactly between the root list and the node reads; a second raw connection submits root B and purges root A there. MUTATION: removing the transaction (the pre-fix shape) lets the purge land between the statements -> A's node read is empty, B was never listed -> HasLive/Own assertions fail.
+4. Verbatim partial-index terms (batch_reaction.go:51-59 debt const
+   batchDebtNodesVoidAwareSQL; :73-84 batchOutboxReactNodesVoidAware; react
+   executed at :230 in the same tx position): `delivery != 'void'` spelled
+   out so idx_batch_nodes_debt is usable (`IN` does not imply the
+   inequality). Result sets unchanged (the IN term already fixed delivery to
+   pending/done; 'done' already excludes 'void'). Test:
+   TestBatchHotStatementsPlanWithoutScans (batch_read_live_served_test.go:164) explains the PRODUCTION constants — dropping either verbatim term makes the SCAN assertion fail. (The plan text itself is CI-verified; static analysis says the index is used.)
+5. Duplicate notices read removed (batch_reaction.go:164-200): the
+   pending-inclusive read now executes the nodes query and the notices query
+   EXACTLY once each inside its read tx (the previous shape read the
+   notices twice — refs via batchDebtSnapshot, kinds via a second query).
+   Test: TestBatchPendingInclusiveDebtRowsReadsNoticesOnce
+   (batch_reaction_dedupe_test.go) — a counting DBTX sniffs the statement
+   text; restoring the second read makes the count two and fails.
 
-### H3 (cheap to falsify with the new logs): goroutine or timer accumulation
+Honest coverage limits: reverting the *db.Queries dispatch back to the
+Source interface path (batch_read_live.go:28-31) or the react call site back
+to the generated query is behavior-identical SQL-wise and is caught by the
+next profiled CI dispatch, not by a unit test; everything else above has a
+direct failing test.
 
-- Known per-call goroutine: the root-lease Done watcher
-  (batch_root_lease.go:83-94) — exits at Done, bounded. Per-call tickers
-  are defers-stopped (batch_install_adapters.go:182-183). The per-round
-  `goroutines=` log line falsifies or confirms this in one dispatch.
+## 4. Hypothesis verdicts (profiles, run 39152597249)
 
-### H4 (separate track, NOT a perf fix): fresh-store schema consolidation
+- Growth-dependent per-call SQL: CONFIRMED primary cost (section 2).
+- H1 engine/Runner walks: DEMOTED — absent from the top-50 cum nodes; the
+  +4 MB/round heap is consistent with retained roots. internal/jobbatch is
+  owned by the jb/d11-fix branch; out of scope here.
+- H2 WAL/checkpoint stalls: REFUTED — WAL flat ~4.2 MB both modes.
+- H3 goroutine/timer accumulation: REFUTED — goroutines flat (25 vs 21).
 
-Not needed for any finding above (no additive index is required). See
-QUESTIONS.
+## 5. What remains unproven / deferred
 
-## 5. What the next dispatch must confirm (instrumentation -> hypothesis)
+- The per-statement CPU split inside the pull chain (the -top -cum 50-node
+  cap truncated intermediates); the next profiled dispatch measures the fix
+  effect directly.
+- Whether SQLite would have inferred `delivery = 'done'` implies
+  `!= 'void'` for the generated ReactNodes (making the verbatim term a
+  no-op): the term makes it moot; the CI EXPLAIN test settles it.
+- The remaining ~7 ms sequential ON-vs-OFF delta after the scans are gone:
+  attribute from the next dispatch before touching anything else.
+- Prepared-statement reuse (prepare 6.2 s vs 3.7 s): deferred. The writer
+  pool is a single connection (internal/db/connect.go), so per-pool
+  *sql.Stmt caching is plausible, but safety cannot be demonstrated without
+  running code. Follow-up measured round.
+- H4 (fresh-store schema consolidation): unchanged, not required here.
 
-| Signal | Decides |
-|---|---|
-| per-round `D11 ROUND n STATE:` log lines (both modes): batch_nodes/messages growth vs goroutines vs heap_inuse vs wal_bytes | H1 growth present; H3 leak; H2 WAL backlog |
-| candidate CPU pprof `-top -cum` per workload/round: share of Engine.Apply / admit / selectNotices / settledViews vs modernc sqlite commit/wal/checkpoint | H1 vs H2 weight |
-| candidate mutex/block pprof: contention on the writer conn / committer channel | H2 serialization |
-| baseline CPU pprof (same symbols) | the OFF twin should show none of the batch symbols |
+## DECISION NEEDED (operator): additive partial index
 
-## 6. Changed this round; NOT changed and why
+No schema-free fix exists for statements #4/#16: rows with reacted_failed=1
+always carry reacted=1 (batchOutboxAccountNode sets both together), so
+idx_batch_nodes_debt — whose partial WHERE requires reacted = 0 — can never
+serve them, and no other batch_nodes index leads with owner for these
+predicates. Narrowing the UPDATE's predicate to indexable terms would change
+which rows it clears (a semantics change). The code therefore stays on the
+current schema-free shape, and the fix requires a migration:
 
-Changed (tooling only):
+    -- Purely additive; tiny (only failure-marked rows are indexed).
+    -- Serves BatchOutboxClearFailure (#4) and BatchOutboxFailedNodes (#16).
+    CREATE INDEX idx_batch_nodes_reacted_failed ON batch_nodes (owner_session_id)
+        WHERE reacted_failed = 1;
 
-- .github/workflows/job-batches-shadow.yml (d11-benchmark job only,
-  dispatch-only triggers untouched, LF preserved): baseline workloads gain
-  `-cpuprofile`, candidate workloads gain `-cpuprofile -mutexprofile
-  -blockprofile -mutexprofilefraction 1`, all written to $RUNNER_TEMP; new
-  "Print pprof tops" step (always(), non-failing) prints
-  `go tool pprof -top -cum -nodecount=50` and `-top -flat -nodecount=40`
-  per profile into delimited job-log sections; the d11-evidence artifact
-  additionally uploads `d11-*pprof`.
-- internal/app/app_batch_bench_helpers_test.go: `d11Env.dir` field +
-  `d11LogRoundState` (row counts for batch_nodes, batch_runner_checkpoints,
-  session_notices, orphan_call_outbox, messages, sessions; db/wal/shm file
-  sizes; runtime.NumGoroutine; HeapInuse) — logged once per round via
-  t.Logf; d11_report.py ignores these lines and the summary JSON schema is
-  UNCHANGED (tools/d11_report.py and tools/test_d11_report.py untouched).
-- internal/app/app_batch_bench_test.go: one `d11LogRoundState(t, e, round)`
-  call at the end of each round.
-
-NOT changed (production), deliberately:
-
-- The +3 checkpoint transactions: required by the txid evidence contract and
-  by durability semantics (section 2) — merging would relax correctness, and
-  the budget is never relaxed.
-- Engine/Runner retention policy (H1): the walk cost is proven to grow, but
-  its MAGNITUDE versus the budget miss is unproven, and retention is a
-  documented design decision (batch_ingress.go:142-144). Planned fix, to be
-  executed ONLY after the profiles confirm the CPU share: (a) arm the
-  Done->Release adoption for EVERY accepted root (use `SubmitBound`
-  unconditionally in `batchRuntime.submit`, always arm `adopt`; for
-  non-disk roots the lease release must be skipped and only the runner
-  Release fired — batchRootLeaseStore.adopt needs an empty-registry branch),
-  guaranteeing exactly-once so the "batch root disposal after settlement
-  failed" slog.Error (batch_root_lease.go:88-91) can never fire (it would
-  trip the D11 health gate); (b) OR, smaller and purely internal: compact
-  `e.roots` on EventRelease (swap-remove released tails) and delete
-  `Runner.released` entries — bounded walks even with retention unchanged;
-  (c) prune `batchRunnerAdapter.started` post-Done — safe for `AwaitDone`
-  because Done closes only AFTER the settled commit is durable
-  (runner.go:234-246 publish order) — but `owners`/`CLIOwner` must stay
-  answerable for late control requests (commitCLIControl routes on it,
-  batch_cli_runtime.go:84), so owners need a policy tied to the control
-  answer window, not Done.
-- No index added: none is missing (section 3).
+If approved, this migration MUST be mirrored consistently in
+internal/db/testdata/store_v1/*.sql and internal/db/legacymigrations/ (the
+drift test pins the latter) — H4 fold-in note: if the fresh-store schema
+consolidation lands first, this index belongs inside that single schema
+instead of a new migration file. Do NOT add it without operator sign-off;
+until then statements #4/#16 stay SCAN-class and are re-measured per
+dispatch.
 
 ## QUESTIONS
 
-1. H4 (single fresh-store schema replacing the migrations; the
-   internal/db/testdata/store_v1 fixture and the legacymigrations copy must
-   stay consistent) — out of scope for this round and NOT required by any
-   finding here. Confirm whether it should be scheduled as its own round.
-2. H1 fix shape: root Release for every accepted root (changes the
-   documented §1.2 retention behavior) versus the purely internal
-   e.roots compaction (keeps retention, bounds the walks). The profiles
-   from the next dispatch should pick; operator sign-off required for (a)
-   because it reverses a documented design note.
+1. Approve idx_batch_nodes_reacted_failed (DECISION NEEDED above), or accept
+   the scans on #4/#16 with their measured cost?
+2. H4 stays on its own track?
+3. Prepared-statement reuse: authorize a follow-up round where CI measures
+   a prototype first?

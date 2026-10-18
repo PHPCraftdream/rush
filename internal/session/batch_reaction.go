@@ -37,17 +37,31 @@ type BatchPendingDebt struct {
 // fold back into internal/db/sql/batch_outbox.sql when regeneration is
 // available. Delivery is carried alongside the identity for the caller's
 // visible filter.
+//
+// The extra verbatim n.delivery != 'void' term repeats idx_batch_nodes_debt's
+// partial-index predicate so the planner serves the read from that index
+// instead of scanning batch_nodes (the IN list does not imply the inequality
+// to SQLite); it cannot change the result set, which the IN term already
+// fixes to ('pending','done').
 type batchDebtNodeRow struct {
 	ref      BatchDebtNodeRef
 	delivery string
 }
 
-func batchOutboxDebtNodesVoidAware(ctx context.Context, dbtx db.DBTX, owner string) ([]batchDebtNodeRow, error) {
-	rows, err := dbtx.QueryContext(ctx, `SELECT n.root_id, n.node_id, COALESCE(n.notice_message_id, '') AS notice_message_id, n.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+// batchDebtNodesVoidAwareSQL is the exact statement
+// batchOutboxDebtNodesVoidAware executes; package-level so the plan test
+// pins the production SQL, never a copy.
+// Expressed as a package constant (Go-side) because this fork has no pinned sqlc regeneration path;
+// fold back into internal/db/sql/batch_outbox.sql when regeneration is available.
+const batchDebtNodesVoidAwareSQL = `SELECT n.root_id, n.node_id, COALESCE(n.notice_message_id, '') AS notice_message_id, n.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.owner_session_id = ? AND n.notice_selected = 1 AND r.announced = 1
   AND r.delivery != 'void'
   AND n.wake = 1 AND n.reacted = 0 AND n.delivery IN ('pending', 'done')
-ORDER BY n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id`, owner)
+  AND n.delivery != 'void'
+ORDER BY n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id`
+
+func batchOutboxDebtNodesVoidAware(ctx context.Context, dbtx db.DBTX, owner string) ([]batchDebtNodeRow, error) {
+	rows, err := dbtx.QueryContext(ctx, batchDebtNodesVoidAwareSQL, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +76,19 @@ ORDER BY n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id`, owner)
 	}
 	return out, rows.Err()
 }
+
+// batchOutboxReactNodesVoidAware is the generated BatchOutboxReactNodes
+// (internal/db/sql/batch_outbox.sql) with one addition: the verbatim
+// `delivery != 'void'` term. This fork has no pinned sqlc regeneration path
+// (same precedent as batchOutboxPendingVoidAware), so the statement lives
+// here; the added term is idx_batch_nodes_debt's partial-index predicate
+// spelled out, which lets the planner mark the owner's reacted rows from the
+// index instead of scanning batch_nodes as the table grows. The result set
+// is unchanged: delivery = 'done' already excludes 'void'.
+const batchOutboxReactNodesVoidAware = `UPDATE batch_nodes SET reacted = 1, updated_at = ?
+WHERE batch_nodes.owner_session_id = ? AND notice_selected = 1 AND batch_nodes.delivery = 'done'
+  AND batch_nodes.delivery != 'void' AND batch_nodes.wake = 1 AND batch_nodes.reacted = 0
+  AND EXISTS (SELECT 1 FROM batch_nodes r WHERE r.node_id = batch_nodes.root_id AND r.announced = 1)`
 
 func batchDebtSnapshot(ctx context.Context, dbtx db.DBTX, owner string, visible bool) (BatchDebtSnapshot, error) {
 	nodes, err := batchOutboxDebtNodesVoidAware(ctx, dbtx, owner)
@@ -128,20 +155,35 @@ func (s *BatchStore) BatchReactionPendingInclusiveDebtRows(ctx context.Context, 
 		return BatchPendingDebt{}, err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
-	snap, err := batchDebtSnapshot(ctx, tx, owner, false)
+	out, err := batchReactionPendingInclusiveDebtRows(ctx, tx, owner)
 	if err != nil {
 		return BatchPendingDebt{}, err
-	}
-	rows, err := q.BatchOutboxDebtNotices(ctx, owner)
-	if err != nil {
-		return BatchPendingDebt{}, err
-	}
-	out := BatchPendingDebt{Nodes: snap.Nodes}
-	for _, n := range rows {
-		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 	}
 	return out, tx.Commit()
+}
+
+// batchReactionPendingInclusiveDebtRows is the transaction body of
+// BatchReactionPendingInclusiveDebtRows: the node debt rows and the notices
+// rows are read EXACTLY once each inside the caller's transaction (the
+// previous shape read the notices twice — once through batchDebtSnapshot,
+// once for the kinds).
+func batchReactionPendingInclusiveDebtRows(ctx context.Context, dbtx db.DBTX, owner string) (BatchPendingDebt, error) {
+	nodes, err := batchOutboxDebtNodesVoidAware(ctx, dbtx, owner)
+	if err != nil {
+		return BatchPendingDebt{}, err
+	}
+	notices, err := db.New(dbtx).BatchOutboxDebtNotices(ctx, owner)
+	if err != nil {
+		return BatchPendingDebt{}, err
+	}
+	out := BatchPendingDebt{}
+	for _, n := range nodes {
+		out.Nodes = append(out.Nodes, n.ref)
+	}
+	for _, n := range notices {
+		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
+	}
+	return out, nil
 }
 
 func (s *BatchStore) BatchReactionPendingInclusiveDebtSummary(ctx context.Context, owner string) (bool, []string, error) {
@@ -187,7 +229,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 	// Take the writer before UpdateTx so accounting cannot race another writer.
 	q := db.New(tx)
 	now := time.Now().Unix()
-	if _, err = q.BatchOutboxReactNodes(ctx, db.BatchOutboxReactNodesParams{Owner: owner, UpdatedAt: now}); err != nil {
+	if _, err = tx.ExecContext(ctx, batchOutboxReactNodesVoidAware, now, owner); err != nil {
 		return err
 	}
 	persisted, err := q.GetMessage(ctx, msg.ID)

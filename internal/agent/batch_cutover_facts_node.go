@@ -95,6 +95,12 @@ func (n nodeBatchCutoverFacts) liveResult(ctx context.Context, owner string) ses
 		// No reader: conservatively live.
 		return session.BatchLiveResult{}
 	}
+	if n.store != nil {
+		// One read transaction on the store writer: roots and their nodes
+		// come from a single snapshot, index-served (the D11-profiled pull
+		// path's live read).
+		return n.store.BatchLiveForSessionsTx(ctx, n.live, []string{owner})
+	}
 	return n.live.BatchLiveForOwner(ctx, owner)
 }
 
@@ -114,7 +120,11 @@ func (n nodeBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []
 	}
 	var results map[string]session.BatchLiveResult
 	if n.live != nil {
-		results = n.live.BatchLiveForSessions(ctx, owners)
+		if n.store != nil {
+			results = n.store.BatchLiveForSessionsTx(ctx, n.live, owners)
+		} else {
+			results = n.live.BatchLiveForSessions(ctx, owners)
+		}
 	}
 	out := make([]BatchLiveScopeEntry, 0, len(owners))
 	for _, o := range owners {
@@ -433,14 +443,20 @@ func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages me
 // voids only when the owner's batch live scope is closed (conservative: an
 // unreadable liveness read keeps the check-in); wake_only and
 // child_question rows (job_tool_call_id NULL in batch mode) deliver. Tx
-// shape mirrors AsyncJobStore.pullOneSessionNotice.
+// shape mirrors AsyncJobStore.pullOneSessionNotice. The live-scope read runs
+// only when a pending supervision row is present; a pull with nothing
+// pending never reads batch_nodes.
 func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error) {
 	if n.writer == nil {
 		return nil, errBatchFactsUnavailable
 	}
-	// Live-scope check FIRST, outside any transaction.
-	live, descendants, lerr := n.LiveWorkSummary(ctx, owner)
-	openScope := lerr != nil || live > 0 || descendants > 0
+	// Pending rows first (idx_session_notices_owner_pending), the live-scope
+	// read second and ONLY when a supervision row needs it: openScope is
+	// consumed exclusively by the supervision void in pullOneSessionNotice,
+	// so a pull with no pending supervision rows must not read batch_nodes
+	// at all (the D11 profile: the unconditional read scanned batch_nodes on
+	// every step-boundary pull as the table grew). Both reads stay outside
+	// any transaction, as before.
 	rows, err := n.writer.QueryContext(ctx,
 		`SELECT id, kind, text, wake FROM session_notices WHERE owner = ?1 AND delivery = 'pending' ORDER BY id`,
 		owner)
@@ -467,6 +483,16 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 	}
 	// The deferred Close's error is intentionally not surfaced: scan/Err
 	// errors above already return (the logDebtRows pattern).
+	// Lazy live-scope read: only a pending supervision row consumes
+	// openScope (the check-in void in pullOneSessionNotice).
+	openScope := false
+	for _, r := range pending {
+		if r.kindText.Kind == session.NoticeKindSupervision {
+			live, descendants, lerr := n.LiveWorkSummary(ctx, owner)
+			openScope = lerr != nil || live > 0 || descendants > 0
+			break
+		}
+	}
 	var out []session.PulledNotice
 	for _, r := range pending {
 		msg, pulled, err := n.pullOneSessionNotice(ctx, messages, owner, r.id, r.kindText, build, openScope)
