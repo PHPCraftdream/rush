@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"io/fs"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -247,17 +246,7 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 	}
 	fixtureObjects := sqliteObjects(t, fixture, nil)
 	embeddedObjects := sqliteObjects(t, embedded, omitted)
-	// Columns are sorted only after tokenizing table elements outside quoted text; constraints stay as independent exact elements.
-	for key, ddl := range fixtureObjects {
-		if strings.HasPrefix(key, "table:") {
-			fixtureObjects[key] = normalizeTableColumnOrder(ddl)
-		}
-	}
-	for key, ddl := range embeddedObjects {
-		if strings.HasPrefix(key, "table:") {
-			embeddedObjects[key] = normalizeTableColumnOrder(ddl)
-		}
-	}
+	// Column order is part of the contract: RETURNING * consumers scan positionally.
 	for key := range fixtureObjects {
 		if !strings.HasPrefix(key, "table:") && !strings.HasPrefix(key, "index:") && !strings.HasPrefix(key, "trigger:") {
 			t.Errorf("unexpected sqlite_master object: %s", key)
@@ -272,55 +261,4 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 		require.Contains(t, fixtureObjects, tableKey)
 	}
 	require.Equal(t, embeddedObjects, fixtureObjects)
-}
-
-func normalizeTableColumnOrder(ddl string) string {
-	open := strings.Index(ddl, " (")
-	close := strings.LastIndex(ddl, ")")
-	if open < 0 || close <= open {
-		return ddl
-	}
-	body := ddl[open+2 : close]
-	var parts []string
-	start, depth := 0, 0
-	var quote byte
-	for i := 0; i < len(body); i++ {
-		c := body[i]
-		if quote != 0 {
-			if c == quote {
-				if i+1 < len(body) && body[i+1] == quote {
-					i++
-				} else {
-					quote = 0
-				}
-			}
-			continue
-		}
-		if c == '\'' || c == '"' || c == '`' {
-			quote = c
-			continue
-		}
-		switch c {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, strings.TrimSpace(body[start:i]))
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, strings.TrimSpace(body[start:]))
-	var columns, constraints []string
-	for _, part := range parts {
-		if strings.HasPrefix(part, "constraint ") || strings.HasPrefix(part, "primary key ") || strings.HasPrefix(part, "unique ") || strings.HasPrefix(part, "foreign key ") || strings.HasPrefix(part, "check ") {
-			constraints = append(constraints, part)
-		} else {
-			columns = append(columns, part)
-		}
-	}
-	sort.Strings(columns)
-	return ddl[:open+2] + strings.Join(append(columns, constraints...), ",") + ddl[close:]
 }

@@ -35,6 +35,9 @@ type LegacyImportOptions struct {
 }
 
 // ImportLegacyStore imports durable legacy data once and never changes startup selection.
+// The private snapshot is first migrated to the head of the importer-owned legacy
+// chain (legacyMigrationFS), so stores written by older binaries are upgraded
+// before their rows are copied; a snapshot recorded by an unknown lineage is refused.
 func ImportLegacyStore(ctx context.Context, dataDir string, opts LegacyImportOptions) (LegacyImportResult, error) {
 	legacy := storepath.DataDirPath(dataDir, storepath.LegacyFilename)
 	dest := storepath.StoreV1Path(dataDir)
@@ -57,9 +60,9 @@ func ImportLegacyStore(ctx context.Context, dataDir string, opts LegacyImportOpt
 	if opts.Schema == nil {
 		return LegacyImportResult{}, errors.New("legacy import: schema source is required")
 	}
-	if err := checkLegacyLiveHosts(ctx, legacy, dataDir); err != nil {
-		return LegacyImportResult{}, &LegacyImportLiveHostsError{Cause: err}
-	}
+	// Artifacts of a previous crashed import are only ever created under
+	// this lock, so no live importer can own them now.
+	sweepImportDebris(dataDir)
 
 	snapshotDir, err := os.MkdirTemp(dataDir, ".rush-import-snapshot-")
 	if err != nil {
@@ -71,12 +74,22 @@ func ImportLegacyStore(ctx context.Context, dataDir string, opts LegacyImportOpt
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
-	old, err := openReadDB(snapshot)
+	// The snapshot is opened read-write: it is migrated to the legacy head
+	// below, and the original legacy file is never opened for writing.
+	old, err := openDB(snapshot)
 	if err != nil {
 		return LegacyImportResult{}, fmt.Errorf("legacy import open snapshot: %w", err)
 	}
 	old.SetMaxOpenConns(1)
 	defer old.Close()
+	if err := migrateLegacySnapshot(ctx, old); err != nil {
+		return LegacyImportResult{}, err
+	}
+	// The probe reads async_hosts from the migrated snapshot: stores older
+	// than 20260928000002 only gain that table through the migration above.
+	if err := CheckLiveHosts(ctx, old, dataDir, nil); err != nil {
+		return LegacyImportResult{}, &LegacyImportLiveHostsError{Cause: err}
+	}
 
 	tmp, err := os.CreateTemp(dataDir, ".rush-import-building-*.db")
 	if err != nil {
@@ -273,22 +286,59 @@ func syncFile(path string) error {
 	return errors.Join(f.Sync(), f.Close())
 }
 
-func checkLegacyLiveHosts(ctx context.Context, legacy, dataDir string) error {
-	snapshotDir, err := os.MkdirTemp(dataDir, ".rush-host-probe-")
+// migrateLegacySnapshot brings the private snapshot to the head of the
+// importer-owned legacy migration chain and refuses snapshots recorded by
+// a lineage this binary does not know. Only the throwaway copy changes.
+func migrateLegacySnapshot(ctx context.Context, snapshot *sql.DB) error {
+	fsys, err := legacyMigrationFS()
 	if err != nil {
-		return fmt.Errorf("legacy import host probe snapshot: %w", err)
-	}
-	defer os.RemoveAll(snapshotDir)
-	copyPath := filepath.Join(snapshotDir, "legacy.db")
-	if _, err := snapshotLegacyFiles(legacy, copyPath); err != nil {
 		return err
 	}
-	conn, err := openReadDB(copyPath)
+	provider, err := newMigrationProvider(snapshot, fsys, providerOptions()...)
 	if err != nil {
-		return fmt.Errorf("legacy import host probe open: %w", err)
+		return fmt.Errorf("legacy import legacy schema provider: %w", err)
 	}
-	defer conn.Close()
-	return CheckLiveHosts(ctx, conn, dataDir, nil)
+	applied, err := appliedVersions(ctx, snapshot, provider)
+	if err != nil {
+		return err
+	}
+	embedded, err := embeddedVersions(fsys)
+	if err != nil {
+		return err
+	}
+	// migrate() would only warn about unknown versions and import anyway,
+	// silently dropping their columns; a future lineage must be refused.
+	if unknown := subtractVersions(applied, embedded); len(unknown) > 0 {
+		return fmt.Errorf("%w: %s", ErrLegacyImportFutureVersion, formatVersions(unknown))
+	}
+	if err := migrateLocked(ctx, snapshot, "", fsys, MigrateOptions{MayMigrate: true}); err != nil {
+		return fmt.Errorf("legacy import snapshot migration: %w", err)
+	}
+	return nil
+}
+
+// sweepImportDebris removes artifacts of a previous crashed import. Every
+// importer holds the store-v1 migrate lock while running, so nothing live
+// owns the names; removal is best-effort because a crashed process's file
+// handles can outlive it briefly on Windows.
+func sweepImportDebris(dataDir string) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".rush-import-snapshot-") &&
+			!strings.HasPrefix(name, ".rush-host-probe-") &&
+			!strings.HasPrefix(name, ".rush-import-building-") {
+			continue
+		}
+		if entry.IsDir() {
+			_ = os.RemoveAll(filepath.Join(dataDir, name))
+			continue
+		}
+		_ = os.Remove(filepath.Join(dataDir, name))
+	}
 }
 
 type legacyQueryer interface {
@@ -300,7 +350,7 @@ func copyLegacyRows(ctx context.Context, old, fresh *sql.DB) error {
 	if err := old.PingContext(ctx); err != nil {
 		return fmt.Errorf("legacy import snapshot connection: %w", err)
 	}
-	for _, table := range []string{"async_jobs", "async_jobs_new", "async_jobs_old_schema", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "orphan_call_outbox", "async_hosts", "session_drivers"} {
+	for _, table := range []string{"async_jobs", "async_jobs_new", "async_jobs_old_schema", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "async_hosts", "session_drivers"} {
 		if _, exists, err := tableColumnInfo(ctx, old, table); err != nil {
 			return err
 		} else if exists {
@@ -309,6 +359,9 @@ func copyLegacyRows(ctx context.Context, old, fresh *sql.DB) error {
 				return fmt.Errorf("legacy import: non-carried table %q has no explicit drop policy", table)
 			}
 		}
+	}
+	if err := checkUnknownLegacyTables(ctx, old); err != nil {
+		return err
 	}
 	plans := make([]tableCopyPlan, 0, len(LegacyImportPolicy))
 	for _, policy := range LegacyImportPolicy {
@@ -332,6 +385,9 @@ func copyLegacyRows(ctx context.Context, old, fresh *sql.DB) error {
 		columns := intersectColumns(source, target)
 		if err := ensureRequiredColumns(policy.Name, target, columns); err != nil {
 			return err
+		}
+		if unknown := unknownSourceColumns(source, target); len(unknown) > 0 {
+			return fmt.Errorf("%w: %s drops %s", ErrLegacyImportUnknownColumns, policy.Name, strings.Join(unknown, ", "))
 		}
 		plans = append(plans, tableCopyPlan{policy: policy, columns: columns})
 	}
@@ -401,6 +457,22 @@ func intersectColumns(source, target []columnInfo) []columnInfo {
 	return out
 }
 
+// unknownSourceColumns returns the names of source columns that have no
+// target column and would be silently dropped by intersectColumns.
+func unknownSourceColumns(source, target []columnInfo) []string {
+	targetSet := make(map[string]bool, len(target))
+	for _, col := range target {
+		targetSet[col.Name] = true
+	}
+	var out []string
+	for _, col := range source {
+		if !targetSet[col.Name] {
+			out = append(out, col.Name)
+		}
+	}
+	return out
+}
+
 type columnInfo struct {
 	Name       string
 	NotNull    bool
@@ -431,6 +503,31 @@ func tableColumnInfo(ctx context.Context, conn legacyQueryer, table string) ([]c
 		return nil, false, err
 	}
 	return cols, len(cols) != 0, nil
+}
+
+// checkUnknownLegacyTables refuses snapshots with tables the import policy
+// does not classify: a snapshot migrated to the legacy head only contains
+// classified tables, so an extra one means the file is not a store this
+// importer understands.
+func checkUnknownLegacyTables(ctx context.Context, conn legacyQueryer) error {
+	rows, err := conn.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`)
+	if err != nil {
+		return fmt.Errorf("legacy import enumerate tables: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if _, ok := legacyImportPolicy(name); !ok {
+			return fmt.Errorf("%w: %q", ErrLegacyImportUnknownTable, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return rows.Close()
 }
 
 func ensureRequiredColumns(table string, target, copied []columnInfo) error {
@@ -528,6 +625,20 @@ func normalizeLegacyRow(table string, cols []columnInfo, values []any) []any {
 			set("leased_by", nil)
 			set("leased_at", nil)
 			set("lease_expires_at", nil)
+			// Parity with CleanupExpiredLeases (internal/db/sql/run_queue.sql):
+			// an expired lease is a consumed attempt, so the poison-entry
+			// budget survives the import. Timestamps stay as stored: the
+			// import preserves history, unlike the runtime recovery path.
+			set("last_error", "lease_expired")
+			if attempts, ok := value("attempts").(int64); ok {
+				set("attempts", attempts+1)
+			}
+		}
+	case "orphan_call_outbox":
+		// 'processing' is the retired pre-P0-4 claim state; the drain only
+		// scans 'pending', so a carried claim would strand its call forever.
+		if sqliteTextEqual(value("status"), "processing") {
+			set("status", "pending")
 		}
 	case "session_notices":
 		if value("job_tool_call_id") != nil {
