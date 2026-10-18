@@ -198,11 +198,10 @@ func lifecycleBaseName(name string) string {
 // BEFORE writing, deliberately IGNORING ctx cancellation: it models a
 // provider whose physical I/O return cannot be preempted by Stop.
 type lifecycleCaptureLeaf struct {
-	mu          sync.Mutex
-	gate        chan struct{}
-	runs        int
-	gateEntries int
-	inFlight    chan struct{}
+	mu       sync.Mutex
+	gate     chan struct{}
+	runs     int
+	inFlight chan struct{}
 }
 
 var _ fantasy.AgentTool = (*lifecycleCaptureLeaf)(nil)
@@ -232,15 +231,6 @@ func (l *lifecycleCaptureLeaf) runCount() int {
 	return l.runs
 }
 
-// gateEntryCount reports how many Run invocations reached the provider gate
-// (cumulative). Nothing leaves the gate until letGo, so this is also the
-// current in-flight count while gated.
-func (l *lifecycleCaptureLeaf) gateEntryCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.gateEntries
-}
-
 func (l *lifecycleCaptureLeaf) Info() fantasy.ToolInfo {
 	return fantasy.ToolInfo{Name: "fs_write", Description: "capture leaf writing through the bound disk provider"}
 }
@@ -253,9 +243,6 @@ func (l *lifecycleCaptureLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	l.runs++
 	gate := l.gate
 	inFlight := l.inFlight
-	if gate != nil {
-		l.gateEntries++
-	}
 	l.mu.Unlock()
 	select {
 	case inFlight <- struct{}{}:

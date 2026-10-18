@@ -54,7 +54,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -71,6 +70,7 @@ import (
 	jobbatch "github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -592,7 +592,7 @@ func probeHostInChild(t *testing.T, dataDir, hostID string) session.HostLockStat
 	// subprocess probe hangs, CombinedOutput returns when the context fires.
 	probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, os.Args[0], "-test.run=^TestShutdownHostProbeHelper$")
+	cmd := platform.Command(probeCtx, os.Args[0], "-test.run=^TestShutdownHostProbeHelper$")
 	cmd.Env = append(os.Environ(), "RUSH_SHUTDOWN_HOST_PROBE=1", "RUSH_SHUTDOWN_DATA_DIR="+dataDir, "RUSH_SHUTDOWN_HOST_ID="+hostID)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "subprocess host probe: %s", output)

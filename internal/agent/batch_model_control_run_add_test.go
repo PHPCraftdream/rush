@@ -197,11 +197,13 @@ waitInFlight:
 	// the before/after counter snapshot is only valid once the root reaches
 	// its steady gated state. Derive the expected in-flight count from the
 	// Run spec: the root's MaxParallel=2 caps concurrency at 2, and 1 Run
-	// leaf + 2 added nodes are runnable, so exactly 2 leaves sit in the gate.
+	// leaf + 2 added nodes are runnable, so exactly 2 leaves enter the capture
+	// leaf (behind the counting hook/permission layers) and park in the
+	// provider gate.
 	const maxParallel = 2 // the Run spec above
 	require.Eventually(t, func() bool {
-		return env.leaf.gateEntryCount() == maxParallel
-	}, 5*time.Second, time.Millisecond, "the added leaves never reached the root's MaxParallel gate (got %d)", env.leaf.gateEntryCount())
+		return env.leaf.runCount() == maxParallel
+	}, 5*time.Second, time.Millisecond, "the added leaves never reached the root's MaxParallel gate (got %d)", env.leaf.runCount())
 	countersBeforeRefusals := inventorySnapshot(counters)
 	foreignResp, err := foreignAdd.Run(ctx, fantasy.ToolCall{ID: "call-add-2", Name: "batch_add", Input: string(addInput)})
 	require.NoError(t, err, "control tools report denials in the envelope, not as errors")
