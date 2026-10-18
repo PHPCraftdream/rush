@@ -153,7 +153,7 @@ func TestConstructionScopeBoundary(t *testing.T) {
 		registries.Delete(id)
 	})
 	preBuildOwners := caps.ownerCount()
-	_, err = failedCoord.finishToolAssembly(failedCtx, batchTestTools("bash", "view", "job_output"), nil, false, nil)
+	_, err = failedCoord.finishToolAssembly(failedCtx, batchTestTools("bash", "view", "job_output"), nil, false, []string{"batch_run", "batch_add"})
 	caps.setRegistryDrop(registries.Delete)
 	require.Error(t, err, "the controls stub must fail the assembly after the pin")
 	require.Contains(t, err.Error(), "assembly failure", "the failure is the stub's, raised through the real assembly")

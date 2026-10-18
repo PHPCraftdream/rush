@@ -45,6 +45,12 @@ func batchInventoryControls() []fantasy.AgentTool {
 			return fantasy.NewTextResponse("ok"), nil
 		}))
 	}
+	// The stub hands the SAME tool objects to every build (parent and
+	// sub-agent builds run concurrently); fantasy's Info() lazily writes
+	// schema.Required, so warm it once here, before sharing.
+	for _, control := range controls {
+		_ = control.Info()
+	}
 	return controls
 }
 
@@ -256,7 +262,7 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 	t.Run("scoped, commands kept", func(t *testing.T) { scopedCase(t, true) })
 	t.Run("scoped, commands stripped", func(t *testing.T) { scopedCase(t, false) })
 
-	t.Run("restricted: no-real-workspace floor, sub-agents banned", func(t *testing.T) {
+	t.Run("restricted no-real-workspace floor, sub-agents banned", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newBatchInventoryCoordinator(t, env, false)
 		cfg := coord.cfg.Config()
