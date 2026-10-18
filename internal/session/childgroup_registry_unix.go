@@ -146,6 +146,10 @@ var childGroupFileMu sync.Mutex
 // pid reservation" argument could not distinguish a surviving member of the
 // registered group from members of an unrelated group a reused pgid number
 // had since acquired).
+type childGroupWitness struct {
+	PID       int
+	StartTime string
+}
 
 // childGroupEntry is one recorded process group: the pgid, and the session
 // lock generation token that was live when it was registered.
@@ -887,7 +891,7 @@ func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string, witnesses 
 			// with matching identity => INCONCLUSIVE: retained, never
 			// signalled. "Inconclusive, do not kill" is the safe outcome
 			// whenever ownership cannot be established.
-			if !anyWitnessStillHolds(witnesses) {
+			if !anyWitnessStillHolds(pgid, witnesses) {
 				return plausibilityInconclusive
 			}
 			return plausibilityConfirmedLive
@@ -936,9 +940,17 @@ func verifyGroupStillPlausible(pgid int, wantStartTime string) bool {
 // -- the historical-ownership proof used by the leader-gone branch above.
 // A witness pid that is gone, or whose current start time differs (its pid
 // number was reused by a different process), fails; an empty witness list
-// fails outright.
-func anyWitnessStillHolds(witnesses []childGroupWitness) bool {
+// fails outright. The witness must also STILL BE A MEMBER of pgid: a process
+// group number is not reused while any process remains in it, so a surviving
+// member with the recorded birth identity proves the group is still the one
+// we registered; a witness that moved to another group (setsid/setpgid) says
+// nothing about a later group that reuses the number and must not authorise
+// a signal.
+func anyWitnessStillHolds(pgid int, witnesses []childGroupWitness) bool {
 	for _, w := range witnesses {
+		if pg, err := syscall.Getpgid(w.PID); err != nil || pg != pgid {
+			continue
+		}
 		if got, ok := startTimeToken(w.PID); ok && got == w.StartTime {
 			return true
 		}
