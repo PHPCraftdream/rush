@@ -844,17 +844,6 @@ func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
 	return c.sharedBuildScope
 }
 
-// sharedBuildScopeFor lazily creates the coordinator-level build scope for
-// tool assemblies without trusted call state (the shared session toolset).
-func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
-	c.sharedBuildScopeMu.Lock()
-	defer c.sharedBuildScopeMu.Unlock()
-	if c.sharedBuildScope == nil {
-		c.sharedBuildScope = newBuildResourceScope()
-	}
-	return c.sharedBuildScope
-}
-
 // finishToolAssembly is the final construction boundary. Flag OFF (no batch
 // binding): the historical branch, byte-for-byte — async wrappers, then
 // hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
