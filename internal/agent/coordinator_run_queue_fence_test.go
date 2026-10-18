@@ -181,8 +181,8 @@ func TestRebuildSessionAgentCall_ReleasesRowKeyedHolderOnSuccess(t *testing.T) {
 		"the row-keyed holder must be released once the transfer completes")
 	assert.Equal(t, 1, callOwnerCount(caps),
 		"the rebuilt call's Call owner must hold the binding")
-	assert.Equal(t, before-1, caps.ownerCount(),
-		"exactly one owner (the holder) must be dropped by the transfer")
+	assert.Equal(t, before, caps.ownerCount(),
+		"the holder is swapped one-for-one for the rebuilt call's Call owner: net owner count unchanged")
 	_, err = caps.Lookup(bindingID)
 	require.NoError(t, err, "the binding must stay live under the Call owner")
 

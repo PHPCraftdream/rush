@@ -200,18 +200,29 @@ func providerCrashAnnouncedRoot(
 			return false
 		}
 		for _, r := range roots {
-			if r.Announced != 1 || !r.TaskPayload.Valid {
+			if r.Announced != 1 {
 				continue
 			}
-			var p providerCrashLeafPayload
-			if json.Unmarshal([]byte(r.TaskPayload.String), &p) != nil {
+			// A direct call is a one-item BATCH root: the container carries
+			// no task payload, the leaf task rides on a child node.
+			snapshot, err := store.Read(ctx, r.OwnerSessionID, r.RootID)
+			if err != nil {
 				continue
 			}
-			if p.RegistryID == "" && p.Policy.DiskBindingID == "" {
-				continue
+			for _, node := range snapshot.Nodes {
+				if !node.TaskPayload.Valid {
+					continue
+				}
+				var p providerCrashLeafPayload
+				if json.Unmarshal([]byte(node.TaskPayload.String), &p) != nil {
+					continue
+				}
+				if p.RegistryID == "" && p.Policy.DiskBindingID == "" {
+					continue
+				}
+				found, payload = r, p
+				return true
 			}
-			found, payload = r, p
-			return true
 		}
 		return false
 	}, 90*time.Second, 50*time.Millisecond,
