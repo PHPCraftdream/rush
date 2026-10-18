@@ -254,16 +254,21 @@ waitInFlight:
 	// physical-Dispose wrapper drops the Execution owner
 	// (internal/jobbatch/runner_control.go). Releasing the root releases the
 	// whole adopted tree with it.
-	// Release is refused until the root is terminal; the fourth leaf start
-	// above does not imply settlement (slow under -race), so retry on
-	// ErrNotTerminal only.
+	// Release is refused until the root is terminal (the fourth leaf start
+	// above does not imply settlement, slow under -race): retry on
+	// ErrNotTerminal. The adopted root lease also releases the root from its
+	// Done watcher (batch_root_lease.go), so whichever side wins, an
+	// already-released root (ErrReleased) is the same outcome.
 	require.Eventually(t, func() bool {
 		err := env.install.Runner.Release(context.Background(), jobbatch.ID(rootID))
-		if err != nil && !errors.Is(err, jobbatch.ErrNotTerminal) {
+		if err == nil || errors.Is(err, jobbatch.ErrReleased) {
+			return true
+		}
+		if !errors.Is(err, jobbatch.ErrNotTerminal) {
 			t.Errorf("release root: %v", err)
 			return true
 		}
-		return err == nil
+		return false
 	}, 10*time.Second, time.Millisecond, "the settled root must release")
 
 	// Housekeeping: after settlement every engine owner is gone; release the
