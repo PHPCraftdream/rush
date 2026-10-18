@@ -172,8 +172,19 @@ class D11ReportTests(unittest.TestCase):
         refresh(candidates["legacy-bash"])
         with self.assertRaises(ValueError): d11_report.evaluate(baselines, candidates)
 
-    # Trace: two-round summaries rebuilt with matching measured_call_ids (8 identities = 8 attempts)
-    # reach the round gate itself instead of dying earlier on the identity-count check.
+    # Trace: evaluate -> evaluate_pair per workload -> validate(baseline) first
+    # (d11_report.py:212-213). Two-round summaries rebuilt with matching
+    # measured_call_ids (8 identities = 8 attempts) would pass the candidate
+    # identity check at :208, but they never get that far: the round gate at
+    # :180-181 raises "expected at least three sequential and three contention
+    # rounds" during BASELINE validation, before the candidate is validated at
+    # :214. What the test catches: a validator reorder/regression letting a
+    # sub-3-round summary through the :180-181 gate when its identities are
+    # internally consistent. Under that mutation the test still fails, but with
+    # a different message: evaluate_pair's own gate at :223-224 fires
+    # "contention rounds must match across modes with at least three rounds"
+    # (2 < 3), so the assertRaisesRegex below — which pins the :180-181
+    # message — goes red. The assertion is correct as written.
     def test_minimum_rounds_gate_with_consistent_identities(self):
         baselines = {name: mode_summary("baseline", name, rounds=(1, 2)) for name in d11_report.WORKLOADS}
         candidates = {name: mode_summary("candidate", name, rounds=(1, 2)) for name in d11_report.WORKLOADS}

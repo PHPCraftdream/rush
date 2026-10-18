@@ -591,13 +591,16 @@ func (e *cutoverEnv) logDebtRows(t *testing.T) {
 
 // historyNoticeSnapshot dumps the ordered background-notice history rows as
 // {role, id, notice-kind, text-prefix} entries, so the CI log carries the
-// identities and content of the history alongside the bare count.
+// identities and content of the history alongside the bare count. The
+// ordering mirrors the production ListMessagesBySession query
+// (internal/db/sql/messages.sql): (created_at ASC, rowid ASC) -- rowid is
+// the tie-breaker because messages.id is a non-monotonic UUID.
 func (e *cutoverEnv) historyNoticeSnapshot() []string {
 	e.t.Helper()
 	rows, err := e.conn.QueryContext(e.ctx,
 		`SELECT id, role, COALESCE(notice_kind, ''), COALESCE(origin, ''), substr(parts, 1, 80)
 		 FROM messages WHERE session_id = ?1 AND background_job_notice = 1
-		 ORDER BY created_at, id`, e.sessionID)
+		 ORDER BY created_at, rowid`, e.sessionID)
 	require.NoError(e.t, err)
 	defer rows.Close()
 	const maxEntries = 20
