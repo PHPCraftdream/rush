@@ -3,11 +3,17 @@
 package session
 
 import (
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -275,4 +281,110 @@ func isProcessDone(waited <-chan error) bool {
 
 func isProcessGroupLeaderAlive(pgid int) bool {
 	return verifyGroupStillPlausible(pgid, "")
+}
+
+// TestChildGroupRegistry_LeaderReaped_GroupStillSwept is the regression
+// test for the 2026-10-16 review's P2-1: a registered group whose leader
+// exited AND was reaped while a grandchild still lives must be killed by
+// the sweep. The pre-fix Getpgid-only check in
+// verifyGroupStillPlausibleOutcome reported such a group
+// plausibilityConfirmedGone (Getpgid on a reaped leader returns ESRCH) and
+// the sweep dropped the registry entry without signalling anything --
+// exactly the "leader gone implies group gone" assumption.
+func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	dataDir := t.TempDir()
+	sessionID := "childgroup-leader-reaped-group-swept"
+
+	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	require.NoError(t, err)
+	defer lk.Release()
+
+	lockPath := SessionLockPath(dataDir, sessionID)
+	generation := ReadLockGeneration(lockPath)
+	require.NotEmpty(t, generation)
+
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+
+	// The leader spawns a grandchild into its own (already new) process
+	// group and exits. 41.29 is deliberately non-round, like
+	// spawnGroupChild's 43.17: cleanup that matches on command line must
+	// not catch other packages' concurrent sleeps.
+	script := `sleep 41.29 & p=$!; echo "$p" > '` + pidFile + `'; exit 0`
+	cmd := platform.Command(t.Context(), "bash", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// writer is an *os.File, so exec spawns no copy goroutines and
+	// cmd.Wait returns at leader exit even while the grandchild still
+	// holds the inherited write end.
+	cmd.Stdout = writer
+	require.NoError(t, cmd.Start())
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
+
+	grandpid := 0
+	waited := false
+	t.Cleanup(func() {
+		if grandpid > 0 {
+			_ = syscall.Kill(grandpid, syscall.SIGKILL)
+		}
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		_ = writer.Close()
+		_ = reader.Close()
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, readErr := os.ReadFile(pidFile)
+		// An unparseable or not-yet-positive read (bash has open(O_TRUNC)-ed
+		// the file but its write has not landed yet) is "not ready", not an
+		// error: keep polling until the deadline, like
+		// kill_grandchild_test.go's pidfile poll.
+		if readErr == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				grandpid = pid
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild pid file never became readable: %v", readErr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.NotZero(t, grandpid)
+
+	// Reap the leader -- the exact P2-1 precondition, not merely a
+	// zombie.
+	require.NoError(t, cmd.Wait())
+	waited = true
+
+	// Premise guards: the leader is fully reaped, yet the grandchild
+	// keeps the registered group alive.
+	_, pgErr := syscall.Getpgid(cmd.Process.Pid)
+	require.Error(t, pgErr, "premise: the leader must be fully reaped (Getpgid fails) before the sweep runs")
+	require.NoError(t, syscall.Kill(-cmd.Process.Pid, 0), "premise: the grandchild must keep the registered group alive after the leader is reaped")
+
+	RegisterChildGroup(dataDir, sessionID, cmd.Process.Pid, generation)
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
+	require.Equal(t, 1, result.Killed, "the sweep must signal a registered group whose leader is reaped while members still live -- the pre-fix Getpgid-only check dropped it as implausible")
+	require.Zero(t, result.Implausible)
+	require.False(t, result.GenerationMismatch)
+
+	// Death oracle via the inherited pipe, NOT pid liveness: a zombie
+	// keeps kill(pid, 0) alive.
+	require.NoError(t, reader.SetReadDeadline(time.Now().Add(5*time.Second)))
+	buf := make([]byte, 1)
+	_, readErr := reader.Read(buf)
+	require.ErrorIs(t, readErr, io.EOF, "the grandchild survived the sweep of its registered group")
+
+	_, statErr := os.Stat(childGroupRegistryPath(dataDir, sessionID))
+	require.True(t, os.IsNotExist(statErr), "all entries reached a confirmed outcome, so the registry file must be removed")
 }
