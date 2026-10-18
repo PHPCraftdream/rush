@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/platform"
@@ -351,23 +352,45 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			// allocated. On Windows, go-pty/ConPTY may resolve bare names relative
 			// to cmd.Dir instead of PATH, and falling back from a WSL-only resolver
 			// rejection would launch the unsafe WSL executable.
+			// ptyProc publishes the child's *os.Process for the same reason:
+			// go-pty assigns ptycmd.Process only after its inner
+			// exec.Cmd.Start returns (cmd_unix.go:51), while the ctx watcher
+			// that calls Cancel is already running — reading
+			// ptycmd.Process directly was a formal data race (review P3-2).
+			var ptyProc atomic.Pointer[os.Process]
 			ptycmd := p.CommandContext(ctx, binaryPath, args...)
 			ptycmd.Dir = m.workingDir
 			if runtime.GOOS != "windows" {
-				// go-pty's Unix start creates a process-group leader with Setsid. Keep its
-				// known pid so cancellation can kill the full group established by
-				// Setpgid (pipe) or Setsid (PTY), even if the leader exits first.
-				ptycmd.Cancel = func() error { return killChildProcess(ptycmd.Process) }
+				// Cancellation kills the full group (Setpgid pipe / Setsid
+				// PTY), even if the leader exits first. A nil load (ctx
+				// cancelled inside the start window) returns
+				// os.ErrProcessDone — the same benign no-op the old
+				// nil-Process read produced, without the race.
+				// killChildProcess keeps the per-platform dispatch (unix:
+				// group kill via killChildProcessPid; Windows:
+				// session.KillProcess — the closure is never installed on
+				// Windows anyway). The stream's own ctx watchers
+				// (iterStarted/killDone → legacyKill) still group-kill once
+				// Start returns.
+				ptycmd.Cancel = func() error {
+					if proc := ptyProc.Load(); proc != nil {
+						return killChildProcess(proc)
+					}
+					return os.ErrProcessDone
+				}
 			}
 			if startErr := ptycmd.Start(); startErr == nil {
+				ptyProc.Store(ptycmd.Process)
 				// Track the child's tree for teardown. On Windows this
 				// assigns a KILL_ON_JOB_CLOSE Job Object that
 				// KillProcess terminates (go-pty's ConPTY spawn
 				// hand-rolls CreateProcess, so post-Start tracking is
-				// the only hook we get). On Unix it is a no-op:
-				// go-pty's start() sets SysProcAttr{Setsid: true}, and
-				// a process-group leader, so KillProcess's group-kill path already
-				// applies.
+				// the only hook we get). On Unix, go-pty's start()
+				// force-sets SysProcAttr{Setsid: true, Setctty: true},
+				// so the child is its own session and process-group
+				// leader (pgid == pid) by construction and the
+				// registration below needs no getpgid probe on the
+				// possibly-already-exited leader.
 				childPid = trackChildTree(ptycmd.Process, m.dataDir, sessionID)
 				// Log command-line diagnostics. In production mode, args are sanitized
 				// to remove sensitive values (prompts, tokens). In diagnostic mode
