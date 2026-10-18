@@ -41,8 +41,9 @@ const grandchildSleepDuration = "37.91"
 // (Windows).
 //
 // Form: the CLI child (bash) spawns a grandchild (sleep) that
-// outlives it; after ctx cancel — which routes through kill() →
-// session.KillProcess — the grandchild must be dead.
+// outlives it; after ctx cancel — which routes through the stream's
+// kill()/Stop → Cmd.Cancel / killChildProcess group kill — the
+// grandchild must be dead.
 //
 // REVERT CHECK: reverting the group kill / Setpgid / the Job Object
 // tracking makes this fail on the "still alive" assertion below.

@@ -60,10 +60,12 @@
 //     own destructive cleanup; see ReadLockGeneration's doc for why a bare
 //     pid is not an identity but a (session id, generation) pair is.
 //   - Every pgid is re-validated for plausibility immediately before
-//     signalling (see verifyGroupStillPlausible): still a live process
-//     group leader. This narrows, but as documented on
-//     verifyGroupStillPlausible, does not fully close, the residual
-//     pid-reuse race between validation and the signal itself.
+//     signalling (see verifyGroupStillPlausible): still a signalable
+//     registered group -- either the registered leader still leads it
+//     (start-time-checked where the platform can), or the leader has been
+//     reaped but the group still holds living members. This narrows, but as
+//     documented on verifyGroupStillPlausible, does not fully close, the
+//     residual pid-reuse race between validation and the signal itself.
 //
 // WRITE DURABILITY (2026-08-19 static-follow-up review, task #591 part 3):
 // the registry file is written via a temp-file-in-same-dir + fsync + rename
@@ -452,7 +454,8 @@ type ChildGroupSweepResult struct {
 	// CONFIRMED not to be the originally-registered process any more
 	// (verifyGroupStillPlausibleOutcome reporting confirmedGone or
 	// confirmedMismatch -- see that type) -- most likely already exited
-	// and the pgid number reused for something else, so signalling it
+	// and the pgid number reused for something else, or the whole group
+	// has exited with nothing left to signal, so signalling it
 	// would be unrelated to the original CLI-provider child. These are
 	// also dropped: retrying against a pgid confirmed to be a DIFFERENT
 	// process would never become correct by waiting.
@@ -477,7 +480,10 @@ type ChildGroupSweepResult struct {
 // permission-denied process group, neither of which this codebase's test
 // suite can reliably construct. Production always uses the real syscall;
 // only tests in this package (which can see this unexported variable)
-// override it, and always restore it via t.Cleanup.
+// override it, and always restore it via t.Cleanup. It is used for BOTH
+// the real SIGKILL and the signal-0 group-existence probe in
+// verifyGroupStillPlausibleOutcome's leader-gone branch, so a test fake
+// must also expect (and handle) (-pgid, 0) probes.
 var killpgFunc = syscall.Kill
 
 // KillRegisteredChildGroups killpg's every process group registered for
@@ -634,17 +640,23 @@ type plausibilityOutcome int
 const (
 	// plausibilityConfirmedLive: still exists, still a group leader, and
 	// (if a start-time token was captured at registration) the start time
-	// still matches. Safe to signal.
+	// still matches -- OR the registered leader has been reaped but the
+	// group still has living members (identity by pid reservation, see
+	// verifyGroupStillPlausibleOutcome). Safe to signal.
 	plausibilityConfirmedLive plausibilityOutcome = iota
-	// plausibilityConfirmedGone: Getpgid failed or the pgid is no longer
-	// its own group's leader -- the original process-group leader is
-	// confirmed not reachable any more. Safe to drop the entry.
+	// plausibilityConfirmedGone: the leader is gone AND no group with that
+	// id remains (the leader-gone branch's signal-0 probe returned ESRCH),
+	// or the pid exists but does not lead its own group -- the original
+	// process-group leader is confirmed not reachable any more. Safe to
+	// drop the entry.
 	plausibilityConfirmedGone
 	// plausibilityConfirmedMismatch: still exists and is still a group
 	// leader, but the CURRENT start-time token does not match the one
 	// captured at registration -- a DIFFERENT process has since reused
 	// this exact pgid number. Safe to drop the entry: it will never again
-	// refer to the process this registry entry was written for.
+	// refer to the process this registry entry was written for. This is
+	// also how a reused pgid under a NEW live leader is safely
+	// distinguished from the still-ours case.
 	plausibilityConfirmedMismatch
 	// plausibilityInconclusive: the group-leader check passed but the
 	// start-time re-read itself could not be completed for a reason other
@@ -655,53 +667,99 @@ const (
 )
 
 // verifyGroupStillPlausibleOutcome re-checks, immediately before
-// signalling, whether pgid still looks like a real, original process group
-// leader rather than a stale number the OS has since recycled for
-// something unrelated -- and, unlike a plain bool, reports WHICH of those
-// it confirmed, so the caller can decide whether a negative result is safe
-// to discard or must be retained. See verifyGroupStillPlausible (the
-// pre-#591-part-3 bool-returning wrapper, kept for any external caller that
-// only needs a yes/no) for the original two-layer design this refines.
+// signalling, whether a registered pgid still looks like a signalable
+// member of the originally-registered process group rather than a stale
+// number the OS has since recycled for something unrelated -- and reports
+// WHICH of those it confirmed, so the caller can decide whether a negative
+// result is safe to discard or must be retained. See
+// verifyGroupStillPlausible (the pre-#591-part-3 bool-returning wrapper,
+// kept for any external caller that only needs a yes/no) for the original
+// two-layer design this refines.
 //
-// Two layers, in order:
+// Two branches, in order:
 //
-//  1. syscall.Getpgid(pgid) == pgid: still exists and is still the leader
-//     of its own group. Rules out "no such process" and "exists but is no
-//     longer (or never was, for a freshly recycled number) a leader" --
-//     both reported as plausibilityConfirmedGone, since both mean this
-//     specific registration can never be actioned again.
+//  1. Leader branch -- syscall.Getpgid(pgid) succeeds. UNCHANGED
+//     semantics: if pgid is no longer its own group's leader
+//     (Getpgid(pgid) != pgid), plausibilityConfirmedGone. If
+//     wantStartTime is empty (macOS: no start-time facility, would need a
+//     sysctl/libproc binding not currently vendored),
+//     plausibilityConfirmedLive on the leader check alone. Otherwise the
+//     CURRENT start time (Linux: /proc/pid/stat field 22, see
+//     startTimeToken) is re-read right here and must match EXACTLY: a
+//     mismatch is plausibilityConfirmedMismatch (a different process now
+//     owns this pgid -- confirmed, safe to drop), a re-read failing for a
+//     reason other than confirmed death is plausibilityInconclusive
+//     (deliberately NOT collapsed into confirmedGone, because this branch
+//     already independently confirmed the pgid was a live group leader a
+//     moment ago).
 //
-//  2. If wantStartTime is non-empty (Linux: captured from
-//     /proc/pid/stat field 22 at registration time, see startTimeToken),
-//     the CURRENT start time for pgid is re-read right here and must
-//     match EXACTLY. A mismatch is plausibilityConfirmedMismatch (a
-//     different process now owns this pgid -- confirmed, safe to drop). A
-//     re-read that fails for a reason OTHER than confirmed process death
-//     (the only way startTimeToken signals failure on this codebase's
-//     supported platforms is "could not read /proc/pid/stat", which does
-//     not by itself distinguish "process just exited in this exact
-//     instant" from "a transient read failure") is
-//     plausibilityInconclusive -- deliberately NOT collapsed into
-//     confirmedGone, because layer 1 already independently confirmed the
-//     pgid was a live group leader a moment ago; treating an ambiguous
-//     failure at layer 2 as a hard "gone" would discard a registry entry
-//     this check never actually confirmed dead.
+//  2. Leader-gone branch -- Getpgid returns an error, meaning no process
+//     with this pid exists. That is the NORMAL state by sweep time: a
+//     real "sessions kill" runs from a separate process after the holder
+//     died, and the group's LEADER may long since have exited and been
+//     reaped while non-leader members (grandchildren forked into the
+//     group) still live -- a Getpgid-only check wrongly reported exactly
+//     that state as plausibilityConfirmedGone and dropped the entry
+//     without signalling. So this branch probes the GROUP itself with
+//     killpgFunc(-pgid, 0) -- signal 0 is an existence/permission check
+//     that sends nothing:
 //
-// On platforms without a start-time facility this codebase otherwise
-// depends on (macOS: no /proc, would need a sysctl/libproc binding not
-// currently vendored), wantStartTime is always "" and this function
-// returns plausibilityConfirmedLive on layer 1 alone -- the same narrow,
-// accepted TOCTOU window documented on probeThenKillHolder in
-// internal/cmd/sessions_kill.go for the plain-pid case ("Given this is a
-// manual rescue tool an operator runs deliberately, that structural fix is
-// not implemented; the window is accepted as a narrow, known
-// limitation"). THIS IS UNVERIFIED ON REAL LINUX/macOS FROM THIS (Windows)
-// DEVELOPMENT MACHINE -- see the package-level task notes for the exact
-// run that would confirm it.
+//     - nil, or EPERM (the group exists but holds a process we may not
+//     signal -- still exists, still ours; the real SIGKILL below will
+//     surface EPERM into the existing Retained path):
+//     plausibilityConfirmedLive.
+//     - ESRCH: no group with that id remains --
+//     plausibilityConfirmedGone.
+//     - Anything else: plausibilityInconclusive (retained for retry).
+//
+//     IDENTITY in this branch: a pgid number can only be handed to a NEW
+//     process group by a live leader process whose pid equals the pgid,
+//     and Getpgid just reported that no process with that pid exists -- so
+//     if a group with this id still exists, the pid number has been held
+//     reserved since registration by non-leader members forked into it,
+//     i.e. it is still the registered group. A reused-pid NEW leader would
+//     have made Getpgid succeed and is caught by the start-time mismatch
+//     in the leader branch above. The start-time layer cannot apply here
+//     at all (the leader's /proc entry is gone once reaped), which is
+//     exactly why the old Getpgid-only check was wrong, not merely
+//     incomplete.
+//
+// The residual TOCTOU windows -- between the Getpgid and the probe here,
+// and between the probe (or the leader-branch checks) and the real
+// SIGKILL in the caller -- are the same narrow, accepted class this file
+// already documents (see probeThenKillHolder in
+// internal/cmd/sessions_kill.go: "Given this is a manual rescue tool an
+// operator runs deliberately, that structural fix is not implemented; the
+// window is accepted as a narrow, known limitation"). The macOS
+// no-start-time note above and this whole function were UNVERIFIED ON
+// REAL LINUX/macOS FROM THIS (WINDOWS) DEVELOPMENT MACHINE -- the test
+// suite, including the new leader-reaped regression test, now runs on
+// Linux CI; see the package-level task notes for the run that confirms
+// it.
 func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string) plausibilityOutcome {
 	pg, err := syscall.Getpgid(pgid)
 	if err != nil {
-		return plausibilityConfirmedGone
+		// Leader gone: probe the group itself. See this function's doc
+		// comment (leader-gone branch) for why a Getpgid failure alone is
+		// NOT proof the registered group is gone -- the normal sweep-time
+		// state is a reaped leader with non-leader members still living.
+		probeErr := killpgFunc(-pgid, 0)
+		switch {
+		case probeErr == nil || isErrno(probeErr, syscall.EPERM):
+			// The group still exists (EPERM: and holds a process we may
+			// not signal -- still ours; the real SIGKILL surfaces EPERM
+			// into the Retained path). Identity by pid reservation: see
+			// the doc comment above.
+			return plausibilityConfirmedLive
+		case isErrno(probeErr, syscall.ESRCH):
+			// No group with that id remains: confirmed gone, safe to
+			// drop.
+			return plausibilityConfirmedGone
+		default:
+			// Neither confirmed alive nor confirmed gone: retained, not
+			// discarded.
+			return plausibilityInconclusive
+		}
 	}
 	if pg != pgid {
 		return plausibilityConfirmedGone
