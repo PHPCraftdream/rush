@@ -2,6 +2,12 @@
 // batch_nodes (the live-scope read) unless a pending SUPERVISION row needs
 // the scope answer, must still deliver non-supervision rows without it, and
 // must keep the supervision void/deliver semantics identical.
+//
+// Mutation traces (TxStarter-counting edition): restoring the unconditional
+// LiveWorkSummary (pre-pending-scan) opens the live-read transaction on every
+// pull, so begins==1 and the first two tests fail; removing the lazy gate
+// entirely lets the closed-scope test deliver instead of voiding; the
+// supervision delivery/void assertions are unchanged behavior checks.
 package agent
 
 import (
@@ -16,23 +22,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type batchPullCountingSource struct {
-	session.BatchLiveSource
-	q     *db.Queries
-	calls int
+// batchPullCountingTxStarter counts at exactly the handle the production
+// dispatch calls: reader.TxStarter.BeginTx. With the store wired, restoring
+// the unconditional live-scope read still crosses THIS layer, so the
+// zero-call assertions below fail (the old Source spy never fired).
+type batchPullCountingTxStarter struct {
+	*sql.DB
+	begins int
 }
 
-func (s *batchPullCountingSource) BatchLiveNodesForOwners(ctx context.Context, owners []string) ([]db.BatchNode, error) {
-	s.calls++
-	return s.q.BatchLiveNodesForOwners(ctx, owners)
+func (c *batchPullCountingTxStarter) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	c.begins++
+	return c.DB.BeginTx(ctx, opts)
 }
 
-func newBatchPullEnv(t *testing.T) (*cutoverEnv, *nodeBatchCutoverFacts, *batchPullCountingSource) {
+func newBatchPullEnv(t *testing.T) (*cutoverEnv, *nodeBatchCutoverFacts, *batchPullCountingTxStarter) {
 	t.Helper()
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
-	counting := &batchPullCountingSource{q: db.New(env.conn)}
-	env.live.Source = counting
+	counting := &batchPullCountingTxStarter{DB: env.conn}
+	env.live.TxStarter = counting
 	facts := nodeBatchCutoverFacts{store: env.store, live: env.live, writer: env.conn}
 	return env, &facts, counting
 }
@@ -42,7 +51,7 @@ func TestBatchPullPendingNoticesSkipsLiveReadWhenEmpty(t *testing.T) {
 	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled)
-	require.Zero(t, counting.calls, "an empty pull must not read batch_nodes")
+	require.Zero(t, counting.begins, "an empty pull must not open the live-read transaction")
 }
 
 func TestBatchPullPendingNoticesDeliversWithoutLiveRead(t *testing.T) {
@@ -56,11 +65,11 @@ func TestBatchPullPendingNoticesDeliversWithoutLiveRead(t *testing.T) {
 	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
-	require.Zero(t, counting.calls, "non-supervision delivery never needs the live scope")
+	require.Zero(t, counting.begins, "non-supervision delivery never needs the live scope")
 }
 
 func TestBatchPullSupervisionOpenScopeDelivers(t *testing.T) {
-	env, facts, _ := newBatchPullEnv(t)
+	env, facts, counting := newBatchPullEnv(t)
 	batchPullReserveLiveRoot(t, env)
 	now := time.Now().Unix()
 	_, err := env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
@@ -71,14 +80,11 @@ func TestBatchPullSupervisionOpenScopeDelivers(t *testing.T) {
 	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "an open live scope delivers the check-in")
-	// The ON live read runs through the store's transactional read (see
-	// liveResult), not through the injected Source spy — the DELIVERY itself
-	// proves the scope was consulted and open (a closed scope voids the row
-	// and pulled stays empty).
+	require.Equal(t, 1, counting.begins, "exactly one transactional live read")
 }
 
 func TestBatchPullSupervisionClosedScopeVoids(t *testing.T) {
-	env, facts, _ := newBatchPullEnv(t)
+	env, facts, counting := newBatchPullEnv(t)
 	now := time.Now().Unix()
 	_, err := env.q.InsertSessionNotice(env.ctx, db.InsertSessionNoticeParams{
 		Owner: env.sessionID, Kind: session.NoticeKindSupervision, Text: "check-in", Wake: 1,
@@ -88,6 +94,7 @@ func TestBatchPullSupervisionClosedScopeVoids(t *testing.T) {
 	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled, "a closed scope voids the check-in")
+	require.Equal(t, 1, counting.begins, "exactly one transactional live read")
 	var delivery string
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,
 		`SELECT delivery FROM session_notices WHERE owner = ?`, env.sessionID).Scan(&delivery))

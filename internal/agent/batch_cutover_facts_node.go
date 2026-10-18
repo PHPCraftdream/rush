@@ -95,12 +95,8 @@ func (n nodeBatchCutoverFacts) liveResult(ctx context.Context, owner string) ses
 		// No reader: conservatively live.
 		return session.BatchLiveResult{}
 	}
-	if n.store != nil {
-		// One read transaction on the store writer: roots and their nodes
-		// come from a single snapshot, index-served (the D11-profiled pull
-		// path's live read).
-		return n.store.BatchLiveForSessionsTx(ctx, n.live, []string{owner})
-	}
+	// The reader's TxStarter (set by the app install) routes this through
+	// ONE read-only transaction on the writer: single snapshot, index-served.
 	return n.live.BatchLiveForOwner(ctx, owner)
 }
 
@@ -120,11 +116,7 @@ func (n nodeBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []
 	}
 	var results map[string]session.BatchLiveResult
 	if n.live != nil {
-		if n.store != nil {
-			results = n.store.BatchLiveForSessionsTx(ctx, n.live, owners)
-		} else {
-			results = n.live.BatchLiveForSessions(ctx, owners)
-		}
+		results = n.live.BatchLiveForSessions(ctx, owners)
 	}
 	out := make([]BatchLiveScopeEntry, 0, len(owners))
 	for _, o := range owners {
@@ -455,8 +447,10 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 	// consumed exclusively by the supervision void in pullOneSessionNotice,
 	// so a pull with no pending supervision rows must not read batch_nodes
 	// at all (the D11 profile: the unconditional read scanned batch_nodes on
-	// every step-boundary pull as the table grew). Both reads stay outside
-	// any transaction, as before.
+	// every step-boundary pull as the table grew). The live-scope read runs
+	// inside ONE read-only transaction on the reader's TxStarter
+	// (BatchLiveForSessions' own dispatch); a reader built without a
+	// TxStarter falls back to the single-statement join.
 	rows, err := n.writer.QueryContext(ctx,
 		`SELECT id, kind, text, wake FROM session_notices WHERE owner = ?1 AND delivery = 'pending' ORDER BY id`,
 		owner)
