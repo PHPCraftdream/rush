@@ -15,6 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
@@ -192,6 +193,19 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		if err := agent.SetBatchDriverClaimer(app.AgentCoordinator, app.batchHostStore()); err != nil {
 			slog.Error("Failed to set batch driver claimer", "err", err)
 			return err
+		}
+	}
+	// R12-H fix: bind the node-backed cutover facts so every flag-ON App
+	// that runs turns reads batch_nodes instead of the conservative unknown
+	// fail-safe (its permanent "node source unavailable" error made the CLI
+	// loop retry a wiring defect for the full retry bound).
+	if batchCutoverOn() {
+		if writer := app.batchCutoverWriter(); writer != nil {
+			live := app.batchLiveReader
+			if live == nil {
+				live = session.NewBatchLiveReader(db.New(writer), app.dataDir)
+			}
+			agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStore(writer), live, writer))
 		}
 	}
 	// Stage 4b: start the durable wake-schedule worker over this App's

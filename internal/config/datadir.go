@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/platform"
@@ -194,16 +195,17 @@ func defaultDataDirForWorkspace(workingDir string) (string, DataDirSource) {
 	return fallback, DataDirSourceDefault
 }
 
-// closestLocalRushDB reports the closest .rush directory under wtRoot
-// that contains a rush.db, or whether any closest .rush exists at all.
-// Only the rush.db file marks a legacy local database (design amendment:
-// .rush/ appears without a database too -- skills, system-prompts, dev).
+// closestLocalRushDB reports whether the closest .rush directory contains
+// either store filename, or whether any closest .rush exists at all.
 func closestLocalRushDB(workingDir, wtRoot string) (string, bool) {
 	local, ok := fsext.LookupClosestBounded(workingDir, wtRoot, defaultDataDirectory)
 	if !ok {
 		return "", false
 	}
-	if _, err := os.Stat(filepath.Join(local, "rush.db")); err == nil {
+	if _, err := os.Stat(storepath.DataDirPath(local, storepath.LegacyFilename)); err == nil {
+		return local, true
+	}
+	if _, err := os.Stat(storepath.DataDirPath(local, storepath.StoreV1Filename)); err == nil {
 		return local, true
 	}
 	return local, false
