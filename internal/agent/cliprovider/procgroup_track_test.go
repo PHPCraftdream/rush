@@ -58,10 +58,9 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 	// holds the inherited write end.
 	cmd.Stdout = writer
 	require.NoError(t, cmd.Start())
-	// The child now owns the only write end: keeping the parent's copy open
-	// would make the EOF death oracle below unreachable.
-	require.NoError(t, writer.Close())
-
+	// P2-1 (2026-10-19 review): cleanup armed IMMEDIATELY after the
+	// successful Start, BEFORE the fallible writer.Close() assertion, so a
+	// failure there cannot leak the started group or the pipe ends.
 	grandpid := 0
 	waited := false
 	// F3 (2026-10-18 review, finding 3): registered UNCONDITIONALLY, before
@@ -79,6 +78,9 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 		_ = writer.Close()
 		_ = reader.Close()
 	})
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {

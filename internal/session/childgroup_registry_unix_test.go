@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -292,6 +293,32 @@ func startTimeFacilityAvailable() bool {
 	return ok
 }
 
+// killTestGroup is the shared F3 cleanup body for the session-package
+// process-group tests (LeaderReaped, WitnessHolds, and the F3 subtest in
+// TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails must ALL
+// use this one helper): an UNCONDITIONAL group SIGKILL -- deliberately NOT
+// guarded by any pid-publication or grandpid success -- followed by the
+// leader reap behind `waited` so Process.Wait is never called twice.
+// Mutation this centralisation catches: re-introducing the grandpid guard
+// around the group kill, or dropping the group kill, is caught by
+// TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails, which
+// arms THIS helper as its cleanup while modelling total pid-publication
+// failure; a revert of the helper's unconditional behaviour fails it.
+// (P2-2b, 2026-10-19: the F3 subtest previously duplicated this closure
+// inline, so restoring a faulty copy in the two original tests left the
+// F3 test green.)
+func killTestGroup(t *testing.T, cmd *exec.Cmd, waited *bool) {
+	t.Helper()
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if !*waited {
+		// cmd.Wait (not Process.Wait): it also finishes the exec.Cmd context
+		// watcher started by Start and closes its descriptors.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		*waited = true
+	}
+}
+
 // TestChildGroupRegistry_LeaderReaped_GroupStillSwept is the regression
 // test for the 2026-10-16 review's P2-1: a registered group whose leader
 // exited AND was reaped while a grandchild still lives must be killed by
@@ -332,26 +359,22 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 	// holds the inherited write end.
 	cmd.Stdout = writer
 	require.NoError(t, cmd.Start())
-	// The child now owns the only write end: keeping the parent's copy open
-	// would make the EOF death oracle below unreachable.
-	require.NoError(t, writer.Close())
-
 	grandpid := 0
 	waited := false
-	// F3 (2026-10-18 review, finding 3): registered UNCONDITIONALLY, before
-	// anything that can fail. The previous cleanup killed the sleeper only
-	// under `if grandpid > 0`, so a PID-publication failure (grandpid still
-	// 0) leaked the grandchild for its full sleep. The group kill must not
-	// depend on grandpid at all.
+	// P2-1 (2026-10-19 review), sharpening F3: the cleanup is registered
+	// IMMEDIATELY after the successful Start, BEFORE any fallible
+	// assertion. The previous order armed it only after writer.Close(); if
+	// THAT assertion failed, the started group and both pipe ends leaked
+	// with no cleanup armed. The writer.Close() assertion stays, but now
+	// runs with cleanup already in place.
 	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if !waited {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+		killTestGroup(t, cmd, &waited)
 		_ = writer.Close()
 		_ = reader.Close()
 	})
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -393,13 +416,17 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 	RegisterChildGroup(dataDir, sessionID, cmd.Process.Pid, generation)
 	// The leader-gone branch of verifyGroupStillPlausibleOutcome now
 	// requires a registration-time member witness to prove historical
-	// ownership. On a platform with no member-enumeration facility (or in
-	// the degenerate no-other-members case) witnesses are empty and the
-	// entry is deliberately RETAINED, not signalled -- skip rather than
-	// fail there; this test's kill assertion is witness-dependent.
+	// ownership. P2-3 (2026-10-19): an empty witness list must NOT skip the
+	// test on Linux -- that would let deleting the witness capture (or
+	// groupMemberPIDs returning nil) bypass every kill assertion below.
+	// Where the facility exists, empty witnesses here are a HARD FAILURE.
 	regEntries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
-	if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
-		t.Skip("no member witnesses recorded at registration (platform without member enumeration, or no non-leader members): leader-gone identity is unverifiable and the entry is retained by design")
+	if startTimeFacilityAvailable() {
+		if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
+			t.Fatalf("member-witness capture must work on Linux: registration of a group with living non-leader members recorded no witnesses, so the leader-gone kill assertions below would be silently bypassed")
+		}
+	} else {
+		t.Skip("no member witnesses recorded at registration (platform without member enumeration): leader-gone identity is unverifiable and the entry is retained by design")
 	}
 	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Equal(t, 1, result.Killed, "the sweep must signal a registered group whose leader is reaped while members still live -- the pre-fix Getpgid-only check dropped it as implausible")
@@ -506,7 +533,16 @@ func TestChildGroupRegistry_LeaderGone_WitnessMismatch_IsRetainedNotKilled(t *te
 	require.Zero(t, result.Implausible)
 
 	// And the group really was not touched: the grandchild still lives.
+	// P2-2c (2026-10-19): kill(pid, 0) is zombie-blind -- a zombie
+	// grandchild passes it. On Linux, additionally require the
+	// /proc/<pid>/stat state field is not 'Z' (parsed exactly like
+	// starttime_linux.go). Non-Linux keeps the weak fallback.
 	require.NoError(t, syscall.Kill(grandpid, 0), "the grandchild must survive a sweep whose witness evidence does not hold")
+	if runtime.GOOS == "linux" {
+		state, ok := processStateChar(grandpid)
+		require.True(t, ok, "premise: on Linux the grandchild's /proc stat must be readable")
+		require.NotEqual(t, byte('Z'), state, "the grandchild must survive a non-matching-witness sweep as a LIVE process, not merely linger as a zombie")
+	}
 }
 
 // TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled is the F2
@@ -544,17 +580,18 @@ func TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled(t *testing.T) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = writer
 	require.NoError(t, cmd.Start())
-	require.NoError(t, writer.Close())
 	waited := false
+	// P2-1 (2026-10-19 review): cleanup armed immediately after Start,
+	// before the writer.Close() assertion -- see the sibling LeaderReaped
+	// test for the full rationale.
 	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if !waited {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+		killTestGroup(t, cmd, &waited)
 		_ = writer.Close()
 		_ = reader.Close()
 	})
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -578,7 +615,14 @@ func TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled(t *testing.T) {
 	// path must record it.
 	RegisterChildGroup(dataDir, sessionID, cmd.Process.Pid, generation)
 	regEntries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
-	if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
+	// P2-3 (2026-10-19): same shape as the LeaderReaped sibling -- on a
+	// platform WITH the facility, empty witnesses mean the capture is
+	// broken and every assertion below would be bypassed: FAIL, don't skip.
+	if startTimeFacilityAvailable() {
+		if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
+			t.Fatalf("member-witness capture must work on Linux: registration of a group with living non-leader members recorded no witnesses, so the witness-dependent kill assertions below would be silently bypassed")
+		}
+	} else {
 		t.Skip("no member witnesses recorded at registration (platform without member enumeration): witness-dependent assertion not applicable")
 	}
 
@@ -591,6 +635,79 @@ func TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled(t *testing.T) {
 	buf := make([]byte, 1)
 	_, readErr := reader.Read(buf)
 	require.ErrorIs(t, readErr, io.EOF, "the grandchild survived a witness-confirmed sweep")
+}
+
+// processStateChar reads the state field of /proc/<pid>/stat on Linux
+// (field 3), parsed exactly like startTimeToken in starttime_linux.go:
+// comm may contain spaces and parens, so everything up to the LAST ')'
+// is skipped and the first whitespace-separated field after it is the
+// state. ok is false off-Linux (caller keeps its weak fallback there)
+// or when the process/stat line is gone. P2-2c helper: kill(pid, 0)
+// liveness is zombie-blind; the state char is not.
+func processStateChar(pid int) (byte, bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	content := string(data)
+	closeParen := strings.LastIndexByte(content, ')')
+	if closeParen < 0 || closeParen+2 > len(content) {
+		return 0, false
+	}
+	rest := strings.Fields(content[closeParen+2:])
+	if len(rest) == 0 {
+		return 0, false
+	}
+	return rest[0][0], true
+}
+
+// TestAnyWitnessStillHolds_RejectsWitnessThatLeftTheGroup is the P2-3
+// counterexample test (2026-10-19 review): a unit-level pin on the
+// Getpgid==pgid conjunct of anyWitnessStillHolds. The witness built here
+// is ALIVE (this test process) with a MATCHING recorded start time
+// (read live, same facility production uses), so the ONLY thing that can
+// make anyWitnessStillHolds return false for it is the membership
+// conjunct -- the witness's current pgid is not the registered pgid.
+// Mutation caught: dropping the `syscall.Getpgid(w.PID) != pgid` conjunct
+// from anyWitnessStillHolds makes this return true and the test fails.
+//
+// Unit-level only, deliberately: a sweep-level (KillRegisteredChildGroups)
+// version would need the leader-gone branch to trigger, which requires
+// Getpgid(pgid) to FAIL while kill(-pgid, 0) SUCCEEDS -- a live group whose
+// leader pid is gone. The only airtight way to build that state is to spawn
+// a real leader and reap it (the bash pattern the existing
+// WitnessMismatch test already covers end-to-end, including the plumbing
+// from anyWitnessStillHolds to Retained). Duplicating that here would add
+// no additional mutation coverage over the existing test, so this test
+// pins the unit seam only.
+func TestAnyWitnessStillHolds_RejectsWitnessThatLeftTheGroup(t *testing.T) {
+	if !startTimeFacilityAvailable() {
+		// Non-Linux: startTimeToken returns ("", false), so a recorded
+		// witness start time could never match and the assertion would pass
+		// vacuously for the wrong reason. Skip with the reason stated.
+		t.Skip("no start-time facility on this platform: a genuinely matching recorded start time cannot be constructed, so the rejection would be vacuous")
+	}
+
+	// deadPGID is chosen as a large constant that plausibly names no live
+	// group on any CI runner, and is asserted to be group-free and not the
+	// test's own group below.
+	const deadPGID = 999998
+	require.ErrorIs(t, syscall.Kill(-deadPGID, 0), syscall.ESRCH,
+		"premise: the chosen pgid must have no live group behind it")
+
+	mypid := os.Getpid()
+	ownPgid, pgErr := syscall.Getpgid(mypid)
+	require.NoError(t, pgErr)
+	require.NotEqual(t, deadPGID, ownPgid,
+		"premise: the test process must not itself live in the chosen pgid")
+
+	start, ok := startTimeToken(mypid)
+	require.True(t, ok, "premise: the facility reported available, so this process's own start time must be readable")
+	// Alive, matching recorded start time -- but a member of the test
+	// binary's own group, not deadPGID.
+	witness := childGroupWitness{PID: mypid, StartTime: start}
+	require.False(t, anyWitnessStillHolds(deadPGID, []childGroupWitness{witness}),
+		"a witness that is alive with a matching start time but NOT a member of the registered pgid must not authorise a signal -- dropping the Getpgid==pgid conjunct makes this fail")
 }
 
 // TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails is the F3
@@ -621,14 +738,12 @@ func TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails(t *testing.
 		require.NoError(t, cmd.Start())
 		leaderPid = cmd.Process.Pid
 		waited := false
-		// The F3-fixed unconditional cleanup, exactly as in the tests
-		// above: group kill first, then leader reap, no grandpid guard.
+		// P2-2b (2026-10-19): the F3-fixed unconditional cleanup, via the
+		// SAME shared helper the two original tests use, exactly as armed
+		// there: group kill first, then leader reap, no grandpid guard. A
+		// revert of the helper's unconditional behaviour fails THIS test.
 		t.Cleanup(func() {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			if !waited {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
-			}
+			killTestGroup(t, cmd, &waited)
 		})
 
 		pubDeadline := time.Now().Add(2 * time.Second)

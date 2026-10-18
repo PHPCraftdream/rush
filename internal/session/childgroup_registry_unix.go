@@ -90,6 +90,18 @@
 // registry, still fenced by the same (generation, start-time) pair, so a
 // second "sessions kill" has a durable pointer to retry against instead of
 // silently losing the only record of an unreached child tree.
+//
+// KNOWN LIMITATION (2026-10-19 review, P2-4): on platforms without a
+// start-time/member-enumeration facility (macOS, BSD -- see
+// starttime_other_unix.go) registration records NO witnesses, so a
+// registered group whose leader has been reaped is RETAINED and NEVER
+// signalled by the leader-gone branch of verifyGroupStillPlausibleOutcome:
+// descendants of a vanished leader are NOT cleaned by the sweep there (they
+// rely on their own parent-death handling). This is accepted conservative
+// behaviour ("inconclusive, do not kill"), not a bug. Per-OS behaviour:
+// Linux records and re-checks witnesses via /proc
+// (starttime_linux.go's startTimeToken/groupMemberPIDs); macOS/BSD are
+// inert in this branch (retained, never signalled).
 package session
 
 import (
