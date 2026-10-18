@@ -88,6 +88,19 @@ type d11Summary struct {
 	HealthViolations int           `json:"health_violations"`
 	OffWaitPath      string        `json:"off_wait_path"`
 	Runs             []d11RunEntry `json:"runs"`
+	// Workload configuration, exported so the artifact is self-describing:
+	// a consumer can recompute and verify the measured call counts from the
+	// JSON alone. None of these fields use `omitempty`: their zero values
+	// are meaningful configuration (0 sessions, 0 rounds, or 0 warmup calls
+	// would be real workload settings, not absent data), so every field must
+	// always appear explicitly in the summary JSON.
+	MeasuredRounds            int `json:"measured_rounds"`
+	SequentialSessions        int `json:"sequential_sessions"`
+	LatencySamplesPerRound    int `json:"latency_samples_per_round"`
+	ContentionSessions        int `json:"contention_sessions"`
+	ContentionCallsPerSession int `json:"contention_calls_per_session"`
+	WarmupCallsPerRound       int `json:"warmup_calls_per_round"`
+	ConcSessionWarmupCalls    int `json:"conc_session_warmup_calls"`
 }
 
 type d11TransitionCounts struct {

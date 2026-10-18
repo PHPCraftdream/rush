@@ -15,7 +15,9 @@
 -- (owner + job_tool_call_id pairs with an async_jobs row, per the
 -- session_notices schema in 20260928000002), then drop async_jobs. Unrelated
 -- notices (job_tool_call_id NULL or pointing at no job row) keep their
--- delivery/wake, and all message rows are untouched.
+-- delivery/wake, and all message rows are untouched. Historical REACTED
+-- notices (reacted = 1, already consumed by a turn) keep their delivery/wake
+-- and updated_at too: the selected policy voids UNREACTED notices only.
 -- +goose StatementBegin
 UPDATE session_notices
 SET delivery = 'void', wake = 0, updated_at = strftime('%s', 'now')
@@ -23,7 +25,8 @@ WHERE EXISTS (
     SELECT 1 FROM async_jobs
     WHERE async_jobs.owner_session_id = session_notices.owner
       AND async_jobs.tool_call_id = session_notices.job_tool_call_id
-);
+)
+  AND session_notices.reacted = 0;
 DROP TABLE async_jobs;
 -- +goose StatementEnd
 
