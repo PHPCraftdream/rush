@@ -271,8 +271,6 @@ CREATE TABLE batch_nodes (
     outcome_code TEXT NOT NULL DEFAULT '',
     outcome_summary TEXT NOT NULL DEFAULT '',
     response_envelope_ref TEXT,
-    runner_id TEXT NOT NULL DEFAULT '',
-    response_envelope TEXT,
     root_sequence INTEGER NOT NULL DEFAULT 0 CHECK (root_sequence >= 0),
     projection_sequence INTEGER NOT NULL DEFAULT 0 CHECK (projection_sequence >= 0),
     notice_selected INTEGER NOT NULL DEFAULT 0 CHECK (notice_selected IN (0, 1)),
@@ -297,6 +295,8 @@ CREATE TABLE batch_nodes (
     reacted_failed INTEGER NOT NULL DEFAULT 0 CHECK (reacted_failed IN (0, 1)),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    runner_id TEXT NOT NULL DEFAULT '',
+    response_envelope TEXT,
     UNIQUE (root_id, node_id, owner_session_id, host_id),
     UNIQUE (root_id, parent_id, ordinal),
     FOREIGN KEY (root_id, root_id, owner_session_id, host_id)
