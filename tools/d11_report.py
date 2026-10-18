@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import re
+import statistics
 import sys
 
 BEGIN = "===D11-SUMMARY-BEGIN==="
@@ -12,6 +13,8 @@ PINNED = "d5c3b0d9ec8607370e2d97c80503c9d5a7866740"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 WORKLOADS = ("direct-view", "legacy-bash")
 EVENTS = ("submit", "started", "settled")
+QUANTUM_BUDGET_MS = 20.0
+BASELINE_DESCRIPTION = ("integration branch at %s, batch runtime flag OFF; D11 measures ON vs OFF at the integration branch, not against pre-batch main" % PINNED)
 
 
 def extract_summary(path):
@@ -137,7 +140,7 @@ def validate(summary, mode, workload):
         phase, raw = run["phase"], run.get("raw_ms")
         if not isinstance(raw, list):
             raise ValueError("run raw samples missing")
-        warmup = phase == "warmup" or phase.endswith("-warmup")
+        warmup = phase == "warmup" or phase.startswith("warmup")
         if not raw and not warmup:
             raise ValueError("measured run raw samples missing")
         for sample in raw:
@@ -170,8 +173,21 @@ def validate(summary, mode, workload):
             finite(run.get("calls_per_sec"), "run calls_per_sec", positive=True)
         else:
             raise ValueError("unknown measured run phase: %s" % phase)
-    if warmups != 1 or not sequential or not contention:
-        raise ValueError("expected one warmup and sequential/contention runs")
+    if warmups < 1:
+        raise ValueError("expected at least one warmup run")
+    sequential_rounds = {run["phase"] for run in runs if run["phase"].startswith("sequential")}
+    contention_rounds = {run["phase"] for run in runs if run["phase"].startswith("contention")}
+    if len(sequential_rounds) < 3 or len(contention_rounds) < 3:
+        raise ValueError("expected at least three sequential and three contention rounds")
+    if len(contention_rounds) != len(contention):
+        raise ValueError("contention rounds must be distinct")
+    if len(sequential_rounds) != len([run for run in runs if run["phase"].startswith("sequential")]):
+        raise ValueError("sequential rounds must be distinct")
+    health = summary.get("health_violations")
+    if not isinstance(health, int) or isinstance(health, bool) or health != 0:
+        raise ValueError("unhealthy %s turn machinery: %r health violations" % (mode, health))
+    if not isinstance(summary.get("off_wait_path"), str) or not summary["off_wait_path"]:
+        raise ValueError("off_wait_path must be a nonempty string")
     if (seq_attempts != summary["sequential_attempts"] or conc_attempts != summary["contention_attempts"]
             or phase_errors != summary["errors"] or phase_commits != summary["commits"]):
         raise ValueError("aggregate attempts/errors/commits differ from run totals")
@@ -200,9 +216,16 @@ def evaluate_pair(baseline, candidate, workload):
         raise ValueError("candidate SHA mismatch")
     delta = candidate["p95_ms"] - baseline["p95_ms"]
     ratio = candidate["throughput_cps"] / baseline["throughput_cps"]
+    base_rates = {run["phase"]: run["calls_per_sec"] for run in baseline["runs"] if run["phase"].startswith("contention")}
+    cand_rates = {run["phase"]: run["calls_per_sec"] for run in candidate["runs"] if run["phase"].startswith("contention")}
+    if len(base_rates) < 3 or set(base_rates) != set(cand_rates):
+        raise ValueError("contention rounds must match across modes with at least three rounds")
+    phases = sorted(base_rates)
+    ratios = [cand_rates[p] / base_rates[p] for p in phases]
+    median_ratio = statistics.median(ratios)
     return {
         "workload": workload,
-        "off_choice": "direct view fixture (not legacy-wrapped)" if workload == "direct-view" else "same trivial bash command through legacy async wrapper",
+        "off_choice": "direct view fixture (not legacy-wrapped)" if workload == "direct-view" else "same trivial bash command, OFF measured through the CLI-origin production wait (async wrapper)",
         "candidate_sha": candidate["candidate_sha"], "baseline_sha": PINNED,
         "p50_off_ms": baseline["p50_ms"], "p50_on_ms": candidate["p50_ms"],
         "p95_off_ms": baseline["p95_ms"], "p95_on_ms": candidate["p95_ms"],
@@ -215,9 +238,13 @@ def evaluate_pair(baseline, candidate, workload):
         "errors_off": baseline["errors"], "errors_on": candidate["errors"],
         "commits_off": baseline["commits"], "commits_on": candidate["commits"],
         "call_transactions": candidate.get("call_transactions", []),
+        "health_violations": {"baseline": baseline["health_violations"], "candidate": candidate["health_violations"]},
+        "off_wait_path": candidate["off_wait_path"],
+        "throughput_rounds": [{"phase": p, "cps_off": base_rates[p], "cps_on": cand_rates[p], "ratio": cand_rates[p] / base_rates[p]} for p in phases],
+        "throughput_ratio_median": median_ratio, "throughput_ratio_worst": min(ratios),
         "durability": {"baseline": baseline["durability"], "candidate": candidate["durability"]},
         "runs": {"baseline": baseline["runs"], "candidate": candidate["runs"]},
-        "gates": {"sequential_p95": delta <= 15.0, "throughput": ratio >= .8,
+        "gates": {"sequential_p95": delta <= 15.0, "throughput": median_ratio >= .8,
                   "zero_errors": baseline["errors"] == candidate["errors"] == 0,
                   "durability": True, "transition_commits": True},
     }
@@ -232,11 +259,26 @@ def evaluate(baselines, candidates):
         raise ValueError("candidate workload summaries use different candidate SHAs")
     if len(baseline_shas) != 1:
         raise ValueError("baseline workload summaries use different baseline SHAs")
-    return {"candidate_sha": workloads[WORKLOADS[0]]["candidate_sha"], "baseline_sha": PINNED, "workloads": workloads, "gates": gates}
+    off_wait_paths = {result["off_wait_path"] for result in workloads.values()}
+    if len(off_wait_paths) != 1:
+        raise ValueError("workload summaries disagree on the call origin / wait path")
+    result = {"candidate_sha": workloads[WORKLOADS[0]]["candidate_sha"], "baseline_sha": PINNED, "baseline_description": BASELINE_DESCRIPTION, "off_wait_path": workloads[WORKLOADS[0]]["off_wait_path"], "workloads": workloads, "gates": gates}
+    for label, mode in (("off", "baseline"), ("on", "candidate")):
+        quantum = abs(workloads["legacy-bash"]["p50_%s_ms" % label] - workloads["direct-view"]["p50_%s_ms" % label])
+        result["bash_quantum_%s_ms" % label] = quantum
+        gates["bash_quantum_%s" % label] = quantum <= QUANTUM_BUDGET_MS
+    return result
 
 
 def render(result):
-    rows = ["# D11 baseline/candidate comparison", "", "Each workload independently gates sequential p95 delta <=15 ms and eight-session throughput ratio >=0.80.", ""]
+    workloads = result["workloads"]
+    rows = ["# D11 baseline/candidate comparison", "",
+            "Each workload independently gates sequential p95 delta <=15 ms, median eight-session throughput ratio >=0.80 over all rounds, zero turn-health violations, and a bash-vs-view p50 quantum sanity bound of 20 ms per mode.", "",
+            "Pinned baseline %s: %s." % (PINNED, BASELINE_DESCRIPTION),
+            "Call origin / wait path (both modes): %s." % workloads[WORKLOADS[0]]["off_wait_path"],
+            "Bash-vs-view OFF p50 quantum: %.3f ms (gate <=20 ms, %s); ON: %.3f ms (%s)." % (
+                result["bash_quantum_off_ms"], "PASS" if result["gates"]["bash_quantum_off"] else "FAIL",
+                result["bash_quantum_on_ms"], "PASS" if result["gates"]["bash_quantum_on"] else "FAIL"), ""]
     for workload in WORKLOADS:
         item = result["workloads"][workload]
         gates = item["gates"]
@@ -246,6 +288,12 @@ def render(result):
             item["p50_off_ms"], item["p95_off_ms"], item["p99_off_ms"], item["p50_on_ms"], item["p95_on_ms"], item["p99_on_ms"], item["p95_delta_ms"], "PASS" if gates["sequential_p95"] else "FAIL"))
         rows.append("| Contention p95 ms | %.3f | %.3f | %+0.3f ms | informational |" % (item["p95_contention_off_ms"], item["p95_contention_on_ms"], item["p95_contention_on_ms"]-item["p95_contention_off_ms"]))
         rows.append("| Throughput calls/s | %.2f | %.2f | %.3f ratio | %s |" % (item["throughput_off_cps"], item["throughput_on_cps"], item["throughput_ratio"], "PASS" if gates["throughput"] else "FAIL"))
+        rows.extend(["", "| Round | OFF calls/s | ON calls/s | ratio |", "|---|---:|---:|---:|"])
+        for round_row in item["throughput_rounds"]:
+            rows.append("| %s | %.2f | %.2f | %.3f |" % (round_row["phase"], round_row["cps_off"], round_row["cps_on"], round_row["ratio"]))
+        rows.append("| Median ratio (worst %.3f) | | | %.3f | %s |" % (item["throughput_ratio_worst"], item["throughput_ratio_median"], "PASS" if gates["throughput"] else "FAIL"))
+        rows.append("")
+        rows.append("| Turn-health violations | %d | %d | — | %s |" % (item["health_violations"]["baseline"], item["health_violations"]["candidate"], "PASS" if item["health_violations"]["baseline"] == item["health_violations"]["candidate"] == 0 else "FAIL"))
         rows.append("| Errors | %d | %d | — | %s |" % (item["errors_off"], item["errors_on"], "PASS" if gates["zero_errors"] else "FAIL"))
         rows.append("| Commit count | %d | %d | — | recorded |" % (item["commits_off"], item["commits_on"]))
         rows.extend(["", "Candidate per-call committed checkpoint evidence: %d rows." % len(item["call_transactions"]), ""])

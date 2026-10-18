@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +25,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -31,11 +34,13 @@ import (
 )
 
 const (
-	d11WarmupCalls               = 2
-	d11LatencySamples            = 40
+	d11WarmupCalls               = 20  // warmup calls per round, split over the round's sequential sessions
+	d11LatencySamples            = 200 // measured sequential samples per round
+	d11SeqBatchSessions          = 4   // fresh sequential sessions per round, so per-session history stays bounded
 	d11ThroughputSessions        = 8
 	d11ThroughputCallsPerSession = 20
-	d11MeasuredRounds            = 2
+	d11ConcSessionWarmupCalls    = 2 // warm calls per contention session before the measured block
+	d11MeasuredRounds            = 3
 	d11FixtureName               = "d11-fixture.txt"
 )
 
@@ -80,7 +85,9 @@ type d11Summary struct {
 		JournalMode string `json:"journal_mode"`
 		Synchronous string `json:"synchronous"`
 	} `json:"durability"`
-	Runs []d11RunEntry `json:"runs"`
+	HealthViolations int           `json:"health_violations"`
+	OffWaitPath      string        `json:"off_wait_path"`
+	Runs             []d11RunEntry `json:"runs"`
 }
 
 type d11TransitionCounts struct {
@@ -129,7 +136,8 @@ type d11Env struct {
 	app         *App
 	provider    *d11Provider
 	transitions d11TransitionCounts
-	sessions    []string
+	mode        string
+	health      *d11HealthGate
 }
 
 func (d *d11TransitionCounts) snapshot() (int64, int, int, int) {
@@ -460,6 +468,115 @@ func d11PromotePending(state *d11TransitionCounts) {
 	state.pendingTx, state.pendingEvents, state.pendingEventRoots, state.pendingAmbiguity = 0, nil, nil, nil
 }
 
+// d11OffWaitPath documents the measured wait path in the report output.
+const d11OffWaitPath = "call origin agent.WithCallOrigin(OriginCLI), the rush run origin: the OFF async wrapper forces the command to background and the turn waits on the production wait (inline window on the job settled channel / WaitContext on the shell done channel), not the SDK synchronous 100 ms poll"
+
+// d11HealthPatterns are the log classes that mean the turn machinery is
+// measuring an unhealthy path: the fail-closed batch-facts sentinel and the
+// drain policy's refused-turn warning, plus any batch-debt facts wording. Any
+// error-level record fails too.
+var d11HealthPatterns = []string{"node source unavailable", "drain policy", "refusing the turn", "turn facts", "batch facts", "batch debt"}
+
+type d11HealthGate struct {
+	mu         sync.Mutex
+	violations []string
+}
+
+func (g *d11HealthGate) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.violations)
+}
+
+func (g *d11HealthGate) add(violation string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.violations) < 100 {
+		g.violations = append(g.violations, violation)
+	}
+}
+
+func (g *d11HealthGate) snapshot() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.violations...)
+}
+
+// d11HealthHandler wraps a text slog handler and records health
+// violations before passing records through unchanged.
+type d11HealthHandler struct {
+	inner slog.Handler
+	gate  *d11HealthGate
+}
+
+func (h *d11HealthHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn || h.inner.Enabled(ctx, level)
+}
+
+func (h *d11HealthHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		h.gate.add(d11HealthText(r, ""))
+		return h.passThrough(ctx, r)
+	}
+	if r.Level >= slog.LevelWarn {
+		matched := ""
+		lower := strings.ToLower(r.Message)
+		for _, pattern := range d11HealthPatterns {
+			if strings.Contains(lower, pattern) {
+				matched = r.Message
+				break
+			}
+		}
+		check := func(text string) bool {
+			for _, pattern := range d11HealthPatterns {
+				if strings.Contains(strings.ToLower(text), pattern) {
+					return true
+				}
+			}
+			return false
+		}
+		r.Attrs(func(a slog.Attr) bool {
+			if check(a.Value.Resolve().String()) {
+				matched += " " + a.Value.Resolve().String()
+			}
+			return true
+		})
+		if matched != "" {
+			h.gate.add(d11HealthText(r, matched))
+		}
+	}
+	return h.passThrough(ctx, r)
+}
+
+// passThrough forwards only records the wrapped handler would itself emit, so
+// the gate never turns on output the default logger filters out (that I/O
+// would distort the measured latency).
+func (h *d11HealthHandler) passThrough(ctx context.Context, r slog.Record) error {
+	if !h.inner.Enabled(ctx, r.Level) {
+		return nil
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func d11HealthText(r slog.Record, extra string) string {
+	text := r.Level.String() + " " + r.Message
+	if extra != "" && extra != r.Message {
+		text += " " + extra
+	}
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	return text
+}
+
+func (h *d11HealthHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &d11HealthHandler{inner: h.inner.WithAttrs(attrs), gate: h.gate}
+}
+
+func (h *d11HealthHandler) WithGroup(name string) slog.Handler {
+	return &d11HealthHandler{inner: h.inner.WithGroup(name), gate: h.gate}
+}
+
 func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	t.Helper()
 	dir := t.TempDir()
@@ -474,7 +591,19 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	}
 	fixture := filepath.Join(dir, d11FixtureName)
 	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
-	e := &d11Env{t: t}
+	e := &d11Env{t: t, mode: mode}
+	e.health = &d11HealthGate{}
+	// The wrapped handler must be a fresh one, never slog.Default().Handler():
+	// SetDefault routes the log package into the new default, and the stock
+	// default handler writes through the log package, so wrapping it recurses
+	// into itself and deadlocks on the log mutex.
+	previous := slog.Default()
+	slog.SetDefault(slog.New(&d11HealthHandler{inner: slog.NewTextHandler(os.Stderr, nil), gate: e.health}))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
 	provider := newD11Provider(t, fixture, workload, &e.transitions)
 	e.provider = provider
 	store, err := config.Init(dir, dir, false)
@@ -492,15 +621,22 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	t.Cleanup(a.Shutdown)
 	e.app = a
 	d11InstallHooks(t, a.DB(), &e.transitions)
-	for i := 0; i <= d11ThroughputSessions; i++ {
-		sess, err := a.Sessions.Create(context.Background(), fmt.Sprintf("d11-%s-%d", mode, i))
-		require.NoError(t, err)
-		a.Permissions.AutoApproveSession(sess.ID)
-		e.sessions = append(e.sessions, sess.ID)
-		_, err = a.Messages.Create(context.Background(), sess.ID, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "seed"}}})
-		require.NoError(t, err)
-	}
 	return e
+}
+
+// newSessions creates fresh sessions outside measured commit windows, so
+// per-session history stays bounded and identical across samples.
+func (e *d11Env) newSessions(label string, n int) []string {
+	sessions := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		sess, err := e.app.Sessions.Create(context.Background(), fmt.Sprintf("d11-%s-%s-%d", e.mode, label, i))
+		require.NoError(e.t, err)
+		e.app.Permissions.AutoApproveSession(sess.ID)
+		_, err = e.app.Messages.Create(context.Background(), sess.ID, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "seed"}}})
+		require.NoError(e.t, err)
+		sessions = append(sessions, sess.ID)
+	}
+	return sessions
 }
 
 func d11ContentText(raw json.RawMessage) (string, error) {
@@ -540,9 +676,22 @@ func (e *d11Env) toolIdentity(requestID string) (d11ToolIdentity, bool) {
 	return d11ToolIdentity{call: callID}, true
 }
 
-func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error) {
+// d11PhaseResult carries one phase's timing and commit-window evidence.
+type d11PhaseResult struct {
+	Values     []float64
+	Identities []d11ToolIdentity
+	Errors     int
+	Commits    int64
+	Submit     int
+	Started    int
+	Settled    int
+	Elapsed    time.Duration
+	Attempts   int
+}
+
+func (e *d11Env) call(ctx context.Context, sessionID, id string) (float64, error) {
 	started := time.Now()
-	_, err := e.app.AgentCoordinator.Run(ctx, e.sessions[slot], "Read fixture. request="+id)
+	_, err := e.app.AgentCoordinator.Run(agent.WithCallOrigin(ctx, message.OriginCLI), sessionID, "Read fixture. request="+id)
 	countValue, ok := e.provider.results.Load(id)
 	var count int64
 	if ok {
@@ -556,6 +705,65 @@ func (e *d11Env) call(ctx context.Context, slot int, id string) (float64, error)
 		e.t.Logf("D11 invocation %s failed: %v", id, err)
 	}
 	return float64(time.Since(started).Microseconds()) / 1000, err
+}
+
+// runPhase executes one phase's calls and captures the commit-window deltas
+// around the whole phase. Session creation must happen before this call.
+func (e *d11Env) runPhase(label string, sessions []string, callsPerSession int, parallel, measured bool) d11PhaseResult {
+	before, sub, started, settled := e.writeSnapshot()
+	start := time.Now()
+	result := d11PhaseResult{Attempts: len(sessions) * callsPerSession}
+	var mu sync.Mutex
+	record := func(identity d11ToolIdentity, ms float64, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			result.Errors++
+			return
+		}
+		result.Values = append(result.Values, ms)
+		if measured {
+			result.Identities = append(result.Identities, identity)
+		}
+	}
+	identity := func(requestID string) d11ToolIdentity {
+		if found, ok := e.toolIdentity(requestID); ok {
+			return found
+		}
+		return d11ToolIdentity{call: ""}
+	}
+	if !parallel {
+		callIndex := 0
+		for _, sessionID := range sessions {
+			for i := 0; i < callsPerSession; i++ {
+				requestID := fmt.Sprintf("%s-%d", label, callIndex)
+				ms, err := e.call(context.Background(), sessionID, requestID)
+				record(identity(requestID), ms, err)
+				callIndex++
+			}
+		}
+	} else {
+		var wg sync.WaitGroup
+		for sessionIndex, sessionID := range sessions {
+			wg.Add(1)
+			go func(sessionIndex int, sessionID string) {
+				defer wg.Done()
+				for i := 0; i < callsPerSession; i++ {
+					requestID := fmt.Sprintf("%s-%d-%d", label, sessionIndex, i)
+					ms, err := e.call(context.Background(), sessionID, requestID)
+					record(identity(requestID), ms, err)
+				}
+			}(sessionIndex, sessionID)
+		}
+		wg.Wait()
+	}
+	result.Elapsed = time.Since(start)
+	after, asub, astarted, asettled := e.writeSnapshot()
+	result.Commits = after - before
+	result.Submit = asub - sub
+	result.Started = astarted - started
+	result.Settled = asettled - settled
+	return result
 }
 
 func (e *d11Env) writeSnapshot() (int64, int, int, int) {
