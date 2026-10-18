@@ -9,11 +9,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
+// Native batch controls classify like the legacy names they replace;
+// batch_run/batch_add delegate execution to the batch runtime (their leaves
+// stay individually gated).
 var restrictedToolActions = map[string]string{
 	"agent":                      "delegate",
 	"agentic_fetch":              "fetch",
 	"ask_question":               "ask",
 	"await_tasks":                "read",
+	"batch_add":                  "delegate",
+	"batch_output":               "read",
+	"batch_run":                  "delegate",
+	"batch_status":               "read",
+	"batch_stop":                 "delete",
 	"download":                   "download",
 	"edit":                       "write",
 	"fetch":                      "fetch",
