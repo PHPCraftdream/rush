@@ -51,3 +51,33 @@ func TestRateLimitWaitForPrefersRetryAfter(t *testing.T) {
 	err := &fantasy.ProviderError{StatusCode: 429, ResponseHeaders: map[string]string{"retry-after": "2"}}
 	require.Equal(t, 2*time.Second, rateLimitWaitFor(err, 3), "Retry-After wins over the exponential schedule")
 }
+
+// rateLimitFailedBatchFacts is a BOUND fact source whose liveness read fails
+// at runtime: the shape nodeBatchCutoverFacts.LiveWorkSummary returns on a
+// DB error, and unknownBatchCutoverFacts returns when the wiring is missing.
+// Only LiveWorkSummary is reachable from the rate-limit budget path; the
+// embedded interface keeps the stub honest about that scope.
+type rateLimitFailedBatchFacts struct{ BatchCutoverFacts }
+
+func (rateLimitFailedBatchFacts) LiveWorkSummary(context.Context, string) (int, int, error) {
+	return 1, 1, ErrBatchFactsSourceUnavailable
+}
+
+// TestWaitRateLimit_FailingBatchFactsConsumesBudget pins the F3 bound: a
+// failed batch liveness read must not pause the rate-limit budget, or the
+// 429 retry loop never ends (the budget can never exhaust).
+//
+// Revert-check: restoring hasLiveTreeWork's `if err != nil { return true }`
+// makes waitRateLimit sleep out the whole wait without consuming, and the
+// errRateLimitBudgetExhausted assertion goes red.
+func TestWaitRateLimit_FailingBatchFactsConsumesBudget(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	setRateLimitBudgetTick(t, 0, time.Millisecond)
+	c := &coordinator{}
+	BindCoordinatorBatchCutoverFacts(c, rateLimitFailedBatchFacts{})
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(c) })
+	var spent time.Duration
+	err := c.waitRateLimit(t.Context(), "s", 20*time.Millisecond, &spent)
+	require.ErrorIs(t, err, errRateLimitBudgetExhausted,
+		"a failed liveness read must let the budget run out, never pause it forever")
+}
