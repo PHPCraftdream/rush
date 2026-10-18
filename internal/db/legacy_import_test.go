@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -71,7 +72,9 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 func TestLegacyImportPolicyExhaustive(t *testing.T) {
 	t.Parallel()
 	conn := openTestDB(t, filepath.Join(t.TempDir(), "legacy.db"))
-	require.NoError(t, Migrate(t.Context(), conn))
+	fsys, err := legacyMigrationFS()
+	require.NoError(t, err)
+	require.NoError(t, migrateLocked(t.Context(), conn, "", fsys, MigrateOptions{MayMigrate: true}))
 	rows, err := conn.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -157,7 +160,7 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	}
 	require.Equal(t, 2, len(queryAllRows(t, newDB, `SELECT owner,kind,text,delivery,wake,reacted,job_tool_call_id FROM session_notices ORDER BY rowid`)))
 	require.Equal(t, "[]", mustScalar(t, newDB, `SELECT parts FROM messages WHERE id='wal-committed'`))
-	for _, table := range []string{"orphan_call_outbox", "async_hosts", "session_drivers", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints"} {
+	for _, table := range []string{"async_hosts", "session_drivers", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints"} {
 		var count int
 		require.NoError(t, newDB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+quoteIdentifier(table)).Scan(&count), table)
 		require.Zero(t, count, table)
@@ -282,6 +285,283 @@ func TestLegacyImportConcurrentOneWin(t *testing.T) {
 	require.NoError(t, conn.QueryRowContext(t.Context(), `PRAGMA integrity_check`).Scan(&integrity))
 	require.Equal(t, "ok", integrity)
 	legacyImportNoArtifacts(t, dataDir)
+}
+
+func TestLegacyImportNormalisationLiterals(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	legacy, legacyConn := createLegacyFixture(t, dataDir)
+	defer legacyConn.Close()
+	before := legacyImportHashes(t, legacy)
+	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	require.NoError(t, err)
+	require.Equal(t, LegacyImportImported, result.Status)
+	require.Equal(t, before, legacyImportHashes(t, legacy))
+	newDB := openTestDB(t, storepath.StoreV1Path(dataDir))
+	defer newDB.Close()
+	ctx := t.Context()
+
+	// Queue_tasks running->pending mirrors queue.Service.ReclaimRunning.
+	var status, exitReason string
+	var cost float64
+	var tokens int64
+	var startedAt, finishedAt sql.NullInt64
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT status, cost, tokens, exit_reason, started_at, finished_at FROM queue_tasks WHERE id='q-running'`,
+	).Scan(&status, &cost, &tokens, &exitReason, &startedAt, &finishedAt))
+	require.Equal(t, "pending", status)
+	require.Equal(t, float64(0), cost)
+	require.Equal(t, int64(0), tokens)
+	require.Equal(t, "", exitReason)
+	require.False(t, startedAt.Valid)
+	require.False(t, finishedAt.Valid)
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT status FROM queue_tasks WHERE id='q'`).Scan(&status))
+	require.Equal(t, "done", status)
+
+	// Session_run_queue lease recovery mirrors CleanupExpiredLeases, including
+	// the consumed attempt and the poison-entry marker.
+	var leasedBy sql.NullString
+	var leasedAt, leaseExpiresAt sql.NullInt64
+	var attempts, terminalFailure int64
+	var lastError, callData string
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT status, leased_by, leased_at, lease_expires_at, attempts, last_error, terminal_failure, call_data FROM session_run_queue WHERE id='r-leased'`,
+	).Scan(&status, &leasedBy, &leasedAt, &leaseExpiresAt, &attempts, &lastError, &terminalFailure, &callData))
+	require.Equal(t, "pending", status)
+	require.False(t, leasedBy.Valid)
+	require.False(t, leasedAt.Valid)
+	require.False(t, leaseExpiresAt.Valid)
+	require.Equal(t, int64(1), attempts)
+	require.Equal(t, "lease_expired", lastError)
+	require.Equal(t, int64(0), terminalFailure)
+	require.Equal(t, "{}", callData)
+	var pendingLastError sql.NullString
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT status, attempts, last_error FROM session_run_queue WHERE id='r'`,
+	).Scan(&status, &attempts, &pendingLastError))
+	require.Equal(t, "pending", status)
+	require.Equal(t, int64(0), attempts)
+	require.False(t, pendingLastError.Valid)
+
+	// Job-bound notices are voided with their text preserved as history.
+	var delivery, noticeText string
+	var wake, reacted int64
+	var jobToolCallID sql.NullString
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT delivery, wake, reacted, job_tool_call_id, text FROM session_notices WHERE kind='supervision'`,
+	).Scan(&delivery, &wake, &reacted, &jobToolCallID, &noticeText))
+	require.Equal(t, "void", delivery)
+	require.Equal(t, int64(0), wake)
+	require.Equal(t, int64(1), reacted)
+	require.False(t, jobToolCallID.Valid)
+	require.Equal(t, "old job notice", noticeText)
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT delivery, wake, reacted FROM session_notices WHERE kind='wake_failed'`,
+	).Scan(&delivery, &wake, &reacted))
+	require.Equal(t, "pending", delivery)
+	require.Equal(t, int64(1), wake)
+	require.Equal(t, int64(0), reacted)
+
+	// Wake schedule leases are released; the schedule itself is untouched.
+	var state string
+	var nextRunAt int64
+	var leaseOwner sql.NullString
+	var leaseExpires sql.NullInt64
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT state, next_run_at, lease_owner, lease_expires_at FROM wake_schedules WHERE id='w'`,
+	).Scan(&state, &nextRunAt, &leaseOwner, &leaseExpires))
+	require.Equal(t, "active", state)
+	require.Equal(t, int64(2), nextRunAt)
+	require.False(t, leaseOwner.Valid)
+	require.False(t, leaseExpires.Valid)
+
+	// Shutdown cancellation is cleared and the carried outbox call survives.
+	var cancelRequested int64
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT cancel_requested FROM sessions WHERE id='s'`).Scan(&cancelRequested))
+	require.Equal(t, int64(0), cancelRequested)
+	var outboxCallData string
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT status, call_data FROM orphan_call_outbox WHERE id='o'`).Scan(&status, &outboxCallData))
+	require.Equal(t, "pending", status)
+	require.Equal(t, "{}", outboxCallData)
+}
+
+// legacyImportLegacyFSUpTo returns the importer-owned legacy chain trimmed to
+// the migrations a binary with the given head had applied.
+func legacyImportLegacyFSUpTo(t *testing.T, version int64) fstest.MapFS {
+	t.Helper()
+	fsys, err := legacyMigrationFS()
+	require.NoError(t, err)
+	entries, err := fs.ReadDir(fsys, ".")
+	require.NoError(t, err)
+	out := fstest.MapFS{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		prefix, _, _ := strings.Cut(entry.Name(), "_")
+		entryVersion, err := strconv.ParseInt(prefix, 10, 64)
+		require.NoError(t, err)
+		if entryVersion > version {
+			continue
+		}
+		data, err := fs.ReadFile(fsys, entry.Name())
+		require.NoError(t, err)
+		out[entry.Name()] = &fstest.MapFile{Data: data}
+	}
+	require.NotEmpty(t, out)
+	return out
+}
+
+func TestLegacyImportMigratesOldSnapshotToLegacyHead(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	legacy := storepath.DataDirPath(dataDir, storepath.LegacyFilename)
+	conn := openTestDB(t, legacy)
+	// 20260816000002 is the last version before the smart/fast model-slot
+	// rename: sessions still has large_model_*/small_model_*, and neither
+	// async_hosts nor the run-cost columns exist yet.
+	require.NoError(t, migrateLocked(t.Context(), conn, "", legacyImportLegacyFSUpTo(t, 20260816000002), MigrateOptions{MayMigrate: true}))
+	for _, stmt := range []string{
+		`INSERT INTO sessions (id,title,updated_at,created_at) VALUES ('old','old',1700000000,1700000000)`,
+		`INSERT INTO sessions (id,title,parent_session_id,updated_at,created_at) VALUES ('m$$tc','child','old',1700000000,1700000000)`,
+		`INSERT INTO sessions (id,title,parent_session_id,updated_at,created_at) VALUES ('g$$x','grand','m$$tc',1700000000,1700000000)`,
+		`UPDATE sessions SET large_model_provider='prov-x', large_model_id='model-x', large_model_reasoning_effort='high' WHERE id='old'`,
+		`UPDATE sessions SET small_model_provider='prov-y', small_model_id='model-y' WHERE id='old'`,
+		`UPDATE sessions SET cost=10 WHERE id='old'`,
+		`UPDATE sessions SET cost=4, parent_cost_accounted=3 WHERE id='m$$tc'`,
+		`UPDATE sessions SET cost=9, parent_cost_accounted=5 WHERE id='g$$x'`,
+		`INSERT INTO messages (id,session_id,role,parts,created_at,updated_at) VALUES ('m','old','user','[]',1700000000,1700000000)`,
+	} {
+		_, err := conn.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	require.NoError(t, conn.Close())
+	before := legacyImportHashes(t, legacy)
+	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	// An unmigrated snapshot would be refused forever: the live-host probe
+	// queries async_hosts, which this schema version does not have yet.
+	require.NoError(t, err)
+	require.Equal(t, LegacyImportImported, result.Status)
+	require.Equal(t, before, legacyImportHashes(t, legacy))
+	newDB := openTestDB(t, storepath.StoreV1Path(dataDir))
+	defer newDB.Close()
+	ctx := t.Context()
+	// Renamed model slots arrive under their new names.
+	var smartProvider, smartID, smartEffort, fastProvider, fastID, fastEffort string
+	require.NoError(t, newDB.QueryRowContext(ctx,
+		`SELECT smart_model_provider, smart_model_id, smart_model_reasoning_effort, fast_model_provider, fast_model_id, fast_model_reasoning_effort FROM sessions WHERE id='old'`,
+	).Scan(&smartProvider, &smartID, &smartEffort, &fastProvider, &fastID, &fastEffort))
+	require.Equal(t, "prov-x", smartProvider)
+	require.Equal(t, "model-x", smartID)
+	require.Equal(t, "high", smartEffort)
+	require.Equal(t, "prov-y", fastProvider)
+	require.Equal(t, "model-y", fastID)
+	require.Equal(t, "medium", fastEffort)
+	// The run-cost backfill ran on the snapshot during the import: the child
+	// transferred parent_cost_accounted=3 of the parent's cost=10, and the
+	// grandchild transferred 5 over the child's own cost=4.
+	var costSelf, costBase float64
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT cost_self, cost_base FROM sessions WHERE id='old'`).Scan(&costSelf, &costBase))
+	require.InDelta(t, 7.0, costSelf, 0.000001)
+	require.InDelta(t, 1.0, costBase, 0.000001)
+	var costParentID string
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT cost_parent_id FROM sessions WHERE id='m$$tc'`).Scan(&costParentID))
+	require.Equal(t, "old", costParentID)
+}
+
+func TestLegacyImportRefusesFutureVersion(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	legacy, legacyConn := createLegacyFixture(t, dataDir)
+	defer legacyConn.Close()
+	_, err := legacyConn.ExecContext(t.Context(), `INSERT INTO goose_db_version (version_id, is_applied) VALUES (20991010000001, 1)`)
+	require.NoError(t, err)
+	before := legacyImportHashes(t, legacy)
+	_, err = ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	require.ErrorIs(t, err, ErrLegacyImportFutureVersion)
+	require.ErrorContains(t, err, "20991010000001")
+	_, err = os.Stat(storepath.StoreV1Path(dataDir))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.Equal(t, before, legacyImportHashes(t, legacy))
+	legacyImportNoArtifacts(t, dataDir)
+}
+
+func TestLegacyImportRefusesUnknownTables(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	legacy, legacyConn := createLegacyFixture(t, dataDir)
+	defer legacyConn.Close()
+	_, err := legacyConn.ExecContext(t.Context(), `CREATE TABLE legacy_custom (value TEXT)`)
+	require.NoError(t, err)
+	before := legacyImportHashes(t, legacy)
+	_, err = ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	require.ErrorIs(t, err, ErrLegacyImportUnknownTable)
+	require.ErrorContains(t, err, "legacy_custom")
+	_, err = os.Stat(storepath.StoreV1Path(dataDir))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.Equal(t, before, legacyImportHashes(t, legacy))
+	legacyImportNoArtifacts(t, dataDir)
+}
+
+func TestLegacyImportRefusesUnknownColumns(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	legacy, legacyConn := createLegacyFixture(t, dataDir)
+	defer legacyConn.Close()
+	_, err := legacyConn.ExecContext(t.Context(), `ALTER TABLE queue_tasks ADD COLUMN future_col TEXT NOT NULL DEFAULT ''`)
+	require.NoError(t, err)
+	before := legacyImportHashes(t, legacy)
+	_, err = ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	require.ErrorIs(t, err, ErrLegacyImportUnknownColumns)
+	require.ErrorContains(t, err, "queue_tasks")
+	require.ErrorContains(t, err, "future_col")
+	_, err = os.Stat(storepath.StoreV1Path(dataDir))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.Equal(t, before, legacyImportHashes(t, legacy))
+	legacyImportNoArtifacts(t, dataDir)
+}
+
+func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	_, legacyConn := createLegacyFixture(t, dataDir)
+	defer legacyConn.Close()
+	staleSnapshot := filepath.Join(dataDir, ".rush-import-snapshot-crashed")
+	staleProbe := filepath.Join(dataDir, ".rush-host-probe-crashed")
+	staleBuilding := filepath.Join(dataDir, ".rush-import-building-crashed.db")
+	require.NoError(t, os.Mkdir(staleSnapshot, 0o755))
+	require.NoError(t, os.Mkdir(staleProbe, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(staleSnapshot, "legacy.db"), []byte("junk"), 0o600))
+	require.NoError(t, os.WriteFile(staleBuilding, []byte("junk"), 0o600))
+	require.NoError(t, os.WriteFile(staleBuilding+"-wal", []byte("junk"), 0o600))
+	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
+	require.NoError(t, err)
+	require.Equal(t, LegacyImportImported, result.Status)
+	for _, path := range []string{staleSnapshot, staleProbe, staleBuilding, staleBuilding + "-wal"} {
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist, path)
+	}
+}
+
+func TestLegacyImportMigrationsMatchEmbedded(t *testing.T) {
+	t.Parallel()
+	legacyFS, err := legacyMigrationFS()
+	require.NoError(t, err)
+	activeFS, err := migrationFS()
+	require.NoError(t, err)
+	legacyEntries, err := fs.ReadDir(legacyFS, ".")
+	require.NoError(t, err)
+	activeEntries, err := fs.ReadDir(activeFS, ".")
+	require.NoError(t, err)
+	require.Len(t, legacyEntries, len(activeEntries))
+	for i, entry := range legacyEntries {
+		require.Equal(t, activeEntries[i].Name(), entry.Name())
+		want, err := fs.ReadFile(activeFS, entry.Name())
+		require.NoError(t, err)
+		got, err := fs.ReadFile(legacyFS, entry.Name())
+		require.NoError(t, err)
+		require.Equal(t, string(want), string(got), entry.Name())
+	}
 }
 
 func queryAllRows(t *testing.T, conn *sql.DB, query string) [][]any {

@@ -18,7 +18,7 @@ var LegacyImportPolicy = []LegacyTablePolicy{
 	{Name: "queue_tasks", Carry: true, Reason: "independent operator CLI queue; reset in-flight running task to pending for safe retry"},
 	{Name: "pending_injects", Carry: true, Reason: "accepted user input transport; FK ties it to preserved session/message"},
 	{Name: "session_run_queue", Carry: true, Reason: "durable continuation queue; release expired/foreign leases for recovery"},
-	{Name: "orphan_call_outbox", Carry: false, Reason: "handoff fallback belongs to the old session-call runtime and may contain un-rebuildable call data"},
+	{Name: "orphan_call_outbox", Carry: true, Reason: "durable queued session calls the run queue refused; same data class as the carried session_run_queue; reset dead 'processing' claims to pending so the drain can enqueue them"},
 	{Name: "async_hosts", Carry: false, Reason: "diagnostic host registry from the retired runtime; old host locks are probed before import"},
 	{Name: "session_drivers", Carry: false, Reason: "runtime ownership markers cannot remain authoritative in a new database generation"},
 	{Name: "session_notices", Carry: true, Reason: "durable supervision/question/wake transport; void old job-bound notices and preserve their text as history"},
@@ -28,7 +28,7 @@ var LegacyImportPolicy = []LegacyTablePolicy{
 	{Name: "batch_control_requests", Carry: false, Reason: "preparation-era control intent is explicitly abandoned"},
 	{Name: "batch_runner_checkpoints", Carry: false, Reason: "preparation-era runner lifecycle state is explicitly abandoned"},
 	{Name: "goose_db_version", Carry: false, Reason: "engine-managed migration metadata; initialize fresh lineage only"},
-	{Name: "sqlite_sequence", Carry: false, Reason: "SQLite-managed AUTOINCREMENT state, rebuilt by carried inserts"},
+	{Name: "sqlite_sequence", Carry: false, Reason: "SQLite-managed AUTOINCREMENT state, rebuilt by carried inserts; the legacy seq is not carried, so notice ids deleted by retention may be reissued (nothing durable references notice ids)"},
 }
 
 func legacyImportPolicy(name string) (LegacyTablePolicy, bool) {
