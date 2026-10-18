@@ -91,8 +91,8 @@ PATH_RULES = [
     (r"(^|/)querier\.go$", "sql_sqlc"),
     # generated sqlc host files (db.go and friends) classify by PATH before
     # any content rule can see identifiers like `asyncJobDebtOwnersStmt`
-    (r"^internal/db/db.go$", "sql_sqlc"),
-    (r"^internal/db/[^/]*.sql.go$", "sql_sqlc"),
+    (r"^internal/db/db\.go$", "sql_sqlc"),
+    (r"^internal/db/[^/]*\.sql\.go$", "sql_sqlc"),
     # session_old_store: delete
     (r"^internal/session/async_job_[^/]*\.go$", "session_old_store"),
     # retained_infrastructure: retain
