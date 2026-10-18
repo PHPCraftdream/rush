@@ -197,7 +197,7 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	// dispatched through the transactional path (TxStarter set), over a
 	// SEEDED live root — so both ListLiveBatchRootsForOwner and the per-root
 	// ListBatchNodes are captured with real rows.
-	root := batchReserveForOwner(t, s, ctx, "owner", "plan-root")
+	batchReserveForOwner(t, s, ctx, "owner", "plan-root")
 	reader := NewBatchLiveReader(db.New(logDB), dataDir)
 	reader.IsOwnHost = func(string) bool { return false }
 	reader.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusAlive, nil }
@@ -230,11 +230,13 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	require.NotEmpty(t, failed)
 	found := false
 	for _, f := range failed {
-		if f.RootID == root {
+		if f.RootID == snap.Root.RootID {
 			found = true
 		}
 	}
-	require.True(t, found, "failed list must contain the reserved root %s", root)
+	// The listing selects only noticed, announced roots: that is the settled
+	// "snap" root, not the pending "plan-root" seeded for the live read.
+	require.True(t, found, "failed list must contain the settled root %s", snap.Root.RootID)
 
 	plans := ""
 	for _, entry := range batchSQLLogBatchNodes(log) {
