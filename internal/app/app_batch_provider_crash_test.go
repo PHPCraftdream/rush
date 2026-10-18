@@ -187,7 +187,7 @@ type providerCrashLeafPayload struct {
 }
 
 // providerCrashAnnouncedRoot polls the real batch store until the child
-// host's running root is ANNOUNCED and returns the row plus its decoded
+// host's live root carries a leaf payload and returns the row plus its decoded
 // leaf payload (the binding/registry identity the design requires).
 func providerCrashAnnouncedRoot(
 	t *testing.T, store *session.BatchStore, ctx context.Context, host string,
@@ -212,11 +212,10 @@ func providerCrashAnnouncedRoot(
 		defer func() { seen.Store(strings.Join(summary, "; ")) }()
 		for _, r := range roots {
 			summary = append(summary, "root "+r.RootID+" state="+r.State+" announced="+strconv.FormatInt(r.Announced, 10))
-			if r.Announced != 1 {
-				continue
-			}
 			// A direct call is a one-item BATCH root: the container carries
-			// no task payload, the leaf task rides on a child node.
+			// no task payload, the leaf task rides on a child node. The call
+			// is synchronous (escape never for a file tool), so the root is
+			// still UNANNOUNCED while the provider blocks.
 			snapshot, err := store.Read(ctx, r.OwnerSessionID, r.RootID)
 			if err != nil {
 				summary = append(summary, "read: "+err.Error())
@@ -242,7 +241,7 @@ func providerCrashAnnouncedRoot(
 		}
 		return false
 	}, 90*time.Second, 50*time.Millisecond,
-		"the running root must be announced with a non-empty binding/registry identity in its payload")
+		"the live root must carry a leaf payload with a non-empty binding/registry identity")
 	return found, payload
 }
 
@@ -319,16 +318,18 @@ func TestAppBatchProviderCrashSubprocess(t *testing.T) {
 	out1, ok := pass1[sig.Host]
 	require.True(t, ok)
 	require.NotZero(t, out1.Interrupted,
-		"the announced running root must be interrupted (design acceptance: Interrupted==1 for the single running root)")
-	require.Equal(t, int64(1), out1.Notices,
-		"exactly one root notice must be produced by pass 1")
+		"the running root must be interrupted by recovery")
+	// BatchRecoveryNotice selects only ANNOUNCED roots (batch_recovery.sql);
+	// a synchronous inline call is unannounced, its caller died with the host.
+	require.Zero(t, out1.Notices,
+		"an unannounced inline root produces no root notice")
 	require.Zero(t, f.executor.starts.Load(),
 		"no node may re-execute at recovery time (replays dying at binding lookup still Start)")
 
 	pass2 := runProviderCrashSweep(t, f.store, sig.Session, f.dataDir)
 	require.Empty(t, pass2, "recovery pass 2 must be a no-op")
 	// No app-service accessor exposes a notices count; the once-only
-	// property is asserted as pass1.Notices==1 + pass2.Notices==0 (pass2
+	// property is asserted as pass1.Notices==0 (unannounced root) + pass2 (empty
 	// empty) rather than a direct session_notices query.
 	require.Zero(t, f.executor.starts.Load(),
 		"the second recovery pass must not execute anything either")
