@@ -317,10 +317,14 @@ func TestAppBatchProviderCrashSubprocess(t *testing.T) {
 	require.Len(t, pass1, 1, "recovery pass 1 must recover exactly the dead child host")
 	out1, ok := pass1[sig.Host]
 	require.True(t, ok)
-	require.NotZero(t, out1.Interrupted,
-		"the running root must be interrupted by recovery")
-	// BatchRecoveryNotice selects only ANNOUNCED roots (batch_recovery.sql);
-	// a synchronous inline call is unannounced, its caller died with the host.
+	// batchRecoverRoot (batch_recovery.go) DELETES an unannounced root's
+	// subtree instead of interrupting it, and BatchRecoveryNotice selects
+	// only ANNOUNCED roots: a synchronous inline call is unannounced, its
+	// caller died with the host, so there is nobody to notify.
+	require.Equal(t, int64(1), out1.DeletedRoots,
+		"recovery must delete the single unannounced running root")
+	require.Zero(t, out1.Interrupted,
+		"an unannounced root is deleted, not interrupted")
 	require.Zero(t, out1.Notices,
 		"an unannounced inline root produces no root notice")
 	require.Zero(t, f.executor.starts.Load(),
