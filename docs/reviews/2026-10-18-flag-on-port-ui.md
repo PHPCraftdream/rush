@@ -7,6 +7,13 @@ fixtures. Rules honored throughout: flag-OFF behavior byte-identical; every
 assertion byte-identical (no weaken/skip/delete/special-case); no
 compilation on this machine (static checks only; CI compiles and runs).
 
+Revision 2 (post-review): reviewer findings P1-1..P2-4 closed.
+TestHandleListSessions_LiveWorkAnnotationIsBatched is reverted to the
+pre-port state (d1a043ea) and moved to QUESTIONS (value-flow contradiction
+with handlers_sessions_batch_cutover_test.go:112-117). Pins re-dispositioned
+into the H4 table below. Audit DDL gated on the flag. Every green claim here
+is a STATIC derivation; CI pending.
+
 ## F8 — internal/cmd sessions commands
 
 Production fixes (the flag-ON consumer had regressed user-facing behavior):
@@ -22,9 +29,10 @@ Production fixes (the flag-ON consumer had regressed user-facing behavior):
    then the unchanged "(awaiting answer)" decoration. Under the flag a live
    lock reads "running" again, a dead-PID crash reads "crashed", a live
    delegation reads "delegating" — the vocabulary the legacy tests pin and
-   H4 users keep. The pinned batch-ON test
-   (TestSessionsListCmdRun_BatchFlagOnStatusAndJSON) still passes: its row
-   renders "running (batch live) (awaiting answer)".
+   H4 users keep. Static value flow: the pinned batch-ON test's
+   (TestSessionsListCmdRun_BatchFlagOnStatusAndJSON) row renders
+   "running (batch live) (awaiting answer)" under the fix — every one of its
+   Contains assertions holds; CI pending.
 2. `sessions jobs` empty state (internal/cmd/sessions_batch_read.go): the
    flag-ON "(no batch work)" line is the legacy "(no jobs)" (user-facing
    continuity; nothing pinned the old string).
@@ -45,7 +53,8 @@ assertResetCleanDual (legacy debris verbatim; flag ON seeds a completed
 debt-bearing batch root + the same supervision notice and additionally
 asserts the batch debt is gone after the reset).
 
-Tests ported (flag OFF byte-identical, flag ON green): 
+Tests ported (flag OFF byte-identical; flag ON statically derived green
+(CI pending)): 
 TestSessionsListCmdRun_StatusHonorsConfiguredDataDir (lock-only fixture; fix 1),
 TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone (delegation via
 claimDelegation; phase 2 settles the batch root),
@@ -62,16 +71,11 @@ TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork (classifier is
 flag-aware),
 TestSessionsReset_VoidsAsyncNoticesAndDebt (dual debris wrappers).
 
-Env pins (the F11 convention, t.Setenv("RUSH_BATCH_RUNTIME","false"), no
-assertion changes; their t.Parallel() removed because Go 1.26 testing panics
-on Setenv-then-Parallel): the legacy-path unit tests that drive
-resetSessionHistory/explainSessionStatus directly or pin the dead-host crash
-fact (which the batch authority deliberately lacks): the two
-TestResetSessionHistory_* tests, TestListStatus_OwnJobShapes,
-TestListStatus_DriverShapes, the TestExplainSessionStatus_* legacy-render
-tests in sessions_own_job_status_test.go, sessions_run_driver_status_test.go,
-sessions_why_test.go, sessions_why_descendant_test.go,
-sessions_why_awaiting_test.go, and TestSessionsActivity_OneTableEveryCommand.
+Pin dispositions: of the 27 pins, 26 are H4 delete candidates (table below)
+and 1 (TestListStatus_DriverShapes) was ported to the dual-mode helpers and
+unpinned. Pins on legacy-path units are sanctioned; they keep
+t.Setenv("RUSH_BATCH_RUNTIME","false") and therefore no t.Parallel (a Go 1.26
+t.Setenv test cannot be parallel) — stated here explicitly, not silently.
 
 QUESTIONS (left untouched; red under the flag, missing behaviour named):
 - TestSessionsJobsCmdRun_TableAndForeignLiveHostHint, TestSessionsJobsCmdRun_JSON:
@@ -90,9 +94,45 @@ QUESTIONS (left untouched; red under the flag, missing behaviour named):
   own RunQueuePumps (app.New starts one on every full app —
   internal/app/app.go — NOT flag-gated; the flag widens the window because
   installBatchRuntime runs synchronously in each of the test's ~4 app
-  builds, past the pump's 3s tick). Needs a test seam (pump interval or
-  disable) or a single-app-lifetime fixture restructure; production change
-  would be wrong.
+  builds, past the pump's 3s tick). Cause NOT established. The seed, cancel
+  and verify apps each start a RunQueuePump (app.New starts one whenever a
+  data dir is set and the agent config resolves — internal/app/app.go:572-579),
+  and a pump ticks immediately on start
+  (internal/session/run_queue_lifecycle.go:149-150), so several pumps race
+  the purge; which of them keeps or re-writes the row under the flag was not
+  derived. Needs a test seam (pump disable/interval) or a single-app fixture;
+  no production change is indicated.
+
+## H4 delete candidates (pinned legacy-path tests)
+
+| Test | file | Legacy unit under test (H4 deletes) | Where the flag-ON behaviour is covered |
+|---|---|---|---|
+| TestExplainSessionStatus_Crashed_NoCleanFinish (:85) | sessions_why_test.go | legacy branch of explainSessionStatus (internal/cmd/sessions_why.go:127-239; H4 deletes the gate and the legacy body; twin: explainWhyBatch) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir; explainWhyBatch has no crashed verdict: a dead-holder lock with no live batch work reads "at rest" |
+| TestExplainSessionStatus_StaleLockCleanFinish (:127) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir; a stale lock with no batch work reads "at rest" flag-ON |
+| TestExplainSessionStatus_Running (:198) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir |
+| TestExplainSessionStatus_ErrorFinishSurfacesErrorText (:303) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir |
+| TestExplainSessionStatus_AgedLockWithLivePIDIsRunning (:349) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir |
+| TestExplainSessionStatus_DeadPIDIsCrashed (:390) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld / TestSessionsWhyCmdRun_HonorsConfiguredDataDir; explainWhyBatch has no crashed verdict: a dead-holder lock with no live batch work reads "at rest" |
+| TestExplainSessionStatus_StatFailureIsFailOpenInTurn (:426) | sessions_why_test.go | legacy branch of explainSessionStatus (same unit) | the fail-open in-turn property stays classifier-level, covered by the list paths |
+| TestExplainSessionStatus_StaleLockLiveChildIsDelegating (:148) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (async_jobs section, H4-deleted; twin: renderBatchRootsForWhy) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_AtRestLiveChildIsDelegating (:189) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_ChildReleasedReturnsToDone (:223) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_GrandchildLiveIsDelegating (:262) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating (:301) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_AsyncJobsAndDebtSection (:348) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_AsyncJobsSection_NoDebtOnceReacted (:412) | sessions_why_descendant_test.go | legacy why render + describeAsyncJobsAndDebt (same unit) | TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_AtRestOwnRunningJobIsRunning (:122) | sessions_own_job_status_test.go | legacy why render | flag-ON list equivalent: ported TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone |
+| TestExplainSessionStatus_DeadPIDLockWithOwnJobIsRunningNotCrashed (:149) | sessions_own_job_status_test.go | legacy why render | flag-ON list equivalent: ported TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone |
+| TestExplainSessionStatus_DeadPIDLockWithoutJobIsCrashed (:172) | sessions_own_job_status_test.go | legacy why render | flag-ON list equivalent: ported TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone |
+| TestListStatus_OwnJobShapes (:201) | sessions_own_job_status_test.go | classifier table whose deadHost row pins the legacy-only dead-host-running fact (app_session_activity.go:249, flag-OFF only; the batch authority keeps dead-host roots live until recovery) | the other three rows' flag-ON equivalents live in the ported list tests |
+| TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning (:54) | sessions_run_driver_status_test.go | legacy why render | driver halves covered flag-ON by ported TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone and the ported DriverShapes |
+| TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed (:91) | sessions_run_driver_status_test.go | legacy why render | same: ported TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone and the ported DriverShapes |
+| TestExplainSessionStatus_DeadHostRunDriverIsCrashed (:134) | sessions_run_driver_status_test.go | legacy why render | same: ported TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone and the ported DriverShapes |
+| TestSessionsActivity_OneTableEveryCommand (:99) | sessions_activity_cmd_test.go | cross-command oracle whose whyStatus column pins the legacy render | the listStatus/kindIsLive halves keep flag-ON coverage via the ported list/inject tests |
+| TestExplainSessionStatus_AwaitingAnswerNamesChildAndAnswerPath (:51) | sessions_why_awaiting_test.go | legacy #1158 section | flag-ON badge covered by TestSessionsJobsCmdRun_BatchLiveRootFlagOn and TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestExplainSessionStatus_AwaitingAnswer_WithLiveDriverOmitsRelay (:86) | sessions_why_awaiting_test.go | legacy #1158 section | flag-ON badge covered by TestSessionsJobsCmdRun_BatchLiveRootFlagOn and TestSessionsWhyCmdRun_BatchCancellingRootHeld |
+| TestResetSessionHistory_RefusesWhileLiveWork (:193) | sessions_reset_async_test.go | resetSessionHistory (legacy unit; H4 replaces it with batchResetSessionHistory + resetLiveLoopRefusal) | TestSessionsReset_Batch*RefusesFlagOn and TestSessionsReset_LiveLoopRefusesEvenWithForce |
+| TestResetSessionHistory_DeadHostRowsAreRecoveredAndVoided (:241) | sessions_reset_async_test.go | resetSessionHistory; also exercises RecoverOwnerScope (legacy dead-host recovery) | TestSessionsReset_Batch*RefusesFlagOn and TestSessionsReset_LiveLoopRefusesEvenWithForce |
 
 ## F9 — internal/server live-work handlers
 
@@ -101,22 +141,23 @@ to buildSessionLiveWorkFromBatch; annotateSessionActivity reads the flag-aware
 classifier) — fixture-only family.
 
 Dual-mode helpers (internal/server/livework_seed_test.go, new):
-liveWorkSeedSpec + seedLiveWorkRow (OFF: real AsyncJobStore
-Claim/Transition; ON: batch_nodes root+child raw INSERTs with the
-insertBatchRootAndTask column set), insertLiveWorkBatchRows (over any
-handle, for the cross-process test), projectLiveWorkRoot (batch-side
-terminal settle).
+liveWorkSeedSpec + seedLiveWorkRow (OFF: a real AsyncJobStore Claim with
+EXACTLY the inputs the original fixtures used — same Input text, same
+ToolName, same kind; ON: session.BatchStore.Reserve — root kind=batch, mode
+parallel, ControlState none, carrying the tool call, plus one task child when
+the spec has a task kind, carrying the delegation child session; the host id
+is deliberately unregistered, so the reader probes it Dead, which never
+settles a node and never marks a read incomplete), projectLiveWorkRoot (one
+seeded root settled — every node of it — to the terminal state through
+BatchStore.Project, looked up via GetLiveBatchRoot/ListBatchNodes).
 
-Tests ported: TestHandleListSessions_LiveWorkAnnotationIsBatched (rootDead's
-"work that must not read as live" is seeded as TERMINAL batch roots under
-the flag — the batch authority has no dead-host-running fact; the oracle
-loop over the single-root readers is flag-routed: OFF the store readers, ON
-the classifier facts, require lines byte-identical),
+Tests ported:
 TestHandleListSessions_LiveDescendantWorkAnnotation,
 TestHandleListSessions_LiveOwnWorkAnnotation,
 TestHandleGetSessionLiveWork_SubAgentDelegation,
 TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB (flag ON: the batch
-root is inserted through a separate db.Connect handle),
+root is reserved through a second db.Connect handle via the production
+session.BatchStore.Reserve API),
 TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot,
 TestLiveWorkTitles_IsolatedPerSession, TestLiveWorkTitles_InputChangeInvalidates,
 TestLiveWorkTitles_CacheAvoidsHistoryReread, TestMaybeBroadcastSessionLiveWork,
@@ -134,6 +175,16 @@ QUESTIONS (left untouched; no equivalent flag-ON behaviour):
   (internal/db/migrations/20261012000001_batch_projection.sql:30). Terminal
   work is visible flag-ON only through the structured batch snapshot
   (handlers_batch.go), not the flat one.
+- TestHandleListSessions_LiveWorkAnnotationIsBatched: reverted to the
+  pre-port state (d1a043ea; round 2). Under the flag every depth-0 live batch root is the owner's own
+  work (batch_read_live.go:133-138 → app_batch_cutover_facts.go:86-90 →
+  handlers_sessions.go:276; pinned TRUE by
+  handlers_sessions_batch_cutover_test.go:112-117), so a parent owning a
+  live delegation can never satisfy HasLiveOwnWork=false; the legacy
+  nested-delegation shape (parent-owned agent row, own-work = command rows
+  only), the dead-host-not-live annotation and the AsyncJobStore-reader
+  query-count property have no batch equivalent. Red under the flag at :136
+  (the original shadow failure).
 
 ## F10 — audit fixtures pre-dating the batch_nodes migration
 
@@ -144,8 +195,12 @@ RUSH_BATCH_RUNTIME=1 the audit refuses a rush.db without a batch_nodes table
 over the same read-only handle (sessions_audit_db.go:129-135,
 auditScanBatchFacts at internal/cmd/sessions_batch_audit.go:49).
 
-The fix appends the real production DDL to the fixture schema, in one new
-const, with zero assertion changes:
+The seeders now GATE the DDL on the flag — `auditDDLForTest()` in
+sessions_audit_test.go (schema := auditSchemaFixture; auditBatchProjectionDDL
+appended only when config.BatchRuntimeEnabled()) used by seedAuditFixtureDB
+and seedAuditWALFixtureDB, and the same gate inlined after the default-schema
+resolution in seedAuditRulesDB (internal/cmd/sessions_audit_rules_test.go),
+with zero assertion changes:
 
 - `auditBatchProjectionDDL` (internal/cmd/sessions_audit_test.go:75, next to
   `auditSchemaFixture` at :32) carries, verbatim from production (without
@@ -173,13 +228,13 @@ const, with zero assertion changes:
   (unfinishedEntries, sessions_batch_audit.go:72-88), breaking
   TestSessionsAudit_SinceLimitsTheWindowNotTheReport's
   `require.Empty(t, reports[0].Findings)`.
-- Three seeders execute it: seedAuditFixtureDB
-  (sessions_audit_test.go:205, `auditSchemaFixture+auditBatchProjectionDDL`),
-  seedAuditWALFixtureDB (:385, same), and seedAuditRulesDB's default-schema
-  resolution (internal/cmd/sessions_audit_rules_test.go:121,
-  `schema+auditBatchProjectionDDL`, so every rules schema variant —
-  auditSchemaCore, auditSchemaFixtureNoJobs, auditSchemaFixtureJobsNoKind —
-  carries the projection too).
+- Three seeders execute it through the gate: seedAuditFixtureDB
+  (sessions_audit_test.go, `auditDDLForTest()`), seedAuditWALFixtureDB
+  (same), and seedAuditRulesDB's default-schema resolution
+  (internal/cmd/sessions_audit_rules_test.go, gated after `schema` resolves,
+  so every rules schema variant — auditSchemaCore,
+  auditSchemaFixtureNoJobs, auditSchemaFixtureJobsNoKind — carries the
+  projection flag-ON only).
 - No batch rows are seeded anywhere: the ported tests assert selection,
   health, message rules and legacy async_jobs only. Verified statically
   that a batch_nodes table with zero rows reads complete and at rest:
@@ -193,17 +248,13 @@ const, with zero assertion changes:
   line (sessions_batch_audit.go:157-178). The QUESTIONS jobs fixtures are
   untouched.
 
-Flag-OFF inertness (verified by reading auditInspectSchema and
-auditFindings): with the flag off, no audit query touches batch_nodes or
-session_notices. auditInspectSchema runs PRAGMA table_info(batch_nodes) only
-(sessions_audit_db.go:193-197 — an existence probe, not a scan); the
-unfinished_jobs rule goes through auditScanAsyncJobs over async_jobs
-(sessions_audit_findings.go:53-60) and the notice rule reads messages.notice_kind,
-not session_notices. The flag-OFF report is byte-identical; the fixture DB
-simply has two more inert tables.
+Flag-OFF byte-identity: with the DDL gated on config.BatchRuntimeEnabled(),
+the flag-OFF fixtures are schema- and output-identical to HEAD; flag-ON
+fixtures carry batch_nodes + session_notices for the schema guard and the
+batch scan.
 
-Tests ported (flag OFF byte-identical, flag ON green, zero assertion
-changes):
+Tests ported (flag OFF byte-identical; flag ON statically derived green, CI
+pending; zero assertion changes):
 - sessions_audit_test.go: TestSessionsAudit_IsStrictlyReadOnly,
   TestSessionsAudit_ReadOnlyWithPendingWAL, TestSessionsAudit_PrefixSelection,
   TestSessionsAudit_JSONOutput — the flag-ON report adds the additive
@@ -241,14 +292,62 @@ QUESTIONS (left untouched; red under the flag by design):
 
 ## Verification
 
-Every changed file is gofumpt/gofmt parse-only clean (gofumpt -l and
-gofmt -e -l empty on internal/cmd/sessions_audit_test.go,
-internal/cmd/sessions_audit_rules_test.go and this document). git status
-shows only the intended files: the two audit test files and this new
-document, on top of the pre-existing F8/F9 modifications, which were left
-untouched. The production diff is limited to the F8-listed files
-(sessions_list.go, sessions_batch_read.go, sessions_reset.go,
-sessions_batch_act.go) plus their tests — none of the F10 edits touch
-production code. No compilation, no tests and no benchmarks ran locally;
-all verification was static (file reads, grep, gofumpt/gofmt parse-only
-checks, read-only git). No artifacts were left on disk.
+Round-2 truth: static-only checks. gofumpt -l and gofmt -e -l rc 0 (empty)
+on every touched .go file; bash .githooks/check_file_size.sh rc 0 from the
+repo root; git status --short shows only the intended files;
+internal/server/descendant_work_batch_test.go reverted byte-identical to
+its pre-port state (d1a043ea; git diff d1a043ea on it empty). No
+compilation, no tests and no benchmarks ran
+locally; CI is pending. Every green claim in this document is a static
+value-flow derivation, not an observed run.
+
+Expected green on the next shadow round (static derivation):
+
+- F9: TestHandleListSessions_LiveDescendantWorkAnnotation,
+  TestHandleListSessions_LiveOwnWorkAnnotation,
+  TestHandleGetSessionLiveWork_SubAgentDelegation,
+  TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB,
+  TestHandleGetSessionLiveWork_AwaitingAnswerBadge,
+  TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot,
+  TestLiveWorkTitles_IsolatedPerSession,
+  TestLiveWorkTitles_InputChangeInvalidates,
+  TestLiveWorkTitles_CacheAvoidsHistoryReread, TestMaybeBroadcastSessionLiveWork.
+- F8: TestSessionsListCmdRun_StatusHonorsConfiguredDataDir,
+  TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone,
+  TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone,
+  TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone,
+  TestSessionsJobsCmdRun_NoJobs,
+  TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning,
+  TestSessionsShowCmdRun_AsyncJobCounts,
+  TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork,
+  TestSessionsReset_VoidsAsyncNoticesAndDebt,
+  TestSessionsReset_LiveLoopRefusesEvenWithForce,
+  TestListStatus_DriverShapes (newly ported),
+  TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics (new), plus the
+  ambient why tests the nil-DB guard un-reds
+  (TestExplainSessionStatus_AtRest_CleanFinish,
+  TestExplainSessionStatus_AtRest_NoAssistantMessage,
+  TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat,
+  TestExplainSessionStatus_PIDlessRecordIsReleased,
+  TestExplainSessionStatus_NoQuestionNotice_StaysSilent) and the pre-existing
+  batch-ON tests re-derived under the classifier-first list
+  (TestSessionsListCmdRun_BatchFlagOnStatusAndJSON).
+- F10: the 14 ported audit tests.
+
+QUESTIONS (red under the flag; missing behaviour named):
+- TestHandleListSessions_LiveWorkAnnotationIsBatched (semantics above).
+- TestSessionsJobsCmdRun_TableAndForeignLiveHostHint, TestSessionsJobsCmdRun_JSON
+  (no flag-ON host-liveness/kill-hint surface).
+- TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly / _DryRunCountsOnly /
+  _JSONPrintsCounts (legacy wording/kind vs pinned batch_retention;
+  session_notices retention has no batch equivalent —
+  batch_retention.go:17-19).
+- TestSessionsCancel_PurgesQueuedWork (cause not established; above).
+- TestHandleGetSessionLiveWork_RunningAndTerminalCommands,
+  TestHandleGetSessionLiveWork_TerminalCausesAreDistinct,
+  TestBuildSessionLiveWork_TerminalCap (flat ON path reads nonterminal roots
+  only, batch_read.sql:1-6; cause CHECK vocabulary, migration :30).
+- TestAuditRules_UnfinishedJobs_Boundary, TestAuditRules_Integration
+  (flag-ON detail is toolCallID:rootState, interrupted is terminal),
+  TestAuditRules_SchemaDegradation_IsSilent (batch block always printed
+  flag-ON; no-batch_nodes refused by design).

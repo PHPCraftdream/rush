@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -475,3 +476,22 @@ func TestSessionsShowCmdRun_BatchFlagOnCounts(t *testing.T) {
 
 // batchRuntimeFlagOnForTest was the regression tests' flag precondition
 // helper; the tests now set RUSH_BATCH_RUNTIME explicitly with t.Setenv.
+
+// TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics: a hand-built App
+// without a DB func (the &App{...} literal pattern the why unit tests use)
+// degrades to "no batch facts" under the flag — the app-layer configless
+// rule — never a panic; the why render falls back to the lock verdict.
+func TestBatchRuntimeFacts_ConfiglessAppDegradesNotPanics(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	conn, q := newTestDB(t)
+	a := &app.App{Messages: message.NewService(q), Sessions: session.NewService(q, conn)}
+	require.Nil(t, a.DB, "precondition: no DB func wired")
+
+	got := batchRuntimeFacts(context.Background(), a, t.TempDir(), []string{"sess-x"})
+	require.Nil(t, got, "a configless App has no batch facts at all")
+
+	var buf bytes.Buffer
+	require.NoError(t, explainSessionStatus(context.Background(), a, t.TempDir(), "sess-x", &buf))
+	require.Contains(t, buf.String(), "status: at rest",
+		"no DB means no durable facts: the why render degrades to the lock verdict, not a panic")
+}

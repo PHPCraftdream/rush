@@ -19,6 +19,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -229,7 +230,7 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 	require.NoError(t, err)
 	child, err := a.Sessions.CreateTaskSession(ctx, "lw-child", root.ID, "lw child")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-ag", taskKind: "agent", childSessionID: child.ID, state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-ag", taskKind: "agent", input: "investigate", toolName: "agent", childSessionID: child.ID, state: "running"})
 
 	snap := requestSnapshot(t, a, client, root.ID)
 	require.NotNil(t, snap)
@@ -251,9 +252,11 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 
 // TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB proves the
 // snapshot reads the durable table, not this process's memory: the row is
-// claimed by a SEPARATE AsyncJobStore with its own host identity (its lock
-// file held, like another live process), and the app's own store never
-// touched it.
+// written through a second connection handle acquired independently of the
+// snapshot read, so buildSessionLiveWork cannot be serving this process's
+// memory. Flag OFF the writer additionally uses a distinct host identity
+// (its lock held); flag ON the rows are batch_nodes written before the
+// snapshot is requested.
 func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
@@ -268,14 +271,20 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 
 	dataDir := a.Config().Options.DataDirectory
 	if batchRuntimeEnabled() {
-		// Under the flag the row must be written by a handle the reading App
-		// never shared: a separate writable connection inserts the batch root.
+		// The rows are written through a second connection handle acquired
+		// independently of the snapshot read: the snapshot must come from the
+		// durable batch_nodes table, not from this process's memory.
 		other, err := db.Connect(ctx, dataDir)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = db.ReleaseConn(other) })
-		_, err = other.ExecContext(ctx, `INSERT INTO batch_nodes
-			(node_id, root_id, owner_session_id, host_id, ordinal, kind, tool_call_id, input_hash, mode, state, created_at, updated_at)
-			VALUES ('lw-tc-remote', 'lw-tc-remote', ?, 'lw-foreign-host', 0, 'batch', 'tc-remote', 'hash-tc-remote', 'parallel', 'running', 1700000000, 1700000001)`, sess.ID)
+		_, err = session.NewBatchStore(other).Reserve(ctx, session.BatchReservation{
+			Owner: sess.ID, Host: "lw-foreign-host", RunnerID: "lw-foreign-runner",
+			ToolCallID: "tc-remote", InputHash: "hash-tc-remote", Sequence: 1,
+			Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+				Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+				State: "running", ControlState: "none",
+			}},
+		})
 		require.NoError(t, err)
 	} else {
 		other, err := db.Connect(ctx, dataDir)
@@ -310,7 +319,7 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 
 	sess, err := a.Sessions.Create(ctx, "lw coalesce")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-co", taskKind: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-co", taskKind: "bash", input: "sleep", toolName: "bash", state: "running"})
 
 	p := startLiveWorkPusher(ctx, a, hub)
 	t.Cleanup(func() { <-p.stopped })
@@ -403,7 +412,7 @@ func TestLiveWorkTitles_IsolatedPerSession(t *testing.T) {
 			Parts: []message.ContentPart{message.ToolCall{ID: "call_0", Name: "bash", Input: fmt.Sprintf(`{"command":"echo from-%c"}`, 'a'+i)}},
 		})
 		require.NoError(t, err)
-		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "call_0", taskKind: "bash", state: "running"})
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "call_0", taskKind: "bash", input: "echo", toolName: "bash", state: "running"})
 	}
 
 	snapA := requestSnapshot(t, a, client, mustSessionID(t, a, "lw iso a"))
@@ -441,7 +450,7 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-reuse", taskKind: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-reuse", taskKind: "bash", input: "echo first", toolName: "bash", state: "running"})
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -501,7 +510,7 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolCall{ID: "tc-cache-1", Name: "bash", Input: `{"command":"echo once"}`}},
 	})
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-cache-1", taskKind: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-cache-1", taskKind: "bash", input: "echo once", toolName: "bash", state: "running"})
 
 	counting := &countingMessageService{Service: a.Messages}
 	a.Messages = counting
@@ -609,7 +618,7 @@ func TestMaybeBroadcastSessionLiveWork(t *testing.T) {
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "lw push")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-push", taskKind: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-push", taskKind: "bash", input: "sleep", toolName: "bash", state: "running"})
 
 	hub := newHub()
 	go hub.Run(ctx)

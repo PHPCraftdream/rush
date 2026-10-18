@@ -23,6 +23,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,16 +63,15 @@ CREATE TABLE async_jobs (
 // flag-ON paths touch: batch_nodes verbatim from the production migration
 // (internal/db/migrations/20261012000001_batch_projection.sql, the CREATE
 // TABLE and its five indexes) and session_notices verbatim from
-// internal/db/migrations/20260928000002_add_async_phase4_core.sql. With
-// RUSH_BATCH_RUNTIME=1 the audit refuses a rush.db without batch_nodes
-// (sessions_audit_db.go) and reads batch facts through reduceBatchSessionFacts,
-// whose bound-notice and debt queries also read session_notices
-// (sessions_batch_read.go); without the DDL every fixture would fail the
-// schema gate. Flag OFF no audit query touches either table —
-// auditInspectSchema only runs PRAGMA table_info on batch_nodes and
-// auditFindings reads messages/async_jobs — so appending the const keeps the
-// flag-OFF output byte-identical: the fixture DB simply has two more inert
-// tables.
+// internal/db/migrations/20260928000002_add_async_phase4_core.sql. The DDL
+// is GATED on config.BatchRuntimeEnabled(): with RUSH_BATCH_RUNTIME=1 the
+// audit refuses a rush.db without batch_nodes (sessions_audit_db.go) and
+// reads batch facts through reduceBatchSessionFacts, whose bound-notice and
+// debt queries also read session_notices (sessions_batch_read.go), so the
+// flag-ON fixtures carry both tables. Flag OFF no audit query touches either
+// table — auditInspectSchema only runs PRAGMA table_info on batch_nodes and
+// auditFindings reads messages/async_jobs — so the flag-OFF fixtures are
+// byte-identical to HEAD in schema AND output.
 const auditBatchProjectionDDL = `
 CREATE TABLE batch_nodes (
     node_id TEXT PRIMARY KEY,
@@ -183,6 +183,18 @@ CREATE TABLE session_notices (
 );
 `
 
+// auditDDLForTest appends the batch projection DDL only when the batch
+// runtime flag is on: flag-OFF fixtures stay schema-identical to the legacy
+// ones, flag-ON fixtures carry the tables the schema guard and the batch
+// scan need.
+func auditDDLForTest() string {
+	schema := auditSchemaFixture
+	if config.BatchRuntimeEnabled() {
+		schema += auditBatchProjectionDDL
+	}
+	return schema
+}
+
 // seedAuditFixtureDB writes a Rush-shaped rush.db into dataDir and returns
 // its path. dataDir must be a t.TempDir(): the audit command is pointed at
 // it, and the whole test asserts nothing else touches it.
@@ -202,7 +214,7 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 		}
 	})
 
-	_, err = db.ExecContext(context.Background(), auditSchemaFixture+auditBatchProjectionDDL)
+	_, err = db.ExecContext(context.Background(), auditDDLForTest())
 	require.NoError(t, err)
 
 	now := timeNowUnix()
@@ -382,7 +394,7 @@ func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 		}
 	})
 
-	_, err = db.ExecContext(context.Background(), auditSchemaFixture+auditBatchProjectionDDL)
+	_, err = db.ExecContext(context.Background(), auditDDLForTest())
 	require.NoError(t, err)
 	// journal_mode must be set before the inserts for the data to land in
 	// the -wal rather than being checkpointed straight into rush.db.

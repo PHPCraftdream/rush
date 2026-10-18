@@ -221,15 +221,21 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 
 // batchRuntimeFacts is the flag-gated production entry point: nil when
 // RUSH_BATCH_RUNTIME is off (callers must keep the legacy path untouched).
+// A configless App (nil DB func) has no batch facts at all — the same answer
+// SessionActivityBatch gives — never a panic.
 func batchRuntimeFacts(ctx context.Context, a *app.App, dataDir string, ids []string) map[string]batchSessionFacts {
-	if !config.BatchRuntimeEnabled() || a == nil || a.DB() == nil {
+	if !config.BatchRuntimeEnabled() || a == nil || a.DB == nil {
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	reader := session.NewBatchLiveReader(db.New(a.DB()), dataDir)
-	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(a.DB()), db.New(a.DB()), ids)
+	conn := a.DB()
+	if conn == nil {
+		return nil
+	}
+	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
+	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), db.New(conn), ids)
 }
 
 // renderBatchRootsForWhy renders the `sessions why` batch section from

@@ -161,9 +161,7 @@ func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
 //
 // Revert-check: any local re-ranking breaks its row while the others pass.
 func TestListStatus_DriverShapes(t *testing.T) {
-	// F11 env pin: pins the dead-host crash fact, which the batch authority
-	// deliberately has no equivalent of (dead hosts stay live until recovery).
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	t.Parallel()
 	a, s, _, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	mk := func(title string) session.Session {

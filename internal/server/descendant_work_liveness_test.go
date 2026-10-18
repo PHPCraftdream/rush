@@ -102,7 +102,7 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 	// descendant work, naming the child.
 	store := a.AsyncJobStore()
 	require.NotNil(t, store, "a full App built via appPkg.New must have an AsyncJobStore")
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: parent.ID, toolCallID: "delegate-1", taskKind: "agent", childSessionID: child.ID, state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: parent.ID, toolCallID: "delegate-1", taskKind: "agent", input: "delegate to " + child.ID, toolName: "", childSessionID: child.ID, state: "running"})
 
 	rows = list()
 	parentRow = findSessionRow(t, rows, parent.ID)
@@ -170,7 +170,7 @@ func TestHandleListSessions_LiveOwnWorkAnnotation(t *testing.T) {
 
 	store := a.AsyncJobStore()
 	require.NotNil(t, store)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "bash-1", taskKind: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "bash-1", taskKind: "bash", input: "sleep 60", toolName: "bash", state: "running"})
 
 	row := list()
 	require.True(t, row.HasLiveOwnWork, "a running own plain job must reach the row: the session is not idle")
