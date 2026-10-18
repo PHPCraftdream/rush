@@ -283,6 +283,15 @@ func isProcessGroupLeaderAlive(pgid int) bool {
 	return verifyGroupStillPlausible(pgid, "")
 }
 
+// startTimeFacilityAvailable reports whether THIS platform can read a
+// process's start-time token -- the same facility anyWitnessStillHolds
+// needs to evaluate witness evidence. Co-located on Linux (/proc), absent
+// together with member enumeration on the other Unixes.
+func startTimeFacilityAvailable() bool {
+	_, ok := startTimeToken(os.Getpid())
+	return ok
+}
+
 // TestChildGroupRegistry_LeaderReaped_GroupStillSwept is the regression
 // test for the 2026-10-16 review's P2-1: a registered group whose leader
 // exited AND was reaped while a grandchild still lives must be killed by
@@ -329,10 +338,13 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 
 	grandpid := 0
 	waited := false
+	// F3 (2026-10-18 review, finding 3): registered UNCONDITIONALLY, before
+	// anything that can fail. The previous cleanup killed the sleeper only
+	// under `if grandpid > 0`, so a PID-publication failure (grandpid still
+	// 0) leaked the grandchild for its full sleep. The group kill must not
+	// depend on grandpid at all.
 	t.Cleanup(func() {
-		if grandpid > 0 {
-			_ = syscall.Kill(grandpid, syscall.SIGKILL)
-		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if !waited {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
@@ -355,7 +367,13 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("grandchild pid file never became readable: %v", readErr)
+			// t.Errorf, not t.Fatalf: Fatal would end the test WITHOUT
+			// running the remaining body, but cleanup would still run --
+			// the shape is fine either way for cleanup, but Errorf+return
+			// keeps the failure attributable and the F3 sibling test's
+			// parent-visible pattern identical.
+			t.Errorf("grandchild pid file never became readable: %v", readErr)
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -373,6 +391,16 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 	require.NoError(t, syscall.Kill(-cmd.Process.Pid, 0), "premise: the grandchild must keep the registered group alive after the leader is reaped")
 
 	RegisterChildGroup(dataDir, sessionID, cmd.Process.Pid, generation)
+	// The leader-gone branch of verifyGroupStillPlausibleOutcome now
+	// requires a registration-time member witness to prove historical
+	// ownership. On a platform with no member-enumeration facility (or in
+	// the degenerate no-other-members case) witnesses are empty and the
+	// entry is deliberately RETAINED, not signalled -- skip rather than
+	// fail there; this test's kill assertion is witness-dependent.
+	regEntries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
+	if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
+		t.Skip("no member witnesses recorded at registration (platform without member enumeration, or no non-leader members): leader-gone identity is unverifiable and the entry is retained by design")
+	}
 	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
 	require.Equal(t, 1, result.Killed, "the sweep must signal a registered group whose leader is reaped while members still live -- the pre-fix Getpgid-only check dropped it as implausible")
 	require.Zero(t, result.Implausible)
@@ -387,4 +415,254 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 
 	_, statErr := os.Stat(childGroupRegistryPath(dataDir, sessionID))
 	require.True(t, os.IsNotExist(statErr), "all entries reached a confirmed outcome, so the registry file must be removed")
+}
+
+// TestChildGroupRegistry_LeaderGone_WitnessMismatch_IsRetainedNotKilled is
+// the F2 regression test (2026-10-18 review, finding 2, direction (i)):
+// the leader is gone, the group still exists, but the recorded member
+// witness does NOT match any surviving process -- exactly the
+// pgid-reuse/historical-identity shape the old "identity by pid
+// reservation" argument could not distinguish. The entry must be counted
+// Retained (inconclusive) and nothing may be signalled.
+//
+// True OS-level pgid reuse cannot be constructed from user code, so the
+// registry entry is crafted by hand at the parse/write seam (extended
+// "pgid generation leaderStart pid@start" format) with a witness list whose
+// pid cannot hold the recorded start time.
+//
+// Production mutation this catches: reverting the leader-gone branch of
+// verifyGroupStillPlausibleOutcome to return plausibilityConfirmedLive on a
+// successful kill(-pgid,0) probe without requiring a witness (the pre-F2
+// code) makes result.Killed 1 and result.Retained 0 here.
+func TestChildGroupRegistry_LeaderGone_WitnessMismatch_IsRetainedNotKilled(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if !startTimeFacilityAvailable() {
+		t.Skip("no /proc-based member/start-time facility on this platform")
+	}
+
+	dataDir := t.TempDir()
+	sessionID := "childgroup-witness-mismatch-retained"
+
+	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	require.NoError(t, err)
+	defer lk.Release()
+
+	lockPath := SessionLockPath(dataDir, sessionID)
+	generation := ReadLockGeneration(lockPath)
+	require.NotEmpty(t, generation)
+
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	script := `sleep 46.91 & p=$!; echo "$p" > '` + pidFile + `'; exit 0`
+	cmd := platform.Command(t.Context(), "bash", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	grandpid := 0
+	for grandpid == 0 {
+		data, readErr := os.ReadFile(pidFile)
+		if readErr == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				grandpid = pid
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild pid file never became readable: %v", readErr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Reap the leader: Getpgid must fail while the group survives.
+	require.NoError(t, cmd.Wait())
+	_, pgErr := syscall.Getpgid(cmd.Process.Pid)
+	require.Error(t, pgErr, "premise: leader must be reaped")
+	require.NoError(t, syscall.Kill(-cmd.Process.Pid, 0), "premise: group must still exist")
+
+	// Hand-write the registry in the extended format. The witness pid is
+	// one that cannot be alive with the recorded start time: the leader's
+	// OWN pid is reaped (Getpgid failed above), so as a witness pid it can
+	// never satisfy startTimeToken -- and "bogus@bogus" would not parse.
+	// This is the "witness list matches nothing surviving" simulation the
+	// finding asks for.
+	registry := strconv.Itoa(cmd.Process.Pid) + " " + generation + " 12345 " +
+		strconv.Itoa(cmd.Process.Pid) + "@1 424242@999\n"
+	path := childGroupRegistryPath(dataDir, sessionID)
+	childGroupFileMu.Lock()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(registry), 0o644))
+	childGroupFileMu.Unlock()
+
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
+	require.Zero(t, result.Killed, "a leader-gone group whose recorded witness matches no surviving process must NOT be signalled -- the pre-F2 code killed it on the group-probe alone")
+	require.Equal(t, 1, result.Retained, "an unverifiable leader-gone entry must be retained (inconclusive), not dropped")
+	require.Zero(t, result.Implausible)
+
+	// And the group really was not touched: the grandchild still lives.
+	require.NoError(t, syscall.Kill(grandpid, 0), "the grandchild must survive a sweep whose witness evidence does not hold")
+}
+
+// TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled is the F2
+// witness-holds direction (finding 2, direction (ii)), as a sibling of
+// TestChildGroupRegistry_LeaderReaped_GroupStillSwept with the witness
+// requirement made explicit: registration while the grandchild lives
+// records a witness, the leader is reaped, and the sweep MUST kill.
+//
+// Production mutation this catches: removing the witness check entirely
+// (returning plausibilityInconclusive unconditionally in the leader-gone
+// branch) makes result.Killed 0 and result.Retained 1 here -- legitimate
+// cleanup of an exited leader's descendants must keep working when the
+// evidence holds.
+func TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	dataDir := t.TempDir()
+	sessionID := "childgroup-witness-holds-killed"
+
+	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	require.NoError(t, err)
+	defer lk.Release()
+
+	lockPath := SessionLockPath(dataDir, sessionID)
+	generation := ReadLockGeneration(lockPath)
+	require.NotEmpty(t, generation)
+
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	script := `sleep 47.33 & p=$!; echo "$p" > '` + pidFile + `'; exit 0`
+	cmd := platform.Command(t.Context(), "bash", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdout = writer
+	require.NoError(t, cmd.Start())
+	require.NoError(t, writer.Close())
+	waited := false
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		_ = writer.Close()
+		_ = reader.Close()
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, readErr := os.ReadFile(pidFile)
+		if readErr == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("grandchild pid file never became readable: %v", readErr)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	require.NoError(t, cmd.Wait())
+	waited = true
+
+	// Register while the grandchild (the witness) lives: the registration
+	// path must record it.
+	RegisterChildGroup(dataDir, sessionID, cmd.Process.Pid, generation)
+	regEntries := readChildGroupFileLockedForTest(t, dataDir, sessionID)
+	if len(regEntries) != 1 || len(regEntries[0].Witnesses) == 0 {
+		t.Skip("no member witnesses recorded at registration (platform without member enumeration): witness-dependent assertion not applicable")
+	}
+
+	result := KillRegisteredChildGroups(dataDir, sessionID, generation)
+	require.Equal(t, 1, result.Killed, "a leader-gone group with a surviving, identity-matching witness must be swept")
+	require.Zero(t, result.Retained)
+	require.Zero(t, result.Implausible)
+
+	require.NoError(t, reader.SetReadDeadline(time.Now().Add(5*time.Second)))
+	buf := make([]byte, 1)
+	_, readErr := reader.Read(buf)
+	require.ErrorIs(t, readErr, io.EOF, "the grandchild survived a witness-confirmed sweep")
+}
+
+// TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails is the F3
+// regression test (2026-10-18 review, finding 3): when the grandchild's PID
+// publication never succeeds (grandpid stays 0), the unconditional
+// group-kill cleanup -- not the grandpid-guarded one -- must have torn the
+// whole group down. The subtest models the failure with a pidFile path
+// whose parent directory does not exist, using the F3-fixed Errorf+return
+// shape so its cleanup runs; the PARENT test then asserts the group is
+// gone, which only the subtest's cleanup can have achieved.
+//
+// Production mutation this catches: restoring the old cleanup shape
+// (`if grandpid > 0 { kill(grandpid) }`) leaves the sleeper alive -- the
+// parent's ESRCH assertion fails with EPERM/nil (group still exists).
+func TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	var leaderPid int
+	t.Run("publication-fails", func(t *testing.T) {
+		// The parent directory does not exist, so echo can never create
+		// the pid file: publication fails for the whole poll window.
+		pidFile := filepath.Join(t.TempDir(), "no-such-dir", "grandchild.pid")
+		script := `sleep 48.71 & p=$!; echo "$p" > '` + pidFile + `'; exit 0`
+		cmd := platform.Command(t.Context(), "bash", "-c", script)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		require.NoError(t, cmd.Start())
+		leaderPid = cmd.Process.Pid
+		waited := false
+		// The F3-fixed unconditional cleanup, exactly as in the tests
+		// above: group kill first, then leader reap, no grandpid guard.
+		t.Cleanup(func() {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			if !waited {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+		})
+
+		pubDeadline := time.Now().Add(2 * time.Second)
+		for {
+			if _, readErr := os.ReadFile(pidFile); readErr == nil {
+				t.Errorf("pid publication unexpectedly succeeded; this test models its failure")
+				return
+			}
+			if time.Now().After(pubDeadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Log("pid publication failed as modeled; the unconditional cleanup must now kill the group")
+	})
+
+	require.NotZero(t, leaderPid, "premise: the subtest must have started its leader")
+	// The leader exits by itself; its sleeper grandchild (48.71s) is what
+	// keeps the group -- and would keep it for the full sleep on pre-F3
+	// code. Poll briefly: the kill lands, init reaps the grandchild, the
+	// group dissolves.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := syscall.Kill(-leaderPid, 0)
+		if err != nil {
+			require.ErrorIs(t, err, syscall.ESRCH,
+				"after the subtest's unconditional cleanup ran, the whole group must be gone -- the pre-F3 grandpid-guarded cleanup leaked the sleeper")
+			return
+		}
+		if time.Now().After(deadline) {
+			require.ErrorIs(t, syscall.Kill(-leaderPid, 0), syscall.ESRCH,
+				"the process group outlived the test: the F3 unconditional group-kill cleanup did not run")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
