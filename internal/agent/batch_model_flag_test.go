@@ -60,7 +60,10 @@ func TestBatchControlsOnlyAppearWhenAllowedInPinnedToolset(t *testing.T) {
 	require.Equal(t,
 		[]string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"},
 		batchControlAvailability(full, allowedBatchReadControls))
-	require.Equal(t, []string{"batch_run", "batch_add"},
+	// The read/stop controls follow the by-name grant, not the presence of
+	// any command tool: a bash-only build whose AllowedTools carries them
+	// still offers them.
+	require.Equal(t, []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"},
 		batchControlAvailability(batchTestTools("bash"), allowedBatchReadControls))
 	// R12-H1 old-name independence: the legacy control tools NEVER grant
 	// native controls. A revert to the pre-H1 job_output/job_kill presence
