@@ -8,6 +8,9 @@
 // 'running' row is excluded outright, and a terminal row's host does not matter
 // -- except an unnamed job_kill row (delivery='done', no result message),
 // which is kept until its host is dead and recovery re-pends it (R5A-1).
+// Retention-purge helpers moved verbatim from async_job_gc.go and
+// async_job_recovery.go (R12-H1) because internal/cmd/sessions_gc.go and
+// batch_retention.go survive the H4 session_old_store deletion.
 package session
 
 import (
@@ -15,6 +18,15 @@ import (
 	"fmt"
 	"time"
 )
+
+// AsyncDataRetentionAge bounds how long a terminal, delivered-or-voided
+// async_jobs/session_notices row (and an empty dead host's lock file)
+// survives before the purge reaps it (doc sec.3.7): the 60s pass of the web
+// process and of a `rush run` loop (ClaimExternalDriver starts the ticker; the
+// loop also runs it once at start). Fixed, not a config option -- the doc's
+// own tests only require "old rows are purged, recent ones are kept", not a
+// tunable knob.
+const AsyncDataRetentionAge = 7 * 24 * time.Hour
 
 // CountJobsOlderThan reports how many async_jobs/session_notices rows
 // PurgeJobsOlderThan(age) would delete, without deleting anything --
