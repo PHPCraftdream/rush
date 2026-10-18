@@ -97,7 +97,10 @@ func newActivityCmdApp(t *testing.T) (*app.App, string, *session.AsyncJobStore) 
 
 // TestSessionsActivity_OneTableEveryCommand is the cross-command oracle.
 func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render first lines
+	// ("status: running/delegating/crashed/done"); under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	ctx := context.Background()
 	a, dataDir, store := newActivityCmdApp(t)
 

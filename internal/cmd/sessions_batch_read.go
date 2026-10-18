@@ -408,7 +408,9 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		if f.Unknown {
 			fmt.Println("(batch read incomplete; live batch work unknown)")
 		} else {
-			fmt.Println("(no batch work)")
+			// F8: the same empty-state line the legacy path prints (user-facing
+			// continuity across the flag; no batch-specific wording).
+			fmt.Println("(no jobs)")
 		}
 	}
 	if f.Unknown {

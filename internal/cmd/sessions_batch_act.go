@@ -79,6 +79,22 @@ func resetActivityRefusal(ctx context.Context, a *app.App, sessionID string, for
 	return nil
 }
 
+// resetLiveLoopRefusal is the flag-ON reset's live-loop gate: the batch
+// reset's atomic refusal covers batch work, but a live `rush run` loop
+// between turns holds no batch root and no lock, so `reset --force` would
+// otherwise wipe a session a loop still drives (the R8A-3 bug). Refuses
+// under --force too, exactly like the legacy gate.
+func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) error {
+	act, actErr := a.SessionActivity(ctx, sessionID)
+	if actErr != nil {
+		return resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
+	}
+	if act.Facts.Driver != nil {
+		return resetRefusedError(sessionID, "a live `rush run` loop still drives it")
+	}
+	return nil
+}
+
 // batchResetSessionHistory is the flag-ON reset path: the R10c batch reset
 // (check + delete in ONE writer transaction; refusal writes nothing). Its
 // atomic refusal of any nonterminal batch root IS the live-work gate -- no

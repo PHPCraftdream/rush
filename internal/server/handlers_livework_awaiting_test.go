@@ -30,10 +30,8 @@ func TestHandleGetSessionLiveWork_AwaitingAnswerBadge(t *testing.T) {
 	require.NoError(t, err)
 	store := a.AsyncJobStore()
 	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: root.ID, ToolCallID: "tc-await", Kind: session.JobKindAgent, Input: "investigate", ToolName: "agent", ChildSessionID: child.ID})
-	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: root.ID, ToolCallID: "tc-plain", Kind: session.JobKindAgent, Input: "also work", ToolName: "agent", ChildSessionID: other.ID})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-await", taskKind: "agent", childSessionID: child.ID, state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-plain", taskKind: "agent", childSessionID: other.ID, state: "running"})
 
 	text := "Supervision summary.\n\nSUB-AGENT QUESTION (session " + child.ID + "): QUESTION: which adapter?" +
 		"\n\nThe sub-agent is paused on this question."

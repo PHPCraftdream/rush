@@ -112,7 +112,13 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 	if schema == "" {
 		schema = auditSchemaFixture
 	}
-	_, err = db.ExecContext(context.Background(), schema)
+	// The batch projection DDL rides along on every variant: with
+	// RUSH_BATCH_RUNTIME=1 the audit refuses a database without batch_nodes
+	// and its batch scan reads batch_nodes and session_notices
+	// (sessions_audit_db.go, sessions_batch_read.go). No flag-OFF query in
+	// the audit touches either table, so flag OFF the fixture DB just has
+	// two more inert tables.
+	_, err = db.ExecContext(context.Background(), schema+auditBatchProjectionDDL)
 	require.NoError(t, err)
 
 	ctx := context.Background()

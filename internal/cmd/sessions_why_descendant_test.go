@@ -25,6 +25,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,6 +34,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -99,16 +101,39 @@ func newWhyDescendantTestApp(t *testing.T) (a *app.App, s session.Service, m mes
 	return a, s, m, store, dataDir
 }
 
-// claimDelegation claims a running 'agent' async_jobs row on parentID
-// naming childID as its delegation target -- the durable fact "parentID is
-// waiting on childID", live as long as the row stays 'running' on a host
-// this reader judges alive (the store's own lazily-registered host is
+// claimDelegation seeds the "parentID is waiting on childID" fact: flag
+// off, the legacy running-'agent' async_jobs claim on parentID naming
+// childID as its delegation target; flag on, the same fact as a live batch
+// root whose task child carries the ChildSessionID link (set directly in
+// the reservation's child Values -- db.ReserveBatchNodeParams has the
+// field). The row stays live as long as the root stays nonterminal on a
+// host this reader judges alive (the store's own lazily-registered host is
 // always alive-without-probing in-process, see HostLiveness's doc).
-func claimDelegation(t *testing.T, store *session.AsyncJobStore, parentID, toolCallID, childID string) {
+func claimDelegation(t *testing.T, a *app.App, parentID, toolCallID, childID string) {
 	t.Helper()
-	_, err := store.Claim(context.Background(), session.ClaimParams{
-		Owner: parentID, ToolCallID: toolCallID, Kind: session.JobKindAgent,
-		Input: "delegate to " + childID, ChildSessionID: childID,
+	if !config.BatchRuntimeEnabled() {
+		store := a.AsyncJobStore()
+		require.NotNil(t, store)
+		_, err := store.Claim(context.Background(), session.ClaimParams{
+			Owner: parentID, ToolCallID: toolCallID, Kind: session.JobKindAgent,
+			Input: "delegate to " + childID, ChildSessionID: childID,
+		})
+		require.NoError(t, err)
+		return
+	}
+	host, bs, _ := batchSeedHost(t, a)
+	_, err := bs.Reserve(context.Background(), session.BatchReservation{
+		Owner: parentID, Host: host, RunnerID: "claim-delegation-runner",
+		ToolCallID: toolCallID, InputHash: "hash-" + toolCallID, Sequence: 1,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "pending", ControlState: "none",
+		}, Children: []session.BatchReservationNode{
+			{Values: db.ReserveBatchNodeParams{
+				Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "pending", ControlState: "none",
+				ChildSessionID: sql.NullString{String: childID, Valid: true},
+			}},
+		}},
 	})
 	require.NoError(t, err)
 }
@@ -121,8 +146,10 @@ func claimDelegation(t *testing.T, store *session.AsyncJobStore, parentID, toolC
 // "status: done (stale lock)" / "Treat as done." — reporting done for work
 // that was still in progress.
 func TestExplainSessionStatus_StaleLockLiveChildIsDelegating(t *testing.T) {
-	t.Parallel()
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: pins the LEGACY why-render ("status: delegating (stale
+	// lock)"); under the flag explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 
 	parent, err := s.Create(context.Background(), "root session waiting on sub-agent")
 	require.NoError(t, err)
@@ -134,7 +161,7 @@ func TestExplainSessionStatus_StaleLockLiveChildIsDelegating(t *testing.T) {
 	backDateLock(t, parentLock)
 	addFinishedAssistant(t, m, parent.ID, message.FinishReasonEndTurn)
 
-	claimDelegation(t, store, parent.ID, "delegate-1", child.ID)
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, parent.ID, &buf))
@@ -160,8 +187,9 @@ func TestExplainSessionStatus_StaleLockLiveChildIsDelegating(t *testing.T) {
 // names the child. Pre-fix this printed "status: at rest" / "session is
 // idle".
 func TestExplainSessionStatus_AtRestLiveChildIsDelegating(t *testing.T) {
-	t.Parallel()
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_StaleLockLiveChildIsDelegating.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 
 	parent, err := s.Create(context.Background(), "at-rest session waiting on sub-agent")
 	require.NoError(t, err)
@@ -169,7 +197,7 @@ func TestExplainSessionStatus_AtRestLiveChildIsDelegating(t *testing.T) {
 	require.NoError(t, err)
 
 	addFinishedAssistant(t, m, parent.ID, message.FinishReasonEndTurn)
-	claimDelegation(t, store, parent.ID, "delegate-1", child.ID)
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, parent.ID, &buf))
@@ -193,7 +221,8 @@ func TestExplainSessionStatus_AtRestLiveChildIsDelegating(t *testing.T) {
 // (state='running') row, not by the mere existence of a child session row
 // or a past delegation.
 func TestExplainSessionStatus_ChildReleasedReturnsToDone(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_StaleLockLiveChildIsDelegating.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
 
 	parent, err := s.Create(context.Background(), "root session, sub-agent finished")
@@ -205,7 +234,7 @@ func TestExplainSessionStatus_ChildReleasedReturnsToDone(t *testing.T) {
 	backDateLock(t, parentLock)
 	addFinishedAssistant(t, m, parent.ID, message.FinishReasonEndTurn)
 
-	claimDelegation(t, store, parent.ID, "delegate-1", child.ID)
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 	_, err = store.Transition(context.Background(), session.TransitionParams{
 		Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
 	})
@@ -231,8 +260,9 @@ func TestExplainSessionStatus_ChildReleasedReturnsToDone(t *testing.T) {
 // working, at every level), so the root must be reported non-terminal even
 // though the only NEW work in this turn happened two levels down.
 func TestExplainSessionStatus_GrandchildLiveIsDelegating(t *testing.T) {
-	t.Parallel()
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_StaleLockLiveChildIsDelegating.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 
 	root, err := s.Create(context.Background(), "root of a three-level tree")
 	require.NoError(t, err)
@@ -247,8 +277,8 @@ func TestExplainSessionStatus_GrandchildLiveIsDelegating(t *testing.T) {
 	backDateLock(t, rootLock)
 	addFinishedAssistant(t, m, root.ID, message.FinishReasonEndTurn)
 
-	claimDelegation(t, store, root.ID, "delegate-root-child", child.ID)
-	claimDelegation(t, store, child.ID, "delegate-child-grand", grandchild.ID)
+	claimDelegation(t, a, root.ID, "delegate-root-child", child.ID)
+	claimDelegation(t, a, child.ID, "delegate-child-grand", grandchild.ID)
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, root.ID, &buf))
@@ -269,8 +299,9 @@ func TestExplainSessionStatus_GrandchildLiveIsDelegating(t *testing.T) {
 // about ITS OWN status (via its own real session lock), reports "running":
 // two distinct truthful verdicts for two distinct sessions.
 func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) {
-	t.Parallel()
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_StaleLockLiveChildIsDelegating.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 
 	parent, err := s.Create(context.Background(), "crashed parent with live child")
 	require.NoError(t, err)
@@ -282,7 +313,7 @@ func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) 
 	// Canceled, not end_turn — no clean finish, so this is a genuine crash.
 	addFinishedAssistant(t, m, parent.ID, message.FinishReasonCanceled)
 
-	claimDelegation(t, store, parent.ID, "delegate-1", child.ID)
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 
 	// The child's OWN status still comes from its OWN session lock -- that
 	// mechanism is unrelated to (and unchanged by) the delegation-row
@@ -315,7 +346,9 @@ func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) 
 // whether a reaction debt is pending -- a completed job's result already
 // sitting in delivery='done' with no model turn having reacted to it yet.
 func TestExplainSessionStatus_AsyncJobsAndDebtSection(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the legacy "Async jobs:" section; under the flag
+	// explainSessionStatus routes to explainWhyBatch (no legacy section).
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, _, store, dataDir := newWhyDescendantTestApp(t)
 	ctx := context.Background()
 
@@ -377,7 +410,8 @@ func TestExplainSessionStatus_AsyncJobsAndDebtSection(t *testing.T) {
 // debt line flips to "none" once MarkAsyncJobsReactedForOwner-equivalent
 // state is reached (Reacted=true at transition time).
 func TestExplainSessionStatus_AsyncJobsSection_NoDebtOnceReacted(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: legacy-render debt line; see TestExplainSessionStatus_AsyncJobsAndDebtSection.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, _, store, dataDir := newWhyDescendantTestApp(t)
 	ctx := context.Background()
 

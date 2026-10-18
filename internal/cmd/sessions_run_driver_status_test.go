@@ -52,7 +52,10 @@ func verdictLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
 // Revert-check: dropping the driver consultation from explainSessionStatus
 // makes the first assertion read "status: at rest".
 func TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render ("status: running" + the
+	// reaction-owed reason); under the flag explainSessionStatus routes to
+	// explainWhyBatch, whose batch-fact vocabulary differs.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	sess, err := s.Create(ctx, "driven between turns")
@@ -86,7 +89,9 @@ func TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning(t *testing.T) {
 //
 // Revert-check: as above; the first line reads "status: done (stale lock)".
 func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: legacy-render first lines; see
+	// TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 
@@ -127,7 +132,9 @@ func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
 //
 // Revert-check: treating every marker as live makes the verdict "running".
 func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: the dead-host crash fact has no batch-authority equivalent
+	// (dead hosts stay live until recovery); legacy-render first line.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, _, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	conn, err := db.Connect(ctx, dataDir)
@@ -154,7 +161,9 @@ func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
 //
 // Revert-check: any local re-ranking breaks its row while the others pass.
 func TestListStatus_DriverShapes(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the dead-host crash fact, which the batch authority
+	// deliberately has no equivalent of (dead hosts stay live until recovery).
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, _, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	mk := func(title string) session.Session {
@@ -170,7 +179,7 @@ func TestListStatus_DriverShapes(t *testing.T) {
 	// input). The delegating shape needs a live delegation row.
 	backDateLock(t, writeLockFileAt(t, dataDir, deadPID.ID, 999999))
 	other := mk("other")
-	claimDelegation(t, store, delegating.ID, "agent-1", other.ID)
+	claimDelegation(t, a, delegating.ID, "agent-1", other.ID)
 
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)

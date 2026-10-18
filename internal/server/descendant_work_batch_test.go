@@ -61,21 +61,23 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	require.NoError(t, err)
 	leafA, err := a.Sessions.CreateTaskSession(ctx, "batch-leaf-a", midA.ID, "leaf a")
 	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: rootA.ID, ToolCallID: "d1", Kind: session.JobKindAgent, Input: "a", ChildSessionID: midA.ID})
-	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: midA.ID, ToolCallID: "d2", Kind: session.JobKindAgent, Input: "b", ChildSessionID: leafA.ID})
-	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: leafA.ID, ToolCallID: "p1", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash"})
-	require.NoError(t, err)
-
 	// root-own: its own plain job, nothing below it.
 	rootOwn, err := a.Sessions.Create(ctx, "root own")
 	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: rootOwn.ID, ToolCallID: "p2", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash"})
-	require.NoError(t, err)
+	for _, spec := range []liveWorkSeedSpec{
+		{owner: rootA.ID, toolCallID: "d1", taskKind: "agent", childSessionID: midA.ID, state: "running"},
+		{owner: midA.ID, toolCallID: "d2", taskKind: "agent", childSessionID: leafA.ID, state: "running"},
+		{owner: leafA.ID, toolCallID: "p1", taskKind: "bash", state: "running"},
+		{owner: rootOwn.ID, toolCallID: "p2", taskKind: "bash", state: "running"},
+	} {
+		seedLiveWorkRow(t, a, spec)
+	}
 
 	// root-dead: a delegation and a plain job on a host whose lock nobody
-	// holds -- provably dead, so neither counts as live work.
+	// holds -- provably dead, so neither counts as live work. The batch
+	// authority has no dead-host-running fact: under the flag the equivalent
+	// logical state ("this work is settled, not live") is TERMINAL batch
+	// roots; flag OFF keeps the raw dead-host claims exactly as before.
 	rootDead, err := a.Sessions.Create(ctx, "root dead")
 	require.NoError(t, err)
 	deadChild, err := a.Sessions.CreateTaskSession(ctx, "batch-dead-child", rootDead.ID, "dead child")
@@ -84,18 +86,23 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, deadSeed.Release())
 	q := db.New(a.DB())
-	for _, row := range []db.ClaimAsyncJobParams{
-		{
-			OwnerSessionID: rootDead.ID, ToolCallID: "dd1", Kind: "agent", ToolName: "agent", InputHash: "h1", HostID: "batch-dead-host",
-			ChildSessionID: sql.NullString{String: deadChild.ID, Valid: true}, CreatedAt: 1700000000, UpdatedAt: 1700000000,
-		},
-		{
-			OwnerSessionID: rootDead.ID, ToolCallID: "dp1", Kind: "command", ToolName: "bash", InputHash: "h2", HostID: "batch-dead-host",
-			CreatedAt: 1700000000, UpdatedAt: 1700000000,
-		},
-	} {
-		_, err = q.ClaimAsyncJob(ctx, row)
-		require.NoError(t, err)
+	if !batchRuntimeEnabled() {
+		for _, row := range []db.ClaimAsyncJobParams{
+			{
+				OwnerSessionID: rootDead.ID, ToolCallID: "dd1", Kind: "agent", ToolName: "agent", InputHash: "h1", HostID: "batch-dead-host",
+				ChildSessionID: sql.NullString{String: deadChild.ID, Valid: true}, CreatedAt: 1700000000, UpdatedAt: 1700000000,
+			},
+			{
+				OwnerSessionID: rootDead.ID, ToolCallID: "dp1", Kind: "command", ToolName: "bash", InputHash: "h2", HostID: "batch-dead-host",
+				CreatedAt: 1700000000, UpdatedAt: 1700000000,
+			},
+		} {
+			_, err = q.ClaimAsyncJob(ctx, row)
+			require.NoError(t, err)
+		}
+	} else {
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: rootDead.ID, toolCallID: "dd1", taskKind: "agent", childSessionID: deadChild.ID, state: "completed"})
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: rootDead.ID, toolCallID: "dp1", taskKind: "bash", state: "completed"})
 	}
 
 	// driven: a live `rush run` loop between turns -- no lock, no running
@@ -155,11 +162,26 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	// the cmd side always counted the driver).
 	drivers, _ := a.LiveSessionDrivers(ctx)
 	for _, s := range rows {
-		wantDesc, _ := store.LiveDescendantJobs(ctx, s.ID)
-		wantOwn, _ := store.LiveOwnJobs(ctx, s.ID)
+		var wantDesc, wantOwn int
+		if batchRuntimeEnabled() {
+			act, err := a.SessionActivity(ctx, s.ID)
+			require.NoErrorf(t, err, "single reader of %s", s.ID)
+			f := act.Facts
+			if f.LiveDelegations > 0 {
+				wantDesc = 1
+			}
+			if f.Driver != nil || f.OwnRunningJobs > 0 {
+				wantOwn = 1
+			}
+		} else {
+			wantDescRows, _ := store.LiveDescendantJobs(ctx, s.ID)
+			wantDesc = len(wantDescRows)
+			wantOwnRows, _ := store.LiveOwnJobs(ctx, s.ID)
+			wantOwn = len(wantOwnRows)
+		}
 		_, drivenBy := drivers[s.ID]
-		require.Equalf(t, len(wantDesc) > 0, s.HasLiveDescendantWork, "descendant flag of %s", s.ID)
-		require.Equalf(t, len(wantOwn) > 0 || drivenBy, s.HasLiveOwnWork, "own flag of %s", s.ID)
+		require.Equalf(t, wantDesc > 0, s.HasLiveDescendantWork, "descendant flag of %s", s.ID)
+		require.Equalf(t, wantOwn > 0 || drivenBy, s.HasLiveOwnWork, "own flag of %s", s.ID)
 	}
 
 	// R-ACT step 3: every row's annotation is the single classifier reader's

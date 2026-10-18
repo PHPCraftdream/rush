@@ -229,10 +229,7 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 	require.NoError(t, err)
 	child, err := a.Sessions.CreateTaskSession(ctx, "lw-child", root.ID, "lw child")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: root.ID, ToolCallID: "tc-ag", Kind: session.JobKindAgent, Input: "investigate", ToolName: "agent", ChildSessionID: child.ID})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-ag", taskKind: "agent", childSessionID: child.ID, state: "running"})
 
 	snap := requestSnapshot(t, a, client, root.ID)
 	require.NotNil(t, snap)
@@ -270,13 +267,25 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	require.NoError(t, err)
 
 	dataDir := a.Config().Options.DataDirectory
-	other, err := db.Connect(ctx, dataDir)
-	require.NoError(t, err)
-	foreignStore := session.NewAsyncJobStore(other, dataDir, 0, "lw-test-other-process")
-	t.Cleanup(func() { _ = foreignStore.Close(ctx); _ = db.Release(dataDir) })
+	if batchRuntimeEnabled() {
+		// Under the flag the row must be written by a handle the reading App
+		// never shared: a separate writable connection inserts the batch root.
+		other, err := db.Connect(ctx, dataDir)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.ReleaseConn(other) })
+		_, err = other.ExecContext(ctx, `INSERT INTO batch_nodes
+			(node_id, root_id, owner_session_id, host_id, ordinal, kind, tool_call_id, input_hash, mode, state, created_at, updated_at)
+			VALUES ('lw-tc-remote', 'lw-tc-remote', ?, 'lw-foreign-host', 0, 'batch', 'tc-remote', 'hash-tc-remote', 'parallel', 'running', 1700000000, 1700000001)`, sess.ID)
+		require.NoError(t, err)
+	} else {
+		other, err := db.Connect(ctx, dataDir)
+		require.NoError(t, err)
+		foreignStore := session.NewAsyncJobStore(other, dataDir, 0, "lw-test-other-process")
+		t.Cleanup(func() { _ = foreignStore.Close(ctx); _ = db.Release(dataDir) })
 
-	_, err = foreignStore.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-remote", Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash"})
-	require.NoError(t, err)
+		_, err = foreignStore.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-remote", Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash"})
+		require.NoError(t, err)
+	}
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -301,10 +310,7 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 
 	sess, err := a.Sessions.Create(ctx, "lw coalesce")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-co", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash"})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-co", taskKind: "bash", state: "running"})
 
 	p := startLiveWorkPusher(ctx, a, hub)
 	t.Cleanup(func() { <-p.stopped })
@@ -389,8 +395,6 @@ func TestLiveWorkTitles_IsolatedPerSession(t *testing.T) {
 	hub.register <- client
 	ctx := t.Context()
 
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
 	for i, name := range []string{"lw iso a", "lw iso b"} {
 		sess, err := a.Sessions.Create(ctx, name)
 		require.NoError(t, err)
@@ -399,8 +403,7 @@ func TestLiveWorkTitles_IsolatedPerSession(t *testing.T) {
 			Parts: []message.ContentPart{message.ToolCall{ID: "call_0", Name: "bash", Input: fmt.Sprintf(`{"command":"echo from-%c"}`, 'a'+i)}},
 		})
 		require.NoError(t, err)
-		_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "call_0", Kind: session.JobKindCommand, Input: "echo", ToolName: "bash"})
-		require.NoError(t, err)
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "call_0", taskKind: "bash", state: "running"})
 	}
 
 	snapA := requestSnapshot(t, a, client, mustSessionID(t, a, "lw iso a"))
@@ -429,8 +432,6 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 
 	sess, err := a.Sessions.Create(ctx, "lw reuse")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
 	msg, err := a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
 		Role: message.Assistant,
 		Parts: []message.ContentPart{
@@ -440,8 +441,7 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-reuse", Kind: session.JobKindCommand, Input: "echo first", ToolName: "bash"})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-reuse", taskKind: "bash", state: "running"})
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -449,7 +449,11 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 
 	// Simulate id reuse with different input: the row's input_hash changes,
 	// and the history now carries the new call's text instead of the old.
-	_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
+	if batchRuntimeEnabled() {
+		_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
+	} else {
+		_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
+	}
 	require.NoError(t, err)
 	require.NoError(t, a.Messages.ForceDelete(ctx, msg.ID))
 	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
@@ -497,8 +501,7 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolCall{ID: "tc-cache-1", Name: "bash", Input: `{"command":"echo once"}`}},
 	})
 	require.NoError(t, err)
-	_, err = a.AsyncJobStore().Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-cache-1", Kind: session.JobKindCommand, Input: "echo once", ToolName: "bash"})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-cache-1", taskKind: "bash", state: "running"})
 
 	counting := &countingMessageService{Service: a.Messages}
 	a.Messages = counting
@@ -606,10 +609,7 @@ func TestMaybeBroadcastSessionLiveWork(t *testing.T) {
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "lw push")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-push", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash"})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-push", taskKind: "bash", state: "running"})
 
 	hub := newHub()
 	go hub.Run(ctx)
