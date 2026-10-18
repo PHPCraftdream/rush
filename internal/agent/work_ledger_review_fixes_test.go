@@ -116,11 +116,20 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 	t.Run("cancelSession returns before finish", func(t *testing.T) {
 		store, l, delivered := raceFixture(t)
 
+		// Production executors carry their OWN job pointer from Start
+		// into finish (async_tool.go) -- they never re-look it up by
+		// key. Capture it before cancelSession: cancelSession's
+		// deliverLocked deletes this announced plain job, so a post-hoc
+		// jobOf would return nil and the finish below would be a
+		// vacuous no-op that never reaches finish's currentLocked guard
+		// (the stale-executor case the guard exists for).
+		job := jobOf(l, "owner", "call")
+
 		l.cancelSession("owner")
 		require.Empty(t, drainCompletions(delivered),
 			"cancelSession itself must deliver nothing for a plain job")
 
-		l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
+		l.finish(job, jobResult{content: "ok"})
 		require.Empty(t, drainCompletions(delivered),
 			"nothing may be delivered after cancelSession returned")
 
@@ -176,15 +185,16 @@ func TestWorkLedger_CancelSessionRaceAgainstNaturalFinishNeverWakes(t *testing.T
 			go func() {
 				defer wg.Done()
 				<-start
-				l.finish(jobOf(l, "owner", "call"), jobResult{content: "ok"})
+				l.finish(job, jobResult{content: "ok"})
 			}()
 			go func() {
 				defer wg.Done()
 				<-start
 				// The same call stopTargets makes for a non-sync plain
-				// target; the DB CAS winner may vary, the invariant must
+				// target, using the captured job pointer like production
+				// executors; the DB CAS winner may vary, the invariant must
 				// not.
-				l.transition(jobOf(l, "owner", "call"), causeSessionCancel, jobResult{})
+				l.transition(job, causeSessionCancel, jobResult{})
 			}()
 			close(start)
 			wg.Wait()
