@@ -173,6 +173,7 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 			if a.handle != nil {
 				a.handle.terminate()
 			}
+			r.dropSuperseded(a)
 		}
 	}
 	if e.Type == EventRelease {

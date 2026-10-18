@@ -54,7 +54,7 @@ func TestRuntimeDurableReleasePrunesWithoutRepublish(t *testing.T) {
 	aToken.Store(aA.launch.Token)
 	require.NoError(t, r.Stop(ctx, "A.1"))
 	runtimeTestReceive(t, ctx, stopEntered)
-	runtimeTestFinish(t, ctx, r, aA, StateCompleted)
+	runtimeTestFinish(t, ctx, r, aA, StateCancelled)
 	runtimeTestWait(t, ctx, bA)
 
 	released := make(chan error, 1)
@@ -76,9 +76,7 @@ func TestRuntimeDurableReleasePrunesWithoutRepublish(t *testing.T) {
 	held := runnerCopySnapshot(r.snapshots["A"])
 	r.mu.Unlock()
 	require.Equal(t, 4, knownHeld, "B was not captured while the Release commit was held")
-	// Stop latched the cause, so the settled root reads cancelled; the point
-	// here is only that its terminal snapshot is still retained.
-	if !held.Node.State.Terminal() {
+	if held.Node.State != StateCancelled {
 		t.Fatalf("settled root snapshot missing behind the barrier: %+v", held)
 	}
 	close(release)
@@ -209,34 +207,90 @@ func TestRuntimeDurableSuccessfulDisposeCompactsHandles(t *testing.T) {
 	runtimeTestClose(t, ctx, r)
 }
 
-// Catches durable capacity-rejected attempts surviving Release: the rejected
-// token is retired but never deleted, so every reject-then-succeed cycle
-// leaked one attempt with its Launch payload. Fails without the root-keyed
-// attempt index.
-func TestRuntimeDurableReleasePrunesRejectedAttempts(t *testing.T) {
+// Catches durable capacity-rejected attempts accumulating on one root: each
+// rejection retires the attempt, and before the supersede prune nothing
+// deleted it until Release, so N reject/retry cycles on a long-lived root
+// retained N Launch payloads. Fails without the supersede prune in
+// indexAttempt. Also proves a late completion for the superseded first
+// token still reaches the Runner and is ignored without effect.
+func TestRuntimeDurableSupersededAttemptsBoundedAndLateReportSafe(t *testing.T) {
+	t.Parallel()
+	const n = 8
+	lateCompletions := make(chan struct{}, n)
+	var firstToken atomic.Uint64
+	r, e, _, ctx := runtimeTestCommitHooks(t, func(context.Context, Transition) error { return nil }, &runnerRequestHooks{
+		afterMessage: func(m runnerMessage) {
+			if m.kind == runnerCompletion && firstToken.Load() != 0 && m.token == firstToken.Load() {
+				lateCompletions <- struct{}{}
+			}
+		},
+	})
+	b := runtimeTestSubmit(t, ctx, r, "r", OneItem(TaskSpec{Kind: "test", Group: "g"}))
+	first := runtimeTestReceive(t, ctx, e.starts)
+	firstToken.Store(first.launch.Token)
+	first.decision <- runtimeTestDecision{err: ErrCapacity}
+	runtimeTestRecord(t, ctx, r, RecordStartRejected, "r.1")
+	for i := 1; i < n; i++ {
+		require.NoError(t, r.CapacityAvailable(ctx, "g"))
+		retry := runtimeTestReceive(t, ctx, e.starts)
+		retry.decision <- runtimeTestDecision{err: ErrCapacity}
+		runtimeTestRecord(t, ctx, r, RecordStartRejected, "r.1")
+	}
+	require.NoError(t, r.CapacityAvailable(ctx, "g"))
+	last := runtimeTestReceive(t, ctx, e.starts)
+	last.decision <- runtimeTestDecision{execution: &runtimeTestExecution{}}
+	runtimeTestFinish(t, ctx, r, last, StateCompleted)
+	runtimeTestWait(t, ctx, b)
+	r.mu.Lock()
+	attempts := len(r.attempts)
+	r.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("%d attempts retained after %d superseded rejections on one root", attempts, n)
+	}
+	// The superseded first token was pruned; its late completion reaches the
+	// Runner, finds no attempt, and is ignored.
+	first.report(Result{State: StateCompleted})
+	runtimeTestReceive(t, ctx, lateCompletions)
+	r.mu.Lock()
+	attemptsAfter := len(r.attempts)
+	snapshotR := r.snapshots["r"]
+	r.mu.Unlock()
+	if attemptsAfter != 1 {
+		t.Fatalf("late completion changed the attempt count to %d", attemptsAfter)
+	}
+	if snapshotR.Counts.Completed != 1 || snapshotR.Counts.Failed != 0 {
+		t.Fatalf("late completion altered the settled snapshot: %+v", snapshotR)
+	}
+	require.NoError(t, r.Release(ctx, "r"))
+	r.mu.Lock()
+	afterRelease := len(r.attempts)
+	r.mu.Unlock()
+	if afterRelease != 0 {
+		t.Fatalf("%d attempts survived the release", afterRelease)
+	}
+	runtimeTestClose(t, ctx, r)
+}
+
+// Catches durable Release leaving a root's retained accepted attempt behind:
+// after the supersede prune only the accepted, settled attempt is still
+// retained, and the root-keyed prune must remove it at Release.
+func TestRuntimeDurableReleasePrunesRetainedAttempts(t *testing.T) {
 	t.Parallel()
 	const n = 8
 	r, e, _, ctx := runtimeTestCommitHooks(t, func(context.Context, Transition) error { return nil }, nil)
 	for i := 0; i < n; i++ {
 		root := ID(fmt.Sprintf("r%d", i))
-		b := runtimeTestSubmit(t, ctx, r, root, OneItem(TaskSpec{Kind: "test", Group: "g"}))
-		rejected := runtimeTestReceive(t, ctx, e.starts)
-		rejected.decision <- runtimeTestDecision{err: ErrCapacity}
-		runtimeTestRecord(t, ctx, r, RecordStartRejected, root+".1")
-		require.NoError(t, r.CapacityAvailable(ctx, "g"))
+		b := runtimeTestSubmit(t, ctx, r, root, OneItem(TaskSpec{Kind: "test"}))
 		a := runtimeTestAccept(t, ctx, r, e, &runtimeTestExecution{})
-		if a.launch.ID != root+".1" {
-			t.Fatalf("retry launch %q", a.launch.ID)
-		}
 		runtimeTestFinish(t, ctx, r, a, StateCompleted)
 		runtimeTestWait(t, ctx, b)
 		require.NoError(t, r.Release(ctx, root))
 	}
 	r.mu.Lock()
-	attempts := len(r.attempts)
+	afterRelease := len(r.attempts)
 	r.mu.Unlock()
-	if attempts != 0 {
-		t.Fatalf("%d attempts survived their releases", attempts)
+	if afterRelease != 0 {
+		t.Fatalf("%d attempts survived their releases", afterRelease)
 	}
 	runtimeTestClose(t, ctx, r)
 }

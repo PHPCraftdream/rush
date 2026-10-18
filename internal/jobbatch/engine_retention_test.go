@@ -25,9 +25,9 @@ func TestCoreSequentialRootsKeepLiveWalkSetEmpty(t *testing.T) {
 
 // Separate visit-count guard: with terminal roots retained in the live walk
 // set, the settlement, notice and settled-view walks grow linearly with the
-// settled-root count - roughly 11*i visits at root i (three forest walks of
-// length i per Apply plus the admission scan), about 11*n*(n+1)/2 total,
-// ~23k for n=64, while correct retirement costs about 11 per root (~700).
+// settled-root count - roughly 10*i+1 visits at root i (three forest walks
+// of length i per Apply plus the admission scan), about 5*n*n in total,
+// ~20k for n=64, while correct retirement costs about 11 per root (~700).
 // The 20*n bound therefore fails through growth; the non-zero assertion
 // fails first for a broken instrumentation.
 func TestCoreWalkVisitsBoundedAcrossRoots(t *testing.T) {
@@ -50,6 +50,21 @@ func TestCoreWalkVisitsBoundedAcrossRoots(t *testing.T) {
 	if total > 20*n {
 		t.Fatalf("walk visits %d across %d sequential roots: %v", total, n, visits)
 	}
+}
+
+// finishAdmitted finishes the leaf named by a Start command returned by a
+// previous Apply. The node id and token come from that command, so a wrong
+// admission order surfaces as a failed lookup instead of being papered over
+// by state-derived tokens.
+func finishAdmitted(t *testing.T, e *Engine, cmd Command, state State) Transition {
+	t.Helper()
+	if cmd.Type != CommandStartLeaf {
+		t.Fatalf("not a start command: %+v", cmd)
+	}
+	if n := e.nodes[cmd.Node]; n == nil || !n.accepted {
+		coreTestApply(t, e, Event{Type: EventStarted, Node: cmd.Node, Token: cmd.Token})
+	}
+	return coreTestApply(t, e, Event{Type: EventSettled, Node: cmd.Node, Token: cmd.Token, Result: Result{State: state}})
 }
 
 // Preservation guard, not a regression test: it also passes on the
@@ -92,26 +107,41 @@ func TestCoreRetainedRootAnswersArePreserved(t *testing.T) {
 
 // Catches a retirement that drops the cursor translation: after the first
 // root retires, the next admission must start at the surviving root the
-// unretired engine would have picked. Fails on untranslated-cursor
-// retirement, which restarts the scan at the shifted slice head.
+// unretired engine would have picked. Every finished leaf below is derived
+// from the previous Apply's Start command. Original admission (HEAD
+// admission.go): submit A admits A.1 (index 0, cursor 1); finishing A.1
+// admits B.1 (scan 1%3=1, cursor 2) and retires A (index 0 < 2); the
+// original engine scans index 2 next and admits C.1, while an untranslated
+// cursor restarts at the shifted head and admits B.2.
 func TestCoreRoundRobinOrderSurvivesRetirement(t *testing.T) {
 	e := coreTestEngine(t, 1)
-	coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitA := coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask(""), coreTestTask("")))
 	coreTestSubmit(t, e, "C", coreTestBatch(ModeParallel, 0, coreTestTask(""), coreTestTask("")))
-	if got := coreTestFinish(t, e, "A.1", StateCompleted).Commands[0].Node; got != "B.1" {
-		t.Fatalf("first admission %q, want B.1", got)
+	if len(submitA.Commands) != 1 || submitA.Commands[0].Node != "A.1" {
+		t.Fatalf("submit A commands %v", submitA.Commands)
 	}
-	if got := coreTestFinish(t, e, "B.1", StateCompleted).Commands[0].Node; got != "C.1" {
-		t.Fatalf("admission after retirement %q, want C.1", got)
+	tr := finishAdmitted(t, e, submitA.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.1" {
+		t.Fatalf("first admission %v, want B.1", tr.Commands)
 	}
-	if got := coreTestFinish(t, e, "C.1", StateCompleted).Commands[0].Node; got != "B.2" {
-		t.Fatalf("wrap-around admission %q, want B.2", got)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.1" {
+		t.Fatalf("admission after retirement %v, want C.1", tr.Commands)
 	}
-	if got := coreTestFinish(t, e, "B.2", StateCompleted).Commands[0].Node; got != "C.2" {
-		t.Fatalf("tail admission %q, want C.2", got)
+	// The original cursor is now 3: finishing C.1 scans 3%3=0, skips the
+	// terminal A root and the running B.1, and admits B.2.
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.2" {
+		t.Fatalf("wrap-around admission %v, want B.2", tr.Commands)
 	}
-	coreTestFinish(t, e, "C.2", StateCompleted)
+	// The original cursor after B.2 is 2: finishing B.2 settles B and scans
+	// 2%3=2, admitting C.2.
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.2" {
+		t.Fatalf("tail admission %v, want C.2", tr.Commands)
+	}
+	finishAdmitted(t, e, tr.Commands[0], StateCompleted)
 	if len(e.live) != 0 {
 		t.Fatalf("live scheduling slice not empty at the end: %d", len(e.live))
 	}
@@ -123,69 +153,101 @@ func TestCoreRoundRobinOrderSurvivesRetirement(t *testing.T) {
 // Cursor-translation edges. Derivations cite the ORIGINAL admission order
 // (HEAD admission.go: scan starts at cursor over the full unshrunk root
 // list; cursor = index+1 after each admission). Every finished leaf below
-// was admitted by an earlier command, so every Started/Settled event
-// carries a real token.
+// is derived from the previous Apply's Start command, so every
+// Started/Settled event carries a real node id and token.
 func TestCoreRetirementCursorEdges(t *testing.T) {
 	// Edge 1, retired before the cursor: A(1 task), B(2), C(2), cap 1.
-	// Submit A admits A.1 (index 0, cursor 1). Finishing A.1 admits B.1
-	// (scan 1%3=1, cursor 2) and retires A (index 0 < 2); the original
-	// engine scans index 2 next, so finishing B.1 must admit C.1.
+	// Original: submit A admits A.1 (index 0, cursor 1); finishing A.1
+	// admits B.1 (scan 1%3=1, cursor 2) and retires A (index 0 < 2). The
+	// original engine scans index 2 next, so finishing B.1 must admit C.1;
+	// an untranslated cursor restarts at the shifted head (2%2=0) and
+	// admits B.2 instead.
 	e := coreTestEngine(t, 1)
-	coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitA := coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask(""), coreTestTask("")))
 	coreTestSubmit(t, e, "C", coreTestBatch(ModeParallel, 0, coreTestTask(""), coreTestTask("")))
-	if got := coreTestFinish(t, e, "A.1", StateCompleted).Commands[0].Node; got != "B.1" {
-		t.Fatalf("edge 1 first admission %q, want B.1", got)
+	tr := finishAdmitted(t, e, submitA.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.1" {
+		t.Fatalf("edge 1 first admission %v, want B.1", tr.Commands)
 	}
-	if got := coreTestFinish(t, e, "B.1", StateCompleted).Commands[0].Node; got != "C.1" {
-		t.Fatalf("edge 1 admission after retirement %q, want C.1", got)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.1" {
+		t.Fatalf("edge 1 admission after retirement %v, want C.1", tr.Commands)
 	}
 	// The original cursor is now 3: finishing C.1 scans 3%3=0, skips the
 	// terminal A root and the running B.1, and admits B.2.
-	if got := coreTestFinish(t, e, "C.1", StateCompleted).Commands[0].Node; got != "B.2" {
-		t.Fatalf("edge 1 wrap-around admission %q, want B.2", got)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.2" {
+		t.Fatalf("edge 1 wrap-around admission %v, want B.2", tr.Commands)
 	}
 	// The original cursor after B.2 is 2: finishing B.2 settles B and scans
 	// 2%3=2, admitting C.2.
-	if got := coreTestFinish(t, e, "B.2", StateCompleted).Commands[0].Node; got != "C.2" {
-		t.Fatalf("edge 1 tail admission %q, want C.2", got)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.2" {
+		t.Fatalf("edge 1 tail admission %v, want C.2", tr.Commands)
 	}
-	coreTestFinish(t, e, "C.2", StateCompleted)
+	finishAdmitted(t, e, tr.Commands[0], StateCompleted)
 	if len(e.live) != 0 || len(e.roots) != 3 {
 		t.Fatalf("edge 1 live %d roots %d at the end", len(e.live), len(e.roots))
 	}
 
-	// Edge 2, retired at the cursor: A(1), B(1), cap 1. Finishing A.1 admits
-	// B.1 (scan 1%2=1) and retires A; the original engine scans 2%2=0, skips
-	// terminal A and finds nothing new. The translated live [B] cursor 1
-	// behaves the same. Pins the translation; passes unmodified too.
-	e = coreTestEngine(t, 1)
-	coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
-	coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask("")))
-	if got := coreTestFinish(t, e, "A.1", StateCompleted).Commands[0].Node; got != "B.1" {
-		t.Fatalf("edge 2 admission %q, want B.1", got)
+	// Edge 2, retired immediately before the cursor with two further live
+	// roots holding pending tasks: A(g), B(1 plain task), C(g), D(g), cap 2,
+	// ByGroup g:1. Original: submit A admits A.1 (index 0, cursor 1), submit
+	// B admits B.1 (index 1, cursor 2); C and D stay pending because group g
+	// is full. Stopping and settling the running B.1 settles B; no admission
+	// fires (C and D are group-blocked), the cursor stays 2, and retiring B
+	// - the entry immediately before that cursor - leaves live [A,C,D]
+	// translated to cursor 1. Finishing A.1 frees group g; the original
+	// engine scans index 2 and admits C.1, and the translated cursor
+	// 1%3=1 admits C.1 as well. An untranslated cursor 2 (2%3=2) or an
+	// off-by-one kept+1 would admit D.1 and fail.
+	e, err := NewEngine(Limits{MaxConcurrent: 2, ByGroup: map[string]int{"g": 1}, MaxDepth: 8, MaxNodes: 100})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if tr := coreTestFinish(t, e, "B.1", StateCompleted); len(tr.Commands) != 0 {
-		t.Fatalf("edge 2 unexpected admission %v", tr.Commands)
+	gTask := func() Spec {
+		return coreTestBatch(ModeParallel, 0, Spec{Task: &TaskSpec{Kind: "controlled", Group: "g"}})
 	}
-	if len(e.live) != 0 || len(e.roots) != 2 {
-		t.Fatalf("edge 2 live %d roots %d", len(e.live), len(e.roots))
+	submitA = coreTestSubmit(t, e, "A", gTask())
+	submitB := coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	coreTestSubmit(t, e, "C", gTask())
+	coreTestSubmit(t, e, "D", gTask())
+	if len(submitA.Commands) != 1 || len(submitB.Commands) != 1 {
+		t.Fatalf("edge 2 submit commands %v / %v", submitA.Commands, submitB.Commands)
+	}
+	coreTestApply(t, e, Event{Type: EventStopRequested, Node: submitB.Commands[0].Node})
+	stopB := submitB.Commands[0]
+	coreTestApply(t, e, Event{Type: EventControlReported, Node: stopB.Node, Token: stopB.Token, Op: ControlOpStop})
+	finishAdmitted(t, e, stopB, StateCancelled)
+	if len(e.live) != 3 || len(e.roots) != 4 {
+		t.Fatalf("edge 2 live %d roots %d after B retired", len(e.live), len(e.roots))
+	}
+	tr = finishAdmitted(t, e, submitA.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.1" {
+		t.Fatalf("edge 2 admission %v, want C.1 (an untranslated or off-by-one cursor would pick D.1)", tr.Commands)
+	}
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(e.live) != 0 || len(e.roots) != 4 {
+		t.Fatalf("edge 2 live %d roots %d at the end", len(e.live), len(e.roots))
 	}
 
-	// Edge 3, retired after the cursor: A..D one task each, cap 1. Finishing
-	// A.1 admits B.1 (scan 1%4=1) and retires A, leaving live [B,C,D] with
+	// Edge 3, retired after the cursor: A..D one task each, cap 1. Original:
+	// submit A admits A.1 (index 0, cursor 1); finishing A.1 admits B.1
+	// (scan 1%4=1) and retires A, leaving the translated live [B,C,D] at
 	// cursor 1. Stopping the still-pending D settles it at index 2 - behind
-	// the cursor - and that removal must not shift the scan. The original
-	// engine, scanning from cursor 2 over [A,B,C,D], admits C.1 when B.1
-	// finishes; the translated live [B,C] cursor 1 scans 1%2=1 and admits
-	// C.1 as well.
+	// the cursor - and that removal must not shift the scan: the original
+	// engine scans from cursor 2 and admits C.1 when B.1 finishes; the
+	// translated live [B,C] cursor 1 scans 1%2=1 and admits C.1 too.
 	e = coreTestEngine(t, 1)
-	coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitA = coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "C", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "D", coreTestBatch(ModeParallel, 0, coreTestTask("")))
-	if got := coreTestFinish(t, e, "A.1", StateCompleted).Commands[0].Node; got != "B.1" {
-		t.Fatalf("edge 3 first admission %q, want B.1", got)
+	tr = finishAdmitted(t, e, submitA.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.1" {
+		t.Fatalf("edge 3 first admission %v, want B.1", tr.Commands)
 	}
 	coreTestApply(t, e, Event{Type: EventStopRequested, Node: "D"})
 	if len(e.live) != 2 || len(e.roots) != 4 {
@@ -194,10 +256,11 @@ func TestCoreRetirementCursorEdges(t *testing.T) {
 	if v, ok := e.View("D.1"); !ok || !v.State.Terminal() || v.Attempts != 0 {
 		t.Fatalf("edge 3 stopped leaf %+v %v", v, ok)
 	}
-	if got := coreTestFinish(t, e, "B.1", StateCompleted).Commands[0].Node; got != "C.1" {
-		t.Fatalf("edge 3 admission after D retired %q, want C.1", got)
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "C.1" {
+		t.Fatalf("edge 3 admission after D retired %v, want C.1", tr.Commands)
 	}
-	coreTestFinish(t, e, "C.1", StateCompleted)
+	finishAdmitted(t, e, tr.Commands[0], StateCompleted)
 	if len(e.live) != 0 || len(e.roots) != 4 {
 		t.Fatalf("edge 3 live %d roots %d at the end", len(e.live), len(e.roots))
 	}
@@ -205,14 +268,15 @@ func TestCoreRetirementCursorEdges(t *testing.T) {
 	// Edge 4, several roots retiring in one event: with cap 1 only A.1 is
 	// admitted (cursor 1); B and C are all-pending. HostClosing settles and
 	// retires both B and C in a single Apply while A stays live cancelling.
-	// The original engine's next scan from cursor 1 skips terminal B and C
-	// and wraps to A; the translated live [A] cursor 1%1=0 is the same.
-	// Reachable through the public Apply API, so the edge is kept.
+	// Cursor equivalence is unobservable here - admission is disabled while
+	// closing - so this scenario pins the retirement itself: both pending
+	// roots leave the live set in one Apply, e.roots keeps all three roots,
+	// and finishing A.1 still reaches Final.
 	e = coreTestEngine(t, 1)
-	coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitA = coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask("")))
 	coreTestSubmit(t, e, "C", coreTestBatch(ModeParallel, 0, coreTestTask("")))
-	tr := coreTestApply(t, e, Event{Type: EventHostClosing})
+	tr = coreTestApply(t, e, Event{Type: EventHostClosing})
 	if len(tr.Commands) != 1 || tr.Commands[0].Type != CommandStopLeaf || tr.Commands[0].Node != "A.1" {
 		t.Fatalf("edge 4 closing commands %v", tr.Commands)
 	}
@@ -222,7 +286,7 @@ func TestCoreRetirementCursorEdges(t *testing.T) {
 	if _, ok := e.View("B"); !ok || !e.nodes["B"].view.State.Terminal() {
 		t.Fatal("edge 4 retired root B lost or not terminal")
 	}
-	tr = coreTestFinish(t, e, "A.1", StateCompleted)
+	tr = finishAdmitted(t, e, submitA.Commands[0], StateCompleted)
 	if !tr.Final || !e.final {
 		t.Fatalf("edge 4 final not reached: %+v", tr)
 	}

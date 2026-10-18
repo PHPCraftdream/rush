@@ -29,7 +29,10 @@ type runnerAttempt struct {
 }
 
 // indexAttempt records an attempt under its root so a durable Release can
-// prune every attempt of the root, including rejected ones. Loop-only.
+// prune every attempt of the root, including rejected ones. A superseded
+// rejected attempt for the same node is dropped immediately, mirroring the
+// non-durable rejection path: a late message for the dropped token finds no
+// attempt and is ignored. Loop-only.
 func (r *Runner) indexAttempt(a *runnerAttempt) {
 	if a.root == "" {
 		return
@@ -38,6 +41,19 @@ func (r *Runner) indexAttempt(a *runnerAttempt) {
 		r.attemptsByRoot = make(map[ID]map[uint64]bool)
 	}
 	tokens := r.attemptsByRoot[a.root]
+	for token := range tokens {
+		old := r.attempts[token]
+		if old == nil {
+			// Already dropped by the non-durable rejection path, which
+			// deletes the attempt but not its index entry.
+			delete(tokens, token)
+			continue
+		}
+		if old != a && old.launch.ID == a.launch.ID && old.retired {
+			delete(r.attempts, token)
+			delete(tokens, token)
+		}
+	}
 	if tokens == nil {
 		tokens = make(map[uint64]bool)
 		r.attemptsByRoot[a.root] = tokens
@@ -303,5 +319,20 @@ func (r *Runner) acceptCompletion(a *runnerAttempt) {
 		// The report is a physical termination fact even when its Engine
 		// transition cannot be accepted across the concurrent fault boundary.
 		a.handle.terminate()
+	}
+}
+
+// dropSuperseded removes a just-retired attempt when a newer attempt of the
+// same node was already indexed in the same transition (the durable apply
+// creates the re-authorised attempt before it retires the rejected one, so
+// indexAttempt cannot see the retirement). Loop-only.
+func (r *Runner) dropSuperseded(a *runnerAttempt) {
+	tokens := r.attemptsByRoot[a.root]
+	for token := range tokens {
+		if n := r.attempts[token]; n != nil && n != a && n.launch.ID == a.launch.ID && n.launch.Token > a.launch.Token {
+			delete(r.attempts, a.launch.Token)
+			delete(tokens, a.launch.Token)
+			return
+		}
 	}
 }
