@@ -34,6 +34,14 @@ func TestGuardTurnDiskFence_RefusesOptionslessTurnOnFencedSession(t *testing.T) 
 	require.NoError(t, err)
 	bindingB, err := caps.RegisterProvider(newFakeDiskProvider(nil))
 	require.NoError(t, err)
+	// The live SDK runs that own both bindings: a binding with an empty
+	// owner set is pruned by the first release, so each guard call below
+	// must find its binding retained by a Call owner, as in production.
+	for _, id := range []string{bindingA, bindingB} {
+		key := diskOwnerKey{kind: diskOwnerCall, instance: "sdk-run-" + id, bindingID: id}
+		require.NoError(t, caps.acquire(key))
+		t.Cleanup(func() { caps.release(key) })
+	}
 	store := &fakeFenceStore{}
 	require.NoError(t, store.StoreSessionExecutionRequirement(ctx, "s1",
 		session.SessionExecutionRequirement{BindingID: bindingA}))
