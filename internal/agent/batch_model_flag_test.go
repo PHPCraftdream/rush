@@ -17,7 +17,7 @@ func TestFinishToolAssemblyFlagOffDoesNotInstallBatchTools(t *testing.T) {
 	c := &coordinator{asyncJobs: newWorkLedger(nil)}
 	c.asyncJobs.inlineWindow = inlineWindow
 	filtered := batchTestTools("bash", "view", "job_output")
-	off, err := c.finishToolAssembly(context.Background(), filtered, nil, false)
+	off, err := c.finishToolAssembly(context.Background(), filtered, nil, false, nil)
 	require.NoError(t, err)
 	// wrapAsyncTools replaces entries in its input slice. Build a fresh
 	// baseline so it does not wrap the actual path's already-wrapped entries
@@ -51,23 +51,32 @@ func flagOffToolGolden(t *testing.T, ts []fantasy.AgentTool) []string {
 	return lines
 }
 
+// allowedBatchReadControls mirrors the flag-on allToolNames grants the
+// default coder toolset carries.
+var allowedBatchReadControls = []string{"batch_status", "batch_output", "batch_stop"}
+
 func TestBatchControlsOnlyAppearWhenAllowedInPinnedToolset(t *testing.T) {
-	filtered := batchTestTools("view", "job_output", "job_kill")
-	allowed := batchControlAvailability(append(filtered, batchTestTools("bash")...))
-	require.Contains(t, allowed, "batch_run")
-	require.Contains(t, allowed, "batch_add")
-	require.Contains(t, allowed, "batch_status")
-	require.Contains(t, allowed, "batch_output")
-	require.Contains(t, allowed, "batch_stop")
-	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("bash")))
-	require.Equal(t, []string{"batch_status", "batch_output"}, batchControlAvailability(batchTestTools("job_output")))
-	require.Equal(t, []string{"batch_stop"}, batchControlAvailability(batchTestTools("job_kill")))
+	full := append(batchTestTools("view", "job_output", "job_kill"), batchTestTools("bash")...)
+	require.Equal(t,
+		[]string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"},
+		batchControlAvailability(full, allowedBatchReadControls))
+	require.Equal(t, []string{"batch_run", "batch_add"},
+		batchControlAvailability(batchTestTools("bash"), allowedBatchReadControls))
+	// R12-H1 old-name independence: the legacy control tools NEVER grant
+	// native controls. A revert to the pre-H1 job_output/job_kill presence
+	// lookups fails right here.
+	require.Empty(t, batchControlAvailability(batchTestTools("job_output", "job_kill"), nil))
+	require.Equal(t, []string{"batch_status", "batch_output"},
+		batchControlAvailability(batchTestTools("view"), []string{"batch_status", "batch_output"}))
+	require.Equal(t, []string{"batch_stop"},
+		batchControlAvailability(batchTestTools("view"), []string{"batch_stop"}))
 	// D1/D10 allow explicit batches of work the pinned role can already run;
-	// batch controls do not widen the view-only leaf registry.
-	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("view")))
-	require.Equal(t, []string{"await_tasks"}, batchControlAvailability(batchTestTools("await_tasks")), "await alone is visible but cannot launch work")
-	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks")), "batch_run")
-	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks")), "batch_add")
+	// without a by-name grant the view-only leaf registry is not widened.
+	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("view"), nil))
+	require.Equal(t, []string{"await_tasks"},
+		batchControlAvailability(batchTestTools("await_tasks"), nil), "await alone is visible but cannot launch work")
+	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks"), nil), "batch_run")
+	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks"), nil), "batch_add")
 }
 
 type modelControlInventory struct {
@@ -92,7 +101,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	coordinatorBatchBindings.Store(c, bind)
 	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
 	tools := batchTestTools("bash", "job_output", "job_kill")
-	for _, name := range batchControlAvailability(tools) {
+	for _, name := range batchControlAvailability(tools, allowedBatchReadControls) {
 		if name != "await_tasks" {
 			tools = append(tools, newBatchControlPlaceholder(name))
 		}
@@ -107,7 +116,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	require.NotNil(t, scope, "the trusted call state carries its own build scope")
 	defer scope.close()
 	ctx := WithCallOptions(batchCallCtx("flagged-assembly"), callOpts)
-	built, err := c.finishToolAssembly(ctx, tools, nil, false)
+	built, err := c.finishToolAssembly(ctx, tools, nil, false, allowedBatchReadControls)
 	require.NoError(t, err)
 	var names []string
 	for _, tool := range built.tools {

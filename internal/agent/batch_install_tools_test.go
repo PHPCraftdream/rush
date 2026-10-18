@@ -210,7 +210,7 @@ func TestUnboundCoordinatorKeepsLegacyAssembly(t *testing.T) {
 	c.asyncJobs.inlineWindow = inlineWindow
 	list := batchTestTools("bash", "run_command", "view", "ask_question")
 
-	built, err := c.finishToolAssembly(context.Background(), list, nil, false)
+	built, err := c.finishToolAssembly(context.Background(), list, nil, false, nil)
 	if err != nil {
 		t.Fatalf("finishToolAssembly: %v", err)
 	}
