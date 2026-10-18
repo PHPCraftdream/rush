@@ -2,22 +2,8 @@
 
 ## Provenance
 
-<!-- NOTE (prose only, tables below are historical data): the generator was
-reworked on 2026-10-19. Regeneration now emits a bounded summary (this
-filename) plus per-category detail files under
-`docs/research/2026-10-14-r12-old-path-manifest-detail/`, classifies per HIT
-(path pattern, then line-content rules), flags `unknown` hits as an
-ERROR-level count, and excludes generated output paths/files carrying the
-generator marker before collecting matches. Regeneration requires a Python
-run: `python tools/r12a_old_path_manifest.py` from the repo root. The tables
-in this file are from the pre-rework single-file layout and are LEFT AS-IS;
-regenerating the manifest is a follow-up requiring a Python run. -->
-
 - Generator script: `tools/r12a_old_path_manifest.py` (stdlib only, deterministic, no network, not run in CI).
 - Generated date (fixed literal): 2026-10-14.
-- (Historical layout note: the tables below were produced by the old
-  single-file generator; the current generator emits the split layout
-  described above.)
 - Exact command equivalent (run once per top-level dir and concatenated, NO cap):
   ```sh
   git grep -n -I -E 'async_jobs|AsyncJob|asyncJob|work_ledger|workLedger|WorkLedger|awaitSync|job_kill|job_output|stallDetach|stallDetacher|stall-|RUSH_BATCH_RUNTIME' -- internal sdk web docs .github .githooks

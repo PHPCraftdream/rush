@@ -17,9 +17,13 @@ Outputs (all paths relative to the repo root):
       Caveat: a single file whose hits alone exceed MAX_DETAIL_LINES gets
       its own oversize part.
 
-Classification is per HIT (path pattern first, then line-content rules).
-`unknown` is an error-level count: the generator prints it and embeds an
-ERROR line in the summary rather than silently bucketing hits.
+Classification is per HIT: all matching PATH_RULES first, then the first
+CONTENT_RULES entry whose PATH and line-content constraints BOTH match.
+Content rules never fire for files already classified by path, and every
+content rule is constrained to the path family where its identifier is
+meaningful. A hit matching neither becomes an error-level `unknown`: the
+generator prints it and embeds an ERROR line in the summary rather than
+silently bucketing hits.
 
 Self-consumption guard: generated output paths (the summary file and the
 whole detail directory) AND any file whose content contains one of
@@ -85,6 +89,10 @@ PATH_RULES = [
     (r"^internal/db/async_jobs\.sql\.go$", "sql_sqlc"),
     (r"(^|/)models\.go$", "sql_sqlc"),
     (r"(^|/)querier\.go$", "sql_sqlc"),
+    # generated sqlc host files (db.go and friends) classify by PATH before
+    # any content rule can see identifiers like `asyncJobDebtOwnersStmt`
+    (r"^internal/db/db.go$", "sql_sqlc"),
+    (r"^internal/db/[^/]*.sql.go$", "sql_sqlc"),
     # session_old_store: delete
     (r"^internal/session/async_job_[^/]*\.go$", "session_old_store"),
     # retained_infrastructure: retain
@@ -146,19 +154,23 @@ PATH_RULES = [
     (r"^internal/db/migrate_live_hosts", "filelock_probe"),
 ]
 
-# Line-content rules: applied to a single hit line ONLY when no path rule
-# matched that hit's file. First matching rule wins. These give dispositions
-# to "mixed executable" files (generated sqlc output, generic test files,
-# prose docs) that whole-filename classification left in `unknown`.
+# Line-content rules: (path_regex, content_regex, category). Applied to a
+# hit ONLY when no path rule matched that hit's file, and ONLY when the
+# hit's path matches the rule's path constraint AND the line matches the
+# content regex. First matching rule wins. The path constraint ensures we
+# never infer a subsystem from identifier casing in a family where the
+# identifier is not meaningful; a hit matching neither a path rule nor a
+# constrained content rule becomes `unknown` (error-level), which is
+# better than a wrong disposition.
 CONTENT_RULES = [
-    (r"async_jobs", "sql_sqlc"),
-    (r"(job_kill|job_output)", "old_model_tools"),
-    (r"(work_ledger|workLedger|WorkLedger)", "ledger_terminal_authority"),
-    (r"(stallDetach|stallDetacher|stall-)", "stall_jobs"),
-    (r"RUSH_BATCH_RUNTIME", "switch"),
-    (r"awaitSync", "ledger_consumers"),
-    (r"asyncJob", "web_completions"),
-    (r"AsyncJob", "session_old_store"),
+    (r"^internal/db/", r"async_jobs", "sql_sqlc"),
+    (r"^internal/agent/", r"(job_kill|job_output)", "old_model_tools"),
+    (r"^internal/agent/", r"(work_ledger|workLedger|WorkLedger)", "ledger_terminal_authority"),
+    (r"^internal/agent/", r"(stallDetach|stallDetacher|stall-)", "stall_jobs"),
+    (r"^(internal|cmd|sdk)/", r"RUSH_BATCH_RUNTIME", "switch"),
+    (r"^internal/agent/", r"awaitSync", "ledger_consumers"),
+    (r"^web/", r"asyncJob", "web_completions"),
+    (r"^internal/session/", r"AsyncJob", "session_old_store"),
 ]
 
 CATEGORY_DISPOSITION = {
@@ -212,9 +224,10 @@ def classify_hit(path, text):
         if re.search(rx, path):
             cats.append(cat)
     if cats:
-        return cats
-    for rx, cat in CONTENT_RULES:
-        if re.search(rx, text):
+        # overlapping path rules may name one category twice: count each once
+        return list(dict.fromkeys(cats))
+    for path_rx, text_rx, cat in CONTENT_RULES:
+        if re.search(path_rx, path) and re.search(text_rx, text):
             return [cat]
     return ["unknown"]
 
@@ -277,6 +290,9 @@ def main():
     cat_hits = collections.defaultdict(int)  # category -> hit count
     cat_files = collections.defaultdict(set)  # category -> paths
     unknown_hit_paths = collections.defaultdict(int)  # path -> unknown hits
+    # per-(category, path) hit store: each category's detail file carries
+    # ONLY its own category's hits for a member file
+    cat_path_hits = collections.defaultdict(lambda: collections.defaultdict(list))
     for path in sorted(hits):
         cats = set()
         for lineno, text in hits[path]:
@@ -284,6 +300,7 @@ def main():
                 cats.add(cat)
                 cat_hits[cat] += 1
                 cat_files[cat].add(path)
+                cat_path_hits[cat][path].append((lineno, text))
                 if cat == "unknown":
                     unknown_hit_paths[path] += 1
         file_cats[path] = sorted(cats)
@@ -387,16 +404,17 @@ def main():
             placed = 0  # files already in this part; a part always takes at least one
             while idx < len(cat_files[cat]):
                 p = sorted(cat_files[cat])[idx]
-                if placed and count + 5 + len(hits[p]) > MAX_DETAIL_LINES:
+                cat_p_hits = cat_path_hits[cat][p]
+                if placed and count + 5 + len(cat_p_hits) > MAX_DETAIL_LINES:
                     break
-                out_lines.append(f"### `{p}` ({len(hits[p])} hits)")
+                out_lines.append(f"### `{p}` ({len(cat_p_hits)} hits)")
                 out_lines.append("")
                 out_lines.append("```")
-                for lineno, text in hits[p]:
+                for lineno, text in cat_p_hits:
                     out_lines.append(f"{lineno}:{text}")
                 out_lines.append("```")
                 out_lines.append("")
-                count += 2 + len(hits[p]) + 3
+                count += 2 + len(cat_p_hits) + 3
                 placed += 1
                 idx += 1
             with open(out_path, "w", encoding="utf-8", newline="\n") as f:
