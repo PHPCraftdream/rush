@@ -33,15 +33,6 @@ const interruptedBashText = "вывод не сохранялся; процес�
 // child session has no finished assistant message to quote.
 const interruptedNoChildTextText = "the sub-agent session finished with no textual response"
 
-// AsyncDataRetentionAge bounds how long a terminal, delivered-or-voided
-// async_jobs/session_notices row (and an empty dead host's lock file)
-// survives before the purge reaps it (doc sec.3.7): the 60s pass of the web
-// process and of a `rush run` loop (ClaimExternalDriver starts the ticker; the
-// loop also runs it once at start). Fixed, not a config option -- the doc's
-// own tests only require "old rows are purged, recent ones are kept", not a
-// tunable knob.
-const AsyncDataRetentionAge = 7 * 24 * time.Hour
-
 // recoverDeadHostRowSeam is a test-only hook fired before RecoverDeadHost handles
 // each listed row, so a test can hold N recoverers inside the list-then-write
 // gap. nil in production.
