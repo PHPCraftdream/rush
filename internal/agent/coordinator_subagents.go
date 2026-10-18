@@ -191,6 +191,17 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			hbSource = hbSourceSessionOverride
 		}
 	}
+	// D3 (plan §2.3): the slot-built model is refreshed at DISPATCH time — a
+	// dispatch is a new request — so a long orchestrator turn does not keep
+	// spawning sub-agents on a model the operator replaced mid-turn.
+	// Explicit tiers (per-call credentials, the session pin above) never
+	// pass through here.
+	if callCreds == nil && hbSource == hbSourceSlotStart {
+		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, model); ok {
+			model = refreshed
+			hbSource = hbSourceSlotLive
+		}
+	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens

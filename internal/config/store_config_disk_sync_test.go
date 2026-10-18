@@ -2,8 +2,10 @@
 // TestConfigDiskSyncForcedTickCatchesSameStat -> removing the st.tick%configDiskSyncForcedEvery forced check in syncConfigFromDisk (store_config_disk_sync.go).
 // TestConfigDiskSyncNoReloadOnMetadataOnlyChange -> making configDiskSyncDigestsMatch compare metadata instead of digest (store_config_disk_sync.go).
 // TestConfigDiskSyncNoReloadWhenSettled -> dropping the st.settled short-circuit in syncConfigFromDisk (store_config_disk_sync.go).
+// TestConfigDiskSyncIneligibleTrackedFileReloadsOnce -> dropping the st.lastAttemptKey outcome-independent memo in configDiskSyncReload (store_config_disk_sync.go).
+// TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk -> removing the st.lastAttemptKey clear in syncConfigFromDisk's settled branch (store_config_disk_sync.go).
 // TestConfigDiskSyncInvalidJSONKeepsSnapshotAndWarnsOnce -> ignoring st.failedKey in configDiskSyncReload, so every tick retries and re-warns (store_config_disk_sync.go).
-// TestConfigDiskSyncLifecycle -> making StopConfigDiskSync skip configSyncWG.Wait (store_config_disk_sync.go).
+// TestConfigDiskSyncStopJoinsCancelledPoller -> making StopConfigDiskSync skip configSyncWG.Wait (store_config_disk_sync.go).
 // TestConfigDiskSyncJitterBounds -> replacing the first-delay uniform draw in runConfigDiskSync with configDiskSyncDelay (store_config_disk_sync.go).
 // TestConfigDiskSyncOnModelsChangedOnlyOnModelDiff -> firing OnModelsChanged on every reload instead of a model diff (store_config_disk_sync.go).
 // TestReloadRejectsUnsignedModelsEdit -> removing the reloadModelsIntegrityMismatch block in buildAndPublishReload (store_reload.go).
@@ -88,18 +90,13 @@ func configSyncRefreshPublishedSnapshot(s *ConfigStore) {
 	s.publishLocked(next)
 }
 
-// configSyncWhiteBoxStore builds a store over dir with the given paths as
-// the tracked set and injects a counting reload stub that refreshes the
+// configSyncWhiteBoxStoreFingerprints builds a store over dir with the
+// given paths as the tracked set and the given fingerprints as the
+// published per-path state, keyed the same way reloadStalenessState keys
+// its snapshots, and injects a counting reload stub that refreshes the
 // published fingerprints like a real reload would. The caller owns cfg.
-func configSyncWhiteBoxStore(t *testing.T, dir string, cfg *Config, paths []string) (*ConfigStore, *atomic.Int32) {
+func configSyncWhiteBoxStoreFingerprints(t *testing.T, dir string, cfg *Config, paths []string, fingerprints map[string]reloadFileFingerprint) (*ConfigStore, *atomic.Int32) {
 	t.Helper()
-	fingerprints := make(map[string]reloadFileFingerprint, len(paths))
-	for _, path := range paths {
-		fingerprint, err := readReloadFingerprint(path)
-		require.NoError(t, err)
-		// Key the same way reloadStalenessState keys its snapshots.
-		fingerprints[normalizeDiscoveryPath(path)] = fingerprint
-	}
 	s := &ConfigStore{workingDir: dir, globalDataPath: paths[len(paths)-1]}
 	tracked, snapshots := reloadStalenessState(paths, fingerprints)
 	s.snap.Store(&storeSnapshot{
@@ -120,6 +117,21 @@ func configSyncWhiteBoxStore(t *testing.T, dir string, cfg *Config, paths []stri
 	}
 	s.configSyncMu.Unlock()
 	return s, &calls
+}
+
+// configSyncWhiteBoxStore builds a store over dir with the given paths as
+// the tracked set and fingerprints read from disk; see
+// configSyncWhiteBoxStoreFingerprints.
+func configSyncWhiteBoxStore(t *testing.T, dir string, cfg *Config, paths []string) (*ConfigStore, *atomic.Int32) {
+	t.Helper()
+	fingerprints := make(map[string]reloadFileFingerprint, len(paths))
+	for _, path := range paths {
+		fingerprint, err := readReloadFingerprint(path)
+		require.NoError(t, err)
+		// Key the same way reloadStalenessState keys its snapshots.
+		fingerprints[normalizeDiscoveryPath(path)] = fingerprint
+	}
+	return configSyncWhiteBoxStoreFingerprints(t, dir, cfg, paths, fingerprints)
 }
 
 // TestConfigDiskSyncForcedTickCatchesSameStat pins the forced exact check:
@@ -223,8 +235,11 @@ func TestConfigDiskSyncNoReloadWhenSettled(t *testing.T) {
 	}
 	require.Zero(t, calls.Load(), "settled ticks must not reload")
 
-	// A real content change reloads exactly once and settles again.
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-5"}}`)
+	// A real content change reloads exactly once and settles again. The
+	// model id differs in length from gpt-4: same-length rewrites rely on
+	// mtime changing, while a size change is deterministic on every
+	// filesystem.
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-5x"}}`)
 	result, err := s.syncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded)
@@ -309,6 +324,110 @@ func (b *syncBuffer) String() string {
 // attempts counts the reload attempts recorded on the state.
 func (st *configDiskSyncState) attempts() uint64 { return st.reloadAttempts }
 
+// TestConfigDiskSyncIneligibleTrackedFileReloadsOnce pins the
+// outcome-independent attempt memo: a tracked file the loader ignores (a
+// directory at the path) keeps its zero fingerprint in the published
+// snapshot while the digests never match, so without the memo every tick
+// would run a full reload forever.
+func TestConfigDiskSyncIneligibleTrackedFileReloadsOnce(t *testing.T) {
+	dir, configPath, globalPath := configSyncIsolate(t)
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+	// A directory at the global data path is present but ineligible:
+	// eligibleConfigCandidate rejects directories, so Load tracks it with
+	// the zero fingerprint while the poller still reads it on every tick.
+	require.NoError(t, os.Mkdir(globalPath, 0o755))
+	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
+	configFingerprint, err := readReloadFingerprint(configPath)
+	require.NoError(t, err)
+	s, calls := configSyncWhiteBoxStoreFingerprints(t, dir, cfg,
+		[]string{configPath, globalPath},
+		map[string]reloadFileFingerprint{
+			normalizeDiscoveryPath(configPath): configFingerprint,
+			normalizeDiscoveryPath(globalPath): {},
+		})
+
+	// Tick 1 attempts the reload once.
+	var st configDiskSyncState
+	result, tickErr := s.syncConfigFromDisk(context.Background(), &st)
+	require.NoError(t, tickErr)
+	require.True(t, result.Reloaded)
+	require.EqualValues(t, 1, calls.Load())
+	require.EqualValues(t, 1, st.reloadAttempts)
+
+	// Ticks 2..5: the digests can never match the published snapshot, so
+	// each tick would reload without the memo; it must stay quiescent.
+	for range 4 {
+		result, tickErr = s.syncConfigFromDisk(context.Background(), &st)
+		require.NoError(t, tickErr, "the memo skip must not fabricate a stale error")
+		require.False(t, result.Reloaded)
+		require.EqualValues(t, 1, calls.Load(), "an unchanged candidate set must not repeat the attempt")
+		require.EqualValues(t, 1, st.reloadAttempts)
+	}
+
+	// Replacing the directory with a real eligible file changes the
+	// candidate digest set, so exactly one more reload succeeds.
+	require.NoError(t, os.Remove(globalPath))
+	writeSignedModelsFixture(t, globalPath, `{"smart":{"provider":"openai","model":"gpt-global"}}`)
+	result, tickErr = s.syncConfigFromDisk(context.Background(), &st)
+	require.NoError(t, tickErr)
+	require.True(t, result.Reloaded)
+	require.EqualValues(t, 2, calls.Load())
+	require.EqualValues(t, 2, st.reloadAttempts)
+}
+
+// TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk is P2-2: the
+// outcome-independent attempt memo must not outlive a foreign publication.
+// A→B→A: the poller attempts the ineligible-dir state (memo=dir-key);
+// another reload path adopts a real file written behind its back (the
+// settled tick clears the memo); the dir comes back — the flip back to the
+// attempted content MUST reload again.
+// Revert-check: removing the st.lastAttemptKey clear in the settled branch
+// leaves the memo at the dir-key, so the final tick skips and the attempt
+// count stays 1 instead of 2.
+func TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk(t *testing.T) {
+	dir, configPath, globalPath := configSyncIsolate(t)
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+	require.NoError(t, os.Mkdir(globalPath, 0o755))
+	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
+	configFingerprint, err := readReloadFingerprint(configPath)
+	require.NoError(t, err)
+	s, calls := configSyncWhiteBoxStoreFingerprints(t, dir, cfg,
+		[]string{configPath, globalPath},
+		map[string]reloadFileFingerprint{
+			normalizeDiscoveryPath(configPath): configFingerprint,
+			normalizeDiscoveryPath(globalPath): {},
+		})
+
+	// A: the ineligible directory is attempted once and memoized.
+	var st configDiskSyncState
+	result, tickErr := s.syncConfigFromDisk(context.Background(), &st)
+	require.NoError(t, tickErr)
+	require.True(t, result.Reloaded)
+	require.EqualValues(t, 1, st.reloadAttempts)
+
+	// B: a real file appears and ANOTHER reload path adopts it — the
+	// published fingerprints now match disk, so the tick settles AND
+	// clears the memo.
+	require.NoError(t, os.Remove(globalPath))
+	writeSignedModelsFixture(t, globalPath, `{"smart":{"provider":"openai","model":"gpt-foreign"}}`)
+	configSyncRefreshPublishedSnapshot(s)
+	result, tickErr = s.syncConfigFromDisk(context.Background(), &st)
+	require.NoError(t, tickErr)
+	require.False(t, result.Reloaded, "the foreign adoption leaves nothing to reload")
+	require.True(t, st.settled, "the agreement tick must settle")
+	require.EqualValues(t, 1, st.reloadAttempts, "the settled tick must not attempt")
+
+	// A again: the directory returns — the flip back to the attempted
+	// content must reload, which only happens when the memo was cleared.
+	require.NoError(t, os.Remove(globalPath))
+	require.NoError(t, os.Mkdir(globalPath, 0o755))
+	result, tickErr = s.syncConfigFromDisk(context.Background(), &st)
+	require.NoError(t, tickErr)
+	require.True(t, result.Reloaded, "the flip back to the attempted content must reload")
+	require.EqualValues(t, 2, st.reloadAttempts)
+	require.EqualValues(t, 2, calls.Load())
+}
+
 // TestConfigDiskSyncLifecycle pins the lifecycle contract: Start twice
 // spawns one goroutine, Stop joins it, nothing fires after Stop, Start
 // after Stop is refused, and a store without a working directory never
@@ -387,6 +506,56 @@ func TestConfigDiskSyncStopJoinsDuringInFlightReload(t *testing.T) {
 	require.Error(t, s.configSyncCtx.Err(), "Start after Stop is refused")
 }
 
+func TestConfigDiskSyncStopJoinsCancelledPoller(t *testing.T) {
+	// Revert-check: a StopConfigDiskSync that cancels without joining
+	// returns while the poller goroutine is still blocked after cancellation.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	dir, configPath, _ := configSyncIsolate(t)
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+	s, err := Load(dir, "", false)
+	require.NoError(t, err)
+	t.Cleanup(func() { s.StopConfigDiskSync() })
+	entered, cancelled := make(chan struct{}, 2), make(chan struct{}, 2)
+	var releaseOnce sync.Once
+	release := make(chan struct{})
+	releasePoller := func() { releaseOnce.Do(func() { close(release) }) }
+	oldWait := configDiskSyncWait
+	configDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		select {
+		case cancelled <- struct{}{}:
+		default:
+		}
+		<-release
+		return ctx.Err()
+	}
+	// Registered after the stub assignment and restoring it last, after the
+	// release, so a failing body can never leave the stub blocked.
+	t.Cleanup(func() {
+		releasePoller()
+		configDiskSyncWait = oldWait
+	})
+	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
+	awaitCodexSignal(t, entered)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.StopConfigDiskSync() }()
+	awaitCodexSignal(t, cancelled)
+	returnedEarly := false
+	select {
+	case <-stopped:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.False(t, returnedEarly, "StopConfigDiskSync returned before the cancelled poller goroutine was released")
+	releasePoller()
+	awaitCodexSignal(t, stopped)
+	require.False(t, s.ConfigDiskSyncRunning())
+}
+
 func TestConfigDiskSyncLifecycle(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	dir, configPath, _ := configSyncIsolate(t)
@@ -449,6 +618,11 @@ func TestConfigDiskSyncLifecycle(t *testing.T) {
 	library := NewLibraryStore(&Config{}, "")
 	library.StartConfigDiskSync(ConfigDiskSyncOptions{})
 	require.False(t, library.configSyncStarted)
+	// A non-empty working directory with nothing tracked (SDK library mode's
+	// virtual root) starts nothing either: P3-6.
+	virtual := NewLibraryStore(&Config{}, t.TempDir())
+	virtual.StartConfigDiskSync(ConfigDiskSyncOptions{})
+	require.False(t, virtual.configSyncStarted)
 }
 
 // TestConfigDiskSyncJitterBounds pins the delay contract: the first delay

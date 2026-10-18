@@ -66,6 +66,11 @@ type configDiskSyncState struct {
 	// failedKey remembers the digest set of the last failed reload; no
 	// retry or repeated warning happens while the digests stay identical.
 	failedKey string
+	// lastAttemptKey remembers the candidate digest set of the last
+	// ATTEMPT, whatever its outcome: ticks that would repeat an identical
+	// attempt stay quiescent, which closes the ineligible-tracked-file
+	// loop where the digests can never match the published snapshot.
+	lastAttemptKey string
 	// reloadAttempts counts reload attempts (test observability).
 	reloadAttempts uint64
 }
@@ -76,7 +81,8 @@ type configDiskSyncState struct {
 func (s *ConfigStore) StartConfigDiskSync(opts ConfigDiskSyncOptions) {
 	s.configSyncMu.Lock()
 	defer s.configSyncMu.Unlock()
-	if s.workingDir == "" || s.configSyncStarted {
+	// A store with nothing tracked has nothing to poll (library mode).
+	if s.workingDir == "" || s.configSyncStarted || len(s.loadSnapshot().trackedConfigPaths) == 0 {
 		return
 	}
 	if s.configSyncCtx == nil {
@@ -188,6 +194,11 @@ func (s *ConfigStore) syncConfigFromDisk(ctx context.Context, st *configDiskSync
 	// retry, no repeated warning) until a candidate digest or the candidate
 	// set itself changes.
 	if !drift && configDiskSyncDigestsMatch(sn) {
+		// Snapshot and disk agree: any earlier attempt memo is stale from
+		// here on — another reload path may have published exactly this
+		// disk state, and a later flip BACK to the attempted content must
+		// still reload (P2-2: without the clear, A→B→A skips forever).
+		st.lastAttemptKey = ""
 		st.settled = true
 		return result, nil
 	}
@@ -198,7 +209,9 @@ func (s *ConfigStore) syncConfigFromDisk(ctx context.Context, st *configDiskSync
 // configDiskSyncReload runs the injected reload once, with the failure
 // bookkeeping of plan section 3.8: no retry and one warning per distinct
 // failed candidate key (candidate path set plus digests), one info on
-// recovery.
+// recovery. An outcome-independent memo of the last attempted key keeps
+// ticks with an unchanged candidate set from repeating an attempt whose
+// result cannot differ (e.g. a tracked file the loader always ignores).
 func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSyncState, before *storeSnapshot, result *ConfigDiskSyncResult) (ConfigDiskSyncResult, error) {
 	key := configDiskSyncDigestKey(s, before)
 	if st.failedKey == key {
@@ -206,9 +219,17 @@ func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSy
 		// warning was already logged for this exact digest set.
 		return *result, nil
 	}
+	if st.lastAttemptKey == key {
+		// The same candidate set was already attempted; whether that
+		// attempt succeeded or failed, an unchanged candidate set cannot
+		// produce a different outcome, so skip without a retry, a new
+		// warning, or another attempt.
+		return *result, nil
+	}
 	beforeModels := cloneModelsSelections(before.config.Models)
 	st.reloadAttempts++
 	err := s.configSyncReloadFunc()(ctx)
+	st.lastAttemptKey = key
 	if err != nil {
 		st.failedKey = key
 		result.ReloadErr = err
@@ -227,6 +248,14 @@ func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSy
 		}
 	}
 	return *result, nil
+}
+
+// ConfigDiskSyncRunning reports whether the config disk-sync poller
+// goroutine is running: started, not stopped, and not refused after a stop.
+func (s *ConfigStore) ConfigDiskSyncRunning() bool {
+	s.configSyncMu.Lock()
+	defer s.configSyncMu.Unlock()
+	return s.configSyncStarted && s.configSyncCtx != nil && s.configSyncCtx.Err() == nil
 }
 
 // configDiskSyncCandidatePaths rebuilds the current config candidate path

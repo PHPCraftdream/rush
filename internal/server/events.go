@@ -122,6 +122,19 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 		}
 	}()
 
+	// Poll-driven config changes (plan §2.4): re-broadcast the full config
+	// snapshot so web sessions that inherit their models display the new
+	// defaults. The channel is coalescing (buffer 1), so bursts of reloads
+	// cannot flood clients.
+	go func() {
+		ch := a.SubscribeModelsChanged(ctx)
+		for range ch {
+			if wire, ok := buildConfigWire(a); ok {
+				h.Broadcast(EventConfig, wire)
+			}
+		}
+	}()
+
 	slog.Debug("ws: event subscriptions started")
 
 	// Unused imports guard — referenced through the generic channels above.

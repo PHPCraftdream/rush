@@ -452,3 +452,56 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	require.Zero(t, workers, "journal worker start after stop must be refused")
 	require.False(t, s.OAuthDiskSyncRunning())
 }
+
+func TestOAuthDiskSync14StopFlushesPendingRotationOutbox(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync without the post-join outbox drain
+	// leaves the rotation WAL unwritten; the provider has already burned the
+	// old refresh token, so the next process would force a re-login.
+	task1292Descriptor(t, false, nil)
+	f, _ := diskSyncPair(t, task1292Provider)
+	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(f.used.OAuthToken, f.next), Token: f.next}
+	entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, task1292Provider, record)
+	f.store.StopOAuthDiskSync()
+	flushed, err := readOAuthJournal(oauthJournalPath(f.path, task1292Provider))
+	require.NoError(t, err)
+	require.NotNil(t, flushed, "StopOAuthDiskSync must flush a pending rotation outbox to the journal WAL")
+	require.Equal(t, &entry.record, flushed)
+}
+
+func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync that cancels without joining
+	// returns while the journal worker is still blocked after cancellation.
+	s := newTestConfigStore(testStoreOpts{globalDataPath: "fixture-unused", config: &Config{Providers: csync.NewMap[string, ProviderConfig]()}})
+	entered, cancelled := make(chan struct{}, 2), make(chan struct{}, 2)
+	var releaseOnce sync.Once
+	release := make(chan struct{})
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	oldBefore := oauthJournalBeforeWorker
+	oauthJournalBeforeWorker = func(ctx context.Context) {
+		entered <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		<-release
+	}
+	// Register before assertions: even a failing body releases the worker
+	// through the hook before the global hook is restored.
+	t.Cleanup(func() {
+		releaseWorker()
+		s.stopOAuthJournalWorkers()
+		oauthJournalBeforeWorker = oldBefore
+	})
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	awaitCodexSignal(t, entered)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.StopOAuthDiskSync() }()
+	awaitCodexSignal(t, cancelled)
+	returnedEarly := false
+	select {
+	case <-stopped:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.False(t, returnedEarly, "StopOAuthDiskSync returned before the blocked journal worker was released")
+	releaseWorker()
+	awaitCodexSignal(t, stopped)
+}
