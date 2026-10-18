@@ -9,6 +9,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// waitRecordAfter waits until a record of the given type and node is
+// published at or after cursor and returns the cursor to resume from.
+// Unlike runtimeTestRecord it never re-reads earlier records, so repeated
+// waits observe each cycle's own rejection instead of the first one.
+func waitRecordAfter(t *testing.T, ctx context.Context, r *Runner, typ RecordType, node ID, cursor uint64) uint64 {
+	t.Helper()
+	for {
+		p, err := r.Events(ctx, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rec := range p.Records {
+			if rec.Type == typ && rec.Node == node {
+				return rec.Cursor + 1
+			}
+		}
+		if p.Final != 0 {
+			t.Fatalf("feed closed before %s record for %s", typ, node)
+		}
+		cursor = p.Next
+	}
+}
+
 // Catches the durable Release gaps: the speculative fence never transferred,
 // published attempts/views/snapshots/feed entries of the released root
 // survived, and an unrelated transition accepted behind the publication
@@ -229,12 +252,15 @@ func TestRuntimeDurableSupersededAttemptsBoundedAndLateReportSafe(t *testing.T) 
 	first := runtimeTestReceive(t, ctx, e.starts)
 	firstToken.Store(first.launch.Token)
 	first.decision <- runtimeTestDecision{err: ErrCapacity}
-	runtimeTestRecord(t, ctx, r, RecordStartRejected, "r.1")
+	// Wait for this cycle's own rejection record: it exists only after the
+	// rejection was applied and published, so the next capacity signal cannot
+	// overtake it.
+	cursor := waitRecordAfter(t, ctx, r, RecordStartRejected, "r.1", 1)
 	for i := 1; i < n; i++ {
 		require.NoError(t, r.CapacityAvailable(ctx, "g"))
 		retry := runtimeTestReceive(t, ctx, e.starts)
 		retry.decision <- runtimeTestDecision{err: ErrCapacity}
-		runtimeTestRecord(t, ctx, r, RecordStartRejected, "r.1")
+		cursor = waitRecordAfter(t, ctx, r, RecordStartRejected, "r.1", cursor)
 	}
 	require.NoError(t, r.CapacityAvailable(ctx, "g"))
 	last := runtimeTestReceive(t, ctx, e.starts)
@@ -260,6 +286,42 @@ func TestRuntimeDurableSupersededAttemptsBoundedAndLateReportSafe(t *testing.T) 
 	}
 	if snapshotR.Counts.Completed != 1 || snapshotR.Counts.Failed != 0 {
 		t.Fatalf("late completion altered the settled snapshot: %+v", snapshotR)
+	}
+	require.NoError(t, r.Release(ctx, "r"))
+	r.mu.Lock()
+	afterRelease := len(r.attempts)
+	r.mu.Unlock()
+	if afterRelease != 0 {
+		t.Fatalf("%d attempts survived the release", afterRelease)
+	}
+	runtimeTestClose(t, ctx, r)
+}
+
+// Catches the inline re-authorisation ordering: the durable apply creates the
+// re-admitted attempt before it retires the rejected one, so indexAttempt
+// cannot see the retirement; without dropSuperseded the rejected attempt
+// survives alongside its successor. Deterministic: the capacity signal lands
+// while the first attempt is still active, so the StartRejected transition
+// re-admits r.1 in the same transition.
+func TestRuntimeDurableInlineReauthPrunesSuperseded(t *testing.T) {
+	t.Parallel()
+	r, e, _, ctx := runtimeTestCommitHooks(t, func(context.Context, Transition) error { return nil }, nil)
+	b := runtimeTestSubmit(t, ctx, r, "r", OneItem(TaskSpec{Kind: "test", Group: "g"}))
+	first := runtimeTestReceive(t, ctx, e.starts)
+	// Signal capacity while the first attempt is active: the generation bump
+	// is recorded, and the rejection below re-admits r.1 inline.
+	require.NoError(t, r.CapacityAvailable(ctx, "g"))
+	first.decision <- runtimeTestDecision{err: ErrCapacity}
+	waitRecordAfter(t, ctx, r, RecordStartRejected, "r.1", 1)
+	second := runtimeTestReceive(t, ctx, e.starts)
+	second.decision <- runtimeTestDecision{execution: &runtimeTestExecution{}}
+	runtimeTestFinish(t, ctx, r, second, StateCompleted)
+	runtimeTestWait(t, ctx, b)
+	r.mu.Lock()
+	attempts := len(r.attempts)
+	r.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("inline re-authorisation left %d attempts (want 1: the superseded first attempt must be dropped)", attempts)
 	}
 	require.NoError(t, r.Release(ctx, "r"))
 	r.mu.Lock()

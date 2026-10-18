@@ -233,6 +233,40 @@ func TestCoreRetirementCursorEdges(t *testing.T) {
 		t.Fatalf("edge 2 live %d roots %d at the end", len(e.live), len(e.roots))
 	}
 
+	// Edge 2b, retired exactly at the cursor's scan position with two
+	// blocked pending roots behind it: A, B, C one task each, cap 3.
+	// Original: submits A, B, C admit A.1, B.1, C.1 (indices 0-2, cursor 3).
+	// Capacity-rejecting all three returns them to pending (blocked, since
+	// no capacity signal was seen), and the cursor stays 3. Stopping A - the
+	// root exactly at the scan position 3%3=0 - settles and retires it
+	// without an admission: live [B,C], translated cursor 2 (kept = the two
+	// survivors before 3). CapacityAvailable unblocks the generation: the
+	// original engine scans 3%3=0, skips terminal A, and admits B.1; the
+	// translated cursor 2%2=0 admits B.1 as well. kept-1 (1%2=1), kept+1
+	// (3%2=1) and an untranslated cursor (3%2=1) would all admit C.1 and
+	// fail.
+	e = coreTestEngine(t, 3)
+	submitA = coreTestSubmit(t, e, "A", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitB = coreTestSubmit(t, e, "B", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	submitC := coreTestSubmit(t, e, "C", coreTestBatch(ModeParallel, 0, coreTestTask("")))
+	if len(submitA.Commands) != 1 || len(submitB.Commands) != 1 || len(submitC.Commands) != 1 {
+		t.Fatalf("edge 2b submit commands %v / %v / %v", submitA.Commands, submitB.Commands, submitC.Commands)
+	}
+	coreTestApply(t, e, Event{Type: EventStartRejected, Node: submitA.Commands[0].Node, Token: submitA.Commands[0].Token, Reason: RejectCapacity})
+	coreTestApply(t, e, Event{Type: EventStartRejected, Node: submitB.Commands[0].Node, Token: submitB.Commands[0].Token, Reason: RejectCapacity})
+	coreTestApply(t, e, Event{Type: EventStartRejected, Node: submitC.Commands[0].Node, Token: submitC.Commands[0].Token, Reason: RejectCapacity})
+	coreTestApply(t, e, Event{Type: EventStopRequested, Node: "A"})
+	tr = coreTestApply(t, e, Event{Type: EventCapacityAvailable, Group: ""})
+	if len(tr.Commands) != 1 || tr.Commands[0].Node != "B.1" {
+		t.Fatalf("edge 2b admission %v, want B.1 (kept-1, kept+1 and untranslated cursors would pick C.1)", tr.Commands)
+	}
+	tr = finishAdmitted(t, e, tr.Commands[0], StateCompleted)
+	coreTestApply(t, e, Event{Type: EventCapacityAvailable, Group: ""})
+	finishAdmitted(t, e, submitC.Commands[0], StateCompleted)
+	if len(e.live) != 0 || len(e.roots) != 3 {
+		t.Fatalf("edge 2b live %d roots %d at the end", len(e.live), len(e.roots))
+	}
+
 	// Edge 3, retired after the cursor: A..D one task each, cap 1. Original:
 	// submit A admits A.1 (index 0, cursor 1); finishing A.1 admits B.1
 	// (scan 1%4=1) and retires A, leaving the translated live [B,C,D] at
