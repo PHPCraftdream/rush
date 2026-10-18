@@ -102,6 +102,14 @@ func (c *coordinator) stopTree(sessionID string) {
 		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
 			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
 		}
+		// R12-EF fix F4: the same doc sec.3.8 pass zeroes the batch debt's
+		// wake bit too, so a root that settled wake=1 a moment before Stop
+		// cannot survive a restart as a reaction turn.
+		if store := batchCutoverReactionStore(c); store != nil {
+			if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
+				slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
+			}
+		}
 	}
 	// R7B-2: a stopped child parked on its own job is not re-checked by any
 	// other trigger (the job is dropped silently, the idle mailbox fires no

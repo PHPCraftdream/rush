@@ -829,6 +829,15 @@ func (ts *turnStream) persistStepFinish() error {
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
 	if stepIsReaction(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		// R12-EF fix F1: with the batch runtime on and the node-backed fact
+		// source bound, the same one-transaction write marks the BATCH debt
+		// reacted (batch_nodes + session_notices, reacted_failed cleared on
+		// both) instead of the legacy async_jobs twin -- the ON turn never
+		// touches async_jobs. Flag OFF, or nothing bound, keeps the legacy
+		// marker byte-for-byte.
+		if store := batchCutoverReactionStore(ts.a.asyncJobs.coord); store != nil {
+			return store.BatchReactionMarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
+		}
 		return ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
 	}
 	return ts.a.messages.Update(ts.genCtx, snap)
