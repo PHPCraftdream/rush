@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -361,6 +362,53 @@ func TestOAuthJournalOutbox_ExternalJournalArbitration(t *testing.T) {
 			assertCodexRefreshTokens(t, f, &external, &external)
 		})
 	}
+}
+
+// Revert-check: the limiter never evicts live keys at capacity.
+func TestOAuthJournalOutbox_SaturatedFailureLogLimiter(t *testing.T) {
+	logs := captureCodexRefreshLogs(t)
+	oauthJournalLogs.Lock()
+	oldLast, oldAggregate := oauthJournalLogs.last, oauthJournalLogs.aggregate
+	oauthJournalLogs.last = make(map[oauthJournalLogKey]time.Time)
+	oauthJournalLogs.aggregate = time.Time{}
+	oauthJournalLogs.Unlock()
+	t.Cleanup(func() {
+		oauthJournalLogs.Lock()
+		oauthJournalLogs.last, oauthJournalLogs.aggregate = oldLast, oldAggregate
+		oauthJournalLogs.Unlock()
+	})
+	base := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 1024; i++ {
+		logOAuthJournalFailureAt(fmt.Sprintf("limiter-fixture-%04d", i), "read", "failure", base)
+	}
+	logOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(time.Second))
+	logOAuthJournalFailureAt("limiter-new", "read", "failure", base.Add(time.Second))
+	logOAuthJournalFailureAt("limiter-newer", "read", "failure", base.Add(2*time.Second))
+	logOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(3*time.Second))
+	oauthJournalLogs.Lock()
+	assert.Len(t, oauthJournalLogs.last, 1024)
+	assert.Equal(t, base, oauthJournalLogs.last[oauthJournalLogKey{path: normalizeReloadPath("limiter-fixture-0000"), kind: "read"}])
+	oauthJournalLogs.Unlock()
+	logOAuthJournalFailureAt("limiter-expired-window", "read", "failure", base.Add(30*time.Second))
+	oauthJournalLogs.Lock()
+	assert.Len(t, oauthJournalLogs.last, 1)
+	assert.NotContains(t, oauthJournalLogs.last, oauthJournalLogKey{path: normalizeReloadPath("limiter-fixture-0000"), kind: "read"})
+	assert.Equal(t, base.Add(30*time.Second), oauthJournalLogs.last[oauthJournalLogKey{path: normalizeReloadPath("limiter-expired-window"), kind: "read"}])
+	assert.Equal(t, base.Add(time.Second), oauthJournalLogs.aggregate)
+	oauthJournalLogs.Unlock()
+	logs.mu.Lock()
+	errorsLogged, aggregates := 0, 0
+	for _, record := range logs.records {
+		if record.Level == slog.LevelError {
+			errorsLogged++
+			if record.Message == "Additional OAuth journal failures suppressed while log limiter is saturated" {
+				aggregates++
+			}
+		}
+	}
+	logs.mu.Unlock()
+	assert.Equal(t, 1026, errorsLogged)
+	assert.Equal(t, 1, aggregates)
 }
 
 // Revert-check: raw reads log only the first error per file and failure kind.
