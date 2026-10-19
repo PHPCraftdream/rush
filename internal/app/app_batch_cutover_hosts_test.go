@@ -402,6 +402,7 @@ func TestBatchRuntimeFactoryFlagOnWithoutAsyncJobStore(t *testing.T) {
 			"identity falls back to the HostStore's")
 	})
 	t.Run("flag off: still fails closed without the store", func(t *testing.T) {
+		t.Setenv("RUSH_BATCH_RUNTIME", "false")
 		a := batchFactoryApp(t)
 		a.asyncJobStore = nil
 		_, err := newBatchRuntimeFactory(a, batchFactoryDeps())

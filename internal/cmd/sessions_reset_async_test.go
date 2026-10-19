@@ -9,6 +9,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -16,8 +18,14 @@ import (
 
 func startedJob(t *testing.T, store *session.AsyncJobStore, msgs message.Service, owner, id string) {
 	t.Helper()
-	claimOwnJob(t, store, owner, id)
-	_, err := store.AnnounceStarted(context.Background(), msgs, owner, id, message.CreateMessageParams{
+	// Legacy-path only (all its callers are pinned flag-OFF): the same claim
+	// shape claimOwnJob's OFF branch uses, but on the caller's store -- the
+	// dead-host variant claims on a store that is deliberately NOT the app's.
+	_, err := store.Claim(context.Background(), session.ClaimParams{
+		Owner: owner, ToolCallID: id, Kind: session.JobKindCommand, Input: "sleep 60", ToolName: "bash",
+	})
+	require.NoError(t, err)
+	_, err = store.AnnounceStarted(context.Background(), msgs, owner, id, message.CreateMessageParams{
 		Role:  message.Tool,
 		Parts: []message.ContentPart{message.ToolResult{ToolCallID: id, Name: "bash", Content: "started"}},
 	})
@@ -83,6 +91,64 @@ func assertResetClean(t *testing.T, store *session.AsyncJobStore, msgs message.S
 	require.False(t, visible, "old visible debt must not survive the wipe")
 }
 
+// seedResetDebrisDual is the dual-mode seedResetDebris: flag off it is
+// seedResetDebris verbatim; flag on the same debris shape is seeded on the
+// batch substrate (one completed batch root with completion debt, plus the
+// same session notice), and the legacy precondition ("the completed job's
+// notice is in history") becomes the batch debt precondition.
+func seedResetDebrisDual(t *testing.T, a *app.App, msgs message.Service, owner string) {
+	t.Helper()
+	if !config.BatchRuntimeEnabled() {
+		seedResetDebris(t, a.AsyncJobStore(), msgs, owner)
+		return
+	}
+	ctx := context.Background()
+	_, err := msgs.Create(ctx, owner, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "start the soak"}},
+	})
+	require.NoError(t, err)
+
+	// One completed batch root with completion debt, seeded exactly like
+	// TestSessionsJobsCmdRun_CompletionDebtNotAwaitingAnswer: Reserve via
+	// seedBatchReadRoot, then the two raw debt UPDATEs, then settle the root
+	// terminal via the finishOwnJob-style raw UPDATE.
+	f := seedBatchReadRoot(t, a, owner)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET announced = 1, announce_message_id = 'debt-msg' WHERE node_id = ? AND root_id = ?`,
+		f.rootID, f.rootID)
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET notice_selected = 1, notice_kind = 'task', notice_state = 'completed',
+		 notice_cause = '', notice_sequence = 1, notice_ordinal = 0, delivery = 'done', wake = 1
+		 WHERE node_id = ? AND parent_id = ?`, f.nodeA, f.rootID)
+	require.NoError(t, err)
+	settleBatchRoot(t, a, owner, f.toolCallID)
+
+	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, owner, session.NoticeKindSupervision, "supervision: check the soak", true, ""))
+
+	// The legacy precondition ("the completed job's notice is in history" +
+	// visible debt) becomes, flag ON: the root's pending-inclusive debt rows
+	// must exist BEFORE the reset.
+	debt, err := session.NewBatchStore(a.DB()).BatchReactionPendingInclusiveDebtRows(ctx, owner)
+	require.NoError(t, err)
+	require.NotEmpty(t, debt.Nodes, "precondition: the completed root's completion debt exists")
+	require.NotEmpty(t, debt.Notices, "precondition: the completion notice is debt")
+}
+
+// assertResetCleanDual is the dual-mode assertResetClean: the legacy checks
+// run VERBATIM, and flag on the batch debt -- the flag-ON subject of "old
+// debt must not survive the wipe" -- must be gone too.
+func assertResetCleanDual(t *testing.T, a *app.App, msgs message.Service, owner string) {
+	t.Helper()
+	assertResetClean(t, a.AsyncJobStore(), msgs, owner)
+	if config.BatchRuntimeEnabled() {
+		debt, err := session.NewBatchStore(a.DB()).BatchReactionPendingInclusiveDebtRows(context.Background(), owner)
+		require.NoError(t, err)
+		require.Empty(t, debt.Nodes, "old batch debt must not survive the wipe")
+		require.Empty(t, debt.Notices, "old batch debt must not survive the wipe")
+	}
+}
+
 // The command's own documented flow: reset, then run again from a clean slate.
 //
 // Revert-check: dropping the store reset from the command (a plain message
@@ -92,7 +158,7 @@ func TestSessionsReset_VoidsAsyncNoticesAndDebt(t *testing.T) {
 	ctx := context.Background()
 	sess, err := a.Sessions.CreateWithID(ctx, "reset-async-debris", "debris")
 	require.NoError(t, err)
-	seedResetDebris(t, a.AsyncJobStore(), a.Messages, sess.ID)
+	seedResetDebrisDual(t, a, a.Messages, sess.ID)
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "false"))
@@ -106,7 +172,7 @@ func TestSessionsReset_VoidsAsyncNoticesAndDebt(t *testing.T) {
 	left, err := verify.Messages.List(ctx, sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, left)
-	assertResetClean(t, verify.AsyncJobStore(), verify.Messages, sess.ID)
+	assertResetCleanDual(t, verify, verify.Messages, sess.ID)
 }
 
 // resetSeeded seeds a session with debris plus a message, then returns it.
@@ -125,29 +191,33 @@ func resetSeeded(t *testing.T, s session.Service, m message.Service, store *sess
 // resetSessionHistory (and, for the running-job row, the store's running-rows
 // guard) wipes the history of a live session; every case fails.
 func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: drives the LEGACY resetSessionHistory directly and asserts
+	// its legacy debris/refusal state. Under Go 1.26 a test calling t.Setenv
+	// must not be parallel, so the whole test -- parent AND subtests -- is
+	// sequential and the subtests carry no t.Parallel: the pin, not the port,
+	// changed the parallelism.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	for _, tc := range []struct {
 		name string
-		hold func(t *testing.T, s session.Service, store *session.AsyncJobStore, id string)
+		hold func(t *testing.T, a *app.App, s session.Service, store *session.AsyncJobStore, id string)
 		note string
 	}{
-		{"loop between turns", func(t *testing.T, _ session.Service, store *session.AsyncJobStore, id string) {
+		{"loop between turns", func(t *testing.T, _ *app.App, _ session.Service, store *session.AsyncJobStore, id string) {
 			require.NoError(t, store.ClaimSessionDriver(context.Background(), id))
 		}, "`rush run`"},
-		{"running own job", func(t *testing.T, _ session.Service, store *session.AsyncJobStore, id string) {
-			claimOwnJob(t, store, id, "bash-live")
+		{"running own job", func(t *testing.T, a *app.App, _ session.Service, _ *session.AsyncJobStore, id string) {
+			claimOwnJob(t, a, id, "bash-live")
 		}, "1 running job"},
-		{"running delegation", func(t *testing.T, s session.Service, store *session.AsyncJobStore, id string) {
+		{"running delegation", func(t *testing.T, a *app.App, s session.Service, _ *session.AsyncJobStore, id string) {
 			child, err := s.CreateTaskSession(context.Background(), "reset-child-"+id, id, "sub-agent")
 			require.NoError(t, err)
-			claimDelegation(t, store, id, "delegate-live", child.ID)
+			claimDelegation(t, a, id, "delegate-live", child.ID)
 		}, "delegat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			a, s, m, store, _ := newRunDriverTestApp(t)
 			sess := resetSeeded(t, s, m, store, "live "+tc.name)
-			tc.hold(t, s, store, sess.ID)
+			tc.hold(t, a, s, store, sess.ID)
 
 			_, err := resetSessionHistory(context.Background(), a, sess.ID, false)
 			require.ErrorContains(t, err, "still being worked on")
@@ -171,7 +241,9 @@ func TestResetSessionHistory_RefusesWhileLiveWork(t *testing.T) {
 // Revert-check: dropping RecoverOwnerScope from resetSessionHistory makes the
 // dead-host row count as running and the reset refuses.
 func TestResetSessionHistory_DeadHostRowsAreRecoveredAndVoided(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: drives the LEGACY resetSessionHistory directly and asserts
+	// its legacy dead-host recovery state.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	sess := resetSeeded(t, s, m, store, "killed run")

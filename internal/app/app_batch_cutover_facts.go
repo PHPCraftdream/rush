@@ -82,6 +82,8 @@ func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[stri
 		return out
 	}
 	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	// TxStarter: every live read runs in ONE read-only tx on the writer.
+	reader.TxStarter = writer
 	for id, r := range reader.BatchLiveForSessions(ctx, ids) {
 		f := batchWorkFacts{
 			Own:                   len(r.Own),

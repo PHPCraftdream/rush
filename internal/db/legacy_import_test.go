@@ -20,6 +20,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// orderedByKeyColumns returns a deterministic ORDER BY list over the table's
+// declared primary-key columns (in PK ordinal order), falling back to rowid
+// for tables without one. The importer copies in rowid order, so comparing in
+// primary-key order verifies the same set of rows independently of physical
+// rowid renumbering on the destination side.
+func orderedByKeyColumns(cols []columnInfo) string {
+	type pkCol struct {
+		ordinal int
+		name    string
+	}
+	var keys []pkCol
+	for _, col := range cols {
+		if col.PrimaryKey > 0 {
+			keys = append(keys, pkCol{col.PrimaryKey, col.Name})
+		}
+	}
+	if len(keys) == 0 {
+		return `rowid`
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ordinal < keys[j].ordinal })
+	quoted := make([]string, len(keys))
+	for i, key := range keys {
+		quoted[i] = quoteIdentifier(key.name)
+	}
+	return strings.Join(quoted, ",")
+}
+
 func legacyImportSchema(t *testing.T) fs.FS {
 	t.Helper()
 	return storeV1FixtureMigrations()
@@ -32,7 +59,7 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 	require.NoError(t, Migrate(t.Context(), conn))
 	_, err := conn.ExecContext(t.Context(), `PRAGMA wal_autocheckpoint=0`)
 	require.NoError(t, err)
-	_, err = conn.ExecContext(t.Context(), `INSERT INTO sessions (id,title,updated_at,created_at) VALUES ('s','s',1700000000,1700000000)`)
+	_, err = conn.ExecContext(t.Context(), `INSERT INTO sessions (id,title,updated_at,created_at,cancel_requested) VALUES ('s','s',1700000000,1700000000,1)`)
 	require.NoError(t, err)
 	for _, stmt := range []string{
 		`INSERT INTO messages (id,session_id,role,parts,created_at,updated_at) VALUES ('m','s','user','[]',1700000000,1700000000)`,
@@ -40,11 +67,12 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 		`INSERT INTO read_files (session_id,path,read_at) VALUES ('s','f.txt',1)`,
 		`INSERT INTO session_permissions (id,session_id,tool_name,action,path,created_at,enabled) VALUES ('p','s','bash','allow','/',1,1)`,
 		`INSERT INTO queue_tasks (id,prompt,status,created_at) VALUES ('q','queue','done',1)`,
-		`INSERT INTO queue_tasks (id,prompt,status,created_at,started_at) VALUES ('q-running','queue-running','running',1,2)`,
+		`INSERT INTO queue_tasks (id,prompt,status,created_at,started_at,cost,tokens,exit_reason,finished_at) VALUES ('q-running','queue-running','running',1,2,3.5,42,'boom',3)`,
 		`INSERT INTO pending_injects (id,session_id,message_id,content,created_at) VALUES ('i','s','m','inject',1)`,
 		`INSERT INTO session_run_queue (id,session_id,call_data,status,created_at,updated_at) VALUES ('r','s','{}','pending',1,1)`,
-		`INSERT INTO session_run_queue (id,session_id,call_data,status,leased_by,leased_at,lease_expires_at,created_at,updated_at) VALUES ('r-leased','s','{}','leased','dead-host',1,2,1,1)`,
+		`INSERT INTO session_run_queue (id,session_id,call_data,status,leased_by,leased_at,lease_expires_at,attempts,last_error,created_at,updated_at) VALUES ('r-leased','s','{}','leased','dead-host',1,2,5,'prior',1,1)`,
 		`INSERT INTO orphan_call_outbox (id,session_id,call_data,status,created_at,updated_at) VALUES ('o','s','{}','pending',1,1)`,
+		`INSERT INTO orphan_call_outbox (id,session_id,call_data,status,attempts,created_at,updated_at) VALUES ('o-claim','s','{"x":1}','processing',1,1,2)`,
 		`INSERT INTO async_hosts (id,pid,label,started_at) VALUES ('old-host',1,'cli',1)`,
 		`INSERT INTO session_drivers (session_id,host_id,pid,claimed_at) VALUES ('s','old-host',1,1)`,
 		`INSERT INTO session_notices (owner,kind,text,wake,delivery,job_tool_call_id,created_at,updated_at) VALUES ('s','wake_failed','notice',1,'pending',NULL,1,1)`,
@@ -147,7 +175,8 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 		for i, col := range cols {
 			quoted[i] = quoteIdentifier(col.Name)
 		}
-		query := `SELECT ` + strings.Join(quoted, ",") + ` FROM ` + quoteIdentifier(policy.Name) + ` ORDER BY rowid`
+		order := orderedByKeyColumns(cols)
+		query := `SELECT ` + strings.Join(quoted, ",") + ` FROM ` + quoteIdentifier(policy.Name) + ` ORDER BY ` + order
 		sourceRows, destRows := queryAllRows(t, legacyConn, query), queryAllRows(t, newDB, query)
 		require.Equal(t, len(sourceRows), len(destRows), policy.Name)
 		for i := range sourceRows {
@@ -331,7 +360,7 @@ func TestLegacyImportNormalisationLiterals(t *testing.T) {
 	require.False(t, leasedBy.Valid)
 	require.False(t, leasedAt.Valid)
 	require.False(t, leaseExpiresAt.Valid)
-	require.Equal(t, int64(1), attempts)
+	require.Equal(t, int64(6), attempts)
 	require.Equal(t, "lease_expired", lastError)
 	require.Equal(t, int64(0), terminalFailure)
 	require.Equal(t, "{}", callData)
@@ -383,6 +412,12 @@ func TestLegacyImportNormalisationLiterals(t *testing.T) {
 	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT status, call_data FROM orphan_call_outbox WHERE id='o'`).Scan(&status, &outboxCallData))
 	require.Equal(t, "pending", status)
 	require.Equal(t, "{}", outboxCallData)
+	// The retired pre-P0-4 'processing' claim state must not survive the
+	// import: the drain only scans 'pending', so a carried claim would strand
+	// its call forever. The payload must be preserved verbatim.
+	require.NoError(t, newDB.QueryRowContext(ctx, `SELECT status, call_data FROM orphan_call_outbox WHERE id='o-claim'`).Scan(&status, &outboxCallData))
+	require.Equal(t, "pending", status)
+	require.Equal(t, `{"x":1}`, outboxCallData)
 }
 
 // legacyImportLegacyFSUpTo returns the importer-owned legacy chain trimmed to

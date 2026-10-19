@@ -481,6 +481,18 @@ func (f ledgerBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]s
 // external driver, gate) is identical state on both paths. Order is law, as
 // in readTurnFacts: the debt rows first, then the memory half.
 func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts, l *workLedger) (TurnFacts, error) {
+	// Gate order mirrors readTurnFacts (ASYNC-02/09): the seam fires right
+	// before the arrival gate and the rows read under bgArrival, so the debt
+	// rows and the over-cap set are ONE consistent pair on the flag-on path
+	// too (persistBGShellCompletion holds the same gate around insert + slot
+	// decision).
+	if seam := readTurnFactsGateSeam.Load(); seam != nil {
+		(*seam)()
+	}
+	if err := c.bgArrival.lock(ctx); err != nil {
+		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
+	}
+	defer c.bgArrival.unlock()
 	rows, err := facts.PendingInclusiveDebt(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: batch debt rows: %w", err)

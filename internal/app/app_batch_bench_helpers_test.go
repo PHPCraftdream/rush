@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -88,6 +89,19 @@ type d11Summary struct {
 	HealthViolations int           `json:"health_violations"`
 	OffWaitPath      string        `json:"off_wait_path"`
 	Runs             []d11RunEntry `json:"runs"`
+	// Workload configuration, exported so the artifact is self-describing:
+	// a consumer can recompute and verify the measured call counts from the
+	// JSON alone. None of these fields use `omitempty`: their zero values
+	// are meaningful configuration (0 sessions, 0 rounds, or 0 warmup calls
+	// would be real workload settings, not absent data), so every field must
+	// always appear explicitly in the summary JSON.
+	MeasuredRounds            int `json:"measured_rounds"`
+	SequentialSessions        int `json:"sequential_sessions"`
+	LatencySamplesPerRound    int `json:"latency_samples_per_round"`
+	ContentionSessions        int `json:"contention_sessions"`
+	ContentionCallsPerSession int `json:"contention_calls_per_session"`
+	WarmupCallsPerRound       int `json:"warmup_calls_per_round"`
+	ConcSessionWarmupCalls    int `json:"conc_session_warmup_calls"`
 }
 
 type d11TransitionCounts struct {
@@ -137,6 +151,7 @@ type d11Env struct {
 	provider    *d11Provider
 	transitions d11TransitionCounts
 	mode        string
+	dir         string
 	health      *d11HealthGate
 }
 
@@ -591,7 +606,7 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 	}
 	fixture := filepath.Join(dir, d11FixtureName)
 	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
-	e := &d11Env{t: t, mode: mode}
+	e := &d11Env{t: t, mode: mode, dir: dir}
 	e.health = &d11HealthGate{}
 	// The wrapped handler must be a fresh one, never slog.Default().Handler():
 	// SetDefault routes the log package into the new default, and the stock
@@ -790,6 +805,34 @@ func d11Durability(t *testing.T, conn *sql.DB) (string, string) {
 	var value int
 	require.NoError(t, conn.QueryRowContext(context.Background(), `PRAGMA synchronous`).Scan(&value))
 	return journal, map[int]string{0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}[value]
+}
+
+// d11LogRoundState logs the cumulative per-round state the report ignores:
+// batch-runtime row counts, db/WAL file sizes, goroutines and heap-in-use,
+// so the round-over-round decay can be separated from per-call cost.
+func d11LogRoundState(t *testing.T, e *d11Env, round int) {
+	t.Helper()
+	count := func(table string) int64 {
+		var n int64
+		require.NoError(t, e.app.DB().QueryRowContext(context.Background(), `SELECT count(*) FROM `+table).Scan(&n))
+		return n
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	dbBytes, walBytes, shmBytes := int64(-1), int64(-1), int64(-1)
+	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db")); err == nil {
+		dbBytes = fi.Size()
+	}
+	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db-wal")); err == nil {
+		walBytes = fi.Size()
+	}
+	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db-shm")); err == nil {
+		shmBytes = fi.Size()
+	}
+	t.Logf("D11 ROUND %d STATE: batch_nodes=%d checkpoints=%d session_notices=%d orphan_outbox=%d messages=%d sessions=%d db_bytes=%d wal_bytes=%d shm_bytes=%d goroutines=%d heap_inuse=%d",
+		round, count("batch_nodes"), count("batch_runner_checkpoints"), count("session_notices"),
+		count("orphan_call_outbox"), count("messages"), count("sessions"),
+		dbBytes, walBytes, shmBytes, runtime.NumGoroutine(), ms.HeapInuse)
 }
 
 func percentile(values []float64, p float64) float64 {

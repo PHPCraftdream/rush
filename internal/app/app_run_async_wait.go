@@ -99,6 +99,8 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
 	defer cancel()
 	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	// TxStarter: every live read runs in ONE read-only tx on the writer.
+	reader.TxStarter = writer
 	res := reader.BatchLiveForOwner(ctx, l.sessionID)
 	if res.Err != nil || len(res.Own) == 0 {
 		return joinOpenWork(schedule, generic)
