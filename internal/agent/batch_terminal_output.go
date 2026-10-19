@@ -1,3 +1,11 @@
+// Package-level output caching for batch leaves.
+//
+// Cursor contracts are per family and the cached read reproduces the live
+// reader of the family that captured the entry: generic, agent and shell use
+// the clamp contract (cursor is clamped to the retained end; over-end cursors
+// return an empty page at EOF); argv uses the restart contract (cursors above
+// MaxInt64 or above the retained end restart from offset 0, as
+// tools.ArgvProcess.ReadOutput does live).
 package agent
 
 import (
@@ -22,7 +30,16 @@ type batchCachedOutput struct {
 	oldest, total  uint64
 	finished       time.Time
 	truncated      bool
+	argvContract   bool
 }
+
+// batchOutputCursorContract names the live cursor contract a family uses.
+type batchOutputCursorContract uint8
+
+const (
+	batchOutputCursorClamp batchOutputCursorContract = iota
+	batchOutputCursorArgvRestart
+)
 
 // batchOutputCache stores detached output bytes per App; expiry is lazy and
 // never creates a cache-lifecycle goroutine.
@@ -41,6 +58,12 @@ func newBatchOutputCache() *batchOutputCache {
 func (c *batchOutputCache) put(id jobbatch.ID, chunk jobbatch.OutputChunk) { c.putFor(id, id, chunk) }
 
 func (c *batchOutputCache) putFor(id, root jobbatch.ID, chunk jobbatch.OutputChunk) {
+	c.putForContract(id, root, chunk, batchOutputCursorClamp)
+}
+
+// putForContract records chunk under the family's cursor contract so the
+// cached read normalizes cursors exactly like the live reader does.
+func (c *batchOutputCache) putForContract(id, root jobbatch.ID, chunk jobbatch.OutputChunk, contract batchOutputCursorContract) {
 	if c == nil {
 		return
 	}
@@ -66,7 +89,7 @@ func (c *batchOutputCache) putFor(id, root jobbatch.ID, chunk jobbatch.OutputChu
 	if prev, ok := c.entries[id]; ok {
 		c.bytes -= len(prev.data)
 	}
-	c.entries[id] = batchCachedOutput{data: copyData, taskID: string(id), rootID: string(root), oldest: oldest, total: total, finished: now, truncated: truncated}
+	c.entries[id] = batchCachedOutput{data: copyData, taskID: string(id), rootID: string(root), oldest: oldest, total: total, finished: now, truncated: truncated, argvContract: contract == batchOutputCursorArgvRestart}
 	c.bytes += len(copyData)
 	c.evictLocked()
 }
@@ -111,6 +134,14 @@ func (c *batchOutputCache) readWithMetadata(id jobbatch.ID, cursor uint64) (jobb
 		return jobbatch.OutputChunk{}, 0, 0, false, false
 	}
 	start := cursor
+	if e.argvContract {
+		if start > math.MaxInt64 {
+			start = 0
+		}
+		if start > e.total {
+			start = 0
+		}
+	}
 	if start < e.oldest {
 		start = e.oldest
 	}
@@ -145,7 +176,7 @@ func batchOutputRoot(id jobbatch.ID) jobbatch.ID {
 	return jobbatch.ID(root)
 }
 
-func batchOutputCapture(cache *batchOutputCache, id, root jobbatch.ID, reader jobbatch.OutputReader) error {
+func batchOutputCapture(cache *batchOutputCache, id, root jobbatch.ID, reader jobbatch.OutputReader, contract batchOutputCursorContract) error {
 	if cache == nil || reader == nil {
 		return nil
 	}
@@ -153,6 +184,6 @@ func batchOutputCapture(cache *batchOutputCache, id, root jobbatch.ID, reader jo
 	if err != nil {
 		return err
 	}
-	cache.putFor(id, root, chunk)
+	cache.putForContract(id, root, chunk, contract)
 	return nil
 }

@@ -416,7 +416,13 @@ func (c *installedBatchModelControl) Output(ctx context.Context, caller, root, n
 }
 
 func liveBatchOutput(chunk jobbatch.OutputChunk) any {
-	return outputResponse(chunk, chunk.Next, int(chunk.Next), chunk.Truncated)
+	// Retained bytes are the live window size, not the end cursor: the
+	// difference Next-Oldest, clamped at zero.
+	var retained uint64
+	if chunk.Next > chunk.Oldest {
+		retained = chunk.Next - chunk.Oldest
+	}
+	return outputResponse(chunk, chunk.Next, int(retained), chunk.Truncated)
 }
 
 func cachedBatchOutput(chunk jobbatch.OutputChunk, totalBytes uint64, retainedBytes int, truncated bool) any {

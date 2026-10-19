@@ -115,9 +115,9 @@ func (e *batchArgvExecution) run(ctx context.Context, leaf fantasy.AgentTool, ca
 			}
 		}
 		if p != nil {
-			_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, batchArgvOutputReader{p})
+			_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, batchArgvOutputReader{p}, batchOutputCursorArgvRestart)
 		} else if e.cache != nil {
-			e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true})
+			e.cache.putForContract(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true}, batchOutputCursorArgvRestart)
 		}
 		e.mu.Lock()
 		close(e.finished)

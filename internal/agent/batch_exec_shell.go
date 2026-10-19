@@ -97,7 +97,7 @@ func (e *batchShellExecution) run(ctx context.Context, leaf fantasy.AgentTool, c
 		}
 	}
 	if h != nil {
-		_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, shellOutputReader{h})
+		_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, shellOutputReader{h}, batchOutputCursorClamp)
 	} else if e.cache != nil {
 		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true})
 	}

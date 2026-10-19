@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -170,6 +171,103 @@ func TestBatchOutputCacheReaderCopySurvivesConcurrentEviction(t *testing.T) {
 	close(release)
 	if got := <-result; got != "old-bytes" {
 		t.Fatalf("reader copy changed: %q", got)
+	}
+}
+
+// fakeClampReader reproduces the generic/agent live contract
+// (batch_exec_generic.go ReadOutput): cursor = min(cursor, len(content)),
+// data = content[cursor:], Next = total, Oldest = 0, EOF = true.
+type fakeClampReader struct{ content []byte }
+
+func (r fakeClampReader) read(cursor uint64) jobbatch.OutputChunk {
+	total := uint64(len(r.content))
+	if cursor > total {
+		cursor = total
+	}
+	return jobbatch.OutputChunk{Data: append([]byte(nil), r.content[cursor:]...), Next: total, Oldest: 0, EOF: true}
+}
+
+// fakeShellReader reproduces the shell live contract
+// (internal/shell BackgroundExecution.ReadOutput) for a finished stream with
+// an empty drop window: start = max(cursor, oldest) clamped to next,
+// Next = stream next, Truncated = cursor < oldest, EOF = done.
+type fakeShellReader struct{ content []byte }
+
+func (r fakeShellReader) read(cursor uint64) jobbatch.OutputChunk {
+	oldest, next := uint64(0), uint64(len(r.content))
+	start := cursor
+	if start < oldest {
+		start = oldest
+	}
+	if start > next {
+		start = next
+	}
+	return jobbatch.OutputChunk{Data: append([]byte(nil), r.content[start-oldest:]...), Next: next, Oldest: oldest, EOF: true, Truncated: cursor < oldest}
+}
+
+// fakeArgvReader reproduces the argv live contract
+// (batchArgvOutputReader + tools.ArgvProcess.ReadOutput on a finished
+// process): cursors above MaxInt64 reset to zero, cursors below zero or above
+// the retained total reset to zero, Next = total, EOF = true.
+type fakeArgvReader struct{ content []byte }
+
+func (r fakeArgvReader) read(cursor uint64) jobbatch.OutputChunk {
+	if cursor > math.MaxInt64 {
+		cursor = 0
+	}
+	total := uint64(len(r.content))
+	if cursor > total {
+		cursor = 0
+	}
+	return jobbatch.OutputChunk{Data: append([]byte(nil), r.content[cursor:]...), Next: total, Oldest: 0, EOF: true}
+}
+
+func TestBatchOutputCacheCursorContractPerFamily(t *testing.T) {
+	content := []byte("abcdefgh")
+	total := uint64(len(content))
+	cursors := []uint64{0, 3, total, total + 5, math.MaxInt64, uint64(1) << 63}
+	cache := newBatchOutputCache()
+	chunk := jobbatch.OutputChunk{Data: append([]byte(nil), content...), Next: total, EOF: true}
+	cache.putFor("clamp", "root", chunk)
+	cache.putFor("shell", "root", chunk)
+	cache.putForContract("argv", "root", chunk, batchOutputCursorArgvRestart)
+	families := []struct {
+		id   jobbatch.ID
+		live func(uint64) jobbatch.OutputChunk
+	}{
+		{id: "clamp", live: fakeClampReader{content}.read},
+		{id: "shell", live: fakeShellReader{content}.read},
+		{id: "argv", live: fakeArgvReader{content}.read},
+	}
+	for _, fam := range families {
+		for _, cursor := range cursors {
+			live := fam.live(cursor)
+			cached, ok := cache.read(fam.id, cursor)
+			if !ok {
+				t.Fatalf("%s: cache miss at cursor %d", fam.id, cursor)
+			}
+			if string(live.Data) != string(cached.Data) || live.Next != cached.Next || live.EOF != cached.EOF {
+				t.Fatalf("%s: cursor %d live=(%q,%d,%v) cached=(%q,%d,%v)", fam.id, cursor, live.Data, live.Next, live.EOF, cached.Data, cached.Next, cached.EOF)
+			}
+		}
+	}
+}
+
+func TestLiveBatchOutputRetainedBytesUsesWindow(t *testing.T) {
+	chunk := jobbatch.OutputChunk{Data: []byte("0123456789"), Next: 300, Oldest: 100, EOF: true, Truncated: true}
+	resp := liveBatchOutput(chunk).(map[string]any)
+	if resp["total_bytes"] != uint64(300) {
+		t.Fatalf("total_bytes %#v", resp["total_bytes"])
+	}
+	if resp["retained_bytes"] != 200 {
+		t.Fatalf("retained_bytes %#v", resp["retained_bytes"])
+	}
+	if resp["oldest_cursor"] != uint64(100) || resp["next_cursor"] != uint64(300) || resp["eof"] != true || resp["truncated"] != true {
+		t.Fatalf("chunk fields %#v", resp)
+	}
+	inverted := jobbatch.OutputChunk{Next: 5, Oldest: 9}
+	if got := liveBatchOutput(inverted).(map[string]any)["retained_bytes"]; got != 0 {
+		t.Fatalf("inverted retained_bytes %#v", got)
 	}
 }
 
