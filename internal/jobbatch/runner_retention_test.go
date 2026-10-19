@@ -235,6 +235,7 @@ func TestRuntimeFinalDropsEnginePayloads(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"nil-hook", "durable"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			payload := []byte(`"` + strings.Repeat("x", 2048) + `"`)
 			var r *Runner
 			var e *runtimeTestExecutor
