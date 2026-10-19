@@ -348,6 +348,14 @@ type Config struct {
 	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse)"`
 
 	Agents map[string]Agent `json:"-"`
+
+	// endpointDroppedProviders records the custom-provider ids that the most
+	// recent configureProviders run dropped because their base_url was
+	// missing or resolved to empty (see noteEndpointDroppedProvider in
+	// store_reload_providers.go). ReloadFromDisk reads it to reject a
+	// candidate that would silently drop a live provider; the initial Load
+	// keeps its historical warn-and-skip behaviour and ignores it.
+	endpointDroppedProviders map[string]struct{}
 }
 
 func (c *Config) EnabledProviders() []ProviderConfig {

@@ -25,6 +25,10 @@ import (
 var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
 
 func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
+	// Reset the endpoint-drop record from any previous run (see
+	// endpointDroppedProviders): this call's drops must not be confused with
+	// an earlier run's.
+	c.endpointDroppedProviders = nil
 	knownProviderNames := make(map[string]bool)
 
 	// Overlay RUSH_X -> X explicitly for both env.Get lookups below and
@@ -515,6 +519,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		}
 		if providerConfig.BaseURL == "" {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id)
+			c.noteEndpointDroppedProvider(id)
 			c.Providers.Del(id)
 			continue
 		}
@@ -546,6 +551,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		baseURL, err := resolver.ResolveValue(providerConfig.BaseURL)
 		if baseURL == "" || err != nil {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id, "error", err)
+			c.noteEndpointDroppedProvider(id)
 			c.Providers.Del(id)
 			continue
 		}
