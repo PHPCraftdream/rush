@@ -116,19 +116,21 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	// We do NOT race the poller:
 	//  1. drain everything buffered now (frames of the earlier positive change);
 	//  2. the unrelated write (options.debug), waited out until adopted;
-	//  3. a SECOND known-positive model change (probe-b → probe, a real
-	//     models diff that fires OnModelsChanged) publishes a settler frame,
-	//     which we block on with waitForEvent. FIFO proof: hub fan-out
-	//     appends to the client's buffered channel in broadcast order
-	//     (hub.go:497-513), so anything enqueued BEFORE the settler —
-	//     including any mutant frame from the debug reload — is already in
-	//     client.send when the settler is received. The coalescing
-	//     buffer-1 cannot merge them either: the forwarder drains the debug
-	//     ping seconds before the second change is published (separate
-	//     poller cycles).
-	//  4. the first EventConfig after the drain must BE the settler (a mutant
-	//     debug-reload frame would arrive first and carry probe-b), and no
-	//     further EventConfig may follow it.
+	//  3. producer-side quiescence barrier: published == consumed proves the
+	//     forwarder has consumed EVERY notification ever accepted into the
+	//     buffer — nothing is pending/unconsumed before the settler write;
+	//  4. a SECOND known-positive model change (probe-b → probe, a real
+	//     models diff that fires OnModelsChanged) publishes a settler ping.
+	//     We wait until BOTH counters advance: published advancing proves
+	//     the settler's ping was ACCEPTED into the buffer (not coalesced
+	//     away behind an unconsumed ping), consumed advancing proves the
+	//     forwarder picked it up and broadcast the frame. FIFO proof: hub
+	//     fan-out appends to the client's buffered channel in broadcast
+	//     order (hub.go:497-513), so anything enqueued BEFORE the settler
+	//     is already in client.send when the settler is received.
+	//  5. the first EventConfig after the drain must BE the settler (a
+	//     mutant debug-reload frame would arrive first and carry probe-b),
+	//     and no further EventConfig may follow it.
 	countConfigEvents(client.send) // drain: frames of the positive change above are not under test
 	require.NoError(t, foreign.SetConfigFields(config.ScopeGlobal, map[string]any{"options.debug": true}))
 	require.Eventually(t, func() bool {
@@ -136,11 +138,42 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 		return o != nil && o.Debug
 	}, 20*time.Second, 10*time.Millisecond, "the poller must adopt the unrelated write before the negative window opens")
 
+	// Producer-side quiescence barrier (deterministic, no time probe):
+	// published == consumed means the forwarder is idle — every accepted
+	// notification has been consumed and broadcast, and none is pending.
+	// REVERT-CHECK (every-reload mutant, fires OnModelsChanged on the debug
+	// reload): its debug ping is published either
+	//   (a) while the barrier is polling → published == consumed+1 until
+	//       consumed; if it stays buffered when the settler ping is sent,
+	//       the settler's send is coalesced away, published NEVER advances,
+	//       and the published-and-consumed advance assertion below times
+	//       out — the merge escape is closed at the producer; or
+	//   (b) already consumed → its frame is enqueued FIFO BEFORE the
+	//       settler's, and the first EventConfig below decodes "probe-b"
+	//       and fails the settler-model assertion.
+	// Under correct code no debug ping is ever published and the barrier is
+	// trivially satisfied (both counters froze after the positive phase).
+	require.Eventually(t, func() bool {
+		return appPkg.ConfigNotificationsPublished.Load() == configNotificationsForwarded.Load()
+	}, 5*time.Second, 5*time.Millisecond,
+		"the forwarder must be idle (published == consumed) before the settler write: a still-buffered debug notification would coalesce the settler ping away")
+
 	// Settler: a second, known-positive models change orders the negative
-	// window behind a delivered frame.
+	// window behind a delivered frame. Capture BOTH counters BEFORE the
+	// settler write, then wait for both to advance: published advancing
+	// rules out coalescing (the ping was accepted), consumed advancing
+	// proves the frame was broadcast and enqueued on the hub before we
+	// block on the client channel.
+	pubBefore := appPkg.ConfigNotificationsPublished.Load()
+	beforeSettler := configNotificationsForwarded.Load()
 	require.NoError(t, foreign.UpdatePreferredModels(config.ScopeGlobal, map[config.SelectedModelType]config.SelectedModel{
 		config.SelectedModelTypeSmart: {Provider: "copilot", Model: "probe"},
 	}))
+	require.Eventually(t, func() bool {
+		return appPkg.ConfigNotificationsPublished.Load() > pubBefore &&
+			configNotificationsForwarded.Load() > beforeSettler
+	}, 12*time.Second, 10*time.Millisecond,
+		"the settler's notification must be accepted AND consumed; a stalled published counter means the settler ping was coalesced away behind an unconsumed debug ping")
 	settler := waitForEvent(t, client, EventConfig, 12*time.Second)
 	require.NotNil(t, settler, "the second models change must deliver a settler EventConfig")
 	var settlerWire ConfigWire
@@ -148,9 +181,10 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	require.Equal(t, "probe", settlerWire.Models["smart"].Model,
 		"the settler frame must carry the reverted smart model")
 
-	// waitForEvent returned the FIRST EventConfig after the drain: a mutant frame
-	// from the debug reload (carrying probe-b) would have arrived first and failed
-	// the settler-model assertion above. Nothing may follow the settler either.
+	// waitForEvent returned the FIRST EventConfig after the drain: a mutant
+	// frame from the debug reload (carrying probe-b) would have arrived first and
+	// failed the settler-model assertion above. Nothing may follow the settler
+	// either.
 	after := countConfigEvents(client.send)
 	require.Zero(t, after,
 		"no EventConfig may follow the settler; an extra frame means an unrelated reload broadcast")

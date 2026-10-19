@@ -8,10 +8,21 @@ package app
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 )
+
+// ConfigNotificationsPublished counts the model-change pings that
+// publishModelsChanged actually accepted into a subscriber's buffer-1
+// channel (a coalesced no-op send is NOT counted — nothing is pending).
+// Test-observability hook only: paired with the forwarder-side
+// configNotificationsForwarded counter in internal/server/events.go it
+// yields the invariant "published == consumed once the forwarder is idle",
+// letting the server's negative EventConfig test prove producer-side
+// quiescence instead of probing with a timeout.
+var ConfigNotificationsPublished atomic.Int64
 
 // modelsRefreshTimeout bounds the background shared-agent rebuild that
 // follows a poll-detected model change, so a stuck coordinator cannot pin
@@ -98,6 +109,7 @@ func (app *App) publishModelsChanged() {
 	for _, ch := range app.modelsSyncSubs {
 		select {
 		case ch <- struct{}{}:
+			ConfigNotificationsPublished.Add(1)
 		default:
 		}
 	}

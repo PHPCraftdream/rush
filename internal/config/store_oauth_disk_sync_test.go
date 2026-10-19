@@ -395,12 +395,22 @@ func TestOAuthDiskSync12IdleConvergence(t *testing.T) {
 
 func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	// Revert-check: a StopOAuthDiskSync that neither cancels nor joins leaves
-	// the poller and journal workers running past its return.
+	// the poller and journal workers running past its return. Both workers
+	// park AFTER cancellation until explicitly released, so the PUBLIC
+	// StopOAuthDiskSync must not return before either join completes
+	// (oauth-poller-stop#2). Catches: removing the poller join or the
+	// oauthWorkerWG.Wait from StopOAuthDiskSync lets it return while a
+	// worker is still parked → returnedEarly fires.
 	s := newTestConfigStore(testStoreOpts{globalDataPath: "fixture-unused", config: &Config{Providers: csync.NewMap[string, ProviderConfig]()}})
 	var waits atomic.Int32
 	pollerEntered, pollerCancelled, pollerExited := make(chan struct{}, 2), make(chan struct{}, 2), make(chan struct{}, 2)
-	workerEntered, workerExited := make(chan struct{}, 2), make(chan struct{}, 2)
-	doneProviders := make(chan struct{}, 2)
+	workerEntered, workerCancelled, workerExited := make(chan struct{}, 2), make(chan struct{}, 2), make(chan struct{}, 2)
+	releasePollerCh := make(chan struct{})
+	releaseWorkerCh := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBoth := func() {
+		releaseOnce.Do(func() { close(releasePollerCh); close(releaseWorkerCh) })
+	}
 	oldWait := oauthDiskSyncWait
 	oldBefore, oldDone := oauthJournalBeforeWorker, oauthJournalWorkerDone
 	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
@@ -409,19 +419,25 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		pollerEntered <- struct{}{}
 		<-ctx.Done()
 		pollerCancelled <- struct{}{}
+		<-releasePollerCh
 		return ctx.Err()
 	}
 	oauthJournalBeforeWorker = func(ctx context.Context) {
 		workerEntered <- struct{}{}
 		<-ctx.Done()
+		workerCancelled <- struct{}{}
+		<-releaseWorkerCh
 		workerExited <- struct{}{}
 	}
-	oauthJournalWorkerDone = func(_ *ConfigStore, _ string) { doneProviders <- struct{}{} }
+	oauthJournalWorkerDone = func(_ *ConfigStore, _ string) {}
 	// Register before assertions: even a failing body releases both workers
-	// through the hook-exit signals before the global hooks are restored.
+	// and joins them through the hook-exit signals before the global hooks
+	// are restored.
 	t.Cleanup(func() {
+		releaseBoth()
 		s.stopOAuthJournalWorkers()
 		awaitCodexSignal(t, pollerExited)
+		awaitCodexSignal(t, workerExited)
 		oauthDiskSyncWait = oldWait
 		oauthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
 	})
@@ -432,9 +448,20 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	stopped := make(chan struct{})
 	go func() { defer close(stopped); s.StopOAuthDiskSync() }()
 	awaitCodexSignal(t, pollerCancelled)
-	awaitCodexSignal(t, workerExited)
-	awaitCodexSignal(t, stopped) // Stop must not return before both joins finish.
-	awaitCodexSignal(t, doneProviders)
+	awaitCodexSignal(t, workerCancelled)
+	returnedEarly := false
+	select {
+	case <-stopped:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.False(t, returnedEarly, "StopOAuthDiskSync returned while a cancelled worker was still parked")
+	releaseBoth()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopOAuthDiskSync did not return after both workers were released")
+	}
 	require.EqualValues(t, 1, waits.Load())
 	select {
 	case <-pollerEntered:

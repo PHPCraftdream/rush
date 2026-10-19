@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -14,6 +15,15 @@ import (
 )
 
 const batchInterval = 16 * time.Millisecond
+
+// configNotificationsForwarded counts model-change notifications consumed by
+// the config forwarder goroutine below; test-observability hook only.
+// Invariant: every notification accepted into a subscriber's buffer-1
+// channel is consumed exactly once here (the channel holds at most one, and
+// each receive maps to one iteration), so once this goroutine is idle its
+// value equals app.ConfigNotificationsPublished — the server's negative
+// EventConfig test uses that equality as a producer-side quiescence barrier.
+var configNotificationsForwarded atomic.Int64
 
 // Fork merge note: upstream rewrote events.go as REST /v1/... protocol
 // conversions (sessionToProto, messageToProto, etc.). Our events.go is a
@@ -132,6 +142,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 	ch := a.SubscribeModelsChanged(ctx)
 	go func() {
 		for range ch {
+			configNotificationsForwarded.Add(1)
 			if wire, ok := buildConfigWire(a); ok {
 				h.Broadcast(EventConfig, wire)
 			}
