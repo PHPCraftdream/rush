@@ -19,6 +19,7 @@ type batchModelDelivery interface {
 }
 
 type installedBatchModelControl struct {
+	outputCache        *batchOutputCache
 	runner             batchModelRunner
 	delivery           batchModelDelivery
 	store              *session.BatchStore
@@ -35,6 +36,9 @@ var _ BatchModelControl = (*installedBatchModelControl)(nil)
 
 func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
 	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
+	if adapter, ok := runner.(interface{ OutputCache() *batchOutputCache }); ok {
+		control.outputCache = adapter.OutputCache()
+	}
 	if len(leases) > 0 {
 		control.rootLeases = leases[0]
 	}
@@ -396,20 +400,57 @@ func (c *installedBatchModelControl) Output(ctx context.Context, caller, root, n
 	}
 	chunk, err := c.runner.Output(ctx, jobbatch.ID(node), cursor)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !errors.Is(err, jobbatch.ErrReleased) {
+			return nil, err
+		}
+		chunk, totalBytes, retainedBytes, truncated, found := c.outputCache.readWithMetadata(jobbatch.ID(node), cursor)
+		if found {
+			return cachedBatchOutput(chunk, totalBytes, retainedBytes, truncated), nil
+		}
+		return expiredBatchOutput(cursor), nil
 	}
-	start := cursor
-	if chunk.Oldest > start {
-		start = chunk.Oldest
-		chunk.Truncated = true
+	return liveBatchOutput(chunk), nil
+}
+
+func liveBatchOutput(chunk jobbatch.OutputChunk) any {
+	return outputResponse(chunk, chunk.Next, int(chunk.Next), chunk.Truncated)
+}
+
+func cachedBatchOutput(chunk jobbatch.OutputChunk, totalBytes uint64, retainedBytes int, truncated bool) any {
+	return outputResponse(chunk, totalBytes, retainedBytes, truncated)
+}
+
+func outputResponse(chunk jobbatch.OutputChunk, totalBytes uint64, retainedBytes int, truncated bool) any {
+	oldest := chunk.Oldest
+	start := chunk.Next - uint64(len(chunk.Data))
+	if start < oldest {
+		start = oldest
 	}
-	if uint64(len(chunk.Data)) > batchModelOutputLimit {
-		chunk.Data = chunk.Data[:batchModelOutputLimit]
-		chunk.Next = start + uint64(len(chunk.Data))
-		chunk.Truncated = true
+	if start > chunk.Next {
+		start = chunk.Next
+	}
+	data := chunk.Data
+	if uint64(len(data)) > batchModelOutputLimit {
+		data = data[:batchModelOutputLimit]
+		chunk.Next = start + uint64(len(data))
 		chunk.EOF = false
+		truncated = true
 	}
-	return chunk, nil
+	if chunk.Oldest > start {
+		truncated = true
+	}
+	status := "available"
+	if truncated {
+		status = "output_truncated"
+	}
+	return map[string]any{"output_status": status, "data": string(data), "next_cursor": chunk.Next, "oldest_cursor": chunk.Oldest, "eof": chunk.EOF, "truncated": truncated, "total_bytes": totalBytes, "retained_bytes": retainedBytes}
+}
+
+func expiredBatchOutput(cursor uint64) any {
+	return map[string]any{"output_status": "output_expired", "reason": "expired_or_evicted", "data": "", "next_cursor": cursor, "oldest_cursor": uint64(0), "eof": true, "truncated": false, "total_bytes": uint64(0), "retained_bytes": 0}
 }
 
 func (c *installedBatchModelControl) Stop(ctx context.Context, caller, root, node string) (any, error) {

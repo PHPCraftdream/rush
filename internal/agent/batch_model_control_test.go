@@ -88,7 +88,7 @@ func batchOwnedControl(t *testing.T, env *batchInventoryEnv, p *BatchProfile) *i
 	// WORKING BatchRootLeaseStore — the install's own store over the
 	// install's App-owned capability manager (whose construction record the
 	// env pins). A control without one refuses every Run/Add.
-	return &installedBatchModelControl{runner: runner, delivery: env.install.Delivery, store: env.store, live: session.NewBatchLiveReader(db.New(env.conn), ""), sessions: batchTestSessions(env.sessionID), host: env.install.Runtime.cfg.Host, runnerID: env.install.Runtime.cfg.RunnerID, profile: p, rootLeases: env.install.Runtime.cfg.RootLeases, maxDepth: 8, maxNodes: 64}
+	return &installedBatchModelControl{runner: runner, delivery: env.install.Delivery, store: env.store, live: session.NewBatchLiveReader(db.New(env.conn), ""), sessions: batchTestSessions(env.sessionID), host: env.install.Runtime.cfg.Host, runnerID: env.install.Runtime.cfg.RunnerID, profile: p, rootLeases: env.install.Runtime.cfg.RootLeases, outputCache: env.install.OutputCache, maxDepth: 8, maxNodes: 64}
 }
 
 func batchTestModelInv(env *batchInventoryEnv, call string) BatchInvocation {
@@ -231,11 +231,11 @@ func TestInstalledModelControlOutputGapAndLimit(t *testing.T) {
 	c := batchOwnedControl(t, env, batchControlProfile(t))
 	got, err := c.Output(env.ctx, env.sessionID, string(root), node, 0)
 	require.NoError(t, err)
-	chunk := got.(jobbatch.OutputChunk)
-	require.Len(t, chunk.Data, batchModelOutputLimit)
-	require.Equal(t, uint64(batchModelOutputLimit), chunk.Next)
-	require.True(t, chunk.Truncated)
-	require.False(t, chunk.EOF)
+	chunk := got.(map[string]any)
+	require.Equal(t, batchModelOutputLimit, len(chunk["data"].(string)))
+	require.Equal(t, uint64(batchModelOutputLimit), chunk["next_cursor"])
+	require.True(t, chunk["truncated"].(bool))
+	require.False(t, chunk["eof"].(bool))
 	toolSet := newBatchModelTools(c, batchTestModelInv(env, "output-tool"), modelRegistry("view"))
 	params, err := json.Marshal(batchModelParams{Root: string(root), Node: node})
 	require.NoError(t, err)

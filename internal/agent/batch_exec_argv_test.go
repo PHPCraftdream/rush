@@ -375,7 +375,7 @@ func (p *batchArgvControlled) Outcome() (tools.ArgvOutcome, error) {
 func (p *batchArgvControlled) Stop(ctx context.Context) error { return p.stop(ctx) }
 func (p *batchArgvControlled) ReadOutput(_ context.Context, c int64) (jobbatch.OutputChunk, error) {
 	p.reads <- c
-	return jobbatch.OutputChunk{EOF: true}, nil
+	return jobbatch.OutputChunk{Data: []byte("argv-output"), Next: 11, EOF: true}, nil
 }
 
 func (p *batchArgvControlled) Dispose(ctx context.Context) error {

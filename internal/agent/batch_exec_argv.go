@@ -29,12 +29,13 @@ type batchArgvHandle interface {
 }
 
 type batchArgvExecution struct {
-	mu       sync.Mutex
-	process  batchArgvHandle
-	changed  chan struct{}
-	finished chan struct{}
-	cancel   context.CancelFunc
-	disposed bool
+	cache             *batchOutputCache
+	nodeID, rootID    jobbatch.ID
+	mu                sync.Mutex
+	process           batchArgvHandle
+	changed, finished chan struct{}
+	cancel            context.CancelFunc
+	disposed          bool
 
 	// A control answer is not completion. Serialize the result classification
 	// with the caller's Stop answer, not with the physical kill goroutine.
@@ -48,7 +49,7 @@ var (
 	_ jobbatch.Disposer     = (*batchArgvExecution)(nil)
 )
 
-func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -71,7 +72,7 @@ func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.L
 	// R11F round-2 (P1-5c): the PINNED policy wins — rebuilt exclusively
 	// from the payload's immutable policy transport.
 	runCtx = batchLeafRunContext(runCtx, p)
-	e := &batchArgvExecution{changed: make(chan struct{}), finished: make(chan struct{}), cancel: cancel}
+	e := &batchArgvExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), changed: make(chan struct{}), finished: make(chan struct{}), cancel: cancel}
 	runCtx = tools.WithArgvLeaf(runCtx, &tools.ArgvLeaf{OnStart: func(p *tools.ArgvProcess) { e.publish(p) }})
 	go e.run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
 	return e, nil
@@ -112,6 +113,11 @@ func (e *batchArgvExecution) run(ctx context.Context, leaf fantasy.AgentTool, ca
 			if outcome, outcomeErr := p.Outcome(); outcomeErr == nil && outcome.ExitCode > 0 {
 				r.State, r.Code = jobbatch.StateFailed, fmt.Sprintf("exit_%d", outcome.ExitCode)
 			}
+		}
+		if p != nil {
+			_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, batchArgvOutputReader{p})
+		} else if e.cache != nil {
+			e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true})
 		}
 		e.mu.Lock()
 		close(e.finished)
