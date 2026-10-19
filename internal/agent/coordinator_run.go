@@ -800,7 +800,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	// resolutions agree.
 	ctx = WithModelOverrides(ctx, smart, fast)
 
-	pinned, err := c.applyModelOverrides(ctx, smart, fast)
+	pinned, err := c.applyModelOverrides(ctx, sessionID, smart, fast)
 	if err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}
@@ -923,7 +923,7 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	var pinned *resolvedOverrides
 	var err error
 	if smart != nil || fast != nil {
-		pinned, err = c.applyModelOverrides(ctx, smart, fast)
+		pinned, err = c.applyModelOverrides(ctx, sessionID, smart, fast)
 	} else {
 		pinned, err = c.resolveSessionModels(ctx, sessionID)
 	}

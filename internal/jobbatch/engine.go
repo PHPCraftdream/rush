@@ -208,6 +208,39 @@ func (e *Engine) retireSettledRoots() {
 	e.cursor = kept
 }
 
+// dropTaskPayloads releases Engine ownership of task payloads. Payload is
+// never a view field, so View and Snapshot observables are unchanged.
+func (e *Engine) dropTaskPayloads() {
+	for _, n := range e.nodes {
+		if n.task != nil {
+			n.task.Payload = nil
+		}
+	}
+}
+
+// subtreeStopRetryable reports whether any node under id carries a failed
+// control awaiting the cancel retry re-arm (tree_apply.go:55), so a
+// redundant Stop must still be applied to re-issue it.
+func (e *Engine) subtreeStopRetryable(id ID) bool {
+	n := e.nodes[id]
+	if n == nil {
+		return false
+	}
+	var walk func(*treeNode) bool
+	walk = func(p *treeNode) bool {
+		if p.view.Control == ControlFailed {
+			return true
+		}
+		for _, c := range p.children {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(n)
+}
+
 func (e *Engine) validate(ev Event) ([]*treeNode, *treeNode, error) {
 	invalid := func() ([]*treeNode, *treeNode, error) {
 		return nil, nil, fmt.Errorf("%w: %s", ErrInvalidEvent, ev.Type)
