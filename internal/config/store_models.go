@@ -6,6 +6,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -87,6 +88,9 @@ func (s *ConfigStore) UpdatePreferredModels(scope Scope, models map[SelectedMode
 		fields[fmt.Sprintf("models.%s", modelType)] = model
 	}
 	if err := s.SetConfigFields(scope, fields); err != nil {
+		if errors.Is(err, ErrSettingsLocked) || errors.Is(err, ErrWrongPassword) {
+			return err
+		}
 		return fmt.Errorf("failed to update preferred models: %w", err)
 	}
 	s.updateConfig(func(cfgCopy *Config) {
