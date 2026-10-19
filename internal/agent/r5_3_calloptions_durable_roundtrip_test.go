@@ -84,7 +84,7 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	assert.False(t, decoded.CallOptionsSpec.TimeoutExtendsOnProgress)
 	assert.Zero(t, decoded.CallOptionsSpec.TimeoutHardCap)
 
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.NoError(t, err)
 	require.NotNil(t, rebuilt.CallOptions,
 		"a rebuilt call whose row carries CallOptionsSpec/FolderScopeSpec must carry CallOptions")
@@ -169,7 +169,7 @@ func TestRebuildSessionAgentCall_CallOptionsSpecAloneWithoutFolderScope(t *testi
 	require.Nil(t, decoded.FolderScopeSpec, "this call must not carry a folder scope")
 	require.NotNil(t, decoded.CallOptionsSpec)
 
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.NoError(t, err)
 	require.NotNil(t, rebuilt.CallOptions,
 		"a rebuilt call whose row carries ONLY a CallOptionsSpec (no folder scope) must still carry CallOptions")

@@ -101,7 +101,7 @@ func TestDrainCallFor_RootCallCarriesFreshCredentials(t *testing.T) {
 	_, err := f.coord.resolveSessionModels(ctx, f.sessID) // a snapshot cached before the refresh
 	require.NoError(t, err)
 
-	call, err := f.coord.drainCallFor(ctx, f.sessID)
+	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	require.True(t, call.IsDrain)
 	call.Tools = nil // the probe agent's own (empty) toolset
@@ -129,7 +129,7 @@ func TestDrainCallFor_ChildTemplateClientCarriesFreshCredentials(t *testing.T) {
 		agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
 	})
 
-	call, err := f.coord.drainCallFor(ctx, f.sessID)
+	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	_, err = f.sa.Run(ctx, call)
 	require.NoError(t, err)
@@ -194,7 +194,7 @@ func TestDrainCallFor_ChildTemplateClientCarriesFreshAPIKey(t *testing.T) {
 	})
 	f.withAPIKeyTemplateProvider(oauthTestProvider, "new-key") // the 401 accounting's refresh published it
 
-	call, err := f.coord.drainCallFor(ctx, f.sessID)
+	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	_, err = f.sa.Run(ctx, call)
 	require.NoError(t, err)

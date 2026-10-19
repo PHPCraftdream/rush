@@ -94,6 +94,10 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		}
 	}
 	result := NewSessionAgent(SessionAgentOptions{
+		// R12-H2b §2.4: the agent's durable enqueue producer holds
+		// row-keyed Continuation owners through the coordinator's
+		// capability manager (nil on bare fixtures, same as diskCaps).
+		diskCaps:             c.diskCaps,
 		SmartModel:           smart,
 		FastModel:            fast,
 		SystemPromptPrefix:   smartProviderCfg.SystemPromptPrefix,
