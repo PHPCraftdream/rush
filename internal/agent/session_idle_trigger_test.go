@@ -109,8 +109,15 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 	delivered := make(chan AsyncCompletion, 4)
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(func(c AsyncCompletion) { delivered <- c })
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
+	// recheckChild scope read (childScopeOpenAcrossProcesses -> CLIScope ->
+	// node facts) needs both to bind a real (here: empty) node source, or the
+	// unknown-facts fail-open keeps the parked delegation undelivered even
+	// once the driver's real turn ends.
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 
 	model := newBlockUntilReleasedModel()

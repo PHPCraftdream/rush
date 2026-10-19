@@ -61,6 +61,16 @@ func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	c := &coordinator{}
 	c.asyncJobs = newWorkLedger(nil)
 	c.asyncJobs.store = store
+	// Standalone coordinator literal: the facts seam needs an explicit
+	// binding, or a flag-ON CLIScope answers through
+	// unknownBatchCutoverFacts ("batch facts: node source unavailable").
+	bindBatchNodeFacts(t, c, conn, dataDir)
+	if batchFlagEnabled() {
+		// Flag ON the same oracle is batch work on the probed dead host:
+		// running batch nodes on dead-host-x must be recovered (projected to
+		// interrupted) before the scope answer closes the scope.
+		b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "dead-host-x", "running")
+	}
 
 	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
@@ -94,6 +104,13 @@ func TestCLIScope_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	c := &coordinator{}
 	c.asyncJobs = newWorkLedger(nil)
 	c.asyncJobs.store = store
+	// Explicit facts binding for the standalone coordinator literal.
+	bindBatchNodeFacts(t, c, conn, dataDir)
+	if batchFlagEnabled() {
+		// Flag ON the live work is a running batch root: the live-host row
+		// analogue must keep the scope open through the batch live read.
+		b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "fixture-host", "running")
+	}
 
 	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)

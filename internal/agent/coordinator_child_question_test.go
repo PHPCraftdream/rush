@@ -46,6 +46,10 @@ func childDelegationBase(t *testing.T, o attemptFixtureOpts) (*attemptFixture, s
 	_, _, err = f.ledger.Start(parent.ID, "delegate-1", "do work", AgentToolName, child.ID, false, false, nil, func() {})
 	require.NoError(t, err)
 	f.ledger.acknowledged(jobOf(f.ledger, parent.ID, "delegate-1"))
+	// The durable delegation child-link the flag-ON readers require
+	// (drainPermitted's DelegationChildEver, CLIScope's live reads); OFF's
+	// durable record is the async_jobs row Start just claimed.
+	b1SeedDelegationChildLink(t, f.env.conn, f.store, parent.ID, "delegate-1", child.ID)
 	return f, parent.ID, child.ID, ch
 }
 
