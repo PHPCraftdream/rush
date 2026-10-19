@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -71,7 +71,9 @@ func newContinuationApp(t *testing.T, withReviewer bool) *App {
 }
 
 func continuationFirstCoordinatorRequest() int {
-	return fantasy.DefaultRetryOptions().MaxRetries + 2
+	// 2 = partial-text attempt + the coordinator continuation; retries are
+	// the pinned fantasy count.
+	return agent.ProviderMaxRetries + 2
 }
 
 func continuationRetryFailure(n int, w http.ResponseWriter) bool {

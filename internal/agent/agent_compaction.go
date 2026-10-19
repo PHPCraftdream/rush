@@ -397,6 +397,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
 
 	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
+		MaxRetries:      &ProviderMaxRetries,
 		Prompt:          summaryPromptText,
 		Messages:        aiMsgs,
 		Headers:         sessionHeaders(sessionID),
@@ -598,6 +599,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 
 	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
 	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
+		MaxRetries:      &ProviderMaxRetries,
 		Prompt:          summaryPromptText,
 		Messages:        aiMsgs,
 		Headers:         sessionHeaders(sessionID),

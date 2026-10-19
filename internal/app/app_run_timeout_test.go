@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -46,7 +45,11 @@ func TestRunTimeoutWaitPhases(t *testing.T) {
 			}
 			duration := 3 * time.Second
 			if phase == "quota" {
-				duration = 40 * time.Second // allow fantasy's 5s/10s/20s retries to latch quota before the wait
+				// Allow the pinned retry waits (5s+10s = 15s over
+				// agent.ProviderMaxRetries at InitialDelayIn 5s,
+				// BackoffFactor 2) to latch quota before the wait,
+				// plus a scheduling margin.
+				duration = quotaRetryWait() + 5*time.Second
 			}
 			cause := &agent.RunTimeoutCause{Duration: duration, Source: "--timeout"}
 			ctx, cancel := context.WithTimeoutCause(t.Context(), cause.Duration, cause)
@@ -77,7 +80,7 @@ func TestRunTimeoutWaitPhases(t *testing.T) {
 				require.EqualValues(t, 1, h.requests.Load())
 			}
 			if phase == "quota" {
-				require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load(), "quota latched before waiting on the held job")
+				require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load(), "quota latched before waiting on the held job")
 			}
 		})
 	}

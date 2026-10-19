@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -57,7 +56,7 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 			loopText(w, "resumed", "resumed persisted results", 1, 1)
 			return
 		}
-		require.LessOrEqual(t, n, fantasy.DefaultRetryOptions().MaxRetries+1, "no own turn after quota")
+		require.LessOrEqual(t, n, agent.ProviderMaxRetries+1, "no own turn after quota")
 		lastQuotaAt.Store(time.Now().UnixNano())
 		quotaResponse(w)
 	})
@@ -84,7 +83,7 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 	res, wire, runErr := h.run(ctx, RunOverrides{})
 	require.Error(t, runErr)
 	require.Equal(t, "provider_limit", res.ExitReason)
-	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load())
+	require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load())
 	require.Len(t, res.FinishedWork, 2)
 	for _, work := range res.FinishedWork {
 		require.NotEqual(t, "historical-child", work.JobID)
@@ -122,7 +121,7 @@ func TestCLIQuotaDrainIgnoresFutureAwaitSchedule(t *testing.T) {
 			loopText(w, "first", "keep answer", 1, 1)
 			return
 		}
-		require.LessOrEqual(t, n, fantasy.DefaultRetryOptions().MaxRetries+2)
+		require.LessOrEqual(t, n, agent.ProviderMaxRetries+2)
 		quotaResponse(w)
 	})
 	ctx := loopCtx(t)
@@ -134,7 +133,9 @@ func TestCLIQuotaDrainIgnoresFutureAwaitSchedule(t *testing.T) {
 	require.Error(t, runErr)
 	require.Equal(t, "provider_limit", res.ExitReason)
 	require.Equal(t, "keep answer", res.FinalText)
-	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+2, h.requests.Load())
+	require.EqualValues(t, agent.ProviderMaxRetries+2, h.requests.Load())
+	// Pinned waits are 15s total; 60s leaves ample headroom for
+	// scheduling even if the pin is later raised.
 	require.Less(t, time.Since(start), 60*time.Second)
 	require.Contains(t, wire, "once schedules")
 	require.True(t, cliScopeOf(t, h.app, h.sessionID).OnceWakeOpen)
@@ -156,7 +157,7 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 	require.Equal(t, "provider_limit", res.ExitReason)
 	require.Len(t, res.PendingChildQuestions, 1)
 	require.Contains(t, wire, "which port?")
-	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load())
+	require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load())
 	var decoded RunResult
 	require.NoError(t, json.Unmarshal([]byte(wire), &decoded))
 	require.Contains(t, strings.Join([]string{decoded.Error, decoded.ResumeCommand}, " "), "--role smart")
