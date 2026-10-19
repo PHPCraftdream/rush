@@ -164,8 +164,12 @@ func TestConfigDiskSyncDriftFailureRecoversWhenFileFixed(t *testing.T) {
 // while every previously tracked file is byte-identical, and back to a real
 // signed file, growing it again. Each transition must perform exactly one
 // reload via the forced tick's sameReloadPathSet drift check
-// (store_config_disk_sync.go:196), and a quiescent third tick must not
-// reload. No git needed.
+// (store_config_disk_sync.go:196), an edit to the newly tracked global
+// config must reload through the ordinary digest gate, and a quiescent
+// final tick must not reload. No git needed.
+//
+// Tracked-set membership is asserted under normalizeDiscoveryPath (the
+// spelling the tracked set is keyed by), not canonicalConfigPath.
 // REVERT-CHECK: removing the `drift := forced && !sameReloadPathSet(...)`
 // line fails the GROWTH assertion — the newly eligible global-config file is
 // not in the tracked set, so configDiskSyncDigestsMatch (which only examines
@@ -187,7 +191,13 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { s.StopConfigDiskSync() })
 	require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model)
-	require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(globalCfg)),
+	// Keyed by normalizeDiscoveryPath: the tracked set is built with
+	// normalizeDiscoveryPath (Abs+Clean only, store_reload.go), NOT
+	// canonicalConfigPath (which additionally EvalSymlinks the deepest
+	// existing parent). GlobalConfig() is a raw env-var path, so on runners
+	// where the temp dir sits behind a symlink (/var -> /private/var on
+	// macOS; junction components on Windows) the two spellings differ.
+	require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(globalCfg)),
 		"the ineligible global-config path must not be tracked at Load")
 
 	// Settle on the initial candidate set.
@@ -229,8 +239,24 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	require.True(t, result.Reloaded, "the candidate-set growth must reload on the drift check alone")
 	require.EqualValues(t, baseAttempts+1, st2.reloadAttempts, "exactly one reload per transition")
 	require.Greater(t, s.Generation(), gen)
-	require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(globalCfg)),
+	require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(globalCfg)),
 		"the new candidate must join the tracked set")
+
+	// The joined candidate is LIVE for future changes: editing the global
+	// config file (different model id, re-signed) changes a tracked path's
+	// digest, so the ordinary digest gate (no drift involved) reloads on
+	// the next forced tick. This is a positive liveness check of the
+	// correct implementation (an edit to the newly tracked file reloads
+	// exactly once). It is NOT the discriminator for a reload that drops
+	// newly eligible paths from the rebuilt tracked set: that mutant is
+	// already rejected by the membership assertion above, and with force set
+	// the candidate-set drift check would still reload on the edit.
+	writeSignedModelsFixture(t, globalCfg, `{"smart":{"provider":"openai","model":"gpt-globalcfg-2"}}`)
+	result, err = s.syncConfigFromDisk(context.Background(), &st2)
+	require.NoError(t, err)
+	require.True(t, result.Reloaded, "an edit to the newly tracked candidate must reload via the digest gate")
+	require.EqualValues(t, baseAttempts+2, st2.reloadAttempts, "exactly one reload for the edit")
+	require.Greater(t, s.Generation(), gen)
 
 	// Transition 2 (SHRINK): the file becomes a directory again — the
 	// candidate set shrinks back. Exactly one more reload.
@@ -239,7 +265,7 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	result, err = s.syncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "the candidate-set shrink must reload")
-	require.EqualValues(t, baseAttempts+2, st2.reloadAttempts, "exactly one reload per transition")
+	require.EqualValues(t, baseAttempts+3, st2.reloadAttempts, "exactly one reload per transition")
 	require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model,
 		"the removed candidate's models must revert to the remaining sources")
 
@@ -247,7 +273,7 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	result, err = s.syncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded)
-	require.EqualValues(t, baseAttempts+2, st2.reloadAttempts)
+	require.EqualValues(t, baseAttempts+3, st2.reloadAttempts)
 }
 
 // TestConfigDiskSyncJitterBounds pins the delay contract: the first delay
