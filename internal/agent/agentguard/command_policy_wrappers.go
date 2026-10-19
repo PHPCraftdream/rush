@@ -7,8 +7,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
-var valueNice = map[string]bool{"cap": true, "capc": true, "capt": true, "capm": true, "caps": true, "capn": true, "pint": true}
-var noValueNice = map[string]bool{"idle": true, "belownormal": true, "abovenormal": true, "high": true, "realtime": true, "uiup": true, "admin": true}
+var (
+	valueNice   = map[string]bool{"cap": true, "capc": true, "capt": true, "capm": true, "caps": true, "capn": true, "pint": true}
+	noValueNice = map[string]bool{"idle": true, "belownormal": true, "abovenormal": true, "high": true, "realtime": true, "uiup": true, "admin": true}
+)
 
 const wrapperDepthLimit = 32
 

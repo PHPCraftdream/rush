@@ -45,10 +45,13 @@ func (p *denyExecBatchPerms) SetRunAllowlist(permission.RunAllowlist)      {}
 func (p *denyExecBatchPerms) SubscribeNotifications(context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }
+
 func (p *denyExecBatchPerms) ListSessionPermissions(context.Context, string) ([]db.SessionPermission, error) {
 	return nil, nil
 }
-func (p *denyExecBatchPerms) DeletePermission(context.Context, string) error              { return nil }
+
+func (p *denyExecBatchPerms) DeletePermission(context.Context, string) error { return nil }
+
 func (p *denyExecBatchPerms) UpdatePermissionEnabled(context.Context, string, bool) error { return nil }
 
 func TestBatchDenyExecPolicyHelper(t *testing.T) {

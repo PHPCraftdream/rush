@@ -39,9 +39,11 @@ func (p *policyPermissionProbe) SkipRequests() bool                           { 
 func (p *policyPermissionProbe) SubscribeNotifications(context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }
+
 func (p *policyPermissionProbe) ListSessionPermissions(context.Context, string) ([]db.SessionPermission, error) {
 	return nil, nil
 }
+
 func (p *policyPermissionProbe) UpdatePermissionEnabled(context.Context, string, bool) error {
 	return nil
 }

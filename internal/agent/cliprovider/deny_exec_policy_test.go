@@ -28,9 +28,11 @@ func (p *policyMCPPermissionProbe) Request(context.Context, permission.CreatePer
 	}
 	return false, nil
 }
+
 func (p *policyMCPPermissionProbe) Subscribe(context.Context) <-chan pubsub.Event[permission.PermissionRequest] {
 	return make(<-chan pubsub.Event[permission.PermissionRequest])
 }
+
 func (p *policyMCPPermissionProbe) SubscribeNotifications(context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }

@@ -35,12 +35,31 @@ func TestCommandPolicyArgvPathsAndWrappers(t *testing.T) {
 		{"xargs", "--max-args=1", "go", "test", "./..."},
 		{"find", ".", "-exec", "go", "vet", "{}", ";"},
 		{"env", "FOO=1", "go", "build", "./..."},
-		{"cmd", "/c", "go", "test", "./..."}, {"sudo", "-u", "builder", "go", "test", "./..."}, {"start", "go", "test", "./..."}, {"start", "title", "go", "test", "./..."},
-		{"npx", "playwright", "test"}, {"sudo", "go", "test", "./..."},
+		{"cmd", "/c", "go", "test", "./..."},
+		{"sudo", "-u", "builder", "go", "test", "./..."},
+		{"start", "go", "test", "./..."},
+		{"start", "title", "go", "test", "./..."},
+		{"npx", "playwright", "test"},
+		{"sudo", "go", "test", "./..."},
 		{"npm", "test"},
-		{"node", "--test"}, {"python3", "-m", "pytest"}, {"python", "-m", "unittest"}, {"pytest"},
-		{"golangci-lint", "run"}, {"staticcheck", "./..."}, {"revive", "./..."}, {"sqlc", "generate"}, {"gopls", "check"}, {"gotestsum", "./..."}, {"ginkgo", "./..."},
-		{"playwright", "test"}, {"vitest", "run"}, {"jest", "--runInBand"}, {"cargo", "build"}, {"cargo", "test"}, {"cargo", "check"}, {"cargo", "clippy"},
+		{"node", "--test"},
+		{"python3", "-m", "pytest"},
+		{"python", "-m", "unittest"},
+		{"pytest"},
+		{"golangci-lint", "run"},
+		{"staticcheck", "./..."},
+		{"revive", "./..."},
+		{"sqlc", "generate"},
+		{"gopls", "check"},
+		{"gotestsum", "./..."},
+		{"ginkgo", "./..."},
+		{"playwright", "test"},
+		{"vitest", "run"},
+		{"jest", "--runInBand"},
+		{"cargo", "build"},
+		{"cargo", "test"},
+		{"cargo", "check"},
+		{"cargo", "clippy"},
 	}
 	for _, argv := range denied {
 		if err := p.CheckArgs(argv); err == nil {
@@ -48,10 +67,17 @@ func TestCommandPolicyArgvPathsAndWrappers(t *testing.T) {
 		}
 	}
 	allowed := [][]string{
-		{"node", "script.js", "test"}, {"capm", "2g", "idle", "go", "fmt", "./..."},
-		{"go", "fmt", "./..."}, {"npm", "run", "lint"}, {"xargs", "echo", "allowed"},
-		{"gofumpt", "-w", "file.go"}, {"git", "status"}, {"curl", "--version"}, {"gh", "--version"},
-		{".githooks/check_file_size.sh", "--selftest"}, {".githooks/check_db_release_pairing_selftest.sh"},
+		{"node", "script.js", "test"},
+		{"capm", "2g", "idle", "go", "fmt", "./..."},
+		{"go", "fmt", "./..."},
+		{"npm", "run", "lint"},
+		{"xargs", "echo", "allowed"},
+		{"gofumpt", "-w", "file.go"},
+		{"git", "status"},
+		{"curl", "--version"},
+		{"gh", "--version"},
+		{".githooks/check_file_size.sh", "--selftest"},
+		{".githooks/check_db_release_pairing_selftest.sh"},
 	}
 	for _, argv := range allowed {
 		if err := p.CheckArgs(argv); err != nil {
@@ -59,6 +85,7 @@ func TestCommandPolicyArgvPathsAndWrappers(t *testing.T) {
 		}
 	}
 }
+
 func TestCommandPolicyNamedAndError(t *testing.T) {
 	p := NewCommandPolicy("go")
 	err := p.CheckArgs([]string{"go", "test", "./..."})

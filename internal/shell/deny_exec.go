@@ -2,8 +2,10 @@ package shell
 
 import "sync"
 
-var denyExecMu sync.RWMutex
-var denyExecPolicy func([]string) error
+var (
+	denyExecMu     sync.RWMutex
+	denyExecPolicy func([]string) error
+)
 
 // RegisterCommandPolicy installs the immutable parsed-once process policy.
 func RegisterCommandPolicy(check func([]string) error) {
@@ -13,6 +15,7 @@ func RegisterCommandPolicy(check func([]string) error) {
 		denyExecPolicy = check
 	}
 }
+
 func checkRegisteredCommandPolicy(args []string) error {
 	denyExecMu.RLock()
 	check := denyExecPolicy

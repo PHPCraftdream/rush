@@ -14,8 +14,10 @@ const denyExecEnv = "RUSH_DENY_EXEC"
 
 var processCommandPolicy = NewCommandPolicy(os.Getenv(denyExecEnv))
 
-type CommandPolicy struct{ rules map[string]struct{} }
-type CommandDeniedError struct{ Rule string }
+type (
+	CommandPolicy      struct{ rules map[string]struct{} }
+	CommandDeniedError struct{ Rule string }
+)
 
 var ciOnlyRules = []string{"go", "linters", "js", "node", "test-runners", "python", "cargo"}
 
@@ -51,6 +53,7 @@ func (p CommandPolicy) CheckCommand(command string) error {
 	}
 	return nil
 }
+
 func (p CommandPolicy) CheckArgs(args []string) error {
 	candidates := shell.CommandCandidatesForPlatform(args, true)
 	candidates = append(candidates, augmentPolicyWrappers(args)...)
