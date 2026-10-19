@@ -42,14 +42,17 @@ func TestStop_OneSecondAfterNaturalFinish_NoNewTurn(t *testing.T) {
 
 	f.coord.Cancel(f.sessID) // "Stop one second after" -- the row already committed
 
-	row, err := f.store.Get(ctx, f.sessID, "call-1")
-	require.NoError(t, err)
+	// Dual-mode readback: under the flag the seeded debt lives in
+	// batch_nodes (claimAndFinish's ON branch), so the legacy async_jobs
+	// Get has no row to return ("sql: no rows"). readFixtureJobDebt maps
+	// the selected child node's wake onto the same AsyncJob view.
+	row := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
 	require.EqualValues(t, 0, row.Wake, "Stop's wake-zero pass must have closed the race")
 
 	// A late/duplicate hint for the SAME completion (exactly what a
 	// goroutine racing Stop would eventually deliver) must not produce a
 	// turn: decideDrainTurn's own visible-debt check now sees wake=0.
-	err = f.coord.wakeSession(ctx, f.sessID, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "Stop must prevent any turn over a race-won natural completion")
 }
