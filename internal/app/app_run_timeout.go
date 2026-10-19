@@ -9,9 +9,15 @@ import (
 )
 
 // RunTimeoutError carries the owned deadline and exact continuation command.
+// CommittedResult reports that the invocation had already finished cleanly
+// (result envelope, no error) before the deadline was noticed: the run exits
+// timed out, but the envelope still carries that committed answer -- the
+// timeout reports how the RUN ended, it never erases a committed turn's
+// outcome (see cliLoop.turnCanceled, which adopts it).
 type RunTimeoutError struct {
-	Cause         *agent.RunTimeoutCause
-	ResumeCommand string
+	Cause           *agent.RunTimeoutCause
+	ResumeCommand   string
+	CommittedResult bool
 }
 
 func (e *RunTimeoutError) Error() string { return e.Cause.Error() }
@@ -24,8 +30,20 @@ func runResumeRole(role string) string {
 	return "smart"
 }
 
+// classifyRunTimeout maps an owned run deadline onto the timeout exit: the
+// envelope gains the timeout reason/error/resume metadata and the caller gets
+// a *RunTimeoutError. A clean invocation outcome (err == nil with an envelope)
+// keeps its answer in the envelope and is flagged CommittedResult on the
+// error, so the loop can still adopt it; failed or envelope-less turns are
+// never marked committed.
 func classifyRunTimeout(ctx context.Context, final *RunResult, err error, sessionID, role string) (*RunResult, error) {
 	if ctx.Err() == nil {
+		return final, err
+	}
+	// Idempotent: the outer and inner ExecuteRun defers both classify; the
+	// second must not rebuild the error (it would lose CommittedResult).
+	var already *RunTimeoutError
+	if errors.As(err, &already) {
 		return final, err
 	}
 	var cause *agent.RunTimeoutCause
@@ -36,7 +54,8 @@ func classifyRunTimeout(ctx context.Context, final *RunResult, err error, sessio
 	if sessionID != "" {
 		resume = fmt.Sprintf("rush run --role %s --session %s", runResumeRole(role), sessionID)
 	}
-	timeoutErr := &RunTimeoutError{Cause: cause, ResumeCommand: resume}
+	committed := err == nil && final != nil
+	timeoutErr := &RunTimeoutError{Cause: cause, ResumeCommand: resume, CommittedResult: committed}
 	if final == nil {
 		final = &RunResult{SessionID: sessionID, ToolCalls: []ToolCallStat{}}
 	}
@@ -44,4 +63,12 @@ func classifyRunTimeout(ctx context.Context, final *RunResult, err error, sessio
 	final.Error = timeoutErr.Error()
 	final.ResumeCommand = resume
 	return final, timeoutErr
+}
+
+// runTimeoutCommitted reports whether err is the timeout of a run whose turn
+// had already committed a clean result before the deadline was noticed; only
+// such a timeout may be traded for the committed answer.
+func runTimeoutCommitted(err error) bool {
+	var timeoutErr *RunTimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr.CommittedResult
 }

@@ -725,7 +725,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 				"wait", wait.String(),
 				"wait_until", deadline.Format("15:04"),
 			)
-			c.notifyRateLimitWait(sessionID, deadline, rateLimitWaits+1)
+			c.notifyRateLimitWaitContext(ctx, sessionID, deadline, rateLimitWaits+1)
 			heartbeat.SetRateLimitedUntilFor(sessionID, deadline)
 			err := c.waitRateLimit(ctx, sessionID, wait, &rateLimitSpent)
 			heartbeat.SetRateLimitedUntilFor(sessionID, time.Time{})
