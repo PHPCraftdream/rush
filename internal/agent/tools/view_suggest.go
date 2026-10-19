@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"io/fs"
+	"time"
 )
 
 // anchoredSuggestionMaxEntries caps how many directory entries are inspected
@@ -14,6 +15,11 @@ const anchoredSuggestionMaxEntries = 2000
 // opened or is not readable as a directory. Entries are NOT sorted; callers
 // only scan them for fuzzy name matches.
 func boundedReadDirNames(ctx context.Context, fsys fs.FS, dir string, maxEntries int) []fs.DirEntry {
+	return boundedReadDirNamesWithClock(ctx, fsys, dir, maxEntries, time.Now)
+}
+
+func boundedReadDirNamesWithClock(ctx context.Context, fsys fs.FS, dir string, maxEntries int, now func() time.Time) []fs.DirEntry {
+	deadline := now().Add(100 * time.Millisecond)
 	f, err := fsys.Open(dir)
 	if err != nil {
 		return nil
@@ -21,18 +27,11 @@ func boundedReadDirNames(ctx context.Context, fsys fs.FS, dir string, maxEntries
 	defer f.Close()
 	rdf, ok := f.(fs.ReadDirFile)
 	if !ok {
-		fallEntries, err := fs.ReadDir(fsys, dir)
-		if err != nil {
-			return nil
-		}
-		if len(fallEntries) > maxEntries {
-			fallEntries = fallEntries[:maxEntries]
-		}
-		return fallEntries
+		return nil
 	}
 	var entries []fs.DirEntry
 	for len(entries) < maxEntries {
-		if err := ctx.Err(); err != nil {
+		if ctx.Err() != nil || now().After(deadline) {
 			return entries
 		}
 		n := 256
