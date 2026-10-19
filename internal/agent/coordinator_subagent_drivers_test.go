@@ -21,9 +21,15 @@ import (
 func TestSubAgentWorkTerminal_DriverBusyIsNotTerminal(t *testing.T) {
 	t.Parallel()
 	coord := &coordinator{}
+	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
+	// childScopeDrained reads (childScopeOpenAcrossProcesses -> CLIScope ->
+	// node facts) need both to bind a real (here: empty) node source. An
+	// empty bound store reads drained once the driver is idle.
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
 	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 
 	// c.currentAgent, if wrongly consulted for a driven child, would report

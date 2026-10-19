@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -14,21 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedCompletedJob claims, announces and completes a wake=1 job for owner
-// (pending-inclusive reaction debt), optionally naming childID as its
-// delegation target.
-func seedCompletedJob(t *testing.T, store *session.AsyncJobStore, owner, callID string, kind session.JobKind, childID string) {
+// seedCompletedJob is the dual-mode completed-job seed: it leaves owner with
+// pending-inclusive wake=1 reaction debt on whichever authority
+// RUSH_BATCH_RUNTIME selects -- flag ON projects batch nodes
+// (seedFixtureJobDebt / seedFixtureDelegation), OFF keeps the legacy
+// claim/announce/transition async_jobs row -- optionally naming childID as
+// the delegation target.
+func seedCompletedJob(t *testing.T, conn *sql.DB, store *session.AsyncJobStore, ledger *workLedger, owner, callID string, kind session.JobKind, childID string) {
 	t.Helper()
-	ctx := context.Background()
-	_, err := store.Claim(ctx, session.ClaimParams{
-		Owner: owner, ToolCallID: callID, Kind: kind, Input: "x", ChildSessionID: childID, ToolName: string(kind),
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, owner, callID))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: owner, ToolCallID: callID, State: "completed", ResultSummary: "done", Wake: true,
-	})
-	require.NoError(t, err)
+	b1SeedCompletedJob(t, conn, store, ledger, owner, callID, kind, childID)
 }
 
 func seedBGShellNotice(t *testing.T, store *session.AsyncJobStore, owner string) {
@@ -59,10 +54,12 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 
 	t.Run("running job only", func(t *testing.T) {
 		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
-		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
+		env := getEnv(ctx)
+		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
-		_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "run-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
-		require.NoError(t, err)
+		// Dual-mode running-row seed: ON a live batch root, OFF a running
+		// async_jobs row.
+		b1SeedRunningJob(t, env.conn, store, sess.ID, "run-1")
 		st, err := coord.CLIScope(ctx, sess.ID)
 		require.NoError(t, err)
 		requireScope(t, st, true, DrainNone)
@@ -80,42 +77,45 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 
 	t.Run("bg-shell debt beside running work is deferred and waiting", func(t *testing.T) {
 		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
-		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
+		env := getEnv(ctx)
+		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
 		seedBGShellNotice(t, store, sess.ID)
-		_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "run-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
-		require.NoError(t, err)
+		b1SeedRunningJob(t, env.conn, store, sess.ID, "run-1")
 		st, err := coord.CLIScope(ctx, sess.ID)
 		require.NoError(t, err)
 		requireScope(t, st, true, DrainDeferred)
 	})
 
 	t.Run("bg-shell notice beside job debt makes the mixed debt owed", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
-		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
+		coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+		env := getEnv(ctx)
+		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
 		seedBGShellNotice(t, store, sess.ID)
-		seedCompletedJob(t, store, sess.ID, "call-1", session.JobKindCommand, "")
+		seedCompletedJob(t, env.conn, store, ledger, sess.ID, "call-1", session.JobKindCommand, "")
 		st, err := coord.CLIScope(ctx, sess.ID)
 		require.NoError(t, err)
 		requireScope(t, st, false, DrainOwed)
 	})
 
 	t.Run("plain job debt is owed", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
-		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
+		coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+		env := getEnv(ctx)
+		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
-		seedCompletedJob(t, store, sess.ID, "call-1", session.JobKindCommand, "")
+		seedCompletedJob(t, env.conn, store, ledger, sess.ID, "call-1", session.JobKindCommand, "")
 		st, err := coord.CLIScope(ctx, sess.ID)
 		require.NoError(t, err)
 		requireScope(t, st, false, DrainOwed)
 	})
 
 	t.Run("Stop-suspended debt is deferred", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
-		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
+		coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+		env := getEnv(ctx)
+		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
-		seedCompletedJob(t, store, sess.ID, "call-1", session.JobKindCommand, "")
+		seedCompletedJob(t, env.conn, store, ledger, sess.ID, "call-1", session.JobKindCommand, "")
 		coord.suspendAutoResume(sess.ID)
 		st, err := coord.CLIScope(ctx, sess.ID)
 		require.NoError(t, err)
@@ -127,28 +127,28 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("released delegation child debt is deferred", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+		coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		parent, err := env.sessions.Create(ctx, "parent")
 		require.NoError(t, err)
 		child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 		require.NoError(t, err)
-		seedCompletedJob(t, store, parent.ID, "deleg-1", session.JobKindAgent, child.ID) // released: terminal
-		seedCompletedJob(t, store, child.ID, "child-call", session.JobKindCommand, "")   // the child's own debt
+		seedCompletedJob(t, env.conn, store, ledger, parent.ID, "deleg-1", session.JobKindAgent, child.ID) // released: terminal
+		seedCompletedJob(t, env.conn, store, ledger, child.ID, "child-call", session.JobKindCommand, "")   // the child's own debt
 		st, err := coord.CLIScope(ctx, child.ID)
 		require.NoError(t, err)
 		requireScope(t, st, false, DrainDeferred)
 	})
 
 	t.Run("a delegation child driven by this process's own loop is owed", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+		coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		parent, err := env.sessions.Create(ctx, "parent")
 		require.NoError(t, err)
 		child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 		require.NoError(t, err)
-		seedCompletedJob(t, store, parent.ID, "deleg-1", session.JobKindAgent, child.ID)
-		seedCompletedJob(t, store, child.ID, "child-call", session.JobKindCommand, "")
+		seedCompletedJob(t, env.conn, store, ledger, parent.ID, "deleg-1", session.JobKindAgent, child.ID)
+		seedCompletedJob(t, env.conn, store, ledger, child.ID, "child-call", session.JobKindCommand, "")
 		coord.asyncJobs.claimExternalDriver(child.ID)
 		st, err := coord.CLIScope(ctx, child.ID)
 		require.NoError(t, err)
@@ -164,7 +164,15 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 func TestCLIScope_ForeignLiveDriver_DebtDeferred(t *testing.T) {
 	ctx := context.Background()
 	f := newForeignDriverFx(t, "cli-scope-foreign")
-	f.claimAndFinish(t, ctx, "call-1")
+	// The shared foreignDriverFx fixture (owned elsewhere) does not bind the
+	// facts seam; the flag-ON CLIScope below needs real node facts.
+	bindBatchNodeFacts(t, f.coord, f.conn, f.dataDir)
+	// Dual-mode debt seed: ON batch node debt, OFF the legacy claim+finish.
+	if batchFlagEnabled() {
+		seedFixtureJobDebt(t, f.conn, f.store, f.ledger, nil, f.sessID, "call-1", false)
+	} else {
+		f.claimAndFinish(t, ctx, "call-1")
+	}
 	require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
 	st, err := f.coord.CLIScope(ctx, f.sessID)
@@ -189,9 +197,10 @@ func requireScope(t *testing.T, st CLIScopeState, workOpen bool, drain DrainStat
 func TestCLIScope_LaunchGateStates(t *testing.T) {
 	ctx := context.Background()
 	coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
-	sess, err := getEnv(ctx).sessions.Create(ctx, "gate-states")
+	env := getEnv(ctx)
+	sess, err := env.sessions.Create(ctx, "gate-states")
 	require.NoError(t, err)
-	seedCompletedJob(t, store, sess.ID, "call-1", session.JobKindCommand, "")
+	seedCompletedJob(t, env.conn, store, ledger, sess.ID, "call-1", session.JobKindCommand, "")
 
 	ledger.paceDrainGate(sess.ID, ledger.hintSeqOf(sess.ID), time.Hour, false, pacePaidUnreacted)
 	st, err := coord.CLIScope(ctx, sess.ID)

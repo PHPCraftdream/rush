@@ -68,6 +68,11 @@ func newForeignDriverFx(t *testing.T, title string) *foreignDriverFx {
 
 	cli := session.NewAsyncJobStore(conn, dataDir, os.Getpid()+1, "cli")
 	t.Cleanup(func() { _ = cli.Close(context.Background()) })
+	// The facts seam must be bound to the STORE's conn (not env's): the
+	// flag-ON debt/foreign-driver reads (readTurnFactsBatch, drainDecision)
+	// consult batch_nodes/session_drivers on this database, while env's DB
+	// only carries the messages/sessions services. Binding is OFF-inert.
+	bindBatchNodeFacts(t, f.coord, conn, dataDir)
 	return &foreignDriverFx{wakeDebtFixture: f, cli: cli, conn: conn, dataDir: dataDir}
 }
 
@@ -102,15 +107,21 @@ func TestSessionDrainPolicy_ForeignDriver_NoDrainParkedWhileDebt(t *testing.T) {
 	t.Run("debt_parked_and_no_turn", func(t *testing.T) {
 		t.Parallel()
 		f := newForeignDriverFx(t, "foreign-debt")
-		f.claimAndFinish(t, ctx, "call-1") // pending, wake=1
+		// Dual-mode debt seed: ON projects the pending wake=1 completion onto
+		// batch nodes (the fixture's conn, where the binding reads); OFF keeps
+		// the legacy claim+finish async_jobs row.
+		if batchFlagEnabled() {
+			seedFixtureJobDebt(t, f.conn, f.store, f.ledger, nil, f.sessID, "call-1", false)
+		} else {
+			f.claimAndFinish(t, ctx, "call-1") // pending, wake=1
+		}
 		require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
 		require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true))
 
 		require.Zero(t, f.requests.Load(), "no reaction turn may start in a process that does not drive the session")
 		require.True(t, f.inRecheckSet(f.sessID), "debt must keep the session in the 60s recheck set")
-		row, err := f.store.Get(ctx, f.sessID, "call-1")
-		require.NoError(t, err)
+		row := readFixtureJobDebt(t, f.conn, f.store, f.sessID, "call-1")
 		require.Equal(t, "pending", row.Delivery, "the notice is left for the driver")
 	})
 }
@@ -126,21 +137,25 @@ func TestDecideDrainTurn_ForeignDriver_TransferOnly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newForeignDriverFx(t, "foreign-transfer-only")
-	f.claimAndFinish(t, ctx, "call-1")
+	// Dual-mode debt seed (see TestSessionDrainPolicy_ForeignDriver above):
+	// ON batch node debt on the fixture's conn, OFF the legacy row.
+	if batchFlagEnabled() {
+		seedFixtureJobDebt(t, f.conn, f.store, f.ledger, nil, f.sessID, "call-1", false)
+	} else {
+		f.claimAndFinish(t, ctx, "call-1")
+	}
 	require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
 	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	_, _ = f.sa.Run(ctx, call) // an already-admitted Drain reaching its turn start
 
-	row, err := f.store.Get(ctx, f.sessID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, f.conn, f.store, f.sessID, "call-1")
 	require.Equal(t, "done", row.Delivery, "the admitted Drain transfers the notice into history")
 	require.EqualValues(t, 0, row.Reacted, "but never reacts to it: the driver does")
 	require.Zero(t, f.requests.Load(), "the provider must not be called")
-	visible, err := f.store.VisibleReactionDebtExists(ctx, f.sessID)
-	require.NoError(t, err)
-	require.True(t, visible, "the debt stays visible for the driving loop")
+	require.True(t, b1VisibleReactionDebtExists(ctx, t, f.conn, f.store, f.sessID),
+		"the debt stays visible for the driving loop")
 }
 
 // TestSessionDrainPolicy_OwnLoopNotBlocked: this process's OWN durable marker

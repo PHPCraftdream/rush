@@ -73,6 +73,13 @@ func (c *childBGFixture) park() {
 	c.t.Helper()
 	c.ledger.armDelegation(jobOf(c.ledger, c.parentID, "delegate-1"), jobResult{content: "first turn text"})
 	require.True(c.t, c.ledger.hasParked(), "the child's running shell keeps the delegation armed")
+	// hasParked is the process-local armed-result half (no batch
+	// representation: the captured first-turn text lives only in this
+	// process); the DURABLE half is the delegation row itself, read through
+	// the selected authority: live in async_jobs (OFF) and batch_nodes (ON).
+	view := readFixtureDelegation(c.t, c.env.conn, c.store, c.ledger, c.parentID, "delegate-1")
+	require.Equal(c.t, "running", view.State, "the delegation runs in the selected authority")
+	require.Equal(c.t, c.childID, view.ChildSessionID)
 	require.Empty(c.t, c.delivered)
 }
 

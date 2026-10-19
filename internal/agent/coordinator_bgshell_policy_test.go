@@ -48,7 +48,7 @@ func TestSessionDrainPolicy_BGShellOnlyDebt_AutoResumeOff_Refused(t *testing.T) 
 // must never swallow unrelated, legitimate debt just because a bg-shell
 // notice happens to be mixed in.
 func TestSessionDrainPolicy_BGShellDebtPlusRealJobDebt_NotRefused(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
@@ -56,15 +56,9 @@ func TestSessionDrainPolicy_BGShellDebtPlusRealJobDebt_NotRefused(t *testing.T) 
 	require.NoError(t, err)
 	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindBGShellDone, "background job finished", true, ""))
 
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
+	// Dual-mode job-debt seed: flag ON projects the command completion as
+	// batch node debt; OFF keeps the legacy async_jobs claim/transition.
+	seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, sess.ID, "call-1", false)
 
 	allowed, err := policyAllowed(coord, ctx, sess.ID)
 	require.NoError(t, err)

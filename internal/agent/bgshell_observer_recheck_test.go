@@ -39,8 +39,17 @@ func TestAsyncTool_BGShellObserverReleasesParkedDelegationWithoutNotifier(t *tes
 	coord := &coordinator{}
 	coord.cfg = config.NewLibraryStore(&config.Config{Options: &config.Options{NotifyOnBackgroundJobDone: boolPtr(false)}}, t.TempDir())
 	coord.asyncJobs = newWorkLedger(func(c AsyncCompletion) { delivered <- c })
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
+	// recheckChild scope read (childScopeOpenAcrossProcesses -> CLIScope ->
+	// node facts) needs both to bind a real (here: empty) node source, or the
+	// unknown-facts fail-open keeps the delegation parked forever. The shell
+	// and delegation rows themselves stay on async_jobs (retained
+	// infrastructure) on both paths, so the trailing store reads are
+	// mode-independent.
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	mgr := shell.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(context.Background()) })
 	coord.background = mgr

@@ -31,7 +31,7 @@ func TestCLIScope_ParkedNotifierKeepsTheScopeOpen(t *testing.T) {
 	// bgArrivalEnteredSeam is a package-level atomic pointer: no t.Parallel,
 	// and the hook is restored via t.Cleanup.
 	ctx := context.Background()
-	coord, store, mgr, dir := newBGShellFixture(t)
+	coord, store, mgr, dir := b1BGShellFixture(t)
 	sh, err := mgr.StartOwned(t.Context(), "session", dir, nil, "sleep 30", "window")
 	require.NoError(t, err)
 
@@ -95,7 +95,7 @@ func TestCLIScope_ParkedNotifierKeepsTheScopeOpen(t *testing.T) {
 // a scope open longer than its callbacks.
 func TestCLIScope_NoNotifierScopeClosesWithTheRow(t *testing.T) {
 	t.Parallel()
-	coord, store, mgr, dir := newBGShellFixture(t)
+	coord, store, mgr, dir := b1BGShellFixture(t)
 	ctx := context.Background()
 	sh, err := mgr.StartOwned(t.Context(), "session", dir, nil, "echo done", "no notifier")
 	require.NoError(t, err)
