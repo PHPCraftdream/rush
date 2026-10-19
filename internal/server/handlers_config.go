@@ -208,7 +208,7 @@ func handleSetTheme(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetTheme(config.ScopeGlobal, p.Theme); err != nil {
+	if err := a.Store().SetConfigField(config.ScopeGlobal, "options.tui.theme", p.Theme); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -223,7 +223,7 @@ func handleSetKeepAlive(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetKeepAliveEnabled(config.ScopeGlobal, p.Enabled); err != nil {
+	if err := a.Store().SetConfigField(config.ScopeGlobal, "options.keep_alive_enabled", p.Enabled); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -246,12 +246,10 @@ func handleSetDebug(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if cfg.Options == nil {
-		cfg.Options = &config.Options{}
-	}
-	cfg.Options.Debug = p.Debug
 	if err := store.SetConfigField(config.ScopeGlobal, "options.debug", p.Debug); err != nil {
 		slog.Warn("ws: failed to persist debug setting", "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
@@ -277,16 +275,19 @@ func handleAddContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if cfg.Options == nil {
-		cfg.Options = &config.Options{}
+	paths := []string(nil)
+	if cfg.Options != nil {
+		paths = cfg.Options.ContextPaths
 	}
-	if slices.Contains(cfg.Options.ContextPaths, p.Path) {
+	if slices.Contains(paths, p.Path) {
 		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
-	cfg.Options.ContextPaths = append(cfg.Options.ContextPaths, p.Path)
-	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", cfg.Options.ContextPaths); err != nil {
+	paths = append(slices.Clone(paths), p.Path)
+	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", paths); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
@@ -310,9 +311,11 @@ func handleRemoveContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
-	cfg.Options.ContextPaths = slices.DeleteFunc(cfg.Options.ContextPaths, func(s string) bool { return s == p.Path })
-	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", cfg.Options.ContextPaths); err != nil {
+	paths := slices.DeleteFunc(slices.Clone(cfg.Options.ContextPaths), func(s string) bool { return s == p.Path })
+	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", paths); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)

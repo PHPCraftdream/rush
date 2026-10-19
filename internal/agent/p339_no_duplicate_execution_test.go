@@ -355,8 +355,8 @@ func TestP339_NoDuplicateExecutionAfterHandoff(t *testing.T) {
 		PumpInstanceID: "test-pump-p339",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	stopRunQueuePumpForTest(t, pump, env, func() { sessionAgent.CancelAll() })
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for the pump to terminally remove the queued call.
 	// The sequence is:
