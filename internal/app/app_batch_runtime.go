@@ -112,6 +112,13 @@ type BatchRuntime struct {
 	// release the host lock or the writer. It is never unset: a faulted
 	// process only exits.
 	fenced atomic.Bool
+
+	// testParked is a per-instance TEST-ONLY seam: when non-nil, the dormant
+	// watchFaults select reports each park on it. It lets a test establish
+	// THIS runtime's dormant boundary (replacing a process-wide
+	// goroutine-stack check that any parallel test's watcher could satisfy).
+	// Production never sets it.
+	testParked chan struct{}
 }
 
 // NewBatchRuntime builds a dormant runtime owner. It performs no I/O and
@@ -226,6 +233,12 @@ func (rt *BatchRuntime) watchFaults() {
 			}
 		}
 		// Dormant: wait for a Runner to be set (or shutdown); then re-read.
+		if rt.testParked != nil {
+			select {
+			case rt.testParked <- struct{}{}:
+			default:
+			}
+		}
 		select {
 		case <-rt.runnerSet:
 		case <-stop:

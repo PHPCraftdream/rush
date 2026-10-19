@@ -10,7 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Revert-check: limitwords.Classify's Codex type branch must latch provider_limit.
+// Revert-check: the Codex-shaped response latches provider_limit through
+// status, reset, and classification.
 func TestCLIProviderLimit1282CodexShape(t *testing.T) {
 	// https://github.com/acmiyaguchi/fen/issues/583; not reproduced locally.
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {

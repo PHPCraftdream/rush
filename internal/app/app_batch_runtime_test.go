@@ -29,6 +29,11 @@ type fakeRunner struct {
 	// closeRelease gates Close's return: Close blocks until it is closed or
 	// ctx is done.
 	closeRelease chan struct{}
+
+	// faultedReads counts Faulted() accesses. Reading the fault channel is
+	// how watchFaults parks in its live select, so a read observed on THIS
+	// fake is the instance-local "our watcher attached and parked" signal.
+	faultedReads atomic.Int32
 }
 
 func newFakeRunner() *fakeRunner {
@@ -39,7 +44,10 @@ func newFakeRunner() *fakeRunner {
 	}
 }
 
-func (f *fakeRunner) Faulted() <-chan struct{} { return f.faulted }
+func (f *fakeRunner) Faulted() <-chan struct{} {
+	f.faultedReads.Add(1)
+	return f.faulted
+}
 
 func (f *fakeRunner) FaultErr() error { return f.faultErr }
 
@@ -181,24 +189,4 @@ func allStacks() string {
 // watcherGoroutines counts goroutines currently inside the fault watcher.
 func watcherGoroutines() int {
 	return strings.Count(allStacks(), "BatchRuntime).watchFaults")
-}
-
-// watcherParkedInSelect reports whether the watcher goroutine is currently
-// blocked in a select. While no Runner is attached the live fault select is
-// unreachable (rt.runner is nil), so a parked watcher is necessarily in the
-// dormant runnerSet select.
-func watcherParkedInSelect() bool {
-	// runtime.Stack hides runtime-internal frames (selectgo), but each
-	// goroutine block header carries its wait state: "goroutine N [select]:".
-	for _, block := range strings.Split(allStacks(), "\n\n") {
-		if strings.Contains(block, "BatchRuntime).watchFaults") && strings.Contains(stackBlockHeader(block), "[select") {
-			return true
-		}
-	}
-	return false
-}
-
-func stackBlockHeader(s string) string {
-	line, _, _ := strings.Cut(s, "\n")
-	return line
 }
