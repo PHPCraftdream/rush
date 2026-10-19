@@ -398,6 +398,45 @@ func unwrapCommand(tokens []string, windows bool) commandView {
 	}
 }
 
+// SkipLauncherPrefixes returns the tokens that follow known transparent
+// launcher prefixes (env, nice, timeout, command, builtin, exec, nohup,
+// time) and their options, using the same option rules as unwrapCommand.
+// It returns nil when no command follows the prefixes.
+func SkipLauncherPrefixes(tokens []string) []string {
+	i := 0
+	for i < len(tokens) && isEnvAssignment(tokens[i]) {
+		i++
+	}
+	for i < len(tokens) {
+		head := canonicalExecutableForPlatform(tokens[i], true)
+		var rest []string
+		switch head {
+		case "env":
+			rest, _ = consumeEnv(tokens[i+1:])
+		case "nice":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-n": true, "--adjustment": true})
+		case "timeout":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-k": true, "--kill-after": true, "-s": true, "--signal": true})
+			if len(rest) > 0 {
+				rest = rest[1:] // GNU timeout duration.
+			}
+		case "command", "builtin":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{})
+		case "exec", "nohup":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-a": true})
+		case "time":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-f": true, "--format": true, "-o": true, "--output": true})
+		default:
+			return tokens[i:]
+		}
+		if len(rest) == 0 {
+			return nil
+		}
+		i = len(tokens) - len(rest)
+	}
+	return nil
+}
+
 func shellCommandView(head string, rest []string) commandView {
 	if isPosixShell(head) {
 		if source, found, malformed := posixShellSource(rest); found {

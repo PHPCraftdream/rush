@@ -5,6 +5,37 @@ import (
 	"testing"
 )
 
+func TestCommandPolicyTransparentPrefixOptionVerdicts(t *testing.T) {
+	p := NewCommandPolicy("ci-only")
+	denied := [][]string{
+		{"time", "-f", "%e", "go", "test"},
+		{"bash", "-c", "exec -a ignored go test ./..."},
+		{"time", "-p", "go", "test"},
+		{"exec", "-a", "x", "go", "build"},
+		{"nice", "-n", "5", "go", "vet", "./..."},
+		{"env", "-i", "FOO=1", "go", "test"},
+		{"timeout", "5", "go", "test"},
+		{"sudo", "-u", "bob", "go", "test"},
+		{"command", "-p", "go", "test"},
+		{"xargs", "-n1", "go", "build"},
+	}
+	for _, argv := range denied {
+		if err := p.CheckArgs(argv); err == nil {
+			t.Errorf("CheckArgs(%q) allowed", argv)
+		}
+	}
+	allowed := [][]string{
+		{"time", "-f", "%e", "git", "status"},
+		{"exec", "-a", "x", "git", "log"},
+		{"nice", "-n", "5", "gofmt", "-l", "."},
+	}
+	for _, argv := range allowed {
+		if err := p.CheckArgs(argv); err != nil {
+			t.Errorf("CheckArgs(%q) = %v", argv, err)
+		}
+	}
+}
+
 func TestOpaqueShellWrapperPolicy(t *testing.T) {
 	p := NewCommandPolicy("ci-only")
 	cases := []struct {

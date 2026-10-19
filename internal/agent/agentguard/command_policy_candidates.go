@@ -115,7 +115,23 @@ func resolveArgvPolicyHead(args []string) (string, bool, int) {
 			continue
 		}
 		switch head {
-		case "command", "builtin", "exec", "nohup", "time", "nice", "env", "sudo", "xargs", "timeout":
+		case "command", "builtin", "exec", "nohup", "time", "nice", "env", "timeout":
+			suffix := shell.SkipLauncherPrefixes(args[i-1:])
+			if len(suffix) == 0 {
+				return "", true, len(args)
+			}
+			cmdIdx := len(args) - len(suffix)
+			for _, token := range args[i-1 : cmdIdx] {
+				if token == policyDynamicArg {
+					return "", true, cmdIdx
+				}
+			}
+			if suffix[0] == policyDynamicArg {
+				return "", true, cmdIdx
+			}
+			i = cmdIdx
+			continue
+		case "sudo", "xargs":
 		default:
 			return head, false, i - 1
 		}

@@ -67,8 +67,8 @@ func augmentPolicyWrappers(args []string) [][]string {
 		appendCandidates(rest)
 	}
 	if head == "find" {
-		for i, t := range rest {
-			if (t == "-exec" || t == "-execdir") && i+1 < len(rest) {
+		for i, token := range rest {
+			if (token == "-exec" || token == "-execdir") && i+1 < len(rest) {
 				end := i + 1
 				for end < len(rest) && rest[end] != ";" && rest[end] != "+" {
 					end++
@@ -119,7 +119,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 	}
 	if head == "sudo" {
 		i := 0
-		values := map[string]bool{"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-T": true}
+		valueOptions := map[string]bool{"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-T": true}
 		for i < len(rest) {
 			token := rest[i]
 			if token == "--" {
@@ -134,7 +134,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 				option = token[:eq]
 			}
 			i++
-			if values[option] && !strings.Contains(token, "=") && i < len(rest) {
+			if valueOptions[option] && !strings.Contains(token, "=") && i < len(rest) {
 				i++
 			}
 		}
@@ -148,7 +148,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 			i++
 		}
 		if i < len(rest) && len(rest)-i > 1 && rest[i] == "" {
-			i++
+			i++ // cmd start may include an empty title argument
 		}
 		if i < len(rest) {
 			appendCandidates(rest[i:])

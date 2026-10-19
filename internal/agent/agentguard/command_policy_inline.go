@@ -43,13 +43,15 @@ type inlineCommandPattern struct {
 	tool    string
 	pattern *regexp.Regexp
 	list    bool
+	bare    bool
 }
 
 var inlineCommandPatterns = []inlineCommandPattern{
-	{"node", regexp.MustCompile(`(?is)(?:execSync|exec)\s*\(\s*(['"])([^'"]*)['"]`), false},
-	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn)\s*\(\s*(['"])([^'"]*)['"]\s*,\s*\[([^\]]*)\]`), true},
-	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*(['"])([^'"]*)['"]`), false},
-	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*\[([^\]]*)\]`), true},
+	{"node", regexp.MustCompile(`(?is)(?:execSync|exec)\s*\(\s*(['"])([^'"]*)['"]`), false, false},
+	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn)\s*\(\s*(['"])([^'"]*)['"]\s*,\s*\[([^\]]*)\]`), true, false},
+	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"])([^'"]*)['"]\s*[,)]`), false, true},
+	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*(['"])([^'"]*)['"]`), false, false},
+	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*\[([^\]]*)\]`), true, false},
 }
 
 func literalInlineArgvs(tool, code string) [][]string {
@@ -60,6 +62,12 @@ func literalInlineArgvs(tool, code string) [][]string {
 			continue
 		}
 		for _, match := range spec.pattern.FindAllStringSubmatch(code, -1) {
+			if spec.bare {
+				if len(match) > 2 {
+					out = append(out, []string{match[2]})
+				}
+				continue
+			}
 			if !spec.list {
 				if len(match) > 2 {
 					calls, opaque := policyShellCalls(match[2])
@@ -125,5 +133,5 @@ func literalStringArray(source string) ([]string, bool) {
 		values = append(values, source[start:i])
 		i++
 	}
-	return values, len(values) > 0
+	return values, true
 }

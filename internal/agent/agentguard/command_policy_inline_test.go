@@ -44,13 +44,13 @@ func TestParseInlineOption(t *testing.T) {
 
 func TestInlineCommandExtraction(t *testing.T) {
 	p := NewCommandPolicy("ci-only")
-	denied := [][]string{{"node", "-e", "require('child_process').spawn('go',['test','./...'])"}, {"python", "-c", "import subprocess; subprocess.run(['go','test','./...'])"}, {"node", "--eval=require('child_process').execSync('go test ./...')"}, {"node", "-pe", "require('child_process').execSync('go test ./...')"}, {"node", "-ep", "require('child_process').exec('go test ./...')"}, {"python", "-c", "import subprocess; subprocess.run('go test ./...', shell=True)"}, {"python3", "-cimport subprocess; subprocess.run(['go','test','./...'])"}}
+	denied := [][]string{{"node", "-e", "require('child_process').spawn('go',['test','./...'])"}, {"python", "-c", "import subprocess; subprocess.run(['go','test','./...'])"}, {"node", "--eval=require('child_process').execSync('go test ./...')"}, {"node", "-pe", "require('child_process').execSync('go test ./...')"}, {"node", "-ep", "require('child_process').exec('go test ./...')"}, {"python", "-c", "import subprocess; subprocess.run('go test ./...', shell=True)"}, {"python3", "-cimport subprocess; subprocess.run(['go','test','./...'])"}, {"node", "-e", `require('child_process').spawnSync('pytest', [])`}, {"node", "-e", `require('child_process').spawnSync('staticcheck')`}, {"node", "-e", `require('child_process').execFileSync('golangci-lint')`}}
 	for _, argv := range denied {
 		if err := p.CheckArgs(argv); err == nil {
 			t.Errorf("CheckArgs(%q) allowed", argv)
 		}
 	}
-	allowed := [][]string{{"node", "-e", "arbitrary code"}, {"python", "-c", "import subprocess; subprocess.run('git status', shell=True)"}}
+	allowed := [][]string{{"node", "-e", "arbitrary code"}, {"python", "-c", "import subprocess; subprocess.run('git status', shell=True)"}, {"node", "-e", `require('child_process').spawn('git',['status'])`}}
 	for _, argv := range allowed {
 		if err := p.CheckArgs(argv); err != nil {
 			t.Errorf("CheckArgs(%q)=%v", argv, err)

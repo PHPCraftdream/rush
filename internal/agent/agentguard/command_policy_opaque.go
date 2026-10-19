@@ -239,16 +239,16 @@ func opaquePowerShell(source string) bool {
 	if strings.Contains(lower, "invoke-expression") || containsPowerShellCommand(lower, "iex") {
 		return true
 	}
-	r := []rune(source)
-	for i, c := range r {
-		if c != '&' && c != '.' {
+	runes := []rune(source)
+	for i, r := range runes {
+		if r != '&' && r != '.' {
 			continue
 		}
 		j := i + 1
-		for j < len(r) && (r[j] == ' ' || r[j] == '\t' || r[j] == '(' || r[j] == '\'' || r[j] == '"') {
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '(' || runes[j] == '\'' || runes[j] == '"') {
 			j++
 		}
-		if j < len(r) && r[j] == '$' {
+		if j < len(runes) && runes[j] == '$' {
 			return true
 		}
 	}
