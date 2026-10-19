@@ -9,6 +9,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -101,15 +102,37 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 	// Dual mode: ON the table reports batch roots and no host hint; OFF keeps
 	// the legacy async-job liveness and host-hint contract below.
 	if batchOn {
-		root := seedBatchReadRoot(t, a, sess.ID)
-		projectBatchRoot(t, root, "running")
+		foreignID := "foreign-live-host"
+		foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignID))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = foreignLock.Release() })
+		q := db.New(a.DB())
+		_, err = q.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: foreignID, Pid: 4242, Label: "other-rush", StartedAt: 1700000000})
+		require.NoError(t, err)
+		reserved, err := session.NewBatchStore(a.DB()).Reserve(ctx, session.BatchReservation{
+			Owner: sess.ID, Host: foreignID, RunnerID: "foreign-batch-runner",
+			ToolCallID: "foreign-batch-call", InputHash: "foreign-batch-hash", Sequence: 1,
+			Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"}},
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, reserved.Snapshot.Root.RootID)
 		a.Shutdown()
 		stdout := runJobsCmd(t, sess.ID)
+		lines := strings.Split(stdout, "\n")
+		var foreignLine string
+		for _, line := range lines {
+			if strings.Contains(line, "foreign-batch-call") {
+				foreignLine = line
+			}
+		}
+		require.NotEmpty(t, foreignLine)
+		require.NotContains(t, strings.Fields(foreignLine), "4242")
 		require.Contains(t, stdout, "TOOL_CALL_ID")
-		require.Contains(t, stdout, "batch-read-call")
-		require.Contains(t, stdout, "running")
-		require.Contains(t, stdout, "true")
-		require.NotContains(t, stdout, "4242")
+		require.Contains(t, stdout, "foreign-batch-call")
+		require.Contains(t, foreignLine, "running")
+		require.Contains(t, foreignLine, "true")
+		require.NotContains(t, stdout, "taskkill")
+		require.NotContains(t, stdout, "kill -INT")
 		return
 	}
 	// Own-process row: claimed via this seed App's own AsyncJobStore, so its

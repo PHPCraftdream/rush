@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -394,11 +395,16 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	sess, err := a.Sessions.CreateWithID(ctx, "list-batch-sess", "listed batch session")
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, a, sess.ID)
-	// A held child_question notice bound to the root's tool call must make
-	// the list row await an answer (positive case for the batch question
-	// reporting), inserted while the seed store is still open.
-	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
-		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
+	child, err := a.Sessions.CreateTaskSession(ctx, "list-batch-child", sess.ID, "worker")
+	require.NoError(t, err)
+	updates := []db.ProjectBatchNodeParams{{NodeID: f.nodeA, State: "running", ControlState: "none", Token: 7}}
+	require.NoError(t, f.store.Project(ctx, session.BatchProjection{
+		Host: f.host, RunnerID: "batch-read-runner", Sequence: 2,
+		Roots: []session.BatchRootProjection{{Owner: sess.ID, Root: f.rootID, Updates: updates}},
+	}))
+	marker := fmt.Sprintf("[batch-question node=%s token=%d sequence=%d depth=%d child=%s]\n", f.nodeA, 7, 3, 1, child.ID)
+	text := marker + "SUB-AGENT QUESTION: proceed?\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
+	require.NoError(t, f.store.BatchPublishQuestion(ctx, sess.ID, f.nodeA, 7, marker, text))
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
@@ -421,6 +427,9 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	require.Equal(t, 1, item.BatchRoots)
 	require.Contains(t, item.Status, "batch live")
 	require.True(t, item.BatchAwaitingAnswer, "the held bound question must surface as awaiting answer")
+	require.True(t, item.AwaitingAnswer)
+	require.Equal(t, child.ID, item.AwaitingChild)
+	require.Contains(t, item.AwaitingQuestion, "proceed?")
 }
 
 // TestSessionsShowCmdRun_BatchFlagOnCounts: with the flag on, `sessions show`

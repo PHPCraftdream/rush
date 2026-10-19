@@ -79,7 +79,7 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	acts, err := a.SessionActivityBatch(ctx, []string{parent.ID})
 	require.NoError(t, err)
 
-	statusByID, awaitingByID := listStatusesWithAwaiting(ctx, store, acts, []string{parent.ID})
+	statusByID, awaitingByID := listStatusesWithAwaiting(ctx, sessionQuestionReaderForApp(a), acts, []string{parent.ID})
 	require.Contains(t, statusByID[parent.ID], "awaiting answer",
 		"a held delegation with a pending child question must be annotated")
 	require.Contains(t, statusByID[parent.ID], "delegating")

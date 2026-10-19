@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -71,14 +73,8 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// its own async_jobs row live, so another process sees the same
 		// verdict (decision 9).
 		//
-		// R12-B: with the batch runtime on, NO legacy store read runs at all:
-		// awaitingByID stays empty (the legacy PendingChildQuestions reads
-		// must not run under the flag). F8 invariant restoration: STATUS is
-		// still the ONE classifier's verdict (App.SessionActivityBatch) under
-		// the flag -- the batch facts only annotate it ("(batch live)"/
-		// "(batch unknown)") -- so there is no second status machinery here,
-		// matching this file's doc comment. Flag off: batchFacts is nil and
-		// the legacy path below is unchanged.
+		// R12-B: with the batch runtime on, NO legacy store read runs at all.
+		// Flag off: batchFacts is nil and the legacy path below is unchanged.
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
@@ -88,10 +84,10 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 			if actErr != nil {
 				return fmt.Errorf("failed to classify sessions: %w", actErr)
 			}
-			statusByID = make(map[string]string, len(ids))
+			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
 			for _, id := range ids {
 				bf := batchFacts[id]
-				st := listStatus(activities.ByID[id].Verdict)
+				st := statusByID[id]
 				if bf.Unknown {
 					st += " (batch unknown)"
 				} else if bf.Live {
@@ -104,7 +100,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 				if bf.HasQuestion {
 					if st == "" {
 						st = "batch question awaiting answer"
-					} else {
+					} else if !strings.Contains(st, "awaiting answer") {
 						st += " (awaiting answer)"
 					}
 				}
@@ -115,7 +111,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 			if err != nil {
 				return fmt.Errorf("failed to classify sessions: %w", err)
 			}
-			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, ids)
+			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
 		}
 
 		if asJSON {
@@ -174,12 +170,37 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 	},
 }
 
+type pendingChildQuestionReader interface {
+	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
+}
+
+func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
+	if a == nil {
+		return nil
+	}
+	if config.BatchRuntimeEnabled() {
+		if a.DB == nil {
+			return nil
+		}
+		conn := a.DB()
+		if conn == nil {
+			return nil
+		}
+		return session.NewSessionNoticeStore(conn)
+	}
+	store := a.AsyncJobStore()
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
 // listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
 // column, adding the awaiting-answer substate (#1158): each listed root's
 // pending child_question notices re-classify its verdict (read-only; a
 // failed notice read leaves the plain verdict) and become the
 // "(awaiting answer)" annotation plus the JSON wire fields.
-func listStatusesWithAwaiting(ctx context.Context, store *session.AsyncJobStore, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
+func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
 	questionsByRoot := map[string][]session.ChildQuestion{}
 	if store != nil {
 		for _, id := range ids {
