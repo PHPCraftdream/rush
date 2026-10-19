@@ -13,6 +13,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,12 @@ import (
 // that refuses even an explicit re-supply would deadlock a session whose
 // operator re-established the binding with a fresh SDK run — the
 // explicit binding is a new epoch and must pass, and an unfenced session
-// must stay on the ordinary path.
+// must stay on the ordinary path. It also catches the explicit canonical
+// OS provider (sdk.OSDiskProvider()): a deliberate operator choice with
+// NO binding to name must pass the guard on a fenced session even when
+// the stored fence names a DEAD binding (the CI regression shape); a
+// guard that consults the stale fence in that case fails the run with
+// ErrDiskProviderUnavailable.
 func TestGuardTurnDiskFence_RefusesOptionslessTurnOnFencedSession(t *testing.T) {
 	ctx := context.Background()
 	caps := newDiskCapabilityManager()
@@ -66,6 +72,25 @@ func TestGuardTurnDiskFence_RefusesOptionslessTurnOnFencedSession(t *testing.T) 
 		DiskBindingID: bindingB,
 		Requirement:   &session.SessionExecutionRequirement{BindingID: bindingB},
 	})
+	require.NoError(t, err)
+
+	// An EXPLICIT canonical OS provider on the options is a deliberate
+	// operator choice (sdk.OSDiskProvider()): a new epoch that supersedes
+	// the fence at admission. Here the stored fence names a binding whose
+	// owner has ALREADY been released (dead binding): the guard must pass
+	// without consulting the stale fence.
+	bindingC, err := caps.RegisterProvider(newFakeDiskProvider(nil))
+	require.NoError(t, err)
+	require.NoError(t, store.DeleteSessionExecutionRequirement(ctx, "s1"))
+	require.NoError(t, store.StoreSessionExecutionRequirement(ctx, "s1",
+		session.SessionExecutionRequirement{BindingID: bindingC}))
+	// Release bindingC's sole owner: the binding prunes and the fence
+	// names a dead binding from this point on.
+	caps.release(diskOwnerKey{kind: diskOwnerCall, instance: "sdk-run-" + bindingC, bindingID: bindingC})
+	_, err = caps.Lookup(bindingC)
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable,
+		"the fixture must model the stale-fence state: bindingC's binding must be dead")
+	err = coord.guardTurnDiskFence(ctx, "s1", &CallOptions{DiskProvider: tools.OSDisk()})
 	require.NoError(t, err)
 
 	// A session with NO fence (nothing stored for it) and a nil-opts

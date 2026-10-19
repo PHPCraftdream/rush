@@ -52,6 +52,13 @@ func (f *fakeFenceStore) LoadSessionExecutionRequirement(_ context.Context, sess
 	return nil, nil
 }
 
+func (f *fakeFenceStore) DeleteSessionExecutionRequirement(_ context.Context, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.rows, sessionID)
+	return nil
+}
+
 // continuationOwnerCount derives the Continuation owner count from the
 // manager's owner set (the diagnostic must never be a stored counter).
 func continuationOwnerCount(m *diskCapabilityManager) int {

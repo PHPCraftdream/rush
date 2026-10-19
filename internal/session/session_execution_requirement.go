@@ -71,6 +71,10 @@ func SessionExecutionRequirementRowID(sessionID string) string {
 type SessionExecutionRequirementStore interface {
 	StoreSessionExecutionRequirement(ctx context.Context, sessionID string, req SessionExecutionRequirement) error
 	LoadSessionExecutionRequirement(ctx context.Context, sessionID string) (*SessionExecutionRequirement, error)
+	// DeleteSessionExecutionRequirement removes sessionID's fence. An
+	// explicit OS-provider run supersedes the session's fence (R12-H2b
+	// new-epoch semantics); deleting an absent fence is a no-op.
+	DeleteSessionExecutionRequirement(ctx context.Context, sessionID string) error
 }
 
 // StoreSessionExecutionRequirement upserts the fence row for sessionID.
@@ -101,6 +105,17 @@ func (s *service) StoreSessionExecutionRequirement(ctx context.Context, sessionI
 		 VALUES (?, ?, ?, 'acked', 0, 1, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET call_data = excluded.call_data, updated_at = excluded.updated_at`,
 		SessionExecutionRequirementRowID(sessionID), sessionID, string(payload), now, now,
+	)
+	return err
+}
+
+// DeleteSessionExecutionRequirement removes sessionID's fence row. A
+// missing fence is a no-op (nil): the explicit OS-provider epoch the
+// caller is establishing may legally follow an unfenced session.
+func (s *service) DeleteSessionExecutionRequirement(ctx context.Context, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_run_queue WHERE id = ? AND session_id = ?`,
+		SessionExecutionRequirementRowID(sessionID), sessionID,
 	)
 	return err
 }

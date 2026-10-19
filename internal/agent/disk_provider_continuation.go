@@ -194,9 +194,20 @@ func releaseDurableContinuationOwner(caps *DiskProviderRegistry, bindingID, rowK
 // "Ordinary/idle rebuilt calls"): run before provider-sensitive tool
 // resolution. A session with a persisted fence must not run a turn that
 // cannot name a live binding; an explicit SDK run establishing a new
-// epoch passes (its own binding supersedes). Returns nil for unfenced
-// sessions.
+// epoch passes (its own binding supersedes), and an explicit canonical
+// OS provider (sdk.OSDiskProvider()) is the same new-epoch operator
+// choice with no binding to name — it also passes. Returns nil for
+// unfenced sessions.
 func (c *coordinator) guardTurnDiskFence(ctx context.Context, sessionID string, opts *CallOptions) error {
+	// An EXPLICIT canonical OS provider on the call options is a
+	// deliberate operator choice (sdk.OSDiskProvider()), never a silent
+	// fallback: it starts a NEW execution epoch for the session and its
+	// run supersedes the stored fence at admission (internal/app
+	// ExecuteRun). It must pass without consulting a stale fence that may
+	// name a binding this process no longer holds.
+	if opts != nil && opts.DiskBindingID == "" && tools.IsOSDisk(opts.DiskProvider) {
+		return nil
+	}
 	var source *session.SessionExecutionRequirement
 	if opts != nil {
 		source = opts.Requirement

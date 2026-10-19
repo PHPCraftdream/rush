@@ -17,6 +17,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
@@ -213,6 +214,20 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		}
 		if err := reqStore.StoreSessionExecutionRequirement(ctx, sess.ID, *setup.callOpts.Requirement); err != nil {
 			return nil, fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+		}
+	} else if tools.IsOSDisk(overrides.DiskProvider) {
+		// An explicit canonical OS provider is a deliberate operator
+		// choice (sdk.OSDiskProvider()), never a silent fallback: it
+		// starts a NEW execution epoch for the session. Supersede the
+		// stored fence here, under the same exclusive admission, so
+		// later ordinary/unmarked continuations follow the new epoch
+		// instead of failing closed on a dead binding. A run with NO
+		// explicit provider on a fenced session still lands in NEITHER
+		// branch and keeps the existing fail-closed guard.
+		if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sess.ID); err != nil {
+				return nil, fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+			}
 		}
 	}
 
