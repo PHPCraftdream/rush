@@ -257,7 +257,9 @@ func TestUnwritableDirThenRecoveredFileInPlace(t *testing.T) {
 	if err := os.Remove(d); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(d, 0o700); err != nil {
+	// MkdirAll: the background flusher may recreate d between Remove and here
+	// (macOS CI: "mkdir ...: file exists"); the test needs a directory, not a race.
+	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	flush(true)
