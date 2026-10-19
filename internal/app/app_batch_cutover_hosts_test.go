@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -157,8 +158,12 @@ func TestBatchHostShutdownReleasesEveryHostFlagOn(t *testing.T) {
 // TestBatchHostLockSubprocessHelper is the guarded helper process: it
 // registers a REAL host (OS lock on <dataDir>/hosts/<id>.lock plus the
 // async_hosts row) against the data dir named by the environment and blocks
-// forever holding the lock. It only ever runs when the test binary is
-// re-invoked with R12F_HOST_LOCK_HELPER=1 (see the parent below).
+// forever holding the lock. After registering it writes a structured record
+// to the id file (bare host id on the first line, then pid/path/identity/
+// registered_at key=value lines) so the parent's diagnostics can compare
+// the helper-reported lock path identity with what the parent observes. It
+// only ever runs when the test binary is re-invoked with
+// R12F_HOST_LOCK_HELPER=1 (see the parent below).
 func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	if os.Getenv("R12F_HOST_LOCK_HELPER") != "1" {
 		t.Skip("helper process only")
@@ -188,7 +193,16 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	// *os.File, closing the fd and silently dropping the OS lock (the parent
 	// then probes the host DEAD instead of ALIVE).
 	defer runtime.KeepAlive(h)
-	if err := os.WriteFile(idFile, []byte(h.ID), 0o644); err != nil {
+	// Mirror production's lock-path derivation (HostIdentity exposes only ID
+	// and DataDir; the lock handle is unexported, so derive it from the
+	// data dir) and record the file's identity AFTER registration.
+	lockPath := session.HostLockPath(dataDir, h.ID)
+	record := h.ID + "\n" +
+		"pid=" + strconv.Itoa(os.Getpid()) + "\n" +
+		"path=" + lockPath + "\n" +
+		"identity=" + hostFileIdentity(lockPath) + "\n" +
+		"registered_at=" + time.Now().UTC().Format(time.RFC3339Nano) + "\n"
+	if err := os.WriteFile(idFile, []byte(record), 0o644); err != nil {
 		_ = db.Release(dataDir)
 		os.Exit(5)
 	}
@@ -234,7 +248,8 @@ INSERT INTO batch_nodes (
 
 // helperOutputBuffer is a goroutine-safe sink for exec.Cmd output: the
 // command's copy goroutines write while the failure diagnostics read, and
-// the test reaps the helper with Process.Wait (which does not join them).
+// the test reaps the helper through a single cmd.Wait run by the
+// helperWaitResult goroutine (which does not join the copy goroutines).
 type helperOutputBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -252,39 +267,155 @@ func (b *helperOutputBuffer) String() string {
 	return b.buf.String()
 }
 
+// helperWaitResult owns the helper's SINGLE cmd.Wait: run is started once in
+// a goroutine right after cmd.Start, and both the cleanup and the crash
+// section drain the same result through doneCh, so Wait is never called
+// twice on the process.
+type helperWaitResult struct {
+	mu       sync.Mutex
+	done     bool
+	err      error
+	finished time.Time
+	doneCh   chan struct{}
+}
+
+func newHelperWaitResult() *helperWaitResult {
+	return &helperWaitResult{doneCh: make(chan struct{})}
+}
+
+func (w *helperWaitResult) run(cmd *exec.Cmd) {
+	err := cmd.Wait()
+	w.mu.Lock()
+	w.done = true
+	w.err = err
+	w.finished = time.Now()
+	w.mu.Unlock()
+	close(w.doneCh)
+}
+
+// helperWaitState is a consistent view of the helper's wait result.
+type helperWaitState struct {
+	done     bool
+	err      error
+	finished time.Time
+}
+
+// snapshot reports the current wait state without racing the run goroutine.
+func (w *helperWaitResult) snapshot() helperWaitState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return helperWaitState{done: w.done, err: w.err, finished: w.finished}
+}
+
+// hostProbeTimeline records when each phase of the parent's test ran.
+type hostProbeTimeline struct {
+	start, idFile, dbOpened, seeded, firstProbe time.Time
+}
+
+// helperRecord is the structured tail of the id file: key=value lines parsed
+// by parseHelperRecord (all fields may stay empty for an id-only file).
+type helperRecord struct {
+	Pid, Path, Identity, RegisteredAt string
+}
+
+// parseHelperRecord splits the helper's id file into the bare host id (the
+// trimmed first line) and the optional key=value record lines; a missing or
+// blank tail yields a zero helperRecord so the parent stays compatible with
+// an id-only file.
+func parseHelperRecord(data []byte) (string, helperRecord) {
+	lines := strings.Split(string(data), "\n")
+	var rec helperRecord
+	if len(lines) == 0 {
+		return "", rec
+	}
+	hostID := strings.TrimSpace(lines[0])
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "pid":
+			rec.Pid = v
+		case "path":
+			rec.Path = v
+		case "identity":
+			rec.Identity = v
+		case "registered_at":
+			rec.RegisteredAt = v
+		}
+	}
+	return hostID, rec
+}
+
+// sameHostIdentity compares the helper-registered file identity with the
+// parent's current one for the failure report.
+func sameHostIdentity(registered, current string) string {
+	if registered == "" {
+		return "unknown (helper reported no identity)"
+	}
+	return strconv.FormatBool(registered == current)
+}
+
 // lockedHostFaultDiagnostics builds the failure message for a lost helper
-// lock: the helper's captured output, its liveness (ProcessState plus a
-// Signal(0) poll on platforms that support it — Windows does not, so only
-// ProcessState is used there), an EXCLUSIVE ProbeHostLock verdict (winning
-// it IS the diagnosis: the helper's lock is gone; the won lock is Released
-// immediately so the test state is not corrupted), and an os.Stat of the
-// lock path.
-func lockedHostFaultDiagnostics(cmd *exec.Cmd, helperStdout, helperStderr *helperOutputBuffer, dataDir, hostID string) string {
+// lock: the helper's captured output and structured record, its wait state
+// (through the single cmd.Wait owned by hw) plus a Signal(0) poll on
+// platforms that support it, the recorded timeline, the helper-reported lock
+// path and identity against the parent's own os.Stat (immediately before AND
+// after the probe), the canonical vs literal path spelling, and one
+// EXCLUSIVE ProbeHostLock whose won lock is Released immediately so the test
+// state is not corrupted.
+func lockedHostFaultDiagnostics(ctx context.Context, cmd *exec.Cmd, hw *helperWaitResult, rec helperRecord, tl hostProbeTimeline, helperStdout, helperStderr *helperOutputBuffer, dataDir, hostID string) string {
 	lockPath := session.HostLockPath(dataDir, hostID)
+	if rec.Path != "" {
+		lockPath = rec.Path
+	}
 	report := fmt.Sprintf("helper stdout: %q\nhelper stderr: %q\n", helperStdout.String(), helperStderr.String())
-	if cmd.ProcessState != nil {
-		report += "helper ProcessState: " + cmd.ProcessState.String() + "\n"
+	if st := hw.snapshot(); st.done {
+		report += fmt.Sprintf("helper exited at %v (elapsed since start %v): %v\n", st.finished, st.finished.Sub(tl.start), st.err)
 	} else {
-		report += "helper ProcessState: nil (no Wait observed yet)\n"
+		report += "helper has not exited (cmd.Wait still pending)\n"
 	}
 	if runtime.GOOS != "windows" {
+		// After Wait has run the signal typically fails with "process
+		// already finished", which is itself informative here.
 		if serr := cmd.Process.Signal(syscall.Signal(0)); serr != nil {
-			report += "helper Signal(0): " + serr.Error() + " (process is gone)\n"
+			report += "helper Signal(0): " + serr.Error() + " (typical after Wait)\n"
 		} else {
 			report += "helper Signal(0): ok (process still exists)\n"
 		}
 	}
+	since := func(ts time.Time) time.Duration { return ts.Sub(tl.start) }
+	report += fmt.Sprintf("timeline since start: idfile +%v, dbopened +%v, seeded +%v, firstprobe +%v; ctx err: %v\n",
+		since(tl.idFile), since(tl.dbOpened), since(tl.seeded), since(tl.firstProbe), ctx.Err())
+	report += fmt.Sprintf("helper-reported path: %q\nhelper-reported identity: %q (pid %q, registered_at %q)\n", rec.Path, rec.Identity, rec.Pid, rec.RegisteredAt)
+	describe := func(label string) string {
+		info, serr := os.Stat(lockPath)
+		switch {
+		case serr == nil:
+			id := hostFileIdentity(lockPath)
+			return fmt.Sprintf("%s: exists, size %d bytes, identity %q, same as registered: %s\n", label, info.Size(), id, sameHostIdentity(rec.Identity, id))
+		case os.IsNotExist(serr):
+			return label + ": ENOENT (missing)\n"
+		default:
+			return label + ": " + serr.Error() + "\n"
+		}
+	}
+	report += describe("parent stat before probe")
+	canonical, cerr := filepath.EvalSymlinks(lockPath)
+	report += fmt.Sprintf("path spellings: literal %q, canonical %q (eval err %v), differ: %v\n",
+		lockPath, canonical, cerr, cerr == nil && canonical != lockPath)
 	stX, lockX, errX := session.ProbeHostLock(lockPath)
-	report += fmt.Sprintf("exclusive ProbeHostLock: verdict %v, lock!=nil %v, err %v\n", stX, lockX != nil, errX)
+	report += fmt.Sprintf("exclusive ProbeHostLock %v after start: verdict %v, lock won %v, err %v; helper alive=%v\n",
+		time.Since(tl.start), stX, lockX != nil, errX, !hw.snapshot().done)
 	if lockX != nil {
-		report += "EXCLUSIVE LOCK WON — the helper no longer holds the lock (this is the diagnosis)\n"
 		_ = lockX.Release()
 	}
-	if info, serr := os.Stat(lockPath); serr != nil {
-		report += "lock path stat: " + serr.Error() + "\n"
-	} else {
-		report += fmt.Sprintf("lock path stat: exists, size %d bytes\n", info.Size())
-	}
+	report += describe("parent stat after probe")
 	return report
 }
 
@@ -353,17 +484,24 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	cmd.Stdout = &helperStdout
 	cmd.Stderr = &helperStderr
 	require.NoError(t, cmd.Start())
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	tl := hostProbeTimeline{start: time.Now()}
+	hw := newHelperWaitResult()
+	go hw.run(cmd)
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-hw.doneCh })
 
 	// Wait for the helper's REAL registration (it writes the id only after
 	// RegisterHost took the OS lock).
 	var hostID string
+	var rec helperRecord
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		b, rerr := os.ReadFile(idFile)
 		if rerr == nil && len(b) > 0 {
-			hostID = strings.TrimSpace(string(b))
-			break
+			hostID, rec = parseHelperRecord(b)
+			if hostID != "" {
+				tl.idFile = time.Now()
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("helper never registered its host lock")
@@ -377,6 +515,7 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	// dir (same Connect/Release pattern as the helper process above).
 	seedConn, serr := db.Connect(ctx, dataDir)
 	require.NoError(t, serr)
+	tl.dbOpened = time.Now()
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	// Two-result call: CreateSession returns (Session, error) — see
 	// internal/db/sessions.sql.go createSession (:one) and the seedSession
@@ -429,19 +568,21 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 		"call-r12f-announced", "running", 1)
 	announcedFixture.host = hostID
 	insertBatchNodeOnConn(t, seedConn, announcedFixture)
+	tl.seeded = time.Now()
 
 	// The locked-host fault, probed for real: the parent cannot win the
 	// lock while the helper lives.
+	tl.firstProbe = time.Now()
 	st, err := session.ProbeHostShared(dataDir, hostID)
 	require.NoError(t, err)
 	if st != session.HostStatusAlive {
 		t.Fatalf("helper does not hold the real host lock: shared probe verdict %v\n%s",
-			st, lockedHostFaultDiagnostics(cmd, &helperStdout, &helperStderr, dataDir, hostID))
+			st, lockedHostFaultDiagnostics(ctx, cmd, hw, rec, tl, &helperStdout, &helperStderr, dataDir, hostID))
 	}
 
 	// Crash: kill -9 equivalent. The OS lock dies with the process.
 	require.NoError(t, cmd.Process.Kill())
-	_, _ = cmd.Process.Wait()
+	<-hw.doneCh
 	st, err = session.ProbeHostShared(dataDir, hostID)
 	require.NoError(t, err)
 	require.Equal(t, session.HostStatusDead, st, "crashed host is provably dead")
