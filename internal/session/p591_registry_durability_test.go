@@ -258,7 +258,7 @@ func TestVerifyGroupStillPlausibleOutcome_MismatchIsConfirmedNotInconclusive(t *
 	}
 	require.NotEmpty(t, realStartTime)
 
-	outcome := verifyGroupStillPlausibleOutcome(pgid, realStartTime+"-does-not-match")
+	outcome := verifyGroupStillPlausibleOutcome(pgid, realStartTime+"-does-not-match", nil)
 	require.Equal(t, plausibilityConfirmedMismatch, outcome)
 
 	// And the plain-bool wrapper must agree: false (not plausible).
@@ -273,7 +273,7 @@ func TestVerifyGroupStillPlausibleOutcome_LiveMatchIsConfirmedLive(t *testing.T)
 	pgid := leader.Process.Pid
 
 	startTime, _ := startTimeToken(pgid) // "" is fine -- covers the no-facility platform path too
-	outcome := verifyGroupStillPlausibleOutcome(pgid, startTime)
+	outcome := verifyGroupStillPlausibleOutcome(pgid, startTime, nil)
 	require.Equal(t, plausibilityConfirmedLive, outcome)
 }
 
@@ -282,7 +282,7 @@ func TestVerifyGroupStillPlausibleOutcome_LiveMatchIsConfirmedLive(t *testing.T)
 // plausibilityConfirmedGone.
 func TestVerifyGroupStillPlausibleOutcome_GoneIsConfirmedGone(t *testing.T) {
 	const bogusPGID = 999999
-	require.Equal(t, plausibilityConfirmedGone, verifyGroupStillPlausibleOutcome(bogusPGID, ""))
+	require.Equal(t, plausibilityConfirmedGone, verifyGroupStillPlausibleOutcome(bogusPGID, "", nil))
 }
 
 // TestKillRegisteredChildGroups_UnresolvedKillIsRetainedNotDiscarded is the
@@ -326,7 +326,7 @@ func TestKillRegisteredChildGroups_UnresolvedKillIsRetainedNotDiscarded(t *testi
 	// only be explained by the injected kill(2) failure, not by the
 	// plausibility check itself already excluding it.
 	require.Equal(t, plausibilityConfirmedLive,
-		verifyGroupStillPlausibleOutcome(leader.Process.Pid, startTimeTokenOrEmpty(leader.Process.Pid)))
+		verifyGroupStillPlausibleOutcome(leader.Process.Pid, startTimeTokenOrEmpty(leader.Process.Pid), nil))
 
 	injectedErr := syscall.EPERM
 	original := killpgFunc

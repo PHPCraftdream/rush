@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -57,16 +58,17 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 	// holds the inherited write end.
 	cmd.Stdout = writer
 	require.NoError(t, cmd.Start())
-	// The child now owns the only write end: keeping the parent's copy open
-	// would make the EOF death oracle below unreachable.
-	require.NoError(t, writer.Close())
-
+	// P2-1 (2026-10-19 review): cleanup armed IMMEDIATELY after the
+	// successful Start, BEFORE the fallible writer.Close() assertion, so a
+	// failure there cannot leak the started group or the pipe ends.
 	grandpid := 0
 	waited := false
+	// F3 (2026-10-18 review, finding 3): registered UNCONDITIONALLY, before
+	// anything that can fail. The previous cleanup killed the sleeper only
+	// under `if grandpid > 0`, so a PID-publication failure (grandpid still
+	// 0) leaked the grandchild for its full sleep.
 	t.Cleanup(func() {
-		if grandpid > 0 {
-			_ = syscall.Kill(grandpid, syscall.SIGKILL)
-		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if !waited {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
@@ -76,6 +78,9 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 		_ = writer.Close()
 		_ = reader.Close()
 	})
+	// The child now owns the only write end: keeping the parent's copy open
+	// would make the EOF death oracle below unreachable.
+	require.NoError(t, writer.Close())
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -91,7 +96,11 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("grandchild pid file never became readable: %v", readErr)
+			// Errorf+return, not Fatalf: the unconditional F3 cleanup still
+			// runs either way, but this shape keeps the failure attributable
+			// and matches the F3 sibling tests.
+			t.Errorf("grandchild pid file never became readable: %v", readErr)
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -114,6 +123,14 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 	// Drive the REAL cross-path consumer: the same sweep "rush sessions
 	// kill" runs in another process.
 	result := session.KillRegisteredChildGroups(dataDir, sessionID, generation)
+	if result.Killed == 0 && result.Retained == 1 && runtime.GOOS != "linux" {
+		// The leader-gone branch now requires a registration-time member
+		// witness; on platforms with no member-enumeration facility the
+		// entry is deliberately retained, not signalled. Skip rather than
+		// fail there (the cliprovider package cannot inspect the recorded
+		// witness list directly, so the outcome pair is the observable).
+		t.Skip("no member witnesses available on this platform: leader-gone identity is unverifiable and the entry is retained by design")
+	}
 	require.Equal(t, 1, result.Killed, "trackChildTree must register the group durably even though its leader exited and was reaped before the call -- the pre-fix Getpgid gate skipped registration and the sweep found nothing")
 	require.Zero(t, result.Implausible)
 
