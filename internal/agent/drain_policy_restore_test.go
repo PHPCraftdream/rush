@@ -30,10 +30,25 @@ import (
 // a real config via the oauth provider and no driver, so drainCallFor takes
 // the ROOT branch. Tests using this helper must not be parallel (the fixture
 // isolates the global config paths with t.Setenv).
+//
+// The fake provider is seeded with one INSIDE file and one OUTSIDE file
+// (in both native and ToSlash spellings, matching what the fs tool's
+// resolveScopedPath resolves against), so the fs_read denial oracle can
+// assert BOTH sides: an inside read succeeds (the scope ALLOWS; a
+// zero-scope construction fails here) and the outside read is denied
+// with the scope reason, not fs.ErrNotExist (a bypassed scope check
+// would fall through to the seeded outside file and succeed).
 func wireRootDrainFence(t *testing.T, f *attemptFixture) (bindingID string, caps *diskCapabilityManager) {
 	t.Helper()
 	caps = newDiskCapabilityManager()
-	provider := newFakeDiskProvider(nil)
+	insidePath := filepath.Join(f.env.workingDir, "inside-probe.txt")
+	outsidePath := filepath.Join(filepath.Dir(f.env.workingDir), "outside-probe.txt")
+	provider := newFakeDiskProvider(map[string]string{
+		insidePath:                    "inside-value",
+		filepath.ToSlash(insidePath):  "inside-value",
+		outsidePath:                   "outside-value",
+		filepath.ToSlash(outsidePath): "outside-value",
+	})
 	var err error
 	bindingID, err = caps.RegisterProvider(provider)
 	require.NoError(t, err)
@@ -114,13 +129,32 @@ func TestDrainCallFor_RestoresFencePolicyBaseline(t *testing.T) {
 	assertToolsOmit(t, names, "bash", "run_command", "job_output", "job_kill")
 	assertToolsContain(t, names, tools.FSReadToolName)
 
-	// Deny-by-dispatch: the constructed fs_read tool itself must refuse a
-	// path outside the restored scope (the same RunFSBatch Scope.Check the
-	// real dispatch performs), using the existing runFSRead probe
-	// (coordinator_disk_provider_test.go) and fsReadToolFrom.
+	// Deny-by-dispatch oracle, two-sided: the fake provider is seeded so
+	// BOTH outcomes are observable through the constructed fs_read tool
+	// (the same RunFSBatch Scope.Check the real dispatch performs), via
+	// the existing runFSRead probe (coordinator_disk_provider_test.go)
+	// and fsReadToolFrom.
+	//
+	// Positive control: an INSIDE read must SUCCEED — a zero-scope
+	// construction denies the inside read too, so this fails under that
+	// mutation.
+	insideResp := runFSRead(t, fsReadToolFrom(t, call.Tools),
+		filepath.Join(f.env.workingDir, "inside-probe.txt"))
+	require.False(t, insideResp.IsError, "an fs_read inside the restored scope must succeed: %s", insideResp.Content)
+	require.Contains(t, insideResp.Content, "inside-value",
+		"the inside read must come back through the provider with the seeded content")
+	// Negative control: the OUTSIDE read must be denied with the SCOPE
+	// reason (folderscope.go Check: "outside every folder scope"), not
+	// fs.ErrNotExist — a bypassed scope check would fall through to the
+	// provider and succeed (the outside file IS seeded), so the denial
+	// reason alone discriminates.
 	resp := runFSRead(t, fsReadToolFrom(t, call.Tools),
 		filepath.Join(filepath.Dir(f.env.workingDir), "outside-probe.txt"))
 	require.True(t, resp.IsError, "an fs_read outside the restored scope must be a tool error: %s", resp.Content)
+	require.Contains(t, resp.Content, "outside every folder scope",
+		"the denial must be the scope denial, not a provider miss: %s", resp.Content)
+	require.NotContains(t, resp.Content, "not exist",
+		"the denial must not be a not-exist miss: %s", resp.Content)
 
 	prep.release()
 	owners, _, _ := caps.OwnerDiagnostics()

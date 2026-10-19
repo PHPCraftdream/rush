@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,6 +143,15 @@ func fenceLoader(t *testing.T, application *App) session.SessionExecutionRequire
 // durable store. Returns the app, the session id, the fence envelope and
 // the counted fake disk.
 //
+// holdRowID is additive: when empty the run executes synchronously exactly
+// as before. When non-empty it must be the exact run-queue row id a later
+// enqueueSessionAgentCall uses; the run then executes in a goroutine, and
+// once the mid-run fence write is visible the fixture acquires the
+// row-keyed Continuation owner BEFORE waiting for the run to finish. This
+// ordering matters: ExecuteRun releases its Call owner on return and the
+// release prunes ownerless bindings, so a raw enqueue without the hold
+// leaves the pump rebuild refusing the row terminally (already-attempted).
+//
 // The scripted provider has four branches, matched in request order:
 //
 //  1. Initial request (prompt "write probe", no tool result in the
@@ -161,13 +171,22 @@ func fenceLoader(t *testing.T, application *App) session.SessionExecutionRequire
 // call_write tool call and result, so the ids alone cannot sequence the
 // rounds — the marker identifies the continuation request; the ids only
 // identify result rounds (call_cont is matched first for the same reason).
-func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string) (*App, string, *session.SessionExecutionRequirement, *countedLeakDisk) {
+func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string, holdRowID string) (*App, string, *session.SessionExecutionRequirement, *countedLeakDisk) {
 	t.Helper()
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
 	// Assigned below, once the app (and its working dir) exists; the handler
 	// only reads it after ExecuteRun has issued the first request.
 	var initialTarget string
+	// onFirstRequest runs once, on the FIRST provider request, with the
+	// response still withheld: the run is then provably in flight (the fence
+	// is persisted under exclusive admission before the provider turn) and its
+	// Call owner cannot have been released yet. Assigned before ExecuteRun;
+	// the server goroutine reads it only after that request arrived.
+	var (
+		onFirstRequest func()
+		firstReqOnce   sync.Once
+	)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch {
@@ -188,6 +207,11 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 			// replaying the write forever (the loop-detector failure on PR #82).
 			admissionWriteSSE(w, []string{admissionSSEText("c1", "initial write done"), admissionSSEStop("c1", "stop")})
 		default:
+			firstReqOnce.Do(func() {
+				if onFirstRequest != nil {
+					onFirstRequest()
+				}
+			})
 			input, err := json.Marshal(map[string]any{"items": []map[string]any{{
 				"path": filepath.ToSlash(initialTarget), "content": "live-value",
 			}}})
@@ -219,15 +243,61 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 	fake.seedDir(dir)
 	fake.seedDir(filepath.ToSlash(dir))
 
-	res, err := application.ExecuteRun(context.Background(), RunRequest{
+	req := RunRequest{
 		Prompt: "write probe", Mode: RunModeJSON, ContinueSessionID: sessionID,
 		Stdout: io.Discard, Stderr: io.Discard, HideSpinner: true,
 		Overrides: RunOverrides{
 			FolderScopes: []permission.FolderScopeEntry{{Dir: dir, Ops: []permission.FileOp{permission.FileOpCreate, permission.FileOpOverwrite, permission.FileOpRead}}},
 			DiskProvider: fake,
 		},
-	})
-	require.NoError(t, err)
+	}
+	var res *RunResult
+	var runErr error
+	var fence *session.SessionExecutionRequirement
+	// The binding id is minted DURING ExecuteRun and the fence row is
+	// persisted mid-run (under exclusive admission, before the provider turn).
+	// ExecuteRun's deferred Call-owner release prunes a binding that nothing
+	// else retains, so the row-keyed Continuation owner (what the production
+	// durable producers take BEFORE enqueue) must be acquired while the run is
+	// provably still in flight: inside the first provider request, whose
+	// response is withheld until the hook returns. Everything the hook records
+	// is asserted on the test goroutine after ExecuteRun returns.
+	var (
+		holdRelease func()
+		holdErr     string
+	)
+	if holdRowID != "" {
+		loader := fenceLoader(t, application) // resolved on the test goroutine
+		onFirstRequest = func() {
+			var loaded *session.SessionExecutionRequirement
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				got, loadErr := loader.LoadSessionExecutionRequirement(context.Background(), sessionID)
+				if loadErr == nil && got != nil {
+					loaded = got
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			if loaded == nil {
+				holdErr = "the session fence never landed while the first provider request was in flight"
+				return
+			}
+			rel, ok := agent.HoldDurableContinuationOwnerForTest(application.batchInstall.DiskBindings, loaded.BindingID, holdRowID)
+			if !ok {
+				holdErr = "the row-keyed Continuation hold could not be taken on the live binding"
+				return
+			}
+			holdRelease = rel
+		}
+	}
+	res, runErr = application.ExecuteRun(context.Background(), req)
+	if holdRowID != "" {
+		require.Empty(t, holdErr, "enqueueing without the row-keyed hold lets ExecuteRun's release prune the ownerless binding, and the pump rebuild then refuses the row terminally")
+		require.NotNil(t, holdRelease, "the first provider request must have run the hold hook")
+		t.Cleanup(holdRelease)
+	}
+	require.NoError(t, runErr)
 	require.NotNil(t, res)
 	// The provider must have received the write for the EXACT absolute
 	// scoped target (native spelling first; the slashed spelling is the
@@ -246,12 +316,22 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 	require.NoError(t, err)
 	require.Equal(t, providerInitialSentinel, string(sentinel), "the REAL OS file at the exact target must be untouched: the provider run must not reach the OS disk")
 
-	fence, err := fenceLoader(t, application).LoadSessionExecutionRequirement(context.Background(), sessionID)
-	require.NoError(t, err)
+	if fence == nil {
+		loaded, loadErr := fenceLoader(t, application).LoadSessionExecutionRequirement(context.Background(), sessionID)
+		require.NoError(t, loadErr)
+		fence = loaded
+	}
 	require.NotNil(t, fence, "a provider-backed run must land the session execution fence")
 	require.NotEmpty(t, fence.BindingID, "the fence must name a binding")
 	require.Greater(t, fence.Epoch, int64(0), "the fence must carry a positive epoch")
 	return application, sessionID, fence, fake
+}
+
+// runQueueRowID is THE row-id derivation shared by enqueueSessionAgentCall
+// and every fixture that must hold the row-keyed Continuation owner before
+// enqueueing: the two must never drift.
+func runQueueRowID(logicalCallID string) string {
+	return "row-" + logicalCallID
 }
 
 // enqueueSessionAgentCall serializes a SessionAgentCall the same way the
@@ -262,7 +342,7 @@ func enqueueSessionAgentCall(t *testing.T, application *App, call agent.SessionA
 	data := agent.ToSessionAgentCallData(call)
 	raw, err := json.Marshal(data)
 	require.NoError(t, err)
-	rowID := "row-" + call.LogicalCallID
+	rowID := runQueueRowID(call.LogicalCallID)
 	require.NoError(t, application.Sessions.EnqueueRunQueueEntry(
 		context.Background(), rowID, call.SessionID, raw))
 	return rowID
@@ -275,16 +355,23 @@ func enqueueSessionAgentCall(t *testing.T, application *App, call agent.SessionA
 // original turn — the continuation write lands in the fake disk (not the
 // OS disk) and the provider's write count increases, proving the original
 // binding was restored rather than a fresh OS-disk registry.
+//
+// The fixture additionally holds the row-keyed Continuation owner while
+// the original run is in flight: ExecuteRun's deferred Call-owner release
+// prunes ownerless bindings, so a raw enqueue without the owner makes the
+// pump rebuild refuse the row terminally instead of restoring the
+// original provider.
 func TestContinuationQueuedRow_LivePumpRebuildInvokesOriginalProvider(t *testing.T) {
 	var continuationTarget string
+	rowID := runQueueRowID("cont-live-1")
 	application, sessionID, fence, fake := runLiveProviderTurn(t,
-		"CONTINUATION_LIVE_MARKER", func() string { return continuationTarget })
+		"CONTINUATION_LIVE_MARKER", func() string { return continuationTarget }, rowID)
 	workDir := application.config.WorkingDir()
 	dir := filepath.Join(workDir, "scope")
 	continuationTarget = filepath.Join(dir, "probe-continuation.txt")
 	writesBefore := fake.writes.Load()
 
-	rowID := enqueueSessionAgentCall(t, application, agent.SessionAgentCall{
+	require.Equal(t, rowID, enqueueSessionAgentCall(t, application, agent.SessionAgentCall{
 		SessionID:     sessionID,
 		LogicalCallID: "cont-live-1",
 		Prompt:        "CONTINUATION_LIVE_MARKER",
@@ -292,7 +379,7 @@ func TestContinuationQueuedRow_LivePumpRebuildInvokesOriginalProvider(t *testing
 		RunAllowlistSpec: &permission.RunAllowlistSpec{Restrict: true, AllowTools: []string{"fs_write"}},
 		FolderScopeSpec:  &permission.FolderScopeSpec{Entries: []permission.FolderScopeEntry{{Dir: dir, Ops: []permission.FileOp{permission.FileOpCreate, permission.FileOpOverwrite, permission.FileOpRead}}}},
 		DiskRequirement:  fence,
-	})
+	}))
 
 	require.Eventually(t, func() bool {
 		entry, err := application.Sessions.GetRunQueueEntry(context.Background(), rowID)
@@ -323,7 +410,7 @@ func TestContinuationQueuedRow_LivePumpRebuildInvokesOriginalProvider(t *testing
 func TestContinuationQueuedRow_AfterRestartYieldsTypedTerminalUnavailable(t *testing.T) {
 	var handlerRequests atomic.Int64
 	application, sessionID, fence, _ := runLiveProviderTurn(t,
-		"CONTINUATION_RESTART_MARKER", func() string { return "unused" })
+		"CONTINUATION_RESTART_MARKER", func() string { return "unused" }, "")
 	application.Shutdown()
 	// The duplicate shutdown via t.Cleanup is safe (Shutdown is
 	// idempotent); the fence stays in the durable store. The persisted
@@ -370,7 +457,7 @@ func TestContinuationQueuedRow_AfterRestartYieldsTypedTerminalUnavailable(t *tes
 func TestContinuationUnmarkedRow_FencedBySessionMetadata(t *testing.T) {
 	handlerRequests := atomic.Int64{}
 	application, sessionID, _, _ := runLiveProviderTurn(t,
-		"CONTINUATION_UNMARKED_MARKER", func() string { return "unused" })
+		"CONTINUATION_UNMARKED_MARKER", func() string { return "unused" }, "")
 	application.Shutdown()
 	// The unmarked row must name the FENCED session (the first app's
 	// persisted session row), not the restart app's freshly seeded one.
@@ -410,7 +497,7 @@ func TestContinuationUnmarkedRow_FencedBySessionMetadata(t *testing.T) {
 // OS disk.
 func TestContinuationFence_SurvivesQueuePurgeAndReset(t *testing.T) {
 	application, sessionID, fence, _ := runLiveProviderTurn(t,
-		"CONTINUATION_PURGE_MARKER", func() string { return "unused" })
+		"CONTINUATION_PURGE_MARKER", func() string { return "unused" }, "")
 
 	_, err := application.Sessions.PurgeQueuedWorkForSession(context.Background(), sessionID)
 	require.NoError(t, err)

@@ -19,9 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// countingFenceStore counts LoadSessionExecutionRequirement calls so a test
-// can prove a wake reads the fence exactly once and a timed pass over an
-// EMPTY set reads it zero times (the no-periodic-retry guarantee).
+// countingFenceStore counts LoadSessionExecutionRequirement calls so a
+// test can prove each explicit wake reads the fence exactly wantLoads
+// times (see assertBindingLossWake and assertFreshWakeRereadsOnce).
 type countingFenceStore struct {
 	fakeFenceStore
 	loads atomic.Int64
