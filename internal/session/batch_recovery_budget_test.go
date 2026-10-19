@@ -102,7 +102,7 @@ func TestBatchRecoveryPassCancelledBetweenRootsStopsCleanly(t *testing.T) {
 }
 
 func TestBatchRecoveryPassVerdictsAndProbeOnce(t *testing.T) {
-	a, _, _, dir, ctx := r9Stores(t)
+	a, _, _, _, ctx := r9Stores(t)
 	snaps := make([]BatchSnapshot, 3)
 	for i := range snaps {
 		snaps[i] = budgetReserveRoot(t, a, ctx, fmt.Sprintf("call-%d", i), "host")
