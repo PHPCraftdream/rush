@@ -22,6 +22,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -97,6 +98,10 @@ type rerunHandlerFx struct {
 	tail      message.Message
 	started   message.Message
 	store     *session.AsyncJobStore
+	// batchRootID is set (only) by seedRerunBatchRoot on the flag-on tests
+	// that need a batch root incarnation; jobDelivery then reads that row's
+	// delivery/fencing column instead of the legacy async_jobs row.
+	batchRootID string
 }
 
 const rerunCallID = "call-rerun"
@@ -160,6 +165,9 @@ func (f *rerunHandlerFx) run(t *testing.T) WSMessage {
 	}()
 	select {
 	case <-done:
+		// Join the handler goroutine before test-end teardown even on the
+		// paths where it outlives the reply.
+		t.Cleanup(func() { <-done })
 	case <-time.After(10 * time.Second):
 		t.Fatal("rerun handler never returned — something blocked unboundedly")
 	}
@@ -174,6 +182,14 @@ func (f *rerunHandlerFx) exists(t *testing.T, id string) bool {
 
 func (f *rerunHandlerFx) jobDelivery(t *testing.T) string {
 	t.Helper()
+	if f.batchRootID != "" {
+		// Flag ON with a seeded batch incarnation: the delivery/fencing
+		// column of the fixture's batch root row — exactly what
+		// BatchRerunReconcile's void arm writes (batch_nodes.delivery='void').
+		root, err := db.New(f.a.DB()).GetBatchRoot(t.Context(), db.GetBatchRootParams{RootID: f.batchRootID, OwnerSessionID: f.sessionID})
+		require.NoError(t, err)
+		return root.Delivery
+	}
 	row, err := f.store.Get(t.Context(), f.sessionID, rerunCallID)
 	require.NoError(t, err)
 	return row.Delivery
@@ -221,8 +237,23 @@ func TestHandleRerunMessage_CancelAtLastPoint_NothingChanged(t *testing.T) {
 // and the handoff -- the reply is EventError "cancelled" and no run starts.
 func TestHandleRerunMessage_CancelAfterCommit_Proceeds(t *testing.T) {
 	f := newRerunHandlerFx(t, "cancel-after-commit")
-	mockCoord := &cancellableHoldCoordinator{}
-	f.a.AgentCoordinator = mockCoord
+	var mockCoord *cancellableHoldCoordinator
+	var batchCoord *batchStopCoordinator
+	var batchSnap session.BatchSnapshot
+	if batchRuntimeEnabled() {
+		// Flag ON: seed the same live-work fact as one batch root incarnation
+		// (never acked; the reconcile's live tool-call arm voids it), and the
+		// detached stop goes to the optional BatchRerunStopper surface. The
+		// handler must see the WRAPPER (it implements agent.BatchRerunStopper),
+		// not the embedded base.
+		batchSnap = seedRerunBatchRoot(t, f)
+		batchCoord = &batchStopCoordinator{joined: make(chan struct{})}
+		mockCoord = &batchCoord.cancellableHoldCoordinator
+		f.a.AgentCoordinator = batchCoord
+	} else {
+		mockCoord = &cancellableHoldCoordinator{}
+		f.a.AgentCoordinator = mockCoord
+	}
 	runStarted := make(chan struct{})
 	mockCoord.runSideEffect = func() { close(runStarted) }
 	rerunPostTruncateSeam = func() { mockCoord.Cancel(f.sessionID) }
@@ -239,11 +270,28 @@ func TestHandleRerunMessage_CancelAfterCommit_Proceeds(t *testing.T) {
 	require.False(t, f.exists(t, f.target.ID), "the target is deleted by the committed rerun")
 	require.False(t, f.exists(t, f.tail.ID))
 	require.Equal(t, "void", f.jobDelivery(t))
-	mockCoord.waitStopRerun(t, 1)
-	_, _, stopRerun, voided, _ := mockCoord.counters()
-	require.Equal(t, 1, stopRerun, "the voided job must be stopped after the commit")
-	require.Len(t, voided, 1)
-	require.Equal(t, rerunCallID, voided[0].ToolCallID)
+	if batchRuntimeEnabled() {
+		select {
+		case <-batchCoord.joined:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the detached BatchRerunStopVoided never ran")
+		}
+		calls, batchVoided := batchCoord.stopVoided()
+		require.Equal(t, 1, calls, "the voided incarnation must be stopped after the commit")
+		require.Len(t, batchVoided, 1)
+		require.Equal(t, session.BatchRerunVoidedNode{
+			RootID: batchSnap.Root.RootID, NodeID: batchSnap.Root.RootID, ToolCallID: rerunCallID,
+			State: "running", ChildSessionID: "", HostID: rerunBatchFxHost,
+		}, batchVoided[0])
+		_, _, stopRerun, _, _ := mockCoord.counters()
+		require.Zero(t, stopRerun, "the flag-on stop must not take the legacy StopRerunJobs path")
+	} else {
+		mockCoord.waitStopRerun(t, 1)
+		_, _, stopRerun, voided, _ := mockCoord.counters()
+		require.Equal(t, 1, stopRerun, "the voided job must be stopped after the commit")
+		require.Len(t, voided, 1)
+		require.Equal(t, rerunCallID, voided[0].ToolCallID)
+	}
 }
 
 // TestHandleRerunMessage_TruncateFailure_ErrorNoStopNoRun: a failing
@@ -255,15 +303,33 @@ func TestHandleRerunMessage_CancelAfterCommit_Proceeds(t *testing.T) {
 // handler replies ok, stops the job and runs a turn over an untouched history.
 func TestHandleRerunMessage_TruncateFailure_ErrorNoStopNoRun(t *testing.T) {
 	f := newRerunHandlerFx(t, "truncate-failure")
-	mockCoord := &cancellableHoldCoordinator{}
-	f.a.AgentCoordinator = mockCoord
+	var mockCoord *cancellableHoldCoordinator
+	var batchCoord *batchStopCoordinator
+	if batchRuntimeEnabled() {
+		// The handler must see the WRAPPER (agent.BatchRerunStopper), not the
+		// embedded base.
+		seedRerunBatchRoot(t, f)
+		batchCoord = &batchStopCoordinator{}
+		mockCoord = &batchCoord.cancellableHoldCoordinator
+		f.a.AgentCoordinator = batchCoord
+	} else {
+		mockCoord = &cancellableHoldCoordinator{}
+		f.a.AgentCoordinator = mockCoord
+	}
 	ran := false
 	mockCoord.runSideEffect = func() { ran = true }
 	prev := rerunTruncate
-	rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
-		return session.RerunTruncation{}, errors.New("database is locked")
+	prevReconcile := batchRerunReconcile
+	t.Cleanup(func() { rerunTruncate = prev; batchRerunReconcile = prevReconcile })
+	if batchRuntimeEnabled() {
+		batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
+			return session.BatchRerunTruncation{}, errors.New("database is locked")
+		}
+	} else {
+		rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+			return session.RerunTruncation{}, errors.New("database is locked")
+		}
 	}
-	t.Cleanup(func() { rerunTruncate = prev })
 
 	env := f.run(t)
 
@@ -277,6 +343,10 @@ func TestHandleRerunMessage_TruncateFailure_ErrorNoStopNoRun(t *testing.T) {
 	require.Zero(t, stopRerun, "a failed truncation must stop no job")
 	require.False(t, ran, "a failed truncation must not start a turn")
 	require.False(t, owned, "the reservation must be released so a retry can proceed")
+	if batchCoord != nil {
+		calls, _ := batchCoord.stopVoided()
+		require.Zero(t, calls, "a failed truncation must stop no batch incarnation")
+	}
 }
 
 // TestHandleRerunMessage_TargetGoneAtTruncation_RefusesAndChangesNothing: the
@@ -310,17 +380,41 @@ func TestHandleRerunMessage_TargetGoneAtTruncation_RefusesAndChangesNothing(t *t
 // Revert-check: call Cancel instead of CancelTurn in the handler.
 func TestHandleRerunMessage_UsesCancelTurnNotStop(t *testing.T) {
 	f := newRerunHandlerFx(t, "uses-cancel-turn")
-	mockCoord := &cancellableHoldCoordinator{}
-	f.a.AgentCoordinator = mockCoord
+	var mockCoord *cancellableHoldCoordinator
+	var batchCoord *batchStopCoordinator
+	if batchRuntimeEnabled() {
+		// The handler must see the WRAPPER (agent.BatchRerunStopper), not the
+		// embedded base.
+		batchCoord = &batchStopCoordinator{joined: make(chan struct{})}
+		mockCoord = &batchCoord.cancellableHoldCoordinator
+		f.a.AgentCoordinator = batchCoord
+	} else {
+		mockCoord = &cancellableHoldCoordinator{}
+		f.a.AgentCoordinator = mockCoord
+	}
 
 	env := f.run(t)
 
 	require.Equal(t, EventResponse, env.Type)
-	mockCoord.waitStopRerun(t, 1)
+	if batchRuntimeEnabled() {
+		select {
+		case <-batchCoord.joined:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the detached BatchRerunStopVoided never ran")
+		}
+		calls, _ := batchCoord.stopVoided()
+		require.Equal(t, 1, calls, "the detached stop of the voided incarnations must run")
+	} else {
+		mockCoord.waitStopRerun(t, 1)
+	}
 	cancelTurn, stop, stopRerun, _, _ := mockCoord.counters()
 	require.GreaterOrEqual(t, cancelTurn, 1, "rerun must cancel the live generation")
 	require.Zero(t, stop, "rerun must not run the full Stop")
-	require.Equal(t, 1, stopRerun)
+	if batchRuntimeEnabled() {
+		require.Zero(t, stopRerun, "the flag-on stop must not take the legacy StopRerunJobs path")
+	} else {
+		require.Equal(t, 1, stopRerun)
+	}
 }
 
 // waitStopRerun waits for the rerun's detached StopRerunJobs call(s): the

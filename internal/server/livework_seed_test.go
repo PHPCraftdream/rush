@@ -16,6 +16,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -100,5 +101,43 @@ func projectLiveWorkRoot(t *testing.T, a *appPkg.App, owner, toolCallID, state s
 	require.NoError(t, session.NewBatchStore(a.DB()).Project(ctx, session.BatchProjection{
 		Host: root.HostID, RunnerID: root.RunnerID, Sequence: root.ProjectionSequence + 1,
 		Roots: []session.BatchRootProjection{{Owner: owner, Root: root.RootID, Updates: updates}},
+	}))
+}
+
+func seedLiveWorkTerminal(t *testing.T, a *appPkg.App, spec liveWorkSeedSpec, transition session.TransitionParams) {
+	t.Helper()
+	ctx := t.Context()
+	spec.state = "running"
+	seedLiveWorkRow(t, a, spec)
+	transition.Owner, transition.ToolCallID = spec.owner, spec.toolCallID
+	if !batchRuntimeEnabled() {
+		store := a.AsyncJobStore()
+		_, err := store.Transition(ctx, transition)
+		require.NoError(t, err)
+		return
+	}
+	cause := jobbatch.CauseNone
+	switch transition.State {
+	case "cancelled":
+		cause = jobbatch.CauseStop
+	case "timed_out":
+		cause = jobbatch.CauseTimeout
+	case "failed":
+		cause = jobbatch.CauseStopOnFail
+	}
+	q := db.New(a.DB())
+	root, err := q.GetLiveBatchRoot(ctx, db.GetLiveBatchRootParams{
+		OwnerSessionID: spec.owner, ToolCallID: sql.NullString{String: spec.toolCallID, Valid: true},
+	})
+	require.NoError(t, err)
+	nodes, err := q.ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: root.RootID, OwnerSessionID: spec.owner})
+	require.NoError(t, err)
+	var updates []db.ProjectBatchNodeParams
+	for _, node := range nodes {
+		updates = append(updates, db.ProjectBatchNodeParams{NodeID: node.NodeID, State: transition.State, Cause: string(cause), ControlState: "none"})
+	}
+	require.NoError(t, session.NewBatchStore(a.DB()).Project(ctx, session.BatchProjection{
+		Host: root.HostID, RunnerID: root.RunnerID, Sequence: root.ProjectionSequence + 1,
+		Roots: []session.BatchRootProjection{{Owner: spec.owner, Root: root.RootID, Updates: updates}},
 	}))
 }
