@@ -21,6 +21,10 @@ import (
 // guarantee that a consumer received or processed the notification.
 var ConfigNotificationsPublished atomic.Int64
 
+// modelsSyncBeforeJoinSeam is a test-only hook called immediately before
+// shutdown joins subscription workers. nil in production.
+var modelsSyncBeforeJoinSeam func()
+
 // modelsRefreshTimeout bounds the background shared-agent rebuild that
 // follows a poll-detected model change, so a stuck coordinator cannot pin
 // the App's shutdown on stopConfigDiskSync's WaitGroup join.
@@ -143,6 +147,9 @@ func (app *App) stopConfigDiskSync() {
 		app.modelsSyncSubs = nil
 	}
 	app.modelsSyncSubsMu.Unlock()
+	if f := modelsSyncBeforeJoinSeam; f != nil {
+		f()
+	}
 	app.modelsSyncSubsWG.Wait()
 	app.modelsSyncWG.Wait()
 }

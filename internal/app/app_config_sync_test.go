@@ -182,7 +182,11 @@ func (ctx gatedDoneContext) Done() <-chan struct{} {
 }
 
 func TestSubscribeModelsChangedShutdownWaitsForInFlightNotification(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	ignoreCurrent := goleak.IgnoreCurrent()
+	t.Cleanup(func() { goleak.VerifyNone(t, ignoreCurrent) })
+	beforeJoin := make(chan struct{})
+	modelsSyncBeforeJoinSeam = func() { close(beforeJoin) }
+	t.Cleanup(func() { modelsSyncBeforeJoinSeam = nil })
 	app := &App{}
 	ctx := gatedDoneContext{
 		Context: context.Background(),
@@ -191,33 +195,59 @@ func TestSubscribeModelsChangedShutdownWaitsForInFlightNotification(t *testing.T
 	}
 	ch := app.SubscribeModelsChanged(ctx)
 	<-ctx.entered
+
+	// The consumer is active but gated before draining the buffered delivery.
+	// Shutdown may close the channel, but must preserve the accepted unread
+	// ping, making its observable sequence exactly {true, false}.
+	consumerReady := make(chan struct{})
+	deliveryGate := make(chan struct{})
+	consumerResult := make(chan []bool, 1)
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		close(consumerReady)
+		<-deliveryGate
+		var results []bool
+		for i := 0; i < 2; i++ {
+			_, ok := <-ch
+			results = append(results, ok)
+		}
+		consumerResult <- results
+	}()
+	<-consumerReady
 	app.publishModelsChanged()
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		app.Shutdown()
 		close(shutdownDone)
 	}()
 	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(ctx.release) }) }
+	release := func() {
+		releaseOnce.Do(func() {
+			close(ctx.release)
+			close(deliveryGate)
+		})
+	}
 	t.Cleanup(func() {
 		release()
 		<-shutdownDone
+		<-consumerDone
 	})
 
-	// Shutdown closes the App signal while the subscription worker is
-	// blocked inside Done; it must still join that worker before returning.
+	// The seam confirms shutdown has closed subscriptions and reached the join;
+	// the worker cannot finish while Done remains gated.
 	<-app.modelsSyncStop
+	<-beforeJoin
 	select {
 	case <-shutdownDone:
 		t.Fatal("shutdown returned before the in-flight subscription worker was released")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 	release()
 	<-shutdownDone
-	_, ok := <-ch
-	require.True(t, ok, "the pending notification must survive shutdown")
-	_, ok = <-ch
-	require.False(t, ok)
+	require.Equal(t, []bool{true, false}, <-consumerResult,
+		"shutdown must preserve an accepted unread ping before the closed-channel EOF")
 }
 
 func TestOnModelsChangedPublishesWithoutCoordinator(t *testing.T) {
