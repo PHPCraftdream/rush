@@ -99,9 +99,7 @@ func retryAfter(err error) (time.Duration, bool) {
 }
 
 func isPositiveDecimalInteger(s string) bool {
-	if strings.HasPrefix(s, "+") {
-		s = s[1:]
-	}
+	s = strings.TrimPrefix(s, "+")
 	if s == "" {
 		return false
 	}
