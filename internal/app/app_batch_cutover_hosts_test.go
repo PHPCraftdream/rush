@@ -9,13 +9,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -187,7 +192,17 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 		_ = db.Release(dataDir)
 		os.Exit(5)
 	}
-	select {} // hold the OS host lock until the parent kills us
+	// Hold the OS host lock until the parent kills us. NOT `select{}`: the
+	// helper binary runs ONLY this test, so once this test function blocks in
+	// select{} every goroutine in the process is blocked forever and Go's
+	// deadlock detector throws "all goroutines are asleep - deadlock!",
+	// terminating the helper — and silently DROPPING its OS lock — before the
+	// parent ever probes (the observed macOS failure: expected Alive, got
+	// Dead). A sleeping timer keeps a pending timer, so the detector never
+	// fires and the lock is released only by the parent's kill.
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 // insertBatchNodeOnConn mirrors insertBatchNode (app_batch_cutover_test.go:47)
@@ -215,6 +230,62 @@ INSERT INTO batch_nodes (
 		f.noticeCause, f.noticeSequence, f.noticeOrd, f.delivery, f.wake, f.reacted,
 		f.outcomeSummary)
 	require.NoError(t, err)
+}
+
+// helperOutputBuffer is a goroutine-safe sink for exec.Cmd output: the
+// command's copy goroutines write while the failure diagnostics read, and
+// the test reaps the helper with Process.Wait (which does not join them).
+type helperOutputBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *helperOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *helperOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// lockedHostFaultDiagnostics builds the failure message for a lost helper
+// lock: the helper's captured output, its liveness (ProcessState plus a
+// Signal(0) poll on platforms that support it — Windows does not, so only
+// ProcessState is used there), an EXCLUSIVE ProbeHostLock verdict (winning
+// it IS the diagnosis: the helper's lock is gone; the won lock is Released
+// immediately so the test state is not corrupted), and an os.Stat of the
+// lock path.
+func lockedHostFaultDiagnostics(cmd *exec.Cmd, helperStdout, helperStderr *helperOutputBuffer, dataDir, hostID string) string {
+	lockPath := session.HostLockPath(dataDir, hostID)
+	report := fmt.Sprintf("helper stdout: %q\nhelper stderr: %q\n", helperStdout.String(), helperStderr.String())
+	if cmd.ProcessState != nil {
+		report += "helper ProcessState: " + cmd.ProcessState.String() + "\n"
+	} else {
+		report += "helper ProcessState: nil (no Wait observed yet)\n"
+	}
+	if runtime.GOOS != "windows" {
+		if serr := cmd.Process.Signal(syscall.Signal(0)); serr != nil {
+			report += "helper Signal(0): " + serr.Error() + " (process is gone)\n"
+		} else {
+			report += "helper Signal(0): ok (process still exists)\n"
+		}
+	}
+	stX, lockX, errX := session.ProbeHostLock(lockPath)
+	report += fmt.Sprintf("exclusive ProbeHostLock: verdict %v, lock!=nil %v, err %v\n", stX, lockX != nil, errX)
+	if lockX != nil {
+		report += "EXCLUSIVE LOCK WON — the helper no longer holds the lock (this is the diagnosis)\n"
+		_ = lockX.Release()
+	}
+	if info, serr := os.Stat(lockPath); serr != nil {
+		report += "lock path stat: " + serr.Error() + "\n"
+	} else {
+		report += fmt.Sprintf("lock path stat: exists, size %d bytes\n", info.Size())
+	}
+	return report
 }
 
 // TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery (R12-F acceptance:
@@ -276,6 +347,11 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 		"R12F_HELPER_DATA_DIR="+dataDir,
 		"R12F_HELPER_HOST_ID_FILE="+idFile,
 	)
+	// Capture the helper's output so a lock-loss failure can show why the
+	// helper ended (a deadlock-detector throw lands on stderr).
+	var helperStdout, helperStderr helperOutputBuffer
+	cmd.Stdout = &helperStdout
+	cmd.Stderr = &helperStderr
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
 
@@ -358,7 +434,10 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	// lock while the helper lives.
 	st, err := session.ProbeHostShared(dataDir, hostID)
 	require.NoError(t, err)
-	require.Equal(t, session.HostStatusAlive, st, "helper holds the real host lock")
+	if st != session.HostStatusAlive {
+		t.Fatalf("helper does not hold the real host lock: shared probe verdict %v\n%s",
+			st, lockedHostFaultDiagnostics(cmd, &helperStdout, &helperStderr, dataDir, hostID))
+	}
 
 	// Crash: kill -9 equivalent. The OS lock dies with the process.
 	require.NoError(t, cmd.Process.Kill())

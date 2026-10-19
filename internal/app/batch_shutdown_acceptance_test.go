@@ -683,8 +683,8 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 // i.e. releaseAll (host release, fence recheck, writer release) had not run.
 //
 // Bounded by construction: every mid-drain observation is a SINGLE event
-// check (ONE writer ping, ONE session.ProbeHostShared call — in-process, it
-// does not acquire the host lock, internal/session/host_lock.go:254) — no
+// check (ONE writer ping, ONE session.ProbeHostLockShared call — the
+// unguarded lock-level shared probe, internal/session/host_lock.go:243) — no
 // fixed sleeps, no subprocess probes inside the drain window — so the whole
 // observation sequence cannot approach appBatchDrainTimeout = 5s
 // (internal/app/app_batch_install.go:27) and a slow probe can never push a
@@ -759,15 +759,18 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 
 	// Phase 1 — STILL HELD, before any gate release: single event checks, no
 	// fixed sleep and no loop — the ordering guarantee comes from Phase 3, not
-	// from spinning. ONE writer ping plus ONE in-process shared-lock probe
-	// (session.ProbeHostShared, internal/session/host_lock.go:254 — it reads
-	// the lock state WITHOUT acquiring it). Both checks are instantaneous
+	// from spinning. ONE writer ping plus ONE shared-lock probe
+	// (session.ProbeHostLockShared, internal/session/host_lock.go:243 — the
+	// UNGUARDED lock-level probe: it takes a SHARED, non-blocking OS lock on
+	// the host lock file WITHOUT acquiring it; unlike ProbeHostShared it has
+	// no self-guard, so probing the app's OWN host id from this process is
+	// allowed). Both checks are instantaneous
 	// against the drain budget appBatchDrainTimeout = 5s
 	// (internal/app/app_batch_install.go:27), so the drain cannot have timed
 	// out yet.
 	require.NoError(t, h.app.DB().PingContext(context.Background()),
 		"while work is in flight the drain must not release the DB writer")
-	st1, serr1 := session.ProbeHostShared(h.dataDir, h.hostID)
+	st1, serr1 := session.ProbeHostLockShared(session.HostLockPath(h.dataDir, h.hostID))
 	require.NoError(t, serr1)
 	require.Equal(t, session.HostStatusAlive, st1,
 		"while work is in flight the drain must not release the OS host lock")
@@ -784,7 +787,8 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	}
 
 	// Phase 3 — WHILE Dispose is blocked, resources are STILL unreleased:
-	// ONE writer ping and ONE in-process shared-lock probe (no subprocess —
+	// ONE writer ping and ONE shared-lock probe (ProbeHostLockShared — no
+	// subprocess —
 	// it must not even risk the 5s budget). This is the dispose-before-release
 	// ordering evidence: releaseAll's order is ReleaseHostIdentity, then the
 	// fence recheck, then ReleaseWriter (internal/app/app_batch_drain.go:86
@@ -792,7 +796,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	// flips to Dead, failing both asserts.
 	require.NoError(t, h.app.DB().PingContext(context.Background()),
 		"resources are released only AFTER the gated Dispose ran")
-	st3, serr3 := session.ProbeHostShared(h.dataDir, h.hostID)
+	st3, serr3 := session.ProbeHostLockShared(session.HostLockPath(h.dataDir, h.hostID))
 	require.NoError(t, serr3)
 	require.Equal(t, session.HostStatusAlive, st3,
 		"the host lock is released only AFTER the gated Dispose ran")
