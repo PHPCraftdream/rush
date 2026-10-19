@@ -76,6 +76,10 @@ func TestBatchRecoveryPassCancelledBetweenRootsStopsCleanly(t *testing.T) {
 	for i := range snaps {
 		snaps[i] = budgetReserveRoot(t, a, ctx, fmt.Sprintf("call-%d", i), "host")
 		r9Announce(t, conn, ctx, snaps[i].Root.RootID)
+		// The announce rewrites the root, so the baseline is read after it.
+		announced, err := a.Read(ctx, "owner", snaps[i].Root.RootID)
+		require.NoError(t, err)
+		snaps[i] = announced
 	}
 	budgetDeadHost(t, dir, "host")
 	probeCtx, cancel := context.WithCancel(context.Background())
@@ -196,6 +200,9 @@ func TestBatchRecoverRootExactNamedRoot(t *testing.T) {
 	second := budgetReserveRoot(t, a, ctx, "call-2", "host")
 	r9Announce(t, conn, ctx, first.Root.RootID)
 	r9Announce(t, conn, ctx, second.Root.RootID)
+	// The announce rewrites the root, so the untouched-root baseline is read after it.
+	first, err := a.Read(ctx, "owner", first.Root.RootID)
+	require.NoError(t, err)
 	budgetDeadHost(t, dir, "host")
 	out, err := a.BatchRecoverRoot(ctx, second.Root.RootID, BatchSharedHostProbe(dir))
 	require.NoError(t, err)
