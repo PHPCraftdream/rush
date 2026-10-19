@@ -65,10 +65,14 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 		return nil
 	}
 
-	call, buildErr := c.drainCallFor(ctx, sessionID)
+	call, prep, buildErr := c.drainCallFor(ctx, sessionID)
 	if buildErr != nil {
-		c.noteDrainRefused(sessionID, buildErr)
-		return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
+		return c.handleDrainBuildError(sessionID, buildErr)
+	}
+	// The Continuation owner lives exactly across the dispatch: released
+	// on every exit from here, including the Run-error path.
+	if prep != nil {
+		defer prep.release()
 	}
 	if _, runErr := c.agentFor(sessionID).Run(ctx, call); runErr != nil {
 		slog.Warn("drain call failed after its underlying notice was committed",
@@ -76,4 +80,21 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 		return runErr
 	}
 	return nil
+}
+
+// handleDrainBuildError routes one drainCallFor failure (gh#11a): an
+// unavailable process-bound binding is TERMINAL FOR THIS EPOCH — it cannot
+// come back on a timer, so the refusal must not re-arm the timed recheck
+// pass. The durable debt is preserved untouched (never counted, never
+// settled); a newly admitted explicit epoch re-evaluates on its own. Any
+// other refusal keeps the historical paced retry (noteDrainRefused).
+func (c *coordinator) handleDrainBuildError(sessionID string, buildErr error) error {
+	if errors.Is(buildErr, ErrDiskProviderUnavailable) {
+		c.clearFromRecheckSet(sessionID)
+		slog.Warn("drain launch refused: the session's disk provider binding is unavailable; deferred until an explicit re-supply",
+			"session_id", sessionID, "err", buildErr)
+		return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
+	}
+	c.noteDrainRefused(sessionID, buildErr)
+	return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
 }

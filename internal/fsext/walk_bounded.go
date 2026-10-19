@@ -2,7 +2,9 @@ package fsext
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strings"
@@ -14,6 +16,8 @@ var (
 	BoundedWalkMaxEntries = 200000
 	BoundedWalkTimeout    = 60 * time.Second
 )
+
+var errWalkBudgetStop = errors.New("bounded walk stopped")
 
 // WalkStopReason explains why a bounded walk ended.
 type WalkStopReason int
@@ -94,6 +98,9 @@ func WalkDirBounded(ctx context.Context, fsys fs.FS, start string, opts BoundedW
 		maxDepth:   opts.MaxDepth,
 	}
 	err := w.walk(start, 1)
+	if errors.Is(err, fs.SkipAll) || errors.Is(err, errWalkBudgetStop) {
+		err = nil
+	}
 	if opts.Visited != nil {
 		*opts.Visited = w.visited
 	}
@@ -139,12 +146,15 @@ func (w *boundedWalker) walk(start string, depth int) error {
 	}
 	if reason, err, stop := w.check(); stop {
 		w.stop(reason)
+		if err == nil {
+			return errWalkBudgetStop
+		}
 		return err
 	}
 	// Visit the start entry itself, like fs.WalkDir does.
 	if err := w.fn(start, entryFromInfo(start, info), nil); err != nil {
 		if err == fs.SkipAll {
-			return nil
+			return fs.SkipAll
 		}
 		if err != fs.SkipDir && !info.IsDir() {
 			return err
@@ -169,7 +179,7 @@ func (w *boundedWalker) walkDir(dir string, depth int) error {
 	if err != nil {
 		if err := w.fn(dir, nil, err); err != nil {
 			if err == fs.SkipAll {
-				return nil
+				return fs.SkipAll
 			}
 			return err
 		}
@@ -184,18 +194,12 @@ func (w *boundedWalker) walkDir(dir string, depth int) error {
 	for {
 		if reason, err, stop := w.check(); stop {
 			w.stop(reason)
+			if err == nil {
+				return errWalkBudgetStop
+			}
 			return err
 		}
-		batch, err := dirs.ReadDir(boundedWalkBatchSize)
-		if err != nil {
-			if err := w.fn(dir, nil, err); err != nil {
-				if err == fs.SkipAll {
-					return fs.SkipAll
-				}
-				return err
-			}
-			return nil
-		}
+		batch, readErr := dirs.ReadDir(boundedWalkBatchSize)
 		// fs.WalkDir sorts entries. Keep identical order for ordinary
 		// (small) directories by sorting a first batch that came back
 		// complete-but-small. Larger directories get per-batch sorting;
@@ -210,28 +214,34 @@ func (w *boundedWalker) walkDir(dir string, depth int) error {
 			}
 			if reason, err, stop := w.check(); stop {
 				w.stop(reason)
+				if err == nil {
+					return errWalkBudgetStop
+				}
 				return err
 			}
 			child := joinPath(dir, e.Name())
 			if err := w.fn(child, e, nil); err != nil {
 				if err == fs.SkipAll {
-					return nil
+					return fs.SkipAll
 				}
 				if err == fs.SkipDir {
 					continue
 				}
 				return err
 			}
-			if e.IsDir() {
-				if w.maxDepth > 0 && depth+1 > w.maxDepth {
-					continue
-				}
+			if e.IsDir() && (w.maxDepth <= 0 || depth+1 <= w.maxDepth) {
 				if err := w.walkDir(child, depth+1); err != nil {
 					return err
 				}
 			}
 		}
-		if len(batch) < boundedWalkBatchSize {
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			if err := w.fn(dir, nil, readErr); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
@@ -242,7 +252,7 @@ func (w *boundedWalker) readDirFallback(dir string, depth int) error {
 	if err != nil {
 		if err := w.fn(dir, nil, err); err != nil {
 			if err == fs.SkipAll {
-				return nil
+				return fs.SkipAll
 			}
 			return err
 		}
@@ -250,28 +260,30 @@ func (w *boundedWalker) readDirFallback(dir string, depth int) error {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, e := range entries {
+		// Count every entry read from ReadDir against the budget,
+		// including entries later skipped.
 		w.visited++
 		if name := e.Name(); name == "." || name == ".." {
 			continue
 		}
 		if reason, err, stop := w.check(); stop {
 			w.stop(reason)
+			if err == nil {
+				return errWalkBudgetStop
+			}
 			return err
 		}
 		child := joinPath(dir, e.Name())
 		if err := w.fn(child, e, nil); err != nil {
 			if err == fs.SkipAll {
-				return nil
+				return fs.SkipAll
 			}
 			if err == fs.SkipDir {
 				continue
 			}
 			return err
 		}
-		if e.IsDir() {
-			if w.maxDepth > 0 && depth+1 > w.maxDepth {
-				continue
-			}
+		if e.IsDir() && (w.maxDepth <= 0 || depth+1 <= w.maxDepth) {
 			if err := w.walkDir(child, depth+1); err != nil {
 				return err
 			}

@@ -192,6 +192,12 @@ type CallOptions struct {
 	// immutable CallOptions incarnation. It is internal trusted runtime
 	// metadata and is never serialized with session calls.
 	DiskBindingID string
+	// Requirement is the durable execution requirement envelope stamped
+	// onto this trusted call state at admission (R12-H2b): the fence
+	// row's identity this invocation established. Copies of the options
+	// borrow the pointer; it is immutable after construction. nil for
+	// ordinary calls.
+	Requirement *session.SessionExecutionRequirement
 }
 
 type sessionModelPersistenceContextKey struct{}
@@ -221,6 +227,23 @@ func WithSessionModelPersistence(ctx context.Context, smart, fast *session.Model
 func sessionModelPersistenceFrom(ctx context.Context) (smart, fast *session.ModelSlotUpdate) {
 	persistence, _ := ctx.Value(sessionModelPersistenceContextKey{}).(sessionModelPersistence)
 	return persistence.smart, persistence.fast
+}
+
+// roleEffortContextKey carries an explicit non-smart role run's --effort to
+// the role-slot resolution (plan R6). Transient by construction: it rides
+// the invocation's ctx, never CallOptions and never the session, so a
+// replayed durable call carries no stale effort.
+type roleEffortContextKey struct{}
+
+// WithRoleReasoningEffort attaches the explicit role-run effort to ctx.
+func WithRoleReasoningEffort(ctx context.Context, effort string) context.Context {
+	return context.WithValue(ctx, roleEffortContextKey{}, effort)
+}
+
+// roleReasoningEffortFrom returns the attached role-run effort, "" when none.
+func roleReasoningEffortFrom(ctx context.Context) string {
+	effort, _ := ctx.Value(roleEffortContextKey{}).(string)
+	return effort
 }
 
 type modelOverridesContextKey struct{}

@@ -53,6 +53,19 @@ func (c *coordinator) addToRecheckSet(sessionID string) {
 	c.recheckMu.Unlock()
 }
 
+// clearFromRecheckSet removes sessionID from the recheck set (R12-H2b
+// §2.3): a binding-loss refusal must not re-spin the 60s pass — the
+// binding cannot come back on a timer, and a newly admitted explicit
+// epoch re-evaluates on its own.
+func (c *coordinator) clearFromRecheckSet(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	c.recheckMu.Lock()
+	delete(c.recheckSet, sessionID)
+	c.recheckMu.Unlock()
+}
+
 // drainRecheckSet atomically empties and returns the current recheck set.
 func (c *coordinator) drainRecheckSet() []string {
 	c.recheckMu.Lock()

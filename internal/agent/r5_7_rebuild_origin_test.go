@@ -62,7 +62,7 @@ func TestRebuildSessionAgentCall_RestoresOrigin(t *testing.T) {
 			require.Equal(t, origin, decoded.Origin,
 				"the DTO conversion must preserve Origin across the JSON boundary")
 
-			rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+			rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 			require.NoError(t, err)
 			assert.Equal(t, origin, rebuilt.Origin,
 				"RebuildSessionAgentCall must restore the persisted row's Origin onto the rebuilt call")

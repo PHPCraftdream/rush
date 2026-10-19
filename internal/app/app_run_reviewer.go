@@ -951,6 +951,10 @@ func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 		// shared: the review turn's tool builds own their scope via the
 		// normal per-call setup.
 		DiskBindingID: primary.DiskBindingID,
+		// R12-H2b §2.4: a reviewer follow-up keeps the invocation's
+		// trusted binding identity (and its requirement envelope) so its
+		// work never falls back to OS disk.
+		Requirement: primary.Requirement,
 	}
 	opts.BorrowDiskBindingFrom(primary)
 	// R12-H2a round 2: the review turn owns its OWN build-resource scope

@@ -27,7 +27,7 @@ func TestAsyncNoticeFlagsSurviveDurableRebuild(t *testing.T) {
 	require.NoError(t, err)
 	var data session.SessionAgentCallData
 	require.NoError(t, json.Unmarshal(raw, &data))
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	require.True(t, rebuilt.AutoResumed)
 	require.True(t, rebuilt.BackgroundJobNotice)

@@ -86,7 +86,7 @@ func (f *fakeAlwaysBusyCoordinator) TakeSummarizeQueue(sessionID string) (*agent
 	return nil, false
 }
 
-func (f *fakeAlwaysBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (f *fakeAlwaysBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 

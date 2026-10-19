@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/format"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -454,6 +455,13 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// defer is only the outer release point on success.
 		callBindingRelease = release
 	}
+	// R12-H2b §2.2: stamp the requirement envelope this invocation
+	// establishes onto the trusted call state. The fence ROW is persisted
+	// under exclusive admission (ExecuteRun, after ReserveExclusive); the
+	// stamp rides the same immutable options value from here on. Owner is
+	// informational until H4 makes it authoritative.
+	callOpts.Requirement = agent.BuildSessionExecutionRequirement(
+		callOpts.DiskBindingID, "app", time.Now().UnixNano(), folderScopeSpec, runSpec, callOpts)
 	// Every ExecuteRun call owns a build-resource scope for its tool
 	// constructions (R12-H2 §1.2) — ordinary calls included; provider calls
 	// got theirs with the binding handle above.
@@ -461,6 +469,13 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// Turn-stall policy: resolve --stall-timeout (default 30m) onto this call.
 	applyTurnStallCallTimeout(callOpts, app.config.Config().Options)
 	ctx = agent.WithCallOptions(ctx, callOpts)
+	// R6 (docs/plans/2026-10-15-role-models-hot-reload.md): --effort on a
+	// non-smart role run rides the role-slot resolution (roleSlotOverride)
+	// for every turn of this invocation; it is never persisted for
+	// worker/reviewer — the role model itself is not persisted either.
+	if overrides.ReasoningEffort != "" && overrides.ModelRole != "" && overrides.ModelRole != config.SelectedModelTypeSmart {
+		ctx = agent.WithRoleReasoningEffort(ctx, overrides.ReasoningEffort)
+	}
 	if modelOverrideRequested {
 		// The override applies to every turn of the invocation, but only the
 		// first one writes it to the session: a follow-up call (Drain, reviewer

@@ -50,7 +50,7 @@ func TestRebuildSessionAgentCall_RestoresFolderScopeFromSpec(t *testing.T) {
 		},
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 
 	// (1) The rebuilt call carries a compiled scope in CallOptions.
@@ -100,7 +100,7 @@ func TestRebuildSessionAgentCall_CorruptedFolderScopeSpecFailsClosed(t *testing.
 		},
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err, "a corrupted spec must not fail the rebuild; it degrades fail-closed instead")
 
 	require.NotNil(t, call.CallOptions)
