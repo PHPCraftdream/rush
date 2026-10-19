@@ -219,17 +219,43 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 	return out
 }
 
-// batchRuntimeFacts is the flag-gated production entry point: nil when
-// RUSH_BATCH_RUNTIME is off (callers must keep the legacy path untouched).
+// unavailableBatchFacts marks every requested id with explicit unknown facts
+// (Unknown + Live): a configless App's batch facts are UNAVAILABLE — a
+// conservative unknown — never "no live work". This is distinct from the
+// flag-off nil: nil means the flag is off and callers keep the legacy path;
+// a non-nil unknown map means the flag is on but the evidence could not be
+// read, so consumers must refuse to report idle.
+func unavailableBatchFacts(ids []string) map[string]batchSessionFacts {
+	out := make(map[string]batchSessionFacts, len(ids))
+	for _, id := range ids {
+		out[id] = batchSessionFacts{Unknown: true, Live: true}
+	}
+	return out
+}
+
+// batchRuntimeFacts is the flag-gated production entry point. Flag off
+// (RUSH_BATCH_RUNTIME disabled) → nil: callers keep the legacy path untouched,
+// so nil means "flag off" ONLY. Flag on but no readable database (nil App,
+// nil DB func, or nil handle) → explicit unknown facts from
+// unavailableBatchFacts — never nil, never a panic, and never an "at rest"
+// verdict on unreadable evidence. Otherwise the live batch facts of the
+// requested sessions.
 func batchRuntimeFacts(ctx context.Context, a *app.App, dataDir string, ids []string) map[string]batchSessionFacts {
-	if !config.BatchRuntimeEnabled() || a == nil || a.DB() == nil {
+	if !config.BatchRuntimeEnabled() {
 		return nil
+	}
+	if a == nil || a.DB == nil {
+		return unavailableBatchFacts(ids)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	reader := session.NewBatchLiveReader(db.New(a.DB()), dataDir)
-	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(a.DB()), db.New(a.DB()), ids)
+	conn := a.DB()
+	if conn == nil {
+		return unavailableBatchFacts(ids)
+	}
+	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
+	return reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), db.New(conn), ids)
 }
 
 // renderBatchRootsForWhy renders the `sessions why` batch section from
@@ -408,7 +434,9 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		if f.Unknown {
 			fmt.Println("(batch read incomplete; live batch work unknown)")
 		} else {
-			fmt.Println("(no batch work)")
+			// F8: the same empty-state line the legacy path prints (user-facing
+			// continuity across the flag; no batch-specific wording).
+			fmt.Println("(no jobs)")
 		}
 	}
 	if f.Unknown {

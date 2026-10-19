@@ -102,11 +102,7 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 	// descendant work, naming the child.
 	store := a.AsyncJobStore()
 	require.NotNil(t, store, "a full App built via appPkg.New must have an AsyncJobStore")
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", Kind: session.JobKindAgent,
-		Input: "delegate to " + child.ID, ChildSessionID: child.ID,
-	})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: parent.ID, toolCallID: "delegate-1", taskKind: "agent", input: "delegate to " + child.ID, toolName: "", childSessionID: child.ID, state: "running"})
 
 	rows = list()
 	parentRow = findSessionRow(t, rows, parent.ID)
@@ -123,10 +119,14 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 	}
 
 	// The delegation row reaches a terminal state: the parent returns to idle.
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
-	})
-	require.NoError(t, err)
+	if batchRuntimeEnabled() {
+		projectLiveWorkRoot(t, a, parent.ID, "delegate-1", "completed")
+	} else {
+		_, err = store.Transition(ctx, session.TransitionParams{
+			Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
+		})
+		require.NoError(t, err)
+	}
 
 	rows = list()
 	parentRow = findSessionRow(t, rows, parent.ID)
@@ -170,19 +170,20 @@ func TestHandleListSessions_LiveOwnWorkAnnotation(t *testing.T) {
 
 	store := a.AsyncJobStore()
 	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: root.ID, ToolCallID: "bash-1", Kind: session.JobKindCommand, Input: "sleep 60", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "bash-1", taskKind: "bash", input: "sleep 60", toolName: "bash", state: "running"})
 
 	row := list()
 	require.True(t, row.HasLiveOwnWork, "a running own plain job must reach the row: the session is not idle")
 	require.False(t, row.HasLiveDescendantWork, "no delegation, so nothing below the root is working")
 	require.Empty(t, row.LiveDescendantIDs)
 
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: root.ID, ToolCallID: "bash-1", State: "completed", NoticeKind: "completed", Wake: true,
-	})
-	require.NoError(t, err)
+	if batchRuntimeEnabled() {
+		projectLiveWorkRoot(t, a, root.ID, "bash-1", "completed")
+	} else {
+		_, err = store.Transition(ctx, session.TransitionParams{
+			Owner: root.ID, ToolCallID: "bash-1", State: "completed", NoticeKind: "completed", Wake: true,
+		})
+		require.NoError(t, err)
+	}
 	require.False(t, list().HasLiveOwnWork, "a terminal job no longer keeps the session working")
 }

@@ -196,21 +196,17 @@ func (r *Runner) handleRequest(q *runnerRequest) runnerAnswer {
 
 func (r *Runner) releasedNode(id ID) bool {
 	// Design §§3.4/4.5: Core may discard released views; only root
-	// tombstones survive, including for descendant accesses.
-	for root := range r.released {
-		if id == root || strings.HasPrefix(string(id), string(root)+".") {
-			return true
-		}
-	}
-	return false
+	// tombstones survive, including for descendant accesses. Root IDs never
+	// contain a dot, so the root component is the first dot-separated token.
+	root, _, _ := strings.Cut(string(id), ".")
+	return r.released[ID(root)]
 }
 
 func (r *Runner) lookup(id ID) (NodeView, error) {
 	if r.commitHook != nil {
-		for root := range r.speculativeReleased {
-			if id == root || strings.HasPrefix(string(id), string(root)+".") {
-				return NodeView{}, ErrReleased
-			}
+		root, _, _ := strings.Cut(string(id), ".")
+		if r.speculativeReleased[ID(root)] {
+			return NodeView{}, ErrReleased
 		}
 	}
 	if r.releasedNode(id) {

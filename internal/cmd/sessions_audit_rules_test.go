@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,6 +112,15 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 	schema := fixture.Schema
 	if schema == "" {
 		schema = auditSchemaFixture
+	}
+	// The batch projection DDL is GATED on the flag: with RUSH_BATCH_RUNTIME=1
+	// the audit refuses a database without batch_nodes and its batch scan
+	// reads batch_nodes and session_notices (sessions_audit_db.go,
+	// sessions_batch_read.go), so the flag-ON fixtures carry both tables. No
+	// flag-OFF query in the audit touches either table, so the flag-OFF
+	// fixtures are schema- and output-identical to HEAD.
+	if config.BatchRuntimeEnabled() {
+		schema += auditBatchProjectionDDL
 	}
 	_, err = db.ExecContext(context.Background(), schema)
 	require.NoError(t, err)

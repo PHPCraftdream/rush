@@ -17,7 +17,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -32,32 +35,99 @@ func mustDBConn(t *testing.T, dataDir string) *sql.DB {
 	return conn
 }
 
-func claimOwnJob(t *testing.T, store *session.AsyncJobStore, owner, toolCallID string) {
+// batchSeedHost is the shared dual-mode seed substrate: it resolves the
+// host identity the batch reservation needs (the app's own registered host,
+// so the live reader proves liveness via the own-host registry), tolerating
+// a nil a.AsyncJobStore() (setupAppLite fixtures) with the same fallback
+// dance seedBatchReadRoot uses. Returns the host, a BatchStore over the
+// app's DB, and the fallback closer (nil when the app's own store was used).
+func batchSeedHost(t *testing.T, a *app.App) (string, *session.BatchStore, func()) {
 	t.Helper()
-	_, err := store.Claim(context.Background(), session.ClaimParams{
-		Owner: owner, ToolCallID: toolCallID, Kind: session.JobKindCommand, Input: "sleep 60", ToolName: "bash",
+	ctx := context.Background()
+	store := a.AsyncJobStore()
+	var closeAsync func()
+	if store == nil {
+		store = session.NewAsyncJobStore(a.DB(), a.Config().Options.DataDirectory, os.Getpid(), "batch-seed-fixture")
+		closeAsync = func() { _ = store.Close(context.Background()) }
+		t.Cleanup(closeAsync)
+	}
+	host, err := store.EnsureHost(ctx)
+	require.NoError(t, err)
+	return host, session.NewBatchStore(a.DB()), closeAsync
+}
+
+// settleBatchRoot is the finishOwnJob-style raw UPDATE for the flag-ON
+// substrate: it settles the root reserved for (owner, toolCallID) and all of
+// its nodes to terminal (raw UPDATE on rows Reserve created -- the
+// established pattern for notice/debt columns; Project needs a live host
+// identity the detached seed no longer has).
+func settleBatchRoot(t *testing.T, a *app.App, owner, toolCallID string) {
+	t.Helper()
+	_, err := a.DB().ExecContext(context.Background(),
+		`UPDATE batch_nodes SET state = 'completed', control_state = 'none', updated_at = ?
+		 WHERE owner_session_id = ? AND (tool_call_id = ? OR root_id IN
+			 (SELECT root_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ?))`,
+		time.Now().Unix(), owner, toolCallID, owner, toolCallID)
+	require.NoError(t, err)
+}
+
+// claimOwnJob seeds the "own running plain background job" fact for owner:
+// flag off, the legacy async_jobs claim; flag on, the same fact as a live
+// batch root (kind 'batch' with one 'command' task child -- 'command' keeps
+// it a command, not an Agents delegation).
+func claimOwnJob(t *testing.T, a *app.App, owner, toolCallID string) {
+	t.Helper()
+	if !config.BatchRuntimeEnabled() {
+		store := a.AsyncJobStore()
+		require.NotNil(t, store)
+		_, err := store.Claim(context.Background(), session.ClaimParams{
+			Owner: owner, ToolCallID: toolCallID, Kind: session.JobKindCommand, Input: "sleep 60", ToolName: "bash",
+		})
+		require.NoError(t, err)
+		return
+	}
+	host, bs, _ := batchSeedHost(t, a)
+	_, err := bs.Reserve(context.Background(), session.BatchReservation{
+		Owner: owner, Host: host, RunnerID: "claim-own-job-runner",
+		ToolCallID: toolCallID, InputHash: "hash-" + toolCallID, Sequence: 1,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "pending", ControlState: "none",
+		}, Children: []session.BatchReservationNode{
+			{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "pending", ControlState: "none"}},
+		}},
 	})
 	require.NoError(t, err)
 }
 
-func finishOwnJob(t *testing.T, store *session.AsyncJobStore, owner, toolCallID string) {
+// finishOwnJob settles the own job for (owner, toolCallID): flag off, the
+// legacy Transition; flag on, the raw root settle (settleBatchRoot).
+func finishOwnJob(t *testing.T, a *app.App, owner, toolCallID string) {
 	t.Helper()
-	_, err := store.Transition(context.Background(), session.TransitionParams{
-		Owner: owner, ToolCallID: toolCallID, State: "completed", NoticeKind: "completed", Wake: true,
-	})
-	require.NoError(t, err)
+	if !config.BatchRuntimeEnabled() {
+		store := a.AsyncJobStore()
+		require.NotNil(t, store)
+		_, err := store.Transition(context.Background(), session.TransitionParams{
+			Owner: owner, ToolCallID: toolCallID, State: "completed", NoticeKind: "completed", Wake: true,
+		})
+		require.NoError(t, err)
+		return
+	}
+	settleBatchRoot(t, a, owner, toolCallID)
 }
 
 // Revert-check: any re-introduction of a local own-job promotion (or its
 // omission from the classifier) flips the first line back to
 // "status: at rest" and fails the first assertion.
 func TestExplainSessionStatus_AtRestOwnRunningJobIsRunning(t *testing.T) {
-	t.Parallel()
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: pins the LEGACY why-render first line ("status: running");
+	// under the flag explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 	sess, err := s.Create(context.Background(), "root waiting on its own bash job")
 	require.NoError(t, err)
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonEndTurn)
-	claimOwnJob(t, store, sess.ID, "bash-1")
+	claimOwnJob(t, a, sess.ID, "bash-1")
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
@@ -69,7 +139,7 @@ func TestExplainSessionStatus_AtRestOwnRunningJobIsRunning(t *testing.T) {
 	require.Contains(t, out, "waiting on 1 running job(s)")
 	require.NotContains(t, out, "status: at rest")
 
-	finishOwnJob(t, store, sess.ID, "bash-1")
+	finishOwnJob(t, a, sess.ID, "bash-1")
 	buf.Reset()
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
 	require.Equal(t, "status: at rest", strings.SplitN(buf.String(), "\n", 2)[0],
@@ -77,16 +147,17 @@ func TestExplainSessionStatus_AtRestOwnRunningJobIsRunning(t *testing.T) {
 }
 
 func TestExplainSessionStatus_DeadPIDLockWithOwnJobIsRunningNotCrashed(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_AtRestOwnRunningJobIsRunning.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	// CHANGED VERDICT (R-ACT-2, D1): the pre-rework rule kept this crashed
 	// ("never downgrade a crash"); live work now outranks the dead recorded
 	// PID, which becomes the "(stale lock)" annotation.
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 	sess, err := s.Create(context.Background(), "stale-lock root waiting on its own job")
 	require.NoError(t, err)
 	backDateLock(t, writeLockFileAt(t, dataDir, sess.ID, 999999))
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonEndTurn)
-	claimOwnJob(t, store, sess.ID, "bash-1")
+	claimOwnJob(t, a, sess.ID, "bash-1")
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
@@ -99,17 +170,18 @@ func TestExplainSessionStatus_DeadPIDLockWithOwnJobIsRunningNotCrashed(t *testin
 }
 
 func TestExplainSessionStatus_DeadPIDLockWithoutJobIsCrashed(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: legacy-render first line; see TestExplainSessionStatus_AtRestOwnRunningJobIsRunning.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	// D3: with the job finished there is no live work; the recorded dead PID
 	// (the holder never reached release) is a crash even with an end_turn
 	// finish from a previous turn.
-	a, s, m, store, dataDir := newWhyDescendantTestApp(t)
+	a, s, m, _, dataDir := newWhyDescendantTestApp(t)
 	sess, err := s.Create(context.Background(), "crashed root, job finished")
 	require.NoError(t, err)
 	backDateLock(t, writeLockFileAt(t, dataDir, sess.ID, 999999))
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonError)
-	claimOwnJob(t, store, sess.ID, "bash-1")
-	finishOwnJob(t, store, sess.ID, "bash-1")
+	claimOwnJob(t, a, sess.ID, "bash-1")
+	finishOwnJob(t, a, sess.ID, "bash-1")
 
 	var buf bytes.Buffer
 	require.NoError(t, explainSessionStatus(context.Background(), a, dataDir, sess.ID, &buf))
@@ -127,8 +199,10 @@ func TestExplainSessionStatus_DeadPIDLockWithoutJobIsCrashed(t *testing.T) {
 // Revert-check: any local re-ranking of these shapes in a reader breaks its
 // row here while the other rows still pass.
 func TestListStatus_OwnJobShapes(t *testing.T) {
-	t.Parallel()
-	a, s, _, store, dataDir := newWhyDescendantTestApp(t)
+	// F11 env pin: pins the dead-host crash fact, which the batch authority
+	// deliberately has no equivalent of (dead hosts stay live until recovery).
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+	a, s, _, _, dataDir := newWhyDescendantTestApp(t)
 	ctx := context.Background()
 	mk := func(title string) session.Session {
 		sess, err := s.Create(ctx, title)
@@ -137,8 +211,8 @@ func TestListStatus_OwnJobShapes(t *testing.T) {
 	}
 	blank, deadPID, deadHost, withJob := mk("blank"), mk("dead-pid"), mk("dead-host"), mk("both")
 
-	claimOwnJob(t, store, blank.ID, "bash-1")
-	claimOwnJob(t, store, deadPID.ID, "bash-1")
+	claimOwnJob(t, a, blank.ID, "bash-1")
+	claimOwnJob(t, a, deadPID.ID, "bash-1")
 	backDateLock(t, writeLockFileAt(t, dataDir, deadPID.ID, 999999))
 
 	deadStore := session.NewAsyncJobStore(mustDBConn(t, dataDir), dataDir, 4242, "dead")
@@ -147,9 +221,9 @@ func TestListStatus_OwnJobShapes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, deadStore.SimulateCrashForTest())
 
-	claimOwnJob(t, store, withJob.ID, "bash-1")
+	claimOwnJob(t, a, withJob.ID, "bash-1")
 	other := mk("other")
-	claimDelegation(t, store, withJob.ID, "agent-1", other.ID)
+	claimDelegation(t, a, withJob.ID, "agent-1", other.ID)
 
 	acts, err := a.SessionActivityBatch(ctx, []string{blank.ID, deadPID.ID, deadHost.ID, withJob.ID})
 	require.NoError(t, err)
@@ -191,7 +265,7 @@ func TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone(t *testing.T) {
 
 	store := a.AsyncJobStore()
 	require.NotNil(t, store)
-	claimOwnJob(t, store, parent.ID, "bash-1")
+	claimOwnJob(t, a, parent.ID, "bash-1")
 	// Keep the store (and its host lock) alive across the seed App's
 	// Shutdown -- same dance as the delegating variant of this test.
 	a.SetAsyncJobStoreForTest(nil)
@@ -220,8 +294,24 @@ func TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone(t *testing.T) {
 	freshConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
-	finishOwnJob(t, writer, parent.ID, "bash-1")
+	if config.BatchRuntimeEnabled() {
+		// Flag ON: settle the batch root with the finishOwnJob-style raw
+		// UPDATE (the seed app is shut down; write through a fresh conn).
+		_, err = freshConn.ExecContext(ctx,
+			`UPDATE batch_nodes SET state = 'completed', control_state = 'none', updated_at = ?
+			 WHERE owner_session_id = ? AND (tool_call_id = ? OR root_id IN
+				 (SELECT root_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ?))`,
+			time.Now().Unix(), parent.ID, "bash-1", parent.ID, "bash-1")
+		require.NoError(t, err)
+	} else {
+		// Flag OFF: the fresh-writer Transition exactly as before (the seed
+		// app is shut down and its store detached, so `a` cannot be used).
+		writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
+		_, err = writer.Transition(ctx, session.TransitionParams{
+			Owner: parent.ID, ToolCallID: "bash-1", State: "completed", NoticeKind: "completed", Wake: true,
+		})
+		require.NoError(t, err)
+	}
 
 	phase2 := rowFor(runList())
 	// CHANGED VERDICT (R-ACT-2, D3/D4): with the job terminal there is no

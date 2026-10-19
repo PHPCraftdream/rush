@@ -214,6 +214,8 @@ def evaluate_pair(baseline, candidate, workload):
     validate(candidate, "candidate", workload)
     if baseline["candidate_sha"] != candidate["candidate_sha"]:
         raise ValueError("candidate SHA mismatch")
+    if baseline["off_wait_path"] != candidate["off_wait_path"]:
+        raise ValueError("baseline and candidate summaries disagree on the call origin / wait path")
     delta = candidate["p95_ms"] - baseline["p95_ms"]
     ratio = candidate["throughput_cps"] / baseline["throughput_cps"]
     base_rates = {run["phase"]: run["calls_per_sec"] for run in baseline["runs"] if run["phase"].startswith("contention")}
@@ -239,7 +241,7 @@ def evaluate_pair(baseline, candidate, workload):
         "commits_off": baseline["commits"], "commits_on": candidate["commits"],
         "call_transactions": candidate.get("call_transactions", []),
         "health_violations": {"baseline": baseline["health_violations"], "candidate": candidate["health_violations"]},
-        "off_wait_path": candidate["off_wait_path"],
+        "off_wait_path": candidate["off_wait_path"], "off_wait_path_baseline": baseline["off_wait_path"],
         "throughput_rounds": [{"phase": p, "cps_off": base_rates[p], "cps_on": cand_rates[p], "ratio": cand_rates[p] / base_rates[p]} for p in phases],
         "throughput_ratio_median": median_ratio, "throughput_ratio_worst": min(ratios),
         "durability": {"baseline": baseline["durability"], "candidate": candidate["durability"]},
@@ -259,7 +261,7 @@ def evaluate(baselines, candidates):
         raise ValueError("candidate workload summaries use different candidate SHAs")
     if len(baseline_shas) != 1:
         raise ValueError("baseline workload summaries use different baseline SHAs")
-    off_wait_paths = {result["off_wait_path"] for result in workloads.values()}
+    off_wait_paths = {path for result in workloads.values() for path in (result["off_wait_path"], result["off_wait_path_baseline"])}
     if len(off_wait_paths) != 1:
         raise ValueError("workload summaries disagree on the call origin / wait path")
     result = {"candidate_sha": workloads[WORKLOADS[0]]["candidate_sha"], "baseline_sha": PINNED, "baseline_description": BASELINE_DESCRIPTION, "off_wait_path": workloads[WORKLOADS[0]]["off_wait_path"], "workloads": workloads, "gates": gates}
