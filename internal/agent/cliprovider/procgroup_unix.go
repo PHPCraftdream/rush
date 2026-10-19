@@ -33,10 +33,16 @@ import (
 // registering a group whose grandchildren still live — the same
 // mechanism the #65 review filed as P3-5 and P2-1.
 //
-// session.TrackProcessTree above still self-filters non-leaders by its
-// own contract: a reaped leader is simply not recorded in the in-memory
-// sweep map — the DURABLE registry below is what "sessions kill" reads
-// from another process.
+// session.RegisterSpawnedGroup records the group in the in-memory sweep
+// map WITHOUT re-probing leadership: the leader may already be reaped by
+// the time this runs, and Getpgid on a reaped leader fails (ESRCH), so the
+// previous TrackProcessTree call silently recorded nothing -- the sweep map
+// then never saw the tree and KillAllTrackedTrees could not kill it while
+// grandchildren survived (2026-10-18 review, finding 1). Recording is safe
+// here and only here because both spawn paths above make the child its own
+// group leader BY CONSTRUCTION: spawn identity replaces the liveness probe.
+// The DURABLE registry below is what "sessions kill" in another process
+// reads.
 //
 // It ALSO durably records the group (session.RegisterChildGroup) in a
 // cross-process, on-disk registry keyed by this rush process's own pid.
@@ -52,7 +58,7 @@ func trackChildTree(proc *os.Process, dataDir, sessionID string) int {
 	if proc == nil {
 		return 0
 	}
-	_ = session.TrackProcessTree(proc.Pid)
+	_ = session.RegisterSpawnedGroup(proc.Pid)
 	if processGroupExists(proc.Pid) && dataDir != "" && sessionID != "" {
 		// generation ties this registration to the CURRENT holder of
 		// sessionID's lock: read fresh from disk right here (this

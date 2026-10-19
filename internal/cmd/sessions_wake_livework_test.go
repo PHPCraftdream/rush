@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -73,6 +74,12 @@ func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeSche
 	require.NoError(t, err)
 
 	a := &app.App{Messages: m, Sessions: s}
+	if config.BatchRuntimeEnabled() {
+		// Only the flag-on classifier reads batch facts through the DB; the
+		// flag-off one must keep seeing no DB (this minimal schema has no
+		// driver-marker tables, so providing one would make them unreadable).
+		a.DB = func() *sql.DB { return conn }
+	}
 	a.SetWakeScheduleStoreForTest(wake)
 	return a, wake, sess.ID, row.ID
 }

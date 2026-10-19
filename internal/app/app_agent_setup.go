@@ -204,6 +204,8 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			live := app.batchLiveReader
 			if live == nil {
 				live = session.NewBatchLiveReader(db.New(writer), app.dataDir)
+				// TxStarter: every live read runs in ONE read-only tx on the writer.
+				live.TxStarter = writer
 			}
 			agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStore(writer), live, writer))
 		}

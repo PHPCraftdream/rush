@@ -19,7 +19,13 @@ type BatchLiveSource interface {
 // BatchLiveReader is independent of BatchStore's writer. Construct it with
 // db.New(readPool), or an instance-local source for fault/counting tests.
 type BatchLiveReader struct {
-	Source    BatchLiveSource
+	Source BatchLiveSource
+	// TxStarter, when non-nil, makes EVERY live read run inside ONE
+	// read-only transaction on it: the served two-step read then comes from
+	// a single snapshot (index-served, one BeginTx per call), instead of the
+	// single-statement join fallback — consistent by construction at the
+	// same scan-class cost. Nil falls back to the single-statement join.
+	TxStarter BatchLiveTxStarter
 	DataDir   string
 	IsOwnHost func(string) bool
 	ProbeHost func(string, string) (HostLockStatus, error)

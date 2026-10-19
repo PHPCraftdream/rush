@@ -234,6 +234,35 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 	require.Equal(t, 1, calls)
 }
 
+// TestRunInternal_RateLimitFailingFactsEndsAfterOneAttempt pins the F3
+// END-TO-END bound: with the batch runtime ON and a BOUND fact source whose
+// liveness read fails at runtime, the retry loop must end with the ORIGINAL
+// provider error after at most one attempt. Before the fix the loop's
+// rate-limit branch had no attempt cap and the failed read paused the budget
+// forever: the fixture spun re-running the attempt and re-reading the
+// ever-growing history (the CI 600s hang, run 39139589128).
+//
+// Revert-check: restoring hasLiveTreeWork's `if err != nil { return true }`
+// makes the wait never exhaust the (zero) budget: the mock is called a second
+// time and the test never returns (the CI hang).
+func TestRunInternal_RateLimitFailingFactsEndsAfterOneAttempt(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	shrinkRateLimitVars(t, time.Millisecond, 10*time.Millisecond, 0, time.Millisecond, time.Millisecond)
+	rlErr := rateLimit429Err()
+	res, calls, _, err := rateLimitLoopRunWith(t, t.Context(), "test-rl-failing-facts", nil,
+		func(c *coordinator) {
+			BindCoordinatorBatchCutoverFacts(c, rateLimitFailedBatchFacts{})
+			t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(c) })
+		},
+		func(t *testing.T, env *fakeEnv, sess session.Session, ctx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			return rateLimitErrorAttempt(t, env, sess, ctx, call, rlErr)
+		})
+	require.Error(t, err)
+	require.ErrorIs(t, err, rlErr, "the ORIGINAL 429 must surface, not a facts error")
+	require.Nil(t, res)
+	require.Equal(t, 1, calls, "a failed liveness read buys no second attempt")
+}
+
 // TestRunInternal_RateLimitWaitContextDeadline: the ctx.Done() select inside
 // waitRateLimit must surface ctx.Err().
 //
