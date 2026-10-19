@@ -3,7 +3,9 @@ package cliprovider
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,7 +101,15 @@ func TestSyntheticLateQuotaEvidence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := &cliModel{workingDir: t.TempDir(), spec: CLISpec{Binary: shell, NoPTY: true, AlwaysStdin: true, BuildArgs: func(bool) []string { return []string{"-c", "printf '%s\\n' '" + tc.lines + "'; exit 1"} }, NewPartParser: geminiPartParser}}
+			// The multi-KB payload goes through a file, not the bash -c argv:
+			// a >8KB argument with embedded newlines is not reliable through
+			// the Windows msys command line (late quota case: exit status 2,
+			// no output, #100 windows CI).
+			payload := filepath.Join(t.TempDir(), "output.txt")
+			if err := os.WriteFile(payload, []byte(tc.lines+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m := &cliModel{workingDir: t.TempDir(), spec: CLISpec{Binary: shell, NoPTY: true, AlwaysStdin: true, BuildArgs: func(bool) []string { return []string{"-c", "cat '" + filepath.ToSlash(payload) + "'; exit 1"} }, NewPartParser: geminiPartParser}}
 			stream, err := m.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("synthetic test")}})
 			if err != nil {
 				t.Fatal(err)
