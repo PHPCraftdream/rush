@@ -168,6 +168,20 @@ func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress
 		bind.live = live[0]
 	}
 	coordinatorBatchBindings.Store(c, bind)
+	// Continuations resolve through the SAME App-owned manager, never a
+	// process global.
+	if cc, ok := c.(*coordinator); ok {
+		cc.diskCaps = diskBindings
+	}
+	// The root agent is built before the batch install binds the manager,
+	// so propagate the registry onto it here too.
+	if cc, ok := c.(*coordinator); ok {
+		if cc.currentAgent != nil {
+			if sa, ok := cc.currentAgent.(*sessionAgent); ok {
+				sa.bindDiskCaps(diskBindings)
+			}
+		}
+	}
 	processBatchBinding.CompareAndSwap(nil, bind)
 	// MCP executor routing (R7a): names registered by the MCP family resolve
 	// through the MCP kind; every other name keeps the built-in mapping.

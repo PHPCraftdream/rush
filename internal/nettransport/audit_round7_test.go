@@ -12,8 +12,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,7 +72,7 @@ func drainConnectRequest(conn net.Conn) error {
 // the always-unresolvable authority "tunnel-target.invalid:443" and
 // returns the raw dial outcome; the test aborts when the dial does
 // not settle within testAbortWait.
-func dialThroughStub(t *testing.T, ln net.Listener) (net.Conn, error) {
+func dialThroughStub(t *testing.T, ln net.Listener, diagnostics ...func()) (net.Conn, error) {
 	t.Helper()
 
 	type dialResult struct {
@@ -88,9 +90,20 @@ func dialThroughStub(t *testing.T, ln net.Listener) (net.Conn, error) {
 	case r := <-ch:
 		return r.conn, r.err
 	case <-time.After(testAbortWait):
+		dumpConnectStubTimeout(t, diagnostics...)
 		t.Fatal("connectDialer did not return within testAbortWait")
 		return nil, nil
 	}
+}
+
+func dumpConnectStubTimeout(t *testing.T, diagnostics ...func()) {
+	t.Helper()
+	for _, diagnostic := range diagnostics {
+		diagnostic()
+	}
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	t.Logf("All-goroutine stacks (possibly truncated=%t):\n%s", n == len(buf), buf[:n])
 }
 
 func TestConnectResponseHeadByteBounded(t *testing.T) {
@@ -103,17 +116,44 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 	// stubDone closes once the stub has flooded past the head budget
 	// and then observed a write failure or the client's close.
 	stubDone := make(chan struct{})
+	var mu sync.Mutex
+	phase := "accept"
+	var responseBytes int64
+	var stubErr error
+	update := func(next string, n int, err error) {
+		mu.Lock()
+		phase = next
+		responseBytes += int64(n)
+		stubErr = err
+		mu.Unlock()
+	}
+	diagnostic := func() {
+		mu.Lock()
+		p, n, err := phase, responseBytes, stubErr
+		mu.Unlock()
+		t.Logf("CONNECT stub: phase=%q response_bytes=%d head_budget=%d error=%v", p, n, maxConnectResponseHead, err)
+	}
 	go func() {
 		defer close(stubDone)
+		defer func() {
+			mu.Lock()
+			if stubErr == nil {
+				phase = "done"
+			}
+			mu.Unlock()
+		}()
 		conn, err := ln.Accept()
 		if err != nil {
+			update("accept error", 0, err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
+		update("draining request", 0, nil)
 
 		// Consume the CONNECT request head before answering (see
 		// drainConnectRequest's doc for why this must happen before Close).
 		if err := drainConnectRequest(conn); err != nil {
+			update("draining request error", 0, err)
 			return
 		}
 
@@ -121,32 +161,43 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 		// rejects the very first ~1000-byte line as "malformed HTTP
 		// status code" long before the byte budget is ever tested,
 		// which is a different failure than the one this test pins.
-		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n")); err != nil {
+		update("status write", 0, nil)
+		n, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n"))
+		update("status write", n, err)
+		if err != nil {
+			update("status write error", 0, err)
 			return
 		}
 		// Flood header lines far past the client's head budget; a
 		// failing write is the client's close surfacing.
 		pad := "X-Pad: " + strings.Repeat("A", 1000) + "\r\n"
+		update("flooding", 0, nil)
 		for written := 0; written < 4*int(maxConnectResponseHead); {
 			n, err := conn.Write([]byte(pad))
 			written += n
+			update("flooding", n, err)
 			if err != nil {
+				update("flooding error", 0, err)
 				return
 			}
 		}
 
 		// The flood may still fit in kernel buffers; keep poking the
 		// socket until the close surfaces or the abort wait expires.
+		update("close-probe", 0, nil)
 		deadline := time.Now().Add(testAbortWait)
 		for time.Now().Before(deadline) {
-			if _, err := conn.Write([]byte(pad)); err != nil {
+			n, err := conn.Write([]byte(pad))
+			update("close-probe", n, err)
+			if err != nil {
+				update("close-probe error", 0, err)
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 
-	conn, err := dialThroughStub(t, ln)
+	conn, err := dialThroughStub(t, ln, diagnostic)
 	require.Error(t, err, "an over-budget CONNECT head must fail the dial")
 	require.Nil(t, conn)
 	require.Contains(t, err.Error(), "head limit")
@@ -154,6 +205,7 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 	select {
 	case <-stubDone:
 	case <-time.After(testAbortWait):
+		dumpConnectStubTimeout(t, diagnostic)
 		t.Fatal("stub never observed a write failure or client close")
 	}
 }
