@@ -10,12 +10,18 @@ import (
 // when offering "did you mean" suggestions for a missing file.
 const anchoredSuggestionMaxEntries = 2000
 
+type suggestionClockContextKey struct{}
+
 // boundedReadDirNames reads up to maxEntries entries from dir in batches,
 // checking ctx between batches. It returns nil if the directory cannot be
 // opened or is not readable as a directory. Entries are NOT sorted; callers
 // only scan them for fuzzy name matches.
 func boundedReadDirNames(ctx context.Context, fsys fs.FS, dir string, maxEntries int) []fs.DirEntry {
-	return boundedReadDirNamesWithClock(ctx, fsys, dir, maxEntries, time.Now)
+	now := time.Now
+	if override, ok := ctx.Value(suggestionClockContextKey{}).(func() time.Time); ok {
+		now = override
+	}
+	return boundedReadDirNamesWithClock(ctx, fsys, dir, maxEntries, now)
 }
 
 func boundedReadDirNamesWithClock(ctx context.Context, fsys fs.FS, dir string, maxEntries int, now func() time.Time) []fs.DirEntry {

@@ -11,13 +11,15 @@ import (
 )
 
 type suggestionReadDirFS struct {
-	reads   int
-	entries []fs.DirEntry
+	reads    int
+	requests []int
+	entries  []fs.DirEntry
 }
 
 func (f *suggestionReadDirFS) Open(string) (fs.File, error) {
 	return &suggestionReadDirFile{owner: f}, nil
 }
+
 func (f *suggestionReadDirFS) ReadDir(string) ([]fs.DirEntry, error) {
 	f.reads++
 	return nil, fs.ErrNotExist
@@ -35,6 +37,7 @@ func (f *suggestionReadDirFile) Read([]byte) (int, error) { return 0, io.EOF }
 func (f *suggestionReadDirFile) Close() error             { return nil }
 func (f *suggestionReadDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	f.owner.reads++
+	f.owner.requests = append(f.owner.requests, n)
 	end := f.index + n
 	if end > len(f.owner.entries) {
 		end = len(f.owner.entries)
@@ -49,12 +52,13 @@ func (f *suggestionReadDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
 
 func TestBoundedReadDirNamesHonorsEntryLimit(t *testing.T) {
 	t.Parallel()
-	fsys := &suggestionReadDirFS{entries: make([]fs.DirEntry, 513)}
+	fsys := &suggestionReadDirFS{entries: make([]fs.DirEntry, 2000)}
 	for i := range fsys.entries {
 		fsys.entries[i] = bwalkDirEntry{name: "entry"}
 	}
 	entries := boundedReadDirNamesWithClock(t.Context(), fsys, ".", 513, func() time.Time { return time.Unix(1, 0) })
 	require.Len(t, entries, 513)
+	require.Equal(t, []int{256, 256, 1}, fsys.requests)
 	require.Equal(t, 3, fsys.reads)
 }
 
@@ -97,6 +101,7 @@ type unsupportedSuggestionFS struct{ reads int }
 func (f *unsupportedSuggestionFS) Open(string) (fs.File, error) {
 	return unsupportedSuggestionFile{}, nil
 }
+
 func (f *unsupportedSuggestionFS) ReadDir(string) ([]fs.DirEntry, error) {
 	f.reads++
 	return []fs.DirEntry{bwalkDirEntry{name: "needle"}}, nil
@@ -156,7 +161,8 @@ func TestAnchoredSuggestionsParentReadCountBounded(t *testing.T) {
 	for i := range fsys.entries {
 		fsys.entries[i] = bwalkDirEntry{name: "nonmatch"}
 	}
-	suggestions := anchoredSuggestions(t.Context(), fsys, ".", "nope/missing.txt")
+	ctx := context.WithValue(t.Context(), suggestionClockContextKey{}, func() time.Time { return time.Unix(1, 0) })
+	suggestions := anchoredSuggestions(ctx, fsys, ".", "nope/missing.txt")
 	require.Empty(t, suggestions)
 	require.Equal(t, 8, fsys.reads)
 }
