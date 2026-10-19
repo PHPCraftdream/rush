@@ -199,7 +199,18 @@ func TestSessionDrainPolicy_DriverMarkerUnreadable(t *testing.T) {
 			t.Parallel()
 			f := broken(t)
 			f.coord.persistentMode.Store(mode == "web")
-			f.claimAndFinish(t, ctx, "call-1")
+			// Dual-mode debt seed (see TestSessionDrainPolicy_ForeignDriver
+			// above): ON projects the pending wake=1 completion onto batch
+			// nodes of the fixture's OWN conn — claimAndFinish's ON branch
+			// reads f.env, which the bare foreignDriverFx never sets (nil
+			// *sql.DB SIGSEGV inside seedBatchJobDebt). OFF keeps the legacy
+			// claim+finish row. Only session_drivers is dropped, so the batch
+			// seed's tables are intact under the flag.
+			if batchFlagEnabled() {
+				seedFixtureJobDebt(t, f.conn, f.store, f.ledger, nil, f.sessID, "call-1", false)
+			} else {
+				f.claimAndFinish(t, ctx, "call-1")
+			}
 
 			v := f.coord.drainPolicy(ctx, f.sessID, false)
 			require.Equal(t, drainDeferred, v.kind)

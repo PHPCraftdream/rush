@@ -513,6 +513,18 @@ func (a *arbiter) overCapCount(sid string) int {
 	return len(s.overCap)
 }
 
+// gateHoldsHint reports whether sid's arbiter entry carries a launch gate
+// with recorded hint state (HintSeen set or HintOpens): while it does,
+// dropping the ledger's hint counter would desynchronize gateShut's
+// newer-hint comparison -- a counter that restarts at zero reads as "any
+// inequality = a newer fact" and reopens a dormant gate with no fact at all.
+func (a *arbiter) gateHoldsHint(sid string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.bySession[sid]
+	return s != nil && (s.gate.HintSeen != 0 || s.gate.HintOpens)
+}
+
 // dropSession deletes sid's entry entirely (the sweep of a deleted session:
 // the only moment cap/suspension state stops meaning anything without a human
 // message).

@@ -17,19 +17,39 @@ import (
 // sweepIdleSessions drops the ledger entries that hold nothing: no jobs and
 // no external driver. (The launch gate moved to the arbiter state in R-ARB-2;
 // its idle half is swept by sweepArbiterEntries below.) A dropped entry's
-// hint counter starts again at zero, which is harmless: the gate is open, and
-// a CLI waiter's session is an external driver (never swept).
+// hint counter starts again at zero -- harmless only while the gate is open:
+// while a dormant gate records HintSeen, dropping the counter makes gateShut
+// read the reset counter as "a newer fact" and reopens the gate with no fact
+// at all (the batch path arms no legacy workLedger job, so every batch-only
+// session's entry was exposed). Entries whose gate still holds hint state are
+// kept until it does not. The check is best effort: a pace that records its
+// hint between the gate check and the delete can still lose the counter once
+// (the cost is one extra gate evaluation; the next pace re-records the hint),
+// closing it would need the hint read and the gate write under one lock.
 func (l *workLedger) sweepIdleSessions() int {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	n := 0
+	var candidates []string
 	for id, s := range l.bySession {
 		if len(s.jobs) == 0 && !s.externalDriver {
-			delete(l.bySession, id)
-			n++
+			candidates = append(candidates, id)
 		}
 	}
-	return n
+	l.mu.Unlock()
+	dropped := 0
+	for _, id := range candidates {
+		if l.coord != nil && l.coord.arb.gateHoldsHint(id) {
+			continue
+		}
+		l.mu.Lock()
+		// Re-check under the lock: a job or driver may have arrived while
+		// the arbiter was asked.
+		if s := l.bySession[id]; s != nil && len(s.jobs) == 0 && !s.externalDriver {
+			delete(l.bySession, id)
+			dropped++
+		}
+		l.mu.Unlock()
+	}
+	return dropped
 }
 
 // sweepArbiterEntries frees arbiter entries whose every field is idle (no
