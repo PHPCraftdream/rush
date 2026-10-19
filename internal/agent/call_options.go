@@ -229,6 +229,23 @@ func sessionModelPersistenceFrom(ctx context.Context) (smart, fast *session.Mode
 	return persistence.smart, persistence.fast
 }
 
+// roleEffortContextKey carries an explicit non-smart role run's --effort to
+// the role-slot resolution (plan R6). Transient by construction: it rides
+// the invocation's ctx, never CallOptions and never the session, so a
+// replayed durable call carries no stale effort.
+type roleEffortContextKey struct{}
+
+// WithRoleReasoningEffort attaches the explicit role-run effort to ctx.
+func WithRoleReasoningEffort(ctx context.Context, effort string) context.Context {
+	return context.WithValue(ctx, roleEffortContextKey{}, effort)
+}
+
+// roleReasoningEffortFrom returns the attached role-run effort, "" when none.
+func roleReasoningEffortFrom(ctx context.Context) string {
+	effort, _ := ctx.Value(roleEffortContextKey{}).(string)
+	return effort
+}
+
 type modelOverridesContextKey struct{}
 
 type modelOverridesContextValue struct {

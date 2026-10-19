@@ -13,7 +13,9 @@ import (
 
 // Heartbeat source labels (design point 3).
 const (
-	hbSourceSlotStart       = "slot@start"
+	hbSourceSlotStart = "slot@start"
+	// The slot was re-resolved from the live snapshot at dispatch time (plan D3).
+	hbSourceSlotLive        = "slot@live"
 	hbSourceSessionOverride = "session-override"
 	hbSourcePerCall         = "per-call"
 )

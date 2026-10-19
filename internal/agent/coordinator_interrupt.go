@@ -626,7 +626,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	}
 	var pinned *resolvedOverrides
 	if smart != nil || fast != nil {
-		resolved, applyErr := c.applyModelOverrides(ctx, smart, fast)
+		resolved, applyErr := c.applyModelOverrides(ctx, sessionID, smart, fast)
 		if applyErr != nil {
 			return applyErr
 		}

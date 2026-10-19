@@ -1,9 +1,13 @@
 package cmd
 
-// Tests for sessionRoleModelOverride (task #1060): `rush run --role worker` /
-// `--role reviewer` must prefer a per-session worker/reviewer override over
-// the config-wide default, the same precedence resolveSubAgentModelOverride
-// already applies for sub-agent dispatch (internal/agent/coordinator_models.go).
+// Tests for sessionRoleModelOverride and foldRoleModel (task #1060, plan D2):
+// `rush run --role worker` / `--role reviewer` validates against a
+// per-session worker/reviewer override or the config slot, the same
+// precedence resolveSubAgentModelOverride already applies for sub-agent
+// dispatch (internal/agent/coordinator_models.go). The fold no longer
+// copies a model into the smart slot — the coordinator resolves the role's
+// model live per turn — so foldRoleModel only resolves --continue's
+// session and validates that a tier exists.
 
 import (
 	"context"
@@ -129,17 +133,17 @@ func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 
 	got, resolved, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
 	require.NoError(t, err)
-	require.Equal(t, "last-prov/last-worker", got, "--continue must use the pin of the session it continues")
+	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, last.ID, resolved, "the resolved session is handed on so the run does not resolve it again")
 	require.False(t, useLast)
 
 	got, _, _, err = foldRoleModel(ctx, a, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
 	require.NoError(t, err)
-	require.Equal(t, "last-prov/last-reviewer", got)
+	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 
 	got, resolved, useLast, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
 	require.NoError(t, err)
-	require.Equal(t, "old-prov/old-worker", got, "an explicit session id takes precedence over --continue, as in resolveSession")
+	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, older.ID, resolved)
 	require.True(t, useLast, "an explicit id resolves nothing: the flags come back as given")
 
@@ -196,8 +200,33 @@ func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 	model, sessionID, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
 
 	require.NoError(t, err)
-	require.Equal(t, "a-prov/a-worker", model, "the pin comes from the first resolution")
+	require.Equal(t, "", model, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, a1.ID, sessionID, "the run continues the session the pin came from")
 	require.False(t, useLast, "the run must not resolve the last session again")
 	require.Equal(t, 1, svc.calls, "exactly one GetLast")
+}
+
+// TestFoldRoleModel_NoFoldLeavesSmartEmpty pins the D2 contract's no-fold
+// paths: an explicit --model comes back unchanged even for a role run, and
+// --role smart never folds. The no-model-no-pin path is NOT exercised
+// here: it would reach a.Config(), which panics on this App literal
+// (Sessions only, no Config store).
+func TestFoldRoleModel_NoFoldLeavesSmartEmpty(t *testing.T) {
+	t.Parallel()
+	conn, q := newTestDB(t)
+	s := session.NewService(q, conn)
+	a := &app.App{Sessions: s}
+	ctx := context.Background()
+
+	got, resolved, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	require.NoError(t, err)
+	require.Equal(t, "explicit/model", got, "an explicit --model is returned unchanged")
+	require.Empty(t, resolved)
+	require.True(t, useLast)
+
+	got, resolved, useLast, err = foldRoleModel(ctx, a, "smart", config.SelectedModelTypeSmart, "", "", true)
+	require.NoError(t, err)
+	require.Equal(t, "", got, "--role smart never folds")
+	require.Empty(t, resolved)
+	require.True(t, useLast)
 }

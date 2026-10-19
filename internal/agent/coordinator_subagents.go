@@ -40,6 +40,11 @@ type subAgentParams struct {
 	// ParentSessionID equals SessionID; runSubAgent verifies this before
 	// touching it (see the ownership check in runSubAgent).
 	ResumeSessionID string
+	// slotModel reports that params.Agent's model was built from a config
+	// role slot (the agent tool's buildAgent cascade). Only such dispatches
+	// may be refreshed at dispatch time; agentic_fetch's fast-built child
+	// and any other caller are exempt.
+	slotModel bool
 }
 
 // runSubAgent runs a sub-agent and handles session management and cost accumulation.
@@ -189,6 +194,20 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		} else if override != nil {
 			model = *override
 			hbSource = hbSourceSessionOverride
+		}
+	}
+	// D3 (plan §2.3): the slot-built model is refreshed at DISPATCH time — a
+	// dispatch is a new request — so a long orchestrator turn does not keep
+	// spawning sub-agents on a model the operator replaced mid-turn.
+	// Explicit tiers (per-call credentials, the session pin above) never
+	// pass through here. The refresh applies ONLY to the agent tool's
+	// slot-built dispatch (params.slotModel): agentic_fetch builds its child
+	// on the FAST model, which is not a role-slot model, so refreshing it
+	// from the smart slot would silently run the child on the wrong model.
+	if params.slotModel && callCreds == nil && hbSource == hbSourceSlotStart {
+		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, model); ok {
+			model = refreshed
+			hbSource = hbSourceSlotLive
 		}
 	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens

@@ -116,7 +116,7 @@ func TestRunInternal_SourceReachesProviderCtx(t *testing.T) {
 func TestApplyModelOverrides_PerCallSourceLabels(t *testing.T) {
 	hbIsolateEnv(t)
 	coord, _ := newCallOptionsTestCoordinator(t)
-	pinned, err := coord.applyModelOverrides(t.Context(), &ModelOverride{Provider: "test-peak", Model: "test-model"}, nil)
+	pinned, err := coord.applyModelOverrides(t.Context(), "", &ModelOverride{Provider: "test-peak", Model: "test-model"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, hbSourcePerCall, pinned.smartSource)
 	require.Equal(t, hbSourceSlotStart, pinned.fastSource)

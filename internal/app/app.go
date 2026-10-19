@@ -185,6 +185,14 @@ type App struct {
 	agentNotifications *pubsub.Broker[notify.Notification]
 	events             *pubsub.Broker[any]
 
+	// modelsSyncSubs are the coalescing (buffer 1) EventConfig fan-out
+	// subscribers for poll-driven model changes.
+	modelsSyncSubsMu sync.Mutex
+	modelsSyncSubs   []chan struct{}
+	// modelsSyncWG tracks background shared-agent rebuilds joined by
+	// stopConfigDiskSync.
+	modelsSyncWG sync.WaitGroup
+
 	// shutdownOnce makes the full App shutdown, including database release,
 	// safe to repeat when a caller has both an explicit shutdown and a cleanup
 	// hook.
@@ -571,6 +579,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// without it. releaseResources stops and joins the poller before the
 	// parallel cleanupFuncs batch.
 	app.config.StartOAuthDiskSync()
+
+	// Package B (docs/plans/2026-10-15-role-models-hot-reload.md §3.4): start
+	// the config disk-sync poller under the same App-owned lifecycle. Same
+	// placement rules as the OAuth poller above; releaseResources stops and
+	// joins it before the parallel cleanupFuncs batch.
+	app.startConfigDiskSync()
 
 	if dataDir != "" {
 		app.RunQueuePump = session.NewRunQueuePump(session.RunQueuePumpConfig{

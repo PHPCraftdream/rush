@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -22,6 +23,18 @@ var (
 	configDiskSyncInterval = 5 * time.Second
 	configDiskSyncWait     = waitCodexRefresh
 	configDiskSyncStat     = os.Stat
+	// configDiskSyncFirstDelay draws the poller's first delay; injectable so
+	// tests can pin boundary draws deterministically (no real sleeps).
+	// Default: defaultConfigDiskSyncFirstDelay, whose bounds are pinned
+	// directly by TestConfigDiskSyncJitterBounds and whose exact response
+	// to boundary draws by TestConfigDiskSyncFirstDelayFormulaBoundaries
+	// (via the configDiskSyncRandInt63 seam below the formula).
+	configDiskSyncFirstDelay = defaultConfigDiskSyncFirstDelay
+	// configDiskSyncRandInt63 is the draw source BELOW the first-delay
+	// formula: the default formula's only nondeterminism. Stubbing it lets
+	// tests pin the FORMULA's exact response to boundary draws (0 and
+	// interval-1) without replacing the formula itself.
+	configDiskSyncRandInt63 = rand.Int64N
 	// configDiskSyncAfterTick is a test hook observing each completed tick.
 	configDiskSyncAfterTick func(*ConfigStore, ConfigDiskSyncResult)
 )
@@ -66,17 +79,24 @@ type configDiskSyncState struct {
 	// failedKey remembers the digest set of the last failed reload; no
 	// retry or repeated warning happens while the digests stay identical.
 	failedKey string
+	// lastAttemptKey remembers the candidate digest set of the last
+	// ATTEMPT, whatever its outcome: ticks that would repeat an identical
+	// attempt stay quiescent, which closes the ineligible-tracked-file
+	// loop where the digests can never match the published snapshot.
+	lastAttemptKey string
 	// reloadAttempts counts reload attempts (test observability).
 	reloadAttempts uint64
 }
 
 // StartConfigDiskSync starts the config disk poller. It is idempotent, a
 // no-op for a store without a working directory (library/test store), and
-// refused after a Stop.
+// refused permanently once StopConfigDiskSync has been called on the store
+// (terminal stop, even when nothing was ever started).
 func (s *ConfigStore) StartConfigDiskSync(opts ConfigDiskSyncOptions) {
 	s.configSyncMu.Lock()
 	defer s.configSyncMu.Unlock()
-	if s.workingDir == "" || s.configSyncStarted {
+	// A store with nothing tracked has nothing to poll (library mode).
+	if s.workingDir == "" || s.configSyncStarted || s.configSyncStopped || len(s.loadSnapshot().trackedConfigPaths) == 0 {
 		return
 	}
 	if s.configSyncCtx == nil {
@@ -95,13 +115,17 @@ func (s *ConfigStore) StartConfigDiskSync(opts ConfigDiskSyncOptions) {
 }
 
 // StopConfigDiskSync cancels the poller and joins its goroutine. It is
-// idempotent; a later StartConfigDiskSync is refused. The mutex is released
-// BEFORE the join: a successful in-flight reload calls
+// idempotent and TERMINAL: the stopped state is recorded even when nothing
+// was ever started, and every later StartConfigDiskSync on the store is
+// refused (a cancelled-context check alone would miss the Stop-before-Start
+// case, where a fresh context would otherwise be created). The mutex is
+// released BEFORE the join: a successful in-flight reload calls
 // configSyncOnModelsChangedFunc, which takes configSyncMu on the poller
 // goroutine — holding the lock across WG.Wait would deadlock Stop against
 // that reload.
 func (s *ConfigStore) StopConfigDiskSync() {
 	s.configSyncMu.Lock()
+	s.configSyncStopped = true
 	if s.configSyncCancel != nil {
 		s.configSyncCancel()
 	}
@@ -118,6 +142,14 @@ func (s *ConfigStore) PollConfigDiskOnce(ctx context.Context) (ConfigDiskSyncRes
 	return s.syncConfigFromDisk(ctx, &st)
 }
 
+// defaultConfigDiskSyncFirstDelay is the production first-delay draw:
+// uniform in [0, configDiskSyncInterval), so N concurrent processes do not
+// tick in lockstep. Named so tests can pin its per-draw bounds directly
+// while the configDiskSyncFirstDelay seam stays test-injectable.
+func defaultConfigDiskSyncFirstDelay() time.Duration {
+	return time.Duration(configDiskSyncRandInt63(int64(configDiskSyncInterval)))
+}
+
 func configDiskSyncDelay() time.Duration {
 	spread := configDiskSyncInterval / 5
 	return configDiskSyncInterval - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
@@ -128,7 +160,7 @@ func (s *ConfigStore) runConfigDiskSync(ctx context.Context) {
 	var st configDiskSyncState
 	// First delay is uniform in [0, interval) so N processes do not tick
 	// in lockstep.
-	delay := time.Duration(rand.Int64N(int64(configDiskSyncInterval)))
+	delay := configDiskSyncFirstDelay()
 	for configDiskSyncWait(ctx, delay) == nil {
 		if ctx.Err() != nil {
 			return
@@ -188,6 +220,11 @@ func (s *ConfigStore) syncConfigFromDisk(ctx context.Context, st *configDiskSync
 	// retry, no repeated warning) until a candidate digest or the candidate
 	// set itself changes.
 	if !drift && configDiskSyncDigestsMatch(sn) {
+		// Snapshot and disk agree: any earlier attempt memo is stale from
+		// here on — another reload path may have published exactly this
+		// disk state, and a later flip BACK to the attempted content must
+		// still reload (P2-2: without the clear, A→B→A skips forever).
+		st.lastAttemptKey = ""
 		st.settled = true
 		return result, nil
 	}
@@ -198,7 +235,9 @@ func (s *ConfigStore) syncConfigFromDisk(ctx context.Context, st *configDiskSync
 // configDiskSyncReload runs the injected reload once, with the failure
 // bookkeeping of plan section 3.8: no retry and one warning per distinct
 // failed candidate key (candidate path set plus digests), one info on
-// recovery.
+// recovery. An outcome-independent memo of the last attempted key keeps
+// ticks with an unchanged candidate set from repeating an attempt whose
+// result cannot differ (e.g. a tracked file the loader always ignores).
 func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSyncState, before *storeSnapshot, result *ConfigDiskSyncResult) (ConfigDiskSyncResult, error) {
 	key := configDiskSyncDigestKey(s, before)
 	if st.failedKey == key {
@@ -206,9 +245,17 @@ func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSy
 		// warning was already logged for this exact digest set.
 		return *result, nil
 	}
+	if st.lastAttemptKey == key {
+		// The same candidate set was already attempted; whether that
+		// attempt succeeded or failed, an unchanged candidate set cannot
+		// produce a different outcome, so skip without a retry, a new
+		// warning, or another attempt.
+		return *result, nil
+	}
 	beforeModels := cloneModelsSelections(before.config.Models)
 	st.reloadAttempts++
 	err := s.configSyncReloadFunc()(ctx)
+	st.lastAttemptKey = key
 	if err != nil {
 		st.failedKey = key
 		result.ReloadErr = err
@@ -227,6 +274,14 @@ func (s *ConfigStore) configDiskSyncReload(ctx context.Context, st *configDiskSy
 		}
 	}
 	return *result, nil
+}
+
+// ConfigDiskSyncRunning reports whether the config disk-sync poller
+// goroutine is running: started, not stopped, and not refused after a stop.
+func (s *ConfigStore) ConfigDiskSyncRunning() bool {
+	s.configSyncMu.Lock()
+	defer s.configSyncMu.Unlock()
+	return s.configSyncStarted && !s.configSyncStopped && s.configSyncCtx != nil && s.configSyncCtx.Err() == nil
 }
 
 // configDiskSyncCandidatePaths rebuilds the current config candidate path
@@ -286,12 +341,67 @@ func configDiskSyncDigestKey(s *ConfigStore, sn *storeSnapshot) string {
 }
 
 // configDiskModelProfile is the compared projection of one role slot plus
-// its referenced provider identity.
+// its referenced provider identity: the COMPLETE effective selection
+// (provider, model, reasoning effort, thinking flag, token budget,
+// temperature, top-p, top-k, frequency/presence penalties, provider
+// options), so ANY single-field change still diffs, not just the identifier.
 type configDiskModelProfile struct {
 	provider string
 	model    string
+	effort   string
+	think    bool
+	maxTk    int64
+	// Pointer-valued SelectedModel fields are compared by dereferenced
+	// value via the set/value pairs below: nil vs non-nil differ (set
+	// false vs true), equal values compare equal.
+	tempSet bool
+	temp    float64
+	topPSet bool
+	topP    float64
+	topKSet bool
+	topK    int64
+	freqSet bool
+	freq    float64
+	presSet bool
+	pres    float64
+	// ProviderOptions compared by canonical JSON encoding (encoding/json
+	// sorts map keys); nil and the empty map both encode to "" and compare
+	// EQUAL, so key-order noise and empty maps do not cause spurious
+	// callbacks.
+	optsJSON string
 	id       string
 	typ      string
+}
+
+// optFloat normalizes a *float64 override to a comparable set/value pair.
+func optFloat(v *float64) (bool, float64) {
+	if v == nil {
+		return false, 0
+	}
+	return true, *v
+}
+
+// optInt normalizes a *int64 override to a comparable set/value pair.
+func optInt(v *int64) (bool, int64) {
+	if v == nil {
+		return false, 0
+	}
+	return true, *v
+}
+
+// providerOptionsJSON canonicalizes a ProviderOptions map for comparison;
+// nil and empty both yield "".
+func providerOptionsJSON(opts map[string]any) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(opts)
+	if err != nil {
+		// Values come from JSON configs, so this is unreachable in practice;
+		// fall back to a distinct key rather than silently equating.
+		return "<unencodable>"
+	}
+	return string(data)
 }
 
 // configDiskModelsEqual reports whether the four role slots and the
@@ -305,7 +415,20 @@ func configDiskModelsProfile(cfg *Config) map[SelectedModelType]configDiskModelP
 	for _, slot := range []SelectedModelType{SelectedModelTypeSmart, SelectedModelTypeFast, SelectedModelTypeWorker, SelectedModelTypeReviewer} {
 		var entry configDiskModelProfile
 		if cfg != nil {
-			entry = configDiskModelProfile{provider: cfg.Models[slot].Provider, model: cfg.Models[slot].Model}
+			sel := cfg.Models[slot]
+			entry = configDiskModelProfile{
+				provider: sel.Provider,
+				model:    sel.Model,
+				effort:   sel.ReasoningEffort,
+				think:    sel.Think,
+				maxTk:    sel.MaxTokens,
+			}
+			entry.tempSet, entry.temp = optFloat(sel.Temperature)
+			entry.topPSet, entry.topP = optFloat(sel.TopP)
+			entry.topKSet, entry.topK = optInt(sel.TopK)
+			entry.freqSet, entry.freq = optFloat(sel.FrequencyPenalty)
+			entry.presSet, entry.pres = optFloat(sel.PresencePenalty)
+			entry.optsJSON = providerOptionsJSON(sel.ProviderOptions)
 			if entry.provider != "" && cfg.Providers != nil {
 				if pc, ok := cfg.Providers.Get(entry.provider); ok {
 					entry.id, entry.typ = pc.ID, string(pc.Type)
