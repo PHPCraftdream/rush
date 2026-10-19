@@ -283,13 +283,13 @@ func TestBatchWorkInventoryRealFamilies(t *testing.T) {
 				// The flag-on binding sets exactly this override
 				// (batch_install_ingress.go); reproduce it so the kind
 				// routing is observable without a full coordinator.
-				batchLeafKindOverride = func(tool string) (string, bool) {
+				setBatchLeafKindOverride(func(tool string) (string, bool) {
 					if len(tool) >= 4 && tool[:4] == "mcp_" {
 						return batchKindMCP, true
 					}
 					return "", false
-				}
-				t.Cleanup(func() { batchLeafKindOverride = nil })
+				})
+				t.Cleanup(func() { setBatchLeafKindOverride(nil) })
 				return env.invoke("call-inv-mcp", "mcp_files__read")
 			},
 		},

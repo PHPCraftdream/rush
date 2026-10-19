@@ -64,7 +64,7 @@ package session
 // | internal/agent/work_ledger*.go, bgshell_claim.go, notice_pull.go, async_job_reaction.go, notice_row_ids.go | claim/terminal CAS, ack, inline, reaction debt | [R8 batch_outbox_doc.go mapping: BatchPullNotices, BatchAnnounceStarted, BatchAnnounceInlineResult, BatchReaction*] — done, inert | existing batch_pull/reaction tests |
 // | internal/session/async_job_recovery.go, async_job_gc.go | host-death sweep, retention | [R9 batch_recovery_doc.go mapping: BatchRecoverDeadHost, BatchSweepDeadHosts, BatchPurgeExpired, BatchCountExpired] — done, inert | existing batch_recovery/retention tests |
 // | internal/agent/turn_arbiter.go, coordinator_await_tasks.go, coordinator_drain_policy.go, cli_active_work.go | debt/live-work gates, captured pairs | [R10a readers done; await mapping is R10b, not this package] | R10b tests |
-// | internal/session/wake_schedule_fire.go, wake_scheduler.go, session_child_question.go, session_driver.go, host_lock.go | retained notice/host/wake infrastructure | retained unchanged; bound-notice DISPOSAL via BatchDisposeLegacyBoundNotices (below) | TestBatchDisposeLegacyBoundNotices |
+// | internal/session/wake_schedule_fire.go, wake_scheduler.go, session_child_question.go, session_driver.go, host_lock.go | retained notice/host/wake infrastructure | retained unchanged; explicitly implemented test-only utility BatchDisposeLegacyBoundNotices (below), referenced by tests; NOT production-wired | TestBatchDisposeLegacyBoundNotices |
 // | async_jobs writer core (async_job_store.go, async_job_bgshell.go) | claim/archive/terminal CAS | dropped at R12: replaced by Reserve/Project [R5, batch_store.go]; no compatibility wrapper | existing batch_store tests |
 // | work_ledger_announce.go / work_ledger_inline.go / work_ledger_pending.go | ack, durable fallback, controller routing | dropped at R12: replaced by BatchAnnounce* [R8] and durable control requests [R9] | existing R8/R9 tests |
 // | tools/job_output.go, tools/job_kill.go | controller tools | dropped at R12 (D6): replaced by batch_status/output/stop [R13] | R13 tests |
@@ -112,9 +112,12 @@ package session
 // permits the new incarnation's reservation only because the old root is
 // terminal or its notice is void.
 //
-// D-R10c-5 (legacy bound notices): disposal voids a bound session_notices
-// row exactly once (delivery IN ('pending','done') guard) and zeroes wake so
-// debt readers cannot count it twice; a reacted notice is left as history.
+// D-R10c-5 (legacy bound notices): the explicitly implemented test-only
+// BatchDisposeLegacyBoundNotices utility voids a bound session_notices row
+// exactly once (delivery IN ('pending','done') guard) and zeroes wake so debt
+// readers cannot count it twice; a reacted notice is left as history. This
+// utility is referenced by tests and is NOT production-wired; this decision
+// does not describe production disposal of retained bound notices.
 //
 // OPEN DECISIONS (deferred with reason):
 // - Whether session reset should also cancel wake_schedules for batch roots
@@ -168,9 +171,10 @@ package session
 //     refusal (D-R10c-1). The session row itself is deleted by
 //     session.Service.Delete, whose FKs cascade any remainder.
 //
-// (e) Legacy bound-notice disposal (batch_owner_delete.go or batch_reset.go)
+// (e) Explicitly implemented test-only legacy bound-notice disposal utility
 //   func (s *BatchStore) BatchDisposeLegacyBoundNotices(ctx context.Context,
 //       owner, toolCallID string) (int64, error)
+//     Referenced by tests; NOT production-wired. It calls
 //     BatchListBoundNoticesByToolCallID for the read, then
 //     BatchDisposeBoundNoticesByToolCallID; idempotent (void once, wake 0).
 //

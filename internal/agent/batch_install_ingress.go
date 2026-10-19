@@ -185,12 +185,12 @@ func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress
 	processBatchBinding.CompareAndSwap(nil, bind)
 	// MCP executor routing (R7a): names registered by the MCP family resolve
 	// through the MCP kind; every other name keeps the built-in mapping.
-	batchLeafKindOverride = func(tool string) (string, bool) {
+	setBatchLeafKindOverride(func(tool string) (string, bool) {
 		if strings.HasPrefix(tool, "mcp_") {
 			return batchKindMCP, true
 		}
 		return "", false
-	}
+	})
 	cliprovider.SetBridgeFallback(coordinatorBridgeFallback)
 	return nil
 }

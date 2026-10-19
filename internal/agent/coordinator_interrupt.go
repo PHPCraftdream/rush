@@ -67,10 +67,56 @@ func (c *coordinator) stopTree(sessionID string) {
 	// directly). A session with no running delegation children degenerates
 	// to the pre-existing single-id behavior.
 	var ids []string
+	// Snapshot batch delegation owners before legacy cancellation mutates the
+	// ledger. Keep the root even if the fact read is incomplete.
+	batchOn := batchFlagEnabled()
+	if batchOn {
+		ids = append(ids, sessionID)
+		if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+			readCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			nodes, err := facts.LiveDelegationNodes(readCtx, sessionID)
+			cancel()
+			seen := map[string]struct{}{sessionID: {}}
+			for _, node := range nodes {
+				if node.ChildSessionID != "" {
+					if _, exists := seen[node.ChildSessionID]; !exists {
+						seen[node.ChildSessionID] = struct{}{}
+						ids = append(ids, node.ChildSessionID)
+					}
+				}
+			}
+			if err != nil {
+				slog.Error("coordinator.Cancel: failed to read batch delegation owners", "session_id", sessionID, "err", err)
+			}
+		}
+	}
 	if c.asyncJobs != nil {
-		ids = c.asyncJobs.cancelTree(sessionID)
-	} else {
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			seen[id] = struct{}{}
+		}
+		var legacyIDs []string
+		if batchOn {
+			legacyIDs = c.asyncJobs.treeSessionIDs(sessionID)
+		} else {
+			legacyIDs = c.asyncJobs.cancelTree(sessionID)
+		}
+		for _, id := range legacyIDs {
+			if _, exists := seen[id]; !exists {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	} else if len(ids) == 0 {
 		ids = []string{sessionID}
+	}
+	if batchOn {
+		c.stopBatchOwners(ids)
+	}
+	if batchOn && c.asyncJobs != nil {
+		for _, id := range ids {
+			c.asyncJobs.cancelSession(id)
+		}
 	}
 	for _, id := range ids {
 		// Task #1054: a delegated child session's live generation runs on
@@ -105,13 +151,16 @@ func (c *coordinator) stopTree(sessionID string) {
 		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
 			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
 		}
-		// R12-EF fix F4: the same doc sec.3.8 pass zeroes the batch debt's
-		// wake bit too, so a root that settled wake=1 a moment before Stop
-		// cannot survive a restart as a reaction turn.
+	}
+	// Batch debt is independent of legacy-store availability: zero every
+	// owner captured from the union above even when the async store is absent.
+	if batchOn {
 		if store := batchCutoverReactionStore(c); store != nil {
+			zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
 				slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
 			}
+			cancel()
 		}
 	}
 	// R7B-2: a stopped child parked on its own job is not re-checked by any

@@ -3,6 +3,7 @@
 package session
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -765,16 +766,19 @@ func TestChildGroupRegistry_CleanupKillsGroupWhenPidPublicationFails(t *testing.
 	// keeps the group -- and would keep it for the full sleep on pre-F3
 	// code. Poll briefly: the kill lands, init reaps the grandchild, the
 	// group dissolves.
+	//
+	// Only ESRCH means "gone". nil is a live member; EPERM is what macOS
+	// returns for a group whose only members are killed-but-unreaped zombies
+	// (init reaps them asynchronously), so both are polled until the
+	// deadline, where a still-live sleeper (the pre-F3 leak lasts 48s) fails.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		err := syscall.Kill(-leaderPid, 0)
-		if err != nil {
-			require.ErrorIs(t, err, syscall.ESRCH,
-				"after the subtest's unconditional cleanup ran, the whole group must be gone -- the pre-F3 grandpid-guarded cleanup leaked the sleeper")
+		if errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		if time.Now().After(deadline) {
-			require.ErrorIs(t, syscall.Kill(-leaderPid, 0), syscall.ESRCH,
+			require.ErrorIs(t, err, syscall.ESRCH,
 				"the process group outlived the test: the F3 unconditional group-kill cleanup did not run")
 			return
 		}
