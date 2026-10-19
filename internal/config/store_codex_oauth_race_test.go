@@ -94,14 +94,26 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 	}
 	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
 	trackOAuthJournalTestStore(t, store)
-	idle := hookOAuthJournalIdle(t, store)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	refreshDone := make(chan error, 1)
 	go func() {
-		refreshDone <- store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, ProviderConfig{
+		refreshDone <- store.RefreshOAuthTokenWithClient(ctx, ScopeGlobal, ProviderConfig{
 			ID:         "openai-codex",
 			OAuthToken: oldToken,
 		}, tokenEndpoint.Client())
+	}()
+	joined := false
+	defer func() {
+		if !joined {
+			select {
+			case <-releaseResponse:
+			default:
+				close(releaseResponse)
+			}
+			cancel()
+			<-refreshDone
+		}
 	}()
 	select {
 	case <-requestArrived:
@@ -115,12 +127,14 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 	close(releaseResponse)
 	select {
 	case err := <-refreshDone:
+		joined = true
+		cancel()
 		require.NoError(t, err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Codex refresh did not reconcile concurrent disk rotation")
 	}
 
-	waitOAuthJournalIdle(t, idle)
+	store.stopOAuthJournalWorkers()
 	current, exists := store.loadSnapshot().config.Providers.Get("openai-codex")
 	require.True(t, exists)
 	require.Equal(t, replacement.AccessToken, current.OAuthToken.AccessToken)
