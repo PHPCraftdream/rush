@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"charm.land/fantasy"
 	"github.com/google/uuid"
@@ -40,18 +41,27 @@ func WithToolBridge(ctx context.Context, bridge ToolBridge) context.Context {
 // package's batch binding: a stream whose invocation context carries no
 // explicit bridge consults it (the batch wiring returns nil when the batch
 // runtime is not bound, preserving the legacy no-bridge behaviour).
-var bridgeFallback func(ctx context.Context) ToolBridge
+//
+// Atomic: every batch bind stores it (several Apps per process, parallel
+// tests) while streams of other Apps read it.
+var bridgeFallback atomic.Pointer[func(ctx context.Context) ToolBridge]
 
-// SetBridgeFallback installs the fallback. Production sets it once, from
-// the batch binding; hosts must never set it.
-func SetBridgeFallback(f func(ctx context.Context) ToolBridge) { bridgeFallback = f }
+// SetBridgeFallback installs the fallback (nil clears it). Production sets it
+// from the batch binding; hosts must never set it.
+func SetBridgeFallback(f func(ctx context.Context) ToolBridge) {
+	if f == nil {
+		bridgeFallback.Store(nil)
+		return
+	}
+	bridgeFallback.Store(&f)
+}
 
 func invocationToolBridge(ctx context.Context) ToolBridge {
 	if bridge, _ := ctx.Value(toolBridgeKey{}).(ToolBridge); bridge != nil {
 		return bridge
 	}
-	if bridgeFallback != nil {
-		return bridgeFallback(ctx)
+	if fallback := bridgeFallback.Load(); fallback != nil {
+		return (*fallback)(ctx)
 	}
 	return nil
 }

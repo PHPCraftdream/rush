@@ -251,9 +251,9 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 // renewal is actually stalled, not when everything is working normally.
 //
 // Scenario:
-// - TTL = 2s, safety_margin = 500ms
+// - TTL = 30s, safety_margin = 2s (fake time)
 // - All renewals succeed quickly
-// - Execution runs for 1s (well within the safe window)
+// - Execution runs for 10s of fake time (well within the safe window)
 // - No watchdog cancellation should occur
 //
 // This is a fake-clock test (see pump_fake_clock_test.go): fake time moves
@@ -267,8 +267,8 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 // greater than or equal to 1" (reproduced 2026-10-01 under heavy.sh).
 //
 // The margins keep their original meaning: the watchdog fires only at
-// last-renewal + TTL - margin = lease + 1.5s of FAKE time, and this test
-// never advances past lease + ~867ms, so a cancellation here is impossible
+// last-renewal + TTL - margin = lease + 28s of FAKE time, and this test
+// never advances past lease + ~10s, so a cancellation here is impossible
 // unless the watchdog wrongly fires on healthy renewals — the false
 // positive this test is the only regression guard for.
 func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
@@ -290,9 +290,16 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	coord.blockCh = blockCh
 	coord.mu.Unlock()
 
+	// The renewal's DB call runs under a REAL context timeout equal to the
+	// FAKE time left before the watchdog (run_queue_entry_exec.go
+	// timeUntilWatchdog). With the old ttl=2s/margin=500ms that budget was
+	// ~833ms of wall time, which a loaded Windows runner exceeded: the one
+	// renewal failed, fake time never advanced to retry, and the wait below
+	// hung. ttl=30s/margin=2s leaves 18s of real budget at the same fake
+	// position and costs no real time.
 	const (
-		ttl          = 2 * time.Second
-		safetyMargin = 500 * time.Millisecond
+		ttl          = 30 * time.Second
+		safetyMargin = 2 * time.Second
 		tick         = ttl / 10
 	)
 
@@ -334,8 +341,8 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	awaitPump(t, func() bool { return probe.renewals.Load() >= 1 },
 		"at least one renewal must land while renewals are healthy")
 
-	// Fake time now sits at lease + ~867ms, well short of the watchdog's
-	// lease + 1.5s fire point: no cancellation is possible here unless the
+	// Fake time now sits at lease + ~10s, well short of the watchdog's
+	// lease + 28s fire point: no cancellation is possible here unless the
 	// watchdog itself is broken.
 	require.False(t, coord.ctxCanceled.Load(),
 		"coordinator should NOT observe cancellation with fast renewals")
