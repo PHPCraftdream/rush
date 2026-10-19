@@ -175,3 +175,76 @@ func TestReleaseCallbackShutdownContextCancelled(t *testing.T) {
 func TestNotifyCallbackJoinedAndRefusedByCancelAll(t *testing.T) {
 	assertCallbackGracefulJoin(t, true)
 }
+
+// wakeCtxCaptureFacts routes drainDecision's debt read through the batch
+// cutover facts seam and captures the context it is invoked with. The
+// embedded nil BatchCutoverFacts panics if any other method is reached; the
+// release wake only calls SelectedDebtExists.
+type wakeCtxCaptureFacts struct {
+	BatchCutoverFacts
+	entered chan struct{}
+	decide  chan context.Context
+	gate    chan struct{}
+}
+
+func (f *wakeCtxCaptureFacts) SelectedDebtExists(ctx context.Context, _ string) (bool, error) {
+	f.decide <- ctx
+	close(f.entered)
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-f.gate:
+	}
+	return false, nil
+}
+
+// TestReleaseWakeDecisionReadUsesShutdownContext (audit jb-teardown.r2#1):
+// the release callback's wakeSession derives its decision-read context from
+// the callback context (supervision.go afterReleaseContext passes ctx to
+// wakeSession; coordinator_wake.go wraps it for drainDecision). The earlier
+// hook-level test (TestReleaseCallbackShutdownContextCancelled) cannot see a
+// supervision.go regression that swaps the wake argument for
+// context.Background(), because CancelAll cancels the hook's ctx regardless.
+// Here the ctx is captured at the ACTUAL decision-read boundary
+// (drainDecision -> BatchCutoverFacts.SelectedDebtExists), held blocked on a
+// gate while CancelAll runs: the captured context must be cancelled by the
+// shutdown even though the callback itself is never independently released.
+// Mutation: replacing the ctx at supervision.go's wakeSession call with
+// context.Background() leaves the captured decideCtx uncancelled and this
+// test times out at the marked require.
+func TestReleaseWakeDecisionReadUsesShutdownContext(t *testing.T) {
+	// drainDecision reads the facts seam only when the batch flag is on
+	// (batch_cutover_facts.go coordinatorBatchCutoverFacts). Flag tests set
+	// the env explicitly; t.Setenv forbids t.Parallel, so none here.
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	c, a := newReleaseJoinCoordinator()
+	facts := &wakeCtxCaptureFacts{
+		entered: make(chan struct{}),
+		decide:  make(chan context.Context, 1),
+		gate:    make(chan struct{}),
+	}
+	BindCoordinatorBatchCutoverFacts(c, facts)
+	unblockGate := releaseJoinUnblock(t, facts.gate) // unblock the decision read on cleanup
+	releaseJoinReservation(t, a)
+
+	// The release goroutine reaches wakeSession and parks in our fake's
+	// decision read; releaseWG holds it for CancelAll's join.
+	select {
+	case <-facts.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("release wake never reached the decision-read seam")
+	}
+	decideCtx := <-facts.decide
+
+	returned := make(chan bool, 1)
+	go func() { returned <- c.CancelAll() }()
+	select {
+	case <-decideCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown cancelled the release callback but the wake's decision-read context never cancelled: the wake context is not derived from the callback context")
+	}
+	// Unblock via the SAME idempotent closer the cleanup uses: one Once
+	// guards the channel, so the registered cleanup cannot double-close it.
+	unblockGate()
+	require.False(t, <-returned, "a joined release wake must allow graceful shutdown")
+}
