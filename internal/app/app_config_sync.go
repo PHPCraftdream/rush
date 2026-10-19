@@ -17,15 +17,8 @@ import (
 // ConfigNotificationsPublished counts the model-change pings that
 // publishModelsChanged actually accepted into a subscriber's buffer-1
 // channel (a coalesced no-op send is NOT counted — nothing is pending).
-// Test-observability hook only: paired with the forwarder-side
-// configNotificationsForwarded counter in internal/server/events.go it
-// yields the invariant "published == consumed once the forwarder is idle",
-// where consumed counts only FULLY processed notifications (frame — when
-// one is produced — already enqueued on the hub). The two counters are in
-// the same unit when there is exactly one subscriber (the server's negative
-// EventConfig test creates one App and one subscribeAndBroadcast, whose
-// forwarder is the process's only production subscriber), letting that test
-// prove producer-side quiescence instead of probing with a timeout.
+// Test-observability hook only: counts accepted buffer-1 sends; it does not
+// guarantee that a consumer received or processed the notification.
 var ConfigNotificationsPublished atomic.Int64
 
 // modelsRefreshTimeout bounds the background shared-agent rebuild that
@@ -63,7 +56,13 @@ func (app *App) onModelsChangedFromPoll(config.ModelsChange) {
 	if app.AgentCoordinator == nil {
 		return
 	}
+	app.modelsSyncSubsMu.Lock()
+	if app.modelsSyncClosed {
+		app.modelsSyncSubsMu.Unlock()
+		return
+	}
 	app.modelsSyncWG.Add(1)
+	app.modelsSyncSubsMu.Unlock()
 	go func() {
 		defer app.modelsSyncWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), modelsRefreshTimeout)
@@ -74,26 +73,33 @@ func (app *App) onModelsChangedFromPoll(config.ModelsChange) {
 	}()
 }
 
-// SubscribeModelsChanged returns a per-caller coalescing notification
-// channel (plan §4: buffer 1 — a subscriber that has not consumed the last
-// ping misses nothing, bursts cannot flood). The channel is REMOVED and
-// CLOSED when ctx is cancelled (after removal, under the send lock), so a
-// `for range` consumer terminates; double-close is impossible because the
-// removal loop runs exactly once per ctx.
+// SubscribeModelsChanged returns a buffered, coalescing notification channel.
+// The channel closes on caller cancellation or App shutdown; shutdown joins
+// the subscription workers.
 func (app *App) SubscribeModelsChanged(ctx context.Context) <-chan struct{} {
 	ch := make(chan struct{}, 1)
 	app.modelsSyncSubsMu.Lock()
+	if app.modelsSyncClosed {
+		close(ch)
+		app.modelsSyncSubsMu.Unlock()
+		return ch
+	}
+	if app.modelsSyncStop == nil {
+		app.modelsSyncStop = make(chan struct{})
+	}
 	app.modelsSyncSubs = append(app.modelsSyncSubs, ch)
+	app.modelsSyncSubsWG.Add(1)
 	app.modelsSyncSubsMu.Unlock()
 	go func() {
-		<-ctx.Done()
+		defer app.modelsSyncSubsWG.Done()
+		select {
+		case <-ctx.Done():
+		case <-app.modelsSyncStop:
+		}
 		app.modelsSyncSubsMu.Lock()
 		for i, sub := range app.modelsSyncSubs {
 			if sub == ch {
 				app.modelsSyncSubs = append(app.modelsSyncSubs[:i], app.modelsSyncSubs[i+1:]...)
-				// Close under the send lock: after removal nothing else
-				// holds the channel, so this cannot race a send, and the
-				// consumer's `for range` terminates deterministically.
 				close(ch)
 				break
 			}
@@ -119,11 +125,24 @@ func (app *App) publishModelsChanged() {
 	}
 }
 
-// stopConfigDiskSync stops and joins the config disk-sync poller and any
-// in-flight shared-agent rebuild. Idempotent; safe on bare App literals.
+// stopConfigDiskSync stops and joins the poller, subscribers, and model
+// refresh workers. Idempotent; safe on bare App literals.
 func (app *App) stopConfigDiskSync() {
 	if app.config != nil {
 		app.config.StopConfigDiskSync()
 	}
+	app.modelsSyncSubsMu.Lock()
+	if !app.modelsSyncClosed {
+		app.modelsSyncClosed = true
+		if app.modelsSyncStop != nil {
+			close(app.modelsSyncStop)
+		}
+		for _, ch := range app.modelsSyncSubs {
+			close(ch)
+		}
+		app.modelsSyncSubs = nil
+	}
+	app.modelsSyncSubsMu.Unlock()
+	app.modelsSyncSubsWG.Wait()
 	app.modelsSyncWG.Wait()
 }

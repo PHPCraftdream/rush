@@ -412,6 +412,7 @@ func newHub() *Hub {
 
 // Run is the hub's single event loop. It must be called in its own goroutine.
 func (h *Hub) Run(ctx context.Context) {
+	var pendingBarriers []chan struct{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -422,6 +423,9 @@ func (h *Hub) Run(ctx context.Context) {
 			// after this close, which the sender's post-send check is guaranteed
 			// to observe (see tryRegister).
 			close(h.stopped)
+			for _, done := range pendingBarriers {
+				close(done)
+			}
 			// Registrations that won the shutdown race into the buffer still
 			// get the same teardown as active clients: close(c.send) so their
 			// writePump — possibly not even started yet — shuts the connection
@@ -508,6 +512,17 @@ func (h *Hub) Run(ctx context.Context) {
 			if msg != nil {
 				h.deliver(msg)
 			}
+			if len(pendingBarriers) > 0 {
+				h.configMu.Lock()
+				pending := h.configPending != nil
+				h.configMu.Unlock()
+				if !pending {
+					for _, done := range pendingBarriers {
+						close(done)
+					}
+					pendingBarriers = nil
+				}
+			}
 		case done := <-h.deliveryBarrier:
 			for {
 				select {
@@ -519,13 +534,13 @@ func (h *Hub) Run(ctx context.Context) {
 			}
 		broadcastsDrained:
 			h.configMu.Lock()
-			msg := h.configPending
-			h.configPending = nil
+			pending := h.configPending != nil
 			h.configMu.Unlock()
-			if msg != nil {
-				h.deliver(msg)
+			if pending {
+				pendingBarriers = append(pendingBarriers, done)
+			} else {
+				close(done)
 			}
-			close(done)
 		case msg := <-h.broadcast:
 			h.deliver(msg)
 
@@ -655,8 +670,13 @@ func (h *Hub) BroadcastConfig(payload any) bool {
 }
 
 // Broadcast encodes a typed event and queues it for all clients + the replay buffer.
+// EventConfig is instead routed through BroadcastConfig's coalescing slot.
 // Safe to call from any goroutine; never blocks (drops on full channel).
 func (h *Hub) Broadcast(msgType string, payload any) {
+	if msgType == EventConfig {
+		h.BroadcastConfig(payload)
+		return
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("ws: marshal broadcast payload", "type", msgType, "err", err)

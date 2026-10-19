@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 func TestAppNewStartsAndShutdownStopsConfigDiskSync(t *testing.T) {
@@ -139,6 +140,84 @@ func TestSubscribeModelsChangedCoalescesAndUnsubscribes(t *testing.T) {
 	// immediately with ok=false (nothing was buffered after the unsubscribe).
 	_, ok := <-ch1
 	require.False(t, ok, "the cancelled subscription must be closed")
+}
+
+func TestSubscribeModelsChangedStopsOnAppShutdown(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	app := &App{}
+	ch := app.SubscribeModelsChanged(context.Background())
+	consumed := make(chan struct{})
+	go func() {
+		for range ch {
+		}
+		close(consumed)
+	}()
+
+	app.Shutdown()
+	<-consumed
+	require.Empty(t, app.modelsSyncSubs)
+}
+
+func TestSubscribeModelsChangedAfterShutdownIsClosed(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	app := &App{}
+	app.Shutdown()
+
+	ch := app.SubscribeModelsChanged(context.Background())
+	_, ok := <-ch
+	require.False(t, ok)
+	require.Empty(t, app.modelsSyncSubs)
+}
+
+type gatedDoneContext struct {
+	context.Context
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (ctx gatedDoneContext) Done() <-chan struct{} {
+	close(ctx.entered)
+	<-ctx.release
+	return ctx.Context.Done()
+}
+
+func TestSubscribeModelsChangedShutdownWaitsForInFlightNotification(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	app := &App{}
+	ctx := gatedDoneContext{
+		Context: context.Background(),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	ch := app.SubscribeModelsChanged(ctx)
+	<-ctx.entered
+	app.publishModelsChanged()
+	shutdownDone := make(chan struct{})
+	go func() {
+		app.Shutdown()
+		close(shutdownDone)
+	}()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(ctx.release) }) }
+	t.Cleanup(func() {
+		release()
+		<-shutdownDone
+	})
+
+	// Shutdown closes the App signal while the subscription worker is
+	// blocked inside Done; it must still join that worker before returning.
+	<-app.modelsSyncStop
+	select {
+	case <-shutdownDone:
+		t.Fatal("shutdown returned before the in-flight subscription worker was released")
+	default:
+	}
+	release()
+	<-shutdownDone
+	_, ok := <-ch
+	require.True(t, ok, "the pending notification must survive shutdown")
+	_, ok = <-ch
+	require.False(t, ok)
 }
 
 func TestOnModelsChangedPublishesWithoutCoordinator(t *testing.T) {
