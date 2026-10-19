@@ -1,9 +1,11 @@
 package server
 
 // R12-C: the batch-runtime ON read path for the live-work panel. Active work
-// comes ONLY from batch_nodes (live roots, delegation tree walked exactly
-// like the structured snapshot); NO async_jobs SQL executes on this path.
-// The OFF path (buildSessionLiveWork below the flag branch) is unchanged.
+// comes from batch_nodes (live roots, delegation tree walked exactly like
+// the structured snapshot); TERMINAL roots additionally come from the
+// bounded BatchHistoryRootsForOwner history read. NO async_jobs SQL
+// executes on this path. The OFF path (buildSessionLiveWork below the flag
+// branch) is unchanged.
 //
 // Incomplete-read rule: a partial or failed read carries complete=false
 // (and the pusher skips broadcasting it), so the client KEEPS the work it
@@ -52,7 +54,20 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 	rowsByOwner, visited, walkComplete := batchCollectRows(ctx, src, sessionID)
 	complete := walkComplete
 
+	// Terminal roots are absent from the live feed, so the history read
+	// adds them before the cap; a root seen live (by root_id) is skipped so
+	// an incarnation that went terminal between the two reads is never
+	// duplicated.
 	roots := collectBatchRoots(rowsByOwner)
+	liveRootIDs := make(map[string]bool, len(roots))
+	for _, m := range roots {
+		liveRootIDs[m.root.RootID] = true
+	}
+	historyRoots, historyComplete := collectBatchHistoryTerminalRoots(ctx, src, visited, liveRootIDs)
+	if !historyComplete {
+		complete = false
+	}
+	roots = append(roots, historyRoots...)
 	roots = capBatchRoots(roots)
 
 	questions, questionsComplete := batchPendingQuestions(ctx, a, visited)
@@ -115,6 +130,121 @@ func collectBatchRoots(rowsByOwner map[string][]db.BatchNode) []batchRootMeta {
 		}
 	}
 	return metas
+}
+
+// batchHistoryTerminalBound caps the per-owner terminal-root history read:
+// BatchHistoryRootsForOwner has no SQL LIMIT, so the newest
+// liveWorkTerminalLimit terminal roots per owner are kept after the read and
+// the rest are discarded before any per-root node read. This bounds the
+// polled endpoint's cost to one history query + at most
+// liveWorkTerminalLimit level queries per owner per snapshot. A root cut by
+// this bound takes its delegation children with it, even when a child's own
+// history is newer than the retained roots (backlog P2: the SQL has no LIMIT
+// to push the bound into).
+const batchHistoryTerminalBound = liveWorkTerminalLimit
+
+// collectBatchHistoryTerminalRoots reads the TERMINAL root incarnations
+// reachable from the live walk's visited sessions and maps each to a
+// batchRootMeta, so finished work stays visible on the flat panel. It
+// mirrors batchRootCompletions' bounded BFS: a terminal root is not in the
+// live read, so its delegation children would never be visited — each kept
+// terminal root's node rows are read (BatchLevelNodes) and the child
+// sessions they name form the next owner frontier, depth capped at
+// batchHistoryDepth with owner and root_id cycle guards. Roots already in
+// the live feed (liveRootIDs, by root_id — a reused tool_call_id is a
+// distinct incarnation with its own root_id) are skipped so a root that
+// went terminal between the two reads is never duplicated. Each owner's
+// read is bounded to the batchHistoryTerminalBound newest terminal roots
+// (UpdatedAt desc, tool_call_id tie-break) BEFORE the per-root node reads.
+// A session reached only through a terminal root was never live-read, so its
+// non-terminal roots (live work behind a finished delegation) are taken from
+// the same history read; a session the live walk visited already contributed
+// them. An unvisited frontier at the depth cap downgrades (ok=false), like
+// the live walk. A failed history or level read only downgrades (ok=false); a root whose
+// row WAS read is still returned, and a failed level read skips only that
+// root's child frontier — a downgrade never drops a row that was read.
+func collectBatchHistoryTerminalRoots(ctx context.Context, src batchNodeSource, visited []string, liveRootIDs map[string]bool) ([]batchRootMeta, bool) {
+	metas := []batchRootMeta{}
+	ok := true
+	seenRoot := map[string]bool{}
+	seenOwner := map[string]bool{}
+	liveRead := map[string]bool{}
+	frontier := make([]string, 0, len(visited))
+	for _, owner := range visited {
+		liveRead[owner] = true
+		if !seenOwner[owner] {
+			seenOwner[owner] = true
+			frontier = append(frontier, owner)
+		}
+	}
+	for depth := 0; depth <= batchHistoryDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, owner := range frontier {
+			roots, err := src.BatchHistoryRootsForOwner(ctx, owner)
+			if err != nil {
+				slog.Warn("live_work: could not read batch root history", "session", owner, "err", err)
+				ok = false
+				continue
+			}
+			var terminal, behind []db.BatchNode
+			for _, r := range roots {
+				if r.NodeID != r.RootID || seenRoot[r.RootID] || liveRootIDs[r.RootID] {
+					continue
+				}
+				switch {
+				case batchTerminal(r.State):
+					terminal = append(terminal, r)
+				case !liveRead[owner]:
+					behind = append(behind, r)
+				}
+			}
+			sort.Slice(terminal, func(i, j int) bool {
+				if terminal[i].UpdatedAt != terminal[j].UpdatedAt {
+					return terminal[i].UpdatedAt > terminal[j].UpdatedAt
+				}
+				return terminal[i].ToolCallID.String < terminal[j].ToolCallID.String
+			})
+			if len(terminal) > batchHistoryTerminalBound {
+				terminal = terminal[:batchHistoryTerminalBound]
+			}
+			for _, r := range append(behind, terminal...) {
+				seenRoot[r.RootID] = true
+				m := batchRootMeta{root: r}
+				nodes, err := src.BatchLevelNodes(ctx, db.BatchLevelNodesParams{Owner: owner, RootID: r.RootID})
+				if err != nil {
+					slog.Warn("live_work: could not read terminal root nodes", "session", owner, "root", r.RootID, "err", err)
+					ok = false
+					metas = append(metas, m)
+					continue
+				}
+				for _, c := range nodes {
+					if c.NodeID == c.RootID {
+						continue
+					}
+					if m.taskKind == "" && c.Kind == "task" {
+						m.taskKind = c.TaskKind.String
+					}
+					if m.askNodeID == "" && c.Kind == "task" {
+						m.askNodeID = c.NodeID
+					}
+					if m.child == "" && c.ChildSessionID.String != "" {
+						m.child = c.ChildSessionID.String
+					}
+					child := c.ChildSessionID.String
+					if c.ChildSessionID.Valid && child != "" && !seenOwner[child] {
+						seenOwner[child] = true
+						next = append(next, child)
+					}
+				}
+				metas = append(metas, m)
+			}
+		}
+		frontier = next
+	}
+	if len(frontier) > 0 {
+		ok = false
+	}
+	return metas, ok
 }
 
 // capBatchRoots mirrors capLiveWorkRows: every running root plus the
