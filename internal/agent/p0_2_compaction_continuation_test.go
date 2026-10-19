@@ -229,8 +229,8 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		PumpInstanceID: "test-pump-p0-2-compaction",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	stopRunQueuePumpForTest(t, pump, env, func() { sessionAgent.CancelAll() })
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for the precise Ack event (not "queue looks empty" — a leased,
 	// still-executing row is already absent from ListPendingRunQueueEntries,

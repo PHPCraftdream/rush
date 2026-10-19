@@ -6,10 +6,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,18 +26,92 @@ import (
 )
 
 // stopRunQueuePumpForTest stops a test RunQueuePump at cleanup and fails the
-// test if shutdown was forced. Revert check: make a pumpTestCoordinator Run
-// block >5s (time.Sleep(6*time.Second)); Stop then returns true and this
-// helper fails the test where the old unchecked `defer pump.Stop()` /
-// `_ = pump.Stop()` passed silently while testEnv's db.Release cleanup closed
-// the DB under a live worker (session.RunQueuePump.Stop, run_queue_lifecycle.go).
-func stopRunQueuePumpForTest(t *testing.T, pump *session.RunQueuePump) {
+// test if shutdown remains forced after one cancellation/unblock retry.
+func stopRunQueuePumpForTest(t *testing.T, pump *session.RunQueuePump, env fakeEnv, unblock func()) {
 	t.Helper()
+	env.cleanupSafe.Store(false)
 	t.Cleanup(func() {
-		if pump.Stop() {
-			t.Errorf("RunQueuePump.Stop was forced: a worker was still running after the 5s grace; DB release cleanup would have closed the database under a live execution")
+		unblock()
+		forced := pump.Stop()
+		if forced {
+			forced = pump.Stop()
 		}
+		if forced {
+			t.Fatalf("RunQueuePump.Stop remained forced after cancellation and unblock")
+		}
+		require.Zero(t, pump.LiveRunQueueDispatchesForTest())
+		env.cleanupSafe.Store(true)
 	})
+}
+
+// runQueueJoinTestCoordinator holds the actual pump worker until cleanup unblocks it.
+type runQueueJoinTestCoordinator struct {
+	entered chan struct{}
+	unblock <-chan struct{}
+	execCtx chan context.Context
+}
+
+func (c *runQueueJoinTestCoordinator) Run(ctx context.Context, _ session.SessionAgentCallData) (*any, error) {
+	c.execCtx <- ctx
+	close(c.entered)
+	<-c.unblock
+	return nil, nil
+}
+
+type runQueueJoinAckService struct {
+	session.Service
+	execCtx <-chan context.Context
+	ackDone chan struct{}
+}
+
+func (s *runQueueJoinAckService) AckRunQueueEntry(ctx context.Context, id, leasedBy string) (string, error) {
+	execCtx := <-s.execCtx
+	<-execCtx.Done()
+	id, err := s.Service.AckRunQueueEntry(ctx, id, leasedBy)
+	close(s.ackDone)
+	return id, err
+}
+
+// TestRunQueuePumpCleanup_JoinsOutcomeBeforeDatabaseRelease verifies cleanup joins worker outcome writes before releasing the test DB.
+func TestRunQueuePumpCleanup_JoinsOutcomeBeforeDatabaseRelease(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	ctx := context.Background()
+	sess, err := env.sessions.Create(ctx, "pump-cleanup-join")
+	require.NoError(t, err)
+	callData, err := json.Marshal(ToSessionAgentCallData(SessionAgentCall{SessionID: sess.ID, Prompt: "join cleanup"}))
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.EnqueueRunQueueEntry(ctx, "pump-cleanup-join-"+sess.ID, sess.ID, callData))
+
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	execCtx := make(chan context.Context, 1)
+	ackDone := make(chan struct{})
+	ackService := &runQueueJoinAckService{Service: env.sessions, execCtx: execCtx, ackDone: ackDone}
+	coord := &runQueueJoinTestCoordinator{entered: entered, unblock: unblock, execCtx: execCtx}
+	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+		Sessions:       ackService,
+		Coordinator:    coord,
+		PumpInstanceID: "test-pump-cleanup-join",
+		TestTick:       func() time.Duration { return 10 * time.Millisecond },
+	})
+	t.Cleanup(func() {
+		select {
+		case <-ackDone:
+		default:
+			t.Error("pump cleanup returned before the Ack outcome completed")
+		}
+		require.Zero(t, pump.LiveRunQueueDispatchesForTest())
+		require.True(t, env.cleanupSafe.Load(), "pump helper must restore DB cleanup safety after joining")
+		require.NoError(t, env.conn.PingContext(context.Background()), "test DB must remain live until cleanup verification")
+	})
+	stopRunQueuePumpForTest(t, pump, env, func() { close(unblock) })
+	pump.Start()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("pump worker did not enter coordinator")
+	}
 }
 
 // TestReleaseGate_2_OSLockHeldPastRetryWindow proves that calls accepted through
@@ -152,12 +228,16 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 		PumpInstanceID: "release-gate-2-pump",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	var lockRelease sync.Once
+	stopRunQueuePumpForTest(t, pump, env, func() {
+		lockRelease.Do(func() { lock.Release() })
+		sessionAgent.CancelAll()
+	})
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// CRITICAL: Release the OS lock - this is the ONLY "action" we take.
 	// The pump AUTONOMOUSLY detects the queued entry and executes it.
-	lock.Release()
+	lockRelease.Do(func() { lock.Release() })
 
 	// Wait for pump to autonomously process the queued call.
 	require.Eventually(t, func() bool {
@@ -343,8 +423,8 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 		PumpInstanceID: "release-gate-3-pump",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	stopRunQueuePumpForTest(t, pump, env, func() { sessionAgent.CancelAll() })
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for pump to autonomously process and execute the queued call.
 	require.Eventually(t, func() bool {
@@ -563,8 +643,8 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 		PumpInstanceID: "release-gate-9-pump",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	stopRunQueuePumpForTest(t, pump, env, func() { sessionAgent.CancelAll() })
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Wait for pump to process the call and delete the entry via
 	// TerminalFailRunQueueEntry.

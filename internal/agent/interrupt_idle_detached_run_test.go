@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,8 +154,12 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 		PumpInstanceID: "test-pump-p0b-idle",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	var proceedOnce sync.Once
+	stopRunQueuePumpForTest(t, pump, env, func() {
+		proceedOnce.Do(func() { close(proceed) })
+		sa.CancelAll()
+	})
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	const interruptPrompt = "interrupt on an idle session must actually run, P0-B"
 	err = coord.InterruptAndSend(t.Context(), sess.ID, interruptPrompt, nil, nil)
@@ -171,7 +176,7 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 			"P0-B defect: InterruptAndSend queued the call into a runnerless queue instead of starting a run",
 			calls.Load())
 	}
-	close(proceed)
+	proceedOnce.Do(func() { close(proceed) })
 
 	// Wait for the detached run to actually finish and persist, rather than
 	// asserting immediately after the request starts (which would race the
