@@ -12,27 +12,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWatcherWakesOnSetRunnerAfterStart: Start while dormant, wait until the
-// watcher is parked in the dormant select, SetRunner, then a fault — the
-// watcher must wake on runnerSet and exit 70 exactly once after the injected
-// containment wait.
+// TestWatcherWakesOnSetRunnerAfterStart: Start while dormant, establish THIS
+// runtime's dormant boundary via its instance-local park seam, SetRunner,
+// then a fault — the watcher must wake on runnerSet and exit 70 exactly once
+// after the injected containment wait.
 func TestWatcherWakesOnSetRunnerAfterStart(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, nil) // dormant: no runner yet
+	// Instance-local dormant boundary: the parked channel belongs to THIS
+	// BatchRuntime, unlike a process-wide goroutine-stack check that a
+	// parallel test's own watcher could satisfy.
+	parked := make(chan struct{}, 1)
+	rt.testParked = parked
 	rt.Start()
 	defer rt.Stop()
 
-	// Park the watcher in the dormant branch first: without this, SetRunner
-	// right after Start races the watcher's first top-of-loop re-read, and a
-	// dropped runnerSet wake is unobservable. With no Runner attached the
-	// live fault select is unreachable, so "parked in a select" means
-	// "parked in the dormant runnerSet select".
-	require.Eventually(t, watcherParkedInSelect, 5*time.Second, time.Millisecond,
-		"watcher must park in the dormant select before SetRunner")
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("this runtime's watcher never parked in the dormant runnerSet select")
+	}
 
 	rt.SetRunner(runner)
 	require.Equal(t, runner, rt.Runner())
+
+	// Instance-local arrival: watchFaults parks in its live select by
+	// READING the attached Runner's Faulted channel, so a read observed on
+	// THIS fake proves THIS watcher observed the runner. Mutation oracle
+	// (jb-strengthen#1): if SetRunner's runnerSet signal
+	// (app_batch_runtime.go SetRunner) were removed, the watcher — already
+	// parked in the dormant select above — is never woken, it never
+	// re-reads rt.runner, Faulted is never called, and THIS assertion times
+	// out instead of the test passing on some other instance's watcher.
+	require.Eventually(t, func() bool { return runner.faultedReads.Load() > 0 },
+		5*time.Second, time.Millisecond,
+		"this runtime's watcher never read this runner's Faulted channel: the SetRunner wake is missing")
+
 	runner.FireFault(errors.New("late runner fault"))
 
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },

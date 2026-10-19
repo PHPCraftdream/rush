@@ -26,10 +26,11 @@ package agent
 // question wrapping, and a REAL sessionAgent turn. What is scripted: ONLY
 // the model (a fantasy.LanguageModel fake emitting tool calls — model
 // behavior is the thing fake BEHAVIOR, per design §3); the child fs_write
-// is a leaf-level tool bound to opts.DiskProvider from the run context (the
-// production fs_write family needs the coordinator permission service; the
-// bound-OP oracle is identical: every write goes through the SAME
-// DiskProvider instance and binding id).
+// is the REAL production tools.NewFSWriteTool (the coordinator's scoped
+// toolset constructor), with its DiskProvider resolved from the run
+// context's CallOptions stamp — the production propagation route. Every
+// write goes through the SAME DiskProvider instance and binding id, and a
+// dropped stamp fails the test closed (never diskOrOS's OS fallback).
 //
 // Oracles kept from the pre-rewrite version: the production publisher wrote
 // the pending child_question notice carrying THIS incarnation's node id,
@@ -74,8 +75,11 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/filetracker"
+	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -101,6 +105,20 @@ type questionProviderLeaf struct {
 	sessions session.Service
 	messages message.Service
 
+	// workDir and the REAL fs_write service triple (permission/history/
+	// filetracker, all over the SAME SQLite store) back the REAL production
+	// tools.NewFSWriteTool the child turn writes through — the same
+	// constructor the coordinator's scoped toolset build uses
+	// (coordinator_tools.go). The tool's DiskProvider argument is NOT a
+	// fixture: it is resolved from the run context's CallOptions stamp at
+	// child-turn time (questionChildFSRecorder), so a mutation dropping the
+	// driver's provider/scope propagation fails closed here instead of
+	// silently falling back to diskOrOS's real disk.
+	workDir string
+	perms   permission.Service
+	files   history.Service
+	tracker filetracker.Service
+
 	op1Provider, op2Provider tools.DiskProvider
 	op1Binding, op2Binding   string
 	midLookupOK              bool
@@ -114,11 +132,14 @@ type questionProviderLeaf struct {
 
 var _ fantasy.AgentTool = (*questionProviderLeaf)(nil)
 
-func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2 string, sessions session.Service, messages message.Service) *questionProviderLeaf {
+func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2, workDir string, sessions session.Service, messages message.Service, q *db.Queries, conn *sql.DB) *questionProviderLeaf {
 	return &questionProviderLeaf{
 		t: t, expectedBinding: bindingID, childSession: childSession,
-		path1: path1, path2: path2,
+		path1: path1, path2: path2, workDir: workDir,
 		sessions: sessions, messages: messages,
+		perms:   permission.NewPermissionService(context.Background(), workDir, true, nil, q),
+		files:   history.NewService(q, conn),
+		tracker: filetracker.NewService(q),
 	}
 }
 
@@ -178,11 +199,39 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	if l.t != nil {
 		l.t.Logf("q8 probe: buildBatchQuestionTools -> %d tools (err=%v)", len(wrappedAsk), werr)
 	}
+	// The child's write tool is the REAL production fs_write
+	// (tools.NewFSWriteTool — the exact constructor the coordinator's
+	// scoped toolset build uses at coordinator_tools.go), with its scope
+	// granted for THIS leaf's pinned directory and its DiskProvider taken
+	// verbatim from the run-context CallOptions stamp. A mutation that
+	// drops the provider stamp anywhere between the executor and the child
+	// leaves provider nil here; the recorder below fails the test CLOSED
+	// instead of letting diskOrOS fall back to the real filesystem.
+	childScope, serr := permission.BuildFolderScope(permission.FolderScopeSpec{
+		WorkingDir: l.workDir,
+		Entries: []permission.FolderScopeEntry{{Dir: ".", Ops: []permission.FileOp{
+			permission.FileOpCreate, permission.FileOpOverwrite,
+		}}},
+	})
+	require.NoError(l.t, serr, "the child fs_write scope compiles")
+	// Production seam note: what IS exercised through the real constructor
+	// below is (a) the driver's CallOptions stamping
+	// (batch_install_agent_driver.go:80-87: boundCallOptions + WithCallOptions
+	// on the child run context), (b) this recorder's fail-closed check on a
+	// dropped stamp (questionChildFSRecorder.Run, this file :438-442), and
+	// (c) the real tools.NewFSWriteTool constructor itself. What is NOT
+	// exercised is the coordinator's child toolset build from those
+	// CallOptions: coordinator_tools.go:604-608 extracts FolderScope and
+	// DiskProvider from the stamped call context inside buildTools, but no
+	// batch path invokes buildTools for the child incarnation — THIS fixture
+	// assembles the child toolset itself (its own BuildFolderScope, tool list
+	// and NewSessionAgent just below), so the :604-608 extraction is only
+	// exercised transitively elsewhere, never on this child's path.
 	childTools := []fantasy.AgentTool{
 		&recordingAskTool{leaf: l, inner: batchMustWrapAsk(wrappedAsk, werr, l.t)},
-		// fs op #2: the model's write tool, bound to the SAME provider from
-		// the run context (no OS fallback — a nil provider fails closed).
-		&questionChildFSTool{leaf: l, path: l.path2},
+		&questionChildFSRecorder{
+			leaf: l, inner: tools.NewFSWriteTool(childScope, l.perms, l.files, l.tracker, l.workDir, opts.DiskProvider),
+		},
 	}
 	child := NewSessionAgent(SessionAgentOptions{
 		SmartModel: Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
@@ -221,7 +270,7 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	answer := l.answer
 	l.mu.Unlock()
 	// fs op #2 already ran INSIDE the child turn (round 2), through the
-	// SAME provider instance and binding — recorded by questionChildFSTool.
+	// SAME provider instance and binding — recorded by questionChildFSRecorder.
 	return fantasy.NewTextResponse("q8 done, answer=" + string(answer)), nil
 }
 
@@ -328,7 +377,8 @@ func (m *questionChildModel) Stream(_ context.Context, call fantasy.Call) (fanta
 			// without the second op (Stop-while-held shape).
 			return questionStopStream(), nil
 		}
-		return m.streamToolCall("call-q8-write", "fs_write", `{"path":"`+m.leaf.path2+`"}`), nil
+		return m.streamToolCall("call-q8-write", tools.FSWriteToolName,
+			`{"items":[{"path":"`+m.leaf.path2+`","content":"q8-op2"}]}`), nil
 	default: // round 3: turn complete.
 		return questionStopStream(), nil
 	}
@@ -377,33 +427,41 @@ func (m *questionChildModel) StreamObject(context.Context, fantasy.ObjectCall) (
 	return nil, errors.New("q8 scripted model: object streams not implemented")
 }
 
-// questionChildFSTool is the child turn's write tool: it resolves the bound
-// provider from the run context (the driver's provider stamp) and performs
-// fs op #2 on the SAME provider instance — never OS disk, never a fallback.
-type questionChildFSTool struct {
-	leaf *questionProviderLeaf
-	path string
+// questionChildFSRecorder wraps the REAL production fs_write tool
+// (tools.NewFSWriteTool) as the child turn's write tool. Before delegating
+// it resolves the bound provider from the run context — the driver's
+// provider stamp, the production propagation route — records the SAME
+// provider instance and binding id for the oracle, and fails the test
+// CLOSED when the stamp is missing: production's diskOrOS would otherwise
+// fall back to the real filesystem and the mutation would stay green.
+type questionChildFSRecorder struct {
+	leaf  *questionProviderLeaf
+	inner fantasy.AgentTool
 }
 
-func (t *questionChildFSTool) Info() fantasy.ToolInfo {
-	return fantasy.ToolInfo{Name: "fs_write", Description: "child write through the bound provider"}
+func (t *questionChildFSRecorder) Info() fantasy.ToolInfo { return t.inner.Info() }
+func (t *questionChildFSRecorder) ProviderOptions() fantasy.ProviderOptions {
+	return t.inner.ProviderOptions()
 }
-func (t *questionChildFSTool) ProviderOptions() fantasy.ProviderOptions   { return nil }
-func (t *questionChildFSTool) SetProviderOptions(fantasy.ProviderOptions) {}
 
-func (t *questionChildFSTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+func (t *questionChildFSRecorder) SetProviderOptions(p fantasy.ProviderOptions) {
+	t.inner.SetProviderOptions(p)
+}
+
+func (t *questionChildFSRecorder) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	opts := callOptionsFrom(ctx)
 	if opts == nil || opts.DiskProvider == nil {
-		return fantasy.NewTextResponse("q8 child: no bound disk provider"), errors.New("q8 child: no bound disk provider")
+		t.leaf.t.Fatal("q8 child: the production fs_write resolved NO bound disk provider from the run context (provider/scope propagation dropped)")
 	}
-	if err := opts.DiskProvider.WriteFile(ctx, t.path, []byte("q8-op2"), 0o644); err != nil {
-		return fantasy.NewTextResponse("q8 child: op2 failed: " + err.Error()), err
+	opt1, opt2 := opts.DiskProvider, opts.DiskBindingID
+	resp, err := t.inner.Run(ctx, call)
+	if err == nil && !resp.IsError {
+		t.leaf.mu.Lock()
+		t.leaf.op2Provider = opt1
+		t.leaf.op2Binding = opt2
+		t.leaf.mu.Unlock()
 	}
-	t.leaf.mu.Lock()
-	t.leaf.op2Provider = opts.DiskProvider
-	t.leaf.op2Binding = opts.DiskBindingID
-	t.leaf.mu.Unlock()
-	return fantasy.NewTextResponse("q8 child wrote " + filepath.ToSlash(t.path)), nil
+	return resp, err
 }
 
 // questionInstall is one real install harness for the agent-kind provider
@@ -453,7 +511,19 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 	path2 := filepath.ToSlash(filepath.Join(realDir, "op2.txt"))
 	require.NoError(t, os.WriteFile(filepath.FromSlash(path1), []byte("q8-sentinel-1"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.FromSlash(path2), []byte("q8-sentinel-2"), 0o644))
-	leaf := newQuestionProviderLeaf(t, bindingID, childSession, path1, path2, sessions, messages)
+	// Seed the fake provider with the scoped directory in its NATIVE
+	// spelling only: the fake normalizes keys to slash form itself
+	// (filepath.ToSlash(filepath.Clean(...))), so resolveScopedPath finds the
+	// existing prefix regardless of which spelling the production path
+	// resolver hands the provider. Without realDir in the fake's dirs, the
+	// REAL fs_write tool's resolveScopedPath finds no existing prefix,
+	// fsWriteExecuteGroup treats the parent as missing and its ancestor
+	// scope walk climbs above realDir and denies op2 before any
+	// fake-provider write. (MkdirAll bumps the fake's call counter, not its
+	// write counter, so the writeCount oracle below is unaffected.)
+	require.NoError(t, fake.MkdirAll(context.Background(), realDir, 0o755))
+	leaf := newQuestionProviderLeaf(t, bindingID, childSession, path1, path2,
+		realDir, sessions, messages, q, conn)
 	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})
 	registryID := "q8-reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()

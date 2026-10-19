@@ -60,23 +60,26 @@ func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []strin
 // batch_status/batch_output, layered in place of job_output (the native
 // surface must not depend on the old name). batch_stop stays out exactly as
 // job_kill always was -- a worker layering never granted a stop control.
-var workerToolNamesBatch = func() []string {
-	out := make([]string, 0, len(workerToolNames)+1)
-	for _, name := range workerToolNames {
+//
+// The native grants are declared INDEPENDENTLY of the legacy entry: the
+// legacy job_output name is FILTERED (never translated), so removing it
+// from the input at H4 cutover cannot silently remove the native grants.
+func workerToolNamesBatch(names []string) []string {
+	out := make([]string, 0, len(names)+2)
+	for _, name := range names {
 		if name == tools.JobOutputToolName {
-			out = append(out, "batch_status", "batch_output")
 			continue
 		}
 		out = append(out, name)
 	}
-	return out
-}()
+	return append(out, "batch_status", "batch_output")
+}
 
 // workerLayeredToolNames picks the worker layering for the build's flag
 // state: flag OFF keeps the historical list byte-identical.
 func workerLayeredToolNames() []string {
 	if batchFlagEnabled() {
-		return workerToolNamesBatch
+		return workerToolNamesBatch(workerToolNames)
 	}
 	return workerToolNames
 }
