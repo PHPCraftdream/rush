@@ -158,7 +158,7 @@ func dynamicAction(call *syntax.CallExpr, headIndex int) bool {
 	}
 	return false
 }
-func isEnvAssignment(value string) bool { i := strings.IndexByte(value, '='); return i > 0 }
+
 func policyUnescapeWord(value string) string {
 	if strings.EqualFold(value, `\eval`) {
 		return "eval"
