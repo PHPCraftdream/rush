@@ -62,24 +62,31 @@ func TestProviderLimit1282Classification(t *testing.T) {
 	}
 	// Vendor fixtures: research spec sources 57/58/63; not reproduced locally.
 	// https://docs.z.ai/api-reference/api-code; https://platform.stepfun.ai/docs/en/api-reference/error-codes
-	for _, code := range []string{"1113", "1308", "1309", "1310", "1316", "1317", "1318", "1319", "1320", "1321", "1302", "1305"} {
-		want := providerLimitHard
-		if code == "1302" || code == "1305" {
-			want = providerLimitTransient
-		}
+	for _, tc := range []struct {
+		code string
+		want providerLimitClass
+	}{
+		{"1113", providerLimitHard}, {"1308", providerLimitHard},
+		{"1309", providerLimitHard}, {"1310", providerLimitHard},
+		{"1316", providerLimitHard}, {"1317", providerLimitHard},
+		{"1318", providerLimitHard}, {"1319", providerLimitHard},
+		{"1320", providerLimitHard}, {"1321", providerLimitHard},
+		{"1302", providerLimitTransient}, {"1305", providerLimitTransient},
+	} {
+		code := tc.code
 		for _, numeric := range []bool{false, true} {
 			value := any(code)
 			if numeric {
 				value = json.Number(code)
 			}
-			body, err := json.Marshal(map[string]any{"error": map[string]any{"code": value, "message": "quota"}})
+			body, err := json.Marshal(map[string]any{"error": map[string]any{"code": value, "message": "neutral fixture"}})
 			require.NoError(t, err)
 			tests = append(tests, struct {
 				name, message, url, body, hint string
 				status                         int
 				context                        bool
 				want                           providerLimitClass
-			}{name: fmt.Sprintf("zai %s numeric=%v", code, numeric), body: string(body), status: 429, want: want})
+			}{name: fmt.Sprintf("zai %s numeric=%v", code, numeric), body: string(body), status: 429, want: tc.want})
 		}
 	}
 	for _, tc := range tests {
