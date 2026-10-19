@@ -143,13 +143,14 @@ func newShadowDelegationFixture(t *testing.T, running bool) (*attemptFixture, st
 	t.Helper()
 	f, parentID, childID, _ := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
 	if batchFlagEnabled() {
-		// ON: the durable identity lives in batch_nodes, not async_jobs --
-		// seed the same parent->child link (running, or released) there.
-		state := "running"
+		// ON: childDelegationBase already seeded the live parent->child
+		// link in batch_nodes (b1SeedDelegationChildLink); a SECOND
+		// seedBatchDelegation for the same (owner, call id) loses
+		// BatchAnnounceStarted's election. A released child only needs the
+		// already-seeded live root projected to its terminal state.
 		if !running {
-			state = "completed"
+			x2ReleaseBatchDelegation(t, f.env.conn, parentID, "delegate-1")
 		}
-		seedBatchDelegation(t, f.env.conn, parentID, "delegate-1", childID, "task", state, false)
 		return f, parentID, childID
 	}
 	if !running {

@@ -22,6 +22,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -91,6 +92,20 @@ func newParkedOutcomeCoordinator(t *testing.T, onWebDone func(AsyncCompletion)) 
 // binding), so both runtimes share this fixture byte-for-byte.
 func newParkedOutcomeCoordinatorWithMessages(t *testing.T, onWebDone func(AsyncCompletion)) (*coordinator, message.Service) {
 	t.Helper()
+	coord, messages, _ := newParkedOutcomeCoordinatorWithMessagesConn(t, onWebDone)
+	return coord, messages
+}
+
+// newParkedOutcomeCoordinatorWithMessagesConn is
+// newParkedOutcomeCoordinatorWithMessages plus the raw *sql.DB behind the
+// bound batch fact source. Callers that seed or clear the child's OWN debt
+// under the flag (startChildOwnedJob's conn argument,
+// simulateChildReaction's ON branch) need that conn: the batch authority
+// lives on it, and the message service returned here is on the SAME
+// connection, so a reaction message created through it is visible to both
+// the batch mark-reacted read and the coordinator's refresh read.
+func newParkedOutcomeCoordinatorWithMessagesConn(t *testing.T, onWebDone func(AsyncCompletion)) (*coordinator, message.Service, *sql.DB) {
+	t.Helper()
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(onWebDone)
 	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
@@ -99,7 +114,7 @@ func newParkedOutcomeCoordinatorWithMessages(t *testing.T, onWebDone func(AsyncC
 	bindBatchNodeFacts(t, coord, conn, dataDir)
 	messages := message.NewService(db.New(conn))
 	coord.messages = messages
-	return coord, messages
+	return coord, messages, conn
 }
 
 // simulateChildReactionWithoutTrigger plays out, directly against the
@@ -117,13 +132,34 @@ func newParkedOutcomeCoordinatorWithMessages(t *testing.T, onWebDone func(AsyncC
 func simulateChildReactionWithoutTrigger(t *testing.T, coord *coordinator, messages message.Service, childSessionID, text string, reason message.FinishReason) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := coord.asyncJobs.store.PullJobNotices(ctx, messages, childSessionID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	// The pull goes through the selected authority: under the flag the
+	// child's debt is batch nodes (facts.PullBatchNotices), never
+	// async_jobs. The reaction write is the matching authority twin
+	// (BatchReactionMarkReactedWithMessageUpdate), so the cross-process
+	// half of childScopeDrained (CLIScope's batch reads) actually sees the
+	// debt clear -- a legacy-only mark would release nothing under the
+	// flag, and a batch debt the fixture never seeded releases too early
+	// (that is what startChildOwnedJob's conn argument seeds).
+	if batchFlagEnabled() {
+		facts := coordinatorBatchCutoverFacts(coord)
+		require.NotNil(t, facts, "simulateChildReaction under the flag needs bound node facts")
+		_, err := facts.PullBatchNotices(ctx, messages, childSessionID)
+		require.NoError(t, err)
+	} else {
+		_, err := coord.asyncJobs.store.PullJobNotices(ctx, messages, childSessionID, buildJobNoticeMessageParams)
+		require.NoError(t, err)
+	}
 	reactionMsg, err := messages.Create(ctx, childSessionID, message.CreateMessageParams{
 		Role:  message.Assistant,
 		Parts: []message.ContentPart{message.TextContent{Text: text}, message.Finish{Reason: reason}},
 	})
 	require.NoError(t, err)
+	if batchFlagEnabled() {
+		store := batchCutoverReactionStore(coord)
+		require.NotNil(t, store, "simulateChildReaction under the flag needs a node-backed reaction store")
+		require.NoError(t, store.BatchReactionMarkReactedWithMessageUpdate(ctx, messages, childSessionID, reactionMsg))
+		return
+	}
 	require.NoError(t, coord.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, messages, childSessionID, reactionMsg))
 }
 
@@ -172,8 +208,18 @@ func parkDelegation(t *testing.T, coord *coordinator, childSession, childYields 
 // unacknowledged row even after its result is set -- correct in production
 // (the turn is not durably done yet) but irrelevant to a test that only
 // wants the child's owned job to reach a terminal state.
-func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID string, cli bool) {
+func startChildOwnedJob(t *testing.T, l *workLedger, sessionID, toolCallID string, cli bool, conn ...*sql.DB) {
 	t.Helper()
+	// ON: the child's owned job must ALSO exist as batch debt, or the
+	// cross-process half of childScopeDrained (CLIScope's batch reads)
+	// sees no debt for the child and releases a parked delegation before
+	// the child's reacting turn -- the legacy ledger row is invisible to
+	// it. Callers that never reach that gate (their fixture coordinator
+	// may be unbound, or the release is driven by cancel) omit conn and
+	// keep the legacy-only shape.
+	if batchFlagEnabled() && len(conn) > 0 && conn[0] != nil {
+		seedBatchJobDebt(t, conn[0], sessionID, toolCallID, false)
+	}
 	_, _, err := l.Start(sessionID, toolCallID, "", "bash", "", cli, false, nil, func() {})
 	require.NoError(t, err)
 	l.acknowledged(jobOf(l, sessionID, toolCallID))
@@ -223,9 +269,9 @@ func TestWorkLedger_NoFinishedNoticeWhileChildOwnedJobsPending(t *testing.T) {
 func TestWorkLedger_SingleFinalNoticeAfterChildJobsDrain(t *testing.T) {
 	t.Parallel()
 	delivered := make(chan AsyncCompletion, 4)
-	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
+	coord, messages, conn := newParkedOutcomeCoordinatorWithMessagesConn(t, func(completion AsyncCompletion) { delivered <- completion })
 
-	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
+	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true, conn)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: async checks still running")
 	require.True(t, coord.asyncJobs.hasParked())
 	require.Empty(t, drainCompletions(delivered))
@@ -262,9 +308,9 @@ func TestWorkLedger_FailedChildJobDeliveredOnceAsFailure(t *testing.T) {
 	t.Parallel()
 	const failedChildSession = "failed-child"
 	delivered := make(chan AsyncCompletion, 4)
-	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
+	coord, messages, conn := newParkedOutcomeCoordinatorWithMessagesConn(t, func(completion AsyncCompletion) { delivered <- completion })
 
-	startChildOwnedJob(t, coord.asyncJobs, failedChildSession, parkedChildJob, true)
+	startChildOwnedJob(t, coord.asyncJobs, failedChildSession, parkedChildJob, true, conn)
 	parkDelegation(t, coord, failedChildSession, "child yielded: gate still running")
 	require.True(t, coord.asyncJobs.hasParked())
 
@@ -451,11 +497,14 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
-	coord.messages = env.messages
+	// Single-DB wiring: the refresh read (coord.messages), the child's
+	// batch debt and the simulated reaction must all live on the bound
+	// batch connection, or the ON reaction write cannot find the message
+	// it is asked to fold in (GetMessage on the wrong database).
+	coord, messages, conn := newParkedOutcomeCoordinatorWithMessagesConn(t, func(completion AsyncCompletion) { delivered <- completion })
 
 	// Delegation A: the child yields with owned async work outstanding.
-	startChildOwnedJob(t, coord.asyncJobs, child.ID, parkedChildJob, true)
+	startChildOwnedJob(t, coord.asyncJobs, child.ID, parkedChildJob, true, conn)
 	parkDelegation(t, coord, child.ID, "yield A")
 	require.True(t, coord.asyncJobs.hasParked())
 	require.Empty(t, drainCompletions(delivered))
@@ -468,7 +517,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 	finishChildJob(t, coord, delivered, AsyncCompletion{
 		SessionID: child.ID, ToolCallID: parkedChildJob, ToolName: "bash", Content: "gate ok",
 	})
-	simulateChildReaction(t, coord, env.messages, child.ID, "first delegation done", message.FinishReasonEndTurn)
+	simulateChildReaction(t, coord, messages, child.ID, "first delegation done", message.FinishReasonEndTurn)
 	first := drainCompletions(delivered)
 	require.Len(t, first, 1, "delegation A must be delivered exactly once")
 	require.Equal(t, parkedParentCall, first[0].ToolCallID)
@@ -476,7 +525,7 @@ func TestWorkLedger_ResumeAfterNoticeDoesNotReemit(t *testing.T) {
 
 	// A later turn on the same child (a resume) produces a second, final
 	// answer.
-	writeParkedChildTurn(t, env, child.ID, "second delegation done", message.FinishReasonEndTurn)
+	x2WriteParkedChildTurn(t, messages, child.ID, "second delegation done", message.FinishReasonEndTurn)
 
 	// Delegation B: the same child, resumed, yields again. The child is now
 	// idle, so this arms and releases at once -- exactly one NEW notice for
@@ -513,9 +562,11 @@ func TestWorkLedger_BusyChildDefersReleaseUntilTurnEnds(t *testing.T) {
 	require.NoError(t, err)
 
 	delivered := make(chan AsyncCompletion, 4)
-	coord := newParkedOutcomeCoordinator(t, func(completion AsyncCompletion) { delivered <- completion })
-	coord.messages = env.messages
-	writeParkedChildTurn(t, env, child.ID, "child final answer", message.FinishReasonEndTurn)
+	// Single-DB wiring (see TestWorkLedger_ResumeAfterNoticeDoesNotReemit):
+	// the ON reaction write needs the message service on the bound batch
+	// connection.
+	coord, messages, _ := newParkedOutcomeCoordinatorWithMessagesConn(t, func(completion AsyncCompletion) { delivered <- completion })
+	x2WriteParkedChildTurn(t, messages, child.ID, "child final answer", message.FinishReasonEndTurn)
 
 	startChildOwnedJob(t, coord.asyncJobs, child.ID, parkedChildJob, true)
 	parkDelegation(t, coord, child.ID, "child yielded")
@@ -539,7 +590,7 @@ func TestWorkLedger_BusyChildDefersReleaseUntilTurnEnds(t *testing.T) {
 	// both writes that reacting turn's final message and re-drives the
 	// child-run-ended re-check.
 	stub.setBusy(false)
-	simulateChildReaction(t, coord, env.messages, child.ID, "child final answer", message.FinishReasonEndTurn)
+	simulateChildReaction(t, coord, messages, child.ID, "child final answer", message.FinishReasonEndTurn)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1)
@@ -688,13 +739,7 @@ func TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation(t *testing.T) {
 // which is what refreshSubAgentCompletion reads at release time.
 func writeParkedChildTurn(t *testing.T, env fakeEnv, sessionID, text string, reason message.FinishReason) {
 	t.Helper()
-	row, err := env.messages.Create(t.Context(), sessionID, message.CreateMessageParams{
-		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: text}},
-	})
-	require.NoError(t, err)
-	row.AddFinish(reason, "", "")
-	require.NoError(t, env.messages.Update(t.Context(), row))
+	x2WriteParkedChildTurn(t, env.messages, sessionID, text, reason)
 }
 
 // busyStubAgent is a SessionAgent stub whose only meaningful behavior is a
