@@ -66,12 +66,18 @@ func TestProviderLimit1282Classification(t *testing.T) {
 		code string
 		want providerLimitClass
 	}{
-		{"1113", providerLimitHard}, {"1308", providerLimitHard},
-		{"1309", providerLimitHard}, {"1310", providerLimitHard},
-		{"1316", providerLimitHard}, {"1317", providerLimitHard},
-		{"1318", providerLimitHard}, {"1319", providerLimitHard},
-		{"1320", providerLimitHard}, {"1321", providerLimitHard},
-		{"1302", providerLimitTransient}, {"1305", providerLimitTransient},
+		{"1113", providerLimitHard},
+		{"1308", providerLimitHard},
+		{"1309", providerLimitHard},
+		{"1310", providerLimitHard},
+		{"1316", providerLimitHard},
+		{"1317", providerLimitHard},
+		{"1318", providerLimitHard},
+		{"1319", providerLimitHard},
+		{"1320", providerLimitHard},
+		{"1321", providerLimitHard},
+		{"1302", providerLimitTransient},
+		{"1305", providerLimitTransient},
 	} {
 		code := tc.code
 		for _, numeric := range []bool{false, true} {

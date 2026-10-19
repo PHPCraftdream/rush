@@ -207,8 +207,10 @@ var oauthJournalLogs = struct {
 	aggregate time.Time
 }{last: make(map[oauthJournalLogKey]time.Time)}
 
-const oauthJournalLogCapacity = 1024
-const oauthJournalLogWindow = 30 * time.Second
+const (
+	oauthJournalLogCapacity = 1024
+	oauthJournalLogWindow   = 30 * time.Second
+)
 
 type oauthJournalLogKey struct {
 	path string
