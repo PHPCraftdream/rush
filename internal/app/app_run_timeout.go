@@ -40,28 +40,33 @@ func classifyRunTimeout(ctx context.Context, final *RunResult, err error, sessio
 	if ctx.Err() == nil {
 		return final, err
 	}
-	// Idempotent: the outer and inner ExecuteRun defers both classify; the
-	// second must not rebuild the error (it would lose CommittedResult).
-	var already *RunTimeoutError
-	if errors.As(err, &already) {
-		return final, err
-	}
-	var cause *agent.RunTimeoutCause
-	if !errors.As(context.Cause(ctx), &cause) {
-		return final, err
-	}
 	resume := ""
 	if sessionID != "" {
 		resume = fmt.Sprintf("rush run --role %s --session %s", runResumeRole(role), sessionID)
 	}
-	committed := err == nil && final != nil
-	timeoutErr := &RunTimeoutError{Cause: cause, ResumeCommand: resume, CommittedResult: committed}
+	// Idempotent: several defers classify (the loop exit, both ExecuteRun
+	// defers). A repeat keeps the error, and so its CommittedResult, but
+	// re-asserts the envelope: the loop's cancel exit may have overwritten
+	// the reason with "canceled" in between.
+	var timeoutErr *RunTimeoutError
+	if errors.As(err, &timeoutErr) {
+		if timeoutErr.ResumeCommand == "" {
+			timeoutErr.ResumeCommand = resume
+		}
+	} else {
+		var cause *agent.RunTimeoutCause
+		if !errors.As(context.Cause(ctx), &cause) {
+			return final, err
+		}
+		committed := err == nil && final != nil
+		timeoutErr = &RunTimeoutError{Cause: cause, ResumeCommand: resume, CommittedResult: committed}
+	}
 	if final == nil {
 		final = &RunResult{SessionID: sessionID, ToolCalls: []ToolCallStat{}}
 	}
 	final.ExitReason = "timeout"
 	final.Error = timeoutErr.Error()
-	final.ResumeCommand = resume
+	final.ResumeCommand = timeoutErr.ResumeCommand
 	return final, timeoutErr
 }
 
