@@ -183,18 +183,20 @@ var testInnermostHandler interp.ExecHandlerFunc
 // [Run] and [Shell]. Order matters:
 //  1. panic guard (outermost — a panic in any layer below becomes one failed
 //     command with exit status 2);
-//  2. builtins first (so Rush's in-process jq wins over any PATH binary);
-//  3. script dispatch (shebang / binary / shell-source for path-prefixed
+//  2. CI-only command policy (before builtins and every execution handler);
+//  3. builtins first (so Rush's in-process jq wins over any PATH binary);
+//  4. script dispatch (shebang / binary / shell-source for path-prefixed
 //     argv[0], no-op for bare commands) — runs before the block list so
 //     that deny rules see the already-resolved argv of anything the
 //     script exec's rather than the outer path-prefixed wrapper;
-//  4. block list;
-//  5. when the Go coreutils are on: the xargs argument normaliser
+//  5. block list;
+//  6. when the Go coreutils are on: the xargs argument normaliser
 //     immediately before the coreutils handler, then the optional Go
 //     coreutils themselves.
 func standardHandlers(blockFuncs []BlockFunc) []execMiddleware {
 	handlers := []execMiddleware{
 		panicGuardHandler(),
+		ciOnlyPolicyHandler(),
 		builtinHandler(),
 		scriptDispatchHandler(blockFuncs),
 		blockHandler(blockFuncs),
@@ -208,6 +210,17 @@ func standardHandlers(blockFuncs []BlockFunc) []execMiddleware {
 		})
 	}
 	return handlers
+}
+
+func ciOnlyPolicyHandler() execMiddleware {
+	return func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+		return func(ctx context.Context, args []string) error {
+			if err := checkRegisteredCommandPolicy(args); err != nil {
+				return err
+			}
+			return next(ctx, args)
+		}
+	}
 }
 
 // builtinHandler returns middleware that dispatches recognized Rush

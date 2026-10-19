@@ -123,6 +123,9 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			}
 
 			argv := append([]string{params.Program}, params.Args...)
+			if guardErr := agentguard.CheckCommandPolicyArgs(argv); guardErr != nil {
+				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
 
 			// Same shared block list as the bash tool (banned programs AND
 			// argument blockers like `go install` / `npm install --global` /
@@ -204,6 +207,12 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			if spawn := commandSpawnFromContext(ctx); spawn != nil {
+				return spawn(ctx, RunCommandToolName, argv)
+			}
+			if testCommandSpawn != nil {
+				return testCommandSpawn(ctx, RunCommandToolName, argv)
+			}
 			startTime := time.Now()
 			// R7b lifetime seam: only after the same shared guards and permission.
 			leaf := argvLeafFromContext(ctx)
