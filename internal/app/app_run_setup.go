@@ -503,7 +503,13 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		FailIfSessionBusy: failIfSessionBusy,
 	}
 	if tools.IsCustomDiskProvider(overrides.DiskProvider) && batchRuntimeFlagEnabled() {
-		if app.batchInstall == nil || app.batchInstall.DiskBindings == nil {
+		// resolveDiskBindings prefers the batch runtime install's registry
+		// (persisted Apps) and falls back to the ephemeral App's in-memory
+		// registry; nil still fails closed with the same sentinel — a
+		// persisted App whose install genuinely failed, or a flag-ON
+		// ephemeral App built before the field existed, must not run.
+		bindings := app.resolveDiskBindings()
+		if bindings == nil {
 			return nil, cancel, nil, agent.ErrDiskProviderUnavailable
 		}
 		// R12-H2 §1.2: the Call owner is acquired ONCE when the trusted
@@ -511,7 +517,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// constructed; the immutable binding handle rides the SAME options
 		// value (the rest of the per-call policy is preserved).
 		_, release, err := agent.BindCallDiskProvider(
-			app.batchInstall.DiskBindings, overrides.DiskProvider, uuid.NewString(), callOpts)
+			bindings, overrides.DiskProvider, uuid.NewString(), callOpts)
 		if err != nil {
 			return nil, cancel, nil, err
 		}

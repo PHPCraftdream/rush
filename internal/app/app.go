@@ -122,6 +122,19 @@ type App struct {
 	batchRuntime *BatchRuntime
 	batchInstall *agent.BatchInstall
 
+	// ephemeralDiskBindings is the flag-ON capability registry for an
+	// ephemeral library-mode App (dataDir == ""): such an App never builds
+	// asyncJobStore (block below) and therefore never installs the batch
+	// runtime whose DiskBindings normally serve custom-DiskProvider runs
+	// (app_run_setup.go's BindCallDiskProvider). The registry is purely
+	// process-local in-memory state (internal/agent/disk_provider_capability.go:
+	// no hosts/ dir, no lock files, no database tables), so nothing touches
+	// the filesystem and there is no Close to call — it has none (GC-managed)
+	// and is closed implicitly with the App itself. Nil on flag-off Apps and
+	// on persisted (dataDir != "") Apps, so both behaviors stay unchanged;
+	// read only via resolveDiskBindings.
+	ephemeralDiskBindings *agent.DiskProviderRegistry
+
 	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
 	// installed batch runtime. Nil on flag-off Apps; set together with
 	// batchRuntime and bound to the coordinator in InitCoderAgent.
@@ -410,6 +423,19 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		// SetReadConn no-ops and readers keep using the writer, exactly like
 		// before this fix.
 		app.asyncJobStore.SetReadConn(readConn)
+	} else if !o.skipAgentSetup && dataDir == "" && config.BatchRuntimeEnabled() {
+		// Ephemeral library-mode App (sdk.ModeLibrary with no WorkingDir):
+		// dataDir == "" means no asyncJobStore above, hence no batch runtime
+		// install below, hence — with RUSH_BATCH_RUNTIME ON — no
+		// batchInstall.DiskBindings for app_run_setup.go's per-call
+		// BindCallDiskProvider. A flag-ON custom-DiskProvider run still
+		// needs an App-owned binding registry, so build one here: purely
+		// in-memory (no hosts/ dir, no lock files, no database),
+		// process-local, dying with the App. Flag-off Apps never construct
+		// it (the flag-off path stays byte-identical), and persisted Apps
+		// are untouched: their runs keep binding through the batch runtime
+		// install's registry via resolveDiskBindings.
+		app.ephemeralDiskBindings = newEphemeralDiskBindings()
 	}
 
 	// R11F (M2): flagged install of the batch runtime. Flag off (unset or
