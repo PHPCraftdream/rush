@@ -817,7 +817,13 @@ func TestConfigDiskSyncStopBeforeStartIsTerminal(t *testing.T) {
 //   - dropping Think → the think-only step does not fire;
 //   - dropping Temperature (P2-4) → the options-only step does not fire;
 //   - dropping ProviderOptions (P2-4) → the provider_options-only step does
-//     not fire.
+//     not fire;
+//   - dropping TopP → the top_p-only step does not fire;
+//   - dropping TopK → the top_k-only step does not fire;
+//   - dropping FrequencyPenalty → the frequency_penalty-only step does not
+//     fire;
+//   - dropping PresencePenalty → the presence_penalty-only step does not
+//     fire.
 func TestConfigDiskSyncOnModelsChangedEffortOnlyFires(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
@@ -895,18 +901,42 @@ func TestConfigDiskSyncOnModelsChangedEffortOnlyFires(t *testing.T) {
 		`{"smart":{"provider":"openai","model":"gpt-4","reasoning_effort":"high","max_tokens":4096,"think":true,"temperature":0.7,"provider_options":{"wire":"beta"}}}`)
 	fire(5, "provider_options-only")
 
+	// TopP-only change on top (catches dropping TopP from the profile).
+	writeSignedModelsFixture(t, configPath,
+		`{"smart":{"provider":"openai","model":"gpt-4","reasoning_effort":"high","max_tokens":4096,"think":true,"temperature":0.7,"provider_options":{"wire":"beta"},"top_p":0.9}}`)
+	fire(6, "top_p-only")
+
+	// TopK-only change on top (catches dropping TopK from the profile).
+	writeSignedModelsFixture(t, configPath,
+		`{"smart":{"provider":"openai","model":"gpt-4","reasoning_effort":"high","max_tokens":4096,"think":true,"temperature":0.7,"provider_options":{"wire":"beta"},"top_p":0.9,"top_k":40}}`)
+	fire(7, "top_k-only")
+
+	// FrequencyPenalty-only change on top (catches dropping
+	// FrequencyPenalty from the profile).
+	writeSignedModelsFixture(t, configPath,
+		`{"smart":{"provider":"openai","model":"gpt-4","reasoning_effort":"high","max_tokens":4096,"think":true,"temperature":0.7,"provider_options":{"wire":"beta"},"top_p":0.9,"top_k":40,"frequency_penalty":0.1}}`)
+	fire(8, "frequency_penalty-only")
+
+	// PresencePenalty-only change on top (catches dropping
+	// PresencePenalty from the profile).
+	writeSignedModelsFixture(t, configPath,
+		`{"smart":{"provider":"openai","model":"gpt-4","reasoning_effort":"high","max_tokens":4096,"think":true,"temperature":0.7,"provider_options":{"wire":"beta"},"top_p":0.9,"top_k":40,"frequency_penalty":0.1,"presence_penalty":0.2}}`)
+	fire(9, "presence_penalty-only")
+
 	// Bytes change with NO effective change: every profile field —
-	// Provider/Model/ReasoningEffort/Think/MaxTokens/Temperature and the
-	// provider identity — stays IDENTICAL (temperature 0.7 and the provider
-	// options kept, not dropped); only the raw bytes differ (the smart
-	// object's keys are reordered, still written through
+	// Provider/Model/ReasoningEffort/Think/MaxTokens/Temperature/TopP/TopK/
+	// FrequencyPenalty/PresencePenalty, the ProviderOptions map, and the
+	// provider identity — stays IDENTICAL (temperature 0.7, provider options
+	// {"wire":"beta"}, top_p 0.9, top_k 40, frequency_penalty 0.1 and
+	// presence_penalty 0.2 all kept, not dropped); only the raw bytes differ
+	// (the smart object's keys are reordered, still written through
 	// writeSignedModelsFixture so the models block keeps a valid
 	// signature). Reloads, must not fire.
 	writeSignedModelsFixture(t, configPath,
-		`{"smart":{"provider_options":{"wire":"beta"},"temperature":0.7,"think":true,"max_tokens":4096,"reasoning_effort":"high","model":"gpt-4","provider":"openai"}}`)
+		`{"smart":{"presence_penalty":0.2,"frequency_penalty":0.1,"top_k":40,"top_p":0.9,"provider_options":{"wire":"beta"},"temperature":0.7,"think":true,"max_tokens":4096,"reasoning_effort":"high","model":"gpt-4","provider":"openai"}}`)
 	result, err := s.syncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "different bytes must reload")
 	require.False(t, result.ModelsChanged)
-	require.EqualValues(t, 5, fired.Load(), "no effective change must not fire")
+	require.EqualValues(t, 9, fired.Load(), "no effective change must not fire")
 }

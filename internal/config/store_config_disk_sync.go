@@ -26,8 +26,15 @@ var (
 	// configDiskSyncFirstDelay draws the poller's first delay; injectable so
 	// tests can pin boundary draws deterministically (no real sleeps).
 	// Default: defaultConfigDiskSyncFirstDelay, whose bounds are pinned
-	// directly by TestConfigDiskSyncJitterBounds.
+	// directly by TestConfigDiskSyncJitterBounds and whose exact response
+	// to boundary draws by TestConfigDiskSyncFirstDelayFormulaBoundaries
+	// (via the configDiskSyncRandInt63 seam below the formula).
 	configDiskSyncFirstDelay = defaultConfigDiskSyncFirstDelay
+	// configDiskSyncRandInt63 is the draw source BELOW the first-delay
+	// formula: the default formula's only nondeterminism. Stubbing it lets
+	// tests pin the FORMULA's exact response to boundary draws (0 and
+	// interval-1) without replacing the formula itself.
+	configDiskSyncRandInt63 = rand.Int64N
 	// configDiskSyncAfterTick is a test hook observing each completed tick.
 	configDiskSyncAfterTick func(*ConfigStore, ConfigDiskSyncResult)
 )
@@ -140,7 +147,7 @@ func (s *ConfigStore) PollConfigDiskOnce(ctx context.Context) (ConfigDiskSyncRes
 // tick in lockstep. Named so tests can pin its per-draw bounds directly
 // while the configDiskSyncFirstDelay seam stays test-injectable.
 func defaultConfigDiskSyncFirstDelay() time.Duration {
-	return time.Duration(rand.Int64N(int64(configDiskSyncInterval)))
+	return time.Duration(configDiskSyncRandInt63(int64(configDiskSyncInterval)))
 }
 
 func configDiskSyncDelay() time.Duration {

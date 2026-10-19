@@ -117,8 +117,10 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	//  1. drain everything buffered now (frames of the earlier positive change);
 	//  2. the unrelated write (options.debug), waited out until adopted;
 	//  3. producer-side quiescence barrier: published == consumed proves the
-	//     forwarder has consumed EVERY notification ever accepted into the
-	//     buffer — nothing is pending/unconsumed before the settler write;
+	//     forwarder has FULLY processed every notification ever accepted into
+	//     the buffer — each receive's frame (when one is produced) is already
+	//     enqueued on the hub before the counter advances (events.go) —
+	//     nothing is pending/unconsumed before the settler write;
 	//  4. a SECOND known-positive model change (probe-b → probe, a real
 	//     models diff that fires OnModelsChanged) publishes a settler ping.
 	//     We wait until BOTH counters advance: published advancing proves
@@ -126,11 +128,22 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	//     away behind an unconsumed ping), consumed advancing proves the
 	//     forwarder picked it up and broadcast the frame. FIFO proof: hub
 	//     fan-out appends to the client's buffered channel in broadcast
-	//     order (hub.go:497-513), so anything enqueued BEFORE the settler
-	//     is already in client.send when the settler is received.
+	//     order (hub.go:497-513), so a frame queued on the hub BEFORE the
+	//     settler's reaches client.send ahead of it (Broadcast itself is a
+	//     non-blocking queue insert, not a client-delivery acknowledgement).
 	//  5. the first EventConfig after the drain must BE the settler (a
 	//     mutant debug-reload frame would arrive first and carry probe-b),
 	//     and no further EventConfig may follow it.
+	//
+	// Subscriber-unit note: published counts accepted sends to ALL
+	// subscribers of this App. The production subscriber is registered only
+	// by subscribeAndBroadcast (internal/server/events.go:148 is the only
+	// SubscribeModelsChanged call outside app's own tests), and this test
+	// creates exactly one App via appPkg.New and calls subscribeAndBroadcast
+	// exactly once — so exactly ONE subscriber exists here and published
+	// counts precisely this forwarder's receives: same unit, equality is
+	// sound.
+	//
 	countConfigEvents(client.send) // drain: frames of the positive change above are not under test
 	require.NoError(t, foreign.SetConfigFields(config.ScopeGlobal, map[string]any{"options.debug": true}))
 	require.Eventually(t, func() bool {
@@ -139,18 +152,55 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	}, 20*time.Second, 10*time.Millisecond, "the poller must adopt the unrelated write before the negative window opens")
 
 	// Producer-side quiescence barrier (deterministic, no time probe):
-	// published == consumed means the forwarder is idle — every accepted
-	// notification has been consumed and broadcast, and none is pending.
-	// REVERT-CHECK (every-reload mutant, fires OnModelsChanged on the debug
-	// reload): its debug ping is published either
-	//   (a) while the barrier is polling → published == consumed+1 until
-	//       consumed; if it stays buffered when the settler ping is sent,
-	//       the settler's send is coalesced away, published NEVER advances,
-	//       and the published-and-consumed advance assertion below times
-	//       out — the merge escape is closed at the producer; or
-	//   (b) already consumed → its frame is enqueued FIFO BEFORE the
-	//       settler's, and the first EventConfig below decodes "probe-b"
-	//       and fails the settler-model assertion.
+	// published == consumed means the forwarder is idle AND caught up: every
+	// accepted notification has been processed with its frame — when one was
+	// produced — already enqueued on the hub (the counter advances only
+	// after h.Broadcast returns), and none is pending. With the
+	// post-broadcast counter this barrier is STRICTLY stronger than a
+	// receive-side count: no partially processed notification can hide
+	// behind it. REVERT-CHECK (every-reload mutant, fires OnModelsChanged on
+	// the debug reload) — its debug ping is published, and then one of:
+	//   (i)  buffered-coalesce: the debug ping sits unconsumed in the
+	//        buffer-1 channel when the settler write fires → the settler's
+	//        send hits the full buffer and is coalesced away → published
+	//        NEVER advances → the published-and-consumed advance assertion
+	//        below times out — the merge escape is closed at the producer; or
+	//   (ii) already-consumed FIFO: the debug frame was enqueued on the hub
+	//        before the settler's; hub fan-out appends to the client's
+	//        buffered channel in broadcast order (hub.go:497-513), so the
+	//        first EventConfig after the drain decodes "probe-b" and fails
+	//        the settler-model assertion; or
+	//   (iii) receive-then-pause (the PRE-fix counter placement the reviewer
+	//        found): the forwarder receives the debug notification,
+	//        increments a receive-side counter as its FIRST statement, then
+	//        pauses before building its frame → the barrier passes with the
+	//        debug frame NOT yet enqueued → the poller meanwhile adopts the
+	//        settler write (store becomes "probe") → the forwarder resumes,
+	//        builds the DEBUG notification's frame from the now-current
+	//        config (carrying "probe"), receives the settler notification,
+	//        increments, pauses before the second broadcast → both advance
+	//        assertions pass, the first frame carries "probe" (settler
+	//        content, indistinguishable), and the immediate final drain sees
+	//        no second frame. THE MUTANT PASSES. With the POST-broadcast
+	//        counter this schedule cannot pass the barrier: consumed has not
+	//        advanced past the debug receive (the increment only happens
+	//        after h.Broadcast returns), while published has advanced for
+	//        both the debug and the settler send, so published > consumed
+	//        and the barrier keeps polling. The barrier can only pass once
+	//        the debug notification's frame is fully enqueued on the hub —
+	//        and once it is, that frame is queued on the hub, FIFO BEFORE
+	//        the settler's frame. The first EventConfig after the drain is
+	//        therefore the DEBUG frame, and the mutant fails in both
+	//        branches: if it was built before the settler adoption it
+	//        decodes "probe-b" and the settler-model assertion fails; if it
+	//        was built after, it decodes "probe" but the settler frame then
+	//        follows it and the after == 0 assertion fails.
+	// Documented residual (best-effort negative oracle, not closeable from the
+	// test side): the poller adopts the debug snapshot BEFORE it invokes
+	// OnModelsChanged (store_reload.go snapshot publish, then
+	// store_config_disk_sync.go compare+callback), so a mutant callback paused
+	// in that window lets the barrier pass; the mutant is then caught only if
+	// its debug frame is built before the settler adoption.
 	// Under correct code no debug ping is ever published and the barrier is
 	// trivially satisfied (both counters froze after the positive phase).
 	require.Eventually(t, func() bool {

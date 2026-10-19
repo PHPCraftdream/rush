@@ -20,9 +20,15 @@ const batchInterval = 16 * time.Millisecond
 // the config forwarder goroutine below; test-observability hook only.
 // Invariant: every notification accepted into a subscriber's buffer-1
 // channel is consumed exactly once here (the channel holds at most one, and
-// each receive maps to one iteration), so once this goroutine is idle its
-// value equals app.ConfigNotificationsPublished — the server's negative
-// EventConfig test uses that equality as a producer-side quiescence barrier.
+// each receive maps to one iteration), and "consumed" means the notification
+// was FULLY processed: buildConfigWire ran and, when it produced a frame,
+// h.Broadcast returned — the frame is enqueued on the hub before the counter
+// advances. So counter == N means the first N accepted notifications were
+// fully processed AND their frames enqueued on the hub. Once this goroutine
+// is idle its value equals app.ConfigNotificationsPublished (same unit: the
+// server test owns the only subscriber — see events_config_test.go), which
+// the server's negative EventConfig test uses as a producer-side quiescence
+// barrier.
 var configNotificationsForwarded atomic.Int64
 
 // Fork merge note: upstream rewrote events.go as REST /v1/... protocol
@@ -142,10 +148,16 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 	ch := a.SubscribeModelsChanged(ctx)
 	go func() {
 		for range ch {
-			configNotificationsForwarded.Add(1)
+			// A notification is consumed whether or not buildConfigWire
+			// produced a frame (an !ok is still a fully processed receive),
+			// but the counter only advances AFTER the frame — when one was
+			// produced — is enqueued on the hub: this makes the
+			// "published == consumed" barrier in the negative EventConfig
+			// test imply "no frame is still being built or enqueued".
 			if wire, ok := buildConfigWire(a); ok {
 				h.Broadcast(EventConfig, wire)
 			}
+			configNotificationsForwarded.Add(1)
 		}
 	}()
 

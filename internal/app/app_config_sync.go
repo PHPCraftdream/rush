@@ -20,8 +20,12 @@ import (
 // Test-observability hook only: paired with the forwarder-side
 // configNotificationsForwarded counter in internal/server/events.go it
 // yields the invariant "published == consumed once the forwarder is idle",
-// letting the server's negative EventConfig test prove producer-side
-// quiescence instead of probing with a timeout.
+// where consumed counts only FULLY processed notifications (frame — when
+// one is produced — already enqueued on the hub). The two counters are in
+// the same unit when there is exactly one subscriber (the server's negative
+// EventConfig test creates one App and one subscribeAndBroadcast, whose
+// forwarder is the process's only production subscriber), letting that test
+// prove producer-side quiescence instead of probing with a timeout.
 var ConfigNotificationsPublished atomic.Int64
 
 // modelsRefreshTimeout bounds the background shared-agent rebuild that

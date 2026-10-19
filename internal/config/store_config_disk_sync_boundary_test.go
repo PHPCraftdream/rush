@@ -10,6 +10,7 @@
 // TestConfigDiskSyncCandidateSetDriftBoundary -> removing the forced-tick candidate-set drift check (store_config_disk_sync.go:196): the global-config growth transition (dir → eligible file) is invisible to the digest gate, which only examines tracked paths, so the mutant settles without reloading.
 // TestConfigDiskSyncJitterBounds -> replacing the first-delay uniform draw in runConfigDiskSync with configDiskSyncDelay, or replacing defaultConfigDiskSyncFirstDelay's [0, interval) draw with an out-of-bounds draw (store_config_disk_sync.go).
 // TestConfigDiskSyncFirstDelayBoundaryDraws -> making runConfigDiskSync clamp or rewrite the configDiskSyncFirstDelay draw before passing it to the wait (store_config_disk_sync.go).
+// TestConfigDiskSyncFirstDelayFormulaBoundaries -> swapping defaultConfigDiskSyncFirstDelay's formula body for the steady-state configDiskSyncDelay (or any non-identity mapping of the draw), detected via the configDiskSyncRandInt63 seam BELOW the formula (store_config_disk_sync.go).
 package config
 
 import (
@@ -204,11 +205,17 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	// alone.
 	//
 	// NOTE: Load was called with (dir, dir, false), so dir/rush.json is
-	// BOTH the project candidate and the workspace path, and the workspace
-	// config merges LAST (append([][]byte{mustMarshalConfig(cfg)}, wsData),
-	// load.go:132-138; same in ReloadFromDisk, store_reload.go:452-457) —
-	// the workspace file SHADOWS the newly eligible global-config candidate
-	// for models.smart, so no assertion here may depend on "gpt-globalcfg"
+	// BOTH the project candidate and the workspace path — the same file,
+	// not two merges. Because it is already a project candidate, the
+	// separate workspace merge never runs: the pathAlreadyLoaded guard
+	// (load.go:105) skips the workspace bytes that would otherwise be
+	// appended (load.go:132-138 / store_reload.go:452-457). The newly
+	// eligible global-config file is therefore shadowed for models.smart
+	// by the PROJECT CANDIDATE's priority alone: candidates are merged
+	// lowest-priority first (global candidates first, the project file
+	// last), so the project file's models outrank the global-config
+	// candidate's in the ordered merge (internal/config/load_files.go:43-97,
+	// load.go:59-64). No assertion here may depend on "gpt-globalcfg"
 	// reaching the store. Growth is proven by the drift reload itself
 	// (Reloaded, exactly one reloadAttempts, generation bump) plus the
 	// candidate joining the tracked set below. This keeps the drift-only
@@ -257,8 +264,10 @@ func TestConfigDiskSyncJitterBounds(t *testing.T) {
 	}
 	// P2-8: the DEFAULT first-delay formula's own bounds. A per-draw
 	// exact-boundary assertion is impossible on a random draw, so the
-	// coverage is per-draw bounds here plus the injectable seam's
-	// passthrough boundary draws in TestConfigDiskSyncFirstDelayBoundaryDraws.
+	// coverage is per-draw bounds here, exact boundary-draw responses of the
+	// default formula in TestConfigDiskSyncFirstDelayFormulaBoundaries, and
+	// the injectable seam's passthrough boundary draws in
+	// TestConfigDiskSyncFirstDelayBoundaryDraws.
 	for range 1000 {
 		delay := defaultConfigDiskSyncFirstDelay()
 		require.GreaterOrEqual(t, delay, time.Duration(0),
@@ -291,6 +300,42 @@ func TestConfigDiskSyncJitterBounds(t *testing.T) {
 		require.Less(t, delay, configDiskSyncInterval, "first delay must be uniform in [0, interval)")
 	case <-time.After(2 * time.Second):
 		t.Fatal("poller never ticked")
+	}
+}
+
+// TestConfigDiskSyncFirstDelayFormulaBoundaries pins the REAL default
+// first-delay formula's exact response to boundary draws, via the draw-source
+// seam BELOW the formula (configDiskSyncRandInt63): unlike
+// TestConfigDiskSyncFirstDelayBoundaryDraws (which replaces the whole seam
+// function ABOVE the formula and only proves passthrough) this exercises the
+// formula body itself. rand.Int64N's contract: returns values in [0, n), so
+// the extreme draws are 0 and interval-1ns (as a Duration), never interval.
+// Catches: replacing defaultConfigDiskSyncFirstDelay's body with the
+// steady-state configDiskSyncDelay (interval-spread + draw over
+// 2*spread+1, spread = interval/5 = 1s): a draw of 0 there yields 4s, not 0
+// — the exact-zero assertion below fails. A comment-level argument suffices
+// for the 4s branch, but the exact equality below already excludes it:
+// 0 != 4s.
+func TestConfigDiskSyncFirstDelayFormulaBoundaries(t *testing.T) {
+	orig := configDiskSyncRandInt63
+	t.Cleanup(func() { configDiskSyncRandInt63 = orig })
+
+	for _, tc := range []struct {
+		name string
+		draw int64
+		want time.Duration
+	}{
+		// Lowest value Int64N can return: the first delay is 0.
+		{"lowest", 0, 0},
+		// Highest value Int64N can return (n-1): interval - 1ns, never the
+		// interval itself — the delay must stay strictly below it.
+		{"highest", int64(configDiskSyncInterval) - 1, configDiskSyncInterval - time.Nanosecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configDiskSyncRandInt63 = func(int64) int64 { return tc.draw }
+			require.Equal(t, tc.want, defaultConfigDiskSyncFirstDelay(),
+				"the default first-delay formula must map the boundary draw exactly; a steady-state configDiskSyncDelay body would map draw 0 to 4s, not 0")
+		})
 	}
 }
 

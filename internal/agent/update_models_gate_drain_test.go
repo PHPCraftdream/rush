@@ -9,7 +9,7 @@ package agent
 // rebuild's `defer cancel()` at internal/app/app_config_sync.go:55 is the
 // production case). Before the fix UpdateModels returned with tasks still
 // pending, the cancellation landed under them, and the tasks returned
-// context.Canceled into the STICKY gate (ready_gate.go:95-104) — so the
+// context.Canceled into the STICKY gate (ready_gate.go:83-85, 105-114) — so the
 // NEXT run's entry-point readyWg.Wait (coordinator.go:544) failed with
 // context.Canceled before any provider request, and the app stamped the
 // turn "canceled". That is exactly the CI failure
@@ -21,11 +21,11 @@ package agent
 // tasks are still pending. With the held-task harness below (a task parked
 // on the gate across the whole call) the mutant fails the "UpdateModels has
 // NOT returned while the task is held" assertion immediately; with the
-// production code it fails only after cancel() lands under a still-pending
-// task, whose sticky context.Canceled error poisons both assertions below
-// (a later Wait and a later UpdateModels both observe the poisoned gate).
+// production code, cancel() only lands once the gate's pending count has
+// drained to exactly the held task (event-derived, not assumed), so no
+// build task ever observes cancellation and the sticky gate stays clean.
 //
-// Precision: the gate keeps errors STICKY (ready_gate.go:83-85 and 97-103 —
+// Precision: the gate keeps errors STICKY (ready_gate.go:83-85 and 105-114 —
 // Wait returns the FIRST error any task ever reported). The fix here does
 // NOT clear or prevent build-failure stickiness; it only prevents the
 // caller's deferred cancellation from being deferred UNDER still-pending
@@ -34,6 +34,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,8 +68,13 @@ func TestUpdateModelsDrainsReadyGateBeforeReturning(t *testing.T) {
 	// with Wait (ready_gate.go:71-93), so this is legal even though
 	// UpdateModels will call readyWg.Wait immediately after its build tasks
 	// are registered. While `held` is open, UpdateModels (with the fix)
-	// must be blocked in readyWg.Wait behind this task.
+	// must be blocked in readyWg.Wait behind this task. The release is
+	// registered as a Cleanup BEFORE any assertion, so an early t.Fatalf
+	// (e.g. the not-returned select below) cannot leak the parked task;
+	// sync.Once makes the cleanup's close safe next to the explicit one.
 	held := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(held) }) })
 	coord.readyWg.Go(func() error { <-held; return nil })
 
 	// Run UpdateModels in a goroutine. With the fix (tail
@@ -83,15 +89,23 @@ func TestUpdateModelsDrainsReadyGateBeforeReturning(t *testing.T) {
 		// expected: UpdateModels is parked on readyWg.Wait()
 	}
 
-	// Cancel the ctx while the task is STILL held — this exercises the
-	// deferred-cancel-under-tasks path the production fix protects. The 2s
-	// bounded select above gives UpdateModels' own build tasks ample time
-	// to finish under the still-alive ctx (as they do in production, where
-	// cancel() is deferred until after UpdateModels returns), so the only
-	// pending task at cancel() time is the held one, which ignores ctx.
-	// After release, the gate drains with no sticky error.
+	// Cancel the ctx ONLY once the held task is provably the LAST pending
+	// one: a bounded, event-derived wait on the gate's pending count. The
+	// 2s bounded select above only tells us UpdateModels has not returned;
+	// it does NOT prove its own build tasks finished — a still-running real
+	// prompt/tool build task would see the cancellation (prompt.go:746-752)
+	// and stick context.Canceled into the sticky gate
+	// (ready_gate.go:83-85), failing correct production. Waiting until
+	// pendingCount() == 1 (1 = the held task, which ignores ctx) is the
+	// event that certifies every build task has returned; then cancel()
+	// lands under the held task alone, exactly like the production
+	// deferred-cancel-under-gate ordering. After release, the gate drains
+	// with no sticky error.
+	require.Eventually(t, func() bool { return coord.readyWg.pendingCount() == 1 },
+		10*time.Second, 5*time.Millisecond,
+		"only the held task may remain pending before cancel")
 	cancel()
-	close(held)
+	releaseOnce.Do(func() { close(held) })
 
 	select {
 	case err := <-returned:
