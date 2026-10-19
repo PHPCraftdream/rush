@@ -490,7 +490,7 @@ jobs:
           rc=0
           for workload in direct-view legacy-bash; do
             echo "Running baseline workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-baseline-$workload-cpu.pprof" ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
             run_rc=${PIPESTATUS[0]}
             if [ "$run_rc" -ne 0 ]; then rc=1; fi
           done
@@ -510,7 +510,7 @@ jobs:
           rc=0
           for workload in direct-view legacy-bash; do
             echo "Running candidate workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-candidate-$workload-cpu.pprof" -mutexprofile "$RUNNER_TEMP/d11-candidate-$workload-mutex.pprof" -blockprofile "$RUNNER_TEMP/d11-candidate-$workload-block.pprof" -mutexprofilefraction 1 ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
             run_rc=${PIPESTATUS[0]}
             if [ "$run_rc" -ne 0 ]; then rc=1; fi
           done
@@ -530,6 +530,22 @@ jobs:
           rc=$?
           if [ -f "$RUNNER_TEMP/d11-report.md" ]; then cat "$RUNNER_TEMP/d11-report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$rc"
+      - name: Print pprof tops
+        if: always()
+        working-directory: candidate
+        shell: bash
+        run: |
+          set +e
+          shopt -s nullglob
+          for prof in "$RUNNER_TEMP"/d11-*.pprof; do
+            echo "::group::d11 pprof $(basename "$prof") (-top -cum -nodecount=50)"
+            go tool pprof -top -cum -nodecount=50 "$prof" || echo "pprof failed for $prof"
+            echo "::endgroup::"
+            echo "::group::d11 pprof $(basename "$prof") (-top -flat -nodecount=40)"
+            go tool pprof -top -flat -nodecount=40 "$prof" || echo "pprof failed for $prof"
+            echo "::endgroup::"
+          done
+          exit 0
       - name: Run report unit tests
         if: always()
         run: python -I -m unittest discover -s candidate/tools -p test_d11_report.py
@@ -543,4 +559,5 @@ jobs:
             ${{ runner.temp }}/d11-candidate-*.log
             ${{ runner.temp }}/d11-summary.json
             ${{ runner.temp }}/d11-report.md
+            ${{ runner.temp }}/d11-*pprof
           if-no-files-found: ignore

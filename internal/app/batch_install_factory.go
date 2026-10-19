@@ -75,8 +75,10 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		// store-backed live-descendant reader over the same writer pool the
 		// batch store uses; a nil reader would report an incomplete read
 		// forever (scope never closes).
-		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithLive(
-			session.NewBatchLiveReader(db.New(writer), a.dataDir))
+		reader := session.NewBatchLiveReader(db.New(writer), a.dataDir)
+		// TxStarter: every live read runs in ONE read-only tx on the writer.
+		reader.TxStarter = writer
+		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithLive(reader)
 	}
 	if deps.Resolver == nil {
 		deps.Resolver = agent.BatchNonReentrantMCPResolver()
@@ -97,6 +99,8 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		deps.RecordRetention = 256
 	}
 	live := session.NewBatchLiveReader(db.New(writer), a.dataDir)
+	// TxStarter: every live read runs in ONE read-only tx on the writer.
+	live.TxStarter = writer
 	f := &batchRuntimeFactory{deps: deps, live: live}
 	return f, nil
 }
