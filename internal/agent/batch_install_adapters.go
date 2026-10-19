@@ -67,6 +67,11 @@ func (a *batchRunnerAdapter) submitBatch(ctx context.Context, req jobbatch.Submi
 	if a.runner == nil {
 		return nil, errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
+	var err error
+	req.Spec, err = stampBatchCallCredentials(ctx, req.Spec)
+	if err != nil {
+		return nil, err
+	}
 	if req.Spec.Task != nil {
 		if req.Spec.Batch != nil {
 			return nil, jobbatch.ErrInvalidSpec
@@ -126,6 +131,15 @@ func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) (
 	}
 	root := string(view.Root)
 	registrations := make([]batchCredentialRegistration, 0)
+	stamped := make([]jobbatch.Spec, len(req.Items))
+	for i, spec := range req.Items {
+		var err error
+		stamped[i], err = stampBatchCallCredentials(ctx, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req.Items = stamped
 	for _, spec := range req.Items {
 		entries, collectErr := a.credentialRegistrations(ctx, root, spec)
 		if collectErr != nil {
@@ -162,6 +176,12 @@ func (a *batchRunnerAdapter) credentialRegistrations(ctx context.Context, root s
 		}
 		if p.Tool != "agent" && p.Tool != "agentic_fetch" {
 			return nil, nil
+		}
+		if !p.CallCredentials {
+			return nil, nil
+		}
+		if callCredentialsFrom(ctx) == nil {
+			return nil, errBatchCredentialEscrowMissing
 		}
 		return []batchCredentialRegistration{{key: batchCredentialKeyFor(p), root: root, creds: callCredentialsFrom(ctx)}}, nil
 	}

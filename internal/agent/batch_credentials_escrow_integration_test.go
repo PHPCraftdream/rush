@@ -56,6 +56,7 @@ type escrowAgentExecutor struct {
 	ingress  BatchWorkIngress
 	mu       sync.Mutex
 	reqs     []batchAgentRunRequest
+	payloads [][]byte
 	turns    []batchAgentTurn
 	wg       sync.WaitGroup
 	launched chan struct{}
@@ -73,10 +74,12 @@ func (e *escrowAgentExecutor) Start(ctx context.Context, launch jobbatch.Launch,
 	req := batchAgentRunRequest{
 		NodeID: launch.ID, Token: launch.Token, SessionID: payload.SessionID,
 		ToolCallID: payload.ToolCallID, Input: payload.Input, RegistryID: payload.RegistryID,
-		MessageID: messageID, Tool: payload.Tool, Ingress: e.ingress,
+		MessageID: messageID, Tool: payload.Tool, CallCredentials: payload.CallCredentials,
+		Ingress: e.ingress,
 	}
 	e.mu.Lock()
 	e.reqs = append(e.reqs, req)
+	e.payloads = append(e.payloads, append([]byte(nil), launch.Task.Payload...))
 	e.mu.Unlock()
 	turn, err := e.deps.Runs.StartAgentTurn(ctx, req, batchAgentHost{})
 	if err != nil {
@@ -101,10 +104,12 @@ func (e *escrowAgentExecutor) Start(ctx context.Context, launch jobbatch.Launch,
 	return escrowTurnExecution{turn: turn}, nil
 }
 
-func (e *escrowAgentExecutor) snapshot() ([]batchAgentRunRequest, []batchAgentTurn) {
+func (e *escrowAgentExecutor) snapshot() ([]batchAgentRunRequest, [][]byte, []batchAgentTurn) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return append([]batchAgentRunRequest(nil), e.reqs...), append([]batchAgentTurn(nil), e.turns...)
+	return append([]batchAgentRunRequest(nil), e.reqs...),
+		append([][]byte(nil), e.payloads...),
+		append([]batchAgentTurn(nil), e.turns...)
 }
 
 type escrowTurnExecution struct{ turn batchAgentTurn }
@@ -123,8 +128,9 @@ func escrowAgentSpec(t *testing.T, callID string) jobbatch.Spec {
 	t.Helper()
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: callID, SessionID: "session", RegistryID: "registry",
-		Input:  json.RawMessage(`{"prompt":"work"}`),
-		Policy: &batchLeafPolicyContext{MessageID: "message", RestrictedToolset: "agent"},
+		CallCredentials: true,
+		Input:           json.RawMessage(`{"prompt":"work"}`),
+		Policy:          &batchLeafPolicyContext{MessageID: "message", RestrictedToolset: "agent"},
 	})
 	require.NoError(t, err)
 	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}
@@ -145,7 +151,7 @@ func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
 	require.NoError(t, store.Register("registry", registry))
 	req := batchAgentRunRequest{
 		NodeID: "root.1", SessionID: "session", MessageID: "message", ToolCallID: "call",
-		Tool: "agent", RegistryID: "registry", Ingress: escrowTestIngress{store: store},
+		Tool: "agent", RegistryID: "registry", CallCredentials: true, Ingress: escrowTestIngress{store: store},
 	}
 	turn, err := (batchCoordinatorAgentRuns{}).StartAgentTurn(context.Background(), req, batchAgentHost{})
 	if turn != nil {
@@ -187,7 +193,7 @@ func TestBatchCredentialSubmitAddDriverLifecycle(t *testing.T) {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = runner.Close(closeCtx)
-		_, turns := executor.snapshot()
+		_, _, turns := executor.snapshot()
 		for _, turn := range turns {
 			select {
 			case <-turn.Exit():
@@ -220,13 +226,16 @@ func TestBatchCredentialSubmitAddDriverLifecycle(t *testing.T) {
 	secondCtx := receiveEscrowStarted(t, ctx, tool.started)
 	receiveEscrowLaunched(t, ctx, executor.launched)
 	require.Equal(t, "second-tenant-secret", callCredentialsFrom(secondCtx).Credentials[0].APIKey)
-	requests, turns := executor.snapshot()
+	requests, payloads, turns := executor.snapshot()
 	require.Len(t, requests, 2)
 	require.Len(t, turns, 2)
-	rawSpec, err := json.Marshal(escrowAgentSpec(t, "serialized-secret-probe"))
-	require.NoError(t, err)
-	require.NotContains(t, string(rawSpec), "tenant-secret")
-	require.NotContains(t, string(rawSpec), "second-tenant-secret")
+	require.Len(t, payloads, 2)
+	for i, request := range requests {
+		require.True(t, request.CallCredentials, "request %d carries the marker", i)
+		require.Contains(t, string(payloads[i]), `"call_credentials":true`)
+		require.NotContains(t, string(payloads[i]), "tenant-secret")
+		require.NotContains(t, string(payloads[i]), "second-tenant-secret")
+	}
 	close(tool.release)
 	for _, turn := range turns {
 		select {

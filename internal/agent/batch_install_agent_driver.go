@@ -57,23 +57,23 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	if err != nil {
 		return nil, err
 	}
-	credentialLeaf, ok := leaf.(interface {
-		credentialEscrow() *batchCredentialEscrow
-	})
-	if !ok {
-		if batchFlagEnabled() {
+	if req.CallCredentials {
+		credentialLeaf, ok := leaf.(interface {
+			credentialEscrow() *batchCredentialEscrow
+		})
+		if !ok {
 			return nil, errBatchCredentialEscrowMissing
 		}
-		return startBatchAgentTurn(ctx, req, host, leaf, nil, func() {})
+		creds, releaseCredentials, err := credentialLeaf.credentialEscrow().consume(batchCredentialKey{
+			registryID: req.RegistryID, sessionID: req.SessionID, messageID: req.MessageID,
+			callID: req.ToolCallID, tool: req.Tool,
+		}, string(req.NodeID))
+		if err != nil {
+			return nil, err
+		}
+		return startBatchAgentTurn(ctx, req, host, leaf, creds, releaseCredentials)
 	}
-	creds, releaseCredentials, err := credentialLeaf.credentialEscrow().consume(batchCredentialKey{
-		registryID: req.RegistryID, sessionID: req.SessionID, messageID: req.MessageID,
-		callID: req.ToolCallID, tool: req.Tool,
-	}, string(req.NodeID))
-	if err != nil {
-		return nil, err
-	}
-	return startBatchAgentTurn(ctx, req, host, leaf, creds, releaseCredentials)
+	return startBatchAgentTurn(ctx, req, host, leaf, nil, func() {})
 }
 
 func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost, leaf fantasy.AgentTool, creds *CredentialSet, releaseCredentials func()) (batchAgentTurn, error) {
@@ -86,7 +86,9 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		depth = 1
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	runCtx = withCallCredentials(runCtx, creds)
+	if req.CallCredentials {
+		runCtx = withCallCredentials(runCtx, creds)
+	}
 	runCtx = withBatchAgentQuestionContext(runCtx, depth)
 	runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
 	runCtx = withBatchAgentLifecycle(runCtx, batchAgentLifecycle{BindChildSession: host.BindChildSession, NoChildSelected: host.NoChildSelected})
