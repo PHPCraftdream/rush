@@ -17,9 +17,15 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	const command = `cd /x && git log --oneline -1 >/dev/null; echo q`
 	launch := func(id, cmd string) *drainAttempt {
 		f.seedDebt(ctx, id, true)
-		row := f.row(ctx, id)
+		var result fantasy.ToolResultContent
+		if batchFlagEnabled() {
+			// A batch started result names its launched root and carries no
+			// ClientMetadata: the call id IS the chain identity.
+			result = batchStartedToolResult(id)
+		} else {
+			result = fantasy.ToolResultContent{ToolCallID: id, ClientMetadata: `{"async":true,"claim_id":"` + f.row(ctx, id).ClaimID + `"}`}
+		}
 		call := fantasy.ToolCallContent{ToolCallID: id, ToolName: "bash", Input: `{"command":` + reactionJSON(cmd) + `}`}
-		result := fantasy.ToolResultContent{ToolCallID: id, ClientMetadata: `{"async":true,"claim_id":"` + row.ClaimID + `"}`}
 		ts.att = &drainAttempt{sessionID: f.sessID, outcome: drainAttempted}
 		ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
 		return ts.att
@@ -27,16 +33,25 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	first := launch("accept1", command)
 	require.True(t, first.chainProgress)
 	require.Empty(t, first.chainIdleClaims)
+	require.Empty(t, first.chainBatchRoots)
 	f.coord.arb.chainLink(f.sessID, first, session.DebtSnapshot{})
 	require.Zero(t, f.chainCount())
 	previous := "accept1"
 	for _, id := range []string{"accept2", "accept3", "accept4"} {
 		att := launch(id, command)
 		require.False(t, att.chainProgress)
-		require.Equal(t, []string{f.row(ctx, id).ClaimID}, att.chainIdleClaims)
 		current := id
-		f.coord.arb.chainLink(f.sessID, att, session.DebtSnapshot{Jobs: []session.DebtJobRef{{ClaimID: f.row(ctx, previous).ClaimID}}})
-		f.exec(ctx, `UPDATE async_jobs SET reacted=1 WHERE owner_session_id='`+f.sessID+`' AND tool_call_id='`+previous+`'`)
+		if batchFlagEnabled() {
+			require.Equal(t, []string{id}, att.chainBatchRoots)
+			// The leg acted on the PREVIOUS launch's completion: the batch
+			// twin of the legacy claim snapshot.
+			att.batchDebtCallIDs = []string{previous}
+			f.coord.arb.chainLink(f.sessID, att, session.DebtSnapshot{})
+		} else {
+			require.Equal(t, []string{f.row(ctx, id).ClaimID}, att.chainIdleClaims)
+			f.coord.arb.chainLink(f.sessID, att, session.DebtSnapshot{Jobs: []session.DebtJobRef{{ClaimID: f.row(ctx, previous).ClaimID}}})
+		}
+		a3MarkRowsReacted(t, ctx, f.env.conn, f.sessID, previous)
 		previous = current
 	}
 	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)

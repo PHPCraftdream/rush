@@ -71,20 +71,29 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 	sess, err := env.sessions.Create(ctx, "b1-recheck-deadline")
 	require.NoError(t, err)
 	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
+	coord.sessions, coord.messages, coord.permissions = env.sessions, env.messages, env.permissions
+	// Standalone coordinator: an explicit node-facts binding is required
+	// under the flag (batch_fixture_port_test.go's contract).
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 
 	// Seed real VISIBLE debt: claim+finish a job, then pull its notice into
 	// history -- exactly what decideDrainTurn requires to allow a turn.
-	_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
+	if batchFlagEnabled() {
+		// ON: the same terminal, pulled, wake-armed debt in batch_nodes.
+		seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, sess.ID, "call-1", true)
+	} else {
+		_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
+		require.NoError(t, err)
+		require.False(t, existing)
+		require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
+		_, err = store.Transition(ctx, session.TransitionParams{
+			Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
+		})
+		require.NoError(t, err)
+		pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
+		require.NoError(t, err)
+		require.Len(t, pulled, 1)
+	}
 
 	// The function under test: this must complete (well past providerDelay)
 	// without the debt-check's own tiny budget ever reaching the turn.
@@ -92,9 +101,7 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 
 	require.EqualValues(t, 1, atomic.LoadInt32(&requests), "the Drain triggered by the release re-check must reach the provider")
 
-	debtStillOpen, err := store.ReactionDebtExists(ctx, sess.ID)
-	require.NoError(t, err)
-	require.False(t, debtStillOpen, "a successful Drain turn must react to and clear the debt")
+	require.False(t, a3DebtOpen(t, ctx, env.conn, store, sess.ID), "a successful Drain turn must react to and clear the debt")
 
 	notices, err := store.ListSessionNotices(ctx, sess.ID)
 	require.NoError(t, err)
@@ -162,18 +169,27 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "b1-queued-turn-survives")
 	require.NoError(t, err)
 	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
+	coord.sessions, coord.messages, coord.permissions = env.sessions, env.messages, env.permissions
+	// Standalone coordinator: an explicit node-facts binding is required
+	// under the flag (batch_fixture_port_test.go's contract).
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 
-	_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
+	if batchFlagEnabled() {
+		// ON: the same terminal, pulled, wake-armed debt in batch_nodes.
+		seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, sess.ID, "call-1", true)
+	} else {
+		_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
+		require.NoError(t, err)
+		require.False(t, existing)
+		require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
+		_, err = store.Transition(ctx, session.TransitionParams{
+			Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
+		})
+		require.NoError(t, err)
+		pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
+		require.NoError(t, err)
+		require.Len(t, pulled, 1)
+	}
 
 	drainDone := make(chan struct{})
 	go func() {
