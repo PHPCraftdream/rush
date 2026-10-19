@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
@@ -80,4 +82,96 @@ func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
 
 	workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
 	return ok && workerModelCfg.Model != ""
+}
+
+// callModelRole returns the model role this call was started with (--role),
+// from the context's CallOptions. "" means no options or no role: the run
+// rides the smart slot with no role-derived resolution at all.
+func callModelRole(ctx context.Context) config.SelectedModelType {
+	opts := callOptionsFrom(ctx)
+	if opts == nil {
+		return ""
+	}
+	return opts.ModelRole
+}
+
+// roleSlotConfigModel returns the role's config slot (fast/worker/reviewer)
+// from cfg. "" and smart never resolve through a role slot, and a missing
+// slot key or an empty Model is "not configured" — the caller decides
+// whether that is an error or a fall-through.
+func roleSlotConfigModel(cfg *config.Config, role config.SelectedModelType) (config.SelectedModel, bool) {
+	if role == "" || role == config.SelectedModelTypeSmart {
+		return config.SelectedModel{}, false
+	}
+	sel, ok := cfg.Models[role]
+	if !ok || sel.Model == "" {
+		return config.SelectedModel{}, false
+	}
+	return sel, true
+}
+
+// roleSlotOverride is THE role-derived smart override resolver, shared by
+// resolveSessionModelsInternal and applyModelOverrides (plan D2): the
+// role's session pin wins, else the role's live config slot. roleEffort
+// (the explicit --effort of a non-smart role run, plan R6) is applied to
+// the resolved slot for THIS call and is never persisted — the role model
+// itself is not persisted either. ""/smart roles, and a role with neither
+// tier configured, return ok=false. The string result is the heartbeat
+// source label for the resolved slot.
+func roleSlotOverride(cfg *config.Config, sess session.Session, role config.SelectedModelType, roleEffort string) (*ModelOverride, string, bool) {
+	if role == "" || role == config.SelectedModelTypeSmart {
+		return nil, "", false
+	}
+	var sel config.SelectedModel
+	source := hbSourceSlotStart
+	switch {
+	case role == config.SelectedModelTypeFast && sess.FastModelID != "":
+		sel = config.SelectedModel{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
+		source = hbSourceSessionOverride
+	case role == config.SelectedModelTypeWorker && sess.WorkerModelID != "":
+		sel = config.SelectedModel{Provider: sess.WorkerModelProvider, Model: sess.WorkerModelID, ReasoningEffort: sess.WorkerModelReasoningEffort}
+		source = hbSourceSessionOverride
+	case role == config.SelectedModelTypeReviewer && sess.ReviewerModelID != "":
+		sel = config.SelectedModel{Provider: sess.ReviewerModelProvider, Model: sess.ReviewerModelID, ReasoningEffort: sess.ReviewerModelReasoningEffort}
+		source = hbSourceSessionOverride
+	default:
+		slot, ok := roleSlotConfigModel(cfg, role)
+		if !ok {
+			return nil, "", false
+		}
+		sel = slot
+	}
+	if roleEffort != "" {
+		sel.ReasoningEffort = roleEffort
+	}
+	return &ModelOverride{Provider: sel.Provider, Model: sel.Model, ReasoningEffort: sel.ReasoningEffort}, source, true
+}
+
+// refreshSubAgentSlotModel re-resolves the slot-built sub-agent model from
+// the live config snapshot at DISPATCH time (plan D3, §2.3): a dispatch is
+// a new request, so a long orchestrator turn must not keep spawning
+// sub-agents on a model the operator replaced mid-turn. Session pins and
+// per-call credentials are explicit choices, not slot values, and never
+// pass through here — callers gate on them. On a rebuild failure the stale
+// model keeps the dispatch alive (warn, don't fail the spawn).
+func (c *coordinator) refreshSubAgentSlotModel(ctx context.Context, model Model) (Model, bool) {
+	cfg, _ := c.cfg.Snapshot()
+	slot, ok := cfg.Models[config.SelectedModelTypeSmart]
+	if c.workerSubAgentActiveForCall(ctx, cfg) {
+		if workerSlot, workerOK := cfg.Models[config.SelectedModelTypeWorker]; workerOK {
+			slot, ok = workerSlot, workerOK
+		}
+	}
+	if !ok || slot.Model == "" {
+		return model, false
+	}
+	if slot.Provider == model.ModelCfg.Provider && slot.Model == model.ModelCfg.Model && slot.ReasoningEffort == model.ModelCfg.ReasoningEffort {
+		return model, false
+	}
+	rebuilt, _, err := c.buildModelsFromCfg(ctx, cfg, slot, slot, true)
+	if err != nil {
+		slog.Warn("runSubAgent: keeping the model built at the parent turn's start; the live slot rebuild failed", "err", err)
+		return model, false
+	}
+	return rebuilt, true
 }

@@ -129,7 +129,7 @@ func TestDecideDrainTurn_ForeignDriver_TransferOnly(t *testing.T) {
 	f.claimAndFinish(t, ctx, "call-1")
 	require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
-	call, err := f.coord.drainCallFor(ctx, f.sessID)
+	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	_, _ = f.sa.Run(ctx, call) // an already-admitted Drain reaching its turn start
 

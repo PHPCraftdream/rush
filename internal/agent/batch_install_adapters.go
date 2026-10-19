@@ -643,6 +643,9 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 // shutdown path (after calls joined and disposal drained): construction
 // records whose only remaining owners are their own Construction pins are
 // released, so unused toolsets never outlive the calls that built them.
+// R12-H2b §2.3: residual Continuation owners are dropped alongside —
+// durable rows are picked up by the next process against ITS OWN store,
+// so an in-process Continuation owner must not pin a binding forever.
 // Forced shutdown never calls this — the manager, its remaining owners and
 // the writer are retained until process exit; owners are never
 // bulk-decremented.
@@ -651,6 +654,7 @@ func (i *BatchInstall) DrainDiskBindings() {
 		return
 	}
 	i.DiskBindings.releaseResidualConstructions()
+	i.DiskBindings.releaseResidualContinuations()
 }
 
 // BuildRunner constructs the real Runner for a deferred install (R11F P1-6)

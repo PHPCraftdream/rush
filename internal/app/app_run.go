@@ -17,7 +17,10 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -197,6 +200,38 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		}()
 	}
 
+	// R12-H2b §2.2: persist the session execution fence UNDER exclusive
+	// admission, before the first provider-dependent model turn. A provider
+	// run that cannot durably record its requirement must not start: a later
+	// continuation rebuilding against a missing fence would silently fall
+	// back to the OS disk — the exact promotion this fence exists to prevent.
+	if setup.callBindingRelease != nil {
+		reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore)
+		if !ok {
+			return nil, fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
+		}
+		if setup.callOpts == nil || setup.callOpts.Requirement == nil {
+			return nil, fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
+		}
+		if err := reqStore.StoreSessionExecutionRequirement(ctx, sess.ID, *setup.callOpts.Requirement); err != nil {
+			return nil, fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+		}
+	} else if tools.IsOSDisk(overrides.DiskProvider) {
+		// An explicit canonical OS provider is a deliberate operator
+		// choice (sdk.OSDiskProvider()), never a silent fallback: it
+		// starts a NEW execution epoch for the session. Supersede the
+		// stored fence here, under the same exclusive admission, so
+		// later ordinary/unmarked continuations follow the new epoch
+		// instead of failing closed on a dead binding. A run with NO
+		// explicit provider on a fenced session still lands in NEITHER
+		// branch and keeps the existing fail-closed guard.
+		if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sess.ID); err != nil {
+				return nil, fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+			}
+		}
+	}
+
 	// R3-3: mutCtx governs every pre-handoff session mutation below. On
 	// the reserved path it is reservedHold, the context ReserveExclusive
 	// derives via context.WithCancel and wires into the mailbox as the
@@ -268,10 +303,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// Persist reasoning effort onto the active slot. We pass the current
 	// stored value for the *other* slot through so we don't clobber it —
 	// UpdateReasoningEffort takes both fields as a single transaction.
+	// A worker/reviewer role run persists NOTHING: the role model itself is
+	// not persisted (plan D2) and the explicit effort rides the role-slot
+	// resolution for this invocation only (plan R6).
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if overrides.ReasoningEffort != "" && !req.mutationFree() {
+	rolePersistable := overrides.ModelRole != config.SelectedModelTypeWorker &&
+		overrides.ModelRole != config.SelectedModelTypeReviewer
+	if overrides.ReasoningEffort != "" && rolePersistable && !req.mutationFree() {
 		smart := sess.SmartModelReasoningEffort
 		fast := sess.FastModelReasoningEffort
 		if overrides.RoleSmart {

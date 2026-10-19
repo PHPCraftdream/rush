@@ -228,7 +228,10 @@ type Coordinator interface {
 	ResetAutoResumeCounter(sessionID string)
 	// RebuildSessionAgentCall reconstructs a full SessionAgentCall from SessionAgentCallData
 	// for run queue pump execution (task #340, ROUND 3 migration).
-	RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (SessionAgentCall, error)
+	// rowID is the leased run-queue entry's durable id (R12-H2b §2.4):
+	// the rebuild releases the row-keyed Continuation holder through it.
+	// Callers without a row id pass "".
+	RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (SessionAgentCall, error)
 	// RunSessionAgentCall executes a SessionAgentCall directly for run queue pump execution
 	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 	// call is already fully reconstructed with all necessary data.
@@ -291,6 +294,16 @@ type coordinator struct {
 	// session-driver-marker store (flag-ON: session.HostStore); nil keeps
 	// the legacy path. See batch_cutover_driver.go.
 	batchDriverClaimer BatchDriverClaimer
+
+	// diskCaps is the App-owned capability manager bound at batch install
+	// (disk_provider_capability.go); nil on flag-off Apps and bare
+	// fixtures. PrepareContinuation resolves continuation bindings ONLY
+	// through it.
+	diskCaps *DiskProviderRegistry
+	// execReqs is the durable session-execution-fence store (R12-H2b);
+	// nil means no fence can exist (bare fixtures), which reads as "no
+	// requirement" in PrepareContinuation.
+	execReqs session.SessionExecutionRequirementStore
 
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
