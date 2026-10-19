@@ -22,7 +22,6 @@ package agent
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
