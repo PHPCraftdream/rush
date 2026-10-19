@@ -34,14 +34,27 @@ func TestHandleRerunMessage_FlagONRependsSessionNotices(t *testing.T) {
 		t.Helper()
 		now := time.Now().Unix()
 		var id int64
+		attempts, reacted := 0, 0
+		if kind == session.NoticeKindBGShellDone {
+			attempts, reacted = 2, 1
+		}
 		require.NoError(t, f.a.DB().QueryRowContext(ctx,
-			`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, notice_message_id, created_at, updated_at)
-VALUES (?, ?, ?, 1, 'done', NULL, ?, ?, ?) RETURNING id`,
-			f.sessionID, kind, text, f.tail.ID, now, now).Scan(&id))
+			`INSERT INTO session_notices (owner, kind, text, wake, delivery, wake_attempts, reacted, job_tool_call_id, notice_message_id, created_at, updated_at)
+VALUES (?, ?, ?, 1, 'done', ?, ?, NULL, ?, ?, ?) RETURNING id`,
+			f.sessionID, kind, text, attempts, reacted, f.tail.ID, now, now).Scan(&id))
 		return id
 	}
 	bgID := seedDelivered(session.NoticeKindBGShellDone, "bg shell finished")
 	wfID := seedDelivered(session.NoticeKindWakeFailed, "wake failed in the deleted branch")
+
+	// Establish a non-default baseline so the re-pend reset assertion has a
+	// literal, independent oracle before the handler runs.
+	var baselineAttempts, baselineReacted int64
+	require.NoError(t, f.a.DB().QueryRowContext(ctx,
+		`SELECT wake_attempts, reacted FROM session_notices WHERE id = ?`, bgID).
+		Scan(&baselineAttempts, &baselineReacted))
+	require.EqualValues(t, 2, baselineAttempts)
+	require.EqualValues(t, 1, baselineReacted)
 
 	// The flag is read live at handler time; the app itself was built
 	// flag-off so this test stays independent of the runtime install.

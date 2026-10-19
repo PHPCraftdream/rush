@@ -382,13 +382,13 @@ func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 	}
 	restore := processBatchBinding.Swap(bind)
 	defer processBatchBinding.Store(restore)
-	batchLeafKindOverride = func(tool string) (string, bool) {
+	setBatchLeafKindOverride(func(tool string) (string, bool) {
 		if strings.HasPrefix(tool, "mcp_") {
 			return batchKindMCP, true
 		}
 		return "", false
-	}
-	defer func() { batchLeafKindOverride = nil }()
+	})
+	defer setBatchLeafKindOverride(nil)
 
 	if got := batchLeafKind("mcp_files__read"); got != batchKindMCP {
 		t.Fatalf("mcp kind %q", got)
