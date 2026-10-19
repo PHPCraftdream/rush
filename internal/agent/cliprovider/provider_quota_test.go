@@ -3,7 +3,9 @@ package cliprovider
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,7 +84,97 @@ func TestSyntheticGenericCLIQuotaExit(t *testing.T) {
 	}
 }
 
-// Revert-check: removing exitDiagnostics.add's JSON exclusion or size cap must fail; synthetic diagnostics only.
+func TestSyntheticLateQuotaEvidence(t *testing.T) {
+	shell, err := resolveBinary("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, lines string
+		quota       bool
+		want        string
+	}{
+		{"late quota", strings.Repeat("x", 8191) + "\nquota exceeded", true, "quota exceeded"},
+		{"late transient veto", "quota exceeded\n" + strings.Repeat("x", 8191) + "\nHTTP 429 per minute", false, ""},
+		{"late reset", "quota exceeded\n" + strings.Repeat("x", 8191) + "\nYour limit will reset at 2026-06-17T14:49:28+08:00", true, "2026-06-17T14:49:28+08:00"},
+		{"json after noise", strings.Repeat("x", 8191) + "\n{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"quota exceeded\"}", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The multi-KB payload goes through a file, not the bash -c argv.
+			// The former argv form failed once on windows CI (late quota
+			// case: bash exit status 2 after one merged output line; the
+			// line was not retained, so the argv hypothesis is unproven).
+			// A failed cat keeps its own exit status so a missing payload
+			// cannot pass a negative case.
+			payload := filepath.Join(t.TempDir(), "output.txt")
+			if err := os.WriteFile(payload, []byte(tc.lines+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			quoted := "'" + strings.ReplaceAll(filepath.ToSlash(payload), "'", `'\''`) + "'"
+			m := &cliModel{workingDir: t.TempDir(), spec: CLISpec{Binary: shell, NoPTY: true, AlwaysStdin: true, BuildArgs: func(bool) []string { return []string{"-c", "cat " + quoted + ` || exit "$?"; exit 1`} }, NewPartParser: geminiPartParser}}
+			stream, err := m.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("synthetic test")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got error
+			for part := range stream {
+				if part.Type == fantasy.StreamPartTypeError {
+					got = part.Error
+				}
+			}
+			var exit *exec.ExitError
+			if got == nil || !errors.As(got, &exit) {
+				t.Fatalf("lost original exit cause: %v", got)
+			}
+			if exit.ExitCode() != 1 {
+				t.Fatalf("exit code=%d want 1 (payload not delivered?): %v", exit.ExitCode(), got)
+			}
+			var pe *fantasy.ProviderError
+			mapped := errors.As(got, &pe)
+			if mapped != tc.quota {
+				t.Fatalf("quota mapping=%v want %v: %v", mapped, tc.quota, got)
+			}
+			if mapped && pe.StatusCode != 429 {
+				t.Fatalf("provider status=%d want 429", pe.StatusCode)
+			}
+			if tc.want != "" && !strings.Contains(pe.Message, tc.want) {
+				t.Fatalf("provider message lacks %q: %q", tc.want, pe.Message)
+			}
+		})
+	}
+}
+
+// Revert-check: dropping the merged-output branch in Stream's exit error makes this fail; a NoPTY failure has no separate stderr, so the bounded output line is the only explanation of the exit.
+func TestSyntheticMergedOutputReachesExitError(t *testing.T) {
+	shell, err := resolveBinary("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &cliModel{workingDir: t.TempDir(), spec: CLISpec{Binary: shell, NoPTY: true, AlwaysStdin: true, BuildArgs: func(bool) []string { return []string{"-c", "echo synthetic-shell-failure; exit 2"} }, NewPartParser: geminiPartParser}}
+	stream, err := m.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("synthetic test")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got error
+	for part := range stream {
+		if part.Type == fantasy.StreamPartTypeError {
+			got = part.Error
+		}
+	}
+	var exit *exec.ExitError
+	if got == nil || !errors.As(got, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("lost original exit cause (want exit code 2): %v", got)
+	}
+	if !strings.Contains(got.Error(), "synthetic-shell-failure") {
+		t.Fatalf("merged output lost from the exit error: %v", got)
+	}
+	var pe *fantasy.ProviderError
+	if errors.As(got, &pe) {
+		t.Fatalf("ordinary failure mapped to a provider error: %v", got)
+	}
+}
+
 func TestSyntheticExitDiagnostics(t *testing.T) {
 	var d exitDiagnostics
 	d.add([]byte(`{"content":"quota"}`))
@@ -97,8 +189,14 @@ func TestSyntheticExitDiagnostics(t *testing.T) {
 	if len(d.text) > maxExitDiagnostics {
 		t.Fatal("unbounded diagnostics")
 	}
-	d.add([]byte("more quota"))
+	d.add([]byte("ordinary tail"))
 	if len(d.text) > maxExitDiagnostics {
-		t.Fatal("unbounded append")
+		t.Fatal("ordinary diagnostics exceeded bound")
+	}
+	for i := 0; i < 4; i++ {
+		d.add([]byte("Usage limit reached. Your limit will reset at 2026-06-17T14:49:28+08:00 " + strings.Repeat("x", maxExitDiagnostics)))
+	}
+	if len(d.text) > maxExitDiagnostics || len(d.evidence) > maxExitDiagnostics || len(d.resetText) > maxExitDiagnostics || !d.hard {
+		t.Fatal("diagnostic evidence exceeded bound or lost hard classification")
 	}
 }

@@ -17,7 +17,6 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -198,38 +197,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 				app.AgentCoordinator.ReleaseExclusive(sess.ID, reservedEpoch, reservedCancel)
 			}
 		}()
-	}
-
-	// R12-H2b §2.2: persist the session execution fence UNDER exclusive
-	// admission, before the first provider-dependent model turn. A provider
-	// run that cannot durably record its requirement must not start: a later
-	// continuation rebuilding against a missing fence would silently fall
-	// back to the OS disk — the exact promotion this fence exists to prevent.
-	if setup.callBindingRelease != nil {
-		reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore)
-		if !ok {
-			return nil, fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
-		}
-		if setup.callOpts == nil || setup.callOpts.Requirement == nil {
-			return nil, fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
-		}
-		if err := reqStore.StoreSessionExecutionRequirement(ctx, sess.ID, *setup.callOpts.Requirement); err != nil {
-			return nil, fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-		}
-	} else if tools.IsOSDisk(overrides.DiskProvider) {
-		// An explicit canonical OS provider is a deliberate operator
-		// choice (sdk.OSDiskProvider()), never a silent fallback: it
-		// starts a NEW execution epoch for the session. Supersede the
-		// stored fence here, under the same exclusive admission, so
-		// later ordinary/unmarked continuations follow the new epoch
-		// instead of failing closed on a dead binding. A run with NO
-		// explicit provider on a fenced session still lands in NEITHER
-		// branch and keeps the existing fail-closed guard.
-		if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
-			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sess.ID); err != nil {
-				return nil, fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-			}
-		}
 	}
 
 	// R3-3: mutCtx governs every pre-handoff session mutation below. On
@@ -420,7 +387,18 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// is setup-free, as before.
 	if !req.mutationFree() {
 		sessID := sess.ID
+		providerIntent := setup.providerIntent
+		customFenceEnabled := setup.callBindingRelease != nil
+		var requirement *session.SessionExecutionRequirement
+		if setup.callOpts != nil && setup.callOpts.Requirement != nil {
+			requirementCopy := *setup.callOpts.Requirement
+			requirement = &requirementCopy
+		}
+		ctx = agent.WithExecutionProviderIntent(ctx, sessID, agent.ExecutionProviderIntent(providerIntent))
 		ctx = agent.WithAdmissionSetup(ctx, func(actx context.Context) error {
+			if err := persistSessionExecutionIntent(actx, app, sessID, providerIntent, requirement, customFenceEnabled); err != nil {
+				return err
+			}
 			app.prepareAdmittedRun(actx, sessID, overrides)
 			return nil
 		})

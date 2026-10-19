@@ -45,9 +45,14 @@ func (c countingReadDBTX) QueryRowContext(ctx context.Context, query string, arg
 // driven-between-turns session is between_turns, not running, and a
 // delegating session's HasLiveOwnWork would flip.
 func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
+	if batchRuntimeEnabled() {
+		testHandleListSessionsLiveWorkAnnotationBatchOn(t)
+		return
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	ctx := t.Context()
 	dataDir := a.Config().Options.DataDirectory
 
 	store := a.AsyncJobStore()
@@ -116,7 +121,9 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	store.WrapReadQueriesForTest(func(d db.DBTX) db.DBTX { return countingReadDBTX{DBTX: d, n: &queries} })
 
 	hub := newHub()
-	go hub.Run(ctx)
+	hubDone := make(chan struct{})
+	go func() { defer close(hubDone); hub.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
 	client.send = make(chan []byte, 512)
 	hub.register <- client

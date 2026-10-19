@@ -35,6 +35,12 @@ func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *se
 	ledger.store = store
 	ledger.coord = coord
 	coord.asyncJobs = ledger
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
+	t.Cleanup(func() {
+		coord.waitRecheckWakes()
+		coord.releaseWG.Wait()
+		coord.waitRecheckWakes()
+	})
 	return coord, ledger, store, func(context.Context) fakeEnv { return env }
 }
 
@@ -62,23 +68,7 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 	require.NoError(t, err)
 
-	// item 8 fix: isDurableDelegationChild no longer trusts ParentSessionID
-	// alone -- it confirms a real delegation job named this session as its
-	// ChildSessionID. Claim + transition it to terminal so
-	// hasRunningDelegationFor reports false (exactly like a released or
-	// long-finished delegation) while the durable async_jobs row backing
-	// the identity check still exists.
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: parent.ID, ToolCallID: "agent-call-1", Kind: session.JobKindAgent,
-		Input: "x", ChildSessionID: child.ID, ToolName: "agent",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "agent-call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: parent.ID, ToolCallID: "agent-call-1", State: "completed",
-		ResultSummary: "done", Wake: true,
-	})
-	require.NoError(t, err)
+	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
 
 	allowed, err := policyAllowed(coord, ctx, child.ID)
 	require.NoError(t, err)
@@ -111,17 +101,7 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 			})
 			require.NoError(t, err)
 
-			_, err = store.Claim(ctx, session.ClaimParams{
-				Owner: parent.ID, ToolCallID: "call-1", Kind: kind,
-				Input: "x", ChildSessionID: child.ID, ToolName: string(kind),
-			})
-			require.NoError(t, err)
-			require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "call-1"))
-			_, err = store.Transition(ctx, session.TransitionParams{
-				Owner: parent.ID, ToolCallID: "call-1", State: "completed",
-				ResultSummary: "done", Wake: true,
-			})
-			require.NoError(t, err)
+			seedFixtureDelegation(t, env.conn, store, parent.ID, "call-1", child.ID, kind, string(kind), "completed", false)
 
 			allowed, err := policyAllowed(coord, ctx, child.ID)
 			require.NoError(t, err)
@@ -205,35 +185,13 @@ func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *t
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child-e2e")
 	require.NoError(t, err)
 
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: parent.ID, ToolCallID: "agent-call-1", Kind: session.JobKindAgent,
-		Input: "x", ChildSessionID: child.ID, ToolName: "agent",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, parent.ID, "agent-call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: parent.ID, ToolCallID: "agent-call-1", State: "completed",
-		ResultSummary: "done", Wake: true,
-	})
-	require.NoError(t, err)
-
-	// The child's OWN debt (e.g. a stray notice/timeout that fired after its
-	// delegation released) -- exactly what would otherwise force a Drain
-	// turn if the policy refusal did not short-circuit first. No driver is
-	// registered for child.ID at all (releaseDriverIfScopeClosed's real
-	// post-release state), so agentFor(child.ID) would return
-	// c.currentAgent if wakeSession ever reached that far.
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: child.ID, ToolCallID: "call-x", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, child.ID, "call-x"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: child.ID, ToolCallID: "call-x", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
+	// Store-only seed: the pre-round-1 state was a direct-store claim with
+	// NOTHING in this process's in-memory workLedger. drainPolicy refuses
+	// before any in-memory use, and drainDecision reads store debt, so the
+	// child's own debt stays visible either way -- the store-only variant is
+	// the exact original state.
+	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-x", true)
 
 	err = coord.wakeSession(ctx, child.ID, true)
 	require.NoError(t, err, "a policy-refused Drain is a silent no-op, never an error")
@@ -279,10 +237,12 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 	child, err := env.sessions.Create(ctx, "child-cross-process")
 	require.NoError(t, err)
 
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: child.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	if batchFlagEnabled() {
+		seedBatchDelegation(t, env.conn, child.ID, "call-1", "", "command", "running", false)
+	} else {
+		_, err = store.Claim(ctx, session.ClaimParams{Owner: child.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
+		require.NoError(t, err)
+	}
 
 	require.False(t, ledger.childScopeDrained(child.ID),
 		"a running row on a live host must keep the child's scope open even with nothing in this process's own memory")
@@ -321,17 +281,7 @@ func TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained(t *testing.T)
 	child, err := env.sessions.Create(ctx, "child-debt")
 	require.NoError(t, err)
 
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: child.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.MarkAnnounced(ctx, child.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: child.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	_, err = store.PullJobNotices(ctx, env.messages, child.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-1", true)
 
 	require.False(t, ledger.childScopeDrained(child.ID),
 		"a pulled-but-unreacted notice is still outstanding reaction debt -- ScopeOpen must report the child's scope as still open")

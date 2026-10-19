@@ -110,6 +110,14 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f.ledger.store = f.store
 	f.ledger.coord = f.coord
 	f.coord.asyncJobs = f.ledger
+	f.coord.sessions, f.coord.messages = f.env.sessions, f.env.messages
+	f.coord.permissions = f.env.permissions
+	bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
+	t.Cleanup(func() {
+		f.coord.waitRecheckWakes()
+		f.waitReleases()
+		f.coord.waitRecheckWakes()
+	})
 	if o.oauthProvider != "" {
 		f.withOAuthProvider(o.oauthProvider)
 	}
@@ -188,25 +196,12 @@ func (f *attemptFixture) seedDebt(ctx context.Context, toolCallID string, pulled
 // seedDebtFor is seedDebt for an arbitrary session id (a delegated child).
 func (f *attemptFixture) seedDebtFor(ctx context.Context, sessionID, toolCallID string, pulled bool) {
 	f.t.Helper()
-	_, existing, err := f.ledger.Start(sessionID, toolCallID, toolCallID, "bash", "", false, false, nil, func() {})
-	require.NoError(f.t, err)
-	require.False(f.t, existing)
-	require.NoError(f.t, f.store.MarkAnnounced(ctx, sessionID, toolCallID))
-	_, err = f.store.Transition(ctx, session.TransitionParams{
-		Owner: sessionID, ToolCallID: toolCallID, State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(f.t, err)
-	if pulled {
-		_, err = f.store.PullJobNotices(ctx, f.env.messages, sessionID, buildJobNoticeMessageParams)
-		require.NoError(f.t, err)
-	}
+	seedFixtureJobDebt(f.t, f.env.conn, f.store, f.ledger, f.env.messages, sessionID, toolCallID, pulled)
 }
 
 func (f *attemptFixture) row(ctx context.Context, toolCallID string) db.AsyncJob {
 	f.t.Helper()
-	row, err := f.store.Get(ctx, f.sessID, toolCallID)
-	require.NoError(f.t, err)
-	return row
+	return readFixtureJobDebt(f.t, f.env.conn, f.store, f.sessID, toolCallID)
 }
 
 // markers counts the wake_failed markers written for the session.
@@ -232,6 +227,10 @@ func (f *attemptFixture) exec(ctx context.Context, stmt string) {
 // blockReactions makes every real reaction write (reacted=1, reacted_failed=0)
 // abort; a settle-by-failure (reacted_failed=1) still goes through.
 func (f *attemptFixture) blockReactions(ctx context.Context) {
+	if batchFlagEnabled() {
+		failFixtureReaction(f.t, f.env.conn)
+		return
+	}
 	f.exec(ctx, `CREATE TRIGGER fx_block_reaction BEFORE UPDATE OF reacted ON async_jobs
 		WHEN NEW.reacted = 1 AND NEW.reacted_failed = 0
 		BEGIN SELECT RAISE(ABORT, 'fx: reaction blocked'); END`)
@@ -239,6 +238,10 @@ func (f *attemptFixture) blockReactions(ctx context.Context) {
 
 // blockSettles additionally makes the settle-by-failure write abort.
 func (f *attemptFixture) blockReactionsAndSettles(ctx context.Context) {
+	if batchFlagEnabled() {
+		failFixtureSettle(f.t, f.env.conn)
+		return
+	}
 	f.exec(ctx, `CREATE TRIGGER fx_block_reaction BEFORE UPDATE OF reacted ON async_jobs
 		WHEN NEW.reacted = 1
 		BEGIN SELECT RAISE(ABORT, 'fx: reaction and settle blocked'); END`)

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -112,31 +114,169 @@ func TestDrainCallFor_RootCallCarriesFreshCredentials(t *testing.T) {
 	require.Equal(t, "Bearer new-key", f.authHeader.Load(), "the call carries a client built after the refresh")
 }
 
-// A delegated child's Drain call uses its driver's FROZEN model template: its
-// client is rebuilt on the current credentials (an expired token refreshed
-// first), same model, so the wire carries "Bearer new-key".
-//
-// Revert-check: dropping freshenDrainClient from drainCallFor leaves the
-// template's stale client in the call ("Bearer old-key") and this test goes red.
+// TestDrainCallFor_ChildTemplateClientCarriesFreshCredentials verifies the
+// automatic child-turn slot refresh and preservation of the frozen active call.
 func TestDrainCallFor_ChildTemplateClientCarriesFreshCredentials(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "drain-call-child", attemptFixtureOpts{noIdle: true, oauthProvider: oauthTestProvider})
 	refreshes := f.countRefreshes(nil)
 	f.seedDebt(ctx, "call-1", false)
-	frozen, err := f.coord.resolveSessionModels(ctx, f.sessID) // the template's client, old credentials
+	frozen, err := f.coord.resolveSessionModels(ctx, f.sessID)
 	require.NoError(t, err)
 	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
 		agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
 	})
-
-	call, _, err := f.coord.drainCallFor(ctx, f.sessID)
+	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
+	if prep != nil {
+		prep.release()
+	}
 	_, err = f.sa.Run(ctx, call)
 	require.NoError(t, err)
-
 	require.EqualValues(t, 1, refreshes.Load())
-	require.Equal(t, "probe", call.SmartModel.ModelCfg.Model, "same model, new client")
-	require.Equal(t, "Bearer new-key", f.authHeader.Load(), "the child's frozen client is replaced")
+	require.Equal(t, "probe", call.SmartModel.ModelCfg.Model)
+	require.Equal(t, "Bearer new-key", f.authHeader.Load())
+}
+
+// TestDrainCallFor_ChildSlotRefreshUsesLiveModelPreservesTemplate proves a
+// new automatic turn uses the live Worker slot while the registered template
+// (and thus the original active call) stays pinned to W1.
+func TestDrainCallFor_ChildSlotRefreshUsesLiveModelPreservesTemplate(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "drain-slot-refresh", attemptFixtureOpts{noIdle: true, oauthProvider: oauthTestProvider})
+	pc, ok := f.coord.cfg.Config().Providers.Get(oauthTestProvider)
+	require.True(t, ok)
+	provider := oauthTestProvider
+	pc.OAuthToken = nil
+	pc.APIKeyTemplate = ""
+	pc.APIKey = "test-key"
+	pc.Models = append(pc.Models, catwalk.Model{ID: "worker-1", Name: "Worker 1", DefaultMaxTokens: 333}, catwalk.Model{ID: "worker-2", Name: "Worker 2", DefaultMaxTokens: 777})
+	f.coord.cfg.SetProviderRuntimeConfig(provider, pc)
+	tempOld, tempNew := 0.1, 0.4
+	topPOld, topPNew := 0.2, 0.7
+	topKOld, topKNew := int64(3), int64(12)
+	f.coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: provider, Model: "worker-2", Temperature: &tempNew, TopP: &topPNew, TopK: &topKNew, MaxTokens: 777}
+	frozen := Model{Model: f.model.Model, CatwalkCfg: catwalk.Model{DefaultMaxTokens: 333}, ModelCfg: config.SelectedModel{Provider: provider, Model: "worker-1", Temperature: &tempOld, TopP: &topPOld, TopK: &topKOld, MaxTokens: 333}}
+	driver := subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 333, Temperature: frozen.ModelCfg.Temperature, TopP: frozen.ModelCfg.TopP, TopK: frozen.ModelCfg.TopK}, slotRole: config.SelectedModelTypeWorker}
+	f.coord.subAgentDrivers.register(f.sessID, driver)
+	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
+	require.NoError(t, err)
+	if prep != nil {
+		prep.release()
+	}
+	require.Equal(t, "worker-2", call.SmartModel.ModelCfg.Model)
+	require.EqualValues(t, 777, call.MaxOutputTokens)
+	require.Equal(t, 0.4, *call.Temperature)
+	require.Equal(t, 0.7, *call.TopP)
+	require.Equal(t, int64(12), *call.TopK)
+	require.Equal(t, "worker-1", driver.callFor("").SmartModel.ModelCfg.Model)
+	require.Equal(t, "worker-1", frozen.ModelCfg.Model)
+}
+
+// An explicit pin without slot provenance is frozen across automatic drains.
+// The template carries its OWN literals and the live Worker slot is moved to a
+// different model with different literals: slotRole "" must keep every one of
+// them untouched.
+func TestDrainCallFor_ExplicitChildPinStaysFrozen(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "drain-explicit-pin", attemptFixtureOpts{noIdle: true, oauthProvider: oauthTestProvider})
+	temp := 0.2
+	topP := 0.3
+	topK := int64(9)
+	frozen := Model{Model: f.model.Model, CatwalkCfg: catwalk.Model{DefaultMaxTokens: 333}, ModelCfg: config.SelectedModel{Provider: oauthTestProvider, Model: "worker-1", MaxTokens: 333}}
+	// The live Worker slot moves to worker-2 with literals that differ from
+	// the template's on every axis; an (incorrect) slot refresh would show up
+	// as any of them changing.
+	liveTemp, liveTopP, liveTopK := 0.9, 0.8, int64(77)
+	f.coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: oauthTestProvider, Model: "worker-2", Temperature: &liveTemp, TopP: &liveTopP, TopK: &liveTopK, MaxTokens: 777}
+	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 111, Temperature: &temp, TopP: &topP, TopK: &topK}, slotRole: ""})
+	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
+	require.NoError(t, err)
+	if prep != nil {
+		prep.release()
+	}
+	require.Equal(t, "worker-1", call.SmartModel.ModelCfg.Model)
+	require.EqualValues(t, 111, call.MaxOutputTokens)
+	require.Equal(t, 0.2, *call.Temperature)
+	require.Equal(t, 0.3, *call.TopP)
+	require.Equal(t, int64(9), *call.TopK)
+	require.Equal(t, "worker-1", frozen.ModelCfg.Model)
+}
+
+// TestDrainCallFor_RealDispatchDriverWakesOnLiveWorkerSlot is the automatic
+// wake end-to-end: a REAL runSubAgent dispatch (slotModel: true, like the
+// agent tool's buildAgent cascade) registers the child's driver with the
+// production slot provenance (coordinator_subagents.go: driverSlotRole :=
+// dispatchSlotRole, dispatchSlotRole = SelectedModelTypeWorker when the call's
+// role is smart and the worker slot is configured). Moving the live Worker
+// slot afterwards must be picked up by the child's NEXT drainCallFor wake,
+// while the registered template stays pinned to the model the delegation
+// actually started with.
+func TestDrainCallFor_RealDispatchDriverWakesOnLiveWorkerSlot(t *testing.T) {
+	hbIsolateEnv(t)
+	env := testEnv(t)
+	prov := "role-prov"
+	coord := newTestCoordinator(t, env, prov, config.ProviderConfig{
+		ID:   prov,
+		Type: "openai",
+		Models: []catwalk.Model{
+			{ID: "w1", Name: "W1", DefaultMaxTokens: 4096},
+			{ID: "w2", Name: "W2", DefaultMaxTokens: 4096},
+		},
+	})
+	// newTestCoordinator leaves the driver registry nil (register is then a
+	// no-op); this test needs the real registration to be recorded.
+	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	tempStart, topPStart := 0.1, 0.2
+	topKStart := int64(3)
+	coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "w1", Temperature: &tempStart, TopP: &topPStart, TopK: &topKStart, MaxTokens: 4096}
+
+	parent, err := env.sessions.Create(t.Context(), "real-dispatch-wake")
+	require.NoError(t, err)
+
+	agent := newMockAgent(prov, 4096, func(_ context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
+		return agentResultWithText("dispatched"), nil
+	})
+	// The mock's model represents the slot build at the parent turn's start.
+	agent.model = Model{ModelCfg: config.SelectedModel{Provider: prov, Model: "w1"}}
+
+	var childID string
+	ctx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeSmart})
+	resp, err := coord.runSubAgent(ctx, subAgentParams{
+		Agent: agent, SessionID: parent.ID, AgentMessageID: "msg-1", ToolCallID: "call-1",
+		Prompt: "go", SessionTitle: "Real dispatch wake", slotModel: true,
+		SessionSetup: func(sessionID string) { childID = sessionID },
+	})
+	require.NoError(t, err)
+	require.False(t, resp.IsError)
+	require.NotEmpty(t, childID)
+
+	// The driver the production dispatch registered carries slot provenance.
+	driver, ok := coord.subAgentDrivers.get(childID)
+	require.True(t, ok, "runSubAgent registered the child's driver")
+	require.Equal(t, config.SelectedModelTypeWorker, driver.slotRole)
+
+	// The operator swaps the worker slot (with new literals); the child's next
+	// automatic turn must wake on the live slot, not the frozen template.
+	tempNew, topPNew := 0.4, 0.7
+	topKNew := int64(12)
+	coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "w2", Temperature: &tempNew, TopP: &topPNew, TopK: &topKNew, MaxTokens: 555}
+
+	call, prep, err := coord.drainCallFor(t.Context(), childID)
+	require.NoError(t, err)
+	if prep != nil {
+		prep.release()
+	}
+	require.NotNil(t, call.SmartModel)
+	require.Equal(t, "w2", call.SmartModel.ModelCfg.Model)
+	require.EqualValues(t, 555, call.MaxOutputTokens)
+	require.Equal(t, 0.4, *call.Temperature)
+	require.Equal(t, 0.7, *call.TopP)
+	require.Equal(t, int64(12), *call.TopK)
+
+	// The registered template itself stays frozen on w1's literals.
+	require.Equal(t, "w1", driver.call.SmartModel.ModelCfg.Model)
+	require.EqualValues(t, 4096, driver.call.MaxOutputTokens)
 }
 
 // runInternal resolved the call's model BEFORE its proactive refresh: after a

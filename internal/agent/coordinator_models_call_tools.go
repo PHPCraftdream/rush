@@ -63,13 +63,9 @@ func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
 }
 
 // pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the
-// buildTools call below, before the readyWg.Wait() drain, letting a test
-// register a task on c.readyWg — simulating a concurrent agent build (or
-// this call's own async sub-agent build) failing — at exactly the window
-// this call's OWN Wait() is about to observe, deterministically and on this
-// same goroutine, without a real race. Mirrors runTurnToolsSnapshotSeam's
-// pattern (agent_turn.go). nil (a no-op) in every production path.
-var pinCallToolsReadyGateSeam func()
+// buildTools call below, before the local gate's Wait drain, allowing a test
+// to inject a failing task on this call's gate deterministically without a race.
+var pinCallToolsReadyGateSeam func(*readyGate)
 
 // pinCallTools builds the per-call coder toolset (R3-1) from the caller's
 // already-pinned cfg snapshot and THIS call's context, then drains any
@@ -125,23 +121,24 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]f
 	if !ok {
 		return fail(errCoderAgentNotConfigured)
 	}
+	buildGate := &readyGate{}
+	ctx = withReadyGate(ctx, buildGate)
 	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
 	if err != nil {
+		_ = buildGate.Wait()
 		return fail(err)
 	}
 	if pinCallToolsReadyGateSeam != nil {
-		pinCallToolsReadyGateSeam()
+		pinCallToolsReadyGateSeam(buildGate)
 	}
 	if required && len(tools) == 0 {
+		_ = buildGate.Wait()
 		return fail(errors.New("per-call toolset is empty"))
 	}
 	// The toolset embeds a freshly built sub-agent (buildTools -> agentTool
-	// -> buildAgent), whose prompt/tool builds run asynchronously on the
-	// ready gate. Drain the gate before returning so the turn cannot
-	// dispatch a still-under-construction sub-agent — the same ordering the
-	// removed per-run UpdateModels publisher used to get from the run entry
-	// points' readyWg.Wait.
-	if waitErr := c.readyWg.Wait(); waitErr != nil {
+	// -> buildAgent), whose prompt/tool builds run asynchronously. Drain the
+	// local build group before the turn uses this per-call toolset.
+	if waitErr := buildGate.Wait(); waitErr != nil {
 		return fail(waitErr)
 	}
 	return tools, nil

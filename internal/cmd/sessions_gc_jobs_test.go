@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -197,8 +198,15 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 
-	require.Equal(t, 0, countAsyncJobRows(t, verifyConn, sess.ID, "old-terminal"),
-		"an old, delivered terminal job must be purged")
+	if config.BatchRuntimeEnabled() {
+		require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-terminal"), "batch mode retains legacy rows")
+		require.Equal(t, 1, countNoticeRows(t, verifyConn, oldNoticeID), "batch mode retains legacy notices")
+	} else {
+		require.Equal(t, 0, countAsyncJobRows(t, verifyConn, sess.ID, "old-terminal"),
+			"an old, delivered terminal job must be purged")
+		require.Equal(t, 0, countNoticeRows(t, verifyConn, oldNoticeID),
+			"an old, delivered notice must be purged (the async_jobs twin)")
+	}
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "recent-terminal"),
 		"a terminal job still within the retention window must survive")
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-debt"),
@@ -207,8 +215,6 @@ func TestSessionsGcCmdRun_JobsOlderThan_PurgesTerminalOnly(t *testing.T) {
 		"a running job must never be purged regardless of age")
 	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "old-running-unknown-host"),
 		"a running job on an unknown-liveness host must never be purged")
-	require.Equal(t, 0, countNoticeRows(t, verifyConn, oldNoticeID),
-		"an old, delivered notice must be purged (the async_jobs twin)")
 	require.Equal(t, 1, countNoticeRows(t, verifyConn, recentNoticeID),
 		"a recent notice must survive")
 	require.Equal(t, 1, countNoticeRows(t, verifyConn, oldDebtNoticeID),
@@ -250,14 +256,22 @@ func TestSessionsGcCmdRun_JobsOlderThan_DryRunCountsOnly(t *testing.T) {
 	stderr := captureStderr(t, func() {
 		require.NoError(t, sessionsGcCmdRun(sessionsGcCmd, nil))
 	})
-	require.Contains(t, stderr, "would purge 1 async job row")
+	if config.BatchRuntimeEnabled() {
+		require.Empty(t, stderr)
+	} else {
+		require.Contains(t, stderr, "would purge 1 async job row")
+	}
 
 	verifyConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 
-	require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "dry-run-terminal"),
-		"--dry-run must count the purge candidate without deleting it")
+	if config.BatchRuntimeEnabled() {
+		require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "dry-run-terminal"), "batch retains legacy row")
+	} else {
+		require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "dry-run-terminal"),
+			"--dry-run must count the purge candidate without deleting it")
+	}
 }
 
 // TestSessionsGcCmdRun_JobsOlderThan_NeverPurgesUnreactedDebt is A5's CLI-
@@ -331,36 +345,53 @@ func TestSessionsGcCmdRun_JobsOlderThan_JSONPrintsCounts(t *testing.T) {
 
 	shutdownSeed()
 
-	summary := func(dryRun string) gcJobsSummary {
+	type retentionSummary struct {
+		gcJobsSummary
+		BatchNodes int64 `json:"batch_nodes"`
+	}
+	summary := func(dryRun string) retentionSummary {
 		t.Helper()
 		require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "7d"))
 		require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", dryRun))
 		require.NoError(t, sessionsGcCmd.Flags().Set("json", "true"))
 		stdout := captureStdout(t, func() { require.NoError(t, sessionsGcCmdRun(sessionsGcCmd, nil)) })
-		for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
-			var s gcJobsSummary
-			if json.Unmarshal([]byte(line), &s) == nil && s.Kind == "async_jobs" {
-				return s
-			}
-		}
-		t.Fatalf("no async_jobs summary line in --json output %q", stdout)
-		return gcJobsSummary{}
+		var result retentionSummary
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &result), stdout)
+		return result
 	}
 
 	dry := summary("true")
 	require.True(t, dry.DryRun)
-	require.EqualValues(t, 1, dry.AsyncJobs, "dry-run must report the job it would purge")
-	require.EqualValues(t, 1, dry.SessionNotices, "dry-run must report the notice it would purge")
+	if config.BatchRuntimeEnabled() {
+		require.Equal(t, "batch_retention", dry.Kind)
+		require.Zero(t, dry.AsyncJobs)
+		require.Zero(t, dry.SessionNotices)
+		require.Zero(t, dry.BatchNodes)
+	} else {
+		require.Equal(t, "async_jobs", dry.Kind)
+		require.EqualValues(t, 1, dry.AsyncJobs, "dry-run must report the job it would purge")
+		require.EqualValues(t, 1, dry.SessionNotices, "dry-run must report the notice it would purge")
+	}
 	require.Equal(t, "7d", dry.OlderThan)
-
 	purged := summary("false")
 	require.False(t, purged.DryRun)
-	require.EqualValues(t, 1, purged.AsyncJobs, "the real run must report the job it purged")
-	require.EqualValues(t, 1, purged.SessionNotices)
+	if config.BatchRuntimeEnabled() {
+		require.Equal(t, "batch_retention", purged.Kind)
+		require.Zero(t, purged.BatchNodes)
+	} else {
+		require.Equal(t, "async_jobs", purged.Kind)
+		require.EqualValues(t, 1, purged.AsyncJobs, "the real run must report the job it purged")
+		require.EqualValues(t, 1, purged.SessionNotices)
+	}
 
 	verifyConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	require.Equal(t, 0, countAsyncJobRows(t, verifyConn, sess.ID, "json-terminal"))
-	require.Equal(t, 0, countNoticeRows(t, verifyConn, noticeID))
+	if config.BatchRuntimeEnabled() {
+		require.Equal(t, 1, countAsyncJobRows(t, verifyConn, sess.ID, "json-terminal"))
+		require.Equal(t, 1, countNoticeRows(t, verifyConn, noticeID))
+	} else {
+		require.Equal(t, 0, countAsyncJobRows(t, verifyConn, sess.ID, "json-terminal"))
+		require.Equal(t, 0, countNoticeRows(t, verifyConn, noticeID))
+	}
 }

@@ -48,6 +48,10 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
+	spec, err = stampBatchCallCredentials(ctx, spec)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	hash := batchInvocationHash(spec)
 
 	// Singleflight covers only IN-FLIGHT executions: finishCall removes the

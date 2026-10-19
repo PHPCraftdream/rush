@@ -43,11 +43,19 @@ func TestHandleRerunMessage_OwnSessionStillReruns(t *testing.T) {
 
 	var truncateCalls int
 	prev := rerunTruncate
-	rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
-		truncateCalls++
-		return session.RerunTruncation{}, nil
+	prevReconcile := batchRerunReconcile
+	t.Cleanup(func() { rerunTruncate = prev; batchRerunReconcile = prevReconcile })
+	if batchRuntimeEnabled() {
+		batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
+			truncateCalls++
+			return session.BatchRerunTruncation{}, nil
+		}
+	} else {
+		rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+			truncateCalls++
+			return session.RerunTruncation{}, nil
+		}
 	}
-	t.Cleanup(func() { rerunTruncate = prev })
 
 	env := f.run(t)
 
@@ -258,11 +266,19 @@ func TestWS1_LegacyRowsAreOwnedByGitCheckoutServer(t *testing.T) {
 
 		var truncateCalls int
 		prev := rerunTruncate
-		rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
-			truncateCalls++
-			return session.RerunTruncation{}, nil
+		prevReconcile := batchRerunReconcile
+		t.Cleanup(func() { rerunTruncate = prev; batchRerunReconcile = prevReconcile })
+		if batchRuntimeEnabled() {
+			batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
+				truncateCalls++
+				return session.BatchRerunTruncation{}, nil
+			}
+		} else {
+			rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+				truncateCalls++
+				return session.RerunTruncation{}, nil
+			}
 		}
-		t.Cleanup(func() { rerunTruncate = prev })
 
 		env := f.run(t)
 		require.Equal(t, EventResponse, env.Type,

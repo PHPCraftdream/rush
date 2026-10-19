@@ -17,10 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const blockPullTrigger = `CREATE TRIGGER fx_block_pull BEFORE UPDATE OF delivery ON async_jobs
-	WHEN NEW.delivery = 'done'
-	BEGIN SELECT RAISE(ABORT, 'fx: pull blocked'); END`
-
 // markerTexts is the text of every wake_failed marker written for the session.
 func (f *attemptFixture) markerTexts(ctx context.Context) []string {
 	f.t.Helper()
@@ -47,11 +43,11 @@ func TestDrainGate_PullFailureDoesNotShortenThePaidBudget(t *testing.T) {
 	shrinkDrainRetry(t, retry)
 	f := newAttemptFixture(t, "gate-mixed-streak", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, blockPullTrigger)
+	unblockPull := a1BlockPull(t, f.env.conn)
 
 	require.NoError(t, f.wake(ctx, true)) // a no-turn Drain: the pull fails
 	require.Zero(t, f.requests.Load())
-	f.exec(ctx, `DROP TRIGGER fx_block_pull`)
+	unblockPull()
 	for want := int32(1); want <= 3; want++ {
 		f.elapseDrainPause(ctx)
 		f.pass(ctx)
@@ -79,7 +75,7 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	f := newAttemptFixture(t, "gate-free-dormant", attemptFixtureOpts{noIdle: true, manualClock: true})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, blockPullTrigger)
+	a1BlockPull(t, f.env.conn)
 
 	for range drainDormantStreak {
 		require.NoError(t, f.wake(ctx, true)) // each fact is newer than the last pace

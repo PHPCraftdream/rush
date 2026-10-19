@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -186,6 +187,7 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	ledger := newWorkLedger(nil)
 	ledger.store = store
 	ledger.supervision = newSupervisionRegistry()
+	a2AttachBatchFacts(t, env, ledger)
 	sa := NewSessionAgent(SessionAgentOptions{
 		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir, AsyncJobs: ledger,
 	})
@@ -195,8 +197,7 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "pull-progress")
 	require.NoError(t, err)
 	// A running job keeps the supervision notice deliverable (not voided).
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
-	require.NoError(t, err)
+	a2ClaimJob(t, env.conn, store, sess.ID, "call-1", false)
 
 	cfg := SupervisionConfig{Enabled: true, Interval: time.Hour, MaxInterval: 4 * time.Hour, MaxNoProgress: 6}
 	ledger.supervision.byRoot[sess.ID] = &supervisionState{rootSessionID: sess.ID, cfg: cfg, interval: 2 * time.Hour, tickCount: 2, generation: 1}
@@ -299,6 +300,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	ledger.store = store
 	ledger.coord = coord
 	coord.asyncJobs = ledger
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 	t.Cleanup(ledger.close)
 
 	sa := NewSessionAgent(SessionAgentOptions{
@@ -314,6 +316,12 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	_, _, err = ledger.Start(sess.ID, "call-1", "{}", "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	ledger.acknowledged(jobOf(ledger, sess.ID, "call-1"))
+	if batchFlagEnabled() {
+		// The flag-ON completion lives in the batch store: the wake below is
+		// answered from the batch debt, never from the legacy async_jobs row
+		// the finish writes.
+		seedBatchJobDebt(t, env.conn, sess.ID, "call-1", false)
+	}
 	ledger.finish(jobOf(ledger, sess.ID, "call-1"), jobResult{content: "job output"})
 
 	require.Eventually(t, func() bool {
@@ -325,28 +333,42 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
-	var notices, users, assistants int
+	// The completion formatter names the tool (legacy row) or nothing at all
+	// (batch notice: batch leaves resolve by payload, not tool identity).
+	completionText := "Async job call-1 () finished."
+	if !batchFlagEnabled() {
+		completionText = "Async job call-1 (bash) finished."
+	}
+	wantNotices, wantUsers := 1, 1
+	if batchFlagEnabled() {
+		// The batch seed's durable started announce is one extra user-role
+		// notice row; the oracle (no empty prompt, no duplicate) is unchanged.
+		wantNotices, wantUsers = 2, 2
+	}
+	var notices, users, assistants, completions int
 	for _, m := range msgs {
 		switch m.Role {
 		case message.User:
 			users++
 			if m.BackgroundJobNotice {
 				notices++
-				require.Contains(t, m.FullText(), "Async job call-1 (bash) finished.")
+				if strings.Contains(m.FullText(), completionText) {
+					completions++
+				}
 			}
 		case message.Assistant:
 			assistants++
 		}
 	}
-	require.Equal(t, 1, notices, "exactly one notice message")
-	require.Equal(t, 1, users, "no other user-role row (no empty Drain prompt, no duplicate)")
+	require.Equal(t, wantNotices, notices, "exactly the completion notice (plus, flag ON, the batch seed's started announce)")
+	require.Equal(t, wantUsers, users, "no other user-role row (no empty Drain prompt, no duplicate)")
+	require.Equal(t, 1, completions, "exactly one completion notice carrying the job's outcome")
 	require.Equal(t, 1, assistants, "exactly one turn")
 	mu.Lock()
 	require.Equal(t, 1, calls)
 	mu.Unlock()
 
-	row, err := store.Get(ctx, sess.ID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, env.conn, store, sess.ID, "call-1")
 	require.Equal(t, "done", row.Delivery)
 }
 
@@ -404,6 +426,7 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	ledger := newWorkLedger(nil)
 	ledger.store = store
+	a2AttachBatchFacts(t, env, ledger)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",

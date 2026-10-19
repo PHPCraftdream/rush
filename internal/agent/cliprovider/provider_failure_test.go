@@ -190,6 +190,29 @@ func TestCLIFailureBounds(t *testing.T) {
 	if errors.As(got, &pe) {
 		t.Fatal("later hard event erased transient veto")
 	}
+	var merged exitDiagnostics
+	merged.add([]byte(strings.Repeat("x", maxExitDiagnostics)))
+	merged.add([]byte("Usage limit reached. Your limit will reset at 2026-06-17T14:49:28+08:00"))
+	got = mapCLIExitError(errors.New("failure"), "", merged, cliFailureEvidence{})
+	if !errors.As(got, &pe) || !strings.Contains(pe.Message, "2026-06-17T14:49:28+08:00") {
+		t.Fatalf("late reset evidence lost: %v", got)
+	}
+
+	// Noise must not make JSON content into quota evidence.
+	var noisy exitDiagnostics
+	noisy.add([]byte(strings.Repeat("x", maxExitDiagnostics)))
+	noisy.add([]byte(`{"type":"message","role":"assistant","content":"quota exceeded"}`))
+	got = mapCLIExitError(errors.New("failure"), "", noisy, cliFailureEvidence{})
+	if errors.As(got, &pe) {
+		t.Fatal("JSON after diagnostic noise became quota evidence")
+	}
+
+	lateTransient := failureEvent("claude", "quota exceeded per minute")
+	got, finish = runFailureScript(t, "claude", failureEvent("claude", "quota exceeded")+"\n"+lateTransient, "", 1, true)
+	var transientPE *fantasy.ProviderError
+	if finish || got == nil || errors.As(got, &transientPE) {
+		t.Fatalf("late transient did not veto quota mapping: finish=%v err=%v", finish, got)
+	}
 }
 
 // Revert-check: provider_failure.go:cliFailureText extracts error string/object.message only.

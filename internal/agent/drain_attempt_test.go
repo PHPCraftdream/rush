@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -255,11 +256,17 @@ func TestSettleDrainDebt_MarkerNamesSnapshotToolCallIDs(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-marker-ids", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", true)
 	f.seedDebt(ctx, "call-2", true)
-	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
-	require.NoError(t, err)
-	require.Len(t, snap.Jobs, 2)
-
-	require.NoError(t, f.coord.settleDrainDebt(ctx, f.sessID, snap, "boom"))
+	boom := &fantasy.ProviderError{Title: "request too large", Message: "boom", StatusCode: http.StatusRequestEntityTooLarge}
+	snap, batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	if batchCaptured {
+		require.Len(t, batchSnap.Nodes, 2)
+		f.coord.accountDrainAttempt(ctx, &drainAttempt{
+			sessionID: f.sessID, batchSnapshot: batchSnap, batchCaptured: true, outcome: drainAttempted,
+		}, boom)
+	} else {
+		require.Len(t, snap.Jobs, 2)
+		require.NoError(t, f.coord.settleDrainDebt(ctx, f.sessID, snap, "boom"))
+	}
 
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
 	require.NoError(t, err)
@@ -288,14 +295,19 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "attempt-commit-refused", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", true) // visible debt: the commit was refused over it
-	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
-	require.NoError(t, err)
-	require.False(t, snap.Empty())
+	snap, batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	if batchCaptured {
+		require.False(t, batchSnap.Empty())
+	} else {
+		require.False(t, snap.Empty())
+	}
 
 	require.False(t, f.ledger.paceDrainGate(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
 
 	att := &drainAttempt{
-		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		sessionID: f.sessID, snapshot: snap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
+		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
@@ -311,7 +323,9 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	delete(f.coord.recheckSet, f.sessID)
 	f.coord.recheckMu.Unlock()
 	att = &drainAttempt{
-		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		sessionID: f.sessID, snapshot: snap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
+		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainDeferred, reason: "automatic turns suspended"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)

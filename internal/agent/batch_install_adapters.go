@@ -27,6 +27,7 @@ import (
 type batchRunnerAdapter struct {
 	outputCache *batchOutputCache
 	runner      *jobbatch.Runner
+	credentials *batchCredentialEscrow
 	// rootLeases is the per-root disk-binding lease store built at install
 	// time; the runtime and the model control share this one instance.
 	rootLeases *batchRootLeaseStore
@@ -36,7 +37,7 @@ type batchRunnerAdapter struct {
 }
 
 func newBatchRunnerAdapter(runner *jobbatch.Runner) *batchRunnerAdapter {
-	return &batchRunnerAdapter{runner: runner, started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
+	return &batchRunnerAdapter{runner: runner, credentials: newBatchCredentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 }
 
 var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
@@ -68,6 +69,11 @@ func (a *batchRunnerAdapter) submitBatch(ctx context.Context, req jobbatch.Submi
 	if a.runner == nil {
 		return nil, errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
 	}
+	var err error
+	req.Spec, err = stampBatchCallCredentials(ctx, req.Spec)
+	if err != nil {
+		return nil, err
+	}
 	if req.Spec.Task != nil {
 		if req.Spec.Batch != nil {
 			return nil, jobbatch.ErrInvalidSpec
@@ -76,11 +82,29 @@ func (a *batchRunnerAdapter) submitBatch(ctx context.Context, req jobbatch.Submi
 	} else if req.Spec.Batch == nil {
 		return nil, jobbatch.ErrInvalidSpec
 	}
-	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
+	registrations, err := a.credentialRegistrations(ctx, string(req.Root), req.Spec)
 	if err != nil {
 		return nil, err
 	}
+	if len(registrations) > 0 && a.credentials == nil {
+		return nil, errBatchCredentialEscrowMissing
+	}
+	release := func() {}
+	if a.credentials != nil {
+		release, err = a.credentials.registerBatch(registrations)
+		if err != nil {
+			return nil, err
+		}
+	}
+	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
+	if err != nil {
+		release()
+		return nil, err
+	}
 	a.mu.Lock()
+	if a.started == nil {
+		a.started = make(map[jobbatch.ID]*jobbatch.Batch)
+	}
 	a.started[req.Root] = batch
 	a.mu.Unlock()
 	return batch, nil
@@ -95,11 +119,86 @@ func (a *batchRunnerAdapter) Stop(ctx context.Context, id jobbatch.ID) error {
 // seam): the ingress/model control adopt this as the automatic post-Done
 // disposal trigger, so the adapter must surface the real Runner's Release.
 func (a *batchRunnerAdapter) Release(ctx context.Context, id jobbatch.ID) error {
-	return a.runner.Release(ctx, id)
+	err := a.runner.Release(ctx, id)
+	if err == nil && a.credentials != nil {
+		a.credentials.releaseRoot(string(id))
+	}
+	return err
 }
 
 func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error) {
-	return a.runner.Add(ctx, req)
+	view, err := a.runner.View(ctx, req.Parent)
+	if err != nil {
+		return nil, err
+	}
+	root := string(view.Root)
+	registrations := make([]batchCredentialRegistration, 0)
+	stamped := make([]jobbatch.Spec, len(req.Items))
+	for i, spec := range req.Items {
+		var err error
+		stamped[i], err = stampBatchCallCredentials(ctx, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req.Items = stamped
+	for _, spec := range req.Items {
+		entries, collectErr := a.credentialRegistrations(ctx, root, spec)
+		if collectErr != nil {
+			return nil, collectErr
+		}
+		registrations = append(registrations, entries...)
+	}
+	if a.credentials == nil {
+		if len(registrations) > 0 {
+			return nil, errBatchCredentialEscrowMissing
+		}
+		ids, err := a.runner.Add(ctx, req)
+		return ids, err
+	}
+	release, err := a.credentials.registerBatch(registrations)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := a.runner.Add(ctx, req)
+	if err != nil {
+		release()
+	}
+	return ids, err
+}
+
+func (a *batchRunnerAdapter) credentialRegistrations(ctx context.Context, root string, spec jobbatch.Spec) ([]batchCredentialRegistration, error) {
+	if spec.Task != nil {
+		if spec.Task.Kind != batchKindAgent {
+			return nil, nil
+		}
+		var p batchLeafPayload
+		if err := json.Unmarshal(spec.Task.Payload, &p); err != nil {
+			return nil, err
+		}
+		if p.Tool != "agent" && p.Tool != "agentic_fetch" {
+			return nil, nil
+		}
+		if !p.CallCredentials {
+			return nil, nil
+		}
+		if callCredentialsFrom(ctx) == nil {
+			return nil, errBatchCredentialEscrowMissing
+		}
+		return []batchCredentialRegistration{{key: batchCredentialKeyFor(p), root: root, creds: callCredentialsFrom(ctx)}}, nil
+	}
+	if spec.Batch == nil {
+		return nil, jobbatch.ErrInvalidSpec
+	}
+	var all []batchCredentialRegistration
+	for _, item := range spec.Batch.Items {
+		entries, err := a.credentialRegistrations(ctx, root, item)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, entries...)
+	}
+	return all, nil
 }
 
 func (a *batchRunnerAdapter) Snapshot(ctx context.Context, id jobbatch.ID) (jobbatch.BatchView, error) {
@@ -343,12 +442,26 @@ func batchNoticeText(row session.BatchNoticeRow) string {
 // can never be replaced, so a live call's leaf set cannot change under it.
 // Lookup fails closed on an unknown identity.
 type BatchLeafRegistryStore struct {
-	mu         sync.RWMutex
-	registries map[string]*policyLeafRegistry
+	mu          sync.RWMutex
+	registries  map[string]*policyLeafRegistry
+	credentials *batchCredentialEscrow
+}
+
+func (s *BatchLeafRegistryStore) credentialEscrowLocked() *batchCredentialEscrow {
+	if s.credentials == nil {
+		s.credentials = newBatchCredentialEscrow()
+	}
+	return s.credentials
+}
+
+func (s *BatchLeafRegistryStore) credentialEscrow() *batchCredentialEscrow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credentialEscrowLocked()
 }
 
 func NewBatchLeafRegistryStore() *BatchLeafRegistryStore {
-	return &BatchLeafRegistryStore{registries: make(map[string]*policyLeafRegistry)}
+	return &BatchLeafRegistryStore{registries: make(map[string]*policyLeafRegistry), credentials: newBatchCredentialEscrow()}
 }
 
 // Register pins one registry under its identity. Double registration of the
@@ -365,7 +478,14 @@ func (s *BatchLeafRegistryStore) Register(registryID string, registry *policyLea
 	if _, exists := s.registries[registryID]; exists {
 		return fmt.Errorf("batch leaf registry: %q is already pinned", registryID)
 	}
-	s.registries[registryID] = registry
+	copyRegistry := &policyLeafRegistry{entries: make(map[string]policyLeafEntry, len(registry.entries))}
+	for name, entry := range registry.entries {
+		if name == "agent" || name == "agentic_fetch" {
+			entry.tool = &batchCredentialLeaf{AgentTool: entry.tool, escrow: s.credentialEscrowLocked()}
+		}
+		copyRegistry.entries[name] = entry
+	}
+	s.registries[registryID] = copyRegistry
 	return nil
 }
 
@@ -560,7 +680,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		owner = batchDormantInstallOwner
 	}
 	cache := newBatchOutputCache()
-	runnerAdapter := &batchRunnerAdapter{outputCache: cache, started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
+	runnerAdapter := &batchRunnerAdapter{outputCache: cache, credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
 	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter})

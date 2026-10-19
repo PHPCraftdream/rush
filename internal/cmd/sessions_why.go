@@ -126,8 +126,10 @@ func sessionsWhyCmdRun(cmd *cobra.Command, args []string) error {
 // production code.
 func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	// R12-B: with the batch runtime on, the whole explanation is built from
-	// the batch facts and the session lock fact -- no legacy classifier,
-	// notice, or async_jobs read runs (explainWhyBatch).
+	// the batch facts, the session lock fact and the shared session-activity
+	// classifier (App.SessionActivity: driver markers and open once
+	// schedules; its work/debt reads use batch authority under the flag).
+	// No legacy async_jobs read runs (explainWhyBatch).
 	if config.BatchRuntimeEnabled() {
 		return explainWhyBatch(ctx, a, dataDir, sessionID, out)
 	}

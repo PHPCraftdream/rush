@@ -141,17 +141,56 @@ func TestRerun_BailoutReleasesTheHold(t *testing.T) {
 }
 
 // blockingStopCoordinator's StopRerunJobs blocks until released, like a child
-// transition retried until it commits.
+// transition retried until it commits. Its BatchRerunStopVoided (the flag-on
+// surface) blocks the SAME way — it shares the entered/unblock channels, since
+// the handler runs exactly one of the two paths per rerun — and follows the
+// record → signal → block order: record the call, signal entered, then block
+// on unblock (batchDone closes only after unblock, so a test joins the
+// handler's detached goroutine by closing unblock and waiting batchDone).
 type blockingStopCoordinator struct {
 	cancellableHoldCoordinator
 	entered chan struct{}
 	unblock chan struct{}
+	// Flag-on join channel and call record for BatchRerunStopVoided.
+	batchDone   chan struct{}
+	batchMu     sync.Mutex
+	batchCalls  int
+	batchVoided []session.BatchRerunVoidedNode
+	// stopDone is closed by the legacy StopRerunJobs wrapper after its
+	// embedded call returns, so cleanup can join the detached goroutine.
+	stopDone chan struct{}
 }
 
 func (m *blockingStopCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
 	close(m.entered)
 	<-m.unblock
 	m.cancellableHoldCoordinator.StopRerunJobs(ctx, sessionID, voided)
+	close(m.stopDone)
+}
+
+// BatchRerunStopVoided implements agent.BatchRerunStopper. Like the flag-on
+// production stop goroutine, it never writes delivery state — the reconcile
+// already committed the void. Record → signal → block: the call is recorded
+// and entered closed BEFORE it blocks on unblock, so the test's post-run
+// assertions see the call while the stop is still blocked (the handler did
+// not block on it).
+func (m *blockingStopCoordinator) BatchRerunStopVoided(_ context.Context, _ string, voided []session.BatchRerunVoidedNode) {
+	m.batchMu.Lock()
+	m.batchCalls++
+	m.batchVoided = append(m.batchVoided, voided...)
+	m.batchMu.Unlock()
+	close(m.entered)
+	<-m.unblock
+	if m.batchDone != nil {
+		close(m.batchDone)
+	}
+}
+
+// batchStopSnapshot returns the recorded flag-on stop calls and voided set.
+func (m *blockingStopCoordinator) batchStopSnapshot() (int, []session.BatchRerunVoidedNode) {
+	m.batchMu.Lock()
+	defer m.batchMu.Unlock()
+	return m.batchCalls, append([]session.BatchRerunVoidedNode(nil), m.batchVoided...)
 }
 
 // TestRerun_StopRerunJobsDoesNotBlockTheHandler: a StopRerunJobs that never
@@ -161,9 +200,35 @@ func (m *blockingStopCoordinator) StopRerunJobs(ctx context.Context, sessionID s
 // until the 10s handler bound and this test goes red.
 func TestRerun_StopRerunJobsDoesNotBlockTheHandler(t *testing.T) {
 	f := newRerunHandlerFx(t, "rerun-stop-detached")
-	coord := &blockingStopCoordinator{entered: make(chan struct{}), unblock: make(chan struct{})}
+	coord := &blockingStopCoordinator{entered: make(chan struct{}), unblock: make(chan struct{}), stopDone: make(chan struct{})}
 	f.a.AgentCoordinator = coord
-	t.Cleanup(func() { close(coord.unblock) })
+	if batchRuntimeEnabled() {
+		// Flag ON: the same live-work fact as one never-acked batch root
+		// incarnation; the reconcile's live tool-call arm voids it and the
+		// stop goes to BatchRerunStopVoided below.
+		seedRerunBatchRoot(t, f)
+		coord.batchDone = make(chan struct{})
+	}
+	t.Cleanup(func() {
+		close(coord.unblock)
+		if coord.batchDone != nil {
+			// Join the handler's detached BatchRerunStopVoided goroutine: it
+			// can only return once unblock above is closed.
+			select {
+			case <-coord.batchDone:
+			case <-time.After(10 * time.Second):
+				t.Errorf("the detached BatchRerunStopVoided goroutine did not return after unblock")
+			}
+		} else {
+			// Legacy path: the detached StopRerunJobs goroutine may still be
+			// mid-unblock; join it the same way.
+			select {
+			case <-coord.stopDone:
+			case <-time.After(10 * time.Second):
+				t.Errorf("the detached StopRerunJobs goroutine did not return after unblock")
+			}
+		}
+	})
 
 	env := f.run(t)
 
@@ -174,6 +239,13 @@ func TestRerun_StopRerunJobsDoesNotBlockTheHandler(t *testing.T) {
 		t.Fatal("the voided jobs were never stopped")
 	}
 	require.Equal(t, "void", f.jobDelivery(t))
+	if batchRuntimeEnabled() {
+		calls, batchVoided := coord.batchStopSnapshot()
+		require.Equal(t, 1, calls, "the flag-on stop must run exactly once")
+		require.Len(t, batchVoided, 1, "the stop carries the voided incarnation")
+		_, _, stopRerun, _, _ := coord.counters()
+		require.Zero(t, stopRerun, "the flag-on stop must not take the legacy StopRerunJobs path")
+	}
 	_, _, _, _, owned := coord.counters()
 	require.False(t, owned, "the reservation is released while the stop is still running")
 }

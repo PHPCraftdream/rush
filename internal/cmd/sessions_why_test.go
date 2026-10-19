@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func writeLockFile(t *testing.T, sessionID string, pid int) string {
 func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -69,7 +70,7 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, m.Update(context.Background(), assistant))
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	// t.TempDir() with no locks dir created → no lock file → "at rest".
 	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
@@ -87,7 +88,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -106,7 +107,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -129,7 +130,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -152,7 +153,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -169,7 +170,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -182,7 +183,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
 
@@ -200,7 +201,7 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -219,7 +220,7 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, os.Getpid())
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -240,7 +241,7 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -250,7 +251,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 	// pid=0 simulates a lock file whose PID line couldn't be read.
 	cwd := writeLockFile(t, sess.ID, 0)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -273,7 +274,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -285,7 +286,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	old := time.Now().Add(-30 * time.Second)
 	require.NoError(t, os.Chtimes(lockPath, old, old))
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -305,7 +306,7 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -322,7 +323,7 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -354,7 +355,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -371,7 +372,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
 		"back-dating mtime: the enum must not depend on it")
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
@@ -392,7 +393,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -402,7 +403,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	dataDir := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
@@ -428,7 +429,7 @@ func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	// explainSessionStatus routes to explainWhyBatch.
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -451,7 +452,7 @@ func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	require.False(t, os.IsNotExist(err),
 		"this failure must NOT be ENOENT -- we need a different stat error class for this test")
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 

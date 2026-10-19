@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -64,8 +64,7 @@ func TestNewBatchRuntimeRejectsMissingDeps(t *testing.T) {
 
 // Not parallel: goroutine-count observation must run exclusively.
 func TestNewBatchRuntimeNoSideEffects(t *testing.T) {
-	before := runtime.NumGoroutine()
-	runtime.Gosched()
+	before := goroutineIDSnapshot()
 	leafCalls := 0
 	cfg := testRuntimeConfig()
 	cfg.Leaves = func(string) (*policyLeafRegistry, error) {
@@ -80,7 +79,7 @@ func TestNewBatchRuntimeNoSideEffects(t *testing.T) {
 		require.Zero(t, attach.probeCalls(), "construction must not probe")
 	}
 	require.Zero(t, leafCalls, "construction must not resolve leaves")
-	require.LessOrEqual(t, runtime.NumGoroutine(), before, "construction must not start goroutines")
+	requireNoNewGoroutinesNaming(t, before, 2*time.Second, "construction must not start goroutines", "newBatchRuntime", "batch_runtime")
 }
 
 func TestBindRunnerOnce(t *testing.T) {

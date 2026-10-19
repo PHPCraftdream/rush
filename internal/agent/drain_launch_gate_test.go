@@ -187,9 +187,7 @@ func TestDrainAttempt_PermanentPullFailure_BoundedNoTurns(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-pull-fail", attemptFixtureOpts{manualClock: true})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, `CREATE TRIGGER fx_block_pull BEFORE UPDATE OF delivery ON async_jobs
-		WHEN NEW.delivery = 'done'
-		BEGIN SELECT RAISE(ABORT, 'fx: pull blocked'); END`)
+	a1BlockPull(t, f.env.conn)
 
 	require.NoError(t, f.wake(ctx, true))
 	for range 6 {

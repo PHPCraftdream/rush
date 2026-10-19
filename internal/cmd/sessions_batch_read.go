@@ -305,7 +305,11 @@ func renderBatchRootsForWhy(f batchSessionFacts, out io.Writer) {
 func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	facts := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})
 	f := facts[sessionID]
-	lock := session.InspectSessionLockFact(dataDir, sessionID)
+	activity, activityErr := a.SessionActivity(ctx, sessionID)
+	if activityErr != nil {
+		return fmt.Errorf("failed to classify session %s: %w", sessionID, activityErr)
+	}
+	lock := activity.Facts.Lock
 	status, reason := "at rest", "no live batch work"
 	switch {
 	case f.Unknown:
@@ -322,6 +326,15 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 	case lock.Kind == session.LockHeld:
 		status = "running"
 		reason = "the session lock is held by a live process"
+	case listStatus(activity.Verdict) != "":
+		status = listStatus(activity.Verdict)
+		reason = activity.Verdict.Description
+	default:
+		reason = activity.Verdict.Description
+	}
+	if !f.Unknown && status != "at rest" && activity.Verdict.Kind != session.ActivityCrashed &&
+		(activity.Verdict.CrashedPID > 0 || lock.Kind == session.LockDead) {
+		status += " (stale lock)"
 	}
 	printStallHeader(ctx, a, dataDir, sessionID, status, lock, out)
 	fmt.Fprintf(out, "reason: %s.\n", reason)
@@ -346,6 +359,9 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 		} else {
 			fmt.Fprintf(out, "  finish_reason: %s\n", finishReasonOrUnknown(last.FinishPart()))
 		}
+	}
+	if activity.Facts.Driver != nil {
+		fmt.Fprintf(out, "driver: %s.\n", describeRunDriver(*activity.Facts.Driver, activity.Facts.DriverOwes))
 	}
 	// The facts are already read above; render them without a re-read.
 	renderBatchRootsForWhy(f, out)

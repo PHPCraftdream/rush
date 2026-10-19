@@ -142,6 +142,16 @@ func newShadowFixture(t *testing.T, title string) *attemptFixture {
 func newShadowDelegationFixture(t *testing.T, running bool) (*attemptFixture, string, string) {
 	t.Helper()
 	f, parentID, childID, _ := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
+	if batchFlagEnabled() {
+		// ON: the durable identity lives in batch_nodes, not async_jobs --
+		// seed the same parent->child link (running, or released) there.
+		state := "running"
+		if !running {
+			state = "completed"
+		}
+		seedBatchDelegation(t, f.env.conn, parentID, "delegate-1", childID, "task", state, false)
+		return f, parentID, childID
+	}
 	if !running {
 		_, err := f.store.Transition(context.Background(), session.TransitionParams{
 			Owner: parentID, ToolCallID: "delegate-1", State: "completed", ResultSummary: "done", Wake: true,
@@ -241,9 +251,14 @@ func TestShadow_ChainGuard(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-chain")
 	f.seedDebt(ctx, "shadow-chain-claim", false) // pending job debt
-	claim := f.row(ctx, "shadow-chain-claim").ClaimID
-	require.NotEmpty(t, claim)
-	f.coord.setReactionChain(f.sessID, turnReactionChainLimit, map[string]struct{}{claim: {}}, false)
+	identity := a3DebtRowIdentity(f.row(ctx, "shadow-chain-claim"))
+	require.NotEmpty(t, identity)
+	if batchFlagEnabled() {
+		// ON the guard owns debt by ROOT tool_call_id, not by claim id.
+		a3SeedChainBatchRoots(f.coord, f.sessID, turnReactionChainLimit, identity)
+	} else {
+		f.coord.setReactionChain(f.sessID, turnReactionChainLimit, map[string]struct{}{identity: {}}, false)
+	}
 	// The running code's guard inserts a marker notice for a non-CLI session
 	// on the FIRST deferred read; pre-mark it so the comparison stays
 	// read-only (the marker insert is the executor's job).

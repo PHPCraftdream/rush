@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/format"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/term"
@@ -68,10 +69,65 @@ type runExecSetup struct {
 
 	failIfSessionBusy bool
 	callOpts          *agent.CallOptions
+	providerIntent    sessionExecutionProviderIntent
 	// callBindingRelease releases the Call owner of callOpts's immutable
 	// disk binding (nil when the run carries no custom provider). ExecuteRun
 	// defers it: the outer release point of the SDK invocation.
 	callBindingRelease func()
+}
+
+type sessionExecutionProviderIntent uint8
+
+const (
+	sessionExecutionProviderOmitted sessionExecutionProviderIntent = iota
+	sessionExecutionProviderCustom
+	sessionExecutionProviderOS
+)
+
+func explicitSessionExecutionProviderIntent(provider tools.DiskProvider) sessionExecutionProviderIntent {
+	if tools.IsCustomDiskProvider(provider) {
+		return sessionExecutionProviderCustom
+	}
+	if tools.IsOSDisk(provider) {
+		return sessionExecutionProviderOS
+	}
+	return sessionExecutionProviderOmitted
+}
+
+func persistSessionExecutionIntent(ctx context.Context, app *App, sessionID string, intent sessionExecutionProviderIntent, requirement *session.SessionExecutionRequirement, customFenceEnabled bool) error {
+	reqStore, hasStore := app.Sessions.(session.SessionExecutionRequirementStore)
+	switch intent {
+	case sessionExecutionProviderCustom:
+		if !customFenceEnabled {
+			return nil
+		}
+		if !hasStore {
+			return fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
+		}
+		if requirement == nil {
+			return fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
+		}
+		if err := reqStore.StoreSessionExecutionRequirement(ctx, sessionID, *requirement); err != nil {
+			return fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+		}
+	case sessionExecutionProviderOS:
+		if hasStore {
+			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sessionID); err != nil {
+				return fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
+			}
+		}
+	case sessionExecutionProviderOmitted:
+		if hasStore {
+			fence, err := reqStore.LoadSessionExecutionRequirement(ctx, sessionID)
+			if err != nil {
+				return fmt.Errorf("%w: session execution requirement cannot be validated: %v", agent.ErrDiskProviderUnavailable, err)
+			}
+			if fence != nil {
+				return fmt.Errorf("%w: session has a persistent custom-provider requirement", agent.ErrDiskProviderUnavailable)
+			}
+		}
+	}
+	return nil
 }
 
 // prepareExecuteRun performs ExecuteRun's request-to-config setup: context
@@ -138,6 +194,15 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// buildCall stamps it onto the call so createUserMessage persists it
 	// on the user message. Empty/unspecified leaves both untouched.
 	ctx = agent.WithCallOrigin(ctx, req.Origin)
+
+	// CLI-origin runs with their own stderr get the rate-limit wait
+	// diagnostics on THAT stderr (the CLI loop passes l.errOut(), so the
+	// line lands on the loop's sink, not the process stderr). Non-CLI
+	// origins (web/SDK/library) carry no sink and get nothing. The sink
+	// is per-run context state, never shared app state.
+	if req.Origin == message.OriginCLI && req.Stderr != nil {
+		ctx = agent.WithRateLimitNotifySink(ctx, stderr)
+	}
 
 	// The ask_question tool reads this to tell "a question asked while the
 	// session's own background work is still running" (turn continues, the
@@ -537,6 +602,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		folderScopeSpec:        folderScopeSpec,
 		failIfSessionBusy:      failIfSessionBusy,
 		callOpts:               callOpts,
+		providerIntent:         explicitSessionExecutionProviderIntent(overrides.DiskProvider),
 		callBindingRelease:     callBindingRelease,
 	}, nil
 }

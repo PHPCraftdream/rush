@@ -30,12 +30,13 @@ const (
 // resolution is keyed by the invocation's pinned registry identity, never by
 // session, and Policy carries the invocation's immutable executor context.
 type batchLeafPayload struct {
-	Tool       string                  `json:"tool"`
-	ToolCallID string                  `json:"tool_call_id"`
-	SessionID  string                  `json:"session_id"`
-	Input      json.RawMessage         `json:"input"`
-	RegistryID string                  `json:"registry_id,omitempty"`
-	Policy     *batchLeafPolicyContext `json:"policy,omitempty"`
+	Tool            string                  `json:"tool"`
+	ToolCallID      string                  `json:"tool_call_id"`
+	SessionID       string                  `json:"session_id"`
+	Input           json.RawMessage         `json:"input"`
+	RegistryID      string                  `json:"registry_id,omitempty"`
+	Policy          *batchLeafPolicyContext `json:"policy,omitempty"`
+	CallCredentials bool                    `json:"call_credentials,omitempty"`
 	// diskProvider is the in-process resolution of Policy.DiskBindingID,
 	// stamped by the executor router before family start; never serialized.
 	diskProvider tools.DiskProvider `json:"-"`

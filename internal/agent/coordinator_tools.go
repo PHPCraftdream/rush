@@ -149,7 +149,8 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	// later on a goroutine.
 	workerActive := c.workerSubAgentActiveForCall(ctx, cfg)
 
-	c.readyWg.Go(func() error {
+	gate := readyGateFor(ctx, &c.readyWg)
+	gate.Go(func() error {
 		// Orchestrator block only ever applies to the top-level coder prompt
 		// (isSubAgent false) — a sub-agent renders task.md.tpl via
 		// taskPrompt, which doesn't reference WorkerAvailable, but guarding
@@ -165,7 +166,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		return nil
 	})
 
-	c.readyWg.Go(func() error {
+	gate.Go(func() error {
 		tools, err := c.buildTools(ctx, cfg, agent, isSubAgent)
 		if err != nil {
 			return err

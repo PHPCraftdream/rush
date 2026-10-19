@@ -205,7 +205,7 @@ func (c *coordinator) guardTurnDiskFence(ctx context.Context, sessionID string, 
 	// run supersedes the stored fence at admission (internal/app
 	// ExecuteRun). It must pass without consulting a stale fence that may
 	// name a binding this process no longer holds.
-	if opts != nil && opts.DiskBindingID == "" && tools.IsOSDisk(opts.DiskProvider) {
+	if opts != nil && executionProviderIntentFrom(ctx, sessionID) == ExecutionProviderOS && opts.DiskBindingID == "" && tools.IsOSDisk(opts.DiskProvider) {
 		return nil
 	}
 	var source *session.SessionExecutionRequirement
