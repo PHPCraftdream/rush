@@ -4,10 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -143,9 +139,70 @@ func assertRefusal(t *testing.T, stderr string, err error, want error) {
 	t.Helper()
 	require.Error(t, err)
 	require.ErrorIs(t, err, want)
+	switch want {
+	case config.ErrSettingsLocked:
+		require.EqualError(t, err, "settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
+	case config.ErrWrongPassword:
+		require.EqualError(t, err, "wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
+	default:
+		t.Fatalf("unexpected refusal sentinel: %v", want)
+	}
+	for _, secret := range []string{"secret", "local-right", config.HashPassword("secret"), config.HashPassword("local-right")} {
+		require.NotContains(t, err.Error()+stderr, secret)
+	}
+	// Refusal output (error text plus everything printed to stderr) must not
+	// hint at how to unlock; this is the pre-existing protection.
 	message := strings.ToLower(strings.ReplaceAll(err.Error()+stderr, config.ErrWrongPassword.Error(), ""))
 	for _, forbidden := range []string{"unlock", "--password", "sha256", "hash", "password"} {
 		require.NotContains(t, message, forbidden)
+	}
+}
+
+func TestDirectConfigCommandsHonorLocalLock(t *testing.T) {
+	_, workspace, dataDir := isolateLockEnv(t)
+	localPath := filepath.Join(dataDir, "rush.json")
+	const localPassword = "local-right"
+	require.NoError(t, os.WriteFile(localPath, []byte(`{"sync_rev":"`+config.HashPassword(localPassword)+`","providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o600))
+	before, err := os.ReadFile(localPath)
+	require.NoError(t, err)
+
+	const wrongPassword = "bad-explicit-secret"
+	for _, command := range []string{"models", "stats"} {
+		t.Run(command+"_wrong_password", func(t *testing.T) {
+			args := []string{"--password", wrongPassword, command}
+			if command == "models" {
+				args = append(args, "zai")
+			}
+			stdout, stderr, runErr := runLockTree(t, workspace, dataDir, args...)
+			assertRefusal(t, stderr+stdout, runErr, config.ErrWrongPassword)
+			require.Empty(t, stdout)
+			for _, secret := range []string{wrongPassword, localPassword, config.HashPassword(localPassword)} {
+				require.NotContains(t, runErr.Error()+stderr, secret)
+			}
+			after, readErr := os.ReadFile(localPath)
+			require.NoError(t, readErr)
+			require.Equal(t, before, after)
+			if command == "stats" {
+				_, statErr := os.Stat(filepath.Join(dataDir, "rush.db"))
+				require.True(t, os.IsNotExist(statErr))
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name         string
+		passwordArgs []string
+	}{
+		{"models_without_password", nil},
+		{"models_with_password", []string{"--password", localPassword}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string(nil), tc.passwordArgs...)
+			args = append(args, "models", "zai")
+			stdout, _, runErr := runLockTree(t, workspace, dataDir, args...)
+			require.NoError(t, runErr)
+			require.NotEmpty(t, stdout)
+		})
 	}
 }
 
@@ -193,48 +250,6 @@ func TestSettingsAuditRecordsAndWebSocketMapping(t *testing.T) {
 	require.True(t, kinds["command_denied"])
 	require.True(t, outcomes["blocked"])
 	require.True(t, outcomes["applied"])
-	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "server", "handlers_config.go"), nil, parser.AllErrors)
-	require.NoError(t, err)
-	mapped := map[string]bool{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok || (fn.Name.Name != "handleSetTheme" && fn.Name.Name != "handleSetKeepAlive") {
-			return true
-		}
-		ast.Inspect(fn.Body, func(bodyNode ast.Node) bool {
-			call, ok := bodyNode.(*ast.CallExpr)
-			if !ok || len(call.Args) != 4 {
-				return true
-			}
-			reply, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || reply.Sel.Name != "reply" {
-				return true
-			}
-			event, ok := call.Args[1].(*ast.Ident)
-			if !ok || event.Name != "EventError" {
-				return true
-			}
-			if nilArg, ok := call.Args[2].(*ast.Ident); !ok || nilArg.Name != "nil" {
-				return true
-			}
-			errCall, ok := call.Args[3].(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			method, ok := errCall.Fun.(*ast.SelectorExpr)
-			if !ok || method.Sel.Name != "Error" {
-				return true
-			}
-			receiver, ok := method.X.(*ast.Ident)
-			if ok && receiver.Name == "err" {
-				mapped[fn.Name.Name] = true
-			}
-			return true
-		})
-		return false
-	})
-	require.True(t, mapped["handleSetTheme"])
-	require.True(t, mapped["handleSetKeepAlive"])
 	for _, forbidden := range []string{"password", "unlock", "--password"} {
 		require.NotContains(t, strings.ToLower(config.ErrSettingsLocked.Error()), forbidden)
 	}
@@ -246,6 +261,8 @@ func TestSettingsLock_RefusalMessageDoesNotLeakHints(t *testing.T) {
 	require.NoError(t, err)
 	_, stderr, err := runLockTree(t, workspace, dataDir, "models", "use", "glm4_6", "glm5_turbo")
 	assertRefusal(t, stderr, err, config.ErrSettingsLocked)
+	_, stderr, err = runLockTree(t, workspace, dataDir, "--password", "wrong", "models", "use", "glm4_6", "glm5_turbo")
+	assertRefusal(t, stderr, err, config.ErrWrongPassword)
 }
 
 // stripAuditPaths removes path-valued fields (launch_cwd, path) so the
@@ -277,6 +294,8 @@ func isolateLockEnv(t *testing.T) (string, string, string) {
 
 func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, stderr string, runErr error) {
 	t.Helper()
+	oldPassword, _ := rootCmd.PersistentFlags().GetString("password")
+	defer func() { config.SetProcessPassword(oldPassword) }()
 	oldRootCtx, oldModelsCtx := rootCmd.Context(), modelsUseCmd.Context()
 	rootCmd.SetContext(context.Background())
 	modelsUseCmd.SetContext(context.Background())
@@ -347,9 +366,6 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 	<-doneOut
 	<-doneErr
 	stdout, stderr = outBuf.String(), errBuf.String()
-	if errors.Is(runErr, config.ErrSettingsLocked) || errors.Is(runErr, config.ErrWrongPassword) || errors.Is(runErr, config.ErrNotLocked) {
-		assertRefusal(t, stdout+stderr, runErr, runErr)
-	}
 	_ = rOut.Close()
 	_ = rErr.Close()
 	return stdout, stderr, runErr

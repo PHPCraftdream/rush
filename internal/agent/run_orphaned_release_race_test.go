@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,8 +108,12 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 		PumpInstanceID: "test-pump-restart-orphaned",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	var proceedOnce sync.Once
+	stopRunQueuePumpForTest(t, pump, env, func() {
+		proceedOnce.Do(func() { close(restartProceed) })
+		sa.CancelAll()
+	})
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Exactly what drainOrReleaseMerged does for its `orphaned` return value.
 	sa.restartOrphaned([]SessionAgentCall{{
@@ -132,7 +137,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 		"turn is in flight — if it ran unprotected instead, this acquisition would spuriously succeed, exactly "+
 		"the #297 class of double-owner bug reached from a different angle")
 
-	close(restartProceed)
+	proceedOnce.Do(func() { close(restartProceed) })
 
 	// Let the detached goroutine finish and release its lock.
 	require.Eventually(t, func() bool {
@@ -255,9 +260,13 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 		PumpInstanceID: "test-pump-restart-orphaned-fullpath",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	var proceedOnce sync.Once
+	stopRunQueuePumpForTest(t, pump, env, func() {
+		proceedOnce.Do(func() { close(restartProceed) })
+		sa.CancelAll()
+		_ = lk.Release()
+	})
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
-
 	// Do exactly what drainOrReleaseMerged does with `orphaned`.
 	sa.restartOrphaned(orphaned)
 
@@ -270,8 +279,7 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 	_, lockErr := session.TryAcquireSessionLock(dataDir, sess.ID)
 	require.Error(t, lockErr, "the restarted orphaned call must hold its own freshly-acquired OS lock while its "+
 		"turn is in flight")
-
-	close(restartProceed)
+	proceedOnce.Do(func() { close(restartProceed) })
 
 	require.Eventually(t, func() bool {
 		lk2, err := session.TryAcquireSessionLock(dataDir, sess.ID)
