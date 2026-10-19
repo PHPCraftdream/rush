@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +51,9 @@ type fakeEnv struct {
 	// outliving its bounded join) before the DB is released: on Windows a
 	// goroutine still holding rush.db makes TempDir removal fail.
 	cleanup func(func())
+	// cleanupSafe prevents releasing the shared test DB while a pump worker
+	// may still be using it; pump tests set it false until terminal join.
+	cleanupSafe *atomic.Bool
 }
 
 type builderFunc func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, error)
@@ -105,6 +109,8 @@ func testEnv(t *testing.T) fakeEnv {
 	history := history.NewService(q, conn)
 	filetrackerService := filetracker.NewService(q)
 
+	cleanupSafe := &atomic.Bool{}
+	cleanupSafe.Store(true)
 	t.Cleanup(func() {
 		// Connect pools connections by absolute path with a refCount (see
 		// internal/db/connect.go) — conn.Close() bypasses that bookkeeping
@@ -112,20 +118,25 @@ func testEnv(t *testing.T) fakeEnv {
 		// connectionOpener goroutine reachable from a stale, never-emptied
 		// entry) for the life of the test binary. db.Release is the
 		// contractually correct counterpart to db.Connect.
+		if !cleanupSafe.Load() {
+			t.Error("Skipping database release because a test pump has not joined")
+			return
+		}
 		_ = db.Release(dbDir)
 		os.RemoveAll(workingDir)
 	})
 
 	return fakeEnv{
-		workingDir,
-		sessions,
-		messages,
-		permissions,
-		history,
-		&filetrackerService,
-		conn,
-		dbDir,
-		t.Cleanup,
+		workingDir:  workingDir,
+		sessions:    sessions,
+		messages:    messages,
+		permissions: permissions,
+		history:     history,
+		filetracker: &filetrackerService,
+		conn:        conn,
+		dbDir:       dbDir,
+		cleanup:     t.Cleanup,
+		cleanupSafe: cleanupSafe,
 	}
 }
 
