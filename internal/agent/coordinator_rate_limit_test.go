@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"testing"
 	"time"
@@ -176,9 +177,52 @@ func TestRetryAfter_Table(t *testing.T) {
 	require.Positive(t, d)
 	require.LessOrEqual(t, d, rateLimitMaxWait, "HTTP-date waits are capped too")
 
-	d, ok = retryAfter(pe(map[string]string{"retry-after": "99999"}))
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{"59999", 59999 * time.Millisecond},
+		{"60000", time.Minute},
+		{"60001", time.Minute},
+		{"9223372036855", time.Minute},
+		{"9223372036854775808", time.Minute},
+		{"+9223372036854775808", time.Minute},
+	} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": tc.header}))
+		require.True(t, ok, tc.header)
+		require.Equal(t, tc.want, d, tc.header)
+	}
+	for _, bad := range []string{"1.5", "1e3", "-1", "NaN", "+Inf", "-Inf"} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": bad, "retry-after": "2"}))
+		require.True(t, ok, bad)
+		require.Equal(t, 2*time.Second, d, bad)
+	}
+	for _, header := range []string{"NaN", "+Inf", "-Inf", "-1", "0", "1e309"} {
+		_, ok = retryAfter(pe(map[string]string{"retry-after": header}))
+		require.False(t, ok, header)
+	}
+	for _, header := range []string{"1e300", "9223372036854775807", "99999"} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after": header}))
+		require.True(t, ok, header)
+		require.Equal(t, time.Minute, d, header)
+	}
+	_, ok = retryAfter(pe(map[string]string{"retry-after-ms": "-1", "retry-after": "2"}))
 	require.True(t, ok)
-	require.Equal(t, rateLimitMaxWait, d, "huge values must be capped")
+	_, ok = retryAfter(pe(map[string]string{"retry-after-ms": "1.5"}))
+	require.False(t, ok)
+
+	minuteMax := rateLimitMaxWait
+	t.Cleanup(func() { rateLimitMaxWait = minuteMax })
+	rateLimitMaxWait = 1500 * time.Microsecond
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{{"1", time.Millisecond}, {"2", 1500 * time.Microsecond}} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": tc.header}))
+		require.True(t, ok)
+		require.Equal(t, tc.want, d)
+	}
+	rateLimitMaxWait = minuteMax
 
 	_, ok = retryAfter(pe(nil))
 	require.False(t, ok)
@@ -191,6 +235,29 @@ func TestRetryAfter_Table(t *testing.T) {
 
 	_, ok = retryAfter(pe(map[string]string{"retry-after": "not-a-number"}))
 	require.False(t, ok)
+}
+
+func TestRateLimitWaitForSaturates(t *testing.T) {
+	origBase, origMax := rateLimitBaseWait, rateLimitMaxWait
+	t.Cleanup(func() { rateLimitBaseWait, rateLimitMaxWait = origBase, origMax })
+	rateLimitBaseWait, rateLimitMaxWait = 4_000_000_000_000_000_000, 9_000_000_000_000_000_000
+	require.Equal(t, time.Duration(9_000_000_000_000_000_000), rateLimitWaitFor(nil, 1))
+	rateLimitBaseWait, rateLimitMaxWait = 10*time.Second, 5*time.Minute
+	for _, tc := range []struct {
+		prior int
+		want  time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 30 * time.Second},
+		{2, 90 * time.Second},
+		{3, 270 * time.Second},
+		{4, 5 * time.Minute},
+		{19, 5 * time.Minute},
+		{math.MaxInt - 1, 5 * time.Minute},
+		{math.MaxInt, 5 * time.Minute},
+	} {
+		require.Equal(t, tc.want, rateLimitWaitFor(nil, tc.prior), "prior waits %d", tc.prior)
+	}
 }
 
 // TestRunInternal_RateLimitRetriesBeyondMaxRetries: the rate-limit leg does

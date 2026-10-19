@@ -56,7 +56,10 @@ func TestSyntheticCLIQuotaPolicy(t *testing.T) {
 			if tc.name == "usage reset" {
 				reset, ok := QuotaLimitResetTime(err, time.Now())
 				require.True(t, ok)
-				require.Equal(t, 2026, reset.Year())
+				cst := time.FixedZone("CST", 8*60*60)
+				expected := time.Date(2026, time.June, 17, 14, 49, 28, 0, cst)
+				require.Equal(t, "2026-06-17T14:49:28+08:00", reset.In(cst).Format(time.RFC3339))
+				require.Equal(t, expected.Format(time.RFC3339), reset.In(cst).Format(time.RFC3339))
 			}
 		})
 	}

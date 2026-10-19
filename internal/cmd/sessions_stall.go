@@ -123,11 +123,16 @@ func lastMessageAgeForWhy(ctx context.Context, a *app.App, sessionID string, now
 // STALLED header line replacing the plain `status: running` line. Returns
 // true when the STALLED line replaced the status line.
 func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, status string, lock session.LockFact, out io.Writer) bool {
+	now := time.Now()
+	defer func() {
+		if line := rateLimitLineForWhy(sessionID, now); line != "" {
+			fmt.Fprint(out, line)
+		}
+	}()
 	if status != "running" {
 		fmt.Fprintf(out, "status: %s\n", status)
 		return false
 	}
-	now := time.Now()
 	pulse, ok := lockPulseAge(dataDir, sessionID, now)
 	if !ok {
 		fmt.Fprintf(out, "status: %s\n", status)
@@ -149,9 +154,6 @@ func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, statu
 		fmt.Fprintf(out, "status: %s\n", status)
 	}
 	fmt.Fprintf(out, "pulse: %s ago\n", formatDurationShort(pulse))
-	if line := rateLimitLineForWhy(sessionID, now); line != "" && !stalled {
-		fmt.Fprint(out, line)
-	}
 	if last := lastMessageAgeForWhy(ctx, a, sessionID, now); last != "" {
 		fmt.Fprintf(out, "last message: %s\n", last)
 	} else {
