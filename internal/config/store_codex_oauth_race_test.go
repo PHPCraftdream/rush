@@ -31,7 +31,7 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 		AccessToken:  "other-session-access",
 		RefreshToken: "other-session-refresh",
 		ExpiresIn:    3600,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    2_000_000_000,
 		AccountID:    "chatgpt-account",
 	}
 	writeConfig := func(token *oauth.Token) []byte {
@@ -66,7 +66,7 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 			AccessToken:  "stale-refresh-result",
 			RefreshToken: "stale-refresh-rotation",
 			ExpiresIn:    3600,
-			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+			ExpiresAt:    2_100_000_000,
 		})
 	}))
 	defer tokenEndpoint.Close()
@@ -93,6 +93,12 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 		return &token, nil
 	}
 	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	// The fixed stale expiry exceeds the replacement's fixed disk expiry.
+	// Quiesce the worker through cancellation and join before the memory check.
+	// Persisted-state assertions separately catch unintended disk writes.
+	oldBeforeWorker := oauthJournalBeforeWorker
+	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthJournalBeforeWorker = oldBeforeWorker })
 	trackOAuthJournalTestStore(t, store)
 
 	ctx, cancel := context.WithCancel(context.Background())

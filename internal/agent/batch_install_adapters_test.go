@@ -358,7 +358,11 @@ func TestBatchLeafRegistryStoreFailsClosed(t *testing.T) {
 	require.NoError(t, s.Register("reg-1", registry))
 	got, err := s.Resolve("reg-1")
 	require.NoError(t, err)
-	require.Same(t, registry, got)
+	require.NotSame(t, registry, got)
+	require.NoError(t, s.Register("reg-2", registry))
+	other, err := s.Resolve("reg-2")
+	require.NoError(t, err)
+	require.NotSame(t, got, other)
 	require.Error(t, s.Register("reg-1", registry), "pinned-once: no replacement")
 }
 

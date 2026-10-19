@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
@@ -199,8 +200,10 @@ func TestCredentialSetCloneDeepCopiesMutableState(t *testing.T) {
 }
 
 type credentialSnapshotProbe struct {
-	model     string
-	maxTokens int64
+	model            string
+	maxTokens        int64
+	auth             string
+	operatorRequests int
 }
 
 func runCredentialSnapshotProbe(
@@ -213,6 +216,7 @@ func runCredentialSnapshotProbe(
 	seedTenantSession(t, h.workDir, "sdk-credential-snapshot")
 	h.tenant.srv.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	arrived := make(chan struct{})
 	release := make(chan struct{})
 	workerSeen := make(chan credentialSnapshotProbe, 1)
@@ -234,7 +238,11 @@ func runCredentialSnapshotProbe(
 			mu.Unlock()
 			if first {
 				close(arrived)
-				<-release
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return
+				}
 				sseChunks(t, w, []map[string]any{
 					toolCallChunkNamed("probe", "snapshot-agent", "agent", map[string]any{
 						"prompt": "complete the delegated probe",
@@ -252,29 +260,70 @@ func runCredentialSnapshotProbe(
 			MaxTokens           int64  `json:"max_tokens"`
 			MaxCompletionTokens int64  `json:"max_completion_tokens"`
 		}
-		require.NoError(t, json.Unmarshal(body, &request))
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode credential snapshot request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
 		if request.MaxTokens == 0 {
 			request.MaxTokens = request.MaxCompletionTokens
 		}
-		workerSeen <- credentialSnapshotProbe{model: request.Model, maxTokens: request.MaxTokens}
+		select {
+		case workerSeen <- credentialSnapshotProbe{model: request.Model, maxTokens: request.MaxTokens, auth: r.Header.Get("Authorization")}:
+		case <-ctx.Done():
+			return
+		}
 		sseChunks(t, w, []map[string]any{textChunk("probe", "worker done"), finishChunk("probe", "stop")})
 	}))
 	t.Cleanup(srv.Close)
 	h.tenant = &credentialServer{srv: srv, auth: map[string]int{}}
 
+	var buf bytes.Buffer
 	creds := strictCreds(h, models, false)
-	runDone := make(chan error, 1)
+	type runResult struct {
+		result *sdk.RunResult
+		err    error
+	}
+	runDone := make(chan runResult, 1)
+	joined := false
+	releaseOnce := sync.Once{}
+	releaseResponse := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseResponse()
+		cancel()
+		if !joined {
+			<-runDone
+		}
+	})
 	go func() {
-		_, err := runStrictTurn(t, h, "sdk-credential-snapshot", creds)
-		runDone <- err
+		result, err := h.client.RunWithCredentials(ctx, sdk.RunRequest{
+			Prompt:            "reply with exactly the marker text and nothing else",
+			Mode:              sdk.RunModeJSON,
+			ContinueSessionID: "sdk-credential-snapshot",
+			Stdout:            &buf,
+			HideSpinner:       true,
+		}, creds)
+		runDone <- runResult{result: result, err: err}
 	}()
-	<-arrived
+	select {
+	case <-arrived:
+	case result := <-runDone:
+		joined = true
+		require.NoError(t, result.err)
+		t.Fatalf("turn completed before the barrier")
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for first provider request")
+	}
 	mutate(&creds)
-	close(release)
-	require.NoError(t, <-runDone)
-
+	releaseResponse()
+	result := <-runDone
+	joined = true
+	require.NoError(t, result.err)
+	require.NotNil(t, result.result)
+	require.Equal(t, "end_turn", string(result.result.ExitReason))
 	select {
 	case probe := <-workerSeen:
+		probe.operatorRequests = h.operator.totalRequests()
 		return probe
 	default:
 		t.Fatal("the delegated worker made no provider request")
@@ -293,6 +342,8 @@ func TestRunWithCredentialsSnapshotsCallerStateBeforeDelegation(t *testing.T) {
 		})
 		require.Equal(t, "tenant-model", probe.model,
 			"the delegated worker must use the pre-call Models map")
+		require.Equal(t, "Bearer sk-tenant-strict-secret", probe.auth)
+		require.Equal(t, 0, probe.operatorRequests)
 	})
 
 	t.Run("nested credential model metadata", func(t *testing.T) {
@@ -303,6 +354,8 @@ func TestRunWithCredentialsSnapshotsCallerStateBeforeDelegation(t *testing.T) {
 		})
 		require.Equal(t, int64(1000), probe.maxTokens,
 			"the delegated worker must use pre-call nested credential metadata")
+		require.Equal(t, "Bearer sk-tenant-strict-secret", probe.auth)
+		require.Equal(t, 0, probe.operatorRequests)
 	})
 }
 
