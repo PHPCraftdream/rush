@@ -150,6 +150,12 @@ func assertRefusal(t *testing.T, stderr string, err error, want error) {
 	for _, secret := range []string{"secret", "local-right", config.HashPassword("secret"), config.HashPassword("local-right")} {
 		require.NotContains(t, err.Error()+stderr, secret)
 	}
+	// Refusal output (error text plus everything printed to stderr) must not
+	// hint at how to unlock; this is the pre-existing protection.
+	message := strings.ToLower(strings.ReplaceAll(err.Error()+stderr, config.ErrWrongPassword.Error(), ""))
+	for _, forbidden := range []string{"unlock", "--password", "sha256", "hash", "password"} {
+		require.NotContains(t, message, forbidden)
+	}
 }
 
 func TestDirectConfigCommandsHonorLocalLock(t *testing.T) {
@@ -168,9 +174,8 @@ func TestDirectConfigCommandsHonorLocalLock(t *testing.T) {
 				args = append(args, "zai")
 			}
 			stdout, stderr, runErr := runLockTree(t, workspace, dataDir, args...)
-			require.ErrorIs(t, runErr, config.ErrWrongPassword)
+			assertRefusal(t, stderr+stdout, runErr, config.ErrWrongPassword)
 			require.Empty(t, stdout)
-			require.Contains(t, runErr.Error()+stderr, "wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
 			for _, secret := range []string{wrongPassword, localPassword, config.HashPassword(localPassword)} {
 				require.NotContains(t, runErr.Error()+stderr, secret)
 			}
