@@ -19,8 +19,12 @@ func hostLockPath(dataDir, hostID string) string {
 // CheckLiveHosts refuses the destructive async_jobs migration while any
 // enumerated host looks alive. The future destructive migration step (R12-H)
 // calls it as a PreMigrationCheck while the migration decision lock
-// (<dataDir>/migrate.lock) is still held, so no host can register between the
-// probe and the DROP.
+// (<dataDir>/migrate.lock) is still held. The gate blocks migration/cutover
+// operations while hosts are alive, but the migrate.lock it runs under does
+// NOT by itself prevent host registration: registering takes only an
+// advisory host lock plus an async_hosts insert and never touches
+// migrate.lock (see session host registration), so operators must still
+// quiesce hosts for the whole migration window.
 //
 // Every async_hosts row is probed, including hosts with zero jobs (a live
 // host with no jobs may still be mid-write). Dead-only hosts proceed. Alive

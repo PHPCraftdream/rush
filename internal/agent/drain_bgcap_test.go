@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
@@ -224,54 +225,218 @@ func TestBGShellCapDeferred_OnlyWhenEveryDebtRowIsOverCap(t *testing.T) {
 	}
 }
 
-// A check that cannot take the arrival gate (a completion is mid-step) fails
-// closed as an error, never as "not deferred": readTurnFacts takes bgArrival
-// BEFORE the debt-rows read, so a blocked check reads nothing. Proven
-// deterministically: the check signals the seam right before the gate, and
-// only then the notices table is made unreadable -- the error must name the
-// gate-ordered read, not an earlier one.
+// bindRealNodeFacts binds the REAL node-backed fact source over the attempt
+// fixture's own database (the production wiring shape, app_agent_setup.go
+// 202-209): every readTurnFactsBatch read below is a real batch_nodes /
+// session_notices read, never the unknown fail-safe's unconditional error
+// (jb-g1b.gh#6).
+func bindRealNodeFacts(t *testing.T, f *attemptFixture) BatchCutoverFacts {
+	t.Helper()
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	facts := NewBatchCutoverNodeFacts(
+		session.NewBatchStore(f.env.conn),
+		session.NewBatchLiveReader(db.New(f.env.conn), f.env.workingDir),
+		f.env.conn)
+	BindCoordinatorBatchCutoverFacts(f.coord, facts)
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
+	return facts
+}
+
+// seedOverCapCompletion inserts one bg-shell completion row and records its
+// over-cap mark: the state a completion lands in when every slot is spent.
+func (f *attemptFixture) seedOverCapCompletion(ctx context.Context, text string) {
+	f.t.Helper()
+	id, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, text, true, "")
+	require.NoError(f.t, err)
+	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
+		if s.overCap == nil {
+			s.overCap = make(map[int64]struct{})
+		}
+		s.overCap[id] = struct{}{}
+	})
+}
+
+// readObservingFacts decorates the real node facts with one hook: after the
+// REAL pending-inclusive rows read returns, it captures the arbiter's
+// over-cap state exactly as the check's gated observation saw it. Only
+// PendingInclusiveDebt is reachable from the cap check's fact read
+// (readTurnFactsBatch); the embedded interface keeps the wrapper honest
+// about that scope.
+type readObservingFacts struct {
+	BatchCutoverFacts
+	afterRead func()
+}
+
+func (r readObservingFacts) PendingInclusiveDebt(ctx context.Context, owner string) (session.BatchPendingDebt, error) {
+	rows, err := r.BatchCutoverFacts.PendingInclusiveDebt(ctx, owner)
+	r.afterRead()
+	return rows, err
+}
+
+// TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed: a REAL
+// arrival parked mid-step (its notice row is committed, its over-cap mark is
+// not — the bgArrivalInsertedSeam point) holds bgArrival. The check reaches
+// the gate (readTurnFactsGateSeam fires immediately before the acquisition,
+// readTurnFactsBatch:489-491) and parks there; cancelling it WHILE parked
+// must surface the cancellation attributed to the ARRIVAL WAIT.
 //
-// Revert-check: removing bgArrival from readTurnFacts (the read answers from
-// reads that no longer wait for the arrival) lets the check return without
-// the error and turns this red.
+// Two schedules:
+//   - gate present: the check parks at the held gate; the cancel unblocks
+//     that wait; the error is "turn facts: bg arrival: context canceled" and
+//     every assertion below passes.
+//   - gate acquisition deleted (the mutation): the check never parks — it
+//     proceeds straight to the rows read with the cancelled context, so the
+//     error is "turn facts: batch debt rows: context canceled" or, if the
+//     read won the race against the cancel, there is no error at all. Either
+//     way the test is red: the "bg arrival" attribution fails when the
+//     cancellation came from the read, and require.Error fails when the read
+//     completed before the cancel.
 func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
+	f, _ := newBGShellCapFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
+	bindRealNodeFacts(t, f)
 	ctx := context.Background()
-	f := newAttemptFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
 	for range maxConsecutiveAutoResumes {
 		f.coord.bumpConsecutiveResume(f.sessID)
 	}
-	require.NoError(t, f.coord.bgArrival.lock(ctx)) // an arrival mid-step
-	unlocked := false
-	defer func() {
-		if !unlocked {
-			f.coord.bgArrival.unlock()
-		}
-	}()
+	f.seedOverCapCompletion(ctx, "over-cap completion #1")
 
-	entered := make(chan struct{})
-	seam := func() { close(entered) }
-	readTurnFactsGateSeam.Store(&seam)
+	// Park one REAL arrival mid-step: row committed, slot decision pending.
+	inserted := make(chan struct{})
+	releaseInsert := make(chan struct{})
+	park := func() {
+		inserted <- struct{}{}
+		<-releaseInsert
+	}
+	bgArrivalInsertedSeam.Store(&park)
+	t.Cleanup(func() { bgArrivalInsertedSeam.Store(nil) })
+	arrivalDone := make(chan bool, 1)
+	go func() { arrivalDone <- f.coord.persistBGShellCompletion(f.sessID, "sh-gate", "done") }()
+	<-inserted // the arrival holds the gate: row committed, mark pending
+
+	// Park the check AT the gate, then cancel it while it waits there; the
+	// parked arrival is released only after the check has returned.
+	reached := make(chan struct{})
+	atGate := func() { close(reached) }
+	readTurnFactsGateSeam.Store(&atGate)
 	t.Cleanup(func() { readTurnFactsGateSeam.Store(nil) })
-
+	blocked, cancel := context.WithCancel(context.Background())
 	type answer struct {
 		deferred bool
 		err      error
 	}
-	done := make(chan answer, 1)
+	checkDone := make(chan answer, 1)
+	go func() {
+		d, err := capDeferred(blocked, f.coord, f.sessID)
+		checkDone <- answer{d, err}
+	}()
+	<-reached // the check is at the gate; the gate being held, it parks there
+	cancel()  // cancel WHILE parked; release nothing yet
+
+	res := <-checkDone
+	close(releaseInsert)
+	<-arrivalDone
+
+	require.Error(t, res.err, "a check cancelled while parked at the arrival gate must fail closed")
+	require.ErrorIs(t, res.err, context.Canceled)
+	require.Contains(t, res.err.Error(), "bg arrival",
+		"the cancellation must be attributed to the arrival wait itself — this assertion is what proves the check parked at the gate")
+	require.False(t, res.deferred)
+}
+
+// TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair: the debt-rows
+// read and the over-cap set are ONE ordered observation (ASYNC-02/09). A REAL
+// arrival is parked mid-step (its row is committed, its over-cap mark is not)
+// and holds the gate; the check must queue behind it, so the pair it observes
+// is consistent — both rows over-cap — and rule 11
+// (turn_arbiter.go:311-314) defers. readObservingFacts captures the over-cap
+// state at the moment of the check's OWN rows read, inside the gate, not
+// after the fact.
+//
+// Two schedules:
+//   - gate present: the check's rows read runs strictly after the arrival's
+//     slot decision (the check can only take the gate after the arrival
+//     released it, and the release happens after the decision), so
+//     observedCount and the post-run count are both 2 and the launch defers.
+//     Deterministic.
+//   - gate acquisition deleted (the mutation): the check's rows read races
+//     the parked arrival's slot decision, so THIS test's outcome is not
+//     deterministic and may false-pass. The deterministic deletion detector
+//     is TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed above.
+func TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair(t *testing.T) {
+	f, _ := newBGShellCapFixture(t, "cap-pair", attemptFixtureOpts{noIdle: true})
+	nodeFacts := bindRealNodeFacts(t, f)
+	observedCount := 0
+	readDone := make(chan struct{})
+	BindCoordinatorBatchCutoverFacts(f.coord, readObservingFacts{
+		BatchCutoverFacts: nodeFacts,
+		afterRead: func() {
+			observedCount = f.coord.bgShellOverCapCount(f.sessID)
+			close(readDone)
+		},
+	})
+	ctx := context.Background()
+	for range maxConsecutiveAutoResumes {
+		f.coord.bumpConsecutiveResume(f.sessID)
+	}
+	f.seedOverCapCompletion(ctx, "over-cap completion #1")
+
+	// Park one REAL arrival mid-step: row committed, slot decision pending.
+	inserted := make(chan struct{})
+	releaseInsert := make(chan struct{})
+	park := func() {
+		inserted <- struct{}{}
+		<-releaseInsert
+	}
+	bgArrivalInsertedSeam.Store(&park)
+	t.Cleanup(func() { bgArrivalInsertedSeam.Store(nil) })
+	arrivalDone := make(chan bool, 1)
+	go func() { arrivalDone <- f.coord.persistBGShellCompletion(f.sessID, "sh-pair", "done") }()
+	<-inserted // the arrival holds the gate: row committed, mark pending
+
+	reached := make(chan struct{})
+	atGate := func() { close(reached) }
+	readTurnFactsGateSeam.Store(&atGate)
+	t.Cleanup(func() { readTurnFactsGateSeam.Store(nil) })
+	type answer struct {
+		deferred bool
+		err      error
+	}
+	checkDone := make(chan answer, 1)
 	go func() {
 		d, err := capDeferred(ctx, f.coord, f.sessID)
-		done <- answer{d, err}
+		checkDone <- answer{d, err}
 	}()
-	<-entered // the check is waiting at the arrival gate, reads not started
-	f.exec(ctx, `ALTER TABLE session_notices RENAME TO fx_session_notices`)
-	f.coord.bgArrival.unlock()
-	unlocked = true
-	res := <-done
-	f.exec(ctx, `ALTER TABLE fx_session_notices RENAME TO session_notices`)
+	<-reached // the check is at the gate; the gate being held, it parks there
 
-	require.Error(t, res.err, "a check that cannot pass the gate must fail closed")
-	require.Contains(t, res.err.Error(), "debt rows")
-	require.False(t, res.deferred)
+	// Serialization proof: with the gate held by the parked arrival the
+	// check cannot have completed — it is parked at the gate above. Under
+	// the deleted-acquisition mutation this select is scheduling-dependent
+	// (documented in the schedule analysis).
+	var res answer
+	early := false
+	select {
+	case res = <-checkDone:
+		// The only result was consumed: record the failure, but still
+		// release the parked arrival below so the test cannot hang.
+		early = true
+		t.Error("the check finished while the arrival was still parked: the gate did not serialise it")
+	default:
+	}
+
+	close(releaseInsert) // the arrival's slot decision commits; the gate opens
+	if !early {
+		res = <-checkDone
+	}
+	<-arrivalDone
+	<-readDone
+
+	require.NoError(t, res.err)
+	require.True(t, res.deferred,
+		"rows + over-cap marks are ONE observation: both completions are over the cap")
+	require.EqualValues(t, 2, observedCount,
+		"the over-cap state captured at the check's own rows read, inside the gate")
+	require.EqualValues(t, 2, f.coord.bgShellOverCapCount(f.sessID),
+		"the parked arrival's mark is part of the same pair")
 }
 
 // P1-3 of the R-ARB-2 review: an over-cap completion landing in the seam

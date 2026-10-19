@@ -582,7 +582,41 @@ func (e *cutoverEnv) logDebtRows(t *testing.T) {
 		t.Logf("AW debt root=%s node=%s wake=%d reacted=%d delivery=%s", root, node, wake, reacted, delivery)
 	}
 	require.NoError(t, rows.Err())
-	t.Logf("AW history background notices: %d", e.backgroundNoticeCount())
+	backgroundNotices := e.backgroundNoticeCount()
+	t.Logf("AW history background notices: %d", backgroundNotices)
+	for _, entry := range e.historyNoticeSnapshot() {
+		t.Logf("AW history notice %s", entry)
+	}
+}
+
+// historyNoticeSnapshot dumps the ordered background-notice history rows as
+// {role, id, notice-kind, text-prefix} entries, so the CI log carries the
+// identities and content of the history alongside the bare count. The
+// ordering mirrors the production ListMessagesBySession query
+// (internal/db/sql/messages.sql): (created_at ASC, rowid ASC) -- rowid is
+// the tie-breaker because messages.id is a non-monotonic UUID.
+func (e *cutoverEnv) historyNoticeSnapshot() []string {
+	e.t.Helper()
+	rows, err := e.conn.QueryContext(e.ctx,
+		`SELECT id, role, COALESCE(notice_kind, ''), COALESCE(origin, ''), substr(parts, 1, 80)
+		 FROM messages WHERE session_id = ?1 AND background_job_notice = 1
+		 ORDER BY created_at, rowid`, e.sessionID)
+	require.NoError(e.t, err)
+	defer rows.Close()
+	const maxEntries = 20
+	var out []string
+	for rows.Next() {
+		if len(out) >= maxEntries {
+			out = append(out, "... (truncated)")
+			break
+		}
+		var id, role, kind, origin, prefix string
+		require.NoError(e.t, rows.Scan(&id, &role, &kind, &origin, &prefix))
+		out = append(out, fmt.Sprintf("role=%s id=%s kind=%s origin=%s text=%q",
+			role, id, kind, origin, prefix))
+	}
+	require.NoError(e.t, rows.Err())
+	return out
 }
 
 // cutoverStateLive mirrors the store's live-state vocabulary.
