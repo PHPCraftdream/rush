@@ -76,23 +76,21 @@ func TestCompaction_DoesNotClearUnreactedDebt(t *testing.T) {
 func TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newWakeDebtFixture(t, "another-holder-pulls")
-	f.claimAndFinish(t, ctx, "call-1")
+	f := newA2WakeDebtFixture(t, "another-holder-pulls", true)
+	f.a2ClaimAndFinish(t, ctx, "call-1")
 
 	// "A web tab" pulls the notice into history directly -- NOT through
 	// wakeSession/the Drain machinery at all, just the raw pull primitive
 	// any session-lock holder can call.
-	pulled, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
-	require.True(t, f.debtVisible(t, ctx), "an independent pull must not erase the debt it just made visible")
+	f.a2PullJobNoticesOnce(t, ctx)
+	require.True(t, f.a2DebtVisible(t, ctx), "an independent pull must not erase the debt it just made visible")
 
 	// The legitimate leader (a wakeSession call, standing in for `rush run`'s
 	// own loop reacting to its hint) still runs a real turn over it.
-	err = f.coord.wakeSession(ctx, f.sessID, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.NotZero(t, f.requests.Load(), "the root must still get a real turn despite another holder's pull")
-	require.False(t, f.debtVisible(t, ctx), "the root's own turn must react and clear the debt")
+	require.False(t, f.a2DebtVisible(t, ctx), "the root's own turn must react and clear the debt")
 }
 
 // failingThenOKUpdateTxMessages fails UpdateTx exactly once, then delegates
@@ -159,25 +157,24 @@ func (f *failingThenOKUpdateTxMessages) UpdateTx(ctx context.Context, tx *sql.Tx
 func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newWakeDebtFixtureNoIdleHook(t, "step-finish-write-failure")
+	f := newA2WakeDebtFixture(t, "step-finish-write-failure", false)
 	failing := &failingThenOKUpdateTxMessages{Service: f.messages.Service}
 	failing.remaining.Store(1) // fail exactly the first UpdateTx call
 	f.messages.Service = failing
-	f.claimAndFinish(t, ctx, "call-1")
-	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.True(t, f.debtVisible(t, ctx))
+	f.a2ClaimAndFinish(t, ctx, "call-1")
+	f.a2PullJobNoticesOnce(t, ctx)
+	require.True(t, f.a2DebtVisible(t, ctx))
 
-	err = f.coord.wakeSession(ctx, f.sessID, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err, "fantasy discards a bare OnStepFinish error -- wakeSession must not surface one either")
-	require.True(t, f.debtVisible(t, ctx), "the debt must survive an unwritten step-finish")
+	require.True(t, f.a2DebtVisible(t, ctx), "the debt must survive an unwritten step-finish")
 
 	// The retry pause elapses (the gate reopens); exactly one more Drain, now
 	// that the write succeeds, resolves it.
 	f.ledger.resetDrainGate(f.sessID)
 	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
-	require.False(t, f.debtVisible(t, ctx), "the very next attempt must clear the debt -- no further chain needed")
+	require.False(t, f.a2DebtVisible(t, ctx), "the very next attempt must clear the debt -- no further chain needed")
 }
 
 // TestInterruptDuringDrain_OperatorMessageReachesProvider: a REAL interrupt

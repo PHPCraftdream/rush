@@ -68,6 +68,13 @@ func guardIsolateCompletions(f *attemptFixture) {
 func guardSeedNotice(t *testing.T, f *attemptFixture, ctx context.Context, toolCallID string) {
 	t.Helper()
 	f.seedDebt(ctx, toolCallID, false)
+	if batchFlagEnabled() {
+		// The batch seed leaves no in-memory ledger job (the batch store is
+		// the only debt authority), so ownWork already starts false.
+		require.Nil(t, jobOf(f.ledger, f.sessID, toolCallID),
+			"the batch seed must not register a ledger job for %s", toolCallID)
+		return
+	}
 	job := jobOf(f.ledger, f.sessID, toolCallID)
 	require.NotNil(t, job, "seedDebt registered a job for %s", toolCallID)
 	f.ledger.finish(job, jobResult{content: "notice output"})
@@ -264,8 +271,14 @@ func TestInTurnGuard_StopsEchoWaitSpamWhileOwnJobRuns(t *testing.T) {
 	// turn, so no fifth echo is ever served.
 	require.EqualValues(t, 5, f.requests.Load(),
 		"the held job plus four refused waits: the guard ends the turn on the fifth")
-	wRow := f.row(ctx, "guard-w")
-	require.Equal(t, "running", wRow.State, "W outlives the stopped turn")
+	if batchFlagEnabled() {
+		// Flag ON the held job's authority is the in-memory ledger job; the
+		// batch store carries no row for it (asyncTool is retained wiring).
+		require.NotNil(t, jobOf(f.ledger, f.sessID, "guard-w"), "W outlives the stopped turn")
+	} else {
+		wRow := f.row(ctx, "guard-w")
+		require.Equal(t, "running", wRow.State, "W outlives the stopped turn")
+	}
 	require.True(t, f.ledger.running(f.sessID), "W keeps the session's scope open")
 	for i := 1; i <= 4; i++ {
 		_, getErr := f.store.Get(ctx, f.sessID, "guard-echo-"+strconv.Itoa(i))
