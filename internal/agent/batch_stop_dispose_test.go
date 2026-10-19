@@ -25,8 +25,11 @@ package agent
 //     A settles terminal as "cancelled" even though its write landed —
 //     stop-then-physical-return is recorded as cancelled, deterministically.
 //   - The Execution owner is released only by the Dispose wrapper: it is
-//     still held after the Stop acknowledgement and drops only after the
-//     physical settle + Runner.Release + dispose.
+//     still held after the Stop acknowledgement (asserted kind-isolated via
+//     h2aOwnerKindCount on the synchronized typed owner set, while the
+//     provider I/O is observably inside its WriteFile via the provider's
+//     enteredCh signal) and drops only after the physical settle +
+//     Runner.Release + dispose.
 //
 // Production mutation caught: releasing admission/capability owners on
 // cancellation observation alone (instead of after the physical return and
@@ -77,11 +80,20 @@ func TestStopHoldsExecutionUntilPhysicalDispose(t *testing.T) {
 	}}
 	root := installSubmit(t, env.install, spec)
 
-	// Leaf A parks INSIDE the provider WriteFile gate.
+	// Leaf A parks INSIDE the provider WriteFile gate. The wait is on the
+	// PROVIDER's own entry signal (h2aGatingDisk.enteredCh, fired inside
+	// h2aGatingDisk.WriteFile AFTER the leaf handed off to the provider and
+	// BEFORE the blocking wait) — NOT on env.leaf.inFlight, which the capture
+	// leaf sends BEFORE its provider call and which therefore proves only
+	// that the leaf started. Observing enteredCh proves the physical
+	// provider I/O is in flight at the moment Stop is driven: an
+	// early-Execution-release mutation (releasing owners on cancellation
+	// observation instead of after the physical return and Dispose) is
+	// judged while the provider call is still blocked.
 	select {
-	case <-env.leaf.inFlight:
+	case <-env.fake.enteredCh():
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "leaf A never reached its provider gate")
+		require.FailNow(t, "leaf A never reached the provider WriteFile barrier")
 	}
 
 	// Drive the REAL Stop: the acknowledgement returns while the physical
@@ -97,6 +109,21 @@ func TestStopHoldsExecutionUntilPhysicalDispose(t *testing.T) {
 	require.NoError(t, err, "the Execution owner must survive the Stop acknowledgement")
 	_, err = env.registries.Resolve(env.registryID)
 	require.NoError(t, err, "the pinned construction stays alive beneath the execution")
+	// Execution-owner retention, isolated from the fixture's Construction
+	// owner by owner KIND (the fixture's Construction pin is deliberately
+	// kept until housekeeping below — release order is not disturbed): the
+	// synchronized typed owner set must hold EXACTLY one execution owner at
+	// the stop point (leaf A in flight; leaf B start-rejected) plus the
+	// fixture's construction owner. A mutation that releases owners on
+	// cancellation observation drops the execution kind to zero HERE, while
+	// the provider I/O is still blocked inside WriteFile — this assertion is
+	// what fails it. (Root/call owners for the pending sibling are not
+	// asserted: the fixture's Construction owner is the only other retention
+	// this test itself controls, hence >= 1 rather than an exact total.)
+	require.Equal(t, 1, h2aOwnerKindCount(env.install.DiskBindings, diskOwnerExecution),
+		"the EXECUTION owner must still be held at the provider barrier after the Stop ack")
+	require.GreaterOrEqual(t, h2aOwnerKindCount(env.install.DiskBindings, diskOwnerConstruction), 1,
+		"the fixture's Construction owner is still held at the stop point")
 
 	// Physical return: leaf A's write lands and settles — exactly ONE
 	// physical settlement. The stopped leaf B is start-rejected (the engine

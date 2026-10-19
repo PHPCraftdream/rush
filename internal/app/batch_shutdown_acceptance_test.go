@@ -664,6 +664,185 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 	}
 }
 
+// TestShutdownGracefulWaitsForInFlightWorkBeforeRelease: graceful shutdown
+// with work IN FLIGHT (not run-to-completion like
+// TestShutdownGracefulReleasesRealWriterAndHostLock). Two test-owned gates:
+// the provider's physical fs_write is blocked (the batch tree is durably
+// running in the real store), and the runner's Dispose of the gated
+// execution is blocked. ShutdownWithResult is driven on a goroutine WHILE
+// both gates are held: the drain must WAIT — mid-hold, the OS host lock is
+// still held (kernel-attested probe) and the DB writer still answers, i.e.
+// NOTHING has been released beneath the outstanding execution. Releasing the
+// gates within the graceful budget (appBatchDrainTimeout) lets the disposal
+// of the in-flight execution finish BEFORE the drain returns and releaseAll
+// runs; the shutdown completes graceful (Forced=false) with the disposal
+// observed first, then the host lock gone and the writer released. The
+// ordering is proven directly: the provider gate alone is opened first, the
+// gated Dispose blocks mid-shutdown, and WHILE it is blocked the writer ping
+// still succeeds and the cross-process probe still reports Alive — i.e.
+// releaseAll (host release, fence recheck, writer release) had not run.
+//
+// Mutations caught:
+//   - releasing resources before Dispose (releaseAll running ahead of the
+//     gated Dispose): the while-blocked probe flips to Dead and the writer
+//     ping fails — both fail their mid-hold require.
+//   - skipping Dispose of the in-flight execution: the drain would return
+//     without disposeDone closing, and the disposeDone wait below times out.
+func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
+	// Dispose-side gate (decorator) + its completion signal.
+	disposeEntered := make(chan struct{}, 1)
+	disposeRelease := make(chan struct{})
+	var disposeReleaseOnce sync.Once
+	releaseDispose := func() { disposeReleaseOnce.Do(func() { close(disposeRelease) }) }
+	disposeDone := make(chan struct{})
+	decorate := func(execution jobbatch.Execution) jobbatch.Execution {
+		disposer, hasDisposer := execution.(jobbatch.Disposer)
+		output, hasOutput := execution.(jobbatch.OutputReader)
+		require.True(t, hasDisposer, "default generic execution exposes physical Dispose")
+		require.True(t, hasOutput, "default generic execution exposes OutputReader")
+		return &shutdownDisposeGate{Execution: execution, entered: disposeEntered, release: disposeRelease, disposeDone: disposeDone, disposer: disposer, output: output}
+	}
+	var h *shutdownAcceptanceApp
+	h = newShutdownAcceptanceAppWithDecorator(t, false,
+		fsWriteScript(func() string { return h.targetPath }, "SHUTDOWN_GRACEFUL_INFLIGHT_OK"), decorate)
+
+	// Provider-side gate: block INSIDE the physical fs_write so the work is
+	// IN FLIGHT (the run has NOT completed) while the batch tree is durably
+	// live in the real store.
+	h.provider.arm()
+	t.Cleanup(func() {
+		// Failure housekeeping: open every gate so the run, the disposal and
+		// the shutdown unwind; the graceful fixture cleans up the rest.
+		h.provider.letGo()
+		releaseDispose()
+	})
+
+	runDone := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(runDone)
+		_, runErr = h.executeRun()
+	}()
+	select {
+	case <-h.provider.enteredCh():
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the provider WriteFile never entered the gate through the real executor")
+	}
+
+	// The in-flight work is accepted and observable as PERSISTED running
+	// state: the batch root row (parent NULL) and its single task child are
+	// nonterminal in the real store (same durable oracle as the forced test).
+	var nonterminal, roots int
+	require.NoError(t, h.app.DB().QueryRowContext(context.Background(),
+		`SELECT
+			count(*) FILTER (WHERE parent_id IS NULL),
+			count(*)
+		 FROM batch_nodes WHERE owner_session_id = ?1 AND state IN ('pending', 'starting', 'running', 'cancelling')`,
+		h.sessionID).Scan(&roots, &nonterminal))
+	require.Equal(t, 2, nonterminal, "the in-flight batch root and its task child are live in the real store")
+	require.Equal(t, 1, roots, "the batch root row is live in the real store")
+
+	// PUBLIC graceful shutdown WHILE both gates are held: drive it on a
+	// goroutine so the test can observe the drain WAITING.
+	shutdownDone := make(chan ShutdownResult, 1)
+	go func() { shutdownDone <- h.app.ShutdownWithResult() }()
+
+	// Phase 1 — STILL HELD, before any gate release: one bounded observation
+	// window (~600ms of writer pings plus ONE cross-process host-lock probe).
+	// Every wait here is far inside the graceful budget appBatchDrainTimeout
+	// = 5s (internal/app/app_batch_install.go:27), so the drain cannot have
+	// timed out yet — this window is the budget bound for the ordering proof
+	// below.
+	holdDeadline := time.Now().Add(600 * time.Millisecond)
+	for {
+		require.NoError(t, h.app.DB().PingContext(context.Background()),
+			"while work is in flight the drain must not release the DB writer")
+		if !time.Now().Before(holdDeadline) {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	require.Equal(t, session.HostStatusAlive, probeHostInChild(t, h.dataDir, h.hostID),
+		"while work is in flight the drain must not release the OS host lock")
+
+	// Phase 2 — release ONLY the provider gate. The physical write unwinds,
+	// the runner reaches the gated Dispose, and Dispose BLOCKS on
+	// disposeRelease: disposeEntered signals that Dispose has started and is
+	// now blocked BEFORE any release ran.
+	h.provider.letGo()
+	select {
+	case <-disposeEntered:
+	case <-time.After(3 * time.Second):
+		require.FailNow(t, "the gated Dispose never entered (well inside the drain budget)")
+	}
+
+	// Phase 3 — WHILE Dispose is blocked, resources are STILL unreleased:
+	// writer ping succeeds and the host lock is still held. This is the
+	// dispose-before-release ordering evidence: releaseAll's order is
+	// ReleaseHostIdentity, then the fence recheck, then ReleaseWriter
+	// (internal/app/app_batch_drain.go:86-106) — if releaseAll had already
+	// run, the ping fails and the probe flips to Dead, failing both asserts.
+	require.NoError(t, h.app.DB().PingContext(context.Background()),
+		"resources are released only AFTER the gated Dispose ran")
+	require.Equal(t, session.HostStatusAlive, probeHostInChild(t, h.dataDir, h.hostID),
+		"the host lock is released only AFTER the gated Dispose ran")
+
+	// Phase 4 — NOW release the disposal and let the drain finish. The
+	// disposal completes, the drain returns to releaseAll, and the shutdown
+	// is graceful (the gates opened well inside appBatchDrainTimeout).
+	releaseDispose()
+	select {
+	case <-disposeDone:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the in-flight execution was never disposed (Dispose skipped or never reached)")
+	}
+	select {
+	case result := <-shutdownDone:
+		require.False(t, result.Forced, "gates released within the drain budget: shutdown is graceful")
+		require.Empty(t, result.CleanupErrors, "cleanup errors: %v", result.CleanupErrors)
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "the graceful shutdown never returned after the gates opened")
+	}
+
+	// The disposal happened BEFORE the release: disposeDone was observed
+	// above, and only afterwards is the released state asserted — the host
+	// lock is gone and the writer was released.
+	require.Equal(t, session.HostStatusDead, probeHostInChild(t, h.dataDir, h.hostID),
+		"graceful shutdown released the real host lock after the in-flight disposal")
+	originalDB := h.app.DB()
+	err := originalDB.PingContext(context.Background())
+	require.Error(t, err, "the pre-shutdown application DB handle must be closed")
+	// Every later query runs on a FRESH pooled handle: h.app.DB() still
+	// closes over the closed original connection (internal/app/app.go:357),
+	// so it must not be touched after the require.Error above.
+	freshConn, ferr := db.Connect(context.Background(), h.dataDir)
+	require.NoError(t, ferr, "the writer was released: the same dataDir reconnects cleanly")
+	require.NoError(t, freshConn.PingContext(context.Background()))
+	require.Zero(t, h.provider.closeCount(), "Rush borrows the provider and never closes it")
+
+	// The in-flight tree settled: nothing nonterminal remains (queried
+	// through freshConn, NOT the closed original handle).
+	require.NoError(t, freshConn.QueryRowContext(context.Background(),
+		`SELECT
+			count(*) FILTER (WHERE parent_id IS NULL),
+			count(*)
+		 FROM batch_nodes WHERE owner_session_id = ?1 AND state IN ('pending', 'starting', 'running', 'cancelling')`,
+		h.sessionID).Scan(&roots, &nonterminal))
+	require.Zero(t, nonterminal, "the in-flight work settled during the graceful drain")
+	require.Zero(t, roots, "no live batch root remains after the graceful drain")
+	// Exactly one release per fresh Connect (internal/db/connect.go:366:
+	// func ReleaseConn(conn *sql.DB) error).
+	require.NoError(t, db.ReleaseConn(freshConn))
+
+	// The run unwound (its context was cancelled by the shutdown).
+	select {
+	case <-runDone:
+		_ = runErr
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "the blocked run never unwound after the gates opened")
+	}
+}
+
 type shutdownDisposeGate struct {
 	jobbatch.Execution
 	entered     chan<- struct{}

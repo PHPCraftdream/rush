@@ -7,6 +7,7 @@ package sdk_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
 )
@@ -419,4 +421,200 @@ func TestSDKBatchRuntimeOnRunContextCancellation(t *testing.T) {
 	require.NotNil(t, res)
 	require.Equal(t, "end_turn", res.ExitReason)
 	require.Equal(t, marker, res.FinalText)
+}
+
+// sdkGatedDisk is a DiskProvider whose WriteFile BLOCKS on a test-owned gate
+// AFTER signaling it is inside the physical write; context cancellation does
+// not release the physical I/O (mirrors internal/app's shutdownGatedDisk
+// contract). All other calls go to the real OS provider.
+type sdkGatedDisk struct {
+	sdk.DiskProvider
+	mu      sync.Mutex
+	gate    chan struct{}
+	entered chan struct{}
+}
+
+func newSDKGatedDisk() *sdkGatedDisk {
+	return &sdkGatedDisk{DiskProvider: sdk.OSDiskProvider(), gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+}
+
+func (d *sdkGatedDisk) release() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.gate != nil {
+		close(d.gate)
+		d.gate = nil
+	}
+}
+
+func (d *sdkGatedDisk) WriteFile(_ context.Context, name string, data []byte, perm fs.FileMode) error {
+	d.mu.Lock()
+	gate := d.gate
+	d.mu.Unlock()
+	if gate != nil {
+		select {
+		case d.entered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	return d.DiskProvider.WriteFile(context.Background(), name, data, perm)
+}
+
+// sdkBatchStateTerminal mirrors internal/agent/batchAwaitTerminalState's
+// terminal set (internal/agent/batch_await.go, case "completed", ...).
+func sdkBatchStateTerminal(state string) bool {
+	switch state {
+	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
+		return true
+	}
+	return false
+}
+
+// waitForBatchNodes polls the REAL persisted batch_nodes tree for sessionID
+// until done holds (same .rush dataDir the client opened). It fails with the
+// last observed state distribution when the budget expires.
+func waitForBatchNodes(t *testing.T, conn *sql.DB, sessionID string, budget time.Duration, done func(nonterminal, roots int, states map[string]int) bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	var nonterminal, roots int
+	var states map[string]int
+	for {
+		require.NoError(t, conn.PingContext(context.Background()))
+		rows, err := conn.QueryContext(context.Background(),
+			`SELECT state, count(*), count(*) FILTER (WHERE parent_id IS NULL)
+			 FROM batch_nodes WHERE owner_session_id = ?1 GROUP BY state`, sessionID)
+		require.NoError(t, err)
+		states, nonterminal, roots = map[string]int{}, 0, 0
+		for rows.Next() {
+			var state string
+			var n, r int
+			require.NoError(t, rows.Scan(&state, &n, &r))
+			states[state] = n
+			if !sdkBatchStateTerminal(state) {
+				nonterminal += n
+			}
+			roots += r
+		}
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+		if done(nonterminal, roots, states) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s (last states=%v roots=%d nonterminal=%d)", msg, states, roots, nonterminal)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSDKBatchRuntimeCancelSettlesAcceptedWork: REAL-work cancellation over
+// the public SDK context. The scripted model emits a REAL fs_write tool call;
+// the tool's physical execution blocks INSIDE the gated provider AFTER the
+// batch work has been accepted and is observable as persisted batch_nodes
+// state (owner_session_id = the continued session). The run is then
+// cancelled through the caller's context — the production caller-cancel path
+// (agent/batch_cancel.go cancelBatchCall) submits the Runner Stop under a
+// bounded, non-cancelled control context, so a cancelled caller still cancels
+// the accepted root; the tree settles terminal with CauseStop => state
+// 'cancelled' (jobbatch/tree_apply.go causeState) once the physical work
+// unwinds.
+//
+// Mutations caught:
+//   - cancelling before acceptance (no accepted work observable): the
+//     gated-provider "entered" wait and/or the pre-cancel batch_nodes
+//     nonterminal wait both time out before cancel() is reached.
+//   - skipping settlement on cancel (Stop never reaches the accepted root):
+//     the Run still returns context.Canceled, but the post-cancel
+//     waitForBatchNodes poll for a terminal 'cancelled' tree never holds and
+//     fails with the last observed state distribution.
+func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
+	isolateGlobalConfig(t)
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+
+	workDir := evalTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
+	const path, content = "scoped/cancel-work.txt", "cancel-work-data"
+	disk := newSDKGatedDisk()
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(disk.release) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"call_w"`)) {
+			sseChunks(t, w, []map[string]any{textChunk("probe", "CANCEL_SETTLE_UNREACHABLE"), finishChunk("probe", "stop")})
+			return
+		}
+		sseChunks(t, w, []map[string]any{toolCallChunkNamed("probe", "call_w", "fs_write", map[string]any{
+			"items": []map[string]any{{"path": path, "content": content}},
+		}), finishChunk("probe", "tool_calls")})
+	}))
+	t.Cleanup(srv.Close)
+	writeProbeRushJSON(t, workDir, srv.URL)
+
+	client, err := sdk.Open(context.Background(), sdk.Options{WorkingDir: workDir})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	const sessionID = "sdk-batch-cancel-realwork"
+	seedTenantSession(t, workDir, sessionID)
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, rerr := client.Run(runCtx, sdk.RunRequest{
+			Prompt:            "cancel accepted work",
+			Mode:              sdk.RunModeJSON,
+			ContinueSessionID: sessionID,
+			HideSpinner:       true,
+			Overrides: sdk.RunOverrides{
+				FolderScopes: []sdk.FolderScope{{Dir: "scoped", Ops: []sdk.FileOp{sdk.FileOpCreate, sdk.FileOpRead}}},
+				DiskProvider: disk,
+			},
+		})
+		errCh <- rerr
+	}()
+
+	// The REAL work tool is executing inside the gated provider: the model
+	// emitted fs_write and the batch executor dispatched it.
+	select {
+	case <-disk.entered:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the scripted fs_write never entered the gated provider call")
+	}
+
+	// The accepted work is observable as PERSISTED batch state BEFORE the
+	// cancel: a nonterminal batch tree is owned by the continued session.
+	dataDir := filepath.Join(workDir, ".rush")
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	waitForBatchNodes(t, conn, sessionID, 60*time.Second,
+		func(nonterminal, roots int, states map[string]int) bool { return nonterminal > 0 },
+		"the accepted fs_write batch tree never became visible in batch_nodes")
+
+	// PUBLIC SDK cancellation while the physical work is in flight.
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled,
+			"cancelling the caller's context must abort the run, got %v", err)
+	case <-time.After(60 * time.Second):
+		t.Fatal("the cancelled run never returned")
+	}
+
+	// Release the physical write; the accepted tree settles: NO nonterminal
+	// node remains and the CauseStop terminal state 'cancelled' is recorded.
+	releaseOnce.Do(disk.release)
+	waitForBatchNodes(t, conn, sessionID, 60*time.Second,
+		func(nonterminal, roots int, states map[string]int) bool {
+			return nonterminal == 0 && states["cancelled"] >= 1
+		},
+		"the cancelled batch tree never settled terminal 'cancelled'")
+
+	// The REAL work actually executed: the physical write landed through the
+	// OS provider before the settlement.
+	got, err := os.ReadFile(filepath.Join(workDir, filepath.FromSlash(path)))
+	require.NoError(t, err)
+	require.Equal(t, content, string(got))
 }

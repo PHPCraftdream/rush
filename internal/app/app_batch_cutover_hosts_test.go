@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -175,6 +177,11 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 		_ = db.Release(dataDir)
 		os.Exit(4)
 	}
+	// Pin the identity for the helper's whole life: after the WriteFile below
+	// nothing else references h, and a GC cycle would finalize the lock's
+	// *os.File, closing the fd and silently dropping the OS lock (the parent
+	// then probes the host DEAD instead of ALIVE).
+	defer runtime.KeepAlive(h)
 	if err := os.WriteFile(idFile, []byte(h.ID), 0o644); err != nil {
 		_ = db.Release(dataDir)
 		os.Exit(5)
@@ -188,13 +195,29 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 // it ALIVE through the shared lock probe (a REAL lock the parent cannot
 // take), kills the holder (the crash model — the OS lock dies with the
 // process), probes it DEAD, and then a REAL flag-ON app built over the same
-// data dir registers its own HostStore identity and shuts down cleanly.
+// data dir runs the production dead-host recovery against the persisted work
+// before shutting down cleanly.
 //
-// Revert-check: reverting the flag-ON install to the AsyncJobStore's
-// EnsureHost keeps this green (both read async_hosts) — the independence
-// pin is TestBatchHostStoreFlagOn_TeardownWithoutAsyncJobsTable; reverting
-// the HostStore probe wiring (e.g. liveness through a store that never sees
-// the foreign lock) fails the Alive/Dead asserts.
+// Coverage: real batch work (a running root plus a running task child, seeded
+// through the real BatchStore reservation path before the crash) is settled
+// by the production dead-host recovery entry BatchRecoverDeadHost: the
+// unannounced root's whole subtree is deleted root-atomically
+// (BatchRecoveryOutcome.DeletedRoots == 1), an ANNOUNCED root with live nodes
+// takes the terminal-interruption arm (state = 'interrupted',
+// outcome_code = 'host_lost', Interrupted == 1, its root notice selected),
+// and a subsequent BatchRequestStop on the deleted root returns
+// session.ErrBatchControlStale (the dead-host dispatch path, which wires to
+// recovery) without further transitions; a second recovery is a no-op (no
+// replay).
+//
+// Revert-check: removing the HostStatusDead -> BatchRecoverDeadHost branch at
+// internal/session/batch_control.go (the dead-host recovery dispatch) leaves
+// the seeded roots unsettled and fails the subtree-deleted and 'interrupted'
+// asserts; removing batchRecoverRoot's settlement (DeleteBatchSubtree) fails
+// the DeletedRoots count and removing the interrupt arm fails the
+// Interrupted count. Reverting the HostStore probe wiring (e.g. liveness
+// through a store that never sees the foreign lock) fails the Alive/Dead
+// asserts.
 func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -229,6 +252,47 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	}
 	require.NotEmpty(t, hostID)
 
+	// Seed REAL persisted batch work owned by the helper host through the
+	// REAL store reservation path, via a throwaway handle on the shared data
+	// dir (same Connect/Release pattern as the helper process above).
+	seedConn, serr := db.Connect(ctx, dataDir)
+	require.NoError(t, serr)
+	t.Cleanup(func() { _ = db.Release(dataDir) })
+	// Two-result call: CreateSession returns (Session, error) — see
+	// internal/db/sessions.sql.go createSession (:one) and the seedSession
+	// helper in internal/session/host_lock_test.go, which passes only ID and
+	// Title (every other listed column keeps its INSERT zero/default value;
+	// none of them violates a sessions CHECK at zero).
+	seedQueries := db.New(seedConn)
+	_, cerr := seedQueries.CreateSession(ctx, db.CreateSessionParams{
+		ID: "r12f-parent", Title: "r12f-parent",
+	})
+	require.NoError(t, cerr)
+	bs := session.NewBatchStore(seedConn)
+	reserved, serr := bs.Reserve(ctx, session.BatchReservation{
+		Owner: "r12f-parent", Host: hostID,
+		ToolCallID: "call-r12f-recovery", InputHash: "hash-r12f-recovery",
+		Sequence: 1,
+		Root: session.BatchReservationNode{
+			Values: db.ReserveBatchNodeParams{
+				Kind: "batch",
+				Mode: nullString("parallel"), State: "running", ControlState: "none",
+			},
+			Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{
+				Kind: "task", TaskKind: nullString("test"), State: "running",
+				ControlState: "none",
+			}}},
+		},
+	})
+	require.NoError(t, serr)
+	rootID := reserved.Snapshot.Root.RootID
+	require.NotEmpty(t, rootID)
+	// The work exists, live, BEFORE the crash gate.
+	var seedState string
+	require.NoError(t, seedConn.QueryRowContext(ctx,
+		`SELECT state FROM batch_nodes WHERE root_id = ? AND node_id = root_id`, rootID).Scan(&seedState))
+	require.Equal(t, "running", seedState, "seeded root is live before the crash")
+
 	// The locked-host fault, probed for real: the parent cannot win the
 	// lock while the helper lives.
 	st, err := session.ProbeHostShared(dataDir, hostID)
@@ -254,6 +318,86 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	require.NoError(t, app.DB().QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM async_hosts WHERE id = ?`, got).Scan(&hosts))
 	require.Equal(t, 1, hosts, "first real-schema assertion: recovered HostStore row")
+
+	// Production recovery entry: BatchRecoverDeadHost (internal/session/
+	// batch_recovery.go:25) against the crashed host. Two roots are listed by
+	// BatchRecoveryRoots (batch_recovery.sql:3-9):
+	//   - the unannounced root (announced=0 matches the first disjunct, line 5;
+	//     the seeded root keeps the schema's announced default) takes
+	//     batchRecoverRoot's DeleteBatchSubtree arm (batch_recovery.go:74-75):
+	//     DeletedRoots == 1;
+	//   - the ANNOUNCED root seeded below (announced=1, live 'running' nodes)
+	//     takes the terminal-interruption arm (batch_recovery.go:77+ via
+	//     BatchRecoveryInterrupt, batch_recovery.sql:18-26: state='interrupted',
+	//     outcome_code='host_lost'): Interrupted == 1, and its root notice is
+	//     selected by BatchRecoveryNotice (batch_recovery.sql:28-37, WHERE
+	//     announced=1 AND notice_selected=0 — the seeded default):
+	//     Notices == 1. No pending batch_control_requests exist, so
+	//     Controls == 0.
+	stopStore := session.NewBatchStore(app.DB())
+	target := session.BatchControlTarget{
+		Owner: "r12f-parent", Host: hostID, Root: rootID, Node: rootID,
+	}
+	// Fixture for the second (announced) root through the raw-schema helper
+	// insertBatchNode (app_batch_cutover_test.go:47): owner is a fresh
+	// session, host is the crashed helper host, announced=1 with a nonempty
+	// announce_message_id (the batch_projection migration's CHECK requires it
+	// for announced=1), state 'running' so the interrupt arm sees live nodes.
+	const announcedRootID = "root-r12f-announced"
+	_, aerr := db.New(app.DB()).CreateSession(ctx, db.CreateSessionParams{
+		ID: "r12f-announced", Title: "r12f-announced",
+	})
+	require.NoError(t, aerr)
+	announcedFixture := testBatchRoot("r12f-announced", announcedRootID,
+		"call-r12f-announced", "running", 1)
+	announcedFixture.host = hostID
+	insertBatchNode(t, app, announcedFixture)
+	out, recErr := stopStore.BatchRecoverDeadHost(ctx, hostID, session.BatchSharedHostProbe(dataDir))
+	require.NoError(t, recErr)
+	require.Equal(t, int64(1), out.DeletedRoots, "the unannounced root's subtree is deleted")
+	require.Equal(t, int64(1), out.Interrupted, "the announced root is terminal-interrupted")
+	require.Equal(t, int64(1), out.Notices, "the announced root's notice is selected")
+	require.Zero(t, out.Controls, "no pending control requests existed")
+	var nodes int
+	require.NoError(t, app.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM batch_nodes WHERE root_id = ?`, rootID).Scan(&nodes))
+	require.Zero(t, nodes, "the settled unannounced root leaves no rows (deleted, not 'interrupted')")
+	var annState, annOutcome string
+	require.NoError(t, app.DB().QueryRowContext(context.Background(),
+		`SELECT state, outcome_state FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
+		announcedRootID).Scan(&annState, &annOutcome))
+	require.Equal(t, "interrupted", annState, "the announced root is persisted interrupted")
+	require.Equal(t, "interrupted", annOutcome, "its outcome_state is latched interrupted")
+
+	// The dead-host stop dispatch wires to recovery and returns BEFORE any
+	// request creation (batch_control.go:62-66 returns the empty request
+	// immediately): the unannounced root is gone, so batchControlTarget
+	// (batch_control.go:23-27) finds no rows and reports
+	// session.ErrBatchControlStale; the returned db.BatchControlRequest is
+	// the zero value (RequestID == "").
+	stopped, stopErr := stopStore.BatchRequestStop(ctx, target, session.BatchSharedHostProbe(dataDir))
+	require.ErrorIs(t, stopErr, session.ErrBatchControlStale,
+		"the documented dead-host result")
+	require.Empty(t, stopped.RequestID, "the dead branch never creates a control request")
+
+	// No replay: the second BatchRecoverDeadHost lists neither root anymore
+	// (the unannounced one is deleted, the announced one is terminal and its
+	// notice is already selected), so all four counters are zero. Both
+	// persisted states are re-read FRESH (no stale local variables).
+	out2, recErr2 := stopStore.BatchRecoverDeadHost(ctx, hostID, session.BatchSharedHostProbe(dataDir))
+	require.NoError(t, recErr2)
+	require.Zero(t, out2.DeletedRoots)
+	require.Zero(t, out2.Interrupted)
+	require.Zero(t, out2.Notices)
+	require.Zero(t, out2.Controls)
+	require.NoError(t, app.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM batch_nodes WHERE root_id = ?`, rootID).Scan(&nodes))
+	require.Zero(t, nodes, "the unannounced root stays gone (nothing re-created)")
+	require.NoError(t, app.DB().QueryRowContext(context.Background(),
+		`SELECT state FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
+		announcedRootID).Scan(&annState))
+	require.Equal(t, "interrupted", annState, "the announced root stays interrupted (no replay)")
+
 	res := app.ShutdownWithResult()
 	require.Empty(t, res.CleanupErrors)
 }
@@ -304,6 +448,55 @@ func TestLiveSessionDrivers_FlagOnLockProbe(t *testing.T) {
 	require.Contains(t, got, sess.ID, "own driver kept")
 	require.Contains(t, got, sibling.ID, "live sibling driver kept")
 	require.NotContains(t, got, dead.ID, "a provably dead host's marker keeps nothing open")
+}
+
+// TestLiveSessionDrivers_FlagOnWithoutAsyncJobStore: the flag-ON driver
+// reader must produce a verdict for a host the flag-OFF liveness CANNOT —
+// an App built with NO AsyncJobStore at all (the supported flag-ON shape,
+// see TestBatchRuntimeFactoryFlagOnWithoutAsyncJobStore) has no
+// HostLiveness to consult, and the store==nil closure's fail-open Unknown
+// would RETAIN a provably dead host's driver marker.
+//
+// Divergence evidence (async_job_reader.go): the legacy HostLiveness never
+// reads async_hosts heartbeats (they are display-only, sec.3.6) — for a
+// non-nil store its verdicts agree with the shared lock probe, so no
+// heartbeat divergence is constructible. The real divergence is the store
+// itself: the shared probe answers HostStatusDead for the crashed foreign
+// host, the legacy path on this App can only answer Unknown (alive).
+//
+// Revert-check: pointing the flag-ON liveness back at
+// app.asyncJobStore.HostLiveness unconditionally panics on the nil store
+// (HostLiveness derefs s.dataDir); guarding the reversion with the
+// store==nil Unknown fallback keeps the dead host's marker live and fails
+// the NotContains below.
+func TestLiveSessionDrivers_FlagOnWithoutAsyncJobStore(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
+		loopText(w, "a", "x", 1, 1)
+	})
+	ctx := context.Background()
+	// Foreign stores claim the markers; the App's own AsyncJobStore is then
+	// removed — the flag-ON factory no longer requires it (R12-F).
+	liveStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 6161, "live-foreign")
+	live, err := h.app.Sessions.Create(ctx, "flagon-nostore-live")
+	require.NoError(t, err)
+	require.NoError(t, liveStore.ClaimSessionDriver(ctx, live.ID))
+	// The live foreign store keeps its OS lock for the whole test: only this
+	// cleanup releases the handle (Windows sharing violation on
+	// hosts/<id>.lock otherwise, same as the sibling cleanup above).
+	t.Cleanup(func() { _ = liveStore.Close(context.Background()) })
+	deadStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 4242, "dead-foreign")
+	dead, err := h.app.Sessions.Create(ctx, "flagon-nostore-dead")
+	require.NoError(t, err)
+	require.NoError(t, deadStore.ClaimSessionDriver(ctx, dead.ID))
+	require.NoError(t, deadStore.SimulateCrashForTest())
+	h.app.asyncJobStore = nil
+
+	got, err := h.app.LiveSessionDrivers(ctx)
+	require.NoError(t, err)
+	require.Contains(t, got, live.ID, "the live foreign host's driver is kept by the shared probe")
+	require.NotContains(t, got, dead.ID,
+		"the probe's Dead verdict must drop the marker; the legacy store==nil Unknown fallback would keep it")
 }
 
 // TestDescribeOpenWorkFlagOn_BatchNodes: the wait heartbeat's flag-ON twin
@@ -373,6 +566,105 @@ func TestBatchNoticeStoreFlagOn_Wired(t *testing.T) {
 	require.Equal(t, session.HostStatusDead, st)
 	_, ownErr := session.ProbeHostShared(a.dataDir, hostID)
 	require.ErrorIs(t, ownErr, session.ErrProbeOwnHost, "own host id is never probed")
+}
+
+// noticeWiredParams is the pull build callback: the same shape as the
+// session package's sessionNoticeParams (notice_pull_test.go).
+func noticeWiredParams(row session.SessionNoticeRow) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:                message.User,
+		Parts:               []message.ContentPart{message.TextContent{Text: row.Text}},
+		BackgroundJobNotice: true,
+		NoticeKind:          row.Kind,
+	}
+}
+
+// TestBatchNoticeStoreFlagOn_PullVerdictsThroughWiring: the RETURNED notice
+// store runs its REAL pull surface (InsertSessionNotice ->
+// PullSessionNotices -> sessionNoticeVoidCondition) through the App's
+// HostStore wiring: identity (HostID) and liveness (SetHostNotDeadFunc
+// probing foreign hosts; own id alive by equality).
+//
+// Trace per owner: batch_nodes root on the owner's host -> supervision
+// notice -> PullSessionNotices: ListLiveBatchRootsForOwner -> wired
+// hostNotDeadF per root -> keep (delivery 'done' + message) or void
+// (delivery 'void', no message).
+//
+// Revert-check: dropping the SetHostIDFunc/SetHostNotDeadFunc wiring
+// (app_batch_cutover_hosts.go) leaves the zero-value defaults — HostID()
+// "" (first assert fails) and equal-ids-only aliveness with ownHostID="",
+// which is false for EVERY host — so the live-foreign and own-host notices
+// are voided and the Len/delivery asserts below fail exactly under the
+// reversion (the dead-foreign case alone cannot catch it: both wiring and
+// defaults void it).
+func TestBatchNoticeStoreFlagOn_PullVerdictsThroughWiring(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+	a := batchFactoryApp(t)
+	ctx := context.Background()
+	hostID, err := a.batchHostEnsure(ctx)
+	require.NoError(t, err)
+	// Same release pattern as TestBatchNoticeStoreFlagOn_Wired: the
+	// hand-assembled app has no batch runtime drain gate.
+	t.Cleanup(func() { _ = a.batchHostRelease(ctx) })
+	ns := a.batchNoticeStore()
+	require.NotNil(t, ns)
+	require.Equal(t, hostID, ns.HostID(), "identity wiring: the store knows the ensured host")
+
+	// A LIVE foreign host: holds its OS lock for the whole test (Close only
+	// in cleanup, no SimulateCrashForTest).
+	liveStore := session.NewAsyncJobStore(a.DB(), a.dataDir, 6161, "live-foreign")
+	t.Cleanup(func() { _ = liveStore.Close(context.Background()) })
+	liveHost, err := liveStore.EnsureHost(ctx)
+	require.NoError(t, err)
+	// A DEAD foreign host: crash-released lock, provably dead through the
+	// probe the wiring uses.
+	deadStore := session.NewAsyncJobStore(a.DB(), a.dataDir, 4242, "dead-foreign")
+	t.Cleanup(func() { _ = deadStore.Close(context.Background()) })
+	deadHost, err := deadStore.EnsureHost(ctx)
+	require.NoError(t, err)
+	require.NoError(t, deadStore.SimulateCrashForTest())
+	st, err := session.ProbeHostShared(a.dataDir, deadHost)
+	require.NoError(t, err)
+	require.Equal(t, session.HostStatusDead, st, "fixture: the dead foreign host is provably dead")
+
+	// One owner + one live batch root per host; the supervision void
+	// condition is per-owner (any not-dead live root keeps the notice), so
+	// the three verdicts need three owners.
+	q := db.New(a.DB())
+	seed := func(owner, id, host string) {
+		_, err := q.CreateSession(ctx, db.CreateSessionParams{ID: owner, Title: owner})
+		require.NoError(t, err)
+		f := testBatchRoot(owner, id, "call-"+id, "running", 0)
+		f.host = host
+		insertBatchNode(t, a, f)
+		require.NoError(t, ns.InsertSessionNotice(ctx, owner, session.NoticeKindSupervision, "still working on "+id, true, ""))
+	}
+	seed("wired-owner-live", "root-wired-live", liveHost)
+	seed("wired-owner-dead", "root-wired-dead", deadHost)
+	seed("wired-owner-own", "root-wired-own", hostID)
+
+	pull := func(owner string) []session.PulledNotice {
+		pulled, err := ns.PullSessionNotices(ctx, message.NewService(q), owner, noticeWiredParams)
+		require.NoError(t, err)
+		return pulled
+	}
+	delivery := func(owner string) string {
+		rows, err := q.ListSessionNoticesForOwner(ctx, owner)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		return rows[0].Delivery
+	}
+
+	require.Len(t, pull("wired-owner-live"), 1,
+		"a live root on a live foreign host keeps the notice (wired probe: not dead)")
+	require.Equal(t, "done", delivery("wired-owner-live"))
+	require.Empty(t, pull("wired-owner-dead"),
+		"a live root on a provably dead foreign host voids the notice")
+	require.Equal(t, "void", delivery("wired-owner-dead"),
+		"the void rule must have fired: a swallowed error would leave the row pending")
+	require.Len(t, pull("wired-owner-own"), 1,
+		"the own host is alive by identity, never probed")
+	require.Equal(t, "done", delivery("wired-owner-own"))
 }
 
 // TestBatchRuntimeFactoryFlagOnWithoutAsyncJobStore: with the flag ON the
