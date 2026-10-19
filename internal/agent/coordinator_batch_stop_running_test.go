@@ -40,6 +40,7 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			t.Setenv("RUSH_BATCH_RUNTIME", "1")
 			leaf := &coordinatorStopRunningLeaf{countingTool: countingTool{name: "stop-running"}, started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
 			env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
+			logs := captureOwnerStopErrors(t)
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(leaf.release) }) }
 			t.Cleanup(release)
@@ -98,6 +99,8 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			default:
 			}
 			c.stopTree(parent)
+			c.stopTree(parent)
+			c.stopTree(parent)
 			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, rootID).Scan(&state))
 			require.Equal(t, "cancelling", state)
 			var selected int
@@ -108,7 +111,17 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			c.stopTree(parent)
+			var pending int
+			var total int
+			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0) FROM batch_control_requests WHERE root_id=?`, rootID).Scan(&total, &pending))
+			require.Equal(t, 1, total)
+			require.Zero(t, pending)
+			var answerCode string
+			var answerSequence int64
+			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT answer_code, answer_sequence FROM batch_control_requests WHERE root_id=?`, rootID).Scan(&answerCode, &answerSequence))
+			require.Equal(t, "accepted", answerCode)
+			require.Greater(t, answerSequence, int64(0))
+			require.NotContains(t, logs.String(), "coordinator.Cancel:")
 			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, rootID).Scan(&state))
 			require.Equal(t, "cancelling", state)
 			release()
@@ -128,6 +141,11 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			debt, err := env.store.BatchReactionVisibleDebtExists(ctx, child)
 			require.NoError(t, err)
 			require.False(t, debt)
+			expired, err := env.store.BatchCountExpired(ctx, time.Now().Add(time.Hour).Unix())
+			require.NoError(t, err)
+			require.EqualValues(t, 1, expired, "only the settled child root is eligible; the fake parent is live")
+			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM batch_control_requests WHERE root_id=? AND status='pending'`, rootID).Scan(&pending))
+			require.Zero(t, pending)
 			fresh := newCutoverCoordinator(t, env)
 			cutoverBindFacts(t, fresh, env)
 			if !legacyAvailable {

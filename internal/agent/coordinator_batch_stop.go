@@ -25,11 +25,9 @@ func (c *coordinator) stopBatchOwners(ids []string) {
 	if len(targets) == 0 {
 		return
 	}
-	bind := coordinatorBatchBindingFor(c)
-	var runtimeRunner batchRunnerHandle
-	_, localHost, _ := batchRerunRuntime(c)
-	if bind == nil || bind.controls == nil {
-		runtimeRunner, _, _ = batchRerunRuntime(c)
+	runtimeRunner, localHost, _ := batchRerunRuntime(c)
+	if runtimeRunner == nil {
+		return
 	}
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stopCancel()
@@ -37,17 +35,15 @@ func (c *coordinator) stopBatchOwners(ids []string) {
 		if target.Host != "" && (localHost == "" || target.Host != localHost) {
 			continue
 		}
-		if bind != nil && bind.controls != nil {
-			if _, err := bind.controls.Stop(stopCtx, target.Owner, target.Root, target.Root); err != nil {
-				slog.Error("coordinator.Cancel: native batch stop failed", "owner", target.Owner, "root", target.Root, "err", err)
-			}
-			continue
-		}
-		if runtimeRunner == nil {
-			continue
-		}
 		if out := cancelBatchCall(stopCtx, runtimeRunner, jobbatch.ID(target.Root)); out.Err != nil {
+			// A failed cancellation must leave the durable request pending for retry.
 			slog.Error("coordinator.Cancel: batch stop failed", "owner", target.Owner, "root", target.Root, "err", out.Err)
+			continue
 		}
+		answerCtx, answerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := store.BatchAnswerOwnerStop(answerCtx, target); err != nil {
+			slog.Error("coordinator.Cancel: failed to answer batch stop", "owner", target.Owner, "root", target.Root, "request_id", target.RequestID, "err", err)
+		}
+		answerCancel()
 	}
 }

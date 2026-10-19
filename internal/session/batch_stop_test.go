@@ -1,7 +1,6 @@
 package session
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -37,10 +36,15 @@ func TestBatchStopRootFenceSurvivesAnsweredRequest(t *testing.T) {
 
 			targets, err := s.BatchStopOwners(ctx, []string{"owner"})
 			require.NoError(t, err)
-			require.Equal(t, []BatchControlTarget{{Owner: "owner", Host: "host", Root: snap.Root.RootID, Node: snap.Root.RootID}}, targets)
+			require.Len(t, targets, 1)
+			require.Equal(t, BatchStopOwnerTarget{BatchControlTarget: BatchControlTarget{Owner: "owner", Host: "host", Root: snap.Root.RootID, Node: snap.Root.RootID}, Status: "pending"}, BatchStopOwnerTarget{BatchControlTarget: targets[0].BatchControlTarget, Status: targets[0].Status})
+			require.NotEmpty(t, targets[0].RequestID)
+			firstRequestID := targets[0].RequestID
 			targets, err = s.BatchStopOwners(ctx, []string{"owner"})
 			require.NoError(t, err)
 			require.Len(t, targets, 1)
+			require.Equal(t, firstRequestID, targets[0].RequestID)
+			require.Equal(t, "pending", targets[0].Status)
 			var requests int
 			require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM batch_control_requests WHERE owner_session_id='owner' AND host_id='host' AND root_id=? AND node_id=?", snap.Root.RootID, snap.Root.RootID).Scan(&requests))
 			require.Equal(t, 1, requests)
@@ -52,11 +56,8 @@ func TestBatchStopRootFenceSurvivesAnsweredRequest(t *testing.T) {
 			var requestID string
 			require.NoError(t, conn.QueryRowContext(ctx, "SELECT request_id FROM batch_control_requests WHERE owner_session_id='owner' AND root_id=? AND node_id=?", snap.Root.RootID, snap.Root.RootID).Scan(&requestID))
 			if answered {
-				require.NoError(t, s.AnswerControl(ctx, db.AnswerBatchControlRequestParams{
-					RequestID: requestID, RootID: snap.Root.RootID, NodeID: snap.Root.RootID,
-					OwnerSessionID: "owner", HostID: "host", AnswerCode: "accepted",
-					AnswerSequence: sql.NullInt64{Int64: 3, Valid: true}, AnsweredAt: sql.NullInt64{Int64: 1, Valid: true},
-				}))
+				require.NoError(t, s.BatchAnswerOwnerStop(ctx, targets[0]))
+				require.NoError(t, s.BatchAnswerOwnerStop(ctx, targets[0]))
 			}
 			status := "pending"
 			if answered {
