@@ -21,6 +21,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/google/uuid"
@@ -67,10 +68,19 @@ func newEphemeralDiskBindingApp(t *testing.T) *App {
 
 	ctx := context.Background()
 	conn := openEphemeralTestDB(t, ctx)
-	store := config.NewLibraryStore(&config.Config{Options: &config.Options{
-		DataDirectory:   "",
-		NoRealWorkspace: true,
-	}}, t.TempDir())
+	// Providers/Models/RecentModels are initialized exactly like the SDK's
+	// buildLibraryConfig: New reads cfg.IsConfigured() and a nil provider
+	// map would panic there.
+	store := config.NewLibraryStore(&config.Config{
+		Options: &config.Options{
+			DataDirectory:   "",
+			NoRealWorkspace: true,
+		},
+		Providers:    csync.NewMap[string, config.ProviderConfig](),
+		Models:       make(map[config.SelectedModelType]config.SelectedModel),
+		MCP:          config.MCPs{},
+		RecentModels: make(map[config.SelectedModelType][]config.SelectedModel),
+	}, t.TempDir())
 
 	application, err := New(ctx, conn, store, SkipMCP())
 	require.NoError(t, err)
