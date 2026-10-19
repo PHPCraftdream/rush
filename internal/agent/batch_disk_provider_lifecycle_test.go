@@ -80,6 +80,7 @@ func (d *lifecycleFakeDisk) writeCount() int {
 }
 
 func (d *lifecycleFakeDisk) has(name string) (string, bool) {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	v, ok := d.files[name]
@@ -87,6 +88,7 @@ func (d *lifecycleFakeDisk) has(name string) (string, bool) {
 }
 
 func (d *lifecycleFakeDisk) Stat(_ context.Context, name string) (fs.FileInfo, error) {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	d.calls++
 	_, hasFile := d.files[name]
@@ -106,6 +108,7 @@ func (d *lifecycleFakeDisk) EvalSymlinks(_ context.Context, name string) (string
 }
 
 func (d *lifecycleFakeDisk) Open(_ context.Context, name string) (io.ReadCloser, error) {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	d.calls++
 	v, ok := d.files[name]
@@ -117,6 +120,7 @@ func (d *lifecycleFakeDisk) Open(_ context.Context, name string) (io.ReadCloser,
 }
 
 func (d *lifecycleFakeDisk) ReadFile(_ context.Context, name string) ([]byte, error) {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	d.calls++
 	v, ok := d.files[name]
@@ -128,6 +132,7 @@ func (d *lifecycleFakeDisk) ReadFile(_ context.Context, name string) ([]byte, er
 }
 
 func (d *lifecycleFakeDisk) MkdirAll(_ context.Context, name string, _ fs.FileMode) error {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls++
@@ -142,6 +147,7 @@ func (d *lifecycleFakeDisk) MkdirAll(_ context.Context, name string, _ fs.FileMo
 }
 
 func (d *lifecycleFakeDisk) WriteFile(_ context.Context, name string, data []byte, _ fs.FileMode) error {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls++
@@ -151,6 +157,7 @@ func (d *lifecycleFakeDisk) WriteFile(_ context.Context, name string, data []byt
 }
 
 func (d *lifecycleFakeDisk) Remove(_ context.Context, name string) error {
+	name = filepath.ToSlash(filepath.Clean(name))
 	d.mu.Lock()
 	delete(d.files, name)
 	d.mu.Unlock()

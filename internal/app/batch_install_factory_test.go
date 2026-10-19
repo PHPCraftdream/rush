@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -64,6 +65,15 @@ func TestBatchRuntimeFactoryBuildDormant(t *testing.T) {
 	require.NotNil(t, install.Delivery)
 	require.NotNil(t, install.NoticePull)
 	rt.Start()
-	t.Cleanup(rt.Stop)
 	require.NotNil(t, rt.Runner(), "Start constructs the Runner (P1-6 RunnerFactory)")
+	// jb-r11f.ci1#2 (T2): the checked Close drains the Runner — Stop alone does
+	// NOT (app_batch_runtime.go Stop never drains). Registered before Stop so
+	// LIFO runs Stop first, then bounded Close joins shutdown.
+	runner := rt.Runner()
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, runner.Close(closeCtx), "Close drains the Runner")
+	})
+	t.Cleanup(rt.Stop)
 }
