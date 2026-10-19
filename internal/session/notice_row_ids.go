@@ -19,6 +19,11 @@ import (
 type PendingNoticeDebt struct {
 	ID   int64
 	Kind string
+	// NodeID and ChildSessionID carry the published batch-question marker's
+	// node and child session. LiveHeldQuestions fills them; every other
+	// producer leaves them empty.
+	NodeID         string
+	ChildSessionID string
 }
 
 // InsertSessionNoticeReturningID is InsertSessionNotice that also returns the
