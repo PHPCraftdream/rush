@@ -25,13 +25,18 @@ func TestThemeAndKeepAliveHandlersMapPersistedValues(t *testing.T) {
 
 func readConfigEvent(t *testing.T, hub *Hub) ConfigWire {
 	t.Helper()
-	var envelope WSMessage
+	// EventConfig goes through the hub's coalescing slot, not hub.broadcast.
+	hub.configMu.Lock()
+	raw := hub.configPending
+	hub.configPending = nil
+	hub.configMu.Unlock()
 	select {
-	case raw := <-hub.broadcast:
-		require.NoError(t, json.Unmarshal(raw, &envelope))
+	case <-hub.configBroadcast:
 	default:
-		t.Fatal("handler did not broadcast config")
 	}
+	require.NotNil(t, raw, "handler did not broadcast config")
+	var envelope WSMessage
+	require.NoError(t, json.Unmarshal(raw, &envelope))
 	require.Equal(t, EventConfig, envelope.Type)
 	var wire ConfigWire
 	require.NoError(t, json.Unmarshal(envelope.Payload, &wire))
