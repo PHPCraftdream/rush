@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,25 +18,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// claimDelegation seeds one live `agent` delegation row owned by owner,
-// announced so the loop treats it as open work from the first turn on.
+// claimDelegation seeds one live `agent` delegation owned by owner, announced
+// so the loop treats it as open work from the first turn on. Dual-mode: the
+// f6 helper reserves a batch delegation when RUSH_BATCH_RUNTIME is ON and
+// claims the legacy async_jobs row when OFF.
 func claimDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, childID string) {
 	t.Helper()
-	_, err := application.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: owner, ToolCallID: toolCallID, Kind: session.JobKindAgent, Input: "x",
-		ChildSessionID: childID, ToolName: "agent",
-	})
-	require.NoError(t, err)
-	require.NoError(t, application.asyncJobStore.MarkAnnounced(ctx, owner, toolCallID))
+	f6ClaimDelegation(t, ctx, application, owner, toolCallID, childID)
 }
 
-// completeDelegation transitions one delegation row to completed.
+// completeDelegation completes one delegation through the selected authority
+// (batch projection when the flag is ON, legacy row transition when OFF);
+// wake turns the completion into reaction debt in both modes.
 func completeDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, summary string, wake bool) {
 	t.Helper()
-	_, err := application.asyncJobStore.Transition(ctx, session.TransitionParams{
-		Owner: owner, ToolCallID: toolCallID, State: "completed", ResultSummary: summary, Wake: wake,
-	})
-	require.NoError(t, err)
+	f6CompleteDelegation(t, ctx, application, owner, toolCallID, summary, wake)
 }
 
 // cliScopeOf reads the coordinator's ONE between-turns decision.
@@ -72,17 +69,11 @@ func hoistOnceWake(t *testing.T, application *App, sessionID string) {
 	}
 }
 
-// delegationRunning reports whether toolCallID's row is still running.
+// delegationRunning reports whether toolCallID's delegation is still running
+// through the selected authority.
 func delegationRunning(t *testing.T, application *App, sessionID, toolCallID string) bool {
 	t.Helper()
-	rows, err := application.asyncJobStore.ListRunningForOwners(context.Background(), []string{sessionID})
-	require.NoError(t, err)
-	for _, row := range rows {
-		if row.ToolCallID == toolCallID {
-			return true
-		}
-	}
-	return false
+	return f6DelegationRunning(t, application, sessionID, toolCallID)
 }
 
 // TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion: with two live delegations
@@ -96,6 +87,11 @@ func delegationRunning(t *testing.T, application *App, sessionID, toolCallID str
 func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 50*time.Millisecond, 0)()
 	var trans1At, req2At atomic.Int64
+	// The completer goroutine outlives neither the run nor the test: it is
+	// joined before any assertion so its require calls can never fire after
+	// the test completed (the suite panic "Fail in goroutine after
+	// TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion has completed").
+	var completers sync.WaitGroup
 	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, _ []byte, _ bool, n int) {
 		switch n {
 		case 1:
@@ -103,7 +99,9 @@ func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 				admissionSSEToolCall("aw", "call_aw", "await_tasks", `{"until":"any"}`),
 				admissionSSEStop("aw", "tool_calls"),
 			})
+			completers.Add(1)
 			go func() {
+				defer completers.Done()
 				ctx := context.Background()
 				time.Sleep(300 * time.Millisecond)
 				completeDelegation(h.t, ctx, h.app, h.sessionID, "deleg-1", "done-one", true)
@@ -132,6 +130,10 @@ func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 	claimDelegation(t, ctx, h.app, h.sessionID, "deleg-2", child2.ID)
 
 	res, _, runErr := h.run(ctx, RunOverrides{})
+	// The run ends only after the second completion drove the final drain,
+	// so the completer goroutine is done by now; the join keeps its require
+	// calls inside the test's lifetime either way.
+	completers.Wait()
 
 	require.NoError(t, runErr)
 	require.NoError(t, ctx.Err(), "the run finishes well within the deadline")
