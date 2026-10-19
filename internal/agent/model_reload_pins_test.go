@@ -59,7 +59,7 @@ func TestForkedWorkerReviewerPinsSurviveDiskReload(t *testing.T) {
 			"reviewer": map[string]any{"provider": provider, "model": "reviewer-pin"},
 		},
 		"providers": map[string]any{provider: map[string]any{
-			"type": "openai", "api_key": "test-key", "models": []any{
+			"type": "openai", "api_key": "test-key", "base_url": "https://pin.example.test/v1", "models": []any{
 				map[string]any{"id": "smart", "name": "Smart"},
 				map[string]any{"id": "worker-pin", "name": "Worker pin"},
 				map[string]any{"id": "reviewer-pin", "name": "Reviewer pin"},
@@ -84,6 +84,13 @@ func TestForkedWorkerReviewerPinsSurviveDiskReload(t *testing.T) {
 	coord.cfg = diskCfg
 	writeConfig("worker-new", "reviewer-new")
 	require.NoError(t, diskCfg.ReloadFromDisk(ctx))
+	// Oracle: the reload must keep the provider. Without base_url,
+	// configureProviders drops the custom provider ("Skipping custom provider
+	// due to missing API endpoint"), and the resolve failure below would name
+	// the wrong cause ("smart model provider not configured") instead of this
+	// fixture bug.
+	require.Contains(t, diskCfg.Config().Providers.Copy(), provider,
+		"reload dropped the provider; the resolve failure below would name the wrong cause")
 	require.Equal(t, "worker-new", diskCfg.Config().Models[config.SelectedModelTypeWorker].Model)
 	require.Equal(t, "reviewer-new", diskCfg.Config().Models[config.SelectedModelTypeReviewer].Model)
 
