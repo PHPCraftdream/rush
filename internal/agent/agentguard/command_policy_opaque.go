@@ -46,6 +46,11 @@ func (p CommandPolicy) checkOpaqueWrapper(args []string) (string, bool) {
 	if payload == "" {
 		return "", false
 	}
+	// A payload word with an expansion (bash -c "... $x") cannot be
+	// inspected; do not rely on the parser to trip over the marker.
+	if strings.Contains(payload, policyDynamicArg) {
+		return "(dynamic payload)", true
+	}
 	if mode == "cmd" && strings.Contains(payload, "%") {
 		return payload, true
 	}

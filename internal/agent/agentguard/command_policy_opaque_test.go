@@ -129,6 +129,9 @@ func TestOpaquePolicyTransparentPrefixesAndDynamicActions(t *testing.T) {
 			t.Errorf("CheckArgs(%q) allowed", payload)
 		}
 	}
+	if err := p.CheckArgs([]string{"bash", "-c", policyDynamicArg}); err == nil {
+		t.Error("CheckArgs allowed a dynamic -c payload")
+	}
 	if err := NewCommandPolicy("").CheckArgs([]string{"bash", "-c", "eval x"}); err != nil {
 		t.Fatalf("disabled: %v", err)
 	}
