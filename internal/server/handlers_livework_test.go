@@ -128,17 +128,17 @@ func TestHandleGetSessionLiveWork_UnknownSessionIsRefused(t *testing.T) {
 
 func TestHandleGetSessionLiveWork_RunningAndTerminalCommands(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx, cancel := context.WithCancel(t.Context())
 	hub := newHub()
-	go hub.Run(t.Context())
+	hubDone := make(chan struct{})
+	go func() { defer close(hubDone); hub.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
 	client.send = make(chan []byte, 64)
 	hub.register <- client
-	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw commands")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
 
 	// The running command's text lives only in the assistant tool_call part.
 	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
@@ -146,14 +146,10 @@ func TestHandleGetSessionLiveWork_RunningAndTerminalCommands(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolCall{ID: "tc-run", Name: "bash", Input: `{"command":"echo hello\nworld"}`}},
 	})
 	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-run", Kind: session.JobKindCommand, Input: "echo", ToolName: "bash"})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-run", taskKind: "bash", input: "echo", toolName: "bash", state: "running"})
 
 	// A finished command with its cause: natural completion.
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-done", Kind: session.JobKindCommand, Input: "true", ToolName: "bash"})
-	require.NoError(t, err)
-	_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: "tc-done", State: "completed", ResultSummary: "ok", Wake: true})
-	require.NoError(t, err)
+	seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-done", taskKind: "bash", input: "true", toolName: "bash"}, session.TransitionParams{State: "completed", ResultSummary: "ok", Wake: true})
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -181,24 +177,20 @@ func TestHandleGetSessionLiveWork_RunningAndTerminalCommands(t *testing.T) {
 
 func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	ctx, cancel := context.WithCancel(t.Context())
 	hub := newHub()
-	go hub.Run(t.Context())
+	hubDone := make(chan struct{})
+	go func() { defer close(hubDone); hub.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
 	client.send = make(chan []byte, 64)
 	hub.register <- client
-	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw causes")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
 
 	seed := func(id string, params session.TransitionParams) {
-		_, err := store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: id, Kind: session.JobKindCommand, Input: id, ToolName: "bash"})
-		require.NoError(t, err)
-		params.Owner, params.ToolCallID = sess.ID, id
-		_, err = store.Transition(ctx, params)
-		require.NoError(t, err)
+		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash"}, params)
 	}
 	seed("tc-timeout", session.TransitionParams{State: "timed_out", NoticeKind: "timeout_terminated", Wake: true})
 	seed("tc-cancel", session.TransitionParams{State: "cancelled", NoticeKind: "session_cancel"})
@@ -211,10 +203,17 @@ func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 	for _, c := range snap.Commands {
 		statuses[c.ToolCallID] = c.Status + "|" + c.Reason
 	}
-	require.Equal(t, "timed_out|timeout_terminated", statuses["tc-timeout"])
-	require.Equal(t, "cancelled|session_cancel", statuses["tc-cancel"])
-	require.Equal(t, "cancelled|job_kill", statuses["tc-kill"])
-	require.Equal(t, "failed|", statuses["tc-fail"])
+	if batchRuntimeEnabled() {
+		require.Equal(t, "timed_out|timeout", statuses["tc-timeout"])
+		require.Equal(t, "cancelled|stop", statuses["tc-cancel"])
+		require.Equal(t, "cancelled|stop", statuses["tc-kill"])
+		require.Equal(t, "failed|stop_on_fail", statuses["tc-fail"])
+	} else {
+		require.Equal(t, "timed_out|timeout_terminated", statuses["tc-timeout"])
+		require.Equal(t, "cancelled|session_cancel", statuses["tc-cancel"])
+		require.Equal(t, "cancelled|job_kill", statuses["tc-kill"])
+		require.Equal(t, "failed|", statuses["tc-fail"])
+	}
 }
 
 func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
@@ -536,40 +535,39 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 // list unbounded and this test fails on the length assertion.
 func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	ctx := t.Context()
+	ctx, cancel := context.WithCancel(t.Context())
 
 	sess, err := a.Sessions.Create(ctx, "lw cap")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
 
 	// 55 finished rows with deterministic, distinct updated_at (oldest =
 	// highest id number), plus 2 running rows that must survive the cap.
-	const totalTerminal = liveWorkTerminalLimit + 5
+	const totalTerminal = 55
 	for i := 0; i < totalTerminal; i++ {
 		id := fmt.Sprintf("tc-cap-%02d", i)
-		_, err := store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: id, Kind: session.JobKindCommand, Input: id, ToolName: "bash"})
-		require.NoError(t, err)
-		_, err = store.Transition(ctx, session.TransitionParams{Owner: sess.ID, ToolCallID: id, State: "completed", Wake: true})
-		require.NoError(t, err)
-		// Distinct, deterministic recency: higher i = more recent.
-		_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
+		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash"}, session.TransitionParams{State: "completed", Wake: true})
+		if batchRuntimeEnabled() {
+			_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
+		} else {
+			_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
+		}
 		require.NoError(t, err)
 	}
 	for _, id := range []string{"tc-cap-run-a", "tc-cap-run-b"} {
-		_, err := store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: id, Kind: session.JobKindCommand, Input: id, ToolName: "bash"})
-		require.NoError(t, err)
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash", state: "running"})
 	}
 
 	hub := newHub()
-	go hub.Run(ctx)
+	hubDone := make(chan struct{})
+	go func() { defer close(hubDone); hub.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
 	client.send = make(chan []byte, 64)
 	hub.register <- client
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
-	require.Len(t, snap.Commands, 2+liveWorkTerminalLimit, "all running + only the last N finished")
+	require.Len(t, snap.Commands, 52, "all running + only the last 50 finished")
 
 	// Newest first (running rows were claimed last, so their updated_at is
 	// the most recent; the tie between them breaks on tool_call_id asc);
@@ -578,9 +576,9 @@ func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	require.Equal(t, "tc-cap-run-b", snap.Commands[1].ToolCallID)
 	require.Equal(t, "running", snap.Commands[0].Status)
 	first := snap.Commands[2]
-	require.Equal(t, fmt.Sprintf("tc-cap-%02d", totalTerminal-1), first.ToolCallID, "newest finished row comes first")
+	require.Equal(t, "tc-cap-54", first.ToolCallID, "newest finished row comes first")
 	last := snap.Commands[len(snap.Commands)-1]
-	require.Equal(t, fmt.Sprintf("tc-cap-%02d", totalTerminal-liveWorkTerminalLimit), last.ToolCallID, "the oldest 5 finished rows are cut")
+	require.Equal(t, "tc-cap-05", last.ToolCallID, "the oldest 5 finished rows are cut")
 	for _, c := range snap.Commands {
 		require.NotEqual(t, "tc-cap-00", c.ToolCallID, "oldest rows must be dropped")
 	}
