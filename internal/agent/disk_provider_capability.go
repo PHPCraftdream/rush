@@ -251,6 +251,26 @@ func (m *diskCapabilityManager) releaseResidualConstructions() {
 	m.pruneLocked()
 }
 
+// releaseResidualContinuations drops every Continuation owner key (graceful
+// shutdown: durable rows are picked up by the next process against ITS OWN
+// store, so an in-process Continuation owner must not pin the binding
+// forever). Call/Construction/Root/Execution owner KEYS are never touched:
+// pruneLocked deletes a binding only when its owner set is empty, so a
+// binding still retained by live call or execution work survives.
+func (m *diskCapabilityManager) releaseResidualContinuations() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.owners {
+		if key.kind == diskOwnerContinuation {
+			delete(m.owners, key)
+		}
+	}
+	m.pruneLocked()
+}
+
 // pruneLocked applies the deletion rules. Callers hold m.mu.
 func (m *diskCapabilityManager) pruneLocked() {
 	// Delete a construction record when no owner names its registry.

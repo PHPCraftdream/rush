@@ -84,7 +84,7 @@ func TestDurableReplayRebuildPersistsModelSlotsAtTurnAdmission(t *testing.T) {
 		PersistSmartModel: &session.ModelSlotUpdate{Provider: "smart-provider", Model: "smart-model"},
 		PersistFastModel:  &session.ModelSlotUpdate{Provider: "fast-provider", Model: "fast-model"},
 	}
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	rebuilt.SmartModel = &Model{Model: &mockModel{}, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}}
 	rebuilt.FastModel = &Model{Model: &mockModel{}, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 1000}}

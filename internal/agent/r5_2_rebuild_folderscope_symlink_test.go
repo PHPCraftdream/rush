@@ -50,7 +50,7 @@ func TestRebuildSessionAgentCall_RealSymlinkedDenyCarveOutUnderBroaderGrantStill
 		},
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	require.NotNil(t, call.CallOptions)
 	require.NotNil(t, call.CallOptions.FolderScope)

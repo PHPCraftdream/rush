@@ -328,8 +328,8 @@ func (p *panicWindowCoordinator) ResetAutoResumeCounter(sessionID string) {
 	p.coordinator.ResetAutoResumeCounter(sessionID)
 }
 
-func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
-	return p.coordinator.RebuildSessionAgentCall(ctx, data)
+func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+	return p.coordinator.RebuildSessionAgentCall(ctx, rowID, data)
 }
 
 func (p *panicWindowCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {

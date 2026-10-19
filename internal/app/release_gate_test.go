@@ -413,7 +413,7 @@ func (a *sessionAgentCoordinatorAdapter) ResetAutoResumeCounter(sessionID string
 }
 
 // RebuildSessionAgentCall - minimal implementation for test compatibility (not used by App.Shutdown())
-func (a *sessionAgentCoordinatorAdapter) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (a *sessionAgentCoordinatorAdapter) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	// For this test, just return an empty call - not used by App.Shutdown()
 	return agent.SessionAgentCall{}, fmt.Errorf("RebuildSessionAgentCall not implemented in test adapter")
 }

@@ -99,7 +99,7 @@ func (f *blockingCoordinator) TakeSummarizeQueue(sessionID string) (*agent.Summa
 	return nil, false
 }
 
-func (f *blockingCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (f *blockingCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 
