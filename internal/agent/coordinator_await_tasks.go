@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -38,6 +39,10 @@ var workerAwaitBlockCap = 40 * time.Minute
 // a package var so tests can shrink it.
 var awaitTasksWorkerPollInterval = time.Second
 
+// awaitTasksWorkerSnapshotHook is a test-only synchronization seam. Production
+// leaves it nil; callbacks run after each complete legacy snapshot.
+var awaitTasksWorkerSnapshotHook atomic.Pointer[func(string, string)]
+
 // AwaitTasks implements tools.AwaitControl. Refuses with a model-safe error
 // when nothing is running (open wake schedules do NOT count as work);
 // otherwise reports the live rows and, for "all", arms the arbiter's
@@ -56,7 +61,11 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 	// would falsely report the delegation as finished. Workers block inside
 	// the tool call instead; the arbiter is not involved.
 	if c.sessions != nil {
-		if sess, err := c.sessions.Get(ctx, sessionID); err == nil && sess.ParentSessionID != "" {
+		isWorker, err := c.isDurableDelegationChild(ctx, sessionID)
+		if err != nil {
+			return tools.AwaitTasksResult{}, err
+		}
+		if isWorker {
 			if batchFlagEnabled() {
 				return c.awaitTasksForBatchWorker(ctx, sessionID, mode, maxWaitSeconds)
 			}
@@ -145,12 +154,19 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 		return tools.AwaitTasksResult{}, errors.New("batch live reader unavailable")
 	}
 	var captured session.BatchCapturedRoots
+	capturedHook := false
 	notifyByRef := make(map[session.BatchLiveRef]string)
 	result, err := BatchAwaitWorker(ctx, BatchAwaitParams{
 		Mode: mode, MaxWaitSeconds: maxWaitSeconds,
 		Capture: func(ctx context.Context) session.BatchCapturedRoots {
 			captured = bind.live.BatchCaptured(ctx, []string{sessionID})
 			levels := bind.live.BatchCapturedLevel(ctx, captured)
+			if !capturedHook {
+				capturedHook = true
+				if hook := awaitTasksWorkerSnapshotHook.Load(); hook != nil {
+					(*hook)(sessionID, mode)
+				}
+			}
 			notifyByRef = batchAwaitNotifyModes(levels)
 			return captured
 		},
@@ -187,7 +203,11 @@ func (c *coordinator) awaitTasksForWorker(ctx context.Context, sessionID, mode s
 		return tools.AwaitTasksResult{}, errors.New("legacy live-work facts unavailable for mixed batch await")
 	}
 	return awaitTasksWorker(ctx, mode, maxWaitSeconds, func() session.RootLiveWork {
-		return c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		work := c.asyncJobs.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
+		if hook := awaitTasksWorkerSnapshotHook.Load(); hook != nil {
+			(*hook)(sessionID, mode)
+		}
+		return work
 	}, func(cap time.Duration) (<-chan time.Time, <-chan time.Time, func()) {
 		ticker := time.NewTicker(awaitTasksWorkerPollInterval)
 		return ticker.C, time.After(cap), ticker.Stop
