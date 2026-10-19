@@ -6,11 +6,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -79,25 +77,8 @@ func TestRunInternal_RateLimitDiagFallsBackToCallback(t *testing.T) {
 	fallback.requireExactly(t, 2)
 }
 
-// lockedBuffer is a goroutine-safe bytes.Buffer.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// requireExactly asserts the buffer holds exactly n diagnostic lines and
+// requireExactly asserts the buffer (lockedBuffer, declared in
+// stream_watchdog_handlefire_test.go) holds exactly n diagnostic lines and
 // nothing else.
 func (b *lockedBuffer) requireExactly(t *testing.T, n int) {
 	t.Helper()
