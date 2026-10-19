@@ -32,8 +32,8 @@ func TestBindCoordinatorBatchRuntimeBindings_BindsBuiltRootAgentAndOrphanEnqueue
 	// BindCoordinatorBatchRuntimeBindings mutates the package-global
 	// batchLeafKindOverride (batch_install_ingress.go tail); save and
 	// restore it so the test does not leak the override elsewhere.
-	prevKindOverride := batchLeafKindOverride
-	t.Cleanup(func() { batchLeafKindOverride = prevKindOverride })
+	prevKindOverride := batchLeafKindOverride.Load()
+	t.Cleanup(func() { batchLeafKindOverride.Store(prevKindOverride) })
 	require.NoError(t, BindCoordinatorBatchRuntimeBindings(coord, &fakeBatchIngress{}, nil, caps))
 
 	// Propagation: the root agent now sees the SAME manager instance.

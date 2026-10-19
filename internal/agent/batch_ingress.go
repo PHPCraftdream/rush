@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
@@ -260,13 +261,24 @@ func batchLeafKind(tool string) string {
 	}
 	// R11F (M3) flag-on hook: MCP leaves registered by the binding resolve
 	// through the MCP kind; nil (flag-off) keeps the generic default.
-	if batchLeafKindOverride != nil {
-		if kind, ok := batchLeafKindOverride(tool); ok {
+	if override := batchLeafKindOverride.Load(); override != nil {
+		if kind, ok := (*override)(tool); ok {
 			return kind
 		}
 	}
 	return batchKindGeneric
 }
 
-// batchLeafKindOverride is set only by the flag-on coordinator binding.
-var batchLeafKindOverride func(tool string) (kind string, ok bool)
+// batchLeafKindOverride is set only by the flag-on coordinator binding. It is
+// atomic: every App bind stores it while invocations of other Apps (and
+// parallel tests) read it.
+var batchLeafKindOverride atomic.Pointer[func(tool string) (kind string, ok bool)]
+
+// setBatchLeafKindOverride installs fn (nil clears the override).
+func setBatchLeafKindOverride(fn func(tool string) (kind string, ok bool)) {
+	if fn == nil {
+		batchLeafKindOverride.Store(nil)
+		return
+	}
+	batchLeafKindOverride.Store(&fn)
+}
