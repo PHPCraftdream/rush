@@ -82,7 +82,53 @@ func TestSyntheticGenericCLIQuotaExit(t *testing.T) {
 	}
 }
 
-// Revert-check: removing exitDiagnostics.add's JSON exclusion or size cap must fail; synthetic diagnostics only.
+func TestSyntheticLateQuotaEvidence(t *testing.T) {
+	shell, err := resolveBinary("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, lines string
+		quota       bool
+		want        string
+	}{
+		{"late quota", strings.Repeat("x", 8191) + "\nquota exceeded", true, "quota exceeded"},
+		{"late transient veto", "quota exceeded\n" + strings.Repeat("x", 8191) + "\nHTTP 429 per minute", false, ""},
+		{"late reset", "quota exceeded\n" + strings.Repeat("x", 8191) + "\nYour limit will reset at 2026-06-17T14:49:28+08:00", true, "2026-06-17T14:49:28+08:00"},
+		{"json after noise", strings.Repeat("x", 8191) + "\n{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"quota exceeded\"}", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &cliModel{workingDir: t.TempDir(), spec: CLISpec{Binary: shell, NoPTY: true, AlwaysStdin: true, BuildArgs: func(bool) []string { return []string{"-c", "printf '%s\\n' '" + tc.lines + "'; exit 1"} }, NewPartParser: geminiPartParser}}
+			stream, err := m.Stream(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("synthetic test")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got error
+			for part := range stream {
+				if part.Type == fantasy.StreamPartTypeError {
+					got = part.Error
+				}
+			}
+			var exit *exec.ExitError
+			if got == nil || !errors.As(got, &exit) {
+				t.Fatalf("lost original exit cause: %v", got)
+			}
+			var pe *fantasy.ProviderError
+			mapped := errors.As(got, &pe)
+			if mapped != tc.quota {
+				t.Fatalf("quota mapping=%v want %v: %v", mapped, tc.quota, got)
+			}
+			if mapped && pe.StatusCode != 429 {
+				t.Fatalf("provider status=%d want 429", pe.StatusCode)
+			}
+			if tc.want != "" && !strings.Contains(pe.Message, tc.want) {
+				t.Fatalf("provider message lacks %q: %q", tc.want, pe.Message)
+			}
+		})
+	}
+}
+
 func TestSyntheticExitDiagnostics(t *testing.T) {
 	var d exitDiagnostics
 	d.add([]byte(`{"content":"quota"}`))
@@ -97,8 +143,14 @@ func TestSyntheticExitDiagnostics(t *testing.T) {
 	if len(d.text) > maxExitDiagnostics {
 		t.Fatal("unbounded diagnostics")
 	}
-	d.add([]byte("more quota"))
+	d.add([]byte("ordinary tail"))
 	if len(d.text) > maxExitDiagnostics {
-		t.Fatal("unbounded append")
+		t.Fatal("ordinary diagnostics exceeded bound")
+	}
+	for i := 0; i < 4; i++ {
+		d.add([]byte("Usage limit reached. Your limit will reset at 2026-06-17T14:49:28+08:00 " + strings.Repeat("x", maxExitDiagnostics)))
+	}
+	if len(d.text) > maxExitDiagnostics || len(d.evidence) > maxExitDiagnostics || len(d.resetText) > maxExitDiagnostics || !d.hard {
+		t.Fatal("diagnostic evidence exceeded bound or lost hard classification")
 	}
 }
