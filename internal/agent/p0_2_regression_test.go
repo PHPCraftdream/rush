@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,11 +164,15 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 		PumpInstanceID: "test-pump-p0-2",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	var lockRelease sync.Once
+	stopRunQueuePumpForTest(t, pump, env, func() {
+		lockRelease.Do(func() { _ = lock.Release() })
+		sessionAgent.CancelAll()
+	})
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
 
 	// Release the OS lock so the pump can acquire it.
-	lock.Release()
+	lockRelease.Do(func() { _ = lock.Release() })
 
 	// Give the pump time to process the queued call.
 	// We use Eventually to wait for:

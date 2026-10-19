@@ -189,9 +189,10 @@ type App struct {
 	// subscribers for poll-driven model changes.
 	modelsSyncSubsMu sync.Mutex
 	modelsSyncSubs   []chan struct{}
-	// modelsSyncWG tracks background shared-agent rebuilds joined by
-	// stopConfigDiskSync.
-	modelsSyncWG sync.WaitGroup
+	modelsSyncClosed bool
+	modelsSyncStop   chan struct{}
+	modelsSyncSubsWG sync.WaitGroup
+	modelsSyncWG     sync.WaitGroup
 
 	// shutdownOnce makes the full App shutdown, including database release,
 	// safe to repeat when a caller has both an explicit shutdown and a cleanup

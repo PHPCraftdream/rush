@@ -111,19 +111,38 @@ func installOneItemSpec(t *testing.T, content string) jobbatch.Spec {
 }
 
 func installSubmit(t *testing.T, install *BatchInstall, spec jobbatch.Spec) jobbatch.ID {
+	return installSubmitAs(t, install, spec, "call-1")
+}
+
+func installSubmitAs(t *testing.T, install *BatchInstall, spec jobbatch.Spec, ref string) jobbatch.ID {
 	t.Helper()
 	root := jobbatch.ID(uuid.NewString())
-	got, err := install.RunnerHandle.Submit(context.Background(), jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: "call-1"})
+	got, err := install.RunnerHandle.Submit(context.Background(), jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: ref})
 	require.NoError(t, err)
 	require.Equal(t, root, got, "runner root equals requested root")
 	return root
 }
 
+// installRunnerForTest installs the real Runner and registers its cleanup:
+// the checked Close drains the Runner; Stop alone does not.
+func installRunnerForTest(t *testing.T, ctx context.Context, deps BatchInstallDeps) *BatchInstall {
+	t.Helper()
+	install, err := InstallBatchRuntime(ctx, deps)
+	require.NoError(t, err)
+	if install.Runner != nil {
+		t.Cleanup(func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			require.NoError(t, install.Runner.Close(closeCtx))
+		})
+	}
+	return install
+}
+
 func TestBatchRunnerAdapterPreservesExplicitNestedBatch(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	explicit := jobbatch.Spec{Batch: &jobbatch.BatchSpec{
 		Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyEach, MaxParallel: 3,
 		Items: []jobbatch.Spec{{Batch: &jobbatch.BatchSpec{
@@ -146,8 +165,7 @@ func TestBatchRunnerAdapterPreservesExplicitNestedBatch(t *testing.T) {
 func TestBatchRunnerAdapterRejectsMalformedSpecShapes(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	for _, spec := range []jobbatch.Spec{
 		{},
 		{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric}, Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel}},
@@ -160,8 +178,7 @@ func TestBatchRunnerAdapterRejectsMalformedSpecShapes(t *testing.T) {
 func TestBatchRunnerAdapterSubmitsOneItemAndSettles(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	spec := installOneItemSpec(t, "")
 	root := installSubmit(t, install, spec)
 	require.NotNil(t, install.RunnerHandle.batchFor(root), "the started root is registered")
@@ -201,16 +218,10 @@ func TestBatchAttachAdapterProbesLiveRootWithFences(t *testing.T) {
 	// no live root at all (GetLiveBatchRoot: attached=false, err=nil).
 	gate := newGatingInstallExecutor("ok")
 	deps.Executor = gate
-	install, err := InstallBatchRuntime(ctx, deps)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		gate.letGo()
-		if install.Runner != nil {
-			// Close (not Stop) drains the engine to Final so no goroutine
-			// outlives the test.
-			require.NoError(t, install.Runner.Close(context.Background()))
-		}
-	})
+	install := installRunnerForTest(t, ctx, deps)
+	// Registered AFTER the Close cleanup, so LIFO runs letGo first and the
+	// gate is released before the Runner closes.
+	t.Cleanup(gate.letGo)
 	spec := installOneItemSpec(t, "")
 	root := installSubmit(t, install, spec)
 	hash := batchInvocationHash(spec)
@@ -245,8 +256,7 @@ func TestBatchAttachAdapterProbesLiveRootWithFences(t *testing.T) {
 func TestBatchStoreDoneSourceLoadDoneProjection(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	// Unsettled/unknown root: no completion is reported (a missing root row
 	// maps to ok=false, never sql.ErrNoRows — see
 	// BatchDeliveryOneItemCompletion in internal/session/batch_adapters.go).
@@ -269,8 +279,7 @@ func TestBatchStoreDoneSourceLoadDoneProjection(t *testing.T) {
 func TestBatchStoreDoneSourceForeignRootWaitsDurably(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	pollCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -297,9 +306,12 @@ func TestBatchStoreDoneSourceForeignRootWaitsDurably(t *testing.T) {
 func TestBatchStoreElectorCASExactlyOneWinner(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
-	root := installSubmit(t, install, installOneItemSpec(t, ""))
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
+	// Distinct call identities (Ref and InputHash) for the two submissions:
+	// the first root may still be live during the second Submit's
+	// reservation, and a duplicated identity would conflict with the second
+	// requested engine root instead of electing a fresh one.
+	root := installSubmitAs(t, install, installOneItemSpec(t, "started"), "call-started")
 	won, err := install.Elector.ElectStarted(ctx, "owner", root)
 	require.NoError(t, err)
 	require.True(t, won, "first started election wins")
@@ -307,7 +319,7 @@ func TestBatchStoreElectorCASExactlyOneWinner(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, won, "second started election loses without error")
 
-	inlineRoot := installSubmit(t, install, installOneItemSpec(t, ""))
+	inlineRoot := installSubmitAs(t, install, installOneItemSpec(t, "inline"), "call-inline")
 	resp, ok, err := install.Done.AwaitDone(ctx, "owner", inlineRoot)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -322,8 +334,7 @@ func TestBatchStoreElectorCASExactlyOneWinner(t *testing.T) {
 func TestBatchStoreNoticePullSelectedOnly(t *testing.T) {
 	t.Parallel()
 	store, conn, ctx := newTestBatchStore(t)
-	install, err := InstallBatchRuntime(ctx, installTestDeps(t, store, conn, "ok"))
-	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	root := installSubmit(t, install, installOneItemSpec(t, ""))
 	_, ok, err := install.Done.AwaitDone(ctx, "owner", root)
 	require.NoError(t, err)
