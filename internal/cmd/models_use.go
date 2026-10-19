@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -242,6 +243,9 @@ rush models state
 		}
 
 		if err := a.Store().UpdatePreferredModels(scope, toWrite); err != nil {
+			if errors.Is(err, config.ErrSettingsLocked) || errors.Is(err, config.ErrWrongPassword) {
+				return err
+			}
 			return fmt.Errorf("write models: %w", err)
 		}
 

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/bmatcuk/doublestar/v4"
@@ -18,18 +19,40 @@ func GlobGitignoreAwareFSBounded(ctx context.Context, fsys fs.FS, start, display
 	// Display paths stay relative to the original start, matching
 	// GlobGitignoreAwareFS.
 	startSlash := filepath.ToSlash(start)
-	walkStart := filepath.ToSlash(start)
+	walkStart := startSlash
 	if base != "" && base != "." {
 		if walkStart == "." {
 			walkStart = base
 		} else {
-			walkStart = walkStart + "/" + base
+			walkStart += "/" + base
 		}
 	}
 	// Existence pre-check: a literal base that does not exist must short-
 	// circuit before any walk, so the caller renders "No files found".
 	if _, err := fs.Stat(fsys, walkStart); err != nil {
 		return nil, false, "", nil
+	}
+	walker := newFastGlobWalkerFSAt(fsys, startSlash)
+	if base != "" && base != "." {
+		ancestors := strings.Split(base, "/")
+		current := startSlash
+		for i, segment := range ancestors {
+			if current == "." {
+				current = segment
+			} else {
+				current += "/" + segment
+			}
+			info, err := fs.Stat(fsys, current)
+			if err != nil {
+				return nil, false, "", nil
+			}
+			if info.IsDir() && walker.ShouldSkipDir(current) {
+				return nil, false, "", nil
+			}
+			if rest == "" && i == len(ancestors)-1 && !info.IsDir() {
+				break
+			}
+		}
 	}
 	var maxDepth int
 	if rest == "" {
@@ -40,7 +63,6 @@ func GlobGitignoreAwareFSBounded(ctx context.Context, fsys fs.FS, start, display
 	}
 	var visited int
 	opts := BoundedWalkOptions{MaxDepth: maxDepth, Visited: &visited}
-	walker := newFastGlobWalkerFSAt(fsys, walkStart)
 	found := csync.NewSlice[FileInfo]()
 	skipAll := false
 	reason, err := WalkDirBounded(ctx, fsys, walkStart, opts, func(p string, d fs.DirEntry, walkErr error) error {
