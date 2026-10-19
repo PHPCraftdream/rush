@@ -58,8 +58,9 @@ func assertBindingLossWake(t *testing.T, f *attemptFixture, store *countingFence
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 
-	// Terminal for this epoch: the timed pass must not re-arm for this
-	// session.
+	// Terminal for this epoch: drainRecheckSet EMPTIES the set here, so this
+	// empty-set assertion IS the discriminator -- any re-add by the old
+	// routing fails at this require.Empty.
 	set := f.coord.drainRecheckSet()
 	require.Empty(t, set, "a binding-loss refusal is terminal for this epoch; the timed recheck pass must not re-spin it")
 
@@ -73,29 +74,23 @@ func assertBindingLossWake(t *testing.T, f *attemptFixture, store *countingFence
 		"the single launch reads the fence exactly once")
 }
 
-// assertNoPeriodicReArm is the STRENGTHENED no-re-arm oracle shared by both
-// subtests. The mutation each must catch: reverting handleDrainBuildError to
-// the old clear-then-noteDrainRefused shape, which re-adds non-external
-// sessions to the recheck set at drain_attempt.go:549-551. Under the
-// reverted old code the set contains f.sessID, RecheckPass launches a
-// recheck wake, drainCallFor loads the fence again -> loads==2 -> FAILS.
-func assertNoPeriodicReArm(t *testing.T, f *attemptFixture, store *countingFenceStore, ctx context.Context) {
+// assertFreshWakeRereadsOnce proves a SECOND explicit wake re-reads the fence
+// exactly once more (the launch predicate keeps working; the refusal is
+// terminal again). It is NOT a periodic-retry oracle: the discriminator
+// against the old clear-then-noteDrainRefused routing is the IMMEDIATE
+// require.Empty set assertion in assertBindingLossWake -- drainRecheckSet
+// empties the set, so any re-add fails right there. (RecheckPass adds no
+// independent signal here: it launches wakes asynchronously without a join,
+// and an old-routing re-add wake would hit the gate noteDrainRefused just
+// paced and return from wakeSession's drainPaced branch without ever
+// re-reading the fence.)
+func assertFreshWakeRereadsOnce(t *testing.T, f *attemptFixture, store *countingFenceStore, ctx context.Context) {
 	t.Helper()
-	// A timed pass over an EMPTY set must launch NOTHING: the fence is not
-	// re-read, the set stays empty.
-	f.coord.RecheckPass(ctx)
-	require.EqualValues(t, 1, store.loads.Load(),
-		"the timed pass over an empty recheck set must not touch the fence")
-	require.Empty(t, f.coord.drainRecheckSet(),
-		"the timed pass over an empty recheck set must not re-arm the refused session")
-
-	// A FRESH wake re-reads once: that is the launch predicate working, not
-	// a retry spin.
 	err := f.coord.wakeSession(ctx, f.sessID, false)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 	require.EqualValues(t, 2, store.loads.Load(),
-		"a fresh wake re-reads the fence once (launch predicate, not a retry spin)")
+		"a fresh wake re-reads the fence exactly once more")
 	require.Empty(t, f.coord.drainRecheckSet(), "the fresh refusal is terminal again")
 }
 
@@ -103,10 +98,15 @@ func assertNoPeriodicReArm(t *testing.T, f *attemptFixture, store *countingFence
 // BOTH CI modes (the RUSH_BATCH_RUNTIME flag is process-global, so the
 // subtests are sequential and never t.Parallel): flag-off (the launch
 // decision reads async_jobs) and flag-on shadow (the decision reads batch
-// node facts; without a bound facts source unknownBatchCutoverFacts
-// .SelectedDebtExists errors and wakeSession takes the launch-decision error
-// branch BEFORE reaching drainCallFor -- so the binding refusal would never
-// be exercised with the wrong error, hence the ON twin).
+// node facts; under flag-on WITHOUT a bound facts source,
+// unknownBatchCutoverFacts.SelectedDebtExists returns (true, nil)
+// (batch_cutover_facts.go:122-124), and the failure is the LATER
+// PendingInclusiveDebt read inside readTurnFactsBatch (batch_cutover_facts.go
+// :484-486, impl :130-131), which drainPolicy converts into an unreadable
+// DEFERRED verdict (coordinator_drain_policy.go:110-112); wakeSession then
+// returns nil from its drainDeferred branch (coordinator_wake.go:59-63)
+// WITHOUT ever reaching drainCallFor -- so the binding refusal would never
+// be exercised, hence the ON twin).
 func TestWakeSession_BindingLossIsTerminalForEpoch(t *testing.T) {
 	ctx := context.Background()
 
@@ -122,7 +122,7 @@ func TestWakeSession_BindingLossIsTerminalForEpoch(t *testing.T) {
 		f.seedDebt(ctx, "call-1", false)
 
 		assertBindingLossWake(t, f, store, ctx, 1)
-		assertNoPeriodicReArm(t, f, store, ctx)
+		assertFreshWakeRereadsOnce(t, f, store, ctx)
 	})
 
 	t.Run("flag-on", func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestWakeSession_BindingLossIsTerminalForEpoch(t *testing.T) {
 		t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
 
 		assertBindingLossWake(t, f, store, ctx, 1)
-		assertNoPeriodicReArm(t, f, store, ctx)
+		assertFreshWakeRereadsOnce(t, f, store, ctx)
 	})
 }
 
@@ -231,7 +231,9 @@ func TestInterruptTicker_StopsOnUnavailableBinding(t *testing.T) {
 	}
 	stub := coord.sessions.(*tickRefusingSessions)
 
-	done := coord.startInterruptTicker(context.Background(), "s-tick")
+	tickerCtx, stopTicker := context.WithCancel(context.Background())
+	t.Cleanup(stopTicker)
+	done := coord.startInterruptTicker(tickerCtx, "s-tick")
 	// The loop exiting IS the stop.
 	require.Eventually(t, func() bool {
 		select {

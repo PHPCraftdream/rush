@@ -199,6 +199,7 @@ func runProviderCrashHelper(t *testing.T) {
 	block := os.Getenv("R12H2B_BLOCK") == "1"
 	done := signal + ".done"
 	fail := func(msg string) {
+		_ = db.Release(dataDir) // no-op (returns nil) if dataDir was never Connect'ed
 		_ = os.WriteFile(os.Getenv("R12H2B_REASON"), []byte(msg), 0o644)
 		os.Exit(2)
 	}
@@ -270,5 +271,7 @@ func runProviderCrashHelper(t *testing.T) {
 	if werr := os.WriteFile(done, []byte(sessID+" "+hostID), 0o644); werr != nil {
 		fail("done signal: " + werr.Error())
 	}
+	// The child exits via os.Exit (defers never run): release the pool refCount explicitly.
+	_ = db.Release(dataDir)
 	os.Exit(0)
 }

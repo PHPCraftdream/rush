@@ -10,10 +10,12 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -101,6 +103,25 @@ func TestDrainCallFor_RestoresFencePolicyBaseline(t *testing.T) {
 		filepath.Join(filepath.Dir(f.env.workingDir), "outside.txt"), permission.FileOpRead), &denied,
 		"a path outside every scoped subtree must be a typed denial")
 
+	// Constructed-toolset oracle: the pinned call.Tools must OMIT the command
+	// tools the restored scope excludes (KeepsCommandTools is false) and
+	// carry the granted fs_read. pinnedToolNames / assertToolsOmit /
+	// assertToolsContain are the package's existing helpers
+	// (coordinator_tool_pinning_test.go).
+	require.NotNil(t, call.Tools)
+	require.NotEmpty(t, call.Tools)
+	names := pinnedToolNames(call.Tools)
+	assertToolsOmit(t, names, "bash", "run_command", "job_output", "job_kill")
+	assertToolsContain(t, names, tools.FSReadToolName)
+
+	// Deny-by-dispatch: the constructed fs_read tool itself must refuse a
+	// path outside the restored scope (the same RunFSBatch Scope.Check the
+	// real dispatch performs), using the existing runFSRead probe
+	// (coordinator_disk_provider_test.go) and fsReadToolFrom.
+	resp := runFSRead(t, fsReadToolFrom(t, call.Tools),
+		filepath.Join(filepath.Dir(f.env.workingDir), "outside-probe.txt"))
+	require.True(t, resp.IsError, "an fs_read outside the restored scope must be a tool error: %s", resp.Content)
+
 	prep.release()
 	owners, _, _ := caps.OwnerDiagnostics()
 	require.Equal(t, 0, owners, "releasing the prep token must release the Continuation owner")
@@ -115,23 +136,52 @@ func (s *fenceFailingGetSessions) Get(context.Context, string) (session.Session,
 	return session.Session{}, errors.New("db down")
 }
 
-// failSecondGetSessions serves the FIRST sessions.Get from the real
-// service and fails every later one, so the FIRST resolveSessionModels
-// inside drainCallFor succeeds (building the per-call toolset) and the
-// post-refresh SECOND resolve fails at its first step
-// (coordinator_models.go:103-105) without reaching the tool build again.
-// session.Service.Get: `Get(ctx context.Context, id string) (Session, error)`
-// (internal/session/session.go:168).
+// failSecondGetSessions serves the FIRST sessions.Get from the real service
+// and fails every later one, so the FIRST resolveSessionModels inside
+// drainCallFor succeeds (building the per-call toolset) and the post-refresh
+// SECOND resolve fails at its first step (coordinator_models.go:103-105)
+// without reaching the tool build again. session.Service.Get:
+// `Get(ctx context.Context, id string) (Session, error)`
+// (internal/session/session.go:168). At the failure moment it snapshots the
+// construction manager's owner diagnostics, so the test can prove the
+// Construction owner was LIVE when the failure happened (reachability oracle:
+// an earlier failure — e.g. pinCallTools' own fail() at
+// coordinator_models_call_tools.go:106-120, which closes the call scope by
+// itself — cannot satisfy the assertions below).
 type failSecondGetSessions struct {
 	session.Service
 	gets atomic.Int64
+	caps *diskCapabilityManager
+
+	mu                     sync.Mutex
+	ownersAtFailure        int
+	constructionsAtFailure int
 }
+
+// errSecondResolve is the sentinel the injected second-Get failure returns;
+// drainCallFor surfaces it wrapped ("failed to load session %q: %w" at
+// coordinator_models.go:103-105), so errors.Is matches.
+var errSecondResolve = errors.New("db down (second resolve)")
 
 func (s *failSecondGetSessions) Get(ctx context.Context, id string) (session.Session, error) {
 	if s.gets.Add(1) == 1 {
 		return s.Service.Get(ctx, id)
 	}
-	return session.Session{}, errors.New("db down (second resolve)")
+	if s.caps != nil {
+		owners, constrs, _ := s.caps.OwnerDiagnostics()
+		s.mu.Lock()
+		s.ownersAtFailure, s.constructionsAtFailure = owners, constrs
+		s.mu.Unlock()
+	}
+	return session.Session{}, errSecondResolve
+}
+
+// snapshotAtFailure returns the owner diagnostics captured when the injected
+// second Get failed.
+func (s *failSecondGetSessions) snapshotAtFailure() (gets, owners, constrs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gets.Load(), int64(s.ownersAtFailure), int64(s.constructionsAtFailure)
 }
 
 // TestDrainCallFor_ReleasesContinuationOwnerWhenModelResolutionFails
@@ -213,6 +263,10 @@ func TestRunSessionAgentCall_ReadyGateFailureReleasesTransferredOwner(t *testing
 // the ready-gate path (pinCallTools' fail() closes the scope itself; the
 // Call-owner half is covered by
 // TestRunSessionAgentCall_ReadyGateFailureReleasesTransferredOwner).
+//
+// The exact-error + gets==2 + at-failure owners==1 assertions make an earlier
+// failure (pinCallTools' fail() closing the scope itself) unable to satisfy
+// the test.
 func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
@@ -230,11 +284,21 @@ func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 	// (coordinator_providers_auth.go:30-37); succeed it like
 	// drain_unauthorized_test.go's countRefreshes(nil).
 	f.coord.refreshOAuth2TokenFn = func(context.Context, config.ProviderConfig) error { return nil }
-	f.coord.sessions = &failSecondGetSessions{Service: f.env.sessions}
+	failing := &failSecondGetSessions{Service: f.env.sessions, caps: caps2}
+	f.coord.sessions = failing
 
 	_, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.Error(t, err)
 	require.Nil(t, prep)
+	require.ErrorIs(t, err, errSecondResolve,
+		"the failure must be the injected second-resolve Get error, not an earlier build failure")
+	gets, ownersAtFailure, constrsAtFailure := failing.snapshotAtFailure()
+	require.EqualValues(t, 2, gets,
+		"exactly two Get calls: the first resolve and the post-refresh second resolve")
+	require.EqualValues(t, 1, ownersAtFailure,
+		"the Construction owner must be LIVE at the failure moment (reachability)")
+	require.EqualValues(t, 1, constrsAtFailure,
+		"the construction record must exist at the failure moment")
 
 	ownersFence, _, _ := fenceCaps.OwnerDiagnostics()
 	require.Equal(t, 0, ownersFence,
