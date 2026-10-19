@@ -9,6 +9,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -90,12 +92,49 @@ func runJobsCmd(t *testing.T, args ...string) string {
 // host's running row (prints the kill hint naming its PID), and a foreign
 // DEAD host's row (shows dead, no hint).
 func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
+	batchOn := config.BatchRuntimeEnabled()
 	a, dataDir := isolatedJobsEnv(t)
 	ctx := context.Background()
 
 	sess, err := a.Sessions.CreateWithID(ctx, "jobs-table-sess", "session with jobs")
 	require.NoError(t, err)
 
+	// Dual mode: ON the table reports batch roots and no host hint; OFF keeps
+	// the legacy async-job liveness and host-hint contract below.
+	if batchOn {
+		foreignID := "foreign-live-host"
+		foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignID))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = foreignLock.Release() })
+		q := db.New(a.DB())
+		_, err = q.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: foreignID, Pid: 4242, Label: "other-rush", StartedAt: 1700000000})
+		require.NoError(t, err)
+		reserved, err := session.NewBatchStore(a.DB()).Reserve(ctx, session.BatchReservation{
+			Owner: sess.ID, Host: foreignID, RunnerID: "foreign-batch-runner",
+			ToolCallID: "foreign-batch-call", InputHash: "foreign-batch-hash", Sequence: 1,
+			Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"}},
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, reserved.Snapshot.Root.RootID)
+		a.Shutdown()
+		stdout := runJobsCmd(t, sess.ID)
+		lines := strings.Split(stdout, "\n")
+		var foreignLine string
+		for _, line := range lines {
+			if strings.Contains(line, "foreign-batch-call") {
+				foreignLine = line
+			}
+		}
+		require.NotEmpty(t, foreignLine)
+		require.NotContains(t, strings.Fields(foreignLine), "4242")
+		require.Contains(t, stdout, "TOOL_CALL_ID")
+		require.Contains(t, stdout, "foreign-batch-call")
+		require.Contains(t, foreignLine, "running")
+		require.Contains(t, foreignLine, "true")
+		require.NotContains(t, stdout, "taskkill")
+		require.NotContains(t, stdout, "kill -INT")
+		return
+	}
 	// Own-process row: claimed via this seed App's own AsyncJobStore, so its
 	// host is "own" -- alive by definition, without probing.
 	store := a.AsyncJobStore()
@@ -179,12 +218,30 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHostHint(t *testing.T) {
 // TestSessionsJobsCmdRun_JSON covers --json: one object per line, and the
 // derived liveness/hint fields.
 func TestSessionsJobsCmdRun_JSON(t *testing.T) {
+	batchOn := config.BatchRuntimeEnabled()
 	a, dataDir := isolatedJobsEnv(t)
 	ctx := context.Background()
 
 	sess, err := a.Sessions.CreateWithID(ctx, "jobs-json-sess", "session with jobs")
 	require.NoError(t, err)
 
+	if batchOn {
+		seedBatchReadRoot(t, a, sess.ID)
+		a.Shutdown()
+		require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
+		t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
+		stdout := runJobsCmd(t, sess.ID)
+		var item jobsJSONItem
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &item), stdout)
+		require.Equal(t, "batch-read-call", item.ToolCallID)
+		require.Equal(t, "batch", item.Kind)
+		require.Equal(t, "pending", item.State)
+		require.True(t, item.BatchHeld)
+		require.Equal(t, "held", item.Liveness)
+		require.Empty(t, item.Hint)
+		require.Zero(t, item.HostPID)
+		return
+	}
 	q := db.New(a.DB())
 	foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "json-live-host"))
 	require.NoError(t, err)

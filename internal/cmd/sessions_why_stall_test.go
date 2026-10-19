@@ -14,6 +14,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,8 @@ import (
 // mtimeAge old) with the given assistant tool-call parts and no results.
 func seedStallFixture(t *testing.T, mtimeAge time.Duration, calls ...message.ToolCall) (*app.App, string, string) {
 	t.Helper()
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
+	dataDir := t.TempDir()
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -48,7 +50,7 @@ func seedStallFixture(t *testing.T, mtimeAge time.Duration, calls ...message.Too
 	})
 	require.NoError(t, err)
 
-	tmpDir := t.TempDir()
+	tmpDir := dataDir
 	locksDir := filepath.Join(tmpDir, "locks")
 	require.NoError(t, os.MkdirAll(locksDir, 0o755))
 	lockPath := filepath.Join(locksDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
@@ -56,8 +58,8 @@ func seedStallFixture(t *testing.T, mtimeAge time.Duration, calls ...message.Too
 	old := time.Now().Add(-mtimeAge)
 	require.NoError(t, os.Chtimes(lockPath, old, old))
 
-	a := &app.App{Messages: m, Sessions: s}
-	return a, tmpDir, sess.ID
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
+	return a, dataDir, sess.ID
 }
 
 func TestWhyStall_FreshPulseUnchanged(t *testing.T) {
