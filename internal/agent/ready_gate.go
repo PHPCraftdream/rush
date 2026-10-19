@@ -92,6 +92,16 @@ func (g *readyGate) Go(f func() error) {
 	}()
 }
 
+// pendingCount reports how many tasks are currently registered and not yet
+// returned. Test-support accessor only (e.g. asserting that exactly the
+// held task remains pending before cancelling under it); production code
+// must rely on Wait, not on polling this counter.
+func (g *readyGate) pendingCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pending
+}
+
 // Wait blocks until no task is pending and returns the first error any task
 // has reported so far (sticky, as with errgroup).
 func (g *readyGate) Wait() error {

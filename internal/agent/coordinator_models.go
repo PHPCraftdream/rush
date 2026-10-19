@@ -130,6 +130,22 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		}
 	}
 
+	// D2 (docs/plans/2026-10-15-role-models-hot-reload.md §2.2): a
+	// role-derived value is not an explicit choice. When the call carries a
+	// non-smart ModelRole and the session has no explicit smart override,
+	// the smart slot resolves through the SHARED roleSlotOverride resolver
+	// (session pin tier first, then the role's config slot) — re-read on
+	// EVERY turn from this pinned snapshot, so a hot-reloaded role model
+	// reaches the next request. roleReasoningEffortFrom carries the explicit
+	// --effort of a non-smart role run onto the resolved slot (plan R6).
+	roleSource := ""
+	if smartOverride == nil {
+		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
+			smartOverride = ovr
+			roleSource = src
+		}
+	}
+
 	// Where each slot's model came from is recorded for heartbeat
 	// attribution (design pt. 3); the labels ride the returned snapshot.
 
@@ -215,6 +231,9 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	}
 	resolved.smartSource = hbOverrideSource(smartOverride != nil)
 	resolved.fastSource = hbOverrideSource(fastOverride != nil)
+	if roleSource != "" {
+		resolved.smartSource = roleSource
+	}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	// Resolve prompt prefix from provider config using the same atomic snapshot.
@@ -352,7 +371,7 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 //
 // The returned snapshot is what makes a TURN immune to the shared state moving
 // underneath it — no turn reads shared state after this point.
-func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *ModelOverride) (*resolvedOverrides, error) {
+func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string, smart, fast *ModelOverride) (*resolvedOverrides, error) {
 	// Atomically capture config and generation up front (task #341, P1-1) so
 	// largeCfg/smallCfg below, the buildModelsFromCfg call further down, and
 	// the provider/prompt reads at the end of this function all agree on one
@@ -362,6 +381,15 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	// landing between the two could hand back a smart/fast model selection
 	// from one generation built against provider config from another.
 	cfg, _ := c.cfg.Snapshot()
+	// The role-slot cascade needs the session's worker/reviewer/fast pins;
+	// a failed load resolves no pins (the caller decides whether that is
+	// fatal — the explicit overrides below still apply).
+	sess := session.Session{}
+	if sessionID != "" {
+		if loaded, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
+			sess = loaded
+		}
+	}
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 	// Where each slot came from is recorded for heartbeat attribution;
@@ -376,6 +404,28 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 		smartCfg.Model = smart.Model
 		if smart.ReasoningEffort != "" {
 			smartCfg.ReasoningEffort = smart.ReasoningEffort
+		}
+	}
+
+	// D2 (plan §2.2) via the SHARED roleSlotOverride resolver: an omitted
+	// smart override on a non-smart role run takes the role's session pin,
+	// else the role's config slot, from the same pinned snapshot — the pin
+	// tier applies here too, so a fast override riding along never buries
+	// a worker pin (plan P1-2). roleReasoningEffortFrom carries the explicit
+	// --effort of a non-smart role run onto the resolved slot (plan R6).
+	roleSource := ""
+	if smart == nil {
+		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
+			if smartCfg.Provider != ovr.Provider || smartCfg.Model != ovr.Model {
+				smartCfg.Think = false
+				smartCfg.ReasoningEffort = ""
+			}
+			smartCfg.Provider = ovr.Provider
+			smartCfg.Model = ovr.Model
+			if ovr.ReasoningEffort != "" {
+				smartCfg.ReasoningEffort = ovr.ReasoningEffort
+			}
+			roleSource = src
 		}
 	}
 	if fast != nil {
@@ -406,6 +456,9 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
 	resolved.smartSource = hbCallSource(smart != nil)
 	resolved.fastSource = hbCallSource(fast != nil)
+	if roleSource != "" {
+		resolved.smartSource = roleSource
+	}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {

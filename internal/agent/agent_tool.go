@@ -74,6 +74,10 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				Prompt:          params.Prompt,
 				SessionTitle:    "New Agent Session",
 				ResumeSessionID: params.ResumeSessionID,
+				// slotModel: this agent's model came from the buildAgent
+				// cascade (config role slots) — the only dispatch path the
+				// dispatch-time slot refresh may rebuild.
+				slotModel: true,
 			})
 		},
 	), nil

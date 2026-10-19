@@ -360,7 +360,7 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 func (c *coordinator) resolveCallModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	if creds == nil {
 		if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
-			return c.applyModelOverrides(ctx, smartOverride, fastOverride)
+			return c.applyModelOverrides(ctx, sessionID, smartOverride, fastOverride)
 		}
 		return c.resolveSessionModels(ctx, sessionID)
 	}

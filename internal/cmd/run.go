@@ -755,8 +755,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// config knob the run's CallOptions resolution reads.
 		a.Config().Options.TurnStallTimeoutSeconds = int(stallTimeout.Seconds())
 
-		// Fold --role into smartModel (see foldRoleModel); resolves
-		// --continue's session first so its worker/reviewer pin applies.
+		// foldRoleModel validates --role and resolves --continue's session;
+		// the role model itself resolves live per turn (plan D2).
 		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
 		if err != nil {
 			return err
