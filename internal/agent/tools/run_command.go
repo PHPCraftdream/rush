@@ -207,6 +207,12 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			if spawn := commandSpawnFromContext(ctx); spawn != nil {
+				return spawn(ctx, RunCommandToolName, argv)
+			}
+			if testCommandSpawn != nil {
+				return testCommandSpawn(ctx, RunCommandToolName, argv)
+			}
 			startTime := time.Now()
 			// R7b lifetime seam: only after the same shared guards and permission.
 			leaf := argvLeafFromContext(ctx)

@@ -21,13 +21,13 @@ const denyExecChild = "RUSH_DENY_EXEC_CHILD"
 type policyPermissionProbe struct {
 	*pubsub.Broker[permission.PermissionRequest]
 	calls int
+	allow bool
 }
 
 func (p *policyPermissionProbe) Request(context.Context, permission.CreatePermissionRequest) (bool, error) {
 	p.calls++
-	return false, nil
+	return p.allow, nil
 }
-
 func (p *policyPermissionProbe) Grant(permission.PermissionRequest)           {}
 func (p *policyPermissionProbe) Deny(permission.PermissionRequest)            {}
 func (p *policyPermissionProbe) GrantPersistent(permission.PermissionRequest) {}
@@ -56,7 +56,7 @@ func runPolicyChild(t *testing.T, value, mode string) string {
 	t.Helper()
 	binary, err := os.Executable()
 	require.NoError(t, err)
-	cmd := exec.Command(binary, "-test.run=^TestDenyExecPolicyHelper$")
+	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestDenyExecPolicyHelper$")
 	cmd.Env = append(os.Environ(), "RUSH_DENY_EXEC="+value, denyExecChild+"="+mode)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -68,50 +68,71 @@ func TestDenyExecPolicyHelper(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	if mode != "disabled" && mode != "bash" && mode != "argv" && mode != "allowed" {
+	if mode != "denied" && mode != "allowed" && mode != "disabled" {
 		t.Fatalf("unknown helper mode %q", mode)
 	}
-	probe := &policyPermissionProbe{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
+	probe := &policyPermissionProbe{Broker: pubsub.NewBroker[permission.PermissionRequest](), allow: true}
 	dir := t.TempDir()
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "policy")
-	if mode == "bash" {
-		tool := NewBashTool(probe, dir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
-		resp := runBashTool(t, tool, ctx, BashParams{Command: "go test ./..."})
-		require.True(t, resp.IsError)
-		require.Contains(t, resp.Content, "matched rule go test")
-		require.Zero(t, probe.calls)
-	} else if mode == "argv" {
-		tool := NewRunCommandTool(probe, dir)
-		raw, err := json.Marshal(RunCommandParams{Program: "go", Args: []string{"test", "./..."}})
-		require.NoError(t, err)
-		resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c", Name: RunCommandToolName, Input: string(raw)})
-		require.NoError(t, err)
-		require.True(t, resp.IsError)
-		require.Contains(t, resp.Content, "matched rule go test")
-		require.Zero(t, probe.calls)
-	} else if mode == "disabled" {
-		args := []string{"test", "./..."}
-		tool := NewRunCommandTool(probe, dir)
-		raw, err := json.Marshal(RunCommandParams{Program: "go", Args: args})
-		require.NoError(t, err)
-		resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c", Name: RunCommandToolName, Input: string(raw)})
-		require.NoError(t, err)
-		require.Equal(t, NewPermissionDeniedResponse().Content, resp.Content)
-		require.Equal(t, 1, probe.calls)
-	} else if mode == "allowed" {
-		tool := NewRunCommandTool(probe, dir)
-		raw, err := json.Marshal(RunCommandParams{Program: "go", Args: []string{"version"}})
-		require.NoError(t, err)
-		resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c", Name: RunCommandToolName, Input: string(raw)})
-		require.NoError(t, err)
-		require.Equal(t, NewPermissionDeniedResponse().Content, resp.Content)
-		require.Equal(t, 1, probe.calls)
+	response := fantasy.WithResponseMetadata(fantasy.NewTextResponse("spawn sentinel"), map[string]string{"origin": "fake-spawn"})
+	t.Cleanup(func() { testCommandSpawn = nil })
+	for _, surface := range []string{"bash", "argv"} {
+		calls := 0
+		var gotKind string
+		var gotArgs []string
+		testCommandSpawn = func(_ context.Context, kind string, args []string) (fantasy.ToolResponse, error) {
+			calls++
+			gotKind = kind
+			gotArgs = append([]string(nil), args...)
+			return response, nil
+		}
+		switch surface {
+		case "bash":
+			tool := NewBashTool(probe, dir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
+			switch mode {
+			case "denied":
+				resp := runBashTool(t, tool, ctx, BashParams{Command: "go test ./..."})
+				require.True(t, resp.IsError)
+				require.Contains(t, resp.Content, "matched rule go test")
+				require.Zero(t, calls)
+			case "allowed", "disabled":
+				cmd := "go version"
+				if mode == "disabled" {
+					cmd = "go test ./..."
+				}
+				resp := runBashTool(t, tool, ctx, BashParams{Command: cmd})
+				require.Equal(t, response, resp)
+				require.Equal(t, 1, calls)
+				require.Equal(t, BashToolName, gotKind)
+				require.Equal(t, []string{cmd}, gotArgs)
+			}
+		case "argv":
+			tool := NewRunCommandTool(probe, dir)
+			params := RunCommandParams{Program: "go", Args: []string{"test", "./..."}}
+			if mode == "allowed" {
+				params.Args = []string{"version"}
+			}
+			raw, err := json.Marshal(params)
+			require.NoError(t, err)
+			resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "c", Name: RunCommandToolName, Input: string(raw)})
+			require.NoError(t, err)
+			switch mode {
+			case "denied":
+				require.True(t, resp.IsError)
+				require.Contains(t, resp.Content, "matched rule go test")
+				require.Zero(t, calls)
+			case "allowed", "disabled":
+				require.Equal(t, response, resp)
+				require.Equal(t, 1, calls)
+				require.Equal(t, RunCommandToolName, gotKind)
+				require.Equal(t, append([]string{params.Program}, params.Args...), gotArgs)
+			}
+		}
 	}
 }
 
 func TestDenyExecPolicyProcessSnapshot(t *testing.T) {
-	runPolicyChild(t, "ci-only", "bash")
-	runPolicyChild(t, "ci-only", "argv")
-	runPolicyChild(t, "", "disabled")
+	runPolicyChild(t, "ci-only", "denied")
 	runPolicyChild(t, "ci-only", "allowed")
+	runPolicyChild(t, "", "disabled")
 }

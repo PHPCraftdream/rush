@@ -16,7 +16,7 @@ func TestCommandPolicy(t *testing.T) {
 		"go vet ./...", "go build ./...", "go test ./...", "go run .", "go install ./...", "go list ./...", "go generate ./...", "go get example.com/x", "go tool vet ./...", "go mod tidy",
 		"go -C dir test ./...", "go -C=dir test ./...", "go -x -n vet ./...", "Go.EXE -C dir test",
 		"GOFLAGS=-count=1 go test ./...", "cmd /c go build", "powershell -Command \"go test ./...\"", "bash -c 'cd x && go vet ./...'", "capm 2g go test -p 1 ./...", "env FOO=1 go list ./...", "xargs go build", "npm run build", "npm test", "npx playwright test", "python -m pytest", "find . -exec go vet {} ;", "pint 1 go test", "capm 2g idle go test", "sudo -u builder go test ./...", "start \"title\" go test ./...",
-		"golangci-lint run", "pytest", "cargo test", "node --test", "node build.js", "pnpm test",
+		"golangci-lint run", "pytest", "cargo test", "node --test", "pnpm test",
 	}
 	for _, command := range denied {
 		err := p.CheckCommand(command)

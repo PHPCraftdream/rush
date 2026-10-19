@@ -199,6 +199,12 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 			}
 
+			if spawn := commandSpawnFromContext(ctx); spawn != nil {
+				return spawn(ctx, BashToolName, []string{params.Command})
+			}
+			if testCommandSpawn != nil {
+				return testCommandSpawn(ctx, BashToolName, []string{params.Command})
+			}
 			if leaf, ok := ctx.Value(shellLeafKey{}).(ShellLeaf); ok {
 				params.RunInBackground = false
 				return runBashLeaf(ctx, leaf, bgManager, sessionID, execWorkingDir, params)

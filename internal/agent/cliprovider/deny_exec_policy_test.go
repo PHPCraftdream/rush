@@ -2,9 +2,9 @@ package cliprovider
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -13,20 +13,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const mcpDenyExecChild = "RUSH_DENY_EXEC_MCP_CHILD"
+const (
+	mcpDenyExecChild = "RUSH_DENY_EXEC_MCP_CHILD"
+	mcpSpawnSentinel = "MCP spawn sentinel"
+)
 
 type policyMCPPermissionProbe struct {
 	permission.Service
-	calls int
+	calls atomic.Int32
 	err   error
+	allow bool
 }
 
 func (p *policyMCPPermissionProbe) Request(context.Context, permission.CreatePermissionRequest) (bool, error) {
-	p.calls++
+	p.calls.Add(1)
 	if p.err != nil {
 		return false, p.err
 	}
-	return false, nil
+	return p.allow, nil
 }
 
 func (p *policyMCPPermissionProbe) Subscribe(context.Context) <-chan pubsub.Event[permission.PermissionRequest] {
@@ -45,38 +49,75 @@ func TestMCPDenyExecPolicyHelper(t *testing.T) {
 	if mode != "ci-denied" && mode != "ci-allowed" && mode != "disabled" {
 		t.Fatalf("unknown helper mode %q", mode)
 	}
-	workingDir := t.TempDir()
-	probe := &policyMCPPermissionProbe{err: errors.New("permission sentinel")}
-	srv, err := newRushMCPServer(t.Context(), probe, nil, "policy-session", workingDir, "test-token", nil)
+	if mode == "disabled" {
+		t.Setenv("RUSH_DENY_EXEC", "")
+	}
+	wd := t.TempDir()
+	probe := &policyMCPPermissionProbe{allow: true}
+	var registered, direct atomic.Int32
+	var gotCmd, gotDir atomic.Value
+	testMCPBashSpawn = func(_ context.Context, kind, command string) (string, error) {
+		registered.Add(1)
+		gotCmd.Store(command)
+		gotDir.Store(kind)
+		return mcpSpawnSentinel, nil
+	}
+	testRunShellSpawn = func(_ context.Context, command, dir string) (string, error) {
+		direct.Add(1)
+		gotCmd.Store(command)
+		gotDir.Store(dir)
+		return mcpSpawnSentinel, nil
+	}
+	t.Cleanup(func() { testMCPBashSpawn = nil; testRunShellSpawn = nil })
+	srv, err := newRushMCPServer(t.Context(), probe, nil, "policy-session", wd, "test-token", nil)
 	require.NoError(t, err)
 	t.Cleanup(srv.stop)
 	client := connectMCPTestClient(t, srv)
 	command := "go test ./..."
+	expected := int32(1)
+	if mode == "ci-denied" {
+		expected = 0
+	}
 	if mode == "ci-allowed" {
 		command = "go version"
 	}
 	result := callMCPTool(t, client, "Bash", mcpBashInput{Command: command, Description: "policy probe"})
-	require.True(t, result.IsError)
-	message := result.Content[0].(*mcp.TextContent).Text
 	if mode == "ci-denied" {
-		require.Contains(t, message, "matched rule go test")
-		require.Zero(t, probe.calls)
-		_, err = runShell(context.Background(), command, workingDir)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "matched rule go test")
+		require.True(t, result.IsError)
+		require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "matched rule go test")
 	} else {
-		require.Equal(t, "permission request failed: permission sentinel", message)
-		require.Equal(t, 1, probe.calls)
+		require.False(t, result.IsError)
+		require.Len(t, result.Content, 1)
+		require.Equal(t, mcpSpawnSentinel, result.Content[0].(*mcp.TextContent).Text)
+		require.Equal(t, command, gotCmd.Load())
+		require.Equal(t, "Bash", gotDir.Load())
+	}
+	require.Equal(t, expected, registered.Load())
+	require.Equal(t, expected, probe.calls.Load())
+	out, runErr := runShell(context.Background(), command, wd)
+	if mode == "ci-denied" {
+		require.Error(t, runErr)
+		require.Contains(t, runErr.Error(), "matched rule go test")
+		require.Empty(t, out)
+	} else {
+		require.NoError(t, runErr)
+		require.Equal(t, mcpSpawnSentinel, out)
+		require.Equal(t, command, gotCmd.Load())
+		require.Equal(t, wd, gotDir.Load())
+	}
+	require.Equal(t, expected, direct.Load())
+	if mode == "ci-denied" {
+		_, err = runShell(context.Background(), "bash -c '$tool test'", wd)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "opaque-wrapper-command")
 	}
 }
 
 func TestMCPDenyExecPolicyProcessSnapshot(t *testing.T) {
 	binary, err := os.Executable()
 	require.NoError(t, err)
-	for _, tc := range []struct{ value, mode string }{
-		{"ci-only", "ci-denied"}, {"ci-only", "ci-allowed"}, {"", "disabled"},
-	} {
-		cmd := exec.Command(binary, "-test.run=^TestMCPDenyExecPolicyHelper$")
+	for _, tc := range []struct{ value, mode string }{{"ci-only", "ci-denied"}, {"ci-only", "ci-allowed"}, {"", "disabled"}} {
+		cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestMCPDenyExecPolicyHelper$")
 		cmd.Env = append(os.Environ(), "RUSH_DENY_EXEC="+tc.value, mcpDenyExecChild+"="+tc.mode)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))

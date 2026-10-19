@@ -2,6 +2,7 @@ package agentguard
 
 import (
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/shell"
@@ -18,7 +19,13 @@ func (p CommandPolicy) checkCandidates(candidates [][]string) error {
 	seen := make(map[string]struct{})
 	var visit func([]string, int) error
 	visit = func(args []string, depth int) error {
-		if len(args) == 0 || depth > wrapperDepthLimit {
+		if len(args) == 0 {
+			return nil
+		}
+		if depth > wrapperDepthLimit || len(args) == 1 && (args[0] == "\x00rush-opaque-command") {
+			if len(p.rules) > 0 {
+				return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "wrapper nesting depth or opaque shell candidate prevented inspection; " + opaqueWrapperDetail}
+			}
 			return nil
 		}
 		key := strings.Join(args, "\x00")
@@ -26,6 +33,9 @@ func (p CommandPolicy) checkCandidates(candidates [][]string) error {
 			return nil
 		}
 		seen[key] = struct{}{}
+		if reason, opaque := p.checkOpaqueWrapper(args); opaque {
+			return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "opaque command head or payload " + reason + "; " + opaqueWrapperDetail}
+		}
 		if rule := matchPolicy(args, p.rules); rule != "" {
 			return &CommandDeniedError{Rule: rule}
 		}
@@ -70,6 +80,36 @@ func augmentPolicyWrappers(args []string) [][]string {
 				if end > i+1 {
 					appendCandidates(rest[i+1 : end])
 				}
+			}
+		}
+	}
+	if head == "node" {
+		for i := 0; i < len(rest); i++ {
+			arg := rest[i]
+			name := arg
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name = name[:eq]
+			}
+			if commandPolicyOptionFlags["node"][name] || strings.HasPrefix(name, "--test-") {
+				continue
+			}
+			if name == "-e" || name == "--eval" || name == "-p" || name == "--print" {
+				if i+1 < len(rest) {
+					for _, command := range literalNodeExecCommands(rest[i+1]) {
+						appendCandidates([]string{"sh", "-c", command})
+					}
+				}
+				i++
+				continue
+			}
+			if operands := commandPolicyOptionOperands["node"]; operands[name] {
+				if !strings.Contains(arg, "=") {
+					i++
+				}
+				continue
+			}
+			if !strings.HasPrefix(arg, "-") {
+				break
 			}
 		}
 	}
@@ -170,6 +210,23 @@ func augmentPolicyWrappers(args []string) [][]string {
 		}
 	}
 	return out
+}
+
+var literalNodeExecPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*'([^']*)'`),
+	regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*"([^"]*)"`),
+}
+
+func literalNodeExecCommands(code string) []string {
+	var commands []string
+	for _, pattern := range literalNodeExecPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(code, -1) {
+			if len(match) == 2 {
+				commands = append(commands, match[1])
+			}
+		}
+	}
+	return commands
 }
 
 func policyCanonicalExecutable(value string) string {

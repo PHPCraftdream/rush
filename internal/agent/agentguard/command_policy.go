@@ -16,7 +16,10 @@ var processCommandPolicy = NewCommandPolicy(os.Getenv(denyExecEnv))
 
 type (
 	CommandPolicy      struct{ rules map[string]struct{} }
-	CommandDeniedError struct{ Rule string }
+	CommandDeniedError struct {
+		Rule   string
+		Detail string
+	}
 )
 
 var ciOnlyRules = []string{"go", "linters", "js", "node", "test-runners", "python", "cargo"}
@@ -55,6 +58,9 @@ func (p CommandPolicy) CheckCommand(command string) error {
 }
 
 func (p CommandPolicy) CheckArgs(args []string) error {
+	if reason, opaque := p.checkOpaqueWrapper(args); opaque {
+		return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "opaque command head or payload " + reason + "; " + opaqueWrapperDetail}
+	}
 	candidates := shell.CommandCandidatesForPlatform(args, true)
 	candidates = append(candidates, augmentPolicyWrappers(args)...)
 	return p.checkCandidates(candidates)
@@ -71,7 +77,12 @@ func CheckCommandPolicyArgs(args []string) error {
 }
 
 func (e *CommandDeniedError) Error() string {
-	return "the command is denied by the CI-only policy (RUSH_DENY_EXEC): tests/builds/lints run only in GitHub CI; matched rule " + e.Rule
+	return "the command is denied by the CI-only policy (RUSH_DENY_EXEC): tests/builds/lints run only in GitHub CI; matched rule " + e.Rule + func() string {
+		if e.Detail == "" {
+			return ""
+		}
+		return ": " + e.Detail
+	}()
 }
 
 func matchPolicy(args []string, enabled map[string]struct{}) string {
@@ -86,22 +97,13 @@ func matchPolicy(args []string, enabled map[string]struct{}) string {
 	}
 	switch {
 	case has("go") && head == "go":
-		i := 1
-		for i < len(args) && strings.HasPrefix(args[i], "-") {
-			t := args[i]
-			if t == "-C" {
-				i += 2
-				continue
-			}
-			if strings.HasPrefix(t, "-C=") {
-				i++
-				continue
-			}
-			i++
+		positional, unknown := scanToolArgs("go", args[1:])
+		if !unknown && len(positional) > 0 {
+			positional = positional[:1]
 		}
-		if i < len(args) {
-			s := strings.ToLower(args[i])
-			if s == "mod" && i+1 < len(args) && strings.EqualFold(args[i+1], "tidy") {
+		for _, token := range positional {
+			s := strings.ToLower(token)
+			if s == "mod" && strings.Contains(strings.ToLower(strings.Join(args, " ")), "mod tidy") {
 				return "go mod tidy"
 			}
 			if strings.Contains("|vet|build|test|run|install|list|generate|tool|get|", "|"+s+"|") {
@@ -110,28 +112,67 @@ func matchPolicy(args []string, enabled map[string]struct{}) string {
 		}
 	case has("linters") && strings.Contains("|golangci-lint|staticcheck|revive|sqlc|gopls|gotestsum|ginkgo|", "|"+head+"|"):
 		return head
-	case has("js") && strings.Contains("|npm|pnpm|yarn|npx|bun|", "|"+head+"|") && (sub == "test" || sub == "build" || sub == "exec" || (sub == "run" && len(args) > 2 && (strings.EqualFold(args[2], "test") || strings.EqualFold(args[2], "build")))):
-		return head + " " + sub
+	case has("js") && strings.Contains("|npm|pnpm|yarn|npx|bun|", "|"+head+"|"):
+		positional, unknown := scanToolArgs(head, args[1:])
+		if unknown {
+			for _, token := range positional {
+				sub = strings.ToLower(token)
+				if strings.Contains("|test|build|exec|", "|"+sub+"|") {
+					return head + " " + sub
+				}
+			}
+			break
+		}
+		if len(positional) > 0 {
+			sub = strings.ToLower(positional[0])
+			if sub == "test" || sub == "build" || sub == "exec" || (sub == "run" && len(positional) > 1 && (strings.EqualFold(positional[1], "test") || strings.EqualFold(positional[1], "build"))) {
+				return head + " " + sub
+			}
+		}
 	case has("node") && head == "node":
-		for i := 1; i < len(args); i++ {
-			a := strings.ToLower(args[i])
-			if a == "--test" {
+		positional, unknown := scanToolArgs("node", args[1:])
+		if unknown {
+			for _, a := range positional {
+				a = strings.ToLower(a)
+				if a == "--test" || strings.HasPrefix(a, "--test-") {
+					return "node --test"
+				}
+				if !strings.HasPrefix(a, "-") && strings.Contains(a, "test") {
+					return "node test script"
+				}
+			}
+			break
+		}
+		for _, a := range positional {
+			a = strings.ToLower(a)
+			if a == "--test" || strings.HasPrefix(a, "--test-") {
 				return "node --test"
 			}
 			if strings.HasPrefix(a, "-") {
 				continue
 			}
-			if strings.Contains(a, "test") || strings.Contains(a, "build") {
-				return "node test/build script"
+			if strings.Contains(a, "test") {
+				return "node test script"
 			}
 			break
 		}
 	case has("test-runners") && strings.Contains("|playwright|vitest|jest|pytest|", "|"+head+"|"):
 		return head
-	case has("python") && (head == "python" || head == "python3") && len(args) > 2 && args[1] == "-m" && (args[2] == "pytest" || args[2] == "unittest"):
-		return "python -m " + args[2]
-	case has("cargo") && head == "cargo" && strings.Contains("|build|test|check|clippy|", "|"+sub+"|"):
-		return "cargo " + sub
+	case has("python") && (head == "python" || head == "python3" || head == "py"):
+		positional, _ := scanToolArgs(head, args[1:])
+		for i := 0; i+1 < len(positional); i++ {
+			if positional[i] == "-m" && (positional[i+1] == "pytest" || positional[i+1] == "unittest") {
+				return "python -m " + positional[i+1]
+			}
+		}
+	case has("cargo") && head == "cargo":
+		positional, _ := scanToolArgs("cargo", args[1:])
+		for _, token := range positional {
+			s := strings.ToLower(token)
+			if strings.Contains("|build|test|check|clippy|", "|"+s+"|") {
+				return "cargo " + s
+			}
+		}
 	}
 	return ""
 }
