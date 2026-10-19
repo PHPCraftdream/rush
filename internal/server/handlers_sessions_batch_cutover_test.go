@@ -197,7 +197,12 @@ preamble.', 0, ?, ?, ?, 1700000002, 1700000002)`,
 		insertBatchCutoverDebt(t, ctx, a, "rb-badge-debt", sess.ID)
 		snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 		require.NoError(t, err)
-		require.Empty(t, snap.Agents, "completion debt is not live work and never badges")
+		// The finished root is retained as terminal history (the 50-newest
+		// finished-roots contract), but completion debt never badges.
+		require.Len(t, snap.Agents, 1, "the finished root stays visible as terminal history")
+		require.Equal(t, "completed", snap.Agents[0].Status)
+		require.False(t, snap.Agents[0].AwaitingAnswer, "completion debt is not live work and never badges")
+		require.Empty(t, snap.Agents[0].AwaitingQuestion)
 		require.Empty(t, snap.Commands)
 	})
 
