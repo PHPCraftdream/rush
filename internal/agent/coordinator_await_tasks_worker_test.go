@@ -20,6 +20,7 @@ func newAwaitWorkerEnv(t *testing.T) (fakeEnv, *coordinator, *session.AsyncJobSt
 	t.Helper()
 	env := testEnv(t)
 	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "await-worker-test")
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
 	c := &coordinator{
 		sessions:  env.sessions,
 		arb:       arbiter{bySession: map[string]*arbiterState{}},
@@ -38,9 +39,15 @@ func shrinkWorkerPoll(t *testing.T, d time.Duration) {
 func childSession(t *testing.T, env fakeEnv, toolCallID, parentID string) string {
 	t.Helper()
 	ctx := context.Background()
-	_, err := env.sessions.CreateTaskSession(ctx, toolCallID, parentID, "worker child")
+	_, err := env.sessions.CreateWithID(ctx, parentID, "parent")
 	require.NoError(t, err)
-	return toolCallID
+	child, err := env.sessions.CreateTaskSession(ctx, toolCallID, parentID, "worker child")
+	require.NoError(t, err)
+	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "await-worker-test")
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	_, err = store.Claim(ctx, session.ClaimParams{Owner: parentID, ToolCallID: toolCallID, Kind: session.JobKindAgent, Input: "x", ChildSessionID: child.ID, ToolName: "agent"})
+	require.NoError(t, err)
+	return child.ID
 }
 
 // TestAwaitTasksWorkerBlocksUntilOwnJobFinishes pins the worker branch in
