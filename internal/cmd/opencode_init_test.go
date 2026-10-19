@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Revert check: runOpenCodeInit and runOpenCodeDel scope flags and target directories.
 func TestOpenCodeInitScopesAndConflict(t *testing.T) {
 	for _, scope := range []string{"default", "global", "local", "cwd"} {
 		t.Run(scope, func(t *testing.T) {
@@ -27,13 +28,14 @@ func TestOpenCodeInitScopesAndConflict(t *testing.T) {
 			}
 			require.NoError(t, runOpenCodeInitWithHome(cmd, home))
 			dest := filepath.Join(home, ".config", "opencode", "commands")
-			if scope == "local" {
-				dest = filepath.Join(cwd, opencodeCommandsDir)
-			} else if scope == "cwd" {
-				dest = filepath.Join(explicit, opencodeCommandsDir)
+			switch scope {
+			case "local":
+				dest = filepath.Join(cwd, ".opencode", "commands")
+			case "cwd":
+				dest = filepath.Join(explicit, ".opencode", "commands")
 			}
 			assertOpenCodeFiles(t, dest)
-			for _, other := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, opencodeCommandsDir), filepath.Join(explicit, opencodeCommandsDir)} {
+			for _, other := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, ".opencode", "commands"), filepath.Join(explicit, ".opencode", "commands")} {
 				if other != dest {
 					assertOpenCodeFilesAbsent(t, other)
 				}
@@ -49,7 +51,7 @@ func TestOpenCodeInitScopesAndConflict(t *testing.T) {
 		_ = cmd.Flags().Set("cwd", explicit)
 		require.ErrorContains(t, runOpenCodeInitWithHome(cmd, home), "mutually exclusive")
 		assertOpenCodeFilesAbsent(t, filepath.Join(home, ".config", "opencode", "commands"))
-		assertOpenCodeFilesAbsent(t, filepath.Join(explicit, opencodeCommandsDir))
+		assertOpenCodeFilesAbsent(t, filepath.Join(explicit, ".opencode", "commands"))
 	})
 }
 
@@ -67,6 +69,7 @@ func assertOpenCodeFilesAbsent(t *testing.T, dir string) {
 	}
 }
 
+// Revert check: installMarkdownCommands writes frontmatter/ownership and nativeFrontMatter moves the sentinel after YAML.
 func TestOpenCodeInitWritesValidCommandsAndHarnessGuidance(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".opencode", "commands")
 	require.NoError(t, installMarkdownCommands(dir, skillTargetOpenCode))
@@ -188,6 +191,7 @@ func TestOpenCodeInitSkillWarningScopesDeduplicate(t *testing.T) {
 	assert.Contains(t, warnings[0], "OpenCode also loads Codex-targeted Rush skills")
 }
 
+// Revert check: runOpenCodeDel selects the same scope and removeMarkdownCommands is sentinel-only/idempotent.
 func TestOpenCodeDelScopesOwnershipAndIdempotence(t *testing.T) {
 	home, cwd := t.TempDir(), t.TempDir()
 	orig, err := os.Getwd()
@@ -195,10 +199,10 @@ func TestOpenCodeDelScopesOwnershipAndIdempotence(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, dir := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, opencodeCommandsDir)} {
+	for _, dir := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, ".opencode", "commands")} {
 		require.NoError(t, installMarkdownCommands(dir, skillTargetOpenCode))
 	}
-	foreign := filepath.Join(cwd, opencodeCommandsDir, "rush.md")
+	foreign := filepath.Join(cwd, ".opencode", "commands", "rush.md")
 	require.NoError(t, os.WriteFile(foreign, []byte("foreign"), 0o644))
 	cmd := nativeTestCommand([]string{"--local"}, cwd)
 	_ = cmd.Flags().Set("cwd", cwd)
@@ -239,6 +243,7 @@ func TestFallbackPolicyRenderedForEveryNonClaudeTarget(t *testing.T) {
 	assert.Contains(t, strings.Join(strings.Fields(claude), " "), "switch to that agent immediately and silently")
 }
 
+// Revert check: parseStructuredSkillSource rejects markers for each current target dialect.
 func TestOpenCodeSourcesRejectMarkersAcrossTargets(t *testing.T) {
 	for _, target := range []skillTarget{skillTargetCommon, skillTargetClaude, skillTargetCodex, skillTargetGemini, skillTargetGrok, skillTargetQwen, skillTargetOpenCode, skillTargetOmp} {
 		for _, name := range []string{"claude_slash_command", "claude_crush_fallback_command"} {

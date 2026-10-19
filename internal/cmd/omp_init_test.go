@@ -30,13 +30,14 @@ func TestOMPInitScopesAndConflicts(t *testing.T) {
 			}
 			require.NoError(t, runOMPInit(cmd, nil))
 			dest := filepath.Join(home, ".omp", "agent", "commands")
-			if scope == "local" {
-				dest = filepath.Join(cwd, ompCommandsDir)
-			} else if scope == "cwd" {
-				dest = filepath.Join(explicit, ompCommandsDir)
+			switch scope {
+			case "local":
+				dest = filepath.Join(cwd, ".omp", "commands")
+			case "cwd":
+				dest = filepath.Join(explicit, ".omp", "commands")
 			}
 			assertOMPFiles(t, dest)
-			for _, other := range []string{filepath.Join(home, ".omp", "agent", "commands"), filepath.Join(cwd, ompCommandsDir), filepath.Join(explicit, ompCommandsDir)} {
+			for _, other := range []string{filepath.Join(home, ".omp", "agent", "commands"), filepath.Join(cwd, ".omp", "commands"), filepath.Join(explicit, ".omp", "commands")} {
 				if other != dest {
 					assertOMPFilesAbsent(t, other)
 				}
@@ -52,7 +53,7 @@ func TestOMPInitScopesAndConflicts(t *testing.T) {
 		_ = cmd.Flags().Set("cwd", cwd)
 		require.ErrorContains(t, runOMPInit(cmd, nil), "mutually exclusive")
 		assertOMPFilesAbsent(t, filepath.Join(home, ".omp", "agent", "commands"))
-		assertOMPFilesAbsent(t, filepath.Join(cwd, ompCommandsDir))
+		assertOMPFilesAbsent(t, filepath.Join(cwd, ".omp", "commands"))
 	})
 }
 
@@ -145,7 +146,7 @@ func TestOMPDelOwnedFilesIdempotent(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	global := filepath.Join(home, ".omp", "agent", "commands")
-	local := filepath.Join(cwd, ompCommandsDir)
+	local := filepath.Join(cwd, ".omp", "commands")
 	require.NoError(t, installMarkdownCommands(global, skillTargetOmp))
 	require.NoError(t, installMarkdownCommands(local, skillTargetOmp))
 	foreign := filepath.Join(local, "foreign.md")

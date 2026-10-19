@@ -110,7 +110,12 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	// Seed turn: establishes the session in a normal, completed state.
 	_, err = sa.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "seed turn"})
 	require.NoError(t, err)
+	sessionAgent.runWg.Wait()
 	require.False(t, sessionAgent.IsSessionBusy(sess.ID), "session must be idle after the seed turn")
+
+	// Snapshot before taking the lock route; the queue is empty at this point.
+	snapshot := sessionAgent.testBuildSummarizeSnapshot()
+	require.False(t, sessionAgent.SummarizeQueued(sess.ID))
 
 	// Hold the OS session lock, simulating ANOTHER process owning the
 	// session. The byte-range/flock file lock blocks the in-process agent
@@ -118,17 +123,62 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	otherProcLock, err = session.TryAcquireSessionLock(env.workingDir, sess.ID)
 	require.NoError(t, err)
 
-	// Snapshot before taking the lock route; the queue is empty at this point.
-	snapshot := sessionAgent.testBuildSummarizeSnapshot()
-	require.False(t, sessionAgent.SummarizeQueued(sess.ID))
+	// Install after seed: this trace counts only compaction ownership releases.
+	busyReleases := make(chan int64, 8)
+	var idleReleases atomic.Int64
+	sessionAgent.onSessionIdle = func(string) {
+		count := idleReleases.Add(1)
+		select {
+		case busyReleases <- count:
+		default:
+		}
+	}
 
 	require.ErrorIs(t, sa.Summarize(ctx, sess.ID, snapshot), ErrSummarizeQueued)
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(1), count, "direct lock-busy attempt must release ownership once")
+	case <-time.After(10 * time.Second):
+		t.Fatal("direct lock-busy attempt did not release ownership")
+	}
 	// Busy branch returned without a provider request, and queue ownership stays parked.
 	require.Equal(t, int64(1), totalCalls.Load())
 	require.True(t, sessionAgent.SummarizeQueued(sess.ID))
-	require.NoError(t, otherProcLock.Release())
+	firstQueued, queued := sessionAgent.summarizeQueue.Get(sess.ID)
+	require.True(t, queued)
+	require.Same(t, snapshot, firstQueued, "direct busy attempt must queue its original snapshot")
 
-	// Simulate the queued ownership handoff after the busy branch re-queued it.
+	// The foreign lock remains held: ReserveExclusive does not acquire it,
+	// so its release deterministically invokes the queued summarize handoff.
+	_, reserveEpoch, reserveCancel, ok := sessionAgent.ReserveExclusive(ctx, sess.ID)
+	require.True(t, ok)
+	sessionAgent.ReleaseExclusive(sess.ID, reserveEpoch, reserveCancel)
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(2), count, "exclusive release must trigger queued summarize handoff")
+	case <-time.After(10 * time.Second):
+		t.Fatal("exclusive release did not hand off queued summarize")
+	}
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(3), count, "detached lock-busy summarize attempt must release ownership")
+	case <-time.After(10 * time.Second):
+		t.Fatal("detached lock-busy summarize attempt did not release ownership")
+	}
+	// Join the admitted detached attempt: it can return only after its lock-busy
+	// branch has re-queued the exact snapshot, making this a structural barrier.
+	sessionAgent.runWg.Wait()
+	require.Equal(t, int64(3), idleReleases.Load())
+	require.Equal(t, int64(1), totalCalls.Load())
+	require.True(t, sessionAgent.SummarizeQueued(sess.ID))
+	requeued, queued := sessionAgent.summarizeQueue.Get(sess.ID)
+	require.True(t, queued)
+	require.Same(t, snapshot, requeued, "the same snapshot must remain queued")
+
+	// The foreign owner releases the OS lock; the next normal owner drains the queue.
+	require.NoError(t, otherProcLock.Release())
+	otherProcLock = nil
+
 	_, err = sa.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "next owner turn"})
 	require.NoError(t, err)
 

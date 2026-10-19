@@ -30,11 +30,16 @@ func (s *p02CrossProcessEnqueueFailingSessions) EnqueueRunQueueEntry(context.Con
 }
 
 type p02CrossProcessPumpCoordinator struct {
-	inner *pumpTestCoordinator
-	done  chan error
+	inner  *pumpTestCoordinator
+	done   chan error
+	prompt chan string
 }
 
 func (c *p02CrossProcessPumpCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+	select {
+	case c.prompt <- callData.Prompt:
+	default:
+	}
 	result, err := c.inner.Run(ctx, callData)
 	select {
 	case c.done <- err:
@@ -76,9 +81,14 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 
 	env := testEnv(t)
 	sa := NewSessionAgent(SessionAgentOptions{
-		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
-		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true,
+		SmartModel:           model,
+		FastModel:            model,
+		SystemPrompt:         "you are a probe",
+		DataDirectory:        env.workingDir,
+		Sessions:             env.sessions,
+		Messages:             env.messages,
+		Tools:                []fantasy.AgentTool{},
+		DisableAutoSummarize: true,
 	}).(*sessionAgent)
 
 	ctx := context.Background()
@@ -120,26 +130,31 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 	require.Len(t, pendingEntries, 1)
 
 	done := make(chan error, 1)
+	prompt := make(chan string, 1)
 	mockCoord := &p02CrossProcessPumpCoordinator{
-		inner: &pumpTestCoordinator{sessionAgent: sa, dataDir: env.workingDir},
-		done:  done,
+		inner:  &pumpTestCoordinator{sessionAgent: sa, dataDir: env.workingDir},
+		done:   done,
+		prompt: prompt,
 	}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions: env.sessions, Coordinator: mockCoord,
 		PumpInstanceID: "test-pump-p0-2-cross",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },
 	})
+	t.Cleanup(sa.runWg.Wait)
+	stopRunQueuePumpForTest(t, pump, env, func() { sa.CancelAll() })
 	pump.Start()
-	stopRunQueuePumpForTest(t, pump)
-	t.Cleanup(func() {
-		sa.CancelAll()
-		sa.runWg.Wait()
-	})
 	select {
 	case runErr := <-done:
 		require.NoError(t, runErr)
 	case <-time.After(10 * time.Second):
 		t.Fatal("pump coordinator did not complete")
+	}
+	select {
+	case promptText := <-prompt:
+		require.Equal(t, "interrupted message", promptText)
+	case <-time.After(10 * time.Second):
+		t.Fatal("pump coordinator did not capture prompt")
 	}
 	require.Eventually(t, func() bool {
 		pending, checkErr := env.sessions.ListPendingRunQueueEntries(ctx)
@@ -154,11 +169,10 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 	require.NoError(t, err)
 	found := false
 	for _, persisted := range msgs {
-		for _, part := range persisted.Parts {
-			if text, ok := part.(message.TextContent); ok && text.Text == pi.Content {
-				found = true
-			}
+		if persisted.ID == msg.ID {
+			found = true
+			break
 		}
 	}
-	require.True(t, found, "restored inject content must reach the executed turn")
+	require.True(t, found, "original user message ID must be preserved after autonomous execution")
 }
