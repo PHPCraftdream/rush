@@ -382,12 +382,32 @@ func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
 	names := buildSubAgentToolNames(t, coord)
 
 	// The worker's complete expected toolset, by name: read-only base
-	// (resolveReadOnlyTools) plus workerToolNames.
+	// (resolveReadOnlyTools) plus the worker layering. The layering is
+	// flag-selected (workerLayeredToolNames, batch_allowed_controls.go:80-85):
+	// OFF layers workerToolNames verbatim, including job_output (#1271); ON
+	// layers workerToolNamesBatch (:67-76), which FILTERS job_output (never
+	// translates it) and grants the native batch_status/batch_output names.
 	expected := []string{
 		"glob", "grep", "ls", "sourcegraph", "view", // read-only base
 		"edit", "multiedit", "write", "bash", // hands-on
 		"todos", "download", "fetch", tools.AskQuestionToolName,
-		tools.AwaitTasksToolName, tools.JobOutputToolName, // #1271
+		tools.AwaitTasksToolName,
+	}
+	if batchFlagEnabled() {
+		// The native controls' absence from THIS resolved list is the
+		// production design, not a gap: the shared default toolset build is
+		// DEFERRED (no trusted call state -> finishToolAssembly's `deferred`
+		// path, coordinator_tools.go:884-885), and a deferred build strips
+		// the control placeholders (withoutBatchControlPlaceholders,
+		// coordinator_tools.go:862) and installs the model controls PER CALL
+		// (:908, gated on !deferred). So the native grants live in
+		// AllowedTools, not in the deferred build's names; the legacy
+		// job_output, by contrast, is genuinely gone from the worker's
+		// resolved toolset under ON.
+		assert.NotContains(t, names, tools.JobOutputToolName,
+			"flag ON filters the legacy job_output name from the worker layering (workerToolNamesBatch)")
+	} else {
+		expected = append(expected, tools.JobOutputToolName) // #1271
 	}
 	for _, name := range expected {
 		assert.Contains(t, names, name, "worker must have %q in its resolved toolset", name)

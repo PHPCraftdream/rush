@@ -54,11 +54,25 @@ const (
 // reads false) and no messages service (so a release keeps the completion
 // captured at arm time). Tests that need a refreshed completion or a busy
 // gate set those fields afterwards.
+//
+// The store comes from newTestAsyncJobStoreWithDataDir (byte-identical
+// construction semantics to newTestAsyncJobStore -- same temp dir, connect,
+// foreign_keys-off, host-registration and cleanup sequence -- it just also
+// returns conn/dataDir) so the coordinator's batch node facts can be bound:
+// under RUSH_BATCH_RUNTIME=1 childScopeOpenAcrossProcesses routes
+// childScopeDrained's cross-process half through CLIScope's bound batch
+// reads (coordinator_reaction_source.go runningWorkOpen/SelectedDebtExists),
+// and an unbound coordinator would fail OPEN ("node source unavailable"),
+// keeping every armed delegation parked forever. The binding is ignored
+// when the flag is OFF (batch_cutover_facts.go coordinatorBatchCutoverFacts),
+// so both runtimes see the same fixture.
 func newParkedOutcomeCoordinator(t *testing.T, onWebDone func(AsyncCompletion)) *coordinator {
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(onWebDone)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	return coord
 }
 
@@ -70,13 +84,20 @@ func newParkedOutcomeCoordinator(t *testing.T, onWebDone func(AsyncCompletion)) 
 // an actual pull + a real reacted=1 write to ever clear -- tests that need
 // the delegation to release past a child's OWN owned-job completion must
 // simulate that reaction explicitly, not just the completion.
+//
+// The store comes from newTestAsyncJobStoreWithDataDir and the coordinator's
+// batch node facts are bound (same rationale as newParkedOutcomeCoordinator:
+// flag ON routes childScopeOpenAcrossProcesses and refreshSubAgentCompletion's
+// reacted-failed read through the bound batch source; flag OFF ignores the
+// binding), so both runtimes share this fixture byte-for-byte.
 func newParkedOutcomeCoordinatorWithMessages(t *testing.T, onWebDone func(AsyncCompletion)) (*coordinator, message.Service) {
 	t.Helper()
 	coord := &coordinator{}
 	coord.asyncJobs = newWorkLedger(onWebDone)
-	store, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
 	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	messages := message.NewService(db.New(conn))
 	coord.messages = messages
 	return coord, messages

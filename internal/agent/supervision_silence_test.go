@@ -115,7 +115,15 @@ func guidanceOf(text string) string {
 // TestSilence_AgedJobFlagged: a 60m-old bash job whose last output was 40m
 // ago is flagged. Catches deleting silenceLine's " — SILENT, possibly stuck"
 // suffix or the flagged guidance prefix in buildSupervisionSummaryAt.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: silenceLine/silenceFlaggedJobs read the
+// in-process ledger job's output buffer (supervision_silence.go); the batch
+// facts seam exposes NO output-buffer/last-activity information, so the
+// flag-ON summary (buildSupervisionSummaryBatch, supervision.go:551-555,
+// 601-617) returns no silence flags BY DESIGN (flagged stays nil). No batch
+// equivalent exists to port to.
 func TestSilence_AgedJobFlagged(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	base := time.Now().Add(-60 * time.Minute)
@@ -133,7 +141,15 @@ func TestSilence_AgedJobFlagged(t *testing.T) {
 
 // TestSilence_RecentOutputNotFlagged: 60m old but output 1m ago is not
 // flagged. Catches silenceFlagged's silence >= max(20m, age/2) threshold.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the silence threshold is computed from
+// the ledger job's output buffer (supervision_silence.go); the batch facts
+// seam exposes NO output-buffer/last-activity information, so the flag-ON
+// summary (supervision.go:551-555, 601-617) never flags -- and its guidance
+// is the batch text, never the legacy "Keep waiting" block. No batch
+// equivalent exists to port to.
 func TestSilence_RecentOutputNotFlagged(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	base := time.Now().Add(-60 * time.Minute)
@@ -149,7 +165,14 @@ func TestSilence_RecentOutputNotFlagged(t *testing.T) {
 
 // TestSilence_YoungJobNotFlagged: 25m old and silent the whole 25m is below
 // the 30m age floor. Catches silenceFlaggedMinAge.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: silenceFlaggedMinAge is a property of
+// the ledger output-buffer classifier (supervision_silence.go); the batch
+// facts seam exposes NO output-buffer/last-activity information
+// (supervision.go:551-555, 601-617), so there is no batch age floor to
+// port to.
 func TestSilence_YoungJobNotFlagged(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	base := time.Now().Add(-25 * time.Minute)
@@ -166,7 +189,14 @@ func TestSilence_YoungJobNotFlagged(t *testing.T) {
 // and a shellID with no shell in the background manager has unreadable
 // silence. Catches jobSilence's known=false early return (stated, never
 // flagged, no liveness guidance).
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the "silence unknown" line comes from
+// jobSilence's known=false branch over the ledger job's (absent) buffer
+// (supervision_silence.go); the batch facts seam exposes NO
+// output-buffer/last-activity information (supervision.go:551-555,
+// 601-617), so there is no batch "silence unknown" line to port to.
 func TestSilence_UnknownSilenceNeverFlagged(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	startSilentJob(t, l, "unknown-root", "call-unknown", `{"command":"mystery"}`, nil, "", time.Now().Add(-90*time.Minute))
@@ -183,7 +213,15 @@ func TestSilence_UnknownSilenceNeverFlagged(t *testing.T) {
 // injectable via supervisionState interval and the fixture's armFunc) three
 // times. Catches the flaggedOnce escalation block's append and
 // recordProgress's flaggedOnce = nil clear.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the flaggedOnce escalation block in
+// handleSupervisionDeadline keys off the flagged set returned by the ledger
+// output-buffer classifier; under the flag ON buildSupervisionSummaryBatch
+// returns NO flags because the batch facts seam exposes no output-buffer
+// last-activity (supervision.go:551-555, 601-617) -- no escalation text can
+// ever be produced, so there is no batch equivalent to port to.
 func TestSilence_EscalationSecondConsecutiveTickThenCleared(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
@@ -239,7 +277,15 @@ func TestSilence_EscalationSecondConsecutiveTickThenCleared(t *testing.T) {
 // TestSilence_PausingNamesOldestFlaggedJob: pausing (lastTick=true) with a
 // flagged job names it with running/silent ages and demands kill-or-justify.
 // Catches buildSupervisionSummaryAt's paused oldestFlaggedJob line.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the pausing line names a job flagged by
+// the ledger output-buffer classifier (oldestFlaggedJob over
+// silenceFlaggedJobs, supervision_silence.go); the batch facts seam exposes
+// NO output-buffer/last-activity information (supervision.go:551-555,
+// 601-617), so the batch pause text can never name a silent job. No batch
+// equivalent exists to port to.
 func TestSilence_PausingNamesOldestFlaggedJob(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	base := time.Now().Add(-60 * time.Minute)
@@ -257,7 +303,14 @@ func TestSilence_PausingNamesOldestFlaggedJob(t *testing.T) {
 // is the run_command output buffer shape (LiveOutputBuffer + LastWriteAt);
 // one real Write, then now is pushed 40m into the future. Catches
 // jobLastOutputAt's lastOutputReader interface assertion.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the run_command buffer's LastWriteAt
+// read is a ledger-side interface (jobLastOutputAt,
+// supervision_silence.go); the batch facts seam exposes NO output-buffer
+// last-activity information (supervision.go:551-555, 601-617). No batch
+// equivalent exists to port to.
 func TestSilence_RunCommandBufferLastWriteAt(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	isolateRushDirs(t)
 	l, _ := newSupervisionTestLedger(t)
 	buf := &silenceOutputBuffer{}

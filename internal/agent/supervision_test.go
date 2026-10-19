@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -49,14 +50,67 @@ func sessionNoticeTextAt(t *testing.T, l *workLedger, owner string, i int) strin
 // handleSupervisionDeadline directly do not need the real timer; armFunc is
 // nil-receiver-safe, so a stray re-arm call from within it is a silent
 // no-op).
+//
+// The store comes from newTestAsyncJobStoreWithDataDir (byte-identical
+// construction semantics to newTestAsyncJobStore -- same temp dir, connect,
+// foreign_keys-off, host-registration-lazy and cleanup sequence -- it just
+// also returns conn/dataDir) so the coordinator's batch node facts are
+// bound: under RUSH_BATCH_RUNTIME=1 supervisionWorkOpen
+// (supervision.go:286-297) answers the open-work question through the bound
+// facts' LiveWorkSummary -- an unbound coordinator would get the
+// conservative unknown source and fail OPEN (work always "open", so e.g.
+// TestSupervision_NoTickWithoutOpenWork's stale state would never be
+// dropped), and a bound coordinator with an empty batch db fails CLOSED
+// (scope closed), which is why the open-work tests seed a live batch row
+// via seedSupervisionOpenWork below. The binding is IGNORED when the flag
+// is OFF (batch_cutover_facts.go:221-230), so both runtimes share this
+// fixture byte-for-byte.
 func newSupervisionTestLedger(t *testing.T) (*workLedger, *coordinator) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	l := newWorkLedger(nil)
-	l.store = newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	l.store = store
 	l.coord = coord
 	l.supervision = newSupervisionRegistry()
 	coord.asyncJobs = l
+	bindBatchNodeFacts(t, coord, conn, dataDir)
+	supervisionTestLedgerConns.Store(l, conn)
+	t.Cleanup(func() { supervisionTestLedgerConns.Delete(l) })
 	return l, coord
+}
+
+// supervisionTestLedgerConns maps each fixture ledger to its raw connection
+// so the dual-mode open-work seed below can reach the batch store without
+// changing newSupervisionTestLedger's signature. Test-only bookkeeping.
+var supervisionTestLedgerConns sync.Map // *workLedger -> *sql.DB
+
+// seedSupervisionOpenWork registers sessionID's open work on BOTH selected
+// authorities, because under the flag ON a supervision tick needs two
+// distinct facts the in-process ledger cannot supply:
+//  1. an open scope -- supervisionWorkOpen (supervision.go:286-297) reads
+//     LiveWorkSummary through the bound node facts and never the in-process
+//     ledger map, so without a live batch row the deadline drops the state
+//     as "scope closed" and never ticks;
+//  2. launchable debt -- the tick's wake travels wakeSession ->
+//     drainDecision (coordinator_drain_policy.go:156-158), which under the
+//     flag ON reads SelectedDebtExists from the bound batch store; an empty
+//     batch db means the tick fires but the wake is a no-op and agent.Run is
+//     never reached. seedBatchJobDebt supplies a real finished-but-unreacted
+//     selected child notice (delivery=pending), the exact debt the OFF path
+//     gets from the persisted supervision session_notices row.
+func seedSupervisionOpenWork(t *testing.T, l *workLedger, sessionID, toolCallID string) {
+	t.Helper()
+	startOpenJob(t, l, sessionID, toolCallID)
+	if !batchFlagEnabled() {
+		return
+	}
+	v, ok := supervisionTestLedgerConns.Load(l)
+	if !ok {
+		t.Fatalf("no batch connection registered for the supervision fixture ledger")
+	}
+	conn := v.(*sql.DB)
+	seedBatchDelegation(t, conn, sessionID, toolCallID, "", "command", "running", false)
+	seedBatchJobDebt(t, conn, sessionID, toolCallID+"-debt", false)
 }
 
 // startOpenJob registers and acknowledges a plain job for sessionID, exactly
@@ -137,7 +191,7 @@ func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
 // passed.
 func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
 	l, coord := newSupervisionTestLedger(t)
-	startOpenJob(t, l, "busy-root", "job-1")
+	seedSupervisionOpenWork(t, l, "busy-root", "job-1")
 
 	busy := &busyStubAgent{}
 	busy.setBusy(true)
@@ -177,7 +231,9 @@ func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
 	require.Nil(t, coord.currentAgent,
 		"precondition: the fixture coordinator has no agent — exactly the crash shape")
 
-	startOpenJob(t, l, "agentless-root", "sup-no-agent")
+	// Under flag ON the open-work read goes through the bound batch facts,
+	// so the seed must be dual-mode (see seedSupervisionOpenWork).
+	seedSupervisionOpenWork(t, l, "agentless-root", "sup-no-agent")
 	l.noteWorkStarted(context.Background(), "agentless-root")
 	l.supervision.mu.Lock()
 	st, armed := l.supervision.byRoot["agentless-root"]
@@ -207,8 +263,17 @@ func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
 // handleSupervisionDeadline (after the nil checks) -- this test FAILED
 // (timed out waiting for the wake). Removed the early return; re-ran,
 // passed.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the asserted check-in text names the
+// LEGACY guidance and tool set ("job_output", "job_kill", "inspect_agent",
+// "stop_agent", produced by buildSupervisionSummaryAt's legacy branch,
+// supervision.go:516). Under RUSH_BATCH_RUNTIME=1 the batch summary is a
+// different, deliberately narrower text (buildSupervisionSummaryBatch,
+// supervision.go:601: "Inspect with batch_output, or stop with
+// batch_stop."); no batch equivalent of the legacy tool guidance exists,
+// so this test pins the legacy branch only.
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
-	t.Parallel()
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	l, coord := newSupervisionTestLedger(t)
 	l.timeouts = newTimeoutService(l)
 	defer l.timeouts.close()
@@ -283,7 +348,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 		return agentResultWithText("ok"), nil
 	}}
 	coord.subAgentDrivers.register("reset-root", subAgentDriver{agent: agent})
-	startOpenJob(t, l, "reset-root", "call-1")
+	seedSupervisionOpenWork(t, l, "reset-root", "call-1")
 
 	start := time.Now()
 	// MaxNoProgress: 1 makes the post-recordProgress tick pause immediately
@@ -347,7 +412,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 		return agentResultWithText("ok"), nil
 	}}
 	coord.subAgentDrivers.register("turnend-root", subAgentDriver{agent: agent})
-	startOpenJob(t, l, "turnend-root", "call-1")
+	seedSupervisionOpenWork(t, l, "turnend-root", "call-1")
 
 	cfg := SupervisionConfig{Enabled: true, Interval: 10 * time.Millisecond, MaxInterval: 500 * time.Millisecond, MaxNoProgress: 6}
 	// Simulate a session already two ticks into backoff (grown to 40ms),
@@ -440,7 +505,7 @@ func TestSupervision_AfterTurnPushesDeadline(t *testing.T) {
 // Both restored; re-ran, passed.
 func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	l, coord := newSupervisionTestLedger(t)
-	startOpenJob(t, l, "backoff-root", "call-1")
+	seedSupervisionOpenWork(t, l, "backoff-root", "call-1")
 
 	var mu sync.Mutex
 	var prompts []string

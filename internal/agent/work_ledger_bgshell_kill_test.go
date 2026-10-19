@@ -227,7 +227,22 @@ func shortKillCtx(t *testing.T) context.Context {
 // assertion (PendingCompletionsOwned stays 1, childScopeDrained false).
 func TestStopBackgroundShellRow_KillReleasesTheCompletionHoldAtOnce(t *testing.T) {
 	t.Parallel()
-	coord, store, mgr, dir := newBGShellFixture(t)
+	// Batch binding (not gating): the final childScopeDrained read crosses
+	// into CLIScope, which under flag ON answers debt through the bound batch
+	// facts -- an unbound flag-ON coordinator fails OPEN ("scope still open").
+	// The binding shares the coordinator's own database, so the body below is
+	// identical in both modes (OFF ignores the binding entirely).
+	coord, store, mgr, dir := func() (*coordinator, *session.AsyncJobStore, *shell.BackgroundShellManager, string) {
+		s, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+		registry := newWorkLedger(nil)
+		registry.store = s
+		m := shell.NewBackgroundShellManager()
+		t.Cleanup(func() { m.KillAll(context.Background()) })
+		c := &coordinator{asyncJobs: registry, background: m}
+		c.asyncJobs.coord = c
+		bindBatchNodeFacts(t, c, conn, dataDir)
+		return c, s, m, dataDir
+	}()
 	coord.asyncJobs.coord = coord
 	child := "child-1"
 	sh, err := mgr.StartOwned(t.Context(), child, dir, nil, "sleep 30", "held")
