@@ -398,7 +398,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -run 'AWa|AWb|TestAW' ./internal/agent/ ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance.log"
+          go test -p 1 -parallel 1 -run 'AWa|AWb|TestAW' ./internal/agent/ ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance.log"
           rc=$?
           if grep -q -e '^ok ' -e 'no tests to run' "$RUNNER_TEMP/aw-acceptance.log"; then
             exit "$rc"
@@ -413,13 +413,24 @@ jobs:
           path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore
 
-  # Mirrors lint.yml's lint-web job (lint.yml lines 86-110) verbatim.
+  # Mirrors lint.yml's lint-web job (lint.yml lines 86-110), plus the same
+  # configuration isolation / log capture / artifact pattern the Go jobs in
+  # this file use (unique dir names so they never collide with another
+  # job's isolated dirs under the same runner temp; artifact name unique
+  # across all jobs here).
   shadow-web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (build.yml/lint.yml)
         with:
           persist-credentials: false
+      - name: Isolate global config/data dirs
+        shell: bash
+        run: |
+          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/web-rush-data" >> "$GITHUB_ENV"
+          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/web-rush-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/web-xdg-data" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/web-xdg-config" >> "$GITHUB_ENV"
       - name: Enable pnpm via corepack
         run: corepack enable
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0 (build.yml/lint.yml)
@@ -427,16 +438,31 @@ jobs:
           node-version: "22"
       - name: Install dependencies
         working-directory: web
-        run: pnpm install --frozen-lockfile
+        # shell: bash = bash -eo pipefail, so a failing command is not masked by tee.
+        shell: bash
+        run: pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/web-install.log"
       - name: tsc --noEmit
         working-directory: web
-        run: pnpm typecheck
+        # shell: bash = bash -eo pipefail, so a failing command is not masked by tee.
+        shell: bash
+        run: pnpm typecheck 2>&1 | tee "$RUNNER_TEMP/web-typecheck.log"
       - name: oxlint
         working-directory: web
-        run: pnpm lint
+        # shell: bash = bash -eo pipefail, so a failing command is not masked by tee.
+        shell: bash
+        run: pnpm lint 2>&1 | tee "$RUNNER_TEMP/web-lint.log"
       - name: web unit tests (node --test)
         working-directory: web
-        run: node --test src/*.test.ts
+        # shell: bash = bash -eo pipefail, so a failing command is not masked by tee.
+        shell: bash
+        run: node --test src/*.test.ts 2>&1 | tee "$RUNNER_TEMP/web-unittest.log"
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
+        with:
+          name: shadow-web-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
 
   # D11 per-call cost: compare both the direct tiny-fixture view workload and
   # the legacy-wrapped bash workload. Each mode runs from an isolated checkout
@@ -490,7 +516,7 @@ jobs:
           rc=0
           for workload in direct-view legacy-bash; do
             echo "Running baseline workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-baseline-$workload-cpu.pprof" ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
             run_rc=${PIPESTATUS[0]}
             if [ "$run_rc" -ne 0 ]; then rc=1; fi
           done
@@ -510,7 +536,7 @@ jobs:
           rc=0
           for workload in direct-view legacy-bash; do
             echo "Running candidate workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
+            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-candidate-$workload-cpu.pprof" -mutexprofile "$RUNNER_TEMP/d11-candidate-$workload-mutex.pprof" -blockprofile "$RUNNER_TEMP/d11-candidate-$workload-block.pprof" -mutexprofilefraction 1 ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
             run_rc=${PIPESTATUS[0]}
             if [ "$run_rc" -ne 0 ]; then rc=1; fi
           done
@@ -530,6 +556,22 @@ jobs:
           rc=$?
           if [ -f "$RUNNER_TEMP/d11-report.md" ]; then cat "$RUNNER_TEMP/d11-report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$rc"
+      - name: Print pprof tops
+        if: always()
+        working-directory: candidate
+        shell: bash
+        run: |
+          set +e
+          shopt -s nullglob
+          for prof in "$RUNNER_TEMP"/d11-*.pprof; do
+            echo "::group::d11 pprof $(basename "$prof") (-top -cum -nodecount=50)"
+            go tool pprof -top -cum -nodecount=50 "$prof" || echo "pprof failed for $prof"
+            echo "::endgroup::"
+            echo "::group::d11 pprof $(basename "$prof") (-top -flat -nodecount=40)"
+            go tool pprof -top -flat -nodecount=40 "$prof" || echo "pprof failed for $prof"
+            echo "::endgroup::"
+          done
+          exit 0
       - name: Run report unit tests
         if: always()
         run: python -I -m unittest discover -s candidate/tools -p test_d11_report.py
@@ -543,4 +585,5 @@ jobs:
             ${{ runner.temp }}/d11-candidate-*.log
             ${{ runner.temp }}/d11-summary.json
             ${{ runner.temp }}/d11-report.md
+            ${{ runner.temp }}/d11-*pprof
           if-no-files-found: ignore

@@ -69,20 +69,22 @@ func (e *Engine) candidate(n *treeNode) *treeNode {
 }
 
 func (e *Engine) admit(t *coreTransition) {
-	if e.closing || len(e.roots) == 0 {
+	if e.closing || len(e.live) == 0 {
 		return
 	}
+	visited := 0
 	for e.active < e.limits.MaxConcurrent {
 		var leaf *treeNode
-		for scanned := 0; scanned < len(e.roots); scanned++ {
-			index := (e.cursor + scanned) % len(e.roots)
-			if leaf = e.candidate(e.roots[index]); leaf != nil {
+		for scanned := 0; scanned < len(e.live); scanned++ {
+			visited++
+			index := (e.cursor + scanned) % len(e.live)
+			if leaf = e.candidate(e.live[index]); leaf != nil {
 				e.cursor = index + 1
 				break
 			}
 		}
 		if leaf == nil {
-			return
+			break
 		}
 		e.token++
 		leaf.view.Token = e.token
@@ -103,5 +105,8 @@ func (e *Engine) admit(t *coreTransition) {
 			}
 		}
 		t.Commands = append(t.Commands, Command{Type: CommandStartLeaf, Node: leaf.view.ID, Token: leaf.view.Token, Launch: Launch{ID: leaf.view.ID, Token: leaf.view.Token, Task: *leaf.task}})
+	}
+	if e.walkInstrument != nil {
+		e.walkInstrument("admit", visited)
 	}
 }

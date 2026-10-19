@@ -59,6 +59,33 @@ func TrackProcessTree(pid int) error {
 	return nil
 }
 
+// RegisterSpawnedGroup records pid in the in-memory sweep map WITHOUT the
+// Getpgid leader check TrackProcessTree applies. Call it ONLY for a process
+// this code spawned itself with SysProcAttr.Setpgid (or Setsid), i.e. one
+// that is its own group leader BY CONSTRUCTION at spawn time.
+//
+// Why the check can be skipped here: TrackProcessTree's Getpgid gate exists
+// to refuse arbitrary pids that are not leaders. A pid we just spawned with
+// Setpgid is a leader by construction, but a fast-exiting one may already
+// have been REAPED by the time registration runs -- Getpgid then fails
+// (ESRCH), the old call path silently recorded nothing, and the
+// last-resort sweep lost the only in-memory pointer to a group whose
+// grandchildren still live (2026-10-18 review, finding 1). Spawn identity,
+// not a liveness probe, is what makes the record safe: only the spawner
+// knows Setpgid was set, so only it may bypass the gate.
+//
+// Anything else must keep using TrackProcessTree, whose non-leader
+// rejection is unchanged.
+func RegisterSpawnedGroup(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	trackedGroupsMu.Lock()
+	trackedGroups[pid] = struct{}{}
+	trackedGroupsMu.Unlock()
+	return nil
+}
+
 // UntrackProcessTree forgets pid. Safe for a pid that was never tracked,
 // which is the common case since non-leaders are not recorded.
 func UntrackProcessTree(pid int) {

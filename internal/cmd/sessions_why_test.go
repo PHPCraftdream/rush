@@ -83,7 +83,9 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 // is dead, and the last assistant message did NOT finish cleanly → verdict is
 // "crashed" and the reason mentions dying mid-turn.
 func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
@@ -123,7 +125,9 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 // end signal (only ended_reason is). The verdict is therefore "crashed" --
 // the old "done (stale lock)" reclassification by finish reason is gone.
 func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
@@ -192,7 +196,9 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 // TestExplainSessionStatus_Running: lock file exists and holder PID is alive
 // (we use our own PID) → verdict is "running" and the heartbeat age is shown.
 func TestExplainSessionStatus_Running(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
@@ -295,7 +301,9 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 // assistant message finished with FinishReasonError and stored error text,
 // the output must include that error text so the operator sees the cause.
 func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
@@ -339,6 +347,9 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 // breaks TestInspectSessionLockFact (mtime is never consulted) and this
 // test's running expectation.
 func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	if testing.Short() {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
@@ -377,7 +388,9 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 // the plain dead-PID phrasing (the #257 property survives the rework: the
 // classifier only says "no longer alive" after IsProcessAlive said so).
 func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
@@ -411,7 +424,9 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 // Revert-check: making an unreadable lock classify as released/idle flips
 // the first assertion to "status: at rest".
 func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)

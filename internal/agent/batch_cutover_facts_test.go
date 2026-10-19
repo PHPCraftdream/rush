@@ -262,7 +262,13 @@ func TestBatchCutoverUnknownFailSafeON(t *testing.T) {
 	require.Error(t, err, "the unknown source reports the missing node source")
 	require.Equal(t, 1, own)
 	require.Equal(t, 1, descendants)
-	require.True(t, coord.hasLiveTreeWork(env.sessionID), "consumers treat unknown as busy/hold")
+	// F3: hasLiveTreeWork is the rate-limit budget's pause signal; a failed
+	// read answers not-live THERE so the budget can exhaust (the loop must
+	// never retry a 429 forever on an unreadable source). The conservative
+	// "unknown = live" rule belongs to the durable consumers, which do their
+	// own reads.
+	require.False(t, coord.hasLiveTreeWork(env.sessionID),
+		"a failed liveness read must not pause the rate-limit budget forever")
 	// The unknown source never touches the ledger: async_jobs stays empty.
 	require.Zero(t, env.asyncJobsCount())
 }

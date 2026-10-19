@@ -74,12 +74,13 @@ func TestD11BatchRuntimeBenchmark(t *testing.T) {
 		cps := float64(concPhase.Attempts) / concPhase.Elapsed.Seconds()
 		throughput += cps
 		runs = append(runs, entry(fmt.Sprintf("contention-%d", round), concPhase, cps))
+		d11LogRoundState(t, e, round)
 		warmErr += warm.Errors + warmConc.Errors
 		require.Equal(t, warm.Attempts, len(warm.Values))
 		require.Equal(t, warmConc.Attempts, len(warmConc.Values))
 	}
 	throughput /= d11MeasuredRounds
-	s := d11Summary{Mode: mode, Workload: workload, CandidateSHA: os.Getenv("RUSH_D11_CANDIDATE_SHA"), BaselineSHA: os.Getenv("RUSH_D11_BASELINE_SHA"), P50Ms: percentile(seq, 50), P95Ms: percentile(seq, 95), P99Ms: percentile(seq, 99), P95ContentionMs: percentile(conc, 95), ThroughputCPS: throughput, Errors: seqErr + concErr, Commits: totalWrites, SequentialAttempts: d11MeasuredRounds * d11LatencySamples, ContentionAttempts: d11MeasuredRounds * d11ThroughputSessions * d11ThroughputCallsPerSession, SubmitWrites: submit, StartedWrites: started, SettledWrites: settled, HealthViolations: e.health.count(), OffWaitPath: d11OffWaitPath, Runs: runs}
+	s := d11Summary{Mode: mode, Workload: workload, CandidateSHA: os.Getenv("RUSH_D11_CANDIDATE_SHA"), BaselineSHA: os.Getenv("RUSH_D11_BASELINE_SHA"), P50Ms: percentile(seq, 50), P95Ms: percentile(seq, 95), P99Ms: percentile(seq, 99), P95ContentionMs: percentile(conc, 95), ThroughputCPS: throughput, Errors: seqErr + concErr, Commits: totalWrites, SequentialAttempts: d11MeasuredRounds * d11LatencySamples, ContentionAttempts: d11MeasuredRounds * d11ThroughputSessions * d11ThroughputCallsPerSession, SubmitWrites: submit, StartedWrites: started, SettledWrites: settled, HealthViolations: e.health.count(), OffWaitPath: d11OffWaitPath, Runs: runs, MeasuredRounds: d11MeasuredRounds, SequentialSessions: d11SeqBatchSessions, LatencySamplesPerRound: d11LatencySamples, ContentionSessions: d11ThroughputSessions, ContentionCallsPerSession: d11ThroughputCallsPerSession, WarmupCallsPerRound: d11WarmupCalls, ConcSessionWarmupCalls: d11ConcSessionWarmupCalls}
 	if s.SequentialAttempts+s.ContentionAttempts > 0 {
 		s.CommitsPerCall = totalWrites / int64(s.SequentialAttempts+s.ContentionAttempts)
 	}

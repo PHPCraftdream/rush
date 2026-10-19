@@ -105,6 +105,13 @@ rush sessions reset pr-42 --force
 		}
 
 		if config.BatchRuntimeEnabled() {
+			// F8: the live-loop gate first -- the batch reset's atomic refusal
+			// covers batch work, but a live `rush run` loop between turns
+			// holds no batch root and no lock, so it must refuse exactly like
+			// the legacy path (the R8A-3 bug).
+			if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
+				return err
+			}
 			// Flag ON: history (messages and batch rows) goes through the
 			// R10c batch reset, which refuses atomically while the owner
 			// has any nonterminal root; the legacy async-ledger wipe below

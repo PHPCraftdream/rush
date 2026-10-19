@@ -27,9 +27,10 @@ func (e *Engine) selectNotices(t *coreTransition) {
 		}
 		t.Notices = append(t.Notices, Notice{Root: n.view.Root, Node: n.view.ID, Kind: kind, State: n.view.State, Cause: n.view.Cause, Counts: e.counts(n)})
 	}
-	for _, root := range e.roots {
-		if !root.released {
-			walk(root)
-		}
+	if e.walkInstrument != nil {
+		e.walkInstrument("notices", len(e.live))
+	}
+	for _, root := range e.live {
+		walk(root)
 	}
 }

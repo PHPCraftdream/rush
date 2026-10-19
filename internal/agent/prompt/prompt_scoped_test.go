@@ -146,6 +146,7 @@ func TestBuild_FolderScoped_CoexistsWithOrchestratorBlock(t *testing.T) {
 // agent's withoutCallOptions produces — must render exactly the golden
 // (pre-scope-hint) bytes, same as a context with no hint at all.
 func TestBuild_ExplicitFalseHint_ByteIdentical(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	store := testConfigStore(t)
 	p := newDeterministicCoderPrompt(t, store)
 

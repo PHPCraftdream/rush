@@ -112,6 +112,14 @@ func r12aSeedRichDB(t *testing.T, ctx context.Context, conn *sql.DB) {
 		// Second job-bound notice: pairs with ('sess-1', 'call-2').
 		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
 			VALUES ('sess-1', 'supervision', 'job-bound-2', 1, 'pending', 'call-2', 1700000000, 1700000000)`,
+		// Third job pair, for the reacted historical notice below.
+		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
+			VALUES ('sess-1', 'call-3', 'command', 'h3', 'host-a', 'completed', 1700000000, 1700000000)`,
+		// Job-bound REACTED historical notice: already consumed by a turn
+		// (reacted = 1, delivery 'done', wake already drained). The rehearsal
+		// voids unreacted notices only, so this row must stay byte-identical.
+		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, reacted, created_at, updated_at)
+			VALUES ('sess-1', 'supervision', 'job-bound-reacted', 0, 'done', 'call-3', 1, 1700000000, 1700000000)`,
 		// Unrelated notice: no async_jobs row references it.
 		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
 			VALUES ('sess-1', 'wake_failed', 'unrelated', 1, 'pending', NULL, 1700000000, 1700000000)`,
@@ -141,14 +149,15 @@ func r12aCount(t *testing.T, ctx context.Context, conn *sql.DB, query string, ar
 	return n
 }
 
-// r12aNotice returns a notice's delivery, wake flag, and updated_at.
-func r12aNotice(t *testing.T, ctx context.Context, conn *sql.DB, text string) (delivery string, wake int, updatedAt int64) {
+// r12aNotice returns a notice's delivery, wake flag, reacted flag, and
+// updated_at.
+func r12aNotice(t *testing.T, ctx context.Context, conn *sql.DB, text string) (delivery string, wake int, reacted int, updatedAt int64) {
 	t.Helper()
 	err := conn.QueryRowContext(ctx,
-		`SELECT delivery, wake, updated_at FROM session_notices WHERE text = ?`, text,
-	).Scan(&delivery, &wake, &updatedAt)
+		`SELECT delivery, wake, reacted, updated_at FROM session_notices WHERE text = ?`, text,
+	).Scan(&delivery, &wake, &reacted, &updatedAt)
 	require.NoError(t, err)
-	return delivery, wake, updatedAt
+	return delivery, wake, reacted, updatedAt
 }
 
 // TestHelperHostLockHold is the re-exec child entry point (same idiom as
@@ -240,17 +249,25 @@ func TestR12ASyntheticUpgrade_NoConversion(t *testing.T) {
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM messages`))
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_drivers`))
 	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM wake_schedules`))
-	assert.Equal(t, 3, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_notices`))
+	assert.Equal(t, 4, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_notices`))
 
-	delivery, wake, updated := r12aNotice(t, ctx, conn, "job-bound")
+	delivery, wake, reacted, updated := r12aNotice(t, ctx, conn, "job-bound")
 	assert.Equal(t, "void", delivery)
 	assert.Equal(t, 0, wake)
+	assert.Equal(t, 0, reacted)
 	assert.Greater(t, updated, int64(1700000000), "voided notice's updated_at must be rewritten")
-	delivery2, wake2, updated2 := r12aNotice(t, ctx, conn, "job-bound-2")
+	delivery2, wake2, reacted2, updated2 := r12aNotice(t, ctx, conn, "job-bound-2")
 	assert.Equal(t, "void", delivery2)
 	assert.Equal(t, 0, wake2)
+	assert.Equal(t, 0, reacted2)
 	assert.Greater(t, updated2, int64(1700000000))
-	delivery, wake, unrelatedUpdated := r12aNotice(t, ctx, conn, "unrelated")
+	// Reacted historical notice: byte-unchanged by the rehearsal.
+	deliveryR, wakeR, reactedR, updatedR := r12aNotice(t, ctx, conn, "job-bound-reacted")
+	assert.Equal(t, "done", deliveryR, "reacted notice's delivery must not be voided")
+	assert.Equal(t, 0, wakeR, "reacted notice was seeded with wake=0")
+	assert.Equal(t, 1, reactedR, "reacted notice's reacted flag must not be rewritten")
+	assert.Equal(t, int64(1700000000), updatedR, "reacted notice's updated_at must not change")
+	delivery, wake, _, unrelatedUpdated := r12aNotice(t, ctx, conn, "unrelated")
 	assert.Equal(t, "pending", delivery)
 	assert.Equal(t, 1, wake)
 	assert.Equal(t, int64(1700000000), unrelatedUpdated, "untouched notice's updated_at must not change")
