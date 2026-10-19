@@ -153,8 +153,13 @@ func TestWorkLedger_TerminateAndWakeTransitionsToTimedOut(t *testing.T) {
 // unconditional "finished/failed" text -- the text assertion below FAILED
 // (got the generic "finished" wording instead of "timed out after...").
 // Restored the TimedOut branch; re-ran, passed.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the wake hint below travels the legacy
+// authority (session_notices debt read by the ledger path in wakeSession ->
+// drainDecision). The batch runtime's timeout-wake parity is pinned by its
+// own twin, batch_timeout_wake_parity_test.go.
 func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.T) {
-	t.Parallel()
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	text := FormatAsyncCompletion(AsyncCompletion{
 		SessionID: "s", ToolCallID: "call-1", ToolName: "bash",
 		Content: "partial output", TimedOut: true, TimeoutSeconds: 900,
@@ -202,8 +207,13 @@ func TestNotifyAsyncCompletion_TimedOutUsesContractTextAndNoticeKind(t *testing.
 // step 3 moved the notice off the in-process call entirely (a Drain call
 // carries no notice text/NoticeKind of its own, doc sec.3.4) -- and does NOT
 // transition the job to terminal (it stays phaseRunning).
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the check-in row and wake below are the
+// legacy authority (the session_notices row + wakeSession's ledger debt
+// read); the batch runtime's timeout-wake parity is pinned by its own twin,
+// batch_timeout_wake_parity_test.go.
 func TestWorkLedger_WakeOnlyUsesTimeoutWakeOnlyNoticeKind(t *testing.T) {
-	t.Parallel()
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	received := make(chan SessionAgentCall, 1)
 	agent := &mockSessionAgent{runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		received <- call
@@ -302,8 +312,13 @@ func TestWorkLedger_WakeOnly_SyncJobProducesNoNoticeOrWake(t *testing.T) {
 // Revert-check performed: removed the `if job.timeoutNotified {return}`
 // guard -- this test FAILED (calls.Load() was 2). Restored the guard;
 // re-ran, passed.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the fired wake is the legacy authority
+// (the wake_only session_notices row + wakeSession's ledger debt read); the
+// batch runtime's timeout-wake parity is pinned by its own twin,
+// batch_timeout_wake_parity_test.go.
 func TestWorkLedger_WakeOnlyFiresExactlyOnceThenStaysRunning(t *testing.T) {
-	t.Parallel()
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	var calls atomic.Int32
 	agent := &mockSessionAgent{runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		calls.Add(1)

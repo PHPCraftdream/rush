@@ -501,7 +501,18 @@ func TestChildQuestion_AnswerHoldBlocksRelease(t *testing.T) {
 // Revert-check: reverting buildSupervisionSummary to the plain "running ...,
 // last activity" line loses every marker and this test goes red on the first
 // Contains.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the "AWAITING YOUR ANSWER" block
+// (question text, resume_session_id, stop_agent) is produced only by the
+// legacy childAwaitingQuestionSummary over the ledger's child-session
+// messages. Under RUSH_BATCH_RUNTIME=1 buildSupervisionSummaryBatch counts
+// the awaiting delegation through facts.LiveHeldQuestions, but its rows
+// "carry only id+kind ..., no question text" (supervision.go:582-589) -- the
+// question reaches the parent through the pulled notice instead. The quoted
+// question / exact-calls text has no batch equivalent, so this test pins the
+// legacy summary branch only.
 func TestSupervisionSummary_NamesDelegationAwaitingAnswer(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	f, parentID, childID, _, _ := questionFixture(t)
 	waitChildQuestion(t, f, parentID)
 
@@ -524,7 +535,17 @@ func TestSupervisionSummary_NamesDelegationAwaitingAnswer(t *testing.T) {
 //
 // Revert-check: without idleChildSummary the tick falls back to "running ...,
 // last activity" and the Contains goes red.
+//
+// LEGACY-AUTHORITY ORACLE, flag OFF: the "idle, waiting on its own N job(s)"
+// line is idleChildSummary over the ledger's in-process child job map
+// (supervision.go:637+). Under RUSH_BATCH_RUNTIME=1
+// buildSupervisionSummaryBatch renders only live batch node lines
+// (supervision.go:556-570) -- the batch facts seam exposes no per-child
+// own-jobs/idle concept and no child-message "last activity" to replace it
+// with. No batch equivalent exists, so this test pins the legacy branch
+// only.
 func TestSupervisionSummary_IdleChildWithOwnJobs(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	ctx := context.Background()
 	f, parentID, childID, _ := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
 	_, _, err := f.ledger.Start(childID, "hung-job", "hung-job", "bash", "", false, false, nil, func() {})
