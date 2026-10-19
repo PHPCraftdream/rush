@@ -19,8 +19,10 @@ const batchInterval = 16 * time.Millisecond
 
 // configNotificationsProcessed counts fully processed notifications; enqueued
 // counts snapshots accepted by the hub's coalescing config queue. Test hooks.
-var configNotificationsProcessed atomic.Int64
-var configNotificationsEnqueued atomic.Int64
+var (
+	configNotificationsProcessed atomic.Int64
+	configNotificationsEnqueued  atomic.Int64
+)
 
 func forwardConfigSnapshot(h *Hub, wire ConfigWire, ok bool) {
 	if ok && h.BroadcastConfig(wire) {
