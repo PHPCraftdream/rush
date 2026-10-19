@@ -127,6 +127,20 @@ func CommandCandidatesForPlatform(args []string, windows bool) [][]string {
 	return commandCandidates(args, 0, windows)
 }
 
+// ParseCommandCandidates extracts shell calls and recursively expands wrappers.
+func ParseCommandCandidates(command string) ([][]string, error) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return nil, err
+	}
+	calls, _ := commandCalls(file)
+	var out [][]string
+	for _, call := range calls {
+		out = append(out, CommandCandidatesForPlatform(call, true)...)
+	}
+	return out, nil
+}
+
 // CommandBlocked performs the textual portion of the canonical policy. The
 // shell runtime remains authoritative: it catches values produced by runtime
 // expansion after this preflight has necessarily run.

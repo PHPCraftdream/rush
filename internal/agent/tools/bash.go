@@ -124,6 +124,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
 			}
+			if guardErr := agentguard.CheckCommandPolicy(params.Command); guardErr != nil {
+				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
 
 			// Fork patch: batch 16 — refuse invocations of other AI agent
 			// CLIs (claude, codex, gemini, opencode, aider, rush itself, …).
@@ -390,7 +393,7 @@ func startRetainedBashShell(ctx context.Context, manager *shell.BackgroundShellM
 }
 
 func isSecurityBlockError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "command is not allowed for security reasons")
+	return err != nil && (strings.Contains(err.Error(), "command is not allowed for security reasons") || strings.Contains(err.Error(), "the command is denied by the CI-only policy (RUSH_DENY_EXEC)"))
 }
 
 // formatOutput formats the output of a completed command with error handling

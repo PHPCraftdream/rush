@@ -1,0 +1,5 @@
+# CI-only command policy
+
+`RUSH_DENY_EXEC` enables the process-wide command policy. Set it to `ci-only` to enable all built-in rules, or use a comma-separated selection: `go`, `linters`, `js`, `node`, `test-runners`, `python`, and `cargo`. An unset or empty value disables this policy. The environment value is read once during package initialization and inherited by child processes in the usual way; changing it later does not update the running policy.
+
+The process policy is read once at package initialization. In-process subagents share that immutable policy; they do not depend on child environment inheritance, and changing or unsetting the environment later does not disable it. External child processes follow their own environment and may unset the variable, so this remains accidental-prevention policy, not a sandbox. The guard checks shell commands and structured argv before execution, including supported launcher and utility wrappers. Arbitrary interpreters, scripts, copied binaries, and indirect process creation can evade command-name checks. Tests, builds, linters, and benchmarks must run in GitHub CI, not locally under agent execution.

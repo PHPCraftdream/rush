@@ -123,6 +123,9 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			}
 
 			argv := append([]string{params.Program}, params.Args...)
+			if guardErr := agentguard.CheckCommandPolicyArgs(argv); guardErr != nil {
+				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
 
 			// Same shared block list as the bash tool (banned programs AND
 			// argument blockers like `go install` / `npm install --global` /

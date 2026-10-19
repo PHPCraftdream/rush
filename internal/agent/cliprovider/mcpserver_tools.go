@@ -137,6 +137,9 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 		// was doing. Both guards now live behind agentguard.CheckAll, the
 		// single entry point shared with the built-in Bash tool so the two
 		// surfaces cannot diverge again. See internal/agent/agentguard.
+		if policyErr := agentguard.CheckCommandPolicy(input.Command); policyErr != nil {
+			return toolError(policyErr.Error()), nil, nil
+		}
 		if guardErr := agentguard.CheckAll(input.Command); guardErr != nil {
 			return toolError(guardErr.Error()), nil, nil
 		}
@@ -562,6 +565,9 @@ func resolvePath(path, workingDir string) string {
 }
 
 func runShell(ctx context.Context, command, dir string) (string, error) {
+	if policyErr := agentguard.CheckCommandPolicy(command); policyErr != nil {
+		return "", policyErr
+	}
 	var buf bytes.Buffer
 	env := append(os.Environ(), shell.RushEnvMarkers()...)
 	err := shell.Run(ctx, shell.RunOptions{
