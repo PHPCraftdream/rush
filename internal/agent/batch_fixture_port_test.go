@@ -2,7 +2,24 @@
 // coord, conn, dataDir). Seed job debt with seedFixtureJobDebt(t, conn,
 // legacyStore, ledger, messages, owner, callID, pulled); read it with
 // readFixtureJobDebt. failFixtureReaction, failFixtureSettle, and
-// failFixturePull target the RUSH_BATCH_RUNTIME-selected authority.
+// failFixturePull target the RUSH_BATCH_RUNTIME-selected authority. The
+// round-trip self-tests live in batch_fixture_port_selftest_test.go.
+// Final helper list:
+//
+//	bindBatchNodeFacts(t *testing.T, c *coordinator, conn *sql.DB, dataDir string) BatchCutoverFacts
+//	bindBatchCoordinatorControls(t *testing.T, c *coordinator, conn *sql.DB, dataDir string, ingress BatchWorkIngress)
+//	seedBatchJobDebt(t *testing.T, conn *sql.DB, owner, callID string, visible bool) (root, child string)
+//	seedBatchDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, kind, state string) (root, child string)
+//	batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID string) db.AsyncJob
+//	seedFixtureJobDebt(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, ledger *workLedger, messages message.Service, owner, callID string, pulled bool) (root, child string)
+//	seedFixtureJobDebtStoreOnly(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, messages message.Service, owner, callID string, pulled bool)
+//	seedFixtureDelegation(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, owner, callID, childID string, kind session.JobKind, toolName, state string) string
+//	readFixtureJobDebt(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, owner, callID string) db.AsyncJob
+//	readFixtureDelegation(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, ledger *workLedger, owner, callID string) batchDelegationView
+//	type batchDelegationView struct { Root, Node, ChildSessionID, Kind, State string; NoticeSelected, Announced, Reacted int64; ScopeOpen bool }
+//	failFixtureReaction(t *testing.T, conn *sql.DB) / failFixtureSettle(...) / failFixturePull(...)
+//	failBatchNodeReaction(t *testing.T, conn *sql.DB, settle bool) / failBatchRetainedNoticeReaction(...) / failBatchPull(...)
+//
 // newAttemptFixture and newChildPolicyTestCoordinator bind automatically;
 // standalone fixtures need an explicit binding. See work_ledger_delegation_test.go
 // (newParkedOutcomeCoordinator*), coordinator_recheck_child_test.go
@@ -200,6 +217,29 @@ func seedFixtureJobDebt(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStor
 	return "", ""
 }
 
+// seedFixtureJobDebtStoreOnly is the cross-process-scope OFF variant: it
+// produces EXACTLY the pre-round-1 direct-store state -- a terminal async_jobs
+// row with unreacted pulled debt and NOTHING in the in-memory workLedger map.
+// ON mode has no such distinction (the batch store is the only authority), so
+// it delegates to seedBatchJobDebt unchanged.
+func seedFixtureJobDebtStoreOnly(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, messages message.Service, owner, callID string, pulled bool) {
+	t.Helper()
+	if batchFlagEnabled() {
+		seedBatchJobDebt(t, conn, owner, callID, pulled)
+		return
+	}
+	ctx := context.Background()
+	_, err := legacy.Claim(ctx, session.ClaimParams{Owner: owner, ToolCallID: callID, Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
+	require.NoError(t, err)
+	require.NoError(t, legacy.MarkAnnounced(ctx, owner, callID))
+	_, err = legacy.Transition(ctx, session.TransitionParams{Owner: owner, ToolCallID: callID, State: "completed", ResultSummary: "output", Wake: true})
+	require.NoError(t, err)
+	if pulled {
+		_, err = legacy.PullJobNotices(ctx, messages, owner, buildJobNoticeMessageParams)
+		require.NoError(t, err)
+	}
+}
+
 // seedFixtureDelegation is the dual-mode delegation seed used by fixtures:
 // batch mode creates a node child-link; OFF mode claims, announces and settles
 // the legacy delegation row. The returned root is empty in legacy mode.
@@ -249,6 +289,66 @@ func readFixtureJobDebt(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStor
 	row, err := legacy.Get(context.Background(), owner, callID)
 	require.NoError(t, err)
 	return row
+}
+
+// batchDelegationView is the dual-mode delegation readback. Root/Node are
+// batch node ids and empty in OFF mode; NoticeSelected maps to the batch
+// node's selected-notice flag in ON mode and honestly to "the legacy row
+// carries a NoticeKind" in OFF mode (the legacy row has no selected flag).
+type batchDelegationView struct {
+	Root, Node, ChildSessionID, Kind, State string
+	NoticeSelected, Announced, Reacted      int64
+	ScopeOpen                               bool
+}
+
+// readFixtureDelegation reads one seeded delegation through the
+// RUSH_BATCH_RUNTIME-selected authority. ScopeOpen is
+// !ledger.childScopeDrained(childSessionID); an empty child id maps to false
+// in BOTH modes (an unnamed child has no scope to keep open).
+func readFixtureDelegation(t *testing.T, conn *sql.DB, legacy *session.AsyncJobStore, ledger *workLedger, owner, callID string) batchDelegationView {
+	t.Helper()
+	if batchFlagEnabled() {
+		var rootID string
+		err := conn.QueryRowContext(context.Background(), `SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id ORDER BY rowid DESC LIMIT 1`, owner, callID).Scan(&rootID)
+		require.NoError(t, err)
+		snap, err := session.NewBatchStore(conn).Read(context.Background(), owner, rootID)
+		require.NoError(t, err)
+		var child db.BatchNode
+		found := false
+		for _, node := range snap.Nodes {
+			if node.NodeID == rootID {
+				continue
+			}
+			child, found = node, true
+			break
+		}
+		require.True(t, found, "fixture delegation root must have a child node")
+		view := batchDelegationView{
+			Root: rootID, Node: child.NodeID, ChildSessionID: child.ChildSessionID.String,
+			Kind: child.TaskKind.String, State: child.State,
+			NoticeSelected: child.NoticeSelected, Announced: child.Announced, Reacted: child.Reacted,
+			ScopeOpen: false,
+		}
+		if child.ChildSessionID.String != "" {
+			view.ScopeOpen = !ledger.childScopeDrained(child.ChildSessionID.String)
+		}
+		return view
+	}
+	row, err := legacy.Get(context.Background(), owner, callID)
+	require.NoError(t, err)
+	view := batchDelegationView{
+		ChildSessionID: row.ChildSessionID.String,
+		Kind:           row.Kind, State: row.State,
+		NoticeSelected: 0, Announced: row.Announced, Reacted: row.Reacted,
+		ScopeOpen: false,
+	}
+	if row.NoticeKind != "" {
+		view.NoticeSelected = 1
+	}
+	if row.ChildSessionID.String != "" {
+		view.ScopeOpen = !ledger.childScopeDrained(row.ChildSessionID.String)
+	}
+	return view
 }
 
 // failFixtureReaction targets batch_nodes in ON mode and async_jobs in OFF mode.

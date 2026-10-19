@@ -175,7 +175,7 @@ func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.Ag
 // fallback exactly as the finding describes). Restored the branch; re-ran,
 // passed (no panic, err == nil).
 func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *testing.T) {
-	coord, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 	coord.currentAgent = &panicIfCalledAgent{mockSessionAgent: &mockSessionAgent{}}
@@ -186,7 +186,12 @@ func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *t
 	require.NoError(t, err)
 
 	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed")
-	seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, child.ID, "call-x", true)
+	// Store-only seed: the pre-round-1 state was a direct-store claim with
+	// NOTHING in this process's in-memory workLedger. drainPolicy refuses
+	// before any in-memory use, and drainDecision reads store debt, so the
+	// child's own debt stays visible either way -- the store-only variant is
+	// the exact original state.
+	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-x", true)
 
 	err = coord.wakeSession(ctx, child.ID, true)
 	require.NoError(t, err, "a policy-refused Drain is a silent no-op, never an error")
@@ -276,7 +281,7 @@ func TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained(t *testing.T)
 	child, err := env.sessions.Create(ctx, "child-debt")
 	require.NoError(t, err)
 
-	seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, child.ID, "call-1", true)
+	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-1", true)
 
 	require.False(t, ledger.childScopeDrained(child.ID),
 		"a pulled-but-unreacted notice is still outstanding reaction debt -- ScopeOpen must report the child's scope as still open")
