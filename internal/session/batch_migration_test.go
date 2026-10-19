@@ -18,7 +18,8 @@ func batchStoreTestMigrationFS(t *testing.T, includeProjection bool) fstest.MapF
 	files := fstest.MapFS{}
 	for _, entry := range entries {
 		if !includeProjection && (entry.Name() == "20261012000001_batch_projection.sql" ||
-			entry.Name() == "20261012000002_batch_runner_incarnation.sql") {
+			entry.Name() == "20261012000002_batch_runner_incarnation.sql" ||
+			entry.Name() == "20261019000001_add_batch_timeout_checkins.sql") {
 			continue
 		}
 		data, e := fs.ReadFile(db.FS, "migrations/"+entry.Name())
@@ -35,7 +36,7 @@ func TestBatchMigrationUpgradeAndDownPreserveLegacy(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
 	provider, err := goose.NewProvider(goose.DialectSQLite3, conn, batchStoreTestMigrationFS(t, true), goose.WithLogger(goose.NopLogger()))
 	require.NoError(t, err)
-	_, err = provider.Down(ctx)
+	_, err = provider.Down(ctx) // 20261019000001_add_batch_timeout_checkins (W3 head; exercise Down before the legacy seed)
 	require.NoError(t, err)
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
 	before, err := db.New(conn).ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{OwnerSessionID: "owner", ToolCallID: "legacy", Kind: "command", InputHash: "hash", HostID: "legacy-host", ClaimID: "claim", CreatedAt: 1, UpdatedAt: 1})
@@ -52,11 +53,13 @@ func TestBatchMigrationUpgradeAndDownPreserveLegacy(t *testing.T) {
 	// Populate the new subtree to exercise Down with its self-referencing FKs.
 	_, err = NewBatchStore(conn).Reserve(ctx, batchStoreTestReservation())
 	require.NoError(t, err)
+	_, err = provider.Down(ctx) // 20261019000001_add_batch_timeout_checkins (W3 receipts; empty, drops cleanly)
+	require.NoError(t, err)
 	_, err = provider.Down(ctx) // 20261012000002_batch_runner_incarnation (R11B additive)
 	require.NoError(t, err)
 	_, err = provider.Down(ctx) // 20261012000001_batch_projection
 	require.NoError(t, err)
-	for _, table := range []string{"batch_nodes", "batch_control_requests", "batch_runner_checkpoints"} {
+	for _, table := range []string{"batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins"} {
 		var count int
 		require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))
 		require.Zero(t, count)

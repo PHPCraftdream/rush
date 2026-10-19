@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
@@ -222,10 +223,17 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 
 // batchOneItemSpec builds the direct-call spec: OneItem, NotifyAll, kind
 // derived from the tool family, payload carrying the invocation's immutable
-// policy transport and pinned registry identity. Explicit specs and Notify
-// selection are represented by the batch model controls, not this direct-call
-// adapter.
+// policy transport and pinned registry identity. The call's timeout intent
+// is normalized here: a terminate_and_wake intent latches TaskSpec.Timeout
+// (the engine's termination deadline — previously never set on the direct
+// path), a wake_only intent is carried durably in the payload for the
+// App-owned check-in scanner. Explicit specs and Notify selection are
+// represented by the batch model controls, not this direct-call adapter.
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
+	intent, err := batchParseTimeoutParam(call.Name, string(input))
+	if err != nil {
+		return jobbatch.Spec{}, err
+	}
 	payload := batchLeafPayload{
 		Tool:       call.Name,
 		ToolCallID: call.ID,
@@ -234,6 +242,19 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		RegistryID: inv.RegistryID,
 		Policy:     &inv.Policy,
 	}
+	timeout := time.Duration(0)
+	if intent != nil {
+		if intent.Kind == batchTimeoutTerminateAndWake {
+			// The termination deadline rides the spec, not the payload:
+			// the engine owns it.
+			timeout = intent.Duration
+		} else {
+			payload.Timeout = &batchLeafTimeoutSpec{
+				Kind:    batchTimeoutWakeOnly,
+				Seconds: intent.Seconds,
+			}
+		}
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return jobbatch.Spec{}, fmt.Errorf("batch payload: %w", err)
@@ -241,6 +262,7 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 	spec := jobbatch.Spec{Task: &jobbatch.TaskSpec{
 		Kind:    batchLeafKind(call.Name),
 		Payload: raw,
+		Timeout: timeout,
 	}}
 	// Direct task specs are normalized by batchRunnerAdapter, the engine seam
 	// that enforces a batch root; keep this spec canonical for its durable hash.

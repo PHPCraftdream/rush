@@ -350,7 +350,7 @@ func copyLegacyRows(ctx context.Context, old, fresh *sql.DB) error {
 	if err := old.PingContext(ctx); err != nil {
 		return fmt.Errorf("legacy import snapshot connection: %w", err)
 	}
-	for _, table := range []string{"async_jobs", "async_jobs_new", "async_jobs_old_schema", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "async_hosts", "session_drivers"} {
+	for _, table := range []string{"async_jobs", "async_jobs_new", "async_jobs_old_schema", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins", "async_hosts", "session_drivers"} {
 		if _, exists, err := tableColumnInfo(ctx, old, table); err != nil {
 			return err
 		} else if exists {
