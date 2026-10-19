@@ -33,6 +33,14 @@ func (s *BatchStore) BatchStopOwners(ctx context.Context, owners []string) ([]Ba
 		if owner == "" {
 			continue
 		}
+		if _, err = tx.ExecContext(ctx, `UPDATE batch_control_requests
+			SET status = 'answered', answer_code = 'accepted',
+				answer_sequence = (SELECT root_sequence FROM batch_nodes r WHERE r.root_id = batch_control_requests.root_id AND r.node_id = r.root_id AND r.owner_session_id = batch_control_requests.owner_session_id AND r.host_id = batch_control_requests.host_id AND r.runner_id = batch_control_requests.runner_id),
+				answered_at = ?
+			WHERE owner_session_id = ? AND node_id = root_id AND operation = 'stop' AND status = 'pending'
+				AND EXISTS (SELECT 1 FROM batch_nodes r WHERE r.root_id = batch_control_requests.root_id AND r.node_id = r.root_id AND r.owner_session_id = batch_control_requests.owner_session_id AND r.host_id = batch_control_requests.host_id AND r.runner_id = batch_control_requests.runner_id AND r.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped') AND r.root_sequence > 0)`, time.Now().Unix(), owner); err != nil {
+			return nil, err
+		}
 		roots, err := q.ListLiveBatchRootsForOwner(ctx, owner)
 		if err != nil {
 			return nil, err
