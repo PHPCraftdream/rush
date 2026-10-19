@@ -3,6 +3,8 @@ package jobbatch
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -181,3 +183,109 @@ func TestRuntimeRetentionHeldCalls(t *testing.T) {
 type runtimeTestRetentionBareExecution struct{}
 
 func (runtimeTestRetentionBareExecution) Stop(context.Context) error { return nil }
+
+// Item 2: the durable retirement path must clear the Launch payload at
+// settlement, mirroring the non-durable path (runner.go:357), while keeping
+// the attempt indexed for late physical returns and the frozen task-id miss
+// (BatchView{}) in frozenSnapshots.
+func TestRuntimeDurableRetiredPayloadCleared(t *testing.T) {
+	t.Parallel()
+	r, e, _, ctx := runtimeTestCommitHooks(t, func(context.Context, Transition) error { return nil }, nil)
+	payload := []byte(`"` + strings.Repeat("x", 2048) + `"`)
+	b := runtimeTestSubmit(t, ctx, r, "r", OneItem(TaskSpec{Kind: "test", Group: "g", Payload: payload}))
+	a := runtimeTestAccept(t, ctx, r, e, &runtimeTestExecution{})
+	runtimeTestFinish(t, ctx, r, a, StateCompleted)
+	runtimeTestWait(t, ctx, b)
+	r.mu.Lock()
+	if len(r.attempts) != 1 {
+		t.Fatalf("attempts after durable settlement: %d", len(r.attempts))
+	}
+	var retired *runnerAttempt
+	for _, at := range r.attempts {
+		retired = at
+	}
+	kept := retired.launch.Task.Payload
+	r.mu.Unlock()
+	if kept != nil {
+		t.Error("retained Launch payload after durable settlement")
+	}
+	frozen, hasFrozen := r.frozenSnapshots["r.1"]
+	if !hasFrozen {
+		t.Error("task id missing from the frozen-snapshot cache")
+	} else if frozen.Sequence != 0 || frozen.Node != (NodeView{}) || frozen.Counts != (Counts{}) || frozen.Descendants != nil {
+		t.Errorf("task id frozen snapshot not the cached BatchView{} miss: %+v", frozen)
+	}
+	if err := r.Release(ctx, "r"); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	remaining := len(r.attempts)
+	r.mu.Unlock()
+	if remaining != 0 {
+		t.Errorf("root prune at publish left attempts: %d", remaining)
+	}
+	runtimeTestClose(t, ctx, r)
+}
+
+// Item 3: the loop-exit block must drop the Engine's own TaskSpec payloads.
+// afterClosed (runner.go:490) serves post-close View/Snapshot from the frozen
+// Runtime maps r.views/r.snapshots (never the Engine, never payloads), so
+// observable identity is preserved by dropTaskPayloads.
+func TestRuntimeFinalDropsEnginePayloads(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"nil-hook", "durable"} {
+		t.Run(mode, func(t *testing.T) {
+			payload := []byte(`"` + strings.Repeat("x", 2048) + `"`)
+			var r *Runner
+			var e *runtimeTestExecutor
+			var ctx context.Context
+			if mode == "durable" {
+				r, e, _, ctx = runtimeTestCommitHooks(t, func(context.Context, Transition) error { return nil }, nil)
+			} else {
+				r, e, _, ctx = runtimeTestNew(t, 1, 128, nil)
+			}
+			b := runtimeTestSubmit(t, ctx, r, "R", OneItem(TaskSpec{Kind: "controlled", Payload: payload}))
+			a := runtimeTestAccept(t, ctx, r, e, &runtimeTestExecution{})
+			runtimeTestFinish(t, ctx, r, a, StateCompleted)
+			runtimeTestWait(t, ctx, b)
+			v0 := runtimeTestView(t, ctx, r, "R")
+			s0, _ := r.Snapshot(ctx, "R")
+			runtimeTestClose(t, ctx, r)
+			// Structural: every Engine task node lost its payload; roots intact.
+			eng := r.engine
+			for id, n := range eng.nodes {
+				if n.task != nil && len(n.task.Payload) != 0 {
+					t.Errorf("node %s retained Engine payload after Final", id)
+				}
+			}
+			if len(eng.roots) != 1 {
+				t.Fatalf("roots after Final: %d", len(eng.roots))
+			}
+			// Observable identity: afterClosed serves frozen published state.
+			v1, err := r.View(ctx, "R")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v1 != v0 {
+				t.Error("View changed across Final payload drop")
+			}
+			s1, s1err := r.Snapshot(ctx, "R")
+			if s1err != nil {
+				t.Fatal(s1err)
+			}
+			// Close accepts HostClosing, one more accepted event, so the
+			// Final snapshot carries Sequence+1 (Engine.Apply increments the
+			// sequence per accepted event, engine.go:70; the Final capture
+			// happens after that increment). Sequence advancement is the
+			// documented observable; everything else must be identical.
+			if s1.Sequence != s0.Sequence+1 {
+				t.Errorf("post-close snapshot Sequence %d, want %d (HostClosing advance)", s1.Sequence, s0.Sequence+1)
+			}
+			s0Seq := s0
+			s0Seq.Sequence = s1.Sequence
+			if !reflect.DeepEqual(s0Seq, s1) {
+				t.Error("Snapshot content changed across Final payload drop")
+			}
+		})
+	}
+}
