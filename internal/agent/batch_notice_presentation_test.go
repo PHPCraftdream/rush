@@ -113,19 +113,11 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 	require.NoError(t, err)
 	root, childNode := seedBatchDelegation(t, env.conn, owner.ID, "call-w5-q", child.ID, "agent", "running", false)
 
-	snap, err := session.NewBatchStore(env.conn).Read(ctx, owner.ID, root)
+	// The synthetic fixture reserves tokens as 0; BatchPublishQuestion needs
+	// the exact nonzero admission-style token of the live node.
+	const tok = int64(42)
+	_, err = env.conn.ExecContext(ctx, `UPDATE batch_nodes SET token = ?1 WHERE node_id = ?2`, tok, childNode)
 	require.NoError(t, err)
-	var tok int64
-	found := false
-	for _, node := range snap.Nodes {
-		if node.NodeID == childNode {
-			tok = node.Token
-			found = true
-			break
-		}
-	}
-	require.True(t, found, "the delegation snapshot must contain its child node")
-	require.NotZero(t, tok)
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
