@@ -127,7 +127,7 @@ func TestBatchAskQuestionDrainReactionON(t *testing.T) {
 	require.EqualValues(t, 1, f.requests.Load())
 }
 
-func TestBatchGenericProviderErrorPersistsFinishWithoutReactingDebt(t *testing.T) {
+func TestBatchGenericProviderErrorSettlesDebtByFailure(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	f := newAttemptFixture(t, "batch-generic-provider-error", attemptFixtureOpts{
@@ -145,15 +145,16 @@ func TestBatchGenericProviderErrorPersistsFinishWithoutReactingDebt(t *testing.T
 	_, err := f.drainRun(ctx)
 	require.Error(t, err)
 
-	var reacted, reactedFailed int64
+	var reacted, reactedFailed, wakeAttempts int64
 	require.NoError(t, f.env.conn.QueryRowContext(ctx,
-		`SELECT reacted, reacted_failed FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
-		string(root)).Scan(&reacted, &reactedFailed))
-	require.Zero(t, reacted, "a generic provider error does not acknowledge batch debt")
-	require.Zero(t, reactedFailed, "persisting the error finish does not consume batch debt")
+		`SELECT reacted, reacted_failed, wake_attempts FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
+		string(root)).Scan(&reacted, &reactedFailed, &wakeAttempts))
+	require.EqualValues(t, 1, reacted, "a terminal provider failure settles the batch debt reacted")
+	require.EqualValues(t, 1, reactedFailed, "the settle is the settle-by-failure form")
+	require.EqualValues(t, 1, wakeAttempts, "the failed turn was one counted attempt")
 	debt, err := store.BatchReactionVisibleDebtExists(ctx, f.sessID)
 	require.NoError(t, err)
-	require.True(t, debt, "generic provider errors leave batch completion debt visible")
+	require.False(t, debt, "the settle-by-failure consumed the batch completion debt")
 
 	messages, err := f.env.messages.List(ctx, f.sessID)
 	require.NoError(t, err)
