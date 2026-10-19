@@ -59,15 +59,7 @@ rush models
 rush models gpt5`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cwd, err := ResolveCwd(cmd)
-		if err != nil {
-			return err
-		}
-
-		dataDir, _ := cmd.Flags().GetString("data-dir")
-		debug, _ := cmd.Flags().GetBool("debug")
-
-		cfg, err := config.Init(cwd, dataDir, debug)
+		cfg, _, _, err := initCommandConfig(cmd)
 		if err != nil {
 			return err
 		}
