@@ -196,7 +196,7 @@ func TestBatchTimeoutWakeParity_WakeOnlyCheckinFiresOnceAndCompletionStillSelect
 	var kind string
 	var wake int
 	var delivery, jobToolCallID, noticeOwner string
-	require.NoError(t, env.conn.QueryRow(
+	require.NoError(t, env.conn.QueryRowContext(t.Context(),
 		"SELECT count(*), kind, wake, delivery, job_tool_call_id, owner FROM session_notices WHERE kind='timeout_wake_only'").
 		Scan(&count, &kind, &wake, &delivery, &jobToolCallID, &noticeOwner))
 	require.Equal(t, 1, count, "exactly one retained check-in notice exists")
@@ -205,7 +205,7 @@ func TestBatchTimeoutWakeParity_WakeOnlyCheckinFiresOnceAndCompletionStillSelect
 	require.Equal(t, callID, jobToolCallID, "the notice void-pairs with the root's tool_call_id")
 	require.Equal(t, owner.ID, noticeOwner)
 	var receipts int
-	require.NoError(t, env.conn.QueryRow("SELECT count(*) FROM batch_timeout_checkins").Scan(&receipts))
+	require.NoError(t, env.conn.QueryRowContext(t.Context(), "SELECT count(*) FROM batch_timeout_checkins").Scan(&receipts))
 	require.Equal(t, 1, receipts, "exactly one one-shot receipt exists")
 
 	// The scanner never stops work: node stays running, root stays live.
@@ -225,7 +225,7 @@ func TestBatchTimeoutWakeParity_WakeOnlyCheckinFiresOnceAndCompletionStillSelect
 	n, err = restarted.ScanOnce(ctx)
 	require.NoError(t, err)
 	require.Zero(t, n, "the durable receipt survives a service restart")
-	require.NoError(t, env.conn.QueryRow("SELECT count(*) FROM session_notices WHERE kind='timeout_wake_only'").Scan(&count))
+	require.NoError(t, env.conn.QueryRowContext(t.Context(), "SELECT count(*) FROM session_notices WHERE kind='timeout_wake_only'").Scan(&count))
 	require.Equal(t, 1, count)
 
 	// The natural completion still selects and delivers its notice exactly
@@ -299,7 +299,7 @@ func TestBatchTimeoutWakeParity_TerminateIntentLatchesAndNeverChecksIn(t *testin
 	require.NoError(t, err)
 	require.Zero(t, n, "the wake_only scanner never acts on a termination intent")
 	var notices int
-	require.NoError(t, env.conn.QueryRow("SELECT count(*) FROM session_notices").Scan(&notices))
+	require.NoError(t, env.conn.QueryRowContext(t.Context(), "SELECT count(*) FROM session_notices").Scan(&notices))
 	require.Zero(t, notices)
 	snap, err := store.Read(ctx, owner.ID, root)
 	require.NoError(t, err)

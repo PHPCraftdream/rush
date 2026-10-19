@@ -72,14 +72,14 @@ func batchTimeoutCheckinReservePayload(t *testing.T, s *BatchStore, ctx context.
 func batchTimeoutCheckinNoticeCount(t *testing.T, conn *sql.DB) int {
 	t.Helper()
 	var n int
-	require.NoError(t, conn.QueryRow("SELECT count(*) FROM session_notices").Scan(&n))
+	require.NoError(t, conn.QueryRowContext(t.Context(), "SELECT count(*) FROM session_notices").Scan(&n))
 	return n
 }
 
 func batchTimeoutCheckinReceiptCount(t *testing.T, conn *sql.DB) int {
 	t.Helper()
 	var n int
-	require.NoError(t, conn.QueryRow("SELECT count(*) FROM batch_timeout_checkins").Scan(&n))
+	require.NoError(t, conn.QueryRowContext(t.Context(), "SELECT count(*) FROM batch_timeout_checkins").Scan(&n))
 	return n
 }
 
@@ -101,7 +101,7 @@ func TestBatchTimeoutCheckinCommitsOneRetainedNotice(t *testing.T) {
 	var kind, text string
 	var wake int
 	var delivery, jobToolCallID, owner string
-	require.NoError(t, conn.QueryRow(
+	require.NoError(t, conn.QueryRowContext(t.Context(),
 		"SELECT kind, text, wake, delivery, job_tool_call_id, owner FROM session_notices").
 		Scan(&kind, &text, &wake, &delivery, &jobToolCallID, &owner))
 	require.Equal(t, "timeout_wake_only", kind)
@@ -114,10 +114,10 @@ func TestBatchTimeoutCheckinCommitsOneRetainedNotice(t *testing.T) {
 	require.Equal(t, 1, batchTimeoutCheckinReceiptCount(t, conn))
 	// The scanner never touches node state or delivery: it only reports.
 	var childState, rootDelivery, rootControl string
-	require.NoError(t, conn.QueryRow(
+	require.NoError(t, conn.QueryRowContext(t.Context(),
 		"SELECT state FROM batch_nodes WHERE node_id=?", child).Scan(&childState))
 	require.Equal(t, "running", childState)
-	require.NoError(t, conn.QueryRow(
+	require.NoError(t, conn.QueryRowContext(t.Context(),
 		"SELECT delivery, control_state FROM batch_nodes WHERE node_id=?", root).Scan(&rootDelivery, &rootControl))
 	require.Equal(t, "none", rootDelivery)
 	require.Equal(t, "none", rootControl)
@@ -204,7 +204,7 @@ func TestBatchTimeoutCheckinSkipsNotYetDueAndTerminalAndVoid(t *testing.T) {
 	// BatchRerunVoidNodesOfVoidedRoots writes it. A due node on such a root
 	// writes no check-in.
 	rootVoid, _ := batchTimeoutCheckinReserve(t, s, ctx, "call-void")
-	_, err = conn.Exec(`UPDATE batch_nodes SET notice_selected = 1,
+	_, err = conn.ExecContext(t.Context(), `UPDATE batch_nodes SET notice_selected = 1,
 		notice_kind = 'root', notice_state = 'cancelled', notice_cause = 'stop',
 		notice_sequence = 2, notice_ordinal = 1, notice_cancelled = 1,
 		delivery = 'void', wake = 0, updated_at = ?
@@ -228,7 +228,7 @@ func TestBatchTimeoutCheckinReceiptSurvivesNoticeRetention(t *testing.T) {
 	n, err := svc.ScanOnce(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
-	_, err = conn.Exec("DELETE FROM session_notices")
+	_, err = conn.ExecContext(t.Context(), "DELETE FROM session_notices")
 	require.NoError(t, err)
 	n, err = svc.ScanOnce(ctx)
 	require.NoError(t, err)
@@ -305,12 +305,12 @@ func TestBatchTimeoutCheckinBudgetProgressesThroughBacklog(t *testing.T) {
 	// Exactly one receipt per due child; none for the malformed task.
 	for _, nodeID := range []string{b1, b2, b3} {
 		var c int
-		require.NoError(t, conn.QueryRow(
+		require.NoError(t, conn.QueryRowContext(t.Context(),
 			"SELECT count(*) FROM batch_timeout_checkins WHERE node_id = ?", nodeID).Scan(&c))
 		require.Equal(t, 1, c, "node %s must have exactly one receipt", nodeID)
 	}
 	var bad int
-	require.NoError(t, conn.QueryRow(
+	require.NoError(t, conn.QueryRowContext(t.Context(),
 		"SELECT count(*) FROM batch_timeout_checkins WHERE node_id IN (SELECT node_id FROM batch_nodes WHERE task_payload = ?)",
 		`{"tool":"bash"`).Scan(&bad))
 	require.Zero(t, bad, "the malformed-payload task must never check in")
@@ -327,5 +327,5 @@ func TestBatchTimeoutCheckinStartStopLifecycle(t *testing.T) {
 	svc.Stop()
 	svc.Start()
 	svc.Stop()
-	require.NoError(t, conn.Ping())
+	require.NoError(t, conn.PingContext(t.Context()))
 }

@@ -216,30 +216,18 @@ func (s *BatchTimeoutCheckin) ScanOnce(ctx context.Context) (int, error) {
 	var cursorNode string
 	committed := 0
 	for {
-		rows, err := s.sqlDB.QueryContext(ctx, batchTimeoutCheckinSelect, now.Unix(), cursorTime, cursorNode, pageSize)
+		// The page is fully drained and its iterator closed BEFORE any write
+		// transaction: checkinRow opens a BeginTx on the same single pooled
+		// connection a live iterator would hold, so checking in inside
+		// rows.Next() would deadlock.
+		page, err := s.readCandidatePage(ctx, now.Unix(), cursorTime, cursorNode, pageSize, budget)
 		if err != nil {
 			return committed, fmt.Errorf("batch timeout check-in scan: %w", err)
 		}
-		// Drain the page fully and close the iterator BEFORE any write
-		// transaction: checkinRow opens a BeginTx on the same single
-		// pooled connection the query holds, so checking in inside
-		// rows.Next() would deadlock.
-		page := make([]batchTimeoutCheckinRow, 0, pageSize)
-		for rows.Next() && len(page) < budget {
-			var row batchTimeoutCheckinRow
-			if err := rows.Scan(&row.CreatedAt, &row.NodeID, &row.RootID, &row.OwnerSessionID, &row.HostID, &row.Token, &row.Payload, &row.RootToolCallID); err != nil {
-				rows.Close()
-				return committed, fmt.Errorf("batch timeout check-in scan: %w", err)
-			}
-			// Keyset cursor advances even when the row is skipped.
-			cursorTime, cursorNode = row.CreatedAt, row.NodeID
-			page = append(page, row)
+		// Keyset cursor advances past every row read, skipped or not.
+		if n := len(page); n > 0 {
+			cursorTime, cursorNode = page[n-1].CreatedAt, page[n-1].NodeID
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return committed, fmt.Errorf("batch timeout check-in scan: %w", err)
-		}
-		rows.Close()
 		for _, row := range page {
 			ok, err := s.checkinRow(ctx, now, row)
 			if err != nil {
@@ -257,6 +245,28 @@ func (s *BatchTimeoutCheckin) ScanOnce(ctx context.Context) (int, error) {
 			return committed, nil
 		}
 	}
+}
+
+// readCandidatePage reads one keyset page of at most limit candidate rows
+// and closes the iterator before returning (see ScanOnce).
+func (s *BatchTimeoutCheckin) readCandidatePage(ctx context.Context, nowUnix, cursorTime int64, cursorNode string, pageSize, limit int) ([]batchTimeoutCheckinRow, error) {
+	rows, err := s.sqlDB.QueryContext(ctx, batchTimeoutCheckinSelect, nowUnix, cursorTime, cursorNode, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	page := make([]batchTimeoutCheckinRow, 0, pageSize)
+	for rows.Next() && len(page) < limit {
+		var row batchTimeoutCheckinRow
+		if err := rows.Scan(&row.CreatedAt, &row.NodeID, &row.RootID, &row.OwnerSessionID, &row.HostID, &row.Token, &row.Payload, &row.RootToolCallID); err != nil {
+			return nil, err
+		}
+		page = append(page, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
 
 // checkinRow handles one candidate: parse, due check, then the fenced
