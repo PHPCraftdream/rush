@@ -72,34 +72,43 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// verdict (decision 9).
 		//
 		// R12-B: with the batch runtime on, NO legacy store read runs at all:
-		// statusByID is built from the batch facts alone (a held root or an
-		// incomplete read can never show as at rest). Flag off: batchFacts is
-		// nil and the legacy path below is unchanged.
+		// awaitingByID stays empty (the legacy PendingChildQuestions reads
+		// must not run under the flag). F8 invariant restoration: STATUS is
+		// still the ONE classifier's verdict (App.SessionActivityBatch) under
+		// the flag -- the batch facts only annotate it ("(batch live)"/
+		// "(batch unknown)") -- so there is no second status machinery here,
+		// matching this file's doc comment. Flag off: batchFacts is nil and
+		// the legacy path below is unchanged.
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
 		awaitingByID := map[string]session.ChildQuestion{}
 		if batchFacts != nil {
+			activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
+			if actErr != nil {
+				return fmt.Errorf("failed to classify sessions: %w", actErr)
+			}
 			statusByID = make(map[string]string, len(ids))
 			for _, id := range ids {
 				bf := batchFacts[id]
-				switch {
-				case bf.Unknown:
-					statusByID[id] = "batch unknown (incomplete read)"
-				case bf.Live:
-					statusByID[id] = "batch live"
+				st := listStatus(activities.ByID[id].Verdict)
+				if bf.Unknown {
+					st += " (batch unknown)"
+				} else if bf.Live {
+					st += " (batch live)"
 				}
 				// F3/#R12-B: a held batch question annotates the status, the
 				// same "(awaiting answer)" substate the legacy path prints.
 				// The fallback also surfaces when the status is empty (at
 				// rest), so a held question never renders as blank/at rest.
 				if bf.HasQuestion {
-					if statusByID[id] == "" {
-						statusByID[id] = "batch question awaiting answer"
+					if st == "" {
+						st = "batch question awaiting answer"
 					} else {
-						statusByID[id] += " (awaiting answer)"
+						st += " (awaiting answer)"
 					}
 				}
+				statusByID[id] = st
 			}
 		} else {
 			activities, err := a.SessionActivityBatch(cmd.Context(), ids)
