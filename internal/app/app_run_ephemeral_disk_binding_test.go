@@ -108,7 +108,7 @@ func TestEphemeralAppFlagOnCustomDiskProviderBindsInMemory(t *testing.T) {
 	fake.seedDir(workDir)
 	fake.seedDir(filepath.ToSlash(workDir))
 
-	ctx, cancel, setup, err := application.prepareExecuteRun(context.Background(), RunRequest{
+	_, cancel, setup, err := application.prepareExecuteRun(context.Background(), RunRequest{
 		HideSpinner: true,
 		Overrides: RunOverrides{
 			FolderScopes: []permission.FolderScopeEntry{{
