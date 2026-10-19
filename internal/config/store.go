@@ -154,6 +154,10 @@ type ConfigStore struct {
 	configSyncCancel  context.CancelFunc
 	configSyncWG      sync.WaitGroup
 	configSyncStarted bool // Guarded by configSyncMu.
+	// configSyncStopped is the terminal stop state: set unconditionally by
+	// StopConfigDiskSync (even with nothing started), so a later Start can
+	// never resurrect a stopped store. Guarded by configSyncMu.
+	configSyncStopped bool
 	configSyncOpts    ConfigDiskSyncOptions
 
 	// diskWriteMu serialises the on-disk read-modify-write cycle

@@ -230,7 +230,29 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 		return err
 	}
 	c.currentAgent.SetTools(tools)
-	return nil
+
+	// P1 (role-models hot reload, round 5): buildTools above (via agentTool
+	// -> buildAgent, coordinator_tools.go:28/agent_tool.go:37-47) registers
+	// the system-prompt and tool-build tasks on the SHARED c.readyWg gate —
+	// bound to THIS ctx. Those tasks run asynchronously; UpdateModels used
+	// to return without draining the gate, so every caller's deferred
+	// ctx cancellation (app_config_sync.go:55's `defer cancel()` on the
+	// poller's 30s rebuild ctx, a request-scoped ctx at the CLI credential
+	// paths, ...) fired while the tasks were still pending. The tasks then
+	// returned context.Canceled, and the gate is STICKY (ready_gate.go:
+	// 95-104): the FIRST error any task ever reported is returned to every
+	// later run entry point's readyWg.Wait (coordinator.go:544 and the
+	// other entry points) — so the next run issued after a poll-driven
+	// model adoption died at the gate with context.Canceled, before any
+	// provider request, and the app stamped the envelope "canceled" (the
+	// CI-observed "no provider request; turn 2 outcome err=run did not
+	// complete cleanly (canceled)" in
+	// TestRoleModelHotReload_NextTurnUsesNewSmart / ExplicitSessionChoiceSurvives).
+	// A model reload must never cancel or fail a run: drain the gate here,
+	// under the same ctx the tasks were registered with, so "UpdateModels
+	// returned" means "the shared agent is fully rebuilt" — and any build
+	// failure surfaces as UpdateModels' own error, not as a poisoned gate.
+	return c.readyWg.Wait()
 }
 
 // clearModelCache empties the model cache, forcing the next resolveSessionModels

@@ -336,6 +336,12 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		result.Forced = true
 	}
 
+	// Package B (docs/plans/2026-10-15-role-models-hot-reload.md §3.4): stop
+	// and join the config disk-sync poller synchronously BEFORE the parallel
+	// cleanupFuncs batch, so no poll-driven reload can run against a closing
+	// MCP owner. Idempotent; nil-safe for bare App literals.
+	app.stopConfigDiskSync()
+
 	// D6 (docs/plans/2026-10-15-role-models-hot-reload.md): stop and join the
 	// OAuth disk-sync poller and its journal workers synchronously BEFORE the
 	// parallel cleanupFuncs batch, so no adoption or journal recovery runs
