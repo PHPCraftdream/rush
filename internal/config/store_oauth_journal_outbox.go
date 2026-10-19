@@ -203,40 +203,49 @@ func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider strin
 
 var oauthJournalLogs = struct {
 	sync.Mutex
-	last map[oauthJournalLogKey]time.Time
+	last      map[oauthJournalLogKey]time.Time
+	aggregate time.Time
 }{last: make(map[oauthJournalLogKey]time.Time)}
+
+const (
+	oauthJournalLogCapacity = 1024
+	oauthJournalLogWindow   = 30 * time.Second
+)
 
 type oauthJournalLogKey struct {
 	path string
 	kind string
 }
 
-// Bounded metadata stores canonical filenames and failure kinds, never errors.
 func logOAuthJournalFailure(path, kind, message string) {
-	now := time.Now()
+	logOAuthJournalFailureAt(path, kind, message, time.Now())
+}
+
+func logOAuthJournalFailureAt(path, kind, message string, now time.Time) {
 	key := oauthJournalLogKey{normalizeReloadPath(path), kind}
 	oauthJournalLogs.Lock()
 	last := oauthJournalLogs.last[key]
-	if !last.IsZero() && now.Sub(last) < 30*time.Second {
+	if !last.IsZero() && now.Sub(last) < oauthJournalLogWindow {
 		oauthJournalLogs.Unlock()
 		return
 	}
-	if len(oauthJournalLogs.last) >= 1024 {
+	if len(oauthJournalLogs.last) >= oauthJournalLogCapacity {
 		for old, stamp := range oauthJournalLogs.last {
-			if now.Sub(stamp) >= 30*time.Second {
+			if now.Sub(stamp) >= oauthJournalLogWindow {
 				delete(oauthJournalLogs.last, old)
 			}
 		}
-		if len(oauthJournalLogs.last) >= 1024 {
-			var oldest oauthJournalLogKey
-			var stamp time.Time
-			for candidate, when := range oauthJournalLogs.last {
-				if stamp.IsZero() || when.Before(stamp) || (when.Equal(stamp) && candidate.path+candidate.kind < oldest.path+oldest.kind) {
-					oldest, stamp = candidate, when
-				}
-			}
-			delete(oauthJournalLogs.last, oldest)
+	}
+	if _, exists := oauthJournalLogs.last[key]; !exists && len(oauthJournalLogs.last) >= oauthJournalLogCapacity {
+		logAggregate := oauthJournalLogs.aggregate.IsZero() || now.Sub(oauthJournalLogs.aggregate) >= oauthJournalLogWindow
+		if logAggregate {
+			oauthJournalLogs.aggregate = now
 		}
+		oauthJournalLogs.Unlock()
+		if logAggregate {
+			slog.Error("Additional OAuth journal failures suppressed while log limiter is saturated", "failure", kind)
+		}
+		return
 	}
 	oauthJournalLogs.last[key] = now
 	oauthJournalLogs.Unlock()

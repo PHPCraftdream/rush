@@ -350,6 +350,10 @@ type Hub struct {
 	// Sticky envelopes are NEVER pushed into h.buffer (the replay ring) --
 	// see BroadcastSticky's doc for why this is required.
 	stickyBroadcast chan struct{}
+	configMu        sync.Mutex
+	configPending   []byte
+	configBroadcast chan struct{}
+	deliveryBarrier chan chan struct{}
 
 	// sticky holds the latest envelope for each event type that must reach
 	// EVERY client, including ones that connect long after it was sent.
@@ -399,6 +403,8 @@ func newHub() *Hub {
 		sticky:          make(map[string][]byte),
 		stickyPending:   make(map[string]struct{}),
 		stickyBroadcast: make(chan struct{}, 64),
+		configBroadcast: make(chan struct{}, 1),
+		deliveryBarrier: make(chan chan struct{}),
 		stopped:         make(chan struct{}),
 		liveWorkTitles:  newTitleCache(),
 	}
@@ -406,6 +412,7 @@ func newHub() *Hub {
 
 // Run is the hub's single event loop. It must be called in its own goroutine.
 func (h *Hub) Run(ctx context.Context) {
+	var pendingBarriers []chan struct{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -416,6 +423,9 @@ func (h *Hub) Run(ctx context.Context) {
 			// after this close, which the sender's post-send check is guaranteed
 			// to observe (see tryRegister).
 			close(h.stopped)
+			for _, done := range pendingBarriers {
+				close(done)
+			}
 			// Registrations that won the shutdown race into the buffer still
 			// get the same teardown as active clients: close(c.send) so their
 			// writePump — possibly not even started yet — shuts the connection
@@ -494,23 +504,45 @@ func (h *Hub) Run(ctx context.Context) {
 				close(c.send)
 			}
 
-		case msg := <-h.broadcast:
-			// Return value intentionally discarded: push already logs (at
-			// debug level) when an event is rejected for exceeding
-			// replayMaxEventSize, which is the only case where it returns
-			// false. There's no additional metric consuming that signal
-			// today, so explicitly discarding it here documents that the
-			// omission is a choice, not an oversight.
-			_ = h.buffer.push(msg) // store (skips oversized events; eviction handled inside)
-
-			// Fan-out to all active clients (non-blocking; slow clients drop messages).
-			for c := range h.clients {
-				select {
-				case c.send <- msg:
-				default:
-					slog.Debug("ws: slow client, dropping message")
+		case <-h.configBroadcast:
+			h.configMu.Lock()
+			msg := h.configPending
+			h.configPending = nil
+			h.configMu.Unlock()
+			if msg != nil {
+				h.deliver(msg)
+			}
+			if len(pendingBarriers) > 0 {
+				h.configMu.Lock()
+				pending := h.configPending != nil
+				h.configMu.Unlock()
+				if !pending {
+					for _, done := range pendingBarriers {
+						close(done)
+					}
+					pendingBarriers = nil
 				}
 			}
+		case done := <-h.deliveryBarrier:
+			for {
+				select {
+				case msg := <-h.broadcast:
+					h.deliver(msg)
+				default:
+					goto broadcastsDrained
+				}
+			}
+		broadcastsDrained:
+			h.configMu.Lock()
+			pending := h.configPending != nil
+			h.configMu.Unlock()
+			if pending {
+				pendingBarriers = append(pendingBarriers, done)
+			} else {
+				close(done)
+			}
+		case msg := <-h.broadcast:
+			h.deliver(msg)
 
 		case <-h.stickyBroadcast:
 			// Deliberately NOT h.buffer.push: sticky envelopes must never
@@ -590,9 +622,61 @@ func (h *Hub) tryRegister(ctx context.Context, c *Client) bool {
 	}
 }
 
+func (h *Hub) deliver(msg []byte) {
+	_ = h.buffer.push(msg)
+	for c := range h.clients {
+		select {
+		case c.send <- msg:
+		default:
+			slog.Debug("ws: slow client, dropping message")
+		}
+	}
+}
+
+func (h *Hub) WaitDelivery() <-chan struct{} {
+	done := make(chan struct{})
+	select {
+	case h.deliveryBarrier <- done:
+	case <-h.stopped:
+		close(done)
+	}
+	return done
+}
+
+func (h *Hub) BroadcastConfig(payload any) bool {
+	select {
+	case <-h.stopped:
+		return false
+	default:
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("ws: marshal config broadcast payload", "err", err)
+		return false
+	}
+	env, err := json.Marshal(WSMessage{Type: EventConfig, Payload: raw})
+	if err != nil {
+		slog.Error("ws: marshal config broadcast envelope", "err", err)
+		return false
+	}
+	h.configMu.Lock()
+	h.configPending = env
+	h.configMu.Unlock()
+	select {
+	case h.configBroadcast <- struct{}{}:
+	default:
+	}
+	return true
+}
+
 // Broadcast encodes a typed event and queues it for all clients + the replay buffer.
+// EventConfig is instead routed through BroadcastConfig's coalescing slot.
 // Safe to call from any goroutine; never blocks (drops on full channel).
 func (h *Hub) Broadcast(msgType string, payload any) {
+	if msgType == EventConfig {
+		h.BroadcastConfig(payload)
+		return
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("ws: marshal broadcast payload", "type", msgType, "err", err)

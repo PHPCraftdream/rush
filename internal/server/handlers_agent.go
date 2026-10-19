@@ -215,10 +215,10 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 
 	// Check payload first
 	if p.SmartModel != nil {
-		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model, ReasoningEffort: p.SmartModel.ReasoningEffort}
 	}
 	if p.FastModel != nil {
-		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model, ReasoningEffort: p.FastModel.ReasoningEffort}
 	}
 
 	// If no payload override, check DB
@@ -321,10 +321,10 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// payload > DB session record > global defaults.
 	var smartOverride, fastOverride *agent.ModelOverride
 	if p.SmartModel != nil {
-		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model, ReasoningEffort: p.SmartModel.ReasoningEffort}
 	}
 	if p.FastModel != nil {
-		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model, ReasoningEffort: p.FastModel.ReasoningEffort}
 	}
 	if smartOverride == nil || fastOverride == nil {
 		if sess, err := a.Sessions.Get(ctx, p.SessionID); err == nil {

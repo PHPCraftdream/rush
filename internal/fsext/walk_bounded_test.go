@@ -257,6 +257,91 @@ func TestGlobGitignoreAwareFSBoundedLiteralBase(t *testing.T) {
 	}, results)
 }
 
+func TestListDirectoryFSBoundedDepthMatchesLegacy(t *testing.T) {
+	t.Parallel()
+	files := fstest.MapFS{
+		"a.txt":         &fstest.MapFile{Data: []byte("a")},
+		"one/b.txt":     &fstest.MapFile{Data: []byte("b")},
+		"one/two/c.txt": &fstest.MapFile{Data: []byte("c")},
+	}
+	wantByDepth := map[int][]string{
+		0: {filepath.Join("ROOT", "a.txt"), filepath.Join("ROOT", "one") + string(filepath.Separator), filepath.Join("ROOT", "one", "b.txt"), filepath.Join("ROOT", "one", "two") + string(filepath.Separator), filepath.Join("ROOT", "one", "two", "c.txt")},
+		1: {filepath.Join("ROOT", "a.txt"), filepath.Join("ROOT", "one") + string(filepath.Separator)},
+		2: {filepath.Join("ROOT", "a.txt"), filepath.Join("ROOT", "one") + string(filepath.Separator), filepath.Join("ROOT", "one", "b.txt"), filepath.Join("ROOT", "one", "two") + string(filepath.Separator)},
+	}
+	for _, depth := range []int{0, 1, 2} {
+		want, _, err := ListDirectoryFS(files, ".", "ROOT", nil, depth, 100)
+		require.NoError(t, err)
+		require.Equal(t, wantByDepth[depth], want)
+		got, _, _, err := ListDirectoryFSBounded(t.Context(), files, ".", "ROOT", nil, depth, 100)
+		require.NoError(t, err)
+		require.Equal(t, wantByDepth[depth], got)
+		limited, _, err := ListDirectoryFS(files, ".", "ROOT", nil, depth, 2)
+		require.NoError(t, err)
+		boundedLimited, _, _, err := ListDirectoryFSBounded(t.Context(), files, ".", "ROOT", nil, depth, 2)
+		require.NoError(t, err)
+		require.Equal(t, limited, boundedLimited)
+		if depth == 2 {
+			require.NotContains(t, boundedLimited, filepath.Join("ROOT", "one", "two", "c.txt"))
+		}
+	}
+}
+
+func TestListDirectoryFSBoundedDepthLimit(t *testing.T) {
+	t.Parallel()
+	files := fstest.MapFS{
+		"a/child.txt": &fstest.MapFile{Data: []byte("nested")},
+		"z.txt":       &fstest.MapFile{Data: []byte("top")},
+	}
+	got, truncated, note, err := ListDirectoryFSBounded(t.Context(), files, ".", ".", nil, 1, 3)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a" + string(filepath.Separator), "z.txt"}, got)
+	require.False(t, truncated)
+	require.Empty(t, note)
+}
+
+func TestGlobGitignoreAwareFSBoundedLiteralBaseHonorsAncestors(t *testing.T) {
+	t.Parallel()
+	files := fstest.MapFS{
+		".gitignore":                     &fstest.MapFile{Data: []byte("root.txt\nsub/\n")},
+		"root.txt":                       &fstest.MapFile{Data: []byte("root")},
+		"sub/a.txt":                      &fstest.MapFile{Data: []byte("ignored")},
+		"sub/deep/file.txt":              &fstest.MapFile{Data: []byte("ignored")},
+		"sub/deep/.gitignore":            &fstest.MapFile{Data: []byte("!file.txt\n")},
+		"ancestor/.gitignore":            &fstest.MapFile{Data: []byte("base/\n")},
+		"ancestor/base/file.txt":         &fstest.MapFile{Data: []byte("ignored")},
+		"nest/.gitignore":                &fstest.MapFile{Data: []byte("*.txt\n")},
+		"nest/base/.gitignore":           &fstest.MapFile{Data: []byte("!keep.txt\n")},
+		"nest/base/keep.txt":             &fstest.MapFile{Data: []byte("kept")},
+		"nest/base/drop.txt":             &fstest.MapFile{Data: []byte("ignored")},
+		"workspace/open/kept.txt":        &fstest.MapFile{Data: []byte("kept")},
+		"workspace/.gitignore":           &fstest.MapFile{Data: []byte("sub/\n")},
+		"workspace/sub/other/target.txt": &fstest.MapFile{Data: []byte("ignored")},
+	}
+
+	cases := []struct {
+		start, pattern string
+		want           []string
+	}{
+		{".", "root*", nil},
+		{".", "sub/*.txt", nil},
+		{".", "sub/deep/*.txt", nil},
+		{".", "ancestor/base/*.txt", nil},
+		{".", "nest/base/*.txt", []string{filepath.Join("nest", "base", "keep.txt")}},
+		{"workspace", "open/*.txt", []string{filepath.Join("open", "kept.txt")}},
+		{"workspace", "sub/other/*.txt", nil},
+	}
+	for _, tc := range cases {
+		got, _, _, err := GlobGitignoreAwareFSBounded(t.Context(), files, tc.start, ".", tc.pattern, 100)
+		require.NoError(t, err)
+		if tc.want == nil {
+			require.Empty(t, got)
+		} else {
+			require.Equal(t, tc.want, got)
+		}
+	}
+}
+
 // infiniteDir is an fs.ReadDirFile that yields fresh synthetic entries on
 // every ReadDir call and never returns io.EOF.
 type infiniteDir struct {

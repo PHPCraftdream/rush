@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -114,12 +113,12 @@ func runStats(cmd *cobra.Command, _ []string) error {
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
 
-	cfg, err := config.Init("", dataDir, false)
+	store, _, _, err := initCommandConfig(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to initialize config: %w", err)
+		return err
 	}
 	if dataDir == "" {
-		dataDir = cfg.Config().Options.DataDirectory
+		dataDir = store.Config().Options.DataDirectory
 	}
 	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {

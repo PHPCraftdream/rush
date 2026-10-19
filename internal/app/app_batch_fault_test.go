@@ -113,26 +113,57 @@ func TestFaultRacingShutdownFaultDuringDrain(t *testing.T) {
 // TestShutdownRacingFaultReleaseAbortsMidway: the fence is re-checked between
 // release steps, so a fault firing between the two releases prevents the
 // writer release.
+//
+// Deterministic by construction: the fake Close is completed explicitly
+// (finishClose) BEFORE the drain starts — no reliance on drain-timeout
+// expiry — and a test-owned channel (hold) parks the drain goroutine inside
+// the host-identity release callback while the test waits for the fault
+// watcher to set the fence. Only then is the gate opened, so the
+// intermediate boundary and the final observation are both stable.
 func TestShutdownRacingFaultReleaseAbortsMidway(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner()
+	runner.finishClose(nil) // Close returns successfully and immediately
 	rt, exits, rec := newTestRuntime(t, runner)
 
+	// Test-owned gate: hold keeps releaseAll parked inside the host-identity
+	// release callback across the fence, making the inter-release boundary
+	// stable. releaseHostEntered signals the callback body has run.
+	hold := make(chan struct{})
+	releaseHostEntered := make(chan struct{})
 	rt.cfg.ReleaseHostIdentity = func(context.Context) error {
 		rec.record("release-host")
+		close(releaseHostEntered)
 		runner.FireFault(errors.New("fault between releases"))
+		<-hold
 		return nil
 	}
 	rt.Start()
 	defer rt.Stop()
 
-	res := rt.DrainAndRelease(context.Background(), time.Second)
+	done := make(chan BatchDrainResult, 1)
+	go func() { done <- rt.DrainAndRelease(context.Background(), time.Second) }()
+
+	<-releaseHostEntered
+	// The fence is set while releaseAll is parked inside the callback — the
+	// fault watcher observes the fault independently of the drain goroutine.
+	require.Eventually(t, func() bool { return rt.Fenced() },
+		5*time.Second, time.Millisecond, "fence set before the host release returns")
+	close(hold)
+
+	res := <-done
 	require.True(t, res.Forced, "fault during release forces the result")
-	require.Equal(t, []string{"release-host"}, rec.snapshot(),
-		"writer release must be skipped once the fence is set")
+	// Final state: fault path finished (retain-host recorded), the drain
+	// goroutine has returned, so the recorder is settled. The writer release
+	// MUST be absent: it is the inter-release fence recheck in
+	// DrainAndRelease.releaseAll (app_batch_drain.go, the second Fenced()
+	// check between ReleaseHostIdentity and ReleaseWriter) that skips it —
+	// removing that check records "release-writer" here and fails.
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
-		5*time.Second, time.Millisecond)
+		5*time.Second, time.Millisecond, "exit 70 exactly once")
 	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []string{"release-host", "retain-host"}, rec.snapshot(),
+		"writer release must be skipped once the fence is set: the inter-release fence recheck must prevent 'release-writer'")
 }
 
 // TestBatchFaultNoSyntheticSettlement: the fault path never touches the
