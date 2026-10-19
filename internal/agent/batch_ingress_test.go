@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
@@ -62,6 +63,7 @@ type fakeBatchRunner struct {
 	err     error
 	started chan struct{}
 	gate    chan struct{}
+	batches []*jobbatch.Batch
 }
 
 func newFakeRunner(err error) *fakeBatchRunner {
@@ -93,15 +95,31 @@ func (f *fakeBatchRunner) Stop(context.Context, jobbatch.ID) error { return nil 
 // omitted Release here fails the bound path with ErrDiskProviderUnavailable).
 func (f *fakeBatchRunner) Release(context.Context, jobbatch.ID) error { return nil }
 
-// SubmitBound satisfies submit()'s root-owning bound path: an invocation
-// with a non-empty RegistryID requires the runner to implement
-// batchBoundRunnerHandle and to return a Batch whose ID matches the
-// requested root (adopt arms the root-lease watcher on its Done channel).
+// SubmitBound ... (adopt arms the root-lease watcher on its Done channel).
+// Every returned batch is recorded; settleBatches settles them all so the
+// adoption watchers return instead of leaking.
 func (f *fakeBatchRunner) SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error) {
 	if _, err := f.Submit(ctx, req); err != nil {
 		return "", nil, err
 	}
-	return req.Root, jobbatch.NewTestBatch(req.Root), nil
+	batch := jobbatch.NewTestBatch(req.Root)
+	f.mu.Lock()
+	f.batches = append(f.batches, batch)
+	f.mu.Unlock()
+	return req.Root, batch, nil
+}
+
+// settleBatches settles every fake batch this runner handed out, closing each
+// Done channel exactly once (Settle is idempotent). Register it via
+// t.Cleanup whenever a test drives a successful bound submit, so the
+// root-lease adoption watcher always unblocks.
+func (f *fakeBatchRunner) settleBatches() {
+	f.mu.Lock()
+	batches := append([]*jobbatch.Batch(nil), f.batches...)
+	f.mu.Unlock()
+	for _, b := range batches {
+		b.Settle()
+	}
 }
 
 func (f *fakeBatchRunner) setErr(err error) {
@@ -243,6 +261,7 @@ func (a *gateAttach) ProbeLive(ctx context.Context, _ batchAttachProbe) (jobbatc
 func TestInvokeConcurrentMatchingRetriesExecuteOnce(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner(nil)
+	t.Cleanup(runner.settleBatches)
 	release := make(chan struct{})
 	runner.gate = release
 	delivery := newFakeDelivery(fantasy.ToolResponse{Content: "done"})
@@ -285,6 +304,18 @@ func TestInvokeConcurrentMatchingRetriesExecuteOnce(t *testing.T) {
 	require.Len(t, specs, 1)
 	require.NotNil(t, specs[0].Task)
 	require.Equal(t, batchKindGeneric, specs[0].Task.Kind)
+
+	// Leak-prevention (observable): settling the fake batches unblocks the
+	// root-lease adoption watcher, which releases the Root owner and forgets
+	// the store entry. If the fake's Done never closed (old never-settling
+	// fixture), this wait times out with the entry still held.
+	runner.settleBatches()
+	require.Eventually(t, func() bool {
+		leases := rt.cfg.RootLeases
+		leases.mu.Lock()
+		defer leases.mu.Unlock()
+		return len(leases.entries) == 0
+	}, 2*time.Second, 5*time.Millisecond, "settled roots release their root leases")
 }
 
 // TestInvokeMismatchedHashFails: the same call id with a different input is
@@ -294,6 +325,7 @@ func TestInvokeConcurrentMatchingRetriesExecuteOnce(t *testing.T) {
 func TestInvokeMismatchedHashFails(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner(nil)
+	t.Cleanup(runner.settleBatches)
 	release := make(chan struct{})
 	runner.gate = release
 	cfg := testRuntimeConfig()
@@ -426,6 +458,7 @@ func TestInvokeSubmitErrorSurfaces(t *testing.T) {
 func TestInvokeEvictsEntryAfterCompletion(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner(errors.New("engine down"))
+	t.Cleanup(runner.settleBatches)
 	cfg := testRuntimeConfig()
 	cfg.Runner = runner
 	cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{Content: "done"})
@@ -441,6 +474,7 @@ func TestInvokeEvictsEntryAfterCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "done", resp.Content)
 	require.Zero(t, rt.inFlightCalls(), "a completed call leaves the singleflight map")
+	runner.settleBatches()
 }
 
 // TestInvokeReexecutesCompletedCall: a retry after completion is a new
@@ -473,6 +507,7 @@ func TestInvokeReexecutesCompletedCall(t *testing.T) {
 	require.Equal(t, "resp-3", resp.Content)
 	require.Equal(t, 3, runner.submitCalls())
 	require.Zero(t, rt.inFlightCalls())
+	runner.settleBatches()
 }
 
 // TestInvokeFailedCallNotReplayed: a transient first-attempt failure is not
@@ -494,6 +529,7 @@ func TestInvokeFailedCallNotReplayed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "done", resp.Content)
 	require.GreaterOrEqual(t, runner.submitCalls(), 2, "the retry reaches Submit again")
+	runner.settleBatches()
 }
 
 // TestInvokeWaiterNotPoisonedByFirstCancel: the first caller's cancellation
@@ -503,6 +539,7 @@ func TestInvokeWaiterNotPoisonedByFirstCancel(t *testing.T) {
 	t.Parallel()
 	attach := &gateAttach{enter: make(chan struct{}, 4), release: make(chan struct{})}
 	runner := newFakeRunner(nil)
+	t.Cleanup(runner.settleBatches)
 	cfg := testRuntimeConfig()
 	cfg.Attach = attach
 	cfg.Runner = runner
