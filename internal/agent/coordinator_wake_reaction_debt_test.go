@@ -55,6 +55,9 @@ type wakeDebtFixture struct {
 	sessID   string
 	requests atomic.Int32
 	srv      *httptest.Server
+	// env is the test env backing sessions/messages and the batch facts'
+	// database.
+	env fakeEnv
 }
 
 // debtVisible reads back the VISIBLE (delivery='done') reaction debt
@@ -62,6 +65,11 @@ type wakeDebtFixture struct {
 // itself uses (doc sec.6 review fix).
 func (f *wakeDebtFixture) debtVisible(t *testing.T, ctx context.Context) bool {
 	t.Helper()
+	if batchFlagEnabled() {
+		visible, err := session.NewBatchStore(f.env.conn).BatchReactionVisibleDebtExists(ctx, f.sessID)
+		require.NoError(t, err)
+		return visible
+	}
 	visible, err := f.store.VisibleReactionDebtExists(ctx, f.sessID)
 	require.NoError(t, err)
 	return visible
@@ -127,6 +135,11 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	f.ledger.store = f.store
 	f.ledger.coord = f.coord
 	f.coord.asyncJobs = f.ledger
+	f.env = env
+	f.coord.sessions, f.coord.messages, f.coord.permissions = env.sessions, env.messages, env.permissions
+	// Standalone fixture: an explicit node-facts binding is required under
+	// the flag (batch_fixture_port_test.go's contract).
+	bindBatchNodeFacts(t, f.coord, env.conn, env.workingDir)
 
 	f.messages = &failingCreateTxMessages{Service: env.messages}
 	opts := SessionAgentOptions{
@@ -157,6 +170,13 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 // store.Transition-only completion (this fixture's whole point) would.
 func (f *wakeDebtFixture) claimAndFinish(t *testing.T, ctx context.Context, toolCallID string) {
 	t.Helper()
+	if batchFlagEnabled() {
+		// ON: the same terminal wake-armed debt, in batch_nodes (the ledger
+		// Start registration is legacy-only bookkeeping the ON path never
+		// reads).
+		seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, false)
+		return
+	}
 	_, existing, err := f.ledger.Start(f.sessID, toolCallID, toolCallID, "bash", "", false, false, nil, func() {})
 	require.NoError(t, err)
 	require.False(t, existing)
@@ -165,6 +185,31 @@ func (f *wakeDebtFixture) claimAndFinish(t *testing.T, ctx context.Context, tool
 		Owner: f.sessID, ToolCallID: toolCallID, State: "completed", ResultSummary: "output", Wake: true,
 	})
 	require.NoError(t, err)
+}
+
+// finishAndPullVisible is claimAndFinish plus the notice pull that makes the
+// debt VISIBLE (delivery='done'), through the selected authority.
+func (f *wakeDebtFixture) finishAndPullVisible(t *testing.T, ctx context.Context, toolCallID string) {
+	t.Helper()
+	if batchFlagEnabled() {
+		seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, true)
+		return
+	}
+	f.claimAndFinish(t, ctx, toolCallID)
+	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
+	require.NoError(t, err)
+}
+
+// breakNoticePulls makes every subsequent notice-pull history insert fail
+// through the selected authority (the batch trigger guards the same
+// messages table; the legacy path fails CreateTx through the wrapper).
+func (f *wakeDebtFixture) breakNoticePulls(t *testing.T) {
+	t.Helper()
+	if batchFlagEnabled() {
+		failFixturePull(t, f.env.conn)
+		return
+	}
+	f.messages.fail.Store(true)
 }
 
 // TestDrainTurn_PermanentPullFailure_NoProviderCallEver is the P1 fix's core
@@ -185,8 +230,8 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newWakeDebtFixture(t, "permanent-pull-failure")
-	f.messages.fail.Store(true) // the pull's CreateTx always errors from here on
-	f.claimAndFinish(t, ctx, "call-1")
+	f.claimAndFinish(t, ctx, "call-1") // seed the terminal wake-armed debt (ON: its announce message insert must precede the pull-blocking trigger)
+	f.breakNoticePulls(t)              // every pull's history insert fails from here on
 
 	// Trigger 1: an ordinary wake (a fresh hint) -- the Drain runs, its own
 	// pull fails, decideDrainTurn sees no VISIBLE debt, no provider call.
@@ -194,8 +239,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "a permanently failing pull must never reach the provider")
 
-	row, err := f.store.Get(ctx, f.sessID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
 	require.Equal(t, "pending", row.Delivery, "the row must still be stuck at pending -- the pull never succeeded")
 	require.EqualValues(t, 0, row.Reacted)
 
@@ -216,8 +260,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	f.coord.waitRecheckWakes() // the pass's wakes are detached
 	require.Zero(t, f.requests.Load(), "the 60s pass must not force a provider call over permanently-pending debt either")
 
-	row, err = f.store.Get(ctx, f.sessID, "call-1")
-	require.NoError(t, err)
+	row = readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
 	require.Equal(t, "pending", row.Delivery)
 }
 
@@ -247,14 +290,12 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newWakeDebtFixture(t, "external-driver-hint-only")
-	f.claimAndFinish(t, ctx, "call-1")
-	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	f.finishAndPullVisible(t, ctx, "call-1")
 
 	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
 	before := f.ledger.hintSeqOf(f.sessID)
 
-	err = f.coord.wakeSession(ctx, f.sessID, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "an external-driver session must never get a Drain turn, only a hint")
 	require.NotEqual(t, before, f.ledger.hintSeqOf(f.sessID), "the hint must still be delivered so the loop can react")
@@ -292,11 +333,9 @@ func TestSessionDrainPolicy_StopSuspendsUntilHumanMessage(t *testing.T) {
 	// (R7B-2); a real root has none, so the fixture puts its agent back.
 	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
 
-	f.claimAndFinish(t, ctx, "call-1")
-	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	f.finishAndPullVisible(t, ctx, "call-1")
 
-	err = f.coord.wakeSession(ctx, f.sessID, true)
+	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "automatic turns must stay suspended after Stop until a human message")
 

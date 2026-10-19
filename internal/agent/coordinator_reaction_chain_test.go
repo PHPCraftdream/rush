@@ -20,21 +20,39 @@ import (
 
 // chainLink feeds one finished leg through the real accounting path:
 // outcome=drainAttempted, no error, the leg's snapshot naming the rows of
-// snapClaims (the claims of PREVIOUS legs' launches -- each leg reacts to the
-// completions that arrived before it) and the leg's own idle-launch claims.
-func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapClaims []string, idle, progress bool) string {
+// snapCalls (the claims of PREVIOUS legs' launches OFF, the launched roots'
+// call ids ON -- each leg reacts to the completions that arrived before it)
+// and the leg's own idle-launch identity.
+// OFF: claim-id snapshot + chainIdleClaims. ON: the batch twin -- the acted-on
+// set is the pending-inclusive debt rows whose root tool_call_id is in
+// snapCalls (a3BatchDebtSnapshotForCalls), captured BEFORE this leg's own row
+// is seeded, batchCaptured set so accountDrainAttempt resolves
+// batchDebtCallIDs itself, and the launched root's call id recorded into
+// chainBatchRoots (batch launches carry no claim ids).
+func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapCalls []string, idle, progress bool) string {
 	f.t.Helper()
+	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, chainProgress: progress}
+	if batchFlagEnabled() {
+		att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
+		att.batchCaptured = true
+		f.seedDebt(ctx, toolCallID, true)
+		identity := f.row(ctx, toolCallID).ToolCallID
+		if idle {
+			att.chainBatchRoots = []string{identity}
+		}
+		f.coord.accountDrainAttempt(ctx, att, nil)
+		return identity
+	}
 	f.seedDebt(ctx, toolCallID, true)
 	row := f.row(ctx, toolCallID)
 	snap := session.DebtSnapshot{}
-	for _, c := range snapClaims {
+	for _, c := range snapCalls {
 		snap.Jobs = append(snap.Jobs, session.DebtJobRef{ClaimID: c})
 	}
-	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, snapshot: snap}
+	att.snapshot = snap
 	if idle {
 		att.chainIdleClaims = []string{row.ClaimID}
 	}
-	att.chainProgress = progress
 	f.coord.accountDrainAttempt(ctx, att, nil)
 	return row.ClaimID
 }
@@ -101,7 +119,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	c2 := f.chainLink(ctx, "chain2", []string{c1}, true, false)
 	f.chainLink(ctx, "chain3", []string{c2}, true, true)
 	require.Zero(t, f.chainCount())
-	require.False(t, f.coord.reactionChainHasClaim(f.sessID, c1))
+	require.False(t, a3ChainHasIdentity(f.coord, f.sessID, c1))
 
 	// bash `cat f`: a real command is progress (same reset path, covered by
 	// classification below); text + echo is a LINK: a leg with an idle
@@ -109,7 +127,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	// Revert-check: counting the leg's text as progress makes this zero.
 	c4 := f.chainLink(ctx, "chain4", []string{"foreign-claim"}, true, false)
 	require.Equal(t, 1, f.chainCount())
-	require.True(t, f.coord.reactionChainHasClaim(f.sessID, c4))
+	require.True(t, a3ChainHasIdentity(f.coord, f.sessID, c4))
 
 	// Two more links: the guard fires; a human message re-arms.
 	c5 := f.chainLink(ctx, "chain5", []string{c4}, true, false)
@@ -117,7 +135,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	// The progress leg above really reacted the rows it saw (the model's own
 	// step does); model that, or those stale rows (claims outside the chain's
 	// set) rightly keep the policy out of the way.
-	f.exec(ctx, `UPDATE async_jobs SET reacted=1 WHERE owner_session_id='`+f.sessID+`' AND tool_call_id IN ('chain1','chain2','chain3')`)
+	a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, "chain1", "chain2", "chain3")
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
 	require.Equal(t, drainDeferred, v.kind)
 	f.coord.ResetAutoResumeCounter(f.sessID)
