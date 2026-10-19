@@ -27,10 +27,20 @@ import (
 )
 
 // fakeBatchSource serves canned node rows per owner list; failOn makes the
-// corresponding fetch return an error (a failed chunk).
+// corresponding fetch return an error (a failed chunk). history serves the
+// R12-C terminal-root read; failHistory fails every history read. levels
+// serves the per-(owner, root) node read, keyed by root_id; a missing entry
+// returns no rows and no error.
 type fakeBatchSource struct {
-	rows   []db.BatchNode
-	failOn map[string]bool
+	rows        []db.BatchNode
+	failOn      map[string]bool
+	history     []db.BatchNode
+	failHistory bool
+	levels      map[string][]db.BatchNode
+	// historyByOwner, when non-nil, serves the terminal-root read per owner
+	// (the history BFS visits owners the live walk never reached); it takes
+	// precedence over the shared history slice.
+	historyByOwner map[string][]db.BatchNode
 }
 
 func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []string) ([]db.BatchNode, error) {
@@ -40,6 +50,20 @@ func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []st
 		}
 	}
 	return f.rows, nil
+}
+
+func (f *fakeBatchSource) BatchHistoryRootsForOwner(_ context.Context, owner string) ([]db.BatchNode, error) {
+	if f.failHistory {
+		return nil, errors.New("history read failed")
+	}
+	if f.historyByOwner != nil {
+		return f.historyByOwner[owner], nil
+	}
+	return f.history, nil
+}
+
+func (f *fakeBatchSource) BatchLevelNodes(_ context.Context, arg db.BatchLevelNodesParams) ([]db.BatchNode, error) {
+	return f.levels[arg.RootID], nil
 }
 
 // withBatchSeams swaps the production seams for fakes and restores them.
@@ -145,18 +169,20 @@ func TestBatchWorkSnapshot_UnknownHostIsConservative(t *testing.T) {
 }
 
 func TestBatchWorkSnapshot_NodesOrderedByOrdinal(t *testing.T) {
-	// Rows arrive deliberately out of ordinal order.
+	// Rows arrive deliberately out of ordinal order, and the ids are chosen
+	// so NodeID lexical order (r1, r1-b, r1-m) ALSO differs from ordinal
+	// order: only an ordinal sort yields 0,1,2.
 	root := batchNode("r1", "r1", "s1", "running", "tc-root", 0)
-	c := batchNode("r1-c", "r1", "s1", "running", "tc-c", 2)
-	a := batchNode("r1-a", "r1", "s1", "running", "tc-a", 1)
-	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, c, a}}, probeAlive, nil)
+	b := batchNode("r1-b", "r1", "s1", "running", "tc-b", 2)
+	m := batchNode("r1-m", "r1", "s1", "running", "tc-m", 1)
+	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, b, m}}, probeAlive, nil)
 
 	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
-	got := []int64{}
+	got := []string{}
 	for _, n := range snap.Roots[0].Nodes {
-		got = append(got, n.Ordinal)
+		got = append(got, n.NodeID)
 	}
-	require.Equal(t, []int64{0, 1, 2}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
+	require.Equal(t, []string{"r1", "r1-m", "r1-b"}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
 }
 
 func TestBatchWorkSnapshot_StructuredCompletions(t *testing.T) {

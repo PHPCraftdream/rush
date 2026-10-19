@@ -60,6 +60,22 @@ func (app *App) SetAsyncJobStoreForTest(s *session.AsyncJobStore) {
 	app.asyncJobStore = s
 }
 
+// BatchHostStore returns the flag-ON (RUSH_BATCH_RUNTIME) App host store
+// (session.HostStore, R12-D): the job-independent host identity the batch
+// runtime install registers and releases. Nil on flag-off Apps, without a
+// database writer or without a data dir; callers treat nil as "no batch
+// host identity", never panic.
+func (app *App) BatchHostStore() *session.HostStore {
+	return app.batchHostStore()
+}
+
+// BatchNoticeStore returns the flag-ON job-independent session-notice store
+// (session.SessionNoticeStore, R12-D) wired to the BatchHostStore identity
+// and liveness. Nil on flag-off Apps or without a database writer.
+func (app *App) BatchNoticeStore() *session.SessionNoticeStore {
+	return app.batchNoticeStore()
+}
+
 // WakeScheduleStore returns the stage-4b durable wake-schedule store
 // (same construction rules as AsyncJobStore: nil under SkipAgentSetup or
 // without a data dir; readers treat nil as "no schedule data available").

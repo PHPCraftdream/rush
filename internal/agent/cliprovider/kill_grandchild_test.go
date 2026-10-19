@@ -1,8 +1,10 @@
 package cliprovider
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,8 +41,9 @@ const grandchildSleepDuration = "37.91"
 // (Windows).
 //
 // Form: the CLI child (bash) spawns a grandchild (sleep) that
-// outlives it; after ctx cancel — which routes through kill() →
-// session.KillProcess — the grandchild must be dead.
+// outlives it; after ctx cancel — which routes through the stream's
+// kill()/Stop → Cmd.Cancel / killChildProcess group kill — the
+// grandchild must be dead.
 //
 // REVERT CHECK: reverting the group kill / Setpgid / the Job Object
 // tracking makes this fail on the "still alive" assertion below.
@@ -173,7 +176,99 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
+			if runtime.GOOS != "windows" {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				output, err := platform.Command(ctx, "ps", "-o", "pid,ppid,pgid,stat,command", "-p", strconv.Itoa(grandpid)).CombinedOutput()
+				t.Logf("grandchild process diagnostics: output=%q error=%v", string(output), err)
+			}
 			t.Errorf("grandchild pid %d still alive after kill() — tree-kill does not reach grandchildren (regression of the orphaned-grandchild fix)", grandpid)
+		})
+	}
+}
+
+func TestConfigureChildProcessGroupKillsGrandchild(t *testing.T) {
+	for _, mode := range []string{"cancel", "leader-exited"} {
+		t.Run(mode, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("Unix process groups only")
+			}
+
+			if _, err := exec.LookPath("bash"); err != nil {
+				t.Skipf("shell %q not found", "bash")
+			}
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := "sleep " + grandchildSleepDuration + " & p=$!; echo $p; "
+			if mode == "leader-exited" {
+				script += "exit 0"
+			} else {
+				script += "wait"
+			}
+			cmd := platform.Command(context.Background(), "bash", "-c", script)
+			cmd.Stdout = writer
+			configureChildProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				_ = reader.Close()
+				_ = writer.Close()
+				t.Fatal(err)
+			}
+			_ = writer.Close()
+			grandchildPID := 0
+			waited := false
+			t.Cleanup(func() {
+				if grandchildPID > 0 {
+					_ = platform.Command(context.Background(), "kill", "-9", fmt.Sprint(grandchildPID)).Run()
+				}
+				if !waited {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+				_ = reader.Close()
+				_ = writer.Close()
+			})
+
+			if err := reader.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatalf("set grandchild PID read deadline: %v", err)
+			}
+			line, err := bufio.NewReader(reader).ReadString('\n')
+			if err != nil {
+				t.Fatalf("read grandchild pid: %v", err)
+			}
+			grandchildPID, err = strconv.Atoi(strings.TrimSpace(line))
+			if err != nil || grandchildPID <= 0 {
+				t.Fatalf("invalid grandchild pid %q: %v", line, err)
+			}
+
+			if mode == "cancel" {
+				if cmd.Cancel == nil {
+					t.Fatal("configureChildProcessGroup did not install Cancel")
+				}
+				if err := cmd.Cancel(); err != nil {
+					t.Fatalf("Cancel: %v", err)
+				}
+				_ = cmd.Wait()
+				waited = true
+			} else {
+				if err := cmd.Wait(); err != nil {
+					t.Fatalf("Wait: %v", err)
+				}
+				waited = true
+				if err := killChildProcess(cmd.Process); err != nil {
+					t.Fatalf("killChildProcess after leader exit: %v", err)
+				}
+			}
+
+			if err := reader.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatalf("set inherited pipe read deadline: %v", err)
+			}
+			var one [1]byte
+			_, err = reader.Read(one[:])
+			if err != io.EOF {
+				t.Fatalf("grandchild still holds inherited pipe after %s: read error=%v", mode, err)
+			}
 		})
 	}
 }

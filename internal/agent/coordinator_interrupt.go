@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
@@ -102,6 +103,14 @@ func (c *coordinator) stopTree(sessionID string) {
 		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
 			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
 		}
+		// R12-EF fix F4: the same doc sec.3.8 pass zeroes the batch debt's
+		// wake bit too, so a root that settled wake=1 a moment before Stop
+		// cannot survive a restart as a reaction turn.
+		if store := batchCutoverReactionStore(c); store != nil {
+			if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
+				slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
+			}
+		}
 	}
 	// R7B-2: a stopped child parked on its own job is not re-checked by any
 	// other trigger (the job is dropped silently, the idle mailbox fires no
@@ -118,12 +127,27 @@ func (c *coordinator) stopTree(sessionID string) {
 
 func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopRecheckTicker()
-	// close() cancels the executor of every still-running job (their rows
-	// stay 'running' for the next host to recover, DUR-1) and stops the
-	// timeout service.
+	c.StopWakeScheduler()
+	// Stop timer admission before closing callback admission. Detached timer
+	// deliveries and recheck wakes remain separate lifecycle backlog.
+	if c.asyncJobs != nil {
+		c.asyncJobs.timeouts.close()
+	}
+	// Close admission before cancelling agent work: releases during unwind
+	// must not create new DB readers. Ownership cleanup already happened in
+	// agent_ownership.go; recheckChild intentionally does nothing on a closed
+	// ledger, so refused callbacks need no replacement bookkeeping.
+	c.callbackMu.Lock()
+	c.callbackClosing = true
+	c.callbackContextLocked()
+	cancelCallbacks := c.callbackCancel
+	c.callbackMu.Unlock()
+	// close() leaves rows running for recovery and suppresses shutdown-caused
+	// delegation completion before cancelled agents start releasing ownership.
 	if c.asyncJobs != nil {
 		c.asyncJobs.close()
 	}
+	cancelCallbacks()
 	stillBusy = c.currentAgent.CancelAll()
 	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from
 	// c.currentAgent (task #1049) -- CancelAll must reach it too, or its own
@@ -134,7 +158,40 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 			stillBusy = true
 		}
 	}
+	if c.joinShutdownCallbacks() {
+		stillBusy = true
+	}
 	return stillBusy
+}
+
+// joinShutdownCallbacks shares one five-second grace across BOTH callback
+// groups and the stopped recheck producer, before App can release its store.
+// Admission is already closed, including for late natural completions.
+func (c *coordinator) joinShutdownCallbacks() bool {
+	done := make(chan struct{})
+	go func() {
+		if c.recheckDone != nil {
+			<-c.recheckDone
+		}
+		c.releaseWG.Wait()
+		c.notifyWG.Wait()
+		if c.callbackAfterWaitHook != nil {
+			c.callbackAfterWaitHook()
+		}
+		close(done)
+	}()
+	timer := time.NewTimer(DefaultCancelAllGrace)
+	defer timer.Stop()
+	expired := timer.C
+	if c.callbackJoinTimeout != nil {
+		expired = c.callbackJoinTimeout()
+	}
+	select {
+	case <-done:
+		return false
+	case <-expired:
+		return true
+	}
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {
@@ -292,6 +349,14 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	} else {
 		// An idle session has no active policy snapshot. Resolve a fresh call
 		// from the tick context, as the normal detached path does.
+		// An independently owned scope is needed only while building the durable
+		// record. No live tool registry crosses serialization, so it is released
+		// on every exit after the scope is created.
+		if callOptionsFrom(ctx) != nil {
+			ownedCtx, ownedScope := ownDeferredCallScope(ctx)
+			ctx = ownedCtx
+			defer ownedScope.close()
+		}
 		pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
 		if resolveErr != nil {
 			return false, fmt.Errorf("failed to resolve session models for interrupt tick: %w", resolveErr)
@@ -310,8 +375,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// would durably enqueue a row that a restart could only replay onto
 	// the REAL disk.
 	if callCarriesDiskProvider(call) {
-		slog.Error("coordinator: refusing to durably enqueue an interrupt-inject call carrying a caller-supplied disk provider",
-			"session_id", sessionID, "logical_call_id", call.LogicalCallID)
+		if call.CallOptions.DiskBindingID != "" {
+			return false, fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued", ErrDiskProviderUnavailable)
+		}
 		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
 	}
 
@@ -470,6 +536,15 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err := c.readyWg.Wait(); err != nil {
 		return err
 	}
+	var scopeTransferred bool
+	ctx, ownedScope := ownDeferredCallScope(ctx)
+	if ownedScope != nil {
+		defer func() {
+			if !scopeTransferred {
+				ownedScope.close()
+			}
+		}()
+	}
 	var pinned *resolvedOverrides
 	if smart != nil || fast != nil {
 		resolved, applyErr := c.applyModelOverrides(ctx, smart, fast)
@@ -491,6 +566,11 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err != nil {
 		return err
 	}
+	if ownedScope != nil {
+		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+	}
+	// The owned scope was established before resolution and is carried through
+	// buildCall; do not replace it with a fresh, empty scope here.
 	// InterruptAndReplace atomically records call as the replacement the
 	// current owner runs next and cancels only the in-flight generation
 	// (design §4) — replacing the QueueMessage+Cancel two-step that P0-2
@@ -502,6 +582,8 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 		if err := c.startDetachedRun(ctx, call); err != nil {
 			return fmt.Errorf("failed to enqueue interrupt for idle session %s: %w", sessionID, err)
 		}
+	} else {
+		scopeTransferred = true
 	}
 	return nil
 }

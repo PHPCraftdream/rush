@@ -62,7 +62,8 @@ type PromptDat struct {
 	// the coder get told to delegate") can never disagree. When false, the
 	// orchestrator block in coder.md.tpl is entirely absent and the
 	// rendered prompt is byte-identical to before this field existed.
-	WorkerAvailable bool
+	WorkerAvailable       bool
+	BatchRuntimeAvailable bool
 	// WorkerContextWindowText is a human-readable size for the configured
 	// worker model's context window (e.g. "200k tokens", "1M tokens"),
 	// preformatted here rather than in the template because Go's
@@ -787,16 +788,17 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 
 	isGit := isGitRepo(store.WorkingDir())
 	data := PromptDat{
-		Provider:        provider,
-		Model:           model,
-		Config:          *cfg,
-		WorkingDir:      filepath.ToSlash(workingDir),
-		IsGitRepo:       isGit,
-		Platform:        platform,
-		Date:            p.now().Format("1/2/2006"),
-		AvailSkillXML:   availSkillXML,
-		WorkerAvailable: workerActive,
-		FolderScoped:    folderScopedFrom(ctx),
+		Provider:              provider,
+		Model:                 model,
+		Config:                *cfg,
+		WorkingDir:            filepath.ToSlash(workingDir),
+		IsGitRepo:             isGit,
+		Platform:              platform,
+		Date:                  p.now().Format("1/2/2006"),
+		AvailSkillXML:         availSkillXML,
+		WorkerAvailable:       workerActive,
+		BatchRuntimeAvailable: config.BatchRuntimeEnabled(),
+		FolderScoped:          folderScopedFrom(ctx),
 	}
 	if workerActive {
 		if workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]; ok {

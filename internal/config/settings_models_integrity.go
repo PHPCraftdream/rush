@@ -129,28 +129,7 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 			mismatch = true
 			break
 		}
-		canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
-		if err != nil {
-			mismatch = true
-			break
-		}
-		if !present {
-			continue
-		}
-		rev := gjson.GetBytes(data, cacheRevKey)
-		if !rev.Exists() {
-			// Genuinely absent: legacy file. Accepted only when unlocked.
-			if s.anySettingsLockExists() {
-				mismatch = true
-			}
-			continue
-		}
-		// Present but not a valid signature string: a mismatch, locked or not.
-		if rev.Type != gjson.String || rev.String() == "" {
-			mismatch = true
-			break
-		}
-		if rev.String() != modelsIntegritySignature(canonical) {
+		if modelsIntegrityOf(data, s.anySettingsLockExists()) != nil {
 			mismatch = true
 			break
 		}
@@ -159,6 +138,38 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 		s.modelsIntegrity = ErrModelsEditedDirectly
 		slog.Warn("model settings were changed outside rush")
 	}
+}
+
+// modelsIntegrityOf checks one config document's bytes against the
+// models-integrity rule: a models block must carry a valid cache_rev
+// signature. A models block with no cache_rev at all is a legacy file,
+// accepted only when no settings lock exists. data unreadable (nil or
+// garbage) fails closed. Reload reuses this on the candidate's stable
+// bytes, so a hand-edited models block never reaches a running process.
+func modelsIntegrityOf(data []byte, lockExists bool) error {
+	canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+	if err != nil {
+		return ErrModelsEditedDirectly
+	}
+	if !present {
+		return nil
+	}
+	rev := gjson.GetBytes(data, cacheRevKey)
+	if !rev.Exists() {
+		// Genuinely absent: legacy file. Accepted only when unlocked.
+		if lockExists {
+			return ErrModelsEditedDirectly
+		}
+		return nil
+	}
+	// Present but not a valid signature string: a mismatch, locked or not.
+	if rev.Type != gjson.String || rev.String() == "" {
+		return ErrModelsEditedDirectly
+	}
+	if rev.String() != modelsIntegritySignature(canonical) {
+		return ErrModelsEditedDirectly
+	}
+	return nil
 }
 
 // ModelsIntegrity returns the one-time startup check result. It is computed

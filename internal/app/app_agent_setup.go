@@ -15,6 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
@@ -172,6 +173,42 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
+	}
+	// R11F (M3): bind the coordinator to the flag-on batch runtime. After
+	// this every tool build re-arms its work tools through the ONE ingress
+	// authority and the old async/stall wrappers are not installed; flag-off
+	// Apps carry a nil ingress and never bind.
+	if app.batchWorkIngress != nil {
+		if err := agent.BindCoordinatorBatchControls(app.AgentCoordinator, app.batchWorkIngress, app.batchModelControl, app.batchLiveReader); err != nil {
+			slog.Error("Failed to bind batch runtime", "err", err)
+			return err
+		}
+	}
+	// R12-F P1: flag ON routes the CLI loop's durable driver markers through
+	// the job-independent HostStore (already released by the flag-ON shutdown
+	// drain gate), so the legacy AsyncJobStore never ensures a host and never
+	// creates a hosts/<id>.lock; flag OFF no claimer is set and the legacy
+	// AsyncJobStore is used unchanged.
+	if app.batchWorkIngress != nil && batchCutoverOn() && app.batchHostStore() != nil {
+		if err := agent.SetBatchDriverClaimer(app.AgentCoordinator, app.batchHostStore()); err != nil {
+			slog.Error("Failed to set batch driver claimer", "err", err)
+			return err
+		}
+	}
+	// R12-H fix: bind the node-backed cutover facts so every flag-ON App
+	// that runs turns reads batch_nodes instead of the conservative unknown
+	// fail-safe (its permanent "node source unavailable" error made the CLI
+	// loop retry a wiring defect for the full retry bound).
+	if batchCutoverOn() {
+		if writer := app.batchCutoverWriter(); writer != nil {
+			live := app.batchLiveReader
+			if live == nil {
+				live = session.NewBatchLiveReader(db.New(writer), app.dataDir)
+				// TxStarter: every live read runs in ONE read-only tx on the writer.
+				live.TxStarter = writer
+			}
+			agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStore(writer), live, writer))
+		}
 	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
 	// store. Optional-interface assertion (agent.WakeScheduleController):

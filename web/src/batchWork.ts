@@ -1,5 +1,6 @@
 import { atom } from "nanostores";
 import type {
+  BatchWorkCompletion,
   BatchWorkRoot,
   BatchWorkSnapshot,
   LiveWorkItem,
@@ -49,10 +50,27 @@ export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
   const prev = next.get(payload.sessionID)?.lastGood ?? null;
   const lastGood: BatchWorkSnapshot =
     payload.complete || prev === null
-      ? { ...payload, roots: payload.roots ?? [] }
-      : { ...payload, roots: mergeRoots(prev.roots, payload.roots ?? []) };
+      ? { ...payload, roots: payload.roots ?? [], completions: payload.completions ?? [] }
+      : {
+          ...payload,
+          roots: mergeRoots(prev.roots, payload.roots ?? []),
+          // Completions follow the same merge rule as roots: an incomplete
+          // read may have missed the terminal-root history chunk, so a
+          // previously seen completion (keyed by rootID + nodeID) must
+          // never drop out of the index. A complete snapshot replaces.
+          completions: mergeCompletions(prev.completions, payload.completions ?? []),
+        };
   next.set(payload.sessionID, { lastGood });
   $batchWorkBySession.set(next);
+}
+
+/** Merges incoming completions over the previous ones by (rootID, nodeID):
+ * incoming overwrites its own key, previously seen completions without an
+ * incoming counterpart are kept. */
+function mergeCompletions(prev: BatchWorkCompletion[], incoming: BatchWorkCompletion[]): BatchWorkCompletion[] {
+  const byKey = new Map(prev.map((c) => [`${c.rootID}\u0000${c.nodeID}`, c]));
+  for (const c of incoming) byKey.set(`${c.rootID}\u0000${c.nodeID}`, c);
+  return [...byKey.values()];
 }
 
 /** Merges incoming incomplete roots into the previous roots by rootID:
@@ -109,20 +127,31 @@ export function pickMergedLiveWork(
     rows.filter((r) => !r.toolCallID || !covered.has(r.toolCallID));
   const commands = keep(flat.commands);
   const agents = keep(flat.agents);
+  // Flat rows by tool call: a structural ROOT node carries no
+  // childSessionID/awaiting state, so a covered flat agent row would lose
+  // its Agents classification and awaiting badge — carry those over.
+  const flatByToolCallID = new Map<string, LiveWorkItem>();
+  for (const row of [...flat.commands, ...flat.agents]) {
+    if (row.toolCallID) flatByToolCallID.set(row.toolCallID, row);
+  }
   for (const root of snap.roots) {
     for (const node of root.nodes) {
       if (!node.toolCallID) continue;
+      const flatRow = flatByToolCallID.get(node.toolCallID);
+      const childSessionID = node.childSessionID || flatRow?.childSessionID || undefined;
       const item: LiveWorkItem = {
         toolCallID: node.toolCallID,
         toolName: node.kind === "task" ? node.taskKind || node.kind : node.kind,
-        title: node.outcomeSummary || node.taskKind || node.kind,
-        childSessionID: node.childSessionID || undefined,
+        title: node.outcomeSummary || node.taskKind || node.kind || flatRow?.title || "",
+        childSessionID,
         startedAt: root.startedAt,
         status: node.state,
         reason: node.cause || undefined,
         lastActivityAt: undefined,
+        awaitingAnswer: flatRow?.awaitingAnswer,
+        awaitingQuestion: flatRow?.awaitingQuestion,
       };
-      (node.childSessionID ? agents : commands).push(item);
+      (childSessionID ? agents : commands).push(item);
     }
   }
   return { commands, agents };

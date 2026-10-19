@@ -52,11 +52,15 @@ func newDeterministicCoderPrompt(t *testing.T, store *config.ConfigStore) *Promp
 // worse than the feature not existing. Regenerate the golden only when an
 // intentional template change lands: go test ./internal/agent/prompt -update
 func TestBuild_UnscopedPrompt_ByteIdentical(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	store := testConfigStore(t)
 	p := newDeterministicCoderPrompt(t, store)
 
 	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
 	require.NoError(t, err)
+	if !config.BatchRuntimeEnabled() {
+		require.NotContains(t, got, "Batch job controls", "flag-off prompt must not expose batch controls")
+	}
 
 	goldenPath := filepath.Join("testdata", "coder_unscoped_prompt.golden")
 	if *update {
@@ -142,6 +146,7 @@ func TestBuild_FolderScoped_CoexistsWithOrchestratorBlock(t *testing.T) {
 // agent's withoutCallOptions produces — must render exactly the golden
 // (pre-scope-hint) bytes, same as a context with no hint at all.
 func TestBuild_ExplicitFalseHint_ByteIdentical(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	store := testConfigStore(t)
 	p := newDeterministicCoderPrompt(t, store)
 

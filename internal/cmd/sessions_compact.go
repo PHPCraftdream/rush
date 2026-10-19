@@ -156,6 +156,18 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	// reported.
 	hostOffenders, hostErr := compactLiveHosts(dataDir)
 	sessionOffenders, sessionErr := compactLiveSessionLocks(dataDir)
+	// Flag ON (R12-B part 2): sessions owning live or unknown batch work are
+	// a gate of their own. It is NEVER bypassed -- not by --force (whose
+	// documented scope is host and session locks only) and not in a real run;
+	// in a dry run it is only reported.
+	batchOffenders, batchGateErr := compactBatchLiveSessions(ctx, a, dataDir)
+	if batchGateErr != nil {
+		return batchGateErr
+	}
+	if !dryRun && len(batchOffenders) > 0 {
+		return fmt.Errorf("refusing to compact: %d session(s) own live or unknown batch work: %s; resolve the batch work first (e.g. `rush sessions jobs <id>` / `rush batch stop`)",
+			len(batchOffenders), strings.Join(batchOffenders, ", "))
+	}
 	if !dryRun && !force {
 		if err := compactGateRefusal(hostErr, hostOffenders, sessionErr, sessionOffenders); err != nil {
 			return err
@@ -198,6 +210,13 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 				compactGateVerdict(hostErr, hostOffenders),
 				compactGateVerdict(sessionErr, sessionOffenders),
 				compactGateVerdict(busyErr, nil))
+			if batchOffenders != nil {
+				if len(batchOffenders) > 0 {
+					fmt.Printf("batch gate: LIVE (%s)\n", strings.Join(batchOffenders, ", "))
+				} else {
+					fmt.Println("batch gate: clear")
+				}
+			}
 		} else {
 			result.AfterBytes = live
 			if dfErr == nil {

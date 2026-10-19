@@ -71,6 +71,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		return nil, err
 	}
 	defer cancel()
+	// R12-H2 §1.2: the OUTER release of the SDK invocation's Call owner —
+	// released when the invocation finishes (setup failures already rolled
+	// back inside prepareExecuteRun). Only this owner releases; root and
+	// execution owners are independent.
+	defer func() {
+		if setup.callBindingRelease != nil {
+			setup.callBindingRelease()
+		}
+	}()
 	stdout := setup.stdout
 	stderr := setup.stderr
 	credsRunner := setup.credsRunner

@@ -45,6 +45,33 @@ func hbReadUsage(t *testing.T, rootID string) (*heartbeat.Entry, bool) {
 	return nil, false
 }
 
+// hbWaitUsageRecorded blocks until the snapshot for rootID carries an entry for
+// provider/name. The detached keep-alive replay accounts its usage AFTER the
+// model call has started, so "the model was called" does not mean "the usage
+// is recorded": reading right after hbWaitForCalls raced the accounting
+// (Windows CI flake). Flushing here, not Shutdown, keeps the writer alive.
+func hbWaitUsageRecorded(t *testing.T, rootID, provider, name string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		heartbeat.FlushForTest()
+		entries, err := heartbeat.ReadAll()
+		if err != nil {
+			return false
+		}
+		for i := range entries {
+			if entries[i].Session != rootID {
+				continue
+			}
+			for _, m := range entries[i].Models {
+				if m.Provider == provider && m.Model == name {
+					return true
+				}
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond, "the replay's usage was never recorded")
+}
+
 // hbEntryCost recomputes the cost delta updateSessionUsage derives from the
 // same catwalk figures, so the test never hard-codes an expected number.
 func hbEntryCost(m Model, usage fantasy.Usage) float64 {
@@ -258,6 +285,7 @@ func TestHbUsage_KeepaliveRecorded(t *testing.T) {
 
 	agent.scheduleCacheKeepAlive(sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
+	hbWaitUsageRecorded(t, sess.ID, "anthropic", "hb-smart")
 
 	entry, found := hbReadUsage(t, sess.ID)
 	require.True(t, found)

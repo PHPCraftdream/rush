@@ -13,7 +13,8 @@ import (
 const advanceBatchRootSequence = `-- name: AdvanceBatchRootSequence :execrows
 UPDATE batch_nodes SET root_sequence = ?1, updated_at = ?2
 WHERE root_id = ?3 AND node_id = root_id AND host_id = ?4
-  AND owner_session_id = ?5 AND root_sequence < ?1
+  AND runner_id = ?5
+  AND owner_session_id = ?6 AND root_sequence < ?1
 `
 
 type AdvanceBatchRootSequenceParams struct {
@@ -21,6 +22,7 @@ type AdvanceBatchRootSequenceParams struct {
 	UpdatedAt      int64  `json:"updated_at"`
 	RootID         string `json:"root_id"`
 	HostID         string `json:"host_id"`
+	RunnerID       string `json:"runner_id"`
 	OwnerSessionID string `json:"owner_session_id"`
 }
 
@@ -31,6 +33,7 @@ func (q *Queries) AdvanceBatchRootSequence(ctx context.Context, arg AdvanceBatch
 		arg.UpdatedAt,
 		arg.RootID,
 		arg.HostID,
+		arg.RunnerID,
 		arg.OwnerSessionID,
 	)
 	if err != nil {
@@ -67,7 +70,7 @@ func (q *Queries) DeleteBatchSubtree(ctx context.Context, arg DeleteBatchSubtree
 }
 
 const getBatchNode = `-- name: GetBatchNode :one
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE root_id = ?1 AND node_id = ?2 AND owner_session_id = ?3
 `
 
@@ -137,12 +140,14 @@ func (q *Queries) GetBatchNode(ctx context.Context, arg GetBatchNodeParams) (Bat
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
 
 const getBatchRoot = `-- name: GetBatchRoot :one
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE root_id = ?1 AND node_id = root_id AND owner_session_id = ?2
 `
 
@@ -211,12 +216,14 @@ func (q *Queries) GetBatchRoot(ctx context.Context, arg GetBatchRootParams) (Bat
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
 
 const getLiveBatchRoot = `-- name: GetLiveBatchRoot :one
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND tool_call_id = ?2
   AND node_id = root_id AND state IN ('pending', 'starting', 'running', 'cancelling')
 `
@@ -287,12 +294,14 @@ func (q *Queries) GetLiveBatchRoot(ctx context.Context, arg GetLiveBatchRootPara
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
 
 const listBatchChildren = `-- name: ListBatchChildren :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE root_id = ?1 AND parent_id = ?2 AND owner_session_id = ?3
 ORDER BY ordinal
 `
@@ -369,6 +378,8 @@ func (q *Queries) ListBatchChildren(ctx context.Context, arg ListBatchChildrenPa
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -384,7 +395,7 @@ func (q *Queries) ListBatchChildren(ctx context.Context, arg ListBatchChildrenPa
 }
 
 const listBatchNodes = `-- name: ListBatchNodes :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE root_id = ?1 AND owner_session_id = ?2
 ORDER BY node_id
 `
@@ -460,6 +471,8 @@ func (q *Queries) ListBatchNodes(ctx context.Context, arg ListBatchNodesParams) 
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -475,7 +488,7 @@ func (q *Queries) ListBatchNodes(ctx context.Context, arg ListBatchNodesParams) 
 }
 
 const listLiveBatchRootsForHost = `-- name: ListLiveBatchRootsForHost :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE host_id = ?1 AND node_id = root_id
   AND state IN ('pending', 'starting', 'running', 'cancelling')
 ORDER BY created_at, root_id
@@ -547,6 +560,8 @@ func (q *Queries) ListLiveBatchRootsForHost(ctx context.Context, hostID string) 
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -562,7 +577,7 @@ func (q *Queries) ListLiveBatchRootsForHost(ctx context.Context, hostID string) 
 }
 
 const listLiveBatchRootsForOwner = `-- name: ListLiveBatchRootsForOwner :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND node_id = root_id
   AND state IN ('pending', 'starting', 'running', 'cancelling')
 ORDER BY created_at, root_id
@@ -634,6 +649,8 @@ func (q *Queries) ListLiveBatchRootsForOwner(ctx context.Context, ownerSessionID
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -654,10 +671,13 @@ UPDATE batch_nodes SET
     control_state = ?5, control_error = ?6,
     control_pending = ?7, outcome_state = ?8,
     outcome_code = ?9, outcome_summary = ?10,
-    response_envelope_ref = ?11, child_session_id = ?12,
-    projection_sequence = ?13, updated_at = ?14
-WHERE root_id = ?15 AND node_id = ?16 AND host_id = ?17
-  AND owner_session_id = ?18 AND projection_sequence < ?13
+    response_envelope_ref = COALESCE(?11, response_envelope_ref),
+    response_envelope = COALESCE(?12, response_envelope),
+    child_session_id = COALESCE(?13, child_session_id),
+    projection_sequence = ?14, updated_at = ?15
+WHERE root_id = ?16 AND node_id = ?17 AND host_id = ?18
+  AND runner_id = ?19
+  AND owner_session_id = ?20 AND projection_sequence < ?14
 `
 
 type ProjectBatchNodeParams struct {
@@ -672,16 +692,20 @@ type ProjectBatchNodeParams struct {
 	OutcomeCode         string         `json:"outcome_code"`
 	OutcomeSummary      string         `json:"outcome_summary"`
 	ResponseEnvelopeRef sql.NullString `json:"response_envelope_ref"`
+	ResponseEnvelope    sql.NullString `json:"response_envelope"`
 	ChildSessionID      sql.NullString `json:"child_session_id"`
 	Sequence            int64          `json:"sequence"`
 	UpdatedAt           int64          `json:"updated_at"`
 	RootID              string         `json:"root_id"`
 	NodeID              string         `json:"node_id"`
 	HostID              string         `json:"host_id"`
+	RunnerID            string         `json:"runner_id"`
 	OwnerSessionID      string         `json:"owner_session_id"`
 }
 
 // Projects the loop's accepted view, not a competing terminal-state decision.
+// COALESCE preserves envelope, reference and child-session facts written by
+// earlier events; the caller passes NULL to keep the current value.
 func (q *Queries) ProjectBatchNode(ctx context.Context, arg ProjectBatchNodeParams) (int64, error) {
 	result, err := q.exec(ctx, q.projectBatchNodeStmt, projectBatchNode,
 		arg.State,
@@ -695,12 +719,14 @@ func (q *Queries) ProjectBatchNode(ctx context.Context, arg ProjectBatchNodePara
 		arg.OutcomeCode,
 		arg.OutcomeSummary,
 		arg.ResponseEnvelopeRef,
+		arg.ResponseEnvelope,
 		arg.ChildSessionID,
 		arg.Sequence,
 		arg.UpdatedAt,
 		arg.RootID,
 		arg.NodeID,
 		arg.HostID,
+		arg.RunnerID,
 		arg.OwnerSessionID,
 	)
 	if err != nil {
@@ -711,20 +737,20 @@ func (q *Queries) ProjectBatchNode(ctx context.Context, arg ProjectBatchNodePara
 
 const reserveBatchNode = `-- name: ReserveBatchNode :one
 INSERT INTO batch_nodes (
-    node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
+    node_id, root_id, owner_session_id, host_id, runner_id, parent_id, ordinal, kind,
     tool_call_id, input_hash, origin_cli, mode, on_fail, notify, max_parallel,
     task_kind, task_group, task_payload, timeout_ns, child_session_id,
     state, cause, token, attempts, control_state, control_error, control_pending,
     outcome_state, outcome_code, outcome_summary, response_envelope_ref,
     root_sequence, projection_sequence, created_at, updated_at
 ) VALUES (
-    ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-    ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19,
-    ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-    ?27, ?28, ?29, ?30,
-    ?31, ?32, ?33, ?34
-) RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+    ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+    ?16, ?17, ?18, ?19, ?20,
+    ?21, ?22, ?23, ?24, ?25, ?26, ?27,
+    ?28, ?29, ?30, ?31,
+    ?32, ?33, ?34, ?35
+) RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type ReserveBatchNodeParams struct {
@@ -732,6 +758,7 @@ type ReserveBatchNodeParams struct {
 	RootID              string         `json:"root_id"`
 	OwnerSessionID      string         `json:"owner_session_id"`
 	HostID              string         `json:"host_id"`
+	RunnerID            string         `json:"runner_id"`
 	ParentID            sql.NullString `json:"parent_id"`
 	Ordinal             int64          `json:"ordinal"`
 	Kind                string         `json:"kind"`
@@ -771,6 +798,7 @@ func (q *Queries) ReserveBatchNode(ctx context.Context, arg ReserveBatchNodePara
 		arg.RootID,
 		arg.OwnerSessionID,
 		arg.HostID,
+		arg.RunnerID,
 		arg.ParentID,
 		arg.Ordinal,
 		arg.Kind,
@@ -860,6 +888,8 @@ func (q *Queries) ReserveBatchNode(ctx context.Context, arg ReserveBatchNodePara
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
@@ -875,7 +905,8 @@ UPDATE batch_nodes SET
     notice_skipped = ?13, delivery = 'pending', wake = ?14,
     updated_at = ?15
 WHERE root_id = ?16 AND node_id = ?17 AND host_id = ?18
-  AND owner_session_id = ?19 AND projection_sequence = ?4
+  AND runner_id = ?19
+  AND owner_session_id = ?20 AND projection_sequence = ?4
   AND notice_selected = 0
   AND state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped')
 `
@@ -899,6 +930,7 @@ type SelectBatchNodeNoticeParams struct {
 	RootID            string         `json:"root_id"`
 	NodeID            string         `json:"node_id"`
 	HostID            string         `json:"host_id"`
+	RunnerID          string         `json:"runner_id"`
 	OwnerSessionID    string         `json:"owner_session_id"`
 }
 
@@ -923,6 +955,7 @@ func (q *Queries) SelectBatchNodeNotice(ctx context.Context, arg SelectBatchNode
 		arg.RootID,
 		arg.NodeID,
 		arg.HostID,
+		arg.RunnerID,
 		arg.OwnerSessionID,
 	)
 	if err != nil {

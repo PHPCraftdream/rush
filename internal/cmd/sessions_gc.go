@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -81,6 +82,15 @@ type gcJobsSummary struct {
 	OlderThan      string `json:"older_than"`
 	AsyncJobs      int64  `json:"async_jobs"`
 	SessionNotices int64  `json:"session_notices"`
+}
+
+// gcBatchRetentionSummary is the flag-ON additive --json line for the
+// batch-side numbers of --jobs-older-than.
+type gcBatchRetentionSummary struct {
+	Kind       string `json:"kind"`
+	DryRun     bool   `json:"dry_run"`
+	OlderThan  string `json:"older_than"`
+	BatchNodes int64  `json:"batch_nodes"`
 }
 
 func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
@@ -158,13 +168,21 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		toDelete = toDelete[:maxSessions]
 	}
 
+	// Flag ON (R12-B part 2): never collect a session that owns live or
+	// unknown batch work (or unreacted batch debt); each keep is reported.
+	if config.BatchRuntimeEnabled() {
+		toDelete = gcDropBatchProtected(a, toDelete)
+	}
+
 	// --jobs-older-than: independent of the session-collection rules above
 	// and of --max-sessions (which only bounds SESSION deletions) -- runs
 	// regardless of whether any session was collected, so `sessions gc
 	// --jobs-older-than` with nothing to collect on the session side still
 	// performs job retention.
 	var jobsAffected, noticesAffected int64
-	if purgeJobs {
+	// Flag ON: the batch retention block below replaces the legacy ledger
+	// purge -- the async_jobs table must not be queried at all.
+	if purgeJobs && !config.BatchRuntimeEnabled() {
 		store := a.AsyncJobStore()
 		if store == nil {
 			return fmt.Errorf("--jobs-older-than: no async job store available (SkipAgentSetup or no data dir)")
@@ -194,6 +212,30 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "%s %d async job row(s) and %d notice row(s) older than %s\n",
 				verb, jobsAffected, noticesAffected, jobsOlderThanStr)
+		}
+	}
+
+	// Flag ON: report the batch-side numbers through the R10c retention API
+	// (same cutoff policy, terminal and debt-free roots only) instead of
+	// duplicating it here.
+	if config.BatchRuntimeEnabled() && purgeJobs {
+		batchAffected, batchErr := gcBatchRetention(cmd.Context(), a, dryRun, jobsOlderThan)
+		if batchErr != nil {
+			return fmt.Errorf("--jobs-older-than (batch retention): %w", batchErr)
+		}
+		if asJSON {
+			if err := json.NewEncoder(os.Stdout).Encode(gcBatchRetentionSummary{
+				Kind: "batch_retention", DryRun: dryRun, OlderThan: jobsOlderThanStr, BatchNodes: batchAffected,
+			}); err != nil {
+				return err
+			}
+		}
+		if !asJSON && batchAffected > 0 {
+			verb := "would purge"
+			if !dryRun {
+				verb = "purged"
+			}
+			fmt.Fprintf(os.Stderr, "%s %d expired batch node row(s)\n", verb, batchAffected)
 		}
 	}
 

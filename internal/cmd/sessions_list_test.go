@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -204,16 +205,15 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
-	// A REAL running delegation row, claimed via the seed App's own
-	// AsyncJobStore (built unconditionally by app.New -- see AsyncJobStore's
-	// own doc) -- exactly like a sub-agent still working in another process.
+	// A REAL running delegation fact, seeded through the dual-mode
+	// claimDelegation helper (legacy async_jobs row, or -- with
+	// RUSH_BATCH_RUNTIME on -- a live batch root whose task child carries the
+	// child-session link) via the seed App's own AsyncJobStore (built
+	// unconditionally by app.New -- see AsyncJobStore's own doc) -- exactly
+	// like a sub-agent still working in another process.
 	store := a.AsyncJobStore()
 	require.NotNil(t, store, "app.New must build an AsyncJobStore for a data-dir'd App")
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", Kind: session.JobKindAgent,
-		Input: "delegate to " + child.ID, ChildSessionID: child.ID,
-	})
-	require.NoError(t, err)
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 
 	// Detach the store from the seed App BEFORE Shutdown: Shutdown's
 	// releaseResources Close()s app.asyncJobStore, which releases the OS
@@ -276,11 +276,22 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	freshConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
-	_, err = writer.Transition(ctx, session.TransitionParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
-	})
-	require.NoError(t, err)
+	if config.BatchRuntimeEnabled() {
+		// Flag ON: settle the batch root with the finishOwnJob-style raw
+		// UPDATE (the seed app is shut down; write through a fresh conn).
+		_, err = freshConn.ExecContext(ctx,
+			`UPDATE batch_nodes SET state = 'completed', control_state = 'none', updated_at = ?
+			 WHERE owner_session_id = ? AND (tool_call_id = ? OR root_id IN
+				 (SELECT root_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ?))`,
+			time.Now().Unix(), parent.ID, "delegate-1", parent.ID, "delegate-1")
+		require.NoError(t, err)
+	} else {
+		writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
+		_, err = writer.Transition(ctx, session.TransitionParams{
+			Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
+		})
+		require.NoError(t, err)
+	}
 
 	phase2 := runList()
 	t.Logf("sessions list (delegation row terminal):\n%s", phase2)

@@ -49,7 +49,9 @@ func insertChildQuestionNotice(t *testing.T, store *session.AsyncJobStore, owner
 // in-process answer path (agent + resume_session_id) and, with no live
 // driver, the relay command for the operator (#1158).
 func TestExplainSessionStatus_AwaitingAnswerNamesChildAndAnswerPath(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	a, store, dataDir := whyAwaitingTestEnv(t)
 	ctx := context.Background()
@@ -82,7 +84,9 @@ func TestExplainSessionStatus_AwaitingAnswerNamesChildAndAnswerPath(t *testing.T
 // live `rush run` driver exists, the answer belongs to the orchestrating
 // agent; the operator relay line is omitted.
 func TestExplainSessionStatus_AwaitingAnswer_WithLiveDriverOmitsRelay(t *testing.T) {
-	t.Parallel()
+	// F11 env pin: pins the LEGACY why-render; under the flag
+	// explainSessionStatus routes to explainWhyBatch.
+	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 
 	a, store, dataDir := whyAwaitingTestEnv(t)
 	ctx := context.Background()

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
@@ -248,6 +249,15 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 			childSessionID,
 		), nil
 	}
+	ctx, ownedScope := ownDeferredCallScope(ctx)
+	scopeTransferred := false
+	if ownedScope != nil {
+		defer func() {
+			if !scopeTransferred {
+				ownedScope.close()
+			}
+		}()
+	}
 	pinned, err := c.resolveSessionModels(ctx, childSessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve session models for inject: %w", err)
@@ -256,8 +266,18 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	if err != nil {
 		return "", err
 	}
+	if ownedScope != nil {
+		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+	}
 	if c.agentFor(childSessionID).InterruptAndReplace(childSessionID, call) {
+		scopeTransferred = true
 		return "Interrupted the sub-agent's current turn; it will process this message next.", nil
+	}
+	// Idle fallback does not accept this built call; release its privately
+	// resolved scope before preserving the historical InjectMessage behavior.
+	if ownedScope != nil {
+		ownedScope.close()
+		scopeTransferred = true
 	}
 	// Idle: nothing to interrupt — fall back to the queue behavior and say so.
 	if _, err := c.InjectMessage(ctx, childSessionID, msg); err != nil {

@@ -16,6 +16,13 @@ type runnerPublication struct {
 	batches    map[ID]*Batch
 	request    *runnerRequest
 	answer     runnerAnswer
+	fenced     []fencedReply
+}
+
+// fencedReply is a recordless answer held behind an earlier queued item.
+type fencedReply struct {
+	q      *runnerRequest
+	answer runnerAnswer
 }
 
 type runnerCommitResult struct {
@@ -118,6 +125,28 @@ func (r *Runner) commit(t Transition) string {
 func (r *Runner) applyDurable(t Transition) (Transition, error) {
 	item := &runnerPublication{transition: t, records: r.captureRecords(t), snapshots: make(map[ID]BatchView), batches: make(map[ID]*Batch)}
 	for id := range r.feed.known {
+		if v, ok := r.engine.View(id); ok && v.State.Terminal() {
+			frozen, stored := r.frozenSnapshots[id]
+			if stored {
+				if frozen.Node.ID != "" {
+					frozen.Sequence = t.Sequence
+					item.snapshots[id] = frozen
+				}
+				continue
+			}
+			s, ok := r.engine.Snapshot(id)
+			if !ok {
+				// Task ids have no batch snapshot; cache the miss so later
+				// transitions stop calling Snapshot for them.
+				r.frozenSnapshots[id] = BatchView{}
+				continue
+			}
+			frozen = runnerCopySnapshot(s)
+			r.frozenSnapshots[id] = frozen
+			frozen.Sequence = t.Sequence
+			item.snapshots[id] = frozen
+			continue
+		}
 		if snapshot, ok := r.engine.Snapshot(id); ok {
 			item.snapshots[id] = runnerCopySnapshot(snapshot)
 		}
@@ -129,7 +158,9 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 		if cmd.Type == CommandStartLeaf {
 			ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
 			v, _ := r.engine.View(cmd.Launch.ID)
-			r.attempts[cmd.Launch.Token] = &runnerAttempt{ctx: ctx, root: v.Root, launch: cmd.Launch, cancel: cancel}
+			a := &runnerAttempt{ctx: ctx, root: v.Root, launch: cmd.Launch, cancel: cancel}
+			r.attempts[cmd.Launch.Token] = a
+			r.indexAttempt(a)
 		}
 	}
 	for _, cmd := range t.Commands {
@@ -146,14 +177,22 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 			}
 			a.cancel()
 			a.retired = true
+			// Mirrors the non-durable retirement at runner.go:357; the attempt
+			// stays indexed for late physical returns, but its Launch payload
+			// must not stay reachable.
+			a.launch.Task.Payload = nil
 			if a.handle != nil {
 				a.handle.terminate()
 			}
+			r.dropSuperseded(a)
 		}
 	}
 	if e.Type == EventRelease {
 		r.speculativeReleased[e.Root] = true
-		for _, h := range r.handles {
+		r.mu.Lock()
+		handles := append([]*runnerHandle(nil), r.handles...)
+		r.mu.Unlock()
+		for _, h := range handles {
 			if h.root == e.Root {
 				h.giveUp()
 			}
@@ -199,8 +238,20 @@ func (r *Runner) acceptRequest(q *runnerRequest) {
 	}
 	item := r.currentPublication
 	if item == nil {
-		item = &runnerPublication{}
-		r.publicationQueue = append(r.publicationQueue, item)
+		if len(r.publicationQueue) == 0 {
+			// Nothing earlier is pending, so there is no fence to sit
+			// behind: reply immediately without allocating anything.
+			r.reply(q, answer)
+			return
+		}
+		// A recordless answer must not allocate a publication, but it stays
+		// fenced behind the newest queued item: publish or failCommit
+		// answers it right after that item's own outcome, preserving reply
+		// order without growing the bounded queue. The list is bounded by
+		// concurrently blocked callers, each holding its own request.
+		tail := r.publicationQueue[len(r.publicationQueue)-1]
+		tail.fenced = append(tail.fenced, fencedReply{q: q, answer: answer})
+		return
 	}
 	item.request, item.answer = q, answer
 	r.currentPublication = nil
@@ -251,12 +302,16 @@ func (r *Runner) publish(item *runnerPublication) {
 		}
 		if t.Event.Type == EventRelease {
 			r.released[t.Event.Root] = true
+			r.pruneRootAttempts(t.Event.Root)
 			for id, v := range r.views {
 				if v.Root == t.Event.Root {
 					delete(r.views, id)
 					delete(r.snapshots, id)
+					delete(r.feed.known, id)
+					delete(r.frozenSnapshots, id)
 				}
 			}
+			delete(r.speculativeReleased, t.Event.Root)
 		}
 		r.mu.Unlock()
 		if r.requestHooks != nil && r.requestHooks.beforeAppend != nil {
@@ -282,6 +337,10 @@ func (r *Runner) publish(item *runnerPublication) {
 	if item.request != nil {
 		r.reply(item.request, item.answer)
 	}
+	for _, fr := range item.fenced {
+		r.reply(fr.q, fr.answer)
+	}
+	item.fenced = nil
 	for _, cmd := range t.Commands {
 		if cmd.Type == CommandStartLeaf {
 			r.dispatchStart(cmd.Launch)
@@ -315,9 +374,21 @@ func (r *Runner) failCommit(reason string) {
 			}
 			r.reply(item.request, runnerAnswer{err: r.FaultErr()})
 		}
+		for _, fr := range item.fenced {
+			// The fenced caller never receives a handle answer, so the
+			// deferred unpin its wrapper would install never runs: release
+			// the pin here, mirroring the item.answer handling above.
+			if fr.answer.handle != nil {
+				fr.answer.handle.unpin()
+			}
+			r.reply(fr.q, runnerAnswer{err: r.FaultErr()})
+		}
 	}
 	r.publicationQueue = nil
-	for _, h := range r.handles {
+	r.mu.Lock()
+	handles := append([]*runnerHandle(nil), r.handles...)
+	r.mu.Unlock()
+	for _, h := range handles {
 		h.giveUp()
 	}
 }
@@ -392,7 +463,10 @@ func (r *Runner) faultDrained() (bool, <-chan struct{}) {
 			pending = true
 		}
 	}
-	for _, h := range r.handles {
+	r.mu.Lock()
+	handles := append([]*runnerHandle(nil), r.handles...)
+	r.mu.Unlock()
+	for _, h := range handles {
 		h.giveUp()
 	}
 	_, cleanupPending, changed := r.cleanupStatus()

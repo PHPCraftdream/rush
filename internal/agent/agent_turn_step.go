@@ -394,10 +394,13 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 // nor launch anything: reading a background job's buffered output and
 // managing the todo list. Every other tool (edit/write/view/grep and
 // friends, a bash/run_command call with substance, a delegation, job_kill)
-// is progress for the reaction chain guard (#1113).
+// is progress for the reaction chain guard (#1113). batch_status/batch_output
+// (flag on) are job_output's polling twins -- neutral the same way.
 var chainNeutralTools = map[string]struct{}{
 	tools.JobOutputToolName: {},
 	tools.TodosToolName:     {},
+	"batch_status":          {},
+	"batch_output":          {},
 }
 
 // recordChainEvidence feeds the reaction chain guard (#1113) from this
@@ -419,6 +422,53 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 	for _, result := range stepResult.Content.ToolResults() {
 		call, ok := calls[result.ToolCallID]
 		if !ok {
+			continue
+		}
+		// Batch branch (R12-E round 4): a batch started tool response names
+		// its launched root in its own text ("batch root <id> started; ...")
+		// and carries no ClientMetadata, so the launched root's identity IS
+		// the call id. Classify exactly like legacy waits via
+		// classifyStepCall: a pure-wait batch launch records the root as
+		// chain identity, a real batch action is progress; a refusal or a
+		// neutral result started nothing this leg may claim.
+		if batchFlagEnabled() && isBatchStartedToolResult(result) {
+			// A batch launch is async by construction (the started response
+			// IS the detached boundary and carries no ClientMetadata), so
+			// stamp the async half of the legacy started tag and classify
+			// EXACTLY like a legacy wait: a pure-wait batch launch records
+			// the root's call id as chain identity; a real batch action is
+			// progress; a refusal/neutral result started nothing this leg
+			// may claim.
+			// Repeated-command policy (legacy parity): compute the launch
+			// command and consult chainLastLaunch like the legacy branch
+			// below (a non-refused launch records its command; an immediate
+			// byte-identical repeat is an idle claim, never progress) -- the
+			// root's call id is the batch identity appended instead of the
+			// legacy ClaimID. A FIRST substantial (non-wait) launch stays
+			// progress; a pure-wait launch is unchanged; refusals/neutral
+			// stay inert.
+			asyncResult := result
+			asyncResult.ClientMetadata = `{"async":true}`
+			class := classifyStepCall(call, asyncResult, stepClassifyCtx{})
+			command, isCommand := asyncLaunchCommand(call)
+			repeated := false
+			if isCommand && class != stepCallRefused && ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
+				repeated = ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+			}
+			switch class {
+			case stepCallWait:
+				ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+			case stepCallRefused, stepCallNeutral:
+				// started nothing this leg may claim
+			default:
+				if repeated {
+					// an idle claim: this leg launched nothing new it may
+					// count as progress
+					ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+				} else {
+					ts.att.chainProgress = true
+				}
+			}
 			continue
 		}
 		class := classifyStepCall(call, result, stepClassifyCtx{})
@@ -782,6 +832,15 @@ func (ts *turnStream) persistStepFinish() error {
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
 	if stepIsReaction(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+		// R12-EF fix F1: with the batch runtime on and the node-backed fact
+		// source bound, the same one-transaction write marks the BATCH debt
+		// reacted (batch_nodes + session_notices, reacted_failed cleared on
+		// both) instead of the legacy async_jobs twin -- the ON turn never
+		// touches async_jobs. Flag OFF, or nothing bound, keeps the legacy
+		// marker byte-for-byte.
+		if store := batchCutoverReactionStore(ts.a.asyncJobs.coord); store != nil {
+			return store.BatchReactionMarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
+		}
 		return ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
 	}
 	return ts.a.messages.Update(ts.genCtx, snap)

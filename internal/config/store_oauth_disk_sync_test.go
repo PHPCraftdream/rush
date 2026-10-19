@@ -392,3 +392,63 @@ func TestOAuthDiskSync12IdleConvergence(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 	f.store.stopOAuthJournalWorkers()
 }
+
+func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync that neither cancels nor joins leaves
+	// the poller and journal workers running past its return.
+	s := newTestConfigStore(testStoreOpts{globalDataPath: "fixture-unused", config: &Config{Providers: csync.NewMap[string, ProviderConfig]()}})
+	var waits atomic.Int32
+	pollerEntered, pollerCancelled, pollerExited := make(chan struct{}, 2), make(chan struct{}, 2), make(chan struct{}, 2)
+	workerEntered, workerExited := make(chan struct{}, 2), make(chan struct{}, 2)
+	doneProviders := make(chan struct{}, 2)
+	oldWait := oauthDiskSyncWait
+	oldBefore, oldDone := oauthJournalBeforeWorker, oauthJournalWorkerDone
+	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
+		defer func() { pollerExited <- struct{}{} }()
+		waits.Add(1)
+		pollerEntered <- struct{}{}
+		<-ctx.Done()
+		pollerCancelled <- struct{}{}
+		return ctx.Err()
+	}
+	oauthJournalBeforeWorker = func(ctx context.Context) {
+		workerEntered <- struct{}{}
+		<-ctx.Done()
+		workerExited <- struct{}{}
+	}
+	oauthJournalWorkerDone = func(_ *ConfigStore, _ string) { doneProviders <- struct{}{} }
+	// Register before assertions: even a failing body releases both workers
+	// through the hook-exit signals before the global hooks are restored.
+	t.Cleanup(func() {
+		s.stopOAuthJournalWorkers()
+		awaitCodexSignal(t, pollerExited)
+		oauthDiskSyncWait = oldWait
+		oauthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
+	})
+	s.StartOAuthDiskSync()
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	awaitCodexSignal(t, pollerEntered)
+	awaitCodexSignal(t, workerEntered)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.StopOAuthDiskSync() }()
+	awaitCodexSignal(t, pollerCancelled)
+	awaitCodexSignal(t, workerExited)
+	awaitCodexSignal(t, stopped) // Stop must not return before both joins finish.
+	awaitCodexSignal(t, doneProviders)
+	require.EqualValues(t, 1, waits.Load())
+	select {
+	case <-pollerEntered:
+		t.Fatal("poller ticked after StopOAuthDiskSync returned")
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.StopOAuthDiskSync() // Idempotent.
+	require.False(t, s.OAuthDiskSyncRunning())
+	s.StartOAuthDiskSync() // Refused after a stop.
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	s.oauthWorkerMu.Lock()
+	workers := len(s.oauthWorkers)
+	s.oauthWorkerMu.Unlock()
+	require.EqualValues(t, 1, waits.Load(), "start after stop must be refused")
+	require.Zero(t, workers, "journal worker start after stop must be refused")
+	require.False(t, s.OAuthDiskSyncRunning())
+}

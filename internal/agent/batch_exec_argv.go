@@ -68,6 +68,9 @@ func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.L
 	// Acceptance is the boundary: subsequent caller cancellation cannot reject
 	// setup and abandon a process. Values survive, lifetime belongs to Stop.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// R11F round-2 (P1-5c): the PINNED policy wins — rebuilt exclusively
+	// from the payload's immutable policy transport.
+	runCtx = batchLeafRunContext(runCtx, p)
 	e := &batchArgvExecution{changed: make(chan struct{}), finished: make(chan struct{}), cancel: cancel}
 	runCtx = tools.WithArgvLeaf(runCtx, &tools.ArgvLeaf{OnStart: func(p *tools.ArgvProcess) { e.publish(p) }})
 	go e.run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)

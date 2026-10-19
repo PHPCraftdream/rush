@@ -29,11 +29,27 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatc
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	// Copy only leaf policy inputs; do not retain the Start context.
-	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, tools.GetMessageFromContext(ctx))
-	runCtx = context.WithValue(runCtx, tools.SupportsImagesContextKey, tools.GetSupportsImagesFromContext(ctx))
-	runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
-	runCtx = withBatchManagedCall(context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID))
+	// R11F round-2 (P1-5c): the PINNED policy wins. The run context is
+	// rebuilt EXCLUSIVELY from the payload's immutable policy transport
+	// (batchLeafRunContext: message id, image support, model name, session
+	// id, folder scope, run allowlist, custom disk) — never from the Start
+	// context's session-keyed lookups.
+	if p.Policy == nil {
+		// No pinned transport on the payload (older records, tests): keep
+		// the Start context's leaf policy inputs, without retaining ctx.
+		runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, tools.GetMessageFromContext(ctx))
+		runCtx = context.WithValue(runCtx, tools.SupportsImagesContextKey, tools.GetSupportsImagesFromContext(ctx))
+		runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
+	}
+	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
+	// R12-H2 P1-4: batchLeafRunContext does NOT stamp the binding registry;
+	// carry the App-owned registry so leaf-side binding resolution /
+	// batchDiskRegistryFromContext resolve the SAME instance, never a
+	// process global.
+	runCtx = withDiskProviderRegistry(runCtx, env.DiskBindings)
+	if p.diskProvider != nil && p.Policy != nil {
+		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
+	}
 	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{})}
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
 	go e.run(runCtx, leaf, call, report)

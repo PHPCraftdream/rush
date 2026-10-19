@@ -126,7 +126,7 @@ func (q *Queries) BatchOutboxClearFailure(ctx context.Context, arg BatchOutboxCl
 }
 
 const batchOutboxDebtNodes = `-- name: BatchOutboxDebtNodes :many
-SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at, n.runner_id, n.response_envelope FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.owner_session_id = ?1 AND n.notice_selected = 1 AND r.announced = 1
   AND n.wake = 1 AND n.reacted = 0 AND n.delivery IN ('pending', 'done')
 ORDER BY n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id
@@ -198,6 +198,8 @@ func (q *Queries) BatchOutboxDebtNodes(ctx context.Context, owner string) ([]Bat
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -255,7 +257,7 @@ func (q *Queries) BatchOutboxDebtNotices(ctx context.Context, owner string) ([]S
 }
 
 const batchOutboxFailedNodes = `-- name: BatchOutboxFailedNodes :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes WHERE batch_nodes.owner_session_id = ?1 AND notice_selected = 1 AND reacted_failed = 1
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes WHERE batch_nodes.owner_session_id = ?1 AND notice_selected = 1 AND reacted_failed = 1
 ORDER BY root_id, notice_sequence, notice_ordinal, node_id
 `
 
@@ -325,6 +327,8 @@ func (q *Queries) BatchOutboxFailedNodes(ctx context.Context, owner string) ([]B
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -346,7 +350,7 @@ WHERE batch_nodes.owner_session_id = ?2 AND batch_nodes.root_id = ?3 AND batch_n
   AND batch_nodes.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped')
   AND (SELECT count(*) FROM batch_nodes c WHERE c.root_id = batch_nodes.root_id AND c.node_id != c.root_id) = 1
   AND EXISTS (SELECT 1 FROM batch_nodes c WHERE c.parent_id = batch_nodes.root_id AND c.kind = 'task')
-RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type BatchOutboxInlineElectParams struct {
@@ -416,6 +420,8 @@ func (q *Queries) BatchOutboxInlineElect(ctx context.Context, arg BatchOutboxInl
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }
@@ -449,7 +455,7 @@ func (q *Queries) BatchOutboxNameMessage(ctx context.Context, arg BatchOutboxNam
 }
 
 const batchOutboxPending = `-- name: BatchOutboxPending :many
-SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at, n.runner_id, n.response_envelope FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.owner_session_id = ?1 AND n.notice_selected = 1
   AND n.delivery = 'pending' AND r.announced = 1
 ORDER BY r.created_at, n.root_id, n.notice_sequence, n.notice_ordinal, n.node_id
@@ -521,6 +527,8 @@ func (q *Queries) BatchOutboxPending(ctx context.Context, owner string) ([]Batch
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -545,7 +553,7 @@ WHERE batch_nodes.owner_session_id = ?2 AND batch_nodes.root_id = ?3 AND batch_n
       AND (earlier.notice_sequence < batch_nodes.notice_sequence
         OR (earlier.notice_sequence = batch_nodes.notice_sequence AND earlier.notice_ordinal < batch_nodes.notice_ordinal)
         OR (earlier.notice_sequence = batch_nodes.notice_sequence AND earlier.notice_ordinal = batch_nodes.notice_ordinal AND earlier.node_id < batch_nodes.node_id)))
-RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at
+RETURNING node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope
 `
 
 type BatchOutboxPullParams struct {
@@ -621,6 +629,8 @@ func (q *Queries) BatchOutboxPull(ctx context.Context, arg BatchOutboxPullParams
 		&i.ReactedFailed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RunnerID,
+		&i.ResponseEnvelope,
 	)
 	return i, err
 }

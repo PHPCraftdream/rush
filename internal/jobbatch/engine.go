@@ -11,7 +11,9 @@ type Engine struct {
 	limits          Limits
 	nodes           map[ID]*treeNode
 	roots           []*treeNode
+	live            []*treeNode
 	known           map[ID]bool
+	released        map[ID]bool
 	sequence, token uint64
 	cursor          int
 	closing, final  bool
@@ -19,6 +21,10 @@ type Engine struct {
 	groups          map[string]int
 	generation      map[string]uint64
 	blocked         map[string]uint64
+
+	// walkInstrument observes the size of each root-forest walk per Apply.
+	// It is nil in production; only in-package tests install it.
+	walkInstrument func(source string, roots int)
 }
 
 // NewEngine validates and takes a detached copy of the scheduling limits.
@@ -34,7 +40,7 @@ func NewEngine(l Limits) (*Engine, error) {
 		groups[g] = cap
 	}
 	l.ByGroup = groups
-	return &Engine{limits: l, nodes: map[ID]*treeNode{}, known: map[ID]bool{}, groups: map[string]int{}, generation: map[string]uint64{}, blocked: map[string]uint64{}}, nil
+	return &Engine{limits: l, nodes: map[ID]*treeNode{}, known: map[ID]bool{}, released: map[ID]bool{}, groups: map[string]int{}, generation: map[string]uint64{}, blocked: map[string]uint64{}}, nil
 }
 
 type coreTransition struct {
@@ -66,6 +72,7 @@ func (e *Engine) Apply(ev Event) (Transition, error) {
 	switch ev.Type {
 	case EventSubmit:
 		e.roots = append(e.roots, staged[0])
+		e.live = append(e.live, staged[0])
 		e.known[ev.Root] = true
 		e.install(staged[0], t)
 	case EventAdd:
@@ -132,11 +139,13 @@ func (e *Engine) Apply(ev Event) (Transition, error) {
 	case EventRelease:
 		n.released = true
 		e.remove(n)
+		e.released[ev.Root] = true
 	}
-	for _, root := range e.roots {
-		if !root.released {
-			e.settle(root, t)
-		}
+	if e.walkInstrument != nil {
+		e.walkInstrument("settle", len(e.live))
+	}
+	for _, root := range e.live {
+		e.settle(root, t)
 	}
 	e.admit(t)
 	e.selectNotices(t)
@@ -154,11 +163,13 @@ func (e *Engine) Apply(ev Event) (Transition, error) {
 			t.Changed = append(t.Changed, n.view)
 		}
 	}
-	for _, root := range e.roots {
-		if !root.released {
-			settledViews(root)
-		}
+	if e.walkInstrument != nil {
+		e.walkInstrument("settledViews", len(e.live))
 	}
+	for _, root := range e.live {
+		settledViews(root)
+	}
+	e.retireSettledRoots()
 	if e.closing {
 		t.Final = true
 		for _, root := range e.roots {
@@ -170,6 +181,64 @@ func (e *Engine) Apply(ev Event) (Transition, error) {
 		e.final = t.Final
 	}
 	return t.Transition, nil
+}
+
+// retireSettledRoots moves terminal roots out of the live scheduling slice
+// at the end of an Apply, after their settlement transition, notices and
+// child-before-parent changed views were constructed. e.roots keeps every
+// retained root exactly as before; only the scheduling walks use live. The
+// in-place filter preserves order and translates the round-robin cursor so
+// the next scan starts at the same surviving root as before retirement.
+func (e *Engine) retireSettledRoots() {
+	if len(e.live) == 0 {
+		return
+	}
+	live := e.live[:0]
+	kept := 0
+	for i, root := range e.live {
+		if root.view.State.Terminal() {
+			continue
+		}
+		live = append(live, root)
+		if i < e.cursor {
+			kept++
+		}
+	}
+	e.live = live
+	e.cursor = kept
+}
+
+// dropTaskPayloads releases Engine ownership of task payloads. Payload is
+// never a view field, so View and Snapshot observables are unchanged.
+func (e *Engine) dropTaskPayloads() {
+	for _, n := range e.nodes {
+		if n.task != nil {
+			n.task.Payload = nil
+		}
+	}
+}
+
+// subtreeStopRetryable reports whether any node under id carries a failed
+// control awaiting the cancel retry re-arm (tree_apply.go:55), so a
+// redundant Stop must still be applied to re-issue it.
+func (e *Engine) subtreeStopRetryable(id ID) bool {
+	n := e.nodes[id]
+	if n == nil {
+		return false
+	}
+	var walk func(*treeNode) bool
+	walk = func(p *treeNode) bool {
+		if p.view.Control == ControlFailed {
+			return true
+		}
+		for _, c := range p.children {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(n)
 }
 
 func (e *Engine) validate(ev Event) ([]*treeNode, *treeNode, error) {
@@ -255,10 +324,9 @@ func (e *Engine) validate(ev Event) ([]*treeNode, *treeNode, error) {
 	}
 	n := e.nodes[id]
 	if n == nil {
-		for _, root := range e.roots {
-			if root.released && (id == root.view.ID || strings.HasPrefix(string(id), string(root.view.ID)+".")) {
-				return nil, nil, fmt.Errorf("%w", ErrReleased)
-			}
+		root, _, _ := strings.Cut(string(id), ".")
+		if e.released[ID(root)] {
+			return nil, nil, fmt.Errorf("%w", ErrReleased)
 		}
 		return nil, nil, fmt.Errorf("%w", ErrUnknownNode)
 	}

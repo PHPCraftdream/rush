@@ -47,31 +47,10 @@ func lowBusyTimeoutStore(t *testing.T, dataDir string) *session.AsyncJobStore {
 	return store
 }
 
-// holdWriteLock opens its own raw connection to path and holds an open
-// write transaction against an unrelated table for hold, releasing it (and
-// closing the connection) when it returns. Runs synchronously -- callers
-// that need it concurrent with other work launch it in a goroutine.
-func holdWriteLock(t *testing.T, dataDir string, hold time.Duration) {
-	t.Helper()
-	path := filepath.Join(dataDir, "rush.db")
-	// busy_timeout lets the holder WAIT for an in-flight store write before
-	// it takes the lock (0 failed with SQLITE_BUSY under load).
-	conn, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
-	require.NoError(t, err)
-	defer conn.Close()
-	conn.SetMaxOpenConns(1)
-	ctx := context.Background()
-	tx, err := conn.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `INSERT INTO async_hosts (id, pid, label, started_at) VALUES (?, 1, '', 0)`, uniqueHostRowID())
-	require.NoError(t, err)
-	time.Sleep(hold)
-	require.NoError(t, tx.Commit())
-}
-
-// holdWriteLockUntilReleased holds an open write transaction like
-// holdWriteLock, but signals once the lock is held and keeps it until release
-// is closed. Errors go to the returned channel (no require in a goroutine).
+// holdWriteLockUntilReleased opens its own raw connection and holds an open
+// write transaction against an unrelated table, signals once the lock is held
+// and keeps it until release is closed. Errors go to the returned channel (no
+// require in a goroutine).
 func holdWriteLockUntilReleased(dataDir string, release <-chan struct{}) (acquired <-chan struct{}, done <-chan error) {
 	acq := make(chan struct{})
 	errc := make(chan error, 1)
@@ -100,7 +79,7 @@ func holdWriteLockUntilReleased(dataDir string, release <-chan struct{}) (acquir
 	return acq, errc
 }
 
-// uniqueHostRowID returns a fresh id for holdWriteLock's throwaway
+// uniqueHostRowID returns a fresh id for the lock holder's throwaway
 // async_hosts row (its PRIMARY KEY must not collide across calls). Each
 // caller uses its own on-disk file (t.TempDir()), so this only needs to be
 // unique WITHIN one such file/call, which UnixNano already guarantees
@@ -143,17 +122,24 @@ func TestWorkLedger_TransitionRetriesUnderBusyDBThenCommits(t *testing.T) {
 	require.False(t, existing)
 	l.acknowledged(jobOf(l, "owner-1", "call-1"))
 
-	busyDone := make(chan struct{})
-	go func() {
-		defer close(busyDone)
-		holdWriteLock(t, dataDir, 250*time.Millisecond)
-	}()
-	time.Sleep(30 * time.Millisecond) // let the holder actually acquire the write lock first
+	// The write lock is provably held before finish starts (signal, not a
+	// sleep: a sleep-ordered holder lost the race under load and finish
+	// committed unopposed in ~10ms), then released 250ms later.
+	release := make(chan struct{})
+	acquired, holderDone := holdWriteLockUntilReleased(dataDir, release)
+	select {
+	case <-acquired:
+	case err := <-holderDone:
+		t.Fatalf("busy-lock holder failed before acquiring the lock: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("busy-lock holder never acquired the write lock")
+	}
+	time.AfterFunc(250*time.Millisecond, func() { close(release) })
 
 	start := time.Now()
 	l.finish(jobOf(l, "owner-1", "call-1"), jobResult{content: "ok"})
 	elapsed := time.Since(start)
-	<-busyDone
+	require.NoError(t, <-holderDone)
 
 	got := drainCompletions(delivered)
 	require.Len(t, got, 1, "the transition must eventually commit and deliver exactly once")

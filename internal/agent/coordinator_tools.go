@@ -245,7 +245,7 @@ func (c *coordinator) buildToolsAgentConfigForCall(ctx context.Context, cfg *con
 	if isSubAgent {
 		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
 		copy(allowed, agent.AllowedTools)
-		for _, name := range workerToolNames {
+		for _, name := range workerLayeredToolNames() {
 			if !slices.Contains(allowed, name) {
 				allowed = append(allowed, name)
 			}
@@ -341,7 +341,8 @@ var folderScopeEscapeHatchTools = map[string]struct{}{
 // bypass any filesystem scope. They stay only when the scope says so
 // (FolderScope.KeepsCommandTools, set by the run plumbing from the
 // restricted-run bash allowlist): keeping them is a deliberate grant,
-// not a default.
+// not a default. (flag on: plus the native batch controls,
+// folderScopeCommandToolsBatch)
 var folderScopeCommandTools = map[string]struct{}{
 	tools.BashToolName: {}, tools.RunCommandToolName: {},
 	tools.JobOutputToolName: {}, tools.JobKillToolName: {},
@@ -392,6 +393,7 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 	}
 	scope := *opts.FolderScope
 
+	commandTools := folderScopeCommandToolSet()
 	stripped := make([]string, 0, len(agent.AllowedTools))
 	for _, name := range agent.AllowedTools {
 		if _, ok := folderScopeLegacyFileTools[name]; ok {
@@ -400,7 +402,7 @@ func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Age
 		if _, ok := folderScopeEscapeHatchTools[name]; ok {
 			continue
 		}
-		if _, ok := folderScopeCommandTools[name]; ok && !scope.KeepsCommandTools() {
+		if _, ok := commandTools[name]; ok && !scope.KeepsCommandTools() {
 			continue
 		}
 		if _, ok := folderScopeOpForTool[name]; ok {
@@ -572,6 +574,10 @@ var nestedAgentToolWarnOnce sync.Once
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
 // first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+	if opts := callOptionsFrom(ctx); opts != nil && callBuildScopeFrom(ctx) == nil {
+		EnsureCallBuildScope(opts)
+		defer opts.buildScope.close()
+	}
 	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
 	return built.tools, err
 }
@@ -780,11 +786,24 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		}
 	}
 
-	// GetMCPTools reads the live mcp.Tools() registry, not cfg -- see this
-	// function's doc comment for why that is deliberate. agent.AllowedMCP
-	// below IS from the pinned cfg/agent, so the allow-list decision itself
-	// is consistent with the rest of this build; only the candidate tool set
-	// it is applied to can be from a different generation.
+	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
+	if batchFlagEnabled() {
+		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
+			for _, name := range allowedControls {
+				if name == tools.AwaitTasksToolName {
+					for i, tool := range filteredTools {
+						if tool.Info().Name == name {
+							filteredTools[i] = tools.NewBatchAwaitTasksTool(c)
+						}
+					}
+					continue
+				}
+				filteredTools = append(filteredTools, newBatchControlPlaceholder(name))
+			}
+		}
+	}
+
+	// GetMCPTools reads the live MCP tool registry; apply the configured MCP allowlist below.
 	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
@@ -811,8 +830,132 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	filteredTools = c.wrapAsyncTools(filteredTools)
+	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowedControls)
+}
 
+// sharedBuildScopeFor lazily creates the coordinator-level build scope for
+// tool assemblies without trusted call state (the shared session toolset).
+func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
+	c.sharedBuildScopeMu.Lock()
+	defer c.sharedBuildScopeMu.Unlock()
+	if c.sharedBuildScope == nil {
+		c.sharedBuildScope = newBuildResourceScope()
+	}
+	return c.sharedBuildScope
+}
+
+// finishToolAssembly is the final construction boundary. Flag OFF (no batch
+// binding): the historical branch, byte-for-byte — async wrappers, then
+// hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
+// restrictions run once here, then every batch-admissible work tool is
+// re-armed through the ONE authority (batchRuntime.Invoke) and the old
+// async/stall wrappers are NOT installed. allowed is the build's control
+// grant list: batchControlAvailability over the final filtered tools and
+// AllowedTools, computed once in buildPolicyTools.
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string) (policyToolBuild, error) {
+	if bind := coordinatorBatchBindingFor(c); bind != nil {
+		allowedControls := allowed
+		filteredTools = withoutBatchControlPlaceholders(filteredTools)
+		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
+		// Construction ownership (R12-H2 §1.2): the build's pins register
+		// in the trusted call state's build-resource scope. A build WITHOUT
+		// trusted call state (the coordinator's shared toolset) uses the
+		// coordinator's shared scope; a custom provider whose options carry
+		// no scope has NO fallback and fails closed.
+		scope := callBuildScopeFrom(ctx)
+		if scope == nil {
+			if opts := callOptionsFrom(ctx); opts != nil && tools.IsCustomDiskProvider(opts.DiskProvider) {
+				return policyToolBuild{}, fmt.Errorf(
+					"%w: a custom disk provider must carry its binding handle before the call options are shared",
+					ErrDiskProviderUnavailable)
+			}
+		}
+		// shared tracks whether the build carries NO trusted call state
+		// (the coordinator's eager default toolset). Design §1.2: bare
+		// builders create AND close a scope — no process-lifetime
+		// fallback. The shared build therefore runs under an EPHEMERAL
+		// scope (closed at assembly end, pinning nothing) and DEFERS its
+		// registry publication + Construction ownership to first dispatch
+		// (batchIngressTool.ensurePinned).
+		shared := scope == nil
+		deferred := shared
+		if shared {
+			scope = newBuildResourceScope()
+			defer scope.close()
+		}
+		// failBuildScope closes the CALL's scope on a build-then-error
+		// sequence (R12-H2a P1-1): newBatchWorkToolBuild succeeded and pinned
+		// construction owners into it, so a later failure (registry resolve,
+		// custom-provider handle, InstallBatchModelControls) must not leak
+		// them past this assembly boundary.
+		failBuildScope := func(err error) (policyToolBuild, error) {
+			if !shared {
+				scope.close()
+			}
+			return policyToolBuild{}, err
+		}
+		built, err := newBatchWorkToolBuild(bind, filteredTools, scope, deferred)
+		if err != nil {
+			return failBuildScope(err)
+		}
+		// A deferred (shared default toolset) build has no published
+		// registry identity until first dispatch, so the model controls
+		// install per-call, never in the shared build.
+		if batchFlagEnabled() && bind.controls != nil && !deferred {
+			allowed := allowedControls
+			if len(allowed) > 0 {
+				registry, err := bind.ingress.Registry(built.registryID)
+				if err != nil {
+					return failBuildScope(err)
+				}
+				inv := BatchInvocation{
+					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
+					BackgroundEscape: batchEscapeNever,
+					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(filteredTools)},
+				}
+				inv.SessionID = tools.GetSessionFromContext(ctx)
+				inv.MessageID = tools.GetMessageFromContext(ctx)
+				inv.CallID = ""
+				inv.Policy.MessageID = inv.MessageID
+				inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
+				inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+				if inv.WaiterRank == 0 {
+					inv.WaiterRank = batchGroupRanks[batchGroupDefault]
+				}
+				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
+				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
+				// A custom (non-OS) call provider carries its IMMUTABLE
+				// binding handle, minted when the trusted call state was
+				// created (BindCallDiskProvider) — never lazily here: a
+				// copied options object must not re-mint a binding, and a
+				// custom provider without one fails closed.
+				if opts := callOptionsFrom(ctx); opts != nil {
+					if bindingID := opts.DiskBindingID; bindingID != "" {
+						inv.Policy.DiskBindingID = bindingID
+						inv.Policy.DiskProvider = true
+					} else if tools.IsCustomDiskProvider(opts.DiskProvider) {
+						return failBuildScope(fmt.Errorf(
+							"%w: a custom disk provider must carry its binding handle before the call options are shared",
+							ErrDiskProviderUnavailable))
+					}
+				}
+				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
+				if err != nil {
+					return failBuildScope(err)
+				}
+				for _, control := range controls {
+					if control.Info().Name == tools.AwaitTasksToolName {
+						continue
+					}
+					if slices.Contains(allowed, control.Info().Name) {
+						built.tools = append(built.tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{control}, restrictedRunAuthorizer(c.permissions)), hookRunner, isSubAgent)[0])
+					}
+				}
+			}
+		}
+		return built, nil
+	}
+	filteredTools = c.wrapAsyncTools(filteredTools)
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
@@ -826,12 +969,5 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
 	// turn any blocked synchronous Run into an immediate job-id result.
 	filteredTools = wrapToolsWithStallDetach(filteredTools)
-
-	// Error logging is NOT applied here. It used to be, and that was the
-	// bug: this function is only one of the places a tool slice is built,
-	// so agentic_fetch's own tools were never covered. NewSessionAgent and
-	// SetTools wrap instead — every slice reaches the agent through one of
-	// them, and the wrapper still ends up outermost, since what they wrap
-	// is the already-hooked slice returned here. See logged_tool.go.
 	return newPolicyToolBuild(filteredTools), nil
 }

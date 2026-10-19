@@ -100,6 +100,23 @@ func rateLimitWaitFor(err error, priorWaits int) time.Duration {
 // delegation tree) still has undelivered work in the ledger — signal that
 // the operator is watching live output and the wait budget should pause.
 func (c *coordinator) hasLiveTreeWork(sessionID string) bool {
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		// Flag on: liveness is a batch live read (own roots plus live
+		// delegation descendants, the R10b/R11G semantics). A FAILED read
+		// answers not-live HERE, against the seam's conservative rule,
+		// deliberately: this answer only decides whether the rate-limit
+		// wait budget may consume, and "pause forever on an unreadable
+		// source" made the 429 retry loop unbounded (F3 — the loop's only
+		// other exit is ctx cancellation). Worst case the budget exhausts
+		// and the run surfaces the ORIGINAL provider error; the durable
+		// batch work itself is untouched. Durable consumers (drain policy,
+		// CLI scope, supervision) keep their own conservative reads.
+		own, descendants, err := facts.LiveWorkSummary(context.Background(), sessionID)
+		if err != nil {
+			return false
+		}
+		return own > 0 || descendants > 0
+	}
 	if c.asyncJobs == nil {
 		return false
 	}

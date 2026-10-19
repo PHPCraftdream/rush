@@ -17,7 +17,8 @@ func batchStoreTestMigrationFS(t *testing.T, includeProjection bool) fstest.MapF
 	require.NoError(t, err)
 	files := fstest.MapFS{}
 	for _, entry := range entries {
-		if !includeProjection && entry.Name() == "20261012000001_batch_projection.sql" {
+		if !includeProjection && (entry.Name() == "20261012000001_batch_projection.sql" ||
+			entry.Name() == "20261012000002_batch_runner_incarnation.sql") {
 			continue
 		}
 		data, e := fs.ReadFile(db.FS, "migrations/"+entry.Name())
@@ -51,9 +52,11 @@ func TestBatchMigrationUpgradeAndDownPreserveLegacy(t *testing.T) {
 	// Populate the new subtree to exercise Down with its self-referencing FKs.
 	_, err = NewBatchStore(conn).Reserve(ctx, batchStoreTestReservation())
 	require.NoError(t, err)
-	_, err = provider.Down(ctx)
+	_, err = provider.Down(ctx) // 20261012000002_batch_runner_incarnation (R11B additive)
 	require.NoError(t, err)
-	for _, table := range []string{"batch_nodes", "batch_control_requests"} {
+	_, err = provider.Down(ctx) // 20261012000001_batch_projection
+	require.NoError(t, err)
+	for _, table := range []string{"batch_nodes", "batch_control_requests", "batch_runner_checkpoints"} {
 		var count int
 		require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))
 		require.Zero(t, count)

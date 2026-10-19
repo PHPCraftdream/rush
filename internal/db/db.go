@@ -216,6 +216,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteAsyncHostIfNoJobsStmt, err = db.PrepareContext(ctx, deleteAsyncHostIfNoJobs); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteAsyncHostIfNoJobs: %w", err)
 	}
+	if q.deleteAsyncHostIfNoNodesStmt, err = db.PrepareContext(ctx, deleteAsyncHostIfNoNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteAsyncHostIfNoNodes: %w", err)
+	}
 	if q.deleteBatchSubtreeStmt, err = db.PrepareContext(ctx, deleteBatchSubtree); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteBatchSubtree: %w", err)
 	}
@@ -276,6 +279,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getAsyncHostStmt, err = db.PrepareContext(ctx, getAsyncHost); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAsyncHost: %w", err)
 	}
+	if q.getAsyncHostRowStmt, err = db.PrepareContext(ctx, getAsyncHostRow); err != nil {
+		return nil, fmt.Errorf("error preparing query GetAsyncHostRow: %w", err)
+	}
 	if q.getAsyncJobStmt, err = db.PrepareContext(ctx, getAsyncJob); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAsyncJob: %w", err)
 	}
@@ -293,6 +299,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getBatchRootStmt, err = db.PrepareContext(ctx, getBatchRoot); err != nil {
 		return nil, fmt.Errorf("error preparing query GetBatchRoot: %w", err)
+	}
+	if q.getBatchRootIdentityStmt, err = db.PrepareContext(ctx, getBatchRootIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchRootIdentity: %w", err)
 	}
 	if q.getCallTreeActivityStmt, err = db.PrepareContext(ctx, getCallTreeActivity); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCallTreeActivity: %w", err)
@@ -402,11 +411,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listAllUserMessagesStmt, err = db.PrepareContext(ctx, listAllUserMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAllUserMessages: %w", err)
 	}
+	if q.listAsyncHostRowsStmt, err = db.PrepareContext(ctx, listAsyncHostRows); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAsyncHostRows: %w", err)
+	}
 	if q.listAsyncHostsStmt, err = db.PrepareContext(ctx, listAsyncHosts); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAsyncHosts: %w", err)
 	}
 	if q.listAsyncHostsWithNoJobsStmt, err = db.PrepareContext(ctx, listAsyncHostsWithNoJobs); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAsyncHostsWithNoJobs: %w", err)
+	}
+	if q.listAsyncHostsWithNoNodesStmt, err = db.PrepareContext(ctx, listAsyncHostsWithNoNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAsyncHostsWithNoNodes: %w", err)
 	}
 	if q.listAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, listAsyncJobsForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAsyncJobsForOwner: %w", err)
@@ -570,6 +585,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.registerAsyncHostStmt, err = db.PrepareContext(ctx, registerAsyncHost); err != nil {
 		return nil, fmt.Errorf("error preparing query RegisterAsyncHost: %w", err)
 	}
+	if q.registerAsyncHostRowStmt, err = db.PrepareContext(ctx, registerAsyncHostRow); err != nil {
+		return nil, fmt.Errorf("error preparing query RegisterAsyncHostRow: %w", err)
+	}
 	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
 		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
 	}
@@ -647,6 +665,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.transitionAsyncJobTerminalPreserveVoidStmt, err = db.PrepareContext(ctx, transitionAsyncJobTerminalPreserveVoid); err != nil {
 		return nil, fmt.Errorf("error preparing query TransitionAsyncJobTerminalPreserveVoid: %w", err)
+	}
+	if q.updateBatchRunnerCheckpointStmt, err = db.PrepareContext(ctx, updateBatchRunnerCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateBatchRunnerCheckpoint: %w", err)
 	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
@@ -1027,6 +1048,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteAsyncHostIfNoJobsStmt: %w", cerr)
 		}
 	}
+	if q.deleteAsyncHostIfNoNodesStmt != nil {
+		if cerr := q.deleteAsyncHostIfNoNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteAsyncHostIfNoNodesStmt: %w", cerr)
+		}
+	}
 	if q.deleteBatchSubtreeStmt != nil {
 		if cerr := q.deleteBatchSubtreeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteBatchSubtreeStmt: %w", cerr)
@@ -1127,6 +1153,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getAsyncHostStmt: %w", cerr)
 		}
 	}
+	if q.getAsyncHostRowStmt != nil {
+		if cerr := q.getAsyncHostRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getAsyncHostRowStmt: %w", cerr)
+		}
+	}
 	if q.getAsyncJobStmt != nil {
 		if cerr := q.getAsyncJobStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getAsyncJobStmt: %w", cerr)
@@ -1155,6 +1186,11 @@ func (q *Queries) Close() error {
 	if q.getBatchRootStmt != nil {
 		if cerr := q.getBatchRootStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getBatchRootStmt: %w", cerr)
+		}
+	}
+	if q.getBatchRootIdentityStmt != nil {
+		if cerr := q.getBatchRootIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchRootIdentityStmt: %w", cerr)
 		}
 	}
 	if q.getCallTreeActivityStmt != nil {
@@ -1337,6 +1373,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listAllUserMessagesStmt: %w", cerr)
 		}
 	}
+	if q.listAsyncHostRowsStmt != nil {
+		if cerr := q.listAsyncHostRowsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAsyncHostRowsStmt: %w", cerr)
+		}
+	}
 	if q.listAsyncHostsStmt != nil {
 		if cerr := q.listAsyncHostsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listAsyncHostsStmt: %w", cerr)
@@ -1345,6 +1386,11 @@ func (q *Queries) Close() error {
 	if q.listAsyncHostsWithNoJobsStmt != nil {
 		if cerr := q.listAsyncHostsWithNoJobsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listAsyncHostsWithNoJobsStmt: %w", cerr)
+		}
+	}
+	if q.listAsyncHostsWithNoNodesStmt != nil {
+		if cerr := q.listAsyncHostsWithNoNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAsyncHostsWithNoNodesStmt: %w", cerr)
 		}
 	}
 	if q.listAsyncJobsForOwnerStmt != nil {
@@ -1617,6 +1663,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing registerAsyncHostStmt: %w", cerr)
 		}
 	}
+	if q.registerAsyncHostRowStmt != nil {
+		if cerr := q.registerAsyncHostRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing registerAsyncHostRowStmt: %w", cerr)
+		}
+	}
 	if q.renameSessionStmt != nil {
 		if cerr := q.renameSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing renameSessionStmt: %w", cerr)
@@ -1745,6 +1796,11 @@ func (q *Queries) Close() error {
 	if q.transitionAsyncJobTerminalPreserveVoidStmt != nil {
 		if cerr := q.transitionAsyncJobTerminalPreserveVoidStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing transitionAsyncJobTerminalPreserveVoidStmt: %w", cerr)
+		}
+	}
+	if q.updateBatchRunnerCheckpointStmt != nil {
+		if cerr := q.updateBatchRunnerCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateBatchRunnerCheckpointStmt: %w", cerr)
 		}
 	}
 	if q.updateMessageStmt != nil {
@@ -1940,6 +1996,7 @@ type Queries struct {
 	createSessionStmt                                    *sql.Stmt
 	createSessionPermissionStmt                          *sql.Stmt
 	deleteAsyncHostIfNoJobsStmt                          *sql.Stmt
+	deleteAsyncHostIfNoNodesStmt                         *sql.Stmt
 	deleteBatchSubtreeStmt                               *sql.Stmt
 	deleteFileStmt                                       *sql.Stmt
 	deleteMessageStmt                                    *sql.Stmt
@@ -1960,12 +2017,14 @@ type Queries struct {
 	enqueueRunQueueEntryStmt                             *sql.Stmt
 	finishLoopWakeScheduleStmt                           *sql.Stmt
 	getAsyncHostStmt                                     *sql.Stmt
+	getAsyncHostRowStmt                                  *sql.Stmt
 	getAsyncJobStmt                                      *sql.Stmt
 	getAsyncJobByClaimIDStmt                             *sql.Stmt
 	getAverageResponseTimeStmt                           *sql.Stmt
 	getBatchControlRequestStmt                           *sql.Stmt
 	getBatchNodeStmt                                     *sql.Stmt
 	getBatchRootStmt                                     *sql.Stmt
+	getBatchRootIdentityStmt                             *sql.Stmt
 	getCallTreeActivityStmt                              *sql.Stmt
 	getCallTreeActivityBatchStmt                         *sql.Stmt
 	getFileStmt                                          *sql.Stmt
@@ -2002,8 +2061,10 @@ type Queries struct {
 	listAllSessionPermissionsStmt                        *sql.Stmt
 	listAllSessionsStmt                                  *sql.Stmt
 	listAllUserMessagesStmt                              *sql.Stmt
+	listAsyncHostRowsStmt                                *sql.Stmt
 	listAsyncHostsStmt                                   *sql.Stmt
 	listAsyncHostsWithNoJobsStmt                         *sql.Stmt
+	listAsyncHostsWithNoNodesStmt                        *sql.Stmt
 	listAsyncJobsForOwnerStmt                            *sql.Stmt
 	listBatchChildrenStmt                                *sql.Stmt
 	listBatchNodesStmt                                   *sql.Stmt
@@ -2058,6 +2119,7 @@ type Queries struct {
 	recordOrphanOutboxFailureStmt                        *sql.Stmt
 	recoverExpiredWakeLeasesStmt                         *sql.Stmt
 	registerAsyncHostStmt                                *sql.Stmt
+	registerAsyncHostRowStmt                             *sql.Stmt
 	renameSessionStmt                                    *sql.Stmt
 	renewRunQueueLeaseStmt                               *sql.Stmt
 	rependAsyncJobsByNoticeMessageIDsStmt                *sql.Stmt
@@ -2084,6 +2146,7 @@ type Queries struct {
 	takeOverSessionDriverStmt                            *sql.Stmt
 	terminalFailRunQueueEntryStmt                        *sql.Stmt
 	transitionAsyncJobTerminalPreserveVoidStmt           *sql.Stmt
+	updateBatchRunnerCheckpointStmt                      *sql.Stmt
 	updateMessageStmt                                    *sql.Stmt
 	updateMessageIfNotTerminalStmt                       *sql.Stmt
 	updateMessagePinnedStmt                              *sql.Stmt
@@ -2172,6 +2235,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createSessionStmt:                                    q.createSessionStmt,
 		createSessionPermissionStmt:                          q.createSessionPermissionStmt,
 		deleteAsyncHostIfNoJobsStmt:                          q.deleteAsyncHostIfNoJobsStmt,
+		deleteAsyncHostIfNoNodesStmt:                         q.deleteAsyncHostIfNoNodesStmt,
 		deleteBatchSubtreeStmt:                               q.deleteBatchSubtreeStmt,
 		deleteFileStmt:                                       q.deleteFileStmt,
 		deleteMessageStmt:                                    q.deleteMessageStmt,
@@ -2192,12 +2256,14 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		enqueueRunQueueEntryStmt:                             q.enqueueRunQueueEntryStmt,
 		finishLoopWakeScheduleStmt:                           q.finishLoopWakeScheduleStmt,
 		getAsyncHostStmt:                                     q.getAsyncHostStmt,
+		getAsyncHostRowStmt:                                  q.getAsyncHostRowStmt,
 		getAsyncJobStmt:                                      q.getAsyncJobStmt,
 		getAsyncJobByClaimIDStmt:                             q.getAsyncJobByClaimIDStmt,
 		getAverageResponseTimeStmt:                           q.getAverageResponseTimeStmt,
 		getBatchControlRequestStmt:                           q.getBatchControlRequestStmt,
 		getBatchNodeStmt:                                     q.getBatchNodeStmt,
 		getBatchRootStmt:                                     q.getBatchRootStmt,
+		getBatchRootIdentityStmt:                             q.getBatchRootIdentityStmt,
 		getCallTreeActivityStmt:                              q.getCallTreeActivityStmt,
 		getCallTreeActivityBatchStmt:                         q.getCallTreeActivityBatchStmt,
 		getFileStmt:                                          q.getFileStmt,
@@ -2234,8 +2300,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listAllSessionPermissionsStmt:                        q.listAllSessionPermissionsStmt,
 		listAllSessionsStmt:                                  q.listAllSessionsStmt,
 		listAllUserMessagesStmt:                              q.listAllUserMessagesStmt,
+		listAsyncHostRowsStmt:                                q.listAsyncHostRowsStmt,
 		listAsyncHostsStmt:                                   q.listAsyncHostsStmt,
 		listAsyncHostsWithNoJobsStmt:                         q.listAsyncHostsWithNoJobsStmt,
+		listAsyncHostsWithNoNodesStmt:                        q.listAsyncHostsWithNoNodesStmt,
 		listAsyncJobsForOwnerStmt:                            q.listAsyncJobsForOwnerStmt,
 		listBatchChildrenStmt:                                q.listBatchChildrenStmt,
 		listBatchNodesStmt:                                   q.listBatchNodesStmt,
@@ -2290,6 +2358,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		recordOrphanOutboxFailureStmt:                        q.recordOrphanOutboxFailureStmt,
 		recoverExpiredWakeLeasesStmt:                         q.recoverExpiredWakeLeasesStmt,
 		registerAsyncHostStmt:                                q.registerAsyncHostStmt,
+		registerAsyncHostRowStmt:                             q.registerAsyncHostRowStmt,
 		renameSessionStmt:                                    q.renameSessionStmt,
 		renewRunQueueLeaseStmt:                               q.renewRunQueueLeaseStmt,
 		rependAsyncJobsByNoticeMessageIDsStmt:                q.rependAsyncJobsByNoticeMessageIDsStmt,
@@ -2316,6 +2385,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		takeOverSessionDriverStmt:                            q.takeOverSessionDriverStmt,
 		terminalFailRunQueueEntryStmt:                        q.terminalFailRunQueueEntryStmt,
 		transitionAsyncJobTerminalPreserveVoidStmt:           q.transitionAsyncJobTerminalPreserveVoidStmt,
+		updateBatchRunnerCheckpointStmt:                      q.updateBatchRunnerCheckpointStmt,
 		updateMessageStmt:                                    q.updateMessageStmt,
 		updateMessageIfNotTerminalStmt:                       q.updateMessageIfNotTerminalStmt,
 		updateMessagePinnedStmt:                              q.updateMessagePinnedStmt,

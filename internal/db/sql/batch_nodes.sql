@@ -1,14 +1,14 @@
 -- name: ReserveBatchNode :one
 -- Reserve every accepted node in one caller-owned transaction before dispatch.
 INSERT INTO batch_nodes (
-    node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
+    node_id, root_id, owner_session_id, host_id, runner_id, parent_id, ordinal, kind,
     tool_call_id, input_hash, origin_cli, mode, on_fail, notify, max_parallel,
     task_kind, task_group, task_payload, timeout_ns, child_session_id,
     state, cause, token, attempts, control_state, control_error, control_pending,
     outcome_state, outcome_code, outcome_summary, response_envelope_ref,
     root_sequence, projection_sequence, created_at, updated_at
 ) VALUES (
-    @node_id, @root_id, @owner_session_id, @host_id, @parent_id, @ordinal, @kind,
+    @node_id, @root_id, @owner_session_id, @host_id, @runner_id, @parent_id, @ordinal, @kind,
     @tool_call_id, @input_hash, @origin_cli, @mode, @on_fail, @notify, @max_parallel,
     @task_kind, @task_group, @task_payload, @timeout_ns, @child_session_id,
     @state, @cause, @token, @attempts, @control_state, @control_error, @control_pending,
@@ -56,18 +56,24 @@ ORDER BY created_at, root_id;
 -- Engine sequences can skip for a root; advance atomically with all projections.
 UPDATE batch_nodes SET root_sequence = @sequence, updated_at = @updated_at
 WHERE root_id = @root_id AND node_id = root_id AND host_id = @host_id
+  AND runner_id = @runner_id
   AND owner_session_id = @owner_session_id AND root_sequence < @sequence;
 
 -- name: ProjectBatchNode :execrows
 -- Projects the loop's accepted view, not a competing terminal-state decision.
+-- COALESCE preserves envelope, reference and child-session facts written by
+-- earlier events; the caller passes NULL to keep the current value.
 UPDATE batch_nodes SET
     state = @state, cause = @cause, token = @token, attempts = @attempts,
     control_state = @control_state, control_error = @control_error,
     control_pending = @control_pending, outcome_state = @outcome_state,
     outcome_code = @outcome_code, outcome_summary = @outcome_summary,
-    response_envelope_ref = @response_envelope_ref, child_session_id = @child_session_id,
+    response_envelope_ref = COALESCE(@response_envelope_ref, response_envelope_ref),
+    response_envelope = COALESCE(@response_envelope, response_envelope),
+    child_session_id = COALESCE(@child_session_id, child_session_id),
     projection_sequence = @sequence, updated_at = @updated_at
 WHERE root_id = @root_id AND node_id = @node_id AND host_id = @host_id
+  AND runner_id = @runner_id
   AND owner_session_id = @owner_session_id AND projection_sequence < @sequence;
 
 -- name: SelectBatchNodeNotice :execrows
@@ -82,6 +88,7 @@ UPDATE batch_nodes SET
     notice_skipped = @notice_skipped, delivery = 'pending', wake = @wake,
     updated_at = @updated_at
 WHERE root_id = @root_id AND node_id = @node_id AND host_id = @host_id
+  AND runner_id = @runner_id
   AND owner_session_id = @owner_session_id AND projection_sequence = @notice_sequence
   AND notice_selected = 0
   AND state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped');

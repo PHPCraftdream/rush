@@ -265,6 +265,18 @@ type coordinator struct {
 	// notifyWG joins the async-completion wake goroutines, so a caller (a
 	// test, a shutdown) can wait for their last store access.
 	notifyWG sync.WaitGroup
+	// callbackMu fences release/notification registration against shutdown Wait.
+	// The context is lazy so bare coordinator fixtures retain the same lifecycle.
+	callbackMu      sync.Mutex
+	callbackClosing bool
+	callbackCtx     context.Context
+	callbackCancel  context.CancelFunc
+	releaseWG       sync.WaitGroup
+	// Signal-only lifecycle seams; nil in production, installed before use.
+	releaseCallbackHook   func(context.Context)
+	notifyCallbackHook    func(context.Context)
+	callbackAfterWaitHook func()
+	callbackJoinTimeout   func() <-chan time.Time
 	// asyncJobs is the single in-memory work ledger: plain async jobs
 	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
 	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.
@@ -275,10 +287,22 @@ type coordinator struct {
 	// coordinator_subagent_drivers.go.
 	subAgentDrivers *subAgentDriverRegistry
 
+	// batchDriverClaimer overrides asyncJobs.store as the durable
+	// session-driver-marker store (flag-ON: session.HostStore); nil keeps
+	// the legacy path. See batch_cutover_driver.go.
+	batchDriverClaimer BatchDriverClaimer
+
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
 	// SetWakeScheduleStore from internal/app; nil until then.
 	wakeScheduler *wakeScheduler
+
+	// sharedBuildScopeMu/sharedBuildScope guard the coordinator-level build
+	// scope for tool assemblies WITHOUT trusted call state (the shared
+	// session toolset). Per-call builds always use the call's own scope;
+	// this one is never used for a custom-provider construction.
+	sharedBuildScopeMu sync.Mutex
+	sharedBuildScope   *buildResourceScope
 
 	// mcpOwner is this config's MCP lifecycle owner (task #923). Nil keeps
 	// the legacy process-current-owner resolution via the package functions.
@@ -509,6 +533,14 @@ func NewCoordinator(
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// R12-H2a round 2: resolution builds this call's toolset into the
+	// trusted call state's build-resource scope before runInternal runs, so
+	// every return from here — resolution failure included — must release
+	// it. Close is idempotent; runInternal's own defer double-closes
+	// harmlessly.
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}

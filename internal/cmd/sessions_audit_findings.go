@@ -39,8 +39,11 @@ const (
 	auditRuleUnfinishedJobs  = "unfinished_jobs"
 )
 
-// auditFindings reports the rules each selected session tripped.
-func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration) ([]auditFinding, error) {
+// auditFindings reports the rules each selected session tripped. Batch is
+// nil with the batch runtime flag off (the legacy async_jobs scan runs);
+// non-nil with it on, in which case unfinished_jobs counts held batch roots
+// and the legacy async_jobs table is not read.
+func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration, batch *auditBatchScan) ([]auditFinding, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -49,7 +52,11 @@ func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []st
 	if err := auditScanMessages(ctx, db, schema, ids, since, tally); err != nil {
 		return nil, err
 	}
-	if err := auditScanAsyncJobs(ctx, db, schema, ids, tally); err != nil {
+	if batch != nil {
+		for _, id := range ids {
+			tally.unfinishedJobs[id] = batch.unfinishedEntries(id)
+		}
+	} else if err := auditScanAsyncJobs(ctx, db, schema, ids, tally); err != nil {
 		return nil, err
 	}
 	return tally.findings(ids), nil

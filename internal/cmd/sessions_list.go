@@ -70,11 +70,53 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// registry) is deliberately not consulted: a parked delegation keeps
 		// its own async_jobs row live, so another process sees the same
 		// verdict (decision 9).
-		activities, err := a.SessionActivityBatch(cmd.Context(), idsOf(sessions))
-		if err != nil {
-			return fmt.Errorf("failed to classify sessions: %w", err)
+		//
+		// R12-B: with the batch runtime on, NO legacy store read runs at all:
+		// awaitingByID stays empty (the legacy PendingChildQuestions reads
+		// must not run under the flag). F8 invariant restoration: STATUS is
+		// still the ONE classifier's verdict (App.SessionActivityBatch) under
+		// the flag -- the batch facts only annotate it ("(batch live)"/
+		// "(batch unknown)") -- so there is no second status machinery here,
+		// matching this file's doc comment. Flag off: batchFacts is nil and
+		// the legacy path below is unchanged.
+		ids := idsOf(sessions)
+		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
+		var statusByID map[string]string
+		awaitingByID := map[string]session.ChildQuestion{}
+		if batchFacts != nil {
+			activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
+			if actErr != nil {
+				return fmt.Errorf("failed to classify sessions: %w", actErr)
+			}
+			statusByID = make(map[string]string, len(ids))
+			for _, id := range ids {
+				bf := batchFacts[id]
+				st := listStatus(activities.ByID[id].Verdict)
+				if bf.Unknown {
+					st += " (batch unknown)"
+				} else if bf.Live {
+					st += " (batch live)"
+				}
+				// F3/#R12-B: a held batch question annotates the status, the
+				// same "(awaiting answer)" substate the legacy path prints.
+				// The fallback also surfaces when the status is empty (at
+				// rest), so a held question never renders as blank/at rest.
+				if bf.HasQuestion {
+					if st == "" {
+						st = "batch question awaiting answer"
+					} else {
+						st += " (awaiting answer)"
+					}
+				}
+				statusByID[id] = st
+			}
+		} else {
+			activities, err := a.SessionActivityBatch(cmd.Context(), ids)
+			if err != nil {
+				return fmt.Errorf("failed to classify sessions: %w", err)
+			}
+			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, ids)
 		}
-		statusByID, awaitingByID := listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, idsOf(sessions))
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -87,6 +129,22 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					item.AwaitingAnswer = true
 					item.AwaitingChild = q.ChildSessionID
 					item.AwaitingQuestion = q.Question
+				}
+				if bf, ok := batchFacts[s.ID]; ok {
+					// A held question with no visible root and a complete read
+					// must still surface, so the answer flag sits outside the
+					// roots/unknown guard (false in the common no-question
+					// case, so the omitempty wire shape is unchanged).
+					item.BatchAwaitingAnswer = bf.awaitingAnswer()
+					if len(bf.Roots) > 0 || bf.Unknown {
+						item.BatchRoots = len(bf.Roots)
+						item.BatchDebt = bf.Debt
+						if bf.Unknown {
+							item.BatchStatus = "unknown"
+						} else {
+							item.BatchStatus = "live"
+						}
+					}
 				}
 				if err := enc.Encode(item); err != nil {
 					return err
@@ -218,6 +276,15 @@ type sessionListItem struct {
 	AwaitingAnswer   bool   `json:"awaiting_answer,omitempty"`
 	AwaitingChild    string `json:"awaiting_child,omitempty"`
 	AwaitingQuestion string `json:"awaiting_question,omitempty"`
+	// Batch read fields (R12-B, flag ON only): additive, zero on the legacy
+	// path so the flag-OFF wire shape stays byte-identical. BatchStatus is
+	// "live" (held batch root) or "unknown" (incomplete/failed read).
+	BatchRoots  int    `json:"batch_roots,omitempty"`
+	BatchDebt   int64  `json:"batch_debt,omitempty"`
+	BatchStatus string `json:"batch_status,omitempty"`
+	// BatchAwaitingAnswer marks a held batch question (or undelivered batch
+	// notice) awaiting an answer; additive, flag ON only.
+	BatchAwaitingAnswer bool `json:"batch_awaiting_answer,omitempty"`
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable

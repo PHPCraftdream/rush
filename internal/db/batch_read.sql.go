@@ -11,7 +11,7 @@ import (
 )
 
 const batchLevelNodes = `-- name: BatchLevelNodes :many
-SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at FROM batch_nodes
+SELECT node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind, tool_call_id, input_hash, announced, announce_message_id, origin_cli, mode, on_fail, notify, max_parallel, task_kind, task_group, task_payload, timeout_ns, child_session_id, state, cause, token, attempts, control_state, control_error, control_pending, outcome_state, outcome_code, outcome_summary, response_envelope_ref, root_sequence, projection_sequence, notice_selected, notice_kind, notice_state, notice_cause, notice_sequence, notice_ordinal, notice_pending, notice_active, notice_completed, notice_failed, notice_cancelled, notice_timed_out, notice_interrupted, notice_skipped, delivery, notice_message_id, wake, reacted, wake_attempts, reacted_failed, created_at, updated_at, runner_id, response_envelope FROM batch_nodes
 WHERE owner_session_id = ?1 AND root_id = ?2
 ORDER BY ordinal, node_id
 `
@@ -88,6 +88,8 @@ func (q *Queries) BatchLevelNodes(ctx context.Context, arg BatchLevelNodesParams
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}
@@ -103,7 +105,7 @@ func (q *Queries) BatchLevelNodes(ctx context.Context, arg BatchLevelNodesParams
 }
 
 const batchLiveNodesForOwners = `-- name: BatchLiveNodesForOwners :many
-SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
+SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at, n.runner_id, n.response_envelope FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE r.owner_session_id IN (/*SLICE:owners*/?)
   AND r.state IN ('pending', 'starting', 'running', 'cancelling')
 ORDER BY r.created_at, r.root_id, n.ordinal, n.node_id
@@ -186,6 +188,8 @@ func (q *Queries) BatchLiveNodesForOwners(ctx context.Context, owners []string) 
 			&i.ReactedFailed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RunnerID,
+			&i.ResponseEnvelope,
 		); err != nil {
 			return nil, err
 		}

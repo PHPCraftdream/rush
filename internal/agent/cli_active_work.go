@@ -22,6 +22,27 @@ type CLIActiveWorkSource interface {
 // CLIActiveWork excludes schedules, debt, and question-paused delegations, but
 // includes those children's jobs and completion-persistence holds.
 func (c *coordinator) CLIActiveWork(ctx context.Context, root string) (bool, error) {
+	// Flag ON: the live scope comes from batch_nodes (the node-backed fact
+	// source bound at install), never from the ledger. An unbound flag-ON
+	// coordinator keeps the legacy path below — no batch runtime means no
+	// batch work can be pending for it. A failed read fails closed with the
+	// error (the quota loop retries it under its bounded window, never
+	// silently reads "idle").
+	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
+		if _, unbound := facts.(unknownBatchCutoverFacts); !unbound {
+			own, descendants, err := facts.LiveWorkSummary(ctx, root)
+			if err != nil {
+				return false, err
+			}
+			if own+descendants > 0 {
+				return true, nil
+			}
+			if c.background != nil && (c.background.ActiveOwned(root) > 0 || c.background.PendingCompletionsOwned(root) > 0) {
+				return true, nil
+			}
+			return false, nil
+		}
+	}
 	if c.asyncJobs == nil || c.asyncJobs.store == nil {
 		return false, errors.New("active work store unavailable")
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -24,6 +25,11 @@ func (l *cliLoop) describeOpenWork() string {
 	var schedule []string
 	if clause := l.describeOnceWake(); clause != "" {
 		schedule = append(schedule, clause)
+	}
+	if l.app != nil && batchCutoverOn() {
+		// R12-F: the flag-ON twin reads batch_nodes and the host lock probe
+		// only -- never async_jobs. It runs BEFORE the AsyncJobStore gate.
+		return l.describeOpenWorkBatch(schedule, generic)
 	}
 	if l.app == nil || l.app.asyncJobStore == nil {
 		if len(schedule) > 0 {
@@ -77,4 +83,67 @@ func (l *cliLoop) describeHost(ctx context.Context, store *session.AsyncJobStore
 		return fmt.Sprintf("%s (PID %d, %s)", desc, pid, status)
 	}
 	return fmt.Sprintf("%s (%s)", desc, status)
+}
+
+// describeOpenWorkBatch is the flag-ON twin of describeOpenWork: live work
+// is read from batch_nodes only (BatchLiveForOwner) and host liveness from
+// the shared, non-acquiring lock probe -- the async_jobs table is never
+// read (it may not exist under the R12-F flag). Display only, with the same
+// generic-wording fallback.
+func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) string {
+	app := l.app
+	writer := app.batchCutoverWriter()
+	if writer == nil {
+		return joinOpenWork(schedule, generic)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
+	defer cancel()
+	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	// TxStarter: every live read runs in ONE read-only tx on the writer.
+	reader.TxStarter = writer
+	res := reader.BatchLiveForOwner(ctx, l.sessionID)
+	if res.Err != nil || len(res.Own) == 0 {
+		return joinOpenWork(schedule, generic)
+	}
+	parts := append(schedule, make([]string, 0, cliOpenWorkNamed)...)
+	for i, n := range res.Own {
+		if i == cliOpenWorkNamed {
+			parts = append(parts, fmt.Sprintf("%d more", len(res.Own)-cliOpenWorkNamed))
+			break
+		}
+		what := n.TaskKind
+		if what == "" {
+			what = n.Kind
+		}
+		part := fmt.Sprintf("%s %q", what, n.ToolCallID)
+		if n.ChildSessionID != "" {
+			part += fmt.Sprintf(" (child session %s)", n.ChildSessionID)
+		}
+		part += " on " + describeBatchHost(app.dataDir, n.HostID, n.HostStatus)
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// describeBatchHost renders a batch node's host: this process, or "host
+// <id> (<status>)" with the reader's probe verdict (re-probed only if the
+// reader could not decide).
+func describeBatchHost(dataDir, hostID string, st session.HostLockStatus) string {
+	if session.IsOwnHostID(hostID) {
+		return "this process"
+	}
+	if st == session.HostStatusUnknown && dataDir != "" {
+		if s, err := session.ProbeHostShared(dataDir, hostID); err == nil {
+			st = s
+		}
+	}
+	return fmt.Sprintf("host %s (%s)", hostID, st)
+}
+
+// joinOpenWork is the shared schedule-plus-fallback join.
+func joinOpenWork(schedule []string, generic string) string {
+	if len(schedule) > 0 {
+		return strings.Join(schedule, "; ")
+	}
+	return generic
 }

@@ -29,8 +29,15 @@ var (
 // constants in internal/agent/tools: view, glob, grep, ls, edit, write,
 // multiedit, fetch, download, web_fetch, web_search, run_command, bash,
 // sourcegraph, git_read, fs_read, fs_list, fs_find, fs_grep, fs_write,
-// fs_write_lines, fs_replace, fs_delete. Control-plane names and delegation
-// tools are absent; unknown generic names are rejected, never defaulted.
+// fs_write_lines, fs_replace, fs_delete, todos. Control-plane names and
+// delegation tools are absent; unknown generic names are rejected, never
+// defaulted.
+//
+// R11F round-2 completeness hunk (P1-5 inventory, batch_install_tools.go):
+// "todos" is admitted into the io group — it MUTATES session state (writes
+// the session's todo list the worker turns read back), so it is a WORK tool
+// and MUST be wrapped through the ONE authority, not left on a direct
+// pinned leaf.
 var batchIOTools = map[string]bool{
 	"view":           true,
 	"glob":           true,
@@ -55,6 +62,7 @@ var batchIOTools = map[string]bool{
 	"fs_write_lines": true,
 	"fs_replace":     true,
 	"fs_delete":      true,
+	"todos":          true,
 }
 
 // batchMCPCapability describes an MCP tool for classification purposes.

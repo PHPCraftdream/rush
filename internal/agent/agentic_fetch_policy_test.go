@@ -43,7 +43,7 @@ func TestPrivateFetchPolicyBindingOmissionLogging(t *testing.T) {
 					return leaf.Run(ctx, call)
 				})
 			}
-			built := buildPrivateFetchTools(ctx, child, authorizer)
+			built := buildPrivateFetchTools(ctx, child, authorizer, newBuildResourceScope())
 			registry = built.leaves
 			agent := NewSessionAgent(SessionAgentOptions{Tools: built.tools, RestrictedRuns: authorizer}).(*sessionAgent)
 			wrapped := agent.tools.Copy()[0]

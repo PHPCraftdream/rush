@@ -146,11 +146,18 @@ jobs:
       - name: "test: internal/app"
         run: go test -short -failfast -p 2 -timeout 20m ./internal/app/...
         shell: bash
+      # internal/session ran out of go test's 600s default on windows-latest
+      # (2026-10-13, 600.080s) once the batch store/commit-hook/history suites
+      # landed (many DB-backed tests); same fix as internal/app above.
       - name: "test: internal/server, internal/session"
-        run: go test -short -failfast -p 2 ./internal/server/... ./internal/session/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/server/... ./internal/session/...
         shell: bash
+      # internal/config ran out of go test's 600s default on windows-latest
+      # (2026-10-18, 600.114s with TestOAuthRound7_CartesianMatrix alone at 451s):
+      # its 2112 sequential subtests share package-level journal seams and cannot
+      # run in parallel, so the step gets the same explicit -timeout as above.
       - name: "test: internal/permission, internal/config, internal/csync"
-        run: go test -short -failfast -p 2 ./internal/permission/... ./internal/config/... ./internal/csync/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/permission/... ./internal/config/... ./internal/csync/...
         shell: bash
       - name: "test: internal/cmd, internal/commands"
         run: go test -short -failfast -p 2 ./internal/cmd/... ./internal/commands/...
