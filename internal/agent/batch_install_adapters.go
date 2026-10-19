@@ -25,15 +25,15 @@ import (
 // and keeps the returned Batch for the done source. The durable reservation
 // is written by the commit hook during engine Submit.
 type batchRunnerAdapter struct {
+	outputCache *batchOutputCache
 	runner      *jobbatch.Runner
 	credentials *batchCredentialEscrow
 	// rootLeases is the per-root disk-binding lease store built at install
 	// time; the runtime and the model control share this one instance.
 	rootLeases *batchRootLeaseStore
-
-	mu      sync.Mutex
-	started map[jobbatch.ID]*jobbatch.Batch
-	owners  map[jobbatch.ID]string
+	mu         sync.Mutex
+	started    map[jobbatch.ID]*jobbatch.Batch
+	owners     map[jobbatch.ID]string
 }
 
 func newBatchRunnerAdapter(runner *jobbatch.Runner) *batchRunnerAdapter {
@@ -41,6 +41,8 @@ func newBatchRunnerAdapter(runner *jobbatch.Runner) *batchRunnerAdapter {
 }
 
 var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
+
+func (a *batchRunnerAdapter) OutputCache() *batchOutputCache { return a.outputCache }
 
 // Submit starts the caller-supplied root. The returned ID is always the
 // requested root (ingress contract: runner root must equal requested root).
@@ -590,6 +592,7 @@ type BatchInstall struct {
 	// shares with the runtime; exported so app wiring can pass it through
 	// (NewBatchModelControl) without a runtime accessor.
 	RootLeases  *BatchRootLeaseStore
+	OutputCache *batchOutputCache
 	cliAccepted map[string]int64
 }
 
@@ -676,7 +679,8 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if owner == "" || owner == batchDormantInstallOwner {
 		owner = batchDormantInstallOwner
 	}
-	runnerAdapter := &batchRunnerAdapter{credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
+	cache := newBatchOutputCache()
+	runnerAdapter := &batchRunnerAdapter{outputCache: cache, credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
 	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter})
@@ -706,7 +710,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	if err != nil {
 		return nil, err
 	}
-	env := batchLeafEnv{Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, Ingress: runtime.ingress}
+	env := batchLeafEnv{OutputCache: cache, Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, Ingress: runtime.ingress}
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
 	}
@@ -745,6 +749,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		Sessions:     deps.Sessions,
 		DiskBindings: deps.DiskBindings,
 		RootLeases:   runnerAdapter.rootLeases,
+		OutputCache:  cache,
 		runnerCfg:    runnerCfg,
 	}
 	if withRunner {

@@ -43,6 +43,7 @@ type batchLeafPayload struct {
 }
 
 type batchLeafEnv struct {
+	OutputCache *batchOutputCache
 	// Leaves resolves a pinned policy-leaf registry by identity.
 	Leaves       func(sessionID string) (*policyLeafRegistry, error)
 	DiskBindings *DiskProviderRegistry

@@ -136,6 +136,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		Ingress: callIngress(env),
 	}
 	e := &batchAgentExecution{
+		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
 		deps:        f.deps,
 		req:         req,
 		scope:       newBatchAgentScope(),
@@ -217,6 +218,9 @@ func (e *batchAgentExecution) launch(runCtx context.Context) (turn batchAgentTur
 }
 
 type batchAgentExecution struct {
+	cache  *batchOutputCache
+	nodeID jobbatch.ID
+	rootID jobbatch.ID
 	deps   batchAgentDeps
 	req    batchAgentRunRequest
 	scope  *batchAgentScope
@@ -332,9 +336,12 @@ func (e *batchAgentExecution) finish(result jobbatch.Result, report func(jobbatc
 		e.mu.Unlock()
 		return
 	}
+	e.content = []byte(result.Summary)
+	if e.cache != nil {
+		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: e.content, Next: uint64(len(e.content)), EOF: true})
+	}
 	e.reported = true
 	e.result = result
-	e.content = []byte(result.Summary)
 	close(e.finished)
 	e.mu.Unlock()
 	report(result)
@@ -404,7 +411,7 @@ func (e *batchAgentExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 	if cursor > next {
 		cursor = next
 	}
-	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, EOF: true}, nil
+	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, Oldest: 0, EOF: true}, nil
 }
 
 // Dispose waits for the late kill (driver exit) and the watcher, then

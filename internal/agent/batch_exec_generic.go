@@ -14,7 +14,7 @@ type batchGenericFamily struct{}
 
 func newBatchGenericFamily() batchLeafFamily { return batchGenericFamily{} }
 
-func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatc
 	if p.diskProvider != nil && p.Policy != nil {
 		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
 	}
-	e := &batchGenericExecution{cancel: cancel, done: make(chan struct{})}
+	e := &batchGenericExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), cancel: cancel, done: make(chan struct{})}
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
 	go e.run(runCtx, leaf, call, report)
 	return e, nil
@@ -67,13 +67,15 @@ func batchControlTarget(name string) bool {
 }
 
 type batchGenericExecution struct {
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopped  bool
-	finished bool
-	disposed bool
-	content  []byte
+	cache          *batchOutputCache
+	nodeID, rootID jobbatch.ID
+	mu             sync.Mutex
+	cancel         context.CancelFunc
+	done           chan struct{}
+	stopped        bool
+	finished       bool
+	disposed       bool
+	content        []byte
 }
 
 var (
@@ -91,6 +93,9 @@ func (e *batchGenericExecution) run(ctx context.Context, leaf fantasy.AgentTool,
 		result = jobbatch.Result{State: jobbatch.StateFailed, Code: "tool_panic"}
 	}
 	e.content = []byte(resp.Content)
+	if e.cache != nil {
+		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: e.content, Next: uint64(len(e.content)), EOF: true})
+	}
 	e.finished = true
 	close(e.done)
 	e.mu.Unlock()
@@ -133,7 +138,7 @@ func (e *batchGenericExecution) ReadOutput(ctx context.Context, cursor uint64) (
 	if cursor > next {
 		cursor = next
 	}
-	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, EOF: true}, nil
+	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, Oldest: 0, EOF: true}, nil
 }
 
 func (e *batchGenericExecution) Dispose(context.Context) error {

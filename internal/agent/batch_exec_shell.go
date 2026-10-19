@@ -26,14 +26,16 @@ type batchShellFamily struct{}
 var _ batchLeafFamily = batchShellFamily{}
 
 type batchShellExecution struct {
-	mu        sync.RWMutex
-	calls     sync.RWMutex
-	handle    batchShellHandle
-	cancel    context.CancelFunc
-	stopped   bool
-	disposed  bool
-	finished  chan struct{}
-	published chan struct{}
+	cache          *batchOutputCache
+	nodeID, rootID jobbatch.ID
+	mu             sync.RWMutex
+	calls          sync.RWMutex
+	handle         batchShellHandle
+	cancel         context.CancelFunc
+	stopped        bool
+	disposed       bool
+	finished       chan struct{}
+	published      chan struct{}
 }
 
 var (
@@ -42,7 +44,7 @@ var (
 	_ jobbatch.Disposer     = (*batchShellExecution)(nil)
 )
 
-func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -60,7 +62,7 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, _ jobbatch.
 	// R11F round-2 (P1-5c): the PINNED policy wins — rebuilt exclusively
 	// from the payload's immutable policy transport.
 	runCtx = batchLeafRunContext(runCtx, p)
-	e := &batchShellExecution{cancel: cancel, finished: make(chan struct{}), published: make(chan struct{})}
+	e := &batchShellExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), cancel: cancel, finished: make(chan struct{}), published: make(chan struct{})}
 	runCtx = tools.WithShellLeaf(runCtx, tools.ShellLeaf{OnStart: func(h *shell.BackgroundExecution) { e.mu.Lock(); e.handle = h; close(e.published); e.mu.Unlock() }})
 	go e.run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
 	return e, nil
@@ -94,10 +96,22 @@ func (e *batchShellExecution) run(ctx context.Context, leaf fantasy.AgentTool, c
 			result.Code = fmt.Sprintf("exit_%d", code)
 		}
 	}
+	if h != nil {
+		_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, shellOutputReader{h}, batchOutputCursorClamp)
+	} else if e.cache != nil {
+		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true})
+	}
 	close(e.finished)
 	e.mu.Unlock()
 	e.cancel()
 	report(result)
+}
+
+type shellOutputReader struct{ h batchShellHandle }
+
+func (r shellOutputReader) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
+	c, err := r.h.ReadOutput(ctx, cursor)
+	return jobbatch.OutputChunk{Data: c.Data, Next: c.Next, Oldest: c.Oldest, EOF: c.EOF, Truncated: c.Truncated}, err
 }
 
 // Stop holds its physical-call barrier until actual return. Context bounds
@@ -132,8 +146,7 @@ func (e *batchShellExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 	e.calls.RLock()
 	defer e.calls.RUnlock()
 	e.mu.RLock()
-	h := e.handle
-	disposed := e.disposed
+	h, disposed := e.handle, e.disposed
 	e.mu.RUnlock()
 	if disposed {
 		return jobbatch.OutputChunk{}, jobbatch.ErrReleased

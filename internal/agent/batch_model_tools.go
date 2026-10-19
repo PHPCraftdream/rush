@@ -124,17 +124,19 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLea
 		mk("batch_status", "Read structured status for an owned root; incomplete reads remain nonterminal.", func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (any, error) {
 			return c.StatusNode(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node)
 		}),
-		mk("batch_output", "Read retained task output capped at 16 KiB. Provide root_id,node_id,cursor; continue at next_cursor.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
+		mk("batch_output", "Best-effort detached output cache (10-minute TTL; pressure eviction or process exit may end it sooner). Newest 1 MiB/task, 32 MiB/App. Read output_expired/output_truncated statuses; provide root_id,node_id,cursor and continue at next_cursor.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
 			v, err := c.Output(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node, p.Cursor)
 			if err != nil {
 				return nil, err
 			}
-			chunk, ok := v.(jobbatch.OutputChunk)
-			if !ok {
+			switch chunk := v.(type) {
+			case jobbatch.OutputChunk:
+				return outputResponse(chunk, chunk.Next, int(chunk.Next), chunk.Truncated), nil
+			case map[string]any:
+				return chunk, nil
+			default:
 				return nil, errors.New("batch output returned invalid chunk")
 			}
-			data := append([]byte(nil), chunk.Data...)
-			return map[string]any{"data": string(data), "next_cursor": chunk.Next, "oldest_cursor": chunk.Oldest, "eof": chunk.EOF, "truncated": chunk.Truncated}, nil
 		}),
 		mk("batch_stop", "Request durable stop of an owned root or descendant. Accepted is cancellation intent, not termination.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
 			return c.Stop(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node)

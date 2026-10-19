@@ -165,6 +165,14 @@ NotifyAll suppression, with sole-child elision per level; Wait is not another
 notification. The public feed contains already-selected notices, not a request
 for consumers to reapply policy.
 
+## Rush detached terminal output cache
+
+The Rush integration captures terminal output before a leaf reports completion and before its handle can be disposed. This cache is App-scoped and stores only copied bytes plus task/root, cursor/truncation, and finish metadata; it does not persist output or retain execution handles. Generic leaves cache the leaf `ToolResponse.Content`; shell/argv leaves cache the process merged byte stream; agent leaves cache the terminal `jobbatch.Result` summary, which is the same bytes the live `ReadOutput` returns at completion.
+
+Each entry expires at `finished_at + 10m` (the exact boundary is expired). It retains the newest 1 MiB of task output. `oldest_cursor` is the absolute byte offset of that suffix and `next_cursor` is the absolute end offset, so callers continue by passing the returned cursor. Pages are capped at 16 KiB; `truncated` reports that earlier bytes are unavailable. The App cache is capped at 32 MiB and evicts the entry with the oldest finish time under pressure. A 1,024-entry metadata bound also limits empty outputs. Expiry is lazy on cache access; there is no expiry goroutine. Cursor semantics are per family: generic, agent and shell clamp over-end cursors to the retained end, while argv restarts from offset 0 when a cursor exceeds MaxInt64 or the retained end.
+
+`batch_output` first uses live Runner output and falls back only when the Runner reports `ErrReleased`; successful live output is never replaced by cache data. It returns `output_expired` when no cached entry remains and `output_truncated` when the requested data starts before the retained suffix. Capture is best-effort, so pressure eviction or process exit can end availability before ten minutes. `internal/jobbatch` remains independent of this Rush-owned policy.
+
 ## Journal and replay limits
 
 JSONL is a header, public records, and footer. The header hashes the decoded
