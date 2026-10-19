@@ -78,7 +78,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
-		awaitingByID := map[string]session.ChildQuestion{}
+		var awaitingByID map[string]session.ChildQuestion
 		if batchFacts != nil {
 			activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
 			if actErr != nil {
