@@ -832,6 +832,10 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				exitErr = fmt.Errorf("%s failed: CLI failure event", m.spec.Binary)
 			} else if stderr != "" {
 				exitErr = fmt.Errorf("%s failed: %w\nstderr: %s", m.spec.Binary, waitErr, stderr)
+			} else if merged := strings.TrimSpace(diagnostics.text); merged != "" {
+				// Merged (NoPTY) mode has no separate stderr; the bounded,
+				// sanitized non-JSON output is the only explanation of the exit.
+				exitErr = fmt.Errorf("%s failed: %w\noutput: %s", m.spec.Binary, waitErr, tailString(merged, 1000))
 			} else {
 				exitErr = fmt.Errorf("%s failed: %w", m.spec.Binary, waitErr)
 			}
