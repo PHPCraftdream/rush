@@ -70,8 +70,11 @@ func callFromActive(active SessionAgentCall) SessionAgentCall {
 // FIRST — the returned preparedContinuation holds the Continuation owner
 // across the dispatch window (the caller releases it after Run returns),
 // and its requirement is stamped onto the drain call (and, on the root
-// branch, onto the ctx so the pinned toolset is provider-backed). A lost
-// binding fails closed typed before anything runs.
+// branch, onto the ctx so the pinned toolset is provider-backed). The root
+// branch cleans up after itself on every failure: a defer releases the
+// Continuation owner and closes the build scope unless the ownership was
+// transferred to the successful return. A lost binding fails closed typed
+// before anything runs.
 func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
@@ -94,14 +97,51 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	}
 	// Root branch: resolve the fence BEFORE model resolution so the pinned
 	// toolset is built with the provider already on the ctx (R12-H2b §2.3).
+	// Failure cleanup (gh#10b): every error return below that does not hand
+	// the Continuation owner to a caller must release it (and close the
+	// build scope it registered pins on) — the deferred abandon below runs
+	// unless the ownership is transferred at the final return.
 	prep, prepErr := c.PrepareContinuation(ctx, sessionID, nil)
 	if prepErr != nil {
 		return SessionAgentCall{}, nil, prepErr
 	}
+	var capOpts *CallOptions
+	transferred := false
+	defer func() {
+		if !transferred && prep != nil {
+			if capOpts != nil {
+				capOpts.buildScope.close()
+			}
+			prep.release()
+		}
+	}()
 	if prep != nil {
-		capOpts := &CallOptions{}
+		capOpts = &CallOptions{}
 		prep.applyToOptions(capOpts)
+		runSpec, policyErr := prep.restorePolicyBaseline(ctx, sessionID, capOpts)
+		if policyErr != nil {
+			return SessionAgentCall{}, nil, policyErr
+		}
 		ctx = WithCallOptions(ctx, capOpts)
+		// Carry the fence's folder-scope spec on the ctx too, mirroring
+		// ExecuteRun's per-call arming: its presence is what lets the
+		// durable queue re-serialize the scope.
+		if prep.requirement.FolderScopeSpec != nil {
+			ctx = WithFolderScopeSpec(ctx, fromSessionFolderScopeSpec(prep.requirement.FolderScopeSpec))
+		}
+		// Arm the fence's restricted-run policy in both forms: compiled for
+		// this turn's enforcement, spec for the durable re-serialization.
+		// Degrade-on-pattern-error, like the rebuild (T12): invalid patterns
+		// are dropped with a warning and the compiled allowlist stays
+		// restricted — the spec itself is still armed verbatim.
+		if runSpec != nil {
+			compiled, compileErr := permission.BuildRunAllowlist(*runSpec)
+			if compileErr != nil {
+				slog.Warn("drainCallFor: dropped invalid restricted-run patterns from the fence policy spec", "session_id", sessionID, "err", compileErr)
+			}
+			ctx = WithRunAllowlist(ctx, &compiled)
+			ctx = WithRunAllowlistSpec(ctx, runSpec)
+		}
 	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
@@ -126,6 +166,9 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	// Idempotent stamping: keeps DiskRequirement on the struct itself even
 	// though the ctx-carried options already carry it (R12-H2b §2.3).
 	prep.applyTo(&call)
+	// The Continuation owner now belongs to the caller, which releases it
+	// after Run returns; the deferred abandon must not fire.
+	transferred = true
 	return call, prep, nil
 }
 

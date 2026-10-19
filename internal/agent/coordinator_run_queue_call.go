@@ -344,6 +344,17 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 // (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 // call is already fully reconstructed with all necessary data.
 func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	// gh#10d: claim scope ownership at ENTRY, BEFORE the ready gate — the
+	// gate's sticky failure is one of this method's return paths, and on the
+	// old code the scope-close defer sat after it, so a rebuilt Call owner
+	// transferred by RebuildSessionAgentCall leaked whenever the gate
+	// failed. queued-call-owned scopes are still NOT closed here: they are
+	// closed by the call resolution hook when rejected, superseded, or
+	// completed. close is nil-receiver safe, and idempotent.
+	ownsScope := call.CallOptions != nil && call.onQueueResolved == nil
+	if ownsScope {
+		defer call.CallOptions.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -464,12 +475,8 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		<-tickerDone
 	}()
 
-	// queued-call-owned scopes are closed by the call resolution hook when
-	// rejected, superseded, or completed. Durable rebuilt scopes remain owned
-	// here and close on every return.
-	if call.CallOptions != nil && call.onQueueResolved == nil {
-		defer call.CallOptions.buildScope.close()
-	}
+	// gh#10d: the queued-call-owned-scope distinction and the durable scope
+	// close now live in the ENTRY defer at the top of this method.
 
 	return c.currentAgent.Run(ctx, call)
 }

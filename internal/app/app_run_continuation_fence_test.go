@@ -49,6 +49,17 @@ func (d *countedLeakDisk) WriteFile(ctx context.Context, name string, b []byte, 
 	return d.leakFakeDisk.WriteFile(ctx, name, b, mode)
 }
 
+// snapshotKeys lists the provider's current keys for failure diagnostics.
+func (d *countedLeakDisk) snapshotKeys() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	keys := make([]string, 0, len(d.files))
+	for k := range d.files {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // newAdmissionRaceAppOnDir is newAdmissionRaceApp with the data dir
 // taken as a parameter, so a test can open a SECOND app over the SAME
 // dataDir and model a restart (no live capability bindings, the fence
@@ -95,6 +106,8 @@ func newAdmissionRaceAppOnDir(t *testing.T, handler http.HandlerFunc, dataDir st
 
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
+	// Pair the pool's refCount: db.Release is the contractual counterpart of db.Connect (see common_test.go's testEnv cleanup).
+	t.Cleanup(func() { _ = db.Release(dataDir) })
 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
@@ -128,15 +141,38 @@ func fenceLoader(t *testing.T, application *App) session.SessionExecutionRequire
 // admission fence write lands the session execution requirement in the
 // durable store. Returns the app, the session id, the fence envelope and
 // the counted fake disk.
+//
+// The scripted provider has four branches, matched in request order:
+//
+//  1. Initial request (prompt "write probe", no tool result in the
+//     history) → default branch: fs_write(initialTarget, "live-value")
+//     with finish_reason tool_calls.
+//  2. Initial follow-up (history carries the tool RESULT id "call_write")
+//     → text+stop: the initial turn ENDS (no re-emitted write, the loop
+//     detector never fires).
+//  3. Continuation request (prompt carries the marker) → marker branch:
+//     fs_write(continuationTarget, "continuation-value") with finish
+//     reason tool_calls.
+//  4. Continuation follow-up (tool RESULT id "call_cont") → text+stop:
+//     the continuation turn ends.
+//
+// The marker branch is matched BEFORE the call_write branch: the
+// continuation request's history already contains the initial turn's
+// call_write tool call and result, so the ids alone cannot sequence the
+// rounds — the marker identifies the continuation request; the ids only
+// identify result rounds (call_cont is matched first for the same reason).
 func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string) (*App, string, *session.SessionExecutionRequirement, *countedLeakDisk) {
 	t.Helper()
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
+	// Assigned below, once the app (and its working dir) exists; the handler
+	// only reads it after ExecuteRun has issued the first request.
+	var initialTarget string
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		switch {
 		case strings.Contains(string(body), `"call_cont"`):
-			// The follow-up request carries the tool RESULT (id call_cont):
+			// The continuation follow-up carries the tool RESULT (id call_cont):
 			// end the turn instead of issuing the write again.
 			admissionWriteSSE(w, []string{admissionSSEText("c9", "continuation done"), admissionSSEStop("c9", "stop")})
 		case strings.Contains(string(body), marker):
@@ -145,9 +181,15 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 			}}})
 			require.NoError(t, err)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("c9", "call_cont", "fs_write", string(input)), admissionSSEStop("c9", "tool_calls")})
+		case strings.Contains(string(body), `"call_write"`):
+			// matched after the marker branch — the continuation request's
+			// history contains this id too. The initial follow-up carries the tool RESULT of the INITIAL
+			// write (id call_write): end the initial turn instead of
+			// replaying the write forever (the loop-detector failure on PR #82).
+			admissionWriteSSE(w, []string{admissionSSEText("c1", "initial write done"), admissionSSEStop("c1", "stop")})
 		default:
 			input, err := json.Marshal(map[string]any{"items": []map[string]any{{
-				"path": "probe-live.txt", "content": "live-value",
+				"path": filepath.ToSlash(initialTarget), "content": "live-value",
 			}}})
 			require.NoError(t, err)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("c1", "call_write", "fs_write", string(input)), admissionSSEStop("c1", "tool_calls")})
@@ -161,6 +203,18 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 
 	workDir := application.config.WorkingDir()
 	dir := filepath.Join(workDir, "scope")
+	// The initial write targets the EXACT absolute path inside the granted
+	// scope, and the REAL OS file at that path is pre-seeded with a sentinel:
+	// if provider routing is ever dropped (the fence binding lost and the
+	// call silently normalised to the OS disk), the provider-content and
+	// untouched-sentinel assertions below fail BEFORE any continuation test
+	// can be credited. The old fixture requested a RELATIVE path outside the
+	// granted scope; production denied the write and the scripted model
+	// re-emitted it forever (loop detector, CI run on PR #82).
+	const providerInitialSentinel = "OS-SENTINEL-MUST-NOT-CHANGE\n"
+	initialTarget = filepath.Join(dir, "probe-live.txt")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(initialTarget, []byte(providerInitialSentinel), 0o644))
 	fake := &countedLeakDisk{leakFakeDisk: newLeakFakeDisk()}
 	fake.seedDir(dir)
 	fake.seedDir(filepath.ToSlash(dir))
@@ -175,13 +229,22 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res)
+	// The provider must have received the write for the EXACT absolute
+	// scoped target (native spelling first; the slashed spelling is the
+	// only tolerated alias — relative-path guessing is what broke the old
+	// fixture). Precedent: app_run_construction_leak_test.go's two-spelling
+	// lookup, minus its relative-path fallback.
 	fake.mu.Lock()
-	contents, ok := fake.files["probe-live.txt"]
+	got, ok := fake.files[initialTarget]
 	if !ok {
-		contents = fake.files[filepath.ToSlash(filepath.Join(dir, "probe-live.txt"))]
+		got, ok = fake.files[filepath.ToSlash(initialTarget)]
 	}
 	fake.mu.Unlock()
-	require.Equal(t, "live-value", contents, "the provider run must persist its write through the fake disk")
+	require.True(t, ok, "the provider run never wrote the exact scoped absolute target %s (provider keys: %v)", initialTarget, fake.snapshotKeys())
+	require.Equal(t, "live-value", got, "the provider run must persist its write through the fake disk at the exact target")
+	sentinel, err := os.ReadFile(initialTarget)
+	require.NoError(t, err)
+	require.Equal(t, providerInitialSentinel, string(sentinel), "the REAL OS file at the exact target must be untouched: the provider run must not reach the OS disk")
 
 	fence, err := fenceLoader(t, application).LoadSessionExecutionRequirement(context.Background(), sessionID)
 	require.NoError(t, err)

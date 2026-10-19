@@ -349,7 +349,10 @@ Boundaries to know:
   provider-backed SDK run persists a session execution requirement (the
   fence) at admission; same-process continuations (durable queued turns,
   drains/wakes, reviewer follow-ups) restore the exact binding, never
-  "the latest provider for the session".
+  "the latest provider for the session". The same-process root
+  drain/wake continuation ALSO restores the persisted folder-scope/command-tool
+  and restricted-run baseline from the fence, so the continued turn is judged
+  by the same policy the fenced run was admitted under.
 - **Supported by the batch runtime as a process-bound capability.** Rush
   borrows the provider and does not close it. Keep it usable until
   associated executions—including detached work and held delegations—

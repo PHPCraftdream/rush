@@ -11,11 +11,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -81,6 +83,57 @@ func (c *coordinator) PrepareContinuation(ctx context.Context, sessionID string,
 			once.Do(func() { caps.release(key) })
 		},
 	}, nil
+}
+
+// restorePolicyBaseline restores the persisted policy baseline (R12-H2b
+// §2.3, audit gh#11b) onto opts: the fence's call policy (DisableSubAgents,
+// model role, timeout-watchdog policy), the compiled folder scope
+// canonicalized against the SAME live provider, and the serializable
+// restricted-run spec, which is returned so the caller can arm it on the
+// turn context. An unsupported call policy refuses the continuation (typed
+// ErrDiskProviderUnavailable — terminal for this epoch); a folder scope
+// that cannot canonicalize or compile degrades to a compiled
+// deny-everything scope, the same fail-closed direction the durable
+// rebuild applies (T12).
+func (p *preparedContinuation) restorePolicyBaseline(ctx context.Context, sessionID string, opts *CallOptions) (*permission.RunAllowlistSpec, error) {
+	if p.requirement.CallPolicy != nil {
+		policyOpts, err := fromSessionCallOptionsSpec(p.requirement.CallPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("%w: session %s execution fence carries an incompatible call policy: %s",
+				ErrDiskProviderUnavailable, sessionID, err)
+		}
+		if policyOpts == nil {
+			policyOpts = &CallOptions{}
+		}
+		// Carry the binding identity/scope over: the policy spec decodes to a
+		// bare CallOptions with no provider knowledge of its own.
+		policyOpts.DiskProvider = opts.DiskProvider
+		policyOpts.DiskBindingID = opts.DiskBindingID
+		policyOpts.diskBinding = opts.diskBinding
+		policyOpts.Requirement = opts.Requirement
+		policyOpts.buildScope = opts.buildScope
+		*opts = *policyOpts
+	}
+	if p.requirement.FolderScopeSpec != nil {
+		var compiled permission.FolderScope
+		canonSpec, canonErr := tools.CanonicalizeFolderScopeSpec(ctx, p.provider, *fromSessionFolderScopeSpec(p.requirement.FolderScopeSpec))
+		if canonErr != nil {
+			slog.Error("restorePolicyBaseline: the fence's folder-scope spec failed to canonicalize; scoping the continuation to deny-everything",
+				"session_id", sessionID, "err", canonErr)
+		} else {
+			var scopeErr error
+			compiled, scopeErr = permission.BuildFolderScope(canonSpec)
+			if scopeErr != nil {
+				slog.Error("restorePolicyBaseline: the fence's folder-scope spec failed to compile; scoping the continuation to deny-everything",
+					"session_id", sessionID, "err", scopeErr)
+			}
+		}
+		opts.FolderScope = &compiled
+	}
+	if p.requirement.RunAllowlistSpec != nil {
+		return fromSessionRunAllowlistSpec(p.requirement.RunAllowlistSpec), nil
+	}
+	return nil, nil
 }
 
 // applyToOptions stamps the resolved capability onto a CallOptions value

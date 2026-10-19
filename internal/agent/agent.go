@@ -849,6 +849,25 @@ type sessionAgent struct {
 	// binding cannot be pruned before the pump rebuilds. Nil on bare
 	// fixtures.
 	diskCaps *DiskProviderRegistry
+
+	// capsMu guards diskCaps, which is bound once at batch install,
+	// possibly after construction.
+	capsMu sync.Mutex
+}
+
+// bindDiskCaps binds the App-owned capability manager onto an
+// already-constructed session agent (batch install path).
+func (a *sessionAgent) bindDiskCaps(caps *DiskProviderRegistry) {
+	a.capsMu.Lock()
+	defer a.capsMu.Unlock()
+	a.diskCaps = caps
+}
+
+// diskCapsRef returns the bound capability manager (nil until bound).
+func (a *sessionAgent) diskCapsRef() *DiskProviderRegistry {
+	a.capsMu.Lock()
+	defer a.capsMu.Unlock()
+	return a.diskCaps
 }
 
 // SessionAgentOptions is defined in agent_options.go (pure move, phase-4

@@ -519,7 +519,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			// Layer-1 refusal above.
 			var holdRelease func()
 			if req := requirementFromCall(call); req != nil {
-				rel, ok := holdDurableContinuationOwner(a.diskCaps, req.BindingID, idempotencyKey)
+				rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, idempotencyKey)
 				if !ok {
 					slog.Error("agent: refusing to durably enqueue a call whose disk provider binding is already lost",
 						"session_id", call.SessionID, "logical_call_id", call.LogicalCallID, "binding_id", req.BindingID)
@@ -568,13 +568,15 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 
 				slog.Error("agent: failed to durably enqueue call for recovery", logFields...)
 
-				// R12-H2b §2.4: the row-keyed holder under the primary
-				// id can never be released by the pump once the outbox
-				// fallback owns the record — release it under the original
-				// key and re-hold under the OUTBOX id the pump will
-				// actually see, but only if the outbox write succeeds. In
-				// every other failure path the original holder is released
-				// so a refused enqueue never leaks the binding pin.
+				// R12-H2b §2.4: the OUTBOX-keyed holder must be acquired
+				// BEFORE releasing the original — gh#10e: releasing the
+				// original first could prune a sole-owner binding before the
+				// replacement exists, leaving the record pinned to a dead
+				// provider. Acquire first, then transfer under the OUTBOX id
+				// the pump will actually see; if the replacement cannot be
+				// acquired, keep the original holder and refuse the fallback.
+				// In every other failure path the holders are released so a
+				// refused enqueue never leaks the binding pin.
 
 				// P0-3 fix: write to orphan outbox for durability. The outbox provides
 				// a minimal durable record that can be recovered by the pump. This
@@ -607,13 +609,21 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				// goroutine that is about to exit either way.
 				outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer outboxCancel()
-				if holdRelease != nil {
-					holdRelease()
-				}
 				var outboxRelease func()
 				if req := requirementFromCall(call); req != nil {
-					if rel, ok := holdDurableContinuationOwner(a.diskCaps, req.BindingID, outboxID); ok {
-						outboxRelease = rel
+					// gh#10e: acquire the OUTBOX-keyed holder BEFORE releasing the
+					// original, so a sole-owner binding survives the transfer. If the
+					// replacement cannot be acquired, keep the ORIGINAL holder (the
+					// primary row id stays the recoverable key) and refuse the fallback
+					// instead of persisting a record whose provider is already gone.
+					rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, outboxID)
+					if !ok {
+						callErrs[i] = fmt.Errorf("%w: orphan outbox fallback could not retain disk provider binding %s (session=%s); the original row-keyed holder is preserved", ErrDiskProviderUnavailable, req.BindingID, call.SessionID)
+						return
+					}
+					outboxRelease = rel
+					if holdRelease != nil {
+						holdRelease()
 					}
 				}
 				if outboxErr := a.sessions.WriteToOrphanOutbox(outboxCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {

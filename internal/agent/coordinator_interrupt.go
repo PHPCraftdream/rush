@@ -25,8 +25,10 @@ import (
 // --interrupt` feels near-immediate to an operator (worst case one tick of
 // latency), slow enough that the extra SELECT is negligible even across a
 // long multi-step turn. The ticker only lives for the duration of a turn (see
-// startInterruptTicker), so there is no idle-process polling.
-const interruptInjectTick = 3 * time.Second
+// startInterruptTicker), so there is no idle-process polling. It is a var so
+// tests can shrink it to drive the real loop at test timescale, restoring it
+// with t.Cleanup (precedent: recheckPassIntervalNS in coordinator_recheck.go).
+var interruptInjectTick = 3 * time.Second
 
 // interruptTickOperationTimeout is the per-tick deadline for the
 // handleInterruptTick operation. If a tick's DB operations or downstream
@@ -198,6 +200,15 @@ func (c *coordinator) ClearQueue(sessionID string) {
 	c.currentAgent.ClearQueue(sessionID)
 }
 
+// interruptTickStopsFor reports whether a tick error must STOP the
+// interrupt-inject ticker (gh#11a): a permanently non-durable dependency
+// and a lost process-bound binding can never succeed on a later tick. The
+// peeked inject row stays in place for an explicit operator action or a
+// newly admitted epoch instead of spinning refusals until shutdown.
+func interruptTickStopsFor(err error) bool {
+	return errors.Is(err, ErrDiskProviderNotDurable) || errors.Is(err, ErrDiskProviderUnavailable)
+}
+
 // startInterruptTicker launches a goroutine that polls pending_injects for an
 // interrupt=true row for sessionID every interruptInjectTick, for as long as
 // ctx is live (i.e. the duration of the owning turn). On each interrupt row
@@ -248,9 +259,8 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 				tickCancel()
 
 				if err != nil {
-					if errors.Is(err, ErrDiskProviderNotDurable) {
-						slog.Error("coordinator: interrupt-inject cannot cross the durable queue for this DiskProvider-backed run; retry after the active run ends",
-							"session_id", sessionID, "err", err)
+					if interruptTickStopsFor(err) {
+						slog.Error("coordinator: interrupt-inject cannot cross the durable queue; the dependency is permanently unavailable for this epoch", "session_id", sessionID, "err", err)
 						return
 					}
 					if errors.Is(err, context.DeadlineExceeded) {
@@ -763,6 +773,12 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 				// durable handoff is authoritative; do not enqueue a duplicate.
 				slog.Debug("coordinator: detached run inject was already consumed; skipping duplicate",
 					"inject_id", call.InjectID)
+				// gh#10c: another detached consumer won ownership of this inject and THIS
+				// consumer enqueued nothing — its row-keyed holder must die with the
+				// abandoned attempt, or the binding stays pinned until process exit.
+				if holdRelease != nil {
+					holdRelease()
+				}
 				return nil
 			}
 			slog.Error("coordinator: detached run failed to delete pending_injects row at start",
