@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,5 +26,5 @@ func TestCLIProviderLimit1282CodexShape(t *testing.T) {
 	reset, parseErr := time.Parse(time.RFC3339, result.QuotaResetAt)
 	require.NoError(t, parseErr)
 	require.True(t, reset.After(before.Add(29*time.Minute)))
-	require.EqualValues(t, 3, h.requests.Load())
+	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load())
 }

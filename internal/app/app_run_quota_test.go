@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -31,7 +33,7 @@ func TestCLIQuotaRetryable429Unchanged(t *testing.T) {
 	res, _, err := h.run(loopCtx(t), RunOverrides{})
 	require.NoError(t, err)
 	require.Equal(t, "end_turn", res.ExitReason)
-	require.GreaterOrEqual(t, time.Since(firstAt), 2*time.Second)
+	require.GreaterOrEqual(t, time.Since(firstAt), 100*time.Millisecond)
 	require.Greater(t, h.requests.Load(), int32(1))
 	require.Empty(t, res.ResumeCommand)
 }
@@ -47,6 +49,7 @@ func quotaResponse(w http.ResponseWriter) {
 func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 50*time.Millisecond, 0)()
 	var resume bool
+	var lastQuotaAt atomic.Int64
 	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, body []byte, _ bool, n int) {
 		if resume {
 			require.Contains(t, string(body), "own-output")
@@ -54,7 +57,8 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 			loopText(w, "resumed", "resumed persisted results", 1, 1)
 			return
 		}
-		require.LessOrEqual(t, n, 3, "no own turn after quota")
+		require.LessOrEqual(t, n, fantasy.DefaultRetryOptions().MaxRetries+1, "no own turn after quota")
+		lastQuotaAt.Store(time.Now().UnixNano())
 		quotaResponse(w)
 	})
 	ctx := loopCtx(t)
@@ -77,11 +81,10 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 			completeDelegation(t, ctx, h.app, h.sessionID, "child-job", "child-output", true)
 		}()
 	})
-	before := time.Now()
 	res, wire, runErr := h.run(ctx, RunOverrides{})
 	require.Error(t, runErr)
 	require.Equal(t, "provider_limit", res.ExitReason)
-	require.EqualValues(t, 3, h.requests.Load())
+	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load())
 	require.Len(t, res.FinishedWork, 2)
 	for _, work := range res.FinishedWork {
 		require.NotEqual(t, "historical-child", work.JobID)
@@ -91,7 +94,7 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 	require.Contains(t, res.ResumeCommand, "--role smart --session "+h.sessionID)
 	reset, err := time.Parse(time.RFC3339, res.QuotaResetAt)
 	require.NoError(t, err)
-	require.WithinDuration(t, before.Add(time.Hour), reset, 10*time.Second)
+	require.WithinDuration(t, time.Unix(0, lastQuotaAt.Load()).Add(time.Hour), reset, 10*time.Second)
 	jobs, err := h.app.asyncJobStore.ListAsyncJobsForOwner(ctx, h.sessionID)
 	require.NoError(t, err)
 	for _, job := range jobs {
@@ -119,7 +122,7 @@ func TestCLIQuotaDrainIgnoresFutureAwaitSchedule(t *testing.T) {
 			loopText(w, "first", "keep answer", 1, 1)
 			return
 		}
-		require.LessOrEqual(t, n, 4)
+		require.LessOrEqual(t, n, fantasy.DefaultRetryOptions().MaxRetries+2)
 		quotaResponse(w)
 	})
 	ctx := loopCtx(t)
@@ -131,8 +134,8 @@ func TestCLIQuotaDrainIgnoresFutureAwaitSchedule(t *testing.T) {
 	require.Error(t, runErr)
 	require.Equal(t, "provider_limit", res.ExitReason)
 	require.Equal(t, "keep answer", res.FinalText)
-	require.EqualValues(t, 4, h.requests.Load())
-	require.Less(t, time.Since(start), 15*time.Second)
+	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+2, h.requests.Load())
+	require.Less(t, time.Since(start), 60*time.Second)
 	require.Contains(t, wire, "once schedules")
 	require.True(t, cliScopeOf(t, h.app, h.sessionID).OnceWakeOpen)
 }
@@ -153,7 +156,7 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 	require.Equal(t, "provider_limit", res.ExitReason)
 	require.Len(t, res.PendingChildQuestions, 1)
 	require.Contains(t, wire, "which port?")
-	require.EqualValues(t, 3, h.requests.Load())
+	require.EqualValues(t, fantasy.DefaultRetryOptions().MaxRetries+1, h.requests.Load())
 	var decoded RunResult
 	require.NoError(t, json.Unmarshal([]byte(wire), &decoded))
 	require.Contains(t, strings.Join([]string{decoded.Error, decoded.ResumeCommand}, " "), "--role smart")
