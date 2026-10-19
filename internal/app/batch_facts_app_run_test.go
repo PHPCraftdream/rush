@@ -93,7 +93,7 @@ func TestAppRun_BoundFactSource_CompletesEndToEnd(t *testing.T) {
 	require.NoError(t, err, "a closed scope over the production-bound fact source must complete the run")
 	require.NotNil(t, res)
 	require.Equal(t, h.sessionID, res.SessionID)
-	require.Equal(t, "stop", res.ExitReason, "the clean first turn is the run's exit")
+	require.Equal(t, "end_turn", res.ExitReason, "the clean first turn is the run's exit")
 	require.Equal(t, "first answer", res.FinalText, "the bound facts must not swallow the turn's answer")
 	require.EqualValues(t, 1, h.requests.Load(), "a closed scope ends the loop after the first turn; no Drain")
 }
@@ -171,7 +171,7 @@ func TestAppRun_UnavailableFactSource_TypedErrorEndToEnd(t *testing.T) {
 	require.Equal(t, 1, counting.scopeCalls(),
 		"the terminal classification must exit on the FIRST unavailable scope read: no retry (a mutation that deletes the errors.Is branch retries, yielding >= 2 calls)")
 	// exitWait keeps the first turn's envelope but reclassifies the exit:
-	// the result is no longer a clean "stop".
+	// the result is no longer a clean "end_turn".
 	require.NotNil(t, res)
 	require.Equal(t, "error", res.ExitReason, "a terminal fact-source failure is an error exit, never stop")
 	require.Contains(t, res.Error, "batch fact source unavailable",
