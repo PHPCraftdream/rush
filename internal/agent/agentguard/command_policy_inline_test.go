@@ -85,22 +85,19 @@ func TestCommandPolicyOptionOperandTableCoverage(t *testing.T) {
 			if !options[option] {
 				t.Errorf("%s unexpected operand %s", tool, option)
 			}
-			operand := "test"
-			action := []string{"test"}
-			if tool == "go" {
-				operand = "build"
-				action = []string{"fmt"}
-			} else if tool == "cargo" {
-				operand = "x"
-				action = []string{"fmt"}
-			} else if tool == "node" {
-				operand = "test"
-				action = []string{"script.js"}
-			} else if tool == "npm" || tool == "pnpm" || tool == "yarn" || tool == "bun" || tool == "npx" {
-				action = []string{"install"}
-			} else {
-				operand = "pytest"
-				action = []string{"script.py"}
+			var operand string
+			var action []string
+			switch tool {
+			case "go":
+				operand, action = "build", []string{"fmt"}
+			case "cargo":
+				operand, action = "x", []string{"fmt"}
+			case "node":
+				operand, action = "test", []string{"script.js"}
+			case "npm", "pnpm", "yarn", "bun", "npx":
+				operand, action = "test", []string{"install"}
+			default:
+				operand, action = "pytest", []string{"script.py"}
 			}
 			if (tool == "python" || tool == "python3" || tool == "py") && option == "-c" {
 				operand = "print('pytest')"

@@ -106,10 +106,7 @@ func matchPolicy(args []string, enabled map[string]struct{}) string {
 	}
 	head := policyCanonicalExecutable(args[0])
 	has := func(r string) bool { _, ok := enabled[r]; return ok }
-	sub := ""
-	if len(args) > 1 {
-		sub = strings.ToLower(args[1])
-	}
+	var sub string
 	switch {
 	case has("go") && head == "go":
 		positional, unknown := scanToolArgs("go", args[1:])
