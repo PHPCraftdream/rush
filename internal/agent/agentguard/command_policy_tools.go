@@ -34,6 +34,9 @@ func scanToolArgs(tool string, args []string) ([]string, bool) {
 	unknown := false
 	for i := 0; i < len(args); i++ {
 		token := args[i]
+		if _, _, ok := parseInlineOption(tool, args, i); ok {
+			return positional, unknown
+		}
 		if strings.HasPrefix(token, "+") && tool == "cargo" {
 			continue
 		}
@@ -63,17 +66,11 @@ func scanToolArgs(tool string, args []string) ([]string, bool) {
 			continue
 		}
 		if operands[name] {
-			if (tool == "python" || tool == "python3" || tool == "py") && (name == "-c" || name == "-m") {
-				if name == "-c" {
-					return nil, unknown
-				}
+			if (tool == "python" || tool == "python3" || tool == "py") && name == "-m" {
 				positional = append(positional, token)
 				if i+1 < len(args) {
 					positional = append(positional, args[i+1])
 				}
-				return positional, unknown
-			}
-			if tool == "node" && (name == "-e" || name == "-p") {
 				return positional, unknown
 			}
 			if !strings.Contains(token, "=") && i+1 < len(args) {

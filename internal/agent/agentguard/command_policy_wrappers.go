@@ -4,8 +4,6 @@ import (
 	"path"
 	"regexp"
 	"strings"
-
-	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
 var (
@@ -22,7 +20,7 @@ func (p CommandPolicy) checkCandidates(candidates [][]string) error {
 		if len(args) == 0 {
 			return nil
 		}
-		if depth > wrapperDepthLimit || len(args) == 1 && (args[0] == "\x00rush-opaque-command") {
+		if depth > wrapperDepthLimit || len(args) == 1 && args[0] == "\x00rush-opaque-command" {
 			if len(p.rules) > 0 {
 				return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "wrapper nesting depth or opaque shell candidate prevented inspection; " + opaqueWrapperDetail}
 			}
@@ -61,9 +59,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 	var out [][]string
 	head := policyCanonicalExecutable(args[0])
 	rest := args[1:]
-	appendCandidates := func(inner []string) {
-		out = append(out, shell.CommandCandidatesForPlatform(inner, true)...)
-	}
+	appendCandidates := func(inner []string) { out = append(out, policyArgvCandidates(inner, 1)...) }
 	if valueNice[head] && len(rest) > 1 {
 		appendCandidates(rest[1:])
 	}
@@ -71,8 +67,8 @@ func augmentPolicyWrappers(args []string) [][]string {
 		appendCandidates(rest)
 	}
 	if head == "find" {
-		for i, token := range rest {
-			if (token == "-exec" || token == "-execdir") && i+1 < len(rest) {
+		for i, t := range rest {
+			if (t == "-exec" || t == "-execdir") && i+1 < len(rest) {
 				end := i + 1
 				for end < len(rest) && rest[end] != ";" && rest[end] != "+" {
 					end++
@@ -83,32 +79,29 @@ func augmentPolicyWrappers(args []string) [][]string {
 			}
 		}
 	}
-	if head == "node" {
+	if head == "node" || head == "python" || head == "python3" || head == "py" {
 		for i := 0; i < len(rest); i++ {
-			arg := rest[i]
-			name := arg
+			if code, consumed, ok := parseInlineOption(head, rest, i); ok {
+				for _, argv := range literalInlineArgvs(head, code) {
+					out = append(out, policyArgvCandidates(argv, 1)...)
+				}
+				i += consumed
+				continue
+			}
+			name := rest[i]
 			if eq := strings.IndexByte(name, '='); eq >= 0 {
 				name = name[:eq]
 			}
-			if commandPolicyOptionFlags["node"][name] || strings.HasPrefix(name, "--test-") {
+			if commandPolicyOptionFlags[head][name] || strings.HasPrefix(name, "--test-") {
 				continue
 			}
-			if name == "-e" || name == "--eval" || name == "-p" || name == "--print" {
-				if i+1 < len(rest) {
-					for _, command := range literalNodeExecCommands(rest[i+1]) {
-						appendCandidates([]string{"sh", "-c", command})
-					}
-				}
-				i++
-				continue
-			}
-			if operands := commandPolicyOptionOperands["node"]; operands[name] {
-				if !strings.Contains(arg, "=") {
+			if commandPolicyOptionOperands[head][name] {
+				if !strings.Contains(rest[i], "=") {
 					i++
 				}
 				continue
 			}
-			if !strings.HasPrefix(arg, "-") {
+			if !strings.HasPrefix(rest[i], "-") {
 				break
 			}
 		}
@@ -126,7 +119,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 	}
 	if head == "sudo" {
 		i := 0
-		valueOptions := map[string]bool{"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-T": true}
+		values := map[string]bool{"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-T": true}
 		for i < len(rest) {
 			token := rest[i]
 			if token == "--" {
@@ -141,7 +134,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 				option = token[:eq]
 			}
 			i++
-			if valueOptions[option] && !strings.Contains(token, "=") && i < len(rest) {
+			if values[option] && !strings.Contains(token, "=") && i < len(rest) {
 				i++
 			}
 		}
@@ -155,7 +148,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 			i++
 		}
 		if i < len(rest) && len(rest)-i > 1 && rest[i] == "" {
-			i++ // cmd start may include an empty title argument
+			i++
 		}
 		if i < len(rest) {
 			appendCandidates(rest[i:])
@@ -212,10 +205,7 @@ func augmentPolicyWrappers(args []string) [][]string {
 	return out
 }
 
-var literalNodeExecPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*'([^']*)'`),
-	regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*"([^"]*)"`),
-}
+var literalNodeExecPatterns = []*regexp.Regexp{regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*'([^']*)'`), regexp.MustCompile(`(?i)(?:execSync|exec)\s*\(\s*"([^"]*)"`)}
 
 func literalNodeExecCommands(code string) []string {
 	var commands []string
@@ -230,7 +220,7 @@ func literalNodeExecCommands(code string) []string {
 }
 
 func policyCanonicalExecutable(value string) string {
-	value = strings.ReplaceAll(value, `\`, "/")
+	value = strings.ReplaceAll(value, `\`, `/`)
 	value = strings.ToLower(path.Base(value))
 	for _, suffix := range []string{".exe", ".cmd", ".bat", ".com", ".ps1"} {
 		value = strings.TrimSuffix(value, suffix)

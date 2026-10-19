@@ -6,7 +6,10 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-const opaqueWrapperDetail = "under RUSH_DENY_EXEC dynamic commands are refused because tests/builds run only in GitHub CI; use a literal allowed command"
+const (
+	opaqueWrapperDetail = "under RUSH_DENY_EXEC dynamic commands are refused because tests/builds run only in GitHub CI; use a literal allowed command"
+	policyDynamicArg    = "\x00rush-dynamic-argument"
+)
 
 func (p CommandPolicy) checkOpaqueWrapper(args []string) (string, bool) {
 	if len(p.rules) == 0 || len(args) == 0 {
@@ -16,51 +19,20 @@ func (p CommandPolicy) checkOpaqueWrapper(args []string) (string, bool) {
 	payload, mode := "", ""
 	switch head {
 	case "sh", "bash", "zsh", "dash":
-		for i := 1; i < len(args); i++ {
-			option := args[i]
-			if option == "--" {
-				break
-			}
-			if !strings.HasPrefix(option, "-") {
-				break
-			}
-			if strings.HasPrefix(option, "--") {
-				if option == "--rcfile" || option == "--init-file" || option == "--startup-file" {
-					i++
-				}
-				continue
-			}
-			cluster := strings.TrimPrefix(option, "-")
-			if strings.Contains(cluster, "c") {
-				if i+1 < len(args) {
-					payload, mode = args[i+1], "sh"
-				}
-				break
-			}
-			if strings.Contains(cluster, "o") || strings.Contains(cluster, "O") {
-				if i+1 < len(args) {
-					i++
-				}
-			}
-		}
+		payload = policyShellPayload(args)
+		mode = "sh"
 	case "powershell", "pwsh":
 		for i := 1; i < len(args); i++ {
-			if strings.EqualFold(args[i], "-File") {
+			switch strings.ToLower(args[i]) {
+			case "-file":
 				return "", false
-			}
-			if strings.EqualFold(args[i], "-EncodedCommand") || strings.EqualFold(args[i], "-enc") {
+			case "-encodedcommand", "-enc":
 				return args[i], true
-			}
-			if strings.EqualFold(args[i], "-Command") || strings.EqualFold(args[i], "-c") {
+			case "-command", "-c":
 				payload, mode = strings.Join(args[i+1:], " "), "ps"
-				break
-			}
-			if strings.EqualFold(args[i], "-ExecutionPolicy") || strings.EqualFold(args[i], "-File") || strings.EqualFold(args[i], "-WindowStyle") {
+				i = len(args)
+			case "-executionpolicy", "-windowstyle":
 				i++
-				continue
-			}
-			if !strings.HasPrefix(args[i], "-") {
-				break
 			}
 		}
 	case "cmd", "cmd.exe":
@@ -78,10 +50,7 @@ func (p CommandPolicy) checkOpaqueWrapper(args []string) (string, bool) {
 		return payload, true
 	}
 	if mode == "ps" {
-		if opaquePowerShell(payload) {
-			return payload, true
-		}
-		return "", false
+		return payload, opaquePowerShell(payload)
 	}
 	file, err := syntax.NewParser().Parse(strings.NewReader(payload), "")
 	if err != nil {
@@ -93,19 +62,111 @@ func (p CommandPolicy) checkOpaqueWrapper(args []string) (string, bool) {
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
-		name, literal := policyLiteralWord(call.Args[0].Parts)
-		if !literal {
-			reason = payload
-			opaque = true
+		head, dynamic, index := resolvePolicyShellHead(call)
+		if dynamic {
+			if head == "" || p.deniedHead(head) {
+				opaque, reason = true, payload
+			}
 			return true
 		}
-		name = strings.ToLower(name)
-		if name == "eval" || name == "source" || name == "." {
-			opaque, reason = true, name
+		head = policyUnescapeWord(head)
+		if head == "eval" || head == "source" || head == "." {
+			opaque, reason = true, head
+			return true
+		}
+		if p.deniedHead(head) && dynamicAction(call, index) {
+			opaque, reason = true, payload
 		}
 		return true
 	})
 	return reason, opaque
+}
+
+func (p CommandPolicy) deniedHead(head string) bool {
+	switch head {
+	case "go":
+		return p.hasRule("go")
+	case "npm", "pnpm", "yarn", "npx", "bun":
+		return p.hasRule("js")
+	case "node":
+		return p.hasRule("node")
+	case "python", "python3", "py":
+		return p.hasRule("python")
+	case "cargo":
+		return p.hasRule("cargo")
+	case "pytest", "playwright", "vitest", "jest":
+		return p.hasRule("test-runners")
+	case "golangci-lint", "staticcheck", "revive", "sqlc", "gopls", "gotestsum", "ginkgo":
+		return p.hasRule("linters")
+	}
+	return false
+}
+func (p CommandPolicy) hasRule(name string) bool { _, ok := p.rules[name]; return ok }
+
+// resolvePolicyShellHead returns the effective executable and its argv index.
+func resolvePolicyShellHead(call *syntax.CallExpr) (string, bool, int) {
+	args := make([]string, len(call.Args))
+	for i, word := range call.Args {
+		value, literal := policyLiteralWord(word.Parts)
+		if literal {
+			args[i] = value
+		} else {
+			args[i] = policyDynamicArg
+		}
+	}
+	return resolveArgvPolicyHead(args)
+}
+
+func dynamicAction(call *syntax.CallExpr, headIndex int) bool {
+	words := make([]string, len(call.Args))
+	dyn := make([]bool, len(call.Args))
+	for i, w := range call.Args {
+		words[i], dyn[i] = policyLiteralWord(w.Parts)
+		dyn[i] = !dyn[i]
+	}
+	head := policyCanonicalExecutable(words[headIndex])
+	i := headIndex + 1
+	for i < len(words) {
+		if dyn[i] {
+			return true
+		}
+		name := words[i]
+		if !strings.HasPrefix(name, "-") {
+			if head == "npm" || head == "pnpm" || head == "yarn" || head == "bun" || head == "npx" {
+				if name == "run" || name == "run-script" {
+					i++
+					return i < len(words) && dyn[i]
+				}
+			}
+			if head == "go" && name == "mod" {
+				i++
+				return i < len(words) && dyn[i]
+			}
+			return false
+		}
+		option := name
+		if eq := strings.IndexByte(option, '='); eq >= 0 {
+			option = option[:eq]
+		}
+		if commandPolicyOptionOperands[head][option] && !strings.Contains(name, "=") {
+			i++
+			if i < len(words) && dyn[i] {
+				return true
+			}
+		}
+		i++
+	}
+	return false
+}
+func isEnvAssignment(value string) bool { i := strings.IndexByte(value, '='); return i > 0 }
+func policyUnescapeWord(value string) string {
+	if strings.EqualFold(value, `\eval`) {
+		return "eval"
+	}
+	if strings.EqualFold(value, `\source`) {
+		return "source"
+	}
+	return value
 }
 
 func policyLiteralWord(parts []syntax.WordPart) (string, bool) {
@@ -117,16 +178,43 @@ func policyLiteralWord(parts []syntax.WordPart) (string, bool) {
 		case *syntax.SglQuoted:
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
-			value, ok := policyLiteralWord(p.Parts)
+			v, ok := policyLiteralWord(p.Parts)
 			if !ok {
 				return "", false
 			}
-			b.WriteString(value)
+			b.WriteString(v)
 		default:
 			return "", false
 		}
 	}
 	return b.String(), true
+}
+
+func policyShellCalls(source string) ([][]string, bool) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(source), "")
+	if err != nil {
+		return nil, true
+	}
+	var calls [][]string
+	opaque := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		args := make([]string, len(call.Args))
+		for i, w := range call.Args {
+			v, literal := policyLiteralWord(w.Parts)
+			if literal {
+				args[i] = v
+			} else {
+				args[i] = policyDynamicArg
+			}
+		}
+		calls = append(calls, args)
+		return true
+	})
+	return calls, opaque
 }
 
 func containsPowerShellCommand(source, word string) bool {
@@ -151,16 +239,16 @@ func opaquePowerShell(source string) bool {
 	if strings.Contains(lower, "invoke-expression") || containsPowerShellCommand(lower, "iex") {
 		return true
 	}
-	runes := []rune(source)
-	for i, r := range runes {
-		if r != '&' && r != '.' {
+	r := []rune(source)
+	for i, c := range r {
+		if c != '&' && c != '.' {
 			continue
 		}
 		j := i + 1
-		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '(' || runes[j] == '\'' || runes[j] == '"') {
+		for j < len(r) && (r[j] == ' ' || r[j] == '\t' || r[j] == '(' || r[j] == '\'' || r[j] == '"') {
 			j++
 		}
-		if j < len(runes) && runes[j] == '$' {
+		if j < len(r) && r[j] == '$' {
 			return true
 		}
 	}

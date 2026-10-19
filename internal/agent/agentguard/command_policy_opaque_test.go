@@ -69,6 +69,76 @@ func TestOpaqueShellWrapperPolicyDisabled(t *testing.T) {
 	}
 }
 
+func TestOpaquePolicyTransparentPrefixesAndDynamicActions(t *testing.T) {
+	p := NewCommandPolicy("ci-only")
+	opaque := [][]string{{"bash", "-c", "command eval x"}, {"bash", "-c", "builtin source f"}, {"bash", "-c", "env X=1 eval x"}, {"bash", "-c", "nohup eval x"}, {"bash", "-c", "timeout 2 command eval x"}, {"bash", "-c", "capm 2g eval x"}, {"bash", "-c", `\eval x`}, {"bash", "-c", `'eval' x`}}
+	for _, argv := range opaque {
+		err := p.CheckArgs(argv)
+		d, ok := err.(*CommandDeniedError)
+		if !ok || d.Rule != "opaque-wrapper-command" {
+			t.Errorf("CheckArgs(%q)=%v; want opaque denial", argv, err)
+		}
+	}
+	allowed := [][]string{{"bash", "-c", `git status "$path"`}, {"bash", "-c", `grep -r "$pat" .`}, {"bash", "-c", `cd "$d" && gofmt -l .`}}
+	for _, argv := range allowed {
+		if err := p.CheckArgs(argv); err != nil {
+			t.Errorf("CheckArgs(%q)=%v", argv, err)
+		}
+	}
+	for _, payload := range []string{"go $s ./...", "npm run $s", "bun run $s", "npx run $s", "cargo $c", "go -C \"$d\" test", "$t test"} {
+		err := p.CheckArgs([]string{"bash", "-c", payload})
+		if err == nil {
+			t.Errorf("CheckArgs(%q) allowed", payload)
+		}
+	}
+	if err := NewCommandPolicy("").CheckArgs([]string{"bash", "-c", "eval x"}); err != nil {
+		t.Fatalf("disabled: %v", err)
+	}
+}
+
+func TestOpaquePolicyCheckCommandCases(t *testing.T) {
+	p := NewCommandPolicy("ci-only")
+	cases := []struct {
+		command string
+		denied  bool
+	}{
+		{"bash -c 'env X=1 command builtin exec nohup time nice eval $code'", true},
+		{"bash -c '\\eval $code'", true},
+		{"bash -c \"'env' X=1 'command' 'source' $script\"", true},
+		{"bash -c 'go $s ./...'", true},
+		{"bash -c 'npm run $s'", true},
+		{"bash -c 'cargo $c'", true},
+		{"bash -c 'go -C \"$d\" test'", true},
+		{"bash -c '$t test'", true},
+		{"bash -c 'git status \"$path\"'", false},
+		{"bash -c 'grep -r \"$pat\" .'", false},
+		{"bash -c 'cd \"$d\" && gofmt -l .'", false},
+	}
+	for _, tc := range cases {
+		err := p.CheckCommand(tc.command)
+		if (err != nil) != tc.denied {
+			t.Errorf("CheckCommand(%q) = %v, denied=%v", tc.command, err, tc.denied)
+		}
+	}
+	if err := NewCommandPolicy("").CheckCommand("bash -c '$tool test'"); err != nil {
+		t.Fatalf("disabled policy: %v", err)
+	}
+}
+
+func TestPowerShellLiteralPrefixControls(t *testing.T) {
+	p := NewCommandPolicy("ci-only")
+	for _, argv := range [][]string{{"pwsh", "-Command", "Start-Process Invoke-Expression"}, {"pwsh", "-Command", "call iex 'go test'"}} {
+		err := p.CheckArgs(argv)
+		d, ok := err.(*CommandDeniedError)
+		if !ok || d.Rule != "opaque-wrapper-command" {
+			t.Errorf("CheckArgs(%q)=%v; want opaque", argv, err)
+		}
+	}
+	if err := p.CheckArgs([]string{"pwsh", "-Command", "Start-Process git"}); err != nil {
+		t.Errorf("literal allowed Start-Process: %v", err)
+	}
+}
+
 func TestCommandDeniedErrorDetail(t *testing.T) {
 	err := NewCommandPolicy("ci-only").CheckArgs([]string{"bash", "-c", "$tool test"})
 	denied, ok := err.(*CommandDeniedError)

@@ -45,8 +45,11 @@ func NewCommandPolicy(value string) CommandPolicy {
 
 // CheckCommand and CheckArgs use shell's shared wrapper/argv candidate parser.
 func (p CommandPolicy) CheckCommand(command string) error {
-	calls, err := shell.ParseCommandCandidates(command)
-	if err != nil {
+	if len(p.rules) == 0 {
+		return nil
+	}
+	calls, opaque := policyShellCalls(command)
+	if opaque {
 		return nil
 	}
 	for _, call := range calls {
@@ -58,11 +61,23 @@ func (p CommandPolicy) CheckCommand(command string) error {
 }
 
 func (p CommandPolicy) CheckArgs(args []string) error {
+	if len(p.rules) == 0 {
+		return nil
+	}
 	if reason, opaque := p.checkOpaqueWrapper(args); opaque {
 		return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "opaque command head or payload " + reason + "; " + opaqueWrapperDetail}
 	}
-	candidates := shell.CommandCandidatesForPlatform(args, true)
-	candidates = append(candidates, augmentPolicyWrappers(args)...)
+	if len(args) > 0 && args[0] == policyDynamicArg {
+		return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "dynamic command head; " + opaqueWrapperDetail}
+	}
+	resolved, dynamic, _ := resolveArgvPolicyHead(args)
+	if dynamic && len(args) > 0 && isPolicyPrefix(args[0]) {
+		return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "dynamic command head; " + opaqueWrapperDetail}
+	}
+	if resolved == "eval" || resolved == "source" || resolved == "." {
+		return &CommandDeniedError{Rule: "opaque-wrapper-command", Detail: "opaque command head " + resolved + "; " + opaqueWrapperDetail}
+	}
+	candidates := policyArgvCandidates(args, 0)
 	return p.checkCandidates(candidates)
 }
 
