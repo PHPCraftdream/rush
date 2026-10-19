@@ -61,11 +61,23 @@ func callFromActive(active SessionAgentCall) SessionAgentCall {
 	return call
 }
 
-// drainCallFor builds sessionID's Drain call: a delegated child uses its
-// driver's own frozen template (same model/provider/sampling shape the
-// delegation launched with, doc sec.3.4), a root/non-driver session
-// resolves its own pinned models exactly like an ordinary wake turn does
-// today (wakeNoticeCall's non-driver branch, which this replaces).
+func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall {
+	call.SmartModel = &model
+	call.MaxOutputTokens = model.CatwalkCfg.DefaultMaxTokens
+	if model.ModelCfg.MaxTokens != 0 {
+		call.MaxOutputTokens = model.ModelCfg.MaxTokens
+	}
+	call.Temperature = model.ModelCfg.Temperature
+	call.TopP = model.ModelCfg.TopP
+	call.TopK = model.ModelCfg.TopK
+	call.FrequencyPenalty = model.ModelCfg.FrequencyPenalty
+	call.PresencePenalty = model.ModelCfg.PresencePenalty
+	return call
+}
+
+// drainCallFor builds sessionID's Drain call. Slot-derived child drivers
+// resolve their live role slot per new automatic turn; explicit/non-slot
+// drivers keep the frozen model. Root sessions resolve their own pins as usual.
 // R12-H2b §2.3: both branches resolve the session's execution fence
 // FIRST — the returned preparedContinuation holds the Continuation owner
 // across the dispatch window (the caller releases it after Run returns),
@@ -87,6 +99,12 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
 		}
 		call := newDrainCall(driver.callFor(""))
+		if driver.slotRole != "" && call.Credentials == nil {
+			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.slotRole); ok {
+				call = applyDrainModelOptions(call, refreshed)
+				call.ProviderOptions = getProviderOptions(sessionID, refreshed, providerCfg)
+			}
+		}
 		c.freshenDrainClient(ctx, &call)
 		prep, prepErr := c.PrepareContinuation(ctx, sessionID, requirementFromCall(call))
 		if prepErr != nil {

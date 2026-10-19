@@ -155,6 +155,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// cannot leak into a concurrent sub-agent dispatch from a different
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
+	cfg, _ := c.cfg.Snapshot()
 
 	// Per-call CredentialSet (RunWithCredentials): the parent call's
 	// tenant credentials win for the slots they cover — worker first (the
@@ -176,8 +177,6 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			choice, covered = creds.Models[RoleSmart]
 		}
 		if covered {
-			// One atomic snapshot for this build's provider + network reads (F6).
-			cfg, _ := c.cfg.Snapshot()
 			credModel, provCfg, err := c.buildCredentialModel(ctx, cfg, creds, choice)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to build sub-agent model from per-call credentials: %w", err)
@@ -196,16 +195,16 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			hbSource = hbSourceSessionOverride
 		}
 	}
-	// D3 (plan §2.3): the slot-built model is refreshed at DISPATCH time — a
-	// dispatch is a new request — so a long orchestrator turn does not keep
-	// spawning sub-agents on a model the operator replaced mid-turn.
-	// Explicit tiers (per-call credentials, the session pin above) never
-	// pass through here. The refresh applies ONLY to the agent tool's
-	// slot-built dispatch (params.slotModel): agentic_fetch builds its child
-	// on the FAST model, which is not a role-slot model, so refreshing it
-	// from the smart slot would silently run the child on the wrong model.
-	if params.slotModel && callCreds == nil && hbSource == hbSourceSlotStart {
-		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, model); ok {
+	// The refresh is best-effort; preserve the selected role for future turns.
+	var dispatchSlotRole config.SelectedModelType
+	if params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+		dispatchSlotRole = config.SelectedModelTypeSmart
+		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
+			if c.workerSubAgentActiveForCall(ctx, cfg) {
+				dispatchSlotRole = config.SelectedModelTypeWorker
+			}
+		}
+		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, cfg, dispatchSlotRole, model); ok {
 			model = refreshed
 			hbSource = hbSourceSlotLive
 		}
@@ -220,7 +219,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		providerCfg = *credProviderCfg
 	} else {
 		var ok bool
-		providerCfg, ok = c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
+		providerCfg, ok = cfg.Providers.Get(model.ModelCfg.Provider)
 		if !ok {
 			return fantasy.ToolResponse{}, errModelProviderNotConfigured
 		}
@@ -274,6 +273,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// driver must keep the model the delegation actually started with, not
 	// whatever a later retry rebuilds it to.
 	driverModel := *pinnedModel
+	// Driver slot provenance is maintained independently of refresh outcome.
+	driverSlotRole := dispatchSlotRole
 	callTemplate := SessionAgentCall{
 		SessionID:        session.ID,
 		MaxOutputTokens:  maxTokens,
@@ -287,7 +288,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 	}
-	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID})
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole})
 	// R1-1: inherit the parent run's per-session restricted-run gate too, so
 	// a delegated sub-agent's tool calls are judged by its own run's policy
 	// rather than by whatever a concurrent run last armed on the

@@ -147,25 +147,30 @@ func roleSlotOverride(cfg *config.Config, sess session.Session, role config.Sele
 	return &ModelOverride{Provider: sel.Provider, Model: sel.Model, ReasoningEffort: sel.ReasoningEffort}, source, true
 }
 
-// refreshSubAgentSlotModel re-resolves the slot-built sub-agent model from
-// the live config snapshot at DISPATCH time (plan D3, §2.3): a dispatch is
-// a new request, so a long orchestrator turn must not keep spawning
-// sub-agents on a model the operator replaced mid-turn. Session pins and
-// per-call credentials are explicit choices, not slot values, and never
-// pass through here — callers gate on them. On a rebuild failure the stale
-// model keeps the dispatch alive (warn, don't fail the spawn).
-func (c *coordinator) refreshSubAgentSlotModel(ctx context.Context, model Model) (Model, bool) {
+func (c *coordinator) refreshDrainModel(ctx context.Context, role config.SelectedModelType) (Model, config.ProviderConfig, bool) {
 	cfg, _ := c.cfg.Snapshot()
-	slot, ok := cfg.Models[config.SelectedModelTypeSmart]
-	if c.workerSubAgentActiveForCall(ctx, cfg) {
-		if workerSlot, workerOK := cfg.Models[config.SelectedModelTypeWorker]; workerOK {
-			slot, ok = workerSlot, workerOK
-		}
-	}
+	slot, ok := cfg.Models[role]
 	if !ok || slot.Model == "" {
-		return model, false
+		return Model{}, config.ProviderConfig{}, false
 	}
-	if slot.Provider == model.ModelCfg.Provider && slot.Model == model.ModelCfg.Model && slot.ReasoningEffort == model.ModelCfg.ReasoningEffort {
+	providerCfg, ok := cfg.Providers.Get(slot.Provider)
+	if !ok {
+		return Model{}, config.ProviderConfig{}, false
+	}
+	rebuilt, _, err := c.buildModelsFromCfg(ctx, cfg, slot, slot, true)
+	if err != nil {
+		slog.Warn("Drain: keeping the model built at the delegation's start; the live slot rebuild failed", "err", err)
+		return Model{}, config.ProviderConfig{}, false
+	}
+	return rebuilt, providerCfg, true
+}
+
+// refreshSubAgentSlotModel re-resolves the slot-built sub-agent model from
+// the live config snapshot at dispatch time. It always rebuilds effective
+// settings even when provider and model identifiers are unchanged.
+func (c *coordinator) refreshSubAgentSlotModel(ctx context.Context, cfg *config.Config, role config.SelectedModelType, model Model) (Model, bool) {
+	slot, ok := cfg.Models[role]
+	if !ok || slot.Model == "" {
 		return model, false
 	}
 	rebuilt, _, err := c.buildModelsFromCfg(ctx, cfg, slot, slot, true)
