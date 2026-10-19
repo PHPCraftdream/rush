@@ -772,6 +772,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 	if err != nil {
 		err = maybeStdioErr(err, transport)
 		err = maybeTimeoutErr(err, timeout, timeoutErrCause, timeoutCause)
+		err = keepContextErr(lifetimeCtx, err, timeoutErrCause, timeoutCause)
 		if admission == nil || (!admission.suppressState && admission.valid()) {
 			if admission == nil {
 				updateState(name, StateError, err, nil, Counts{})
@@ -807,6 +808,19 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 		},
 		cleanup: cleanup,
 	}, nil
+}
+
+// keepContextErr keeps a caller/owner cancellation or deadline classifiable.
+// When the context ends mid-initialize the SDK (>= v1.8) can surface the
+// torn-down transport ("connection closed ... use of closed network
+// connection") without wrapping the context's own error; the owned
+// initialization timeout keeps its dedicated wording.
+func keepContextErr(ctx context.Context, err error, cause, timeoutCause error) error {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || cause == timeoutCause || errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ctxErr, err)
 }
 
 func maybeTimeoutErr(err error, timeout time.Duration, cause, timeoutCause error) error {

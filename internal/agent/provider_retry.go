@@ -6,5 +6,8 @@ package agent
 // close to its CI timeout. Every fantasy agent call/stream call below sets
 // MaxRetries from this var so attempt counts stay as before the bump. The
 // library's initial delay (5 s vs the old 2 s) cannot be pinned through the
-// agent API and is an accepted residual.
+// agent API (fantasy v0.45.2 builds DefaultRetryOptions() per call and only
+// MaxRetries is overridable) and is an accepted residual; a Retry-After
+// header of up to 60 s still wins over the exponential delay, so
+// server-directed rate-limit waits are unchanged.
 var ProviderMaxRetries = 2
