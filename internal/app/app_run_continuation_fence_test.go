@@ -45,6 +45,8 @@ type countedLeakDisk struct {
 	writes atomic.Int64
 }
 
+var fenceLockProviderRequests atomic.Int64
+
 func (d *countedLeakDisk) WriteFile(ctx context.Context, name string, b []byte, mode fs.FileMode) error {
 	d.writes.Add(1)
 	return d.leakFakeDisk.WriteFile(ctx, name, b, mode)
@@ -188,6 +190,7 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 		firstReqOnce   sync.Once
 	)
 	handler := func(w http.ResponseWriter, r *http.Request) {
+		fenceLockProviderRequests.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		switch {
 		case strings.Contains(string(body), `"call_cont"`):

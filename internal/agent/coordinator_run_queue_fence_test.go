@@ -90,8 +90,13 @@ func TestGuardTurnDiskFence_RefusesOptionslessTurnOnFencedSession(t *testing.T) 
 	_, err = caps.Lookup(bindingC)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable,
 		"the fixture must model the stale-fence state: bindingC's binding must be dead")
+	ctx = WithExecutionProviderIntent(ctx, "s1", ExecutionProviderOS)
 	err = coord.guardTurnDiskFence(ctx, "s1", &CallOptions{DiskProvider: tools.OSDisk()})
 	require.NoError(t, err)
+	// The normalized OS provider with omitted caller intent is NOT authority
+	// to clear/ignore the session fence.
+	err = coord.guardTurnDiskFence(context.Background(), "s1", &CallOptions{DiskProvider: tools.OSDisk()})
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 
 	// A session with NO fence (nothing stored for it) and a nil-opts
 	// turn is the ordinary OS-disk path: the guard must not block it.
