@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
@@ -63,6 +62,14 @@ func (f *attemptFixture) expireDrainPause() {
 // maxNoticeAttempts is the highest wake_attempts among the visible debt rows.
 func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
 	f.t.Helper()
+	if batchFlagEnabled() {
+		store := session.NewBatchStore(f.env.conn)
+		snap, err := store.BatchReactionCaptureDebtSnapshot(ctx, f.sessID)
+		require.NoError(f.t, err)
+		maxAttempts, err := store.BatchReactionMaxWakeAttempts(ctx, f.sessID, snap)
+		require.NoError(f.t, err)
+		return maxAttempts
+	}
 	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
 	require.NoError(f.t, err)
 	n, err := f.store.MaxWakeAttempts(ctx, f.sessID, snap)
@@ -72,6 +79,12 @@ func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
 
 func (f *attemptFixture) hasDebt(ctx context.Context) bool {
 	f.t.Helper()
+	if batchFlagEnabled() {
+		store := session.NewBatchStore(f.env.conn)
+		debt, err := store.BatchReactionDebtExists(ctx, f.sessID)
+		require.NoError(f.t, err)
+		return debt
+	}
 	debt, err := f.ledger.reactionDebtExists(ctx, f.sessID)
 	require.NoError(f.t, err)
 	return debt
@@ -232,14 +245,7 @@ func TestBGShellCapDeferred_OnlyWhenEveryDebtRowIsOverCap(t *testing.T) {
 // (jb-g1b.gh#6).
 func bindRealNodeFacts(t *testing.T, f *attemptFixture) BatchCutoverFacts {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	facts := NewBatchCutoverNodeFacts(
-		session.NewBatchStore(f.env.conn),
-		session.NewBatchLiveReader(db.New(f.env.conn), f.env.workingDir),
-		f.env.conn)
-	BindCoordinatorBatchCutoverFacts(f.coord, facts)
-	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
-	return facts
+	return bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
 }
 
 // seedOverCapCompletion inserts one bg-shell completion row and records its
@@ -292,6 +298,7 @@ func (r readObservingFacts) PendingInclusiveDebt(ctx context.Context, owner stri
 //     cancellation came from the read, and require.Error fails when the read
 //     completed before the cancel.
 func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	f, _ := newBGShellCapFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
 	bindRealNodeFacts(t, f)
 	ctx := context.Background()
@@ -363,6 +370,7 @@ func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) 
 //     deterministic and may false-pass. The deterministic deletion detector
 //     is TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed above.
 func TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	f, _ := newBGShellCapFixture(t, "cap-pair", attemptFixtureOpts{noIdle: true})
 	nodeFacts := bindRealNodeFacts(t, f)
 	observedCount := 0
@@ -457,8 +465,7 @@ func TestBGShellCap_OverCapCompletionInTheSeamIsKeptAndDefers(t *testing.T) {
 
 	seam := func() {
 		// An over-cap completion lands exactly between the DB half and the
-		// gate: durable row + the refused slot recorded by its id -- what
-		// persistBGShellCompletion does under bgArrival.
+		// gate: durable retained notice plus its denied slot.
 		id, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
 		require.NoError(t, err)
 		require.False(t, f.coord.arb.claimAutoResumeSlot(f.sessID, id, true), "no slot left: over the cap")
