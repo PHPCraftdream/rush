@@ -18,6 +18,11 @@ func TestCommandPolicyTransparentPrefixOptionVerdicts(t *testing.T) {
 		{"sudo", "-u", "bob", "go", "test"},
 		{"command", "-p", "go", "test"},
 		{"xargs", "-n1", "go", "build"},
+		{"env", "-S", "go test", "git", "status"},
+		{"env", "-S", "go test", "-i"},
+		{"env", "-u", "X", "-S", "npm run build", "echo"},
+		{"nice", "env", "-S", "cargo build", "true"},
+		{"bash", "-c", `env -S "go vet ./..." true`},
 	}
 	for _, argv := range denied {
 		if err := p.CheckArgs(argv); err == nil {
@@ -28,6 +33,8 @@ func TestCommandPolicyTransparentPrefixOptionVerdicts(t *testing.T) {
 		{"time", "-f", "%e", "git", "status"},
 		{"exec", "-a", "x", "git", "log"},
 		{"nice", "-n", "5", "gofmt", "-l", "."},
+		{"env", "-S", "git status", "true"},
+		{"env", "-i", "git", "log"},
 	}
 	for _, argv := range allowed {
 		if err := p.CheckArgs(argv); err != nil {

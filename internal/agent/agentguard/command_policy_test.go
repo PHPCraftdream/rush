@@ -91,6 +91,9 @@ func TestCommandPolicyArgvPathsAndWrappers(t *testing.T) {
 }
 
 func TestPreRound3CommandPolicyVerdictsUnchanged(t *testing.T) {
+	// This net asserts the denial set is a SUPERSET of pre-round-3: every
+	// previously denied argv is still denied, and every previously allowed
+	// control is still allowed.
 	p := NewCommandPolicy("ci-only")
 	for _, command := range preRound3AllowedCommands {
 		if err := p.CheckCommand(command); err != nil {

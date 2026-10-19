@@ -42,15 +42,18 @@ func TestParseInlineOption(t *testing.T) {
 	}
 }
 
+// `spawn('go')` emits bare ["go"], which matchPolicy allows because bare `go`
+// has no denied subcommand — it is an allowed control; spawnSync('staticcheck')
+// remains the denied bare case.
 func TestInlineCommandExtraction(t *testing.T) {
 	p := NewCommandPolicy("ci-only")
-	denied := [][]string{{"node", "-e", "require('child_process').spawn('go',['test','./...'])"}, {"python", "-c", "import subprocess; subprocess.run(['go','test','./...'])"}, {"node", "--eval=require('child_process').execSync('go test ./...')"}, {"node", "-pe", "require('child_process').execSync('go test ./...')"}, {"node", "-ep", "require('child_process').exec('go test ./...')"}, {"python", "-c", "import subprocess; subprocess.run('go test ./...', shell=True)"}, {"python3", "-cimport subprocess; subprocess.run(['go','test','./...'])"}, {"node", "-e", `require('child_process').spawnSync('pytest', [])`}, {"node", "-e", `require('child_process').spawnSync('staticcheck')`}, {"node", "-e", `require('child_process').execFileSync('golangci-lint')`}}
+	denied := [][]string{{"node", "-e", "require('child_process').spawn('go',['test','./...'])"}, {"python", "-c", "import subprocess; subprocess.run(['go','test','./...'])"}, {"node", "--eval=require('child_process').execSync('go test ./...')"}, {"node", "-pe", "require('child_process').execSync('go test ./...')"}, {"node", "-ep", "require('child_process').exec('go test ./...')"}, {"python", "-c", "import subprocess; subprocess.run('go test ./...', shell=True)"}, {"python3", "-cimport subprocess; subprocess.run(['go','test','./...'])"}, {"node", "-e", `require('child_process').spawnSync('pytest', [])`}, {"node", "-e", `require('child_process').spawnSync('staticcheck')`}, {"node", "-e", `require('child_process').execFileSync('golangci-lint')`}} // the pytest case is the single mutation guard: reverting literalStringArray's `return values, true` to `return values, len(values) > 0` re-allows it
 	for _, argv := range denied {
 		if err := p.CheckArgs(argv); err == nil {
 			t.Errorf("CheckArgs(%q) allowed", argv)
 		}
 	}
-	allowed := [][]string{{"node", "-e", "arbitrary code"}, {"python", "-c", "import subprocess; subprocess.run('git status', shell=True)"}, {"node", "-e", `require('child_process').spawn('git',['status'])`}}
+	allowed := [][]string{{"node", "-e", "arbitrary code"}, {"python", "-c", "import subprocess; subprocess.run('git status', shell=True)"}, {"node", "-e", `require('child_process').spawn('git',['status'])`}, {"node", "-e", `require('child_process').spawn('go')`}}
 	for _, argv := range allowed {
 		if err := p.CheckArgs(argv); err != nil {
 			t.Errorf("CheckArgs(%q)=%v", argv, err)
@@ -88,7 +91,7 @@ func TestCommandPolicyOptionOperandTableCoverage(t *testing.T) {
 				operand = "build"
 				action = []string{"fmt"}
 			} else if tool == "cargo" {
-				operand = "build"
+				operand = "x"
 				action = []string{"fmt"}
 			} else if tool == "node" {
 				operand = "test"

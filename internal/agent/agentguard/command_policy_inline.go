@@ -49,7 +49,10 @@ type inlineCommandPattern struct {
 var inlineCommandPatterns = []inlineCommandPattern{
 	{"node", regexp.MustCompile(`(?is)(?:execSync|exec)\s*\(\s*(['"])([^'"]*)['"]`), false, false},
 	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn)\s*\(\s*(['"])([^'"]*)['"]\s*,\s*\[([^\]]*)\]`), true, false},
-	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"])([^'"]*)['"]\s*[,)]`), false, true},
+	// Bare matches a direct `)` or a comma NOT followed by `[` (RE2 has no
+	// lookahead; this alternation is the equivalent). `, [` is left to the
+	// array branch so empty-array calls are observable there.
+	{"node", regexp.MustCompile(`(?is)(?:spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"])([^'"]*)['"]\s*(?:\)|,\s*[^\[])`), false, true},
 	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*(['"])([^'"]*)['"]`), false, false},
 	{"python", regexp.MustCompile(`(?is)subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*\[([^\]]*)\]`), true, false},
 }

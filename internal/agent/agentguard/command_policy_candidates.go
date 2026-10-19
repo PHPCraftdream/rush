@@ -17,23 +17,37 @@ func policyArgvCandidates(args []string, depth int) [][]string {
 	if args[0] == policyDynamicArg {
 		return out
 	}
-	if isPosixPolicyShell(policyCanonicalExecutable(args[0])) {
-		return append(out, policyPosixCandidates(args, depth+1)...)
+	shellHead := isPosixPolicyShell(policyCanonicalExecutable(args[0]))
+	// Unconditionally union in the old textual-parser candidates. For shell
+	// heads the marker-preserving path owns opacity, so only the sentinel
+	// candidates from this union are skipped; every other head keeps them.
+	for _, candidate := range shell.CommandCandidatesForPlatform(args, true) {
+		if shellHead && isOpaqueCandidateArgv(candidate) {
+			continue
+		}
+		out = append(out, candidate)
 	}
 	head, dynamic, index := resolveArgvPolicyHead(args)
 	if dynamic {
-		return append(out, []string{"\x00rush-opaque-command"})
+		return append(out, policyOpaqueCandidate())
 	}
 	if isPosixPolicyShell(head) && index < len(args) {
-		return append(out, policyPosixCandidates(args[index:], depth+1)...)
+		out = append(out, policyPosixCandidates(args[index:], depth+1)...)
 	}
 	if index > 0 && index < len(args) {
-		return append(out, policyArgvCandidates(args[index:], depth+1)...)
-	}
-	for _, candidate := range shell.CommandCandidatesForPlatform(args, true) {
-		out = append(out, candidate)
+		out = append(out, policyArgvCandidates(args[index:], depth+1)...)
 	}
 	return out
+}
+
+const policyOpaqueCandidateLiteral = "\x00rush-opaque-command"
+
+func policyOpaqueCandidate() []string {
+	return []string{policyOpaqueCandidateLiteral}
+}
+
+func isOpaqueCandidateArgv(candidate []string) bool {
+	return len(candidate) == 1 && candidate[0] == policyOpaqueCandidateLiteral
 }
 
 func policyPosixCandidates(args []string, depth int) [][]string {
