@@ -115,12 +115,23 @@ func proxyDialAddr(pu *url.URL) string {
 // the proxy, sends "CONNECT <addr>", and on a 200 response returns the
 // raw connection as the tunnel.
 func connectDialer(pu *url.URL) dialFunc {
+	return connectDialerVia(pu, dialProxyTCP)
+}
+
+// dialProxyTCP opens the connection to the proxy itself: always plain
+// TCP, regardless of what the target connection will carry inside it.
+func dialProxyTCP(ctx context.Context, proxyAddr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 30 * time.Second}
+	return d.DialContext(ctx, "tcp", proxyAddr)
+}
+
+// connectDialerVia is connectDialer over an injectable transport to the
+// proxy, so a test can drive the CONNECT exchange over an in-memory pipe
+// instead of kernel TCP.
+func connectDialerVia(pu *url.URL, dialProxy func(ctx context.Context, proxyAddr string) (net.Conn, error)) dialFunc {
 	proxyAddr := proxyDialAddr(pu)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// The proxy tunnel itself is always plain TCP, regardless of
-		// what the target connection will carry inside it.
-		d := net.Dialer{Timeout: 30 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", proxyAddr)
+		conn, err := dialProxy(ctx, proxyAddr)
 		if err != nil {
 			return nil, fmt.Errorf("dial proxy %q: %w", proxyAddr, err)
 		}

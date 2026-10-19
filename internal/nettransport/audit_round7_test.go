@@ -74,6 +74,20 @@ func drainConnectRequest(conn net.Conn) error {
 // not settle within testAbortWait.
 func dialThroughStub(t *testing.T, ln net.Listener, diagnostics ...func()) (net.Conn, error) {
 	t.Helper()
+	return runConnectDial(t, connectDialer(mustURL("http://"+ln.Addr().String())), diagnostics...)
+}
+
+// dialThroughPipe is dialThroughStub over an in-memory connection: the
+// dialer treats proxyEnd as the (already open) connection to the proxy.
+func dialThroughPipe(t *testing.T, proxyEnd net.Conn, diagnostics ...func()) (net.Conn, error) {
+	t.Helper()
+	dial := connectDialerVia(mustURL("http://pipe-proxy.invalid:80"),
+		func(context.Context, string) (net.Conn, error) { return proxyEnd, nil })
+	return runConnectDial(t, dial, diagnostics...)
+}
+
+func runConnectDial(t *testing.T, dial dialFunc, diagnostics ...func()) (net.Conn, error) {
+	t.Helper()
 
 	type dialResult struct {
 		conn net.Conn
@@ -82,8 +96,7 @@ func dialThroughStub(t *testing.T, ln net.Listener, diagnostics ...func()) (net.
 	ctx := t.Context()
 	ch := make(chan dialResult, 1)
 	go func() {
-		conn, err := connectDialer(mustURL("http://"+ln.Addr().String()))(
-			ctx, "tcp", "tunnel-target.invalid:443")
+		conn, err := dial(ctx, "tcp", "tunnel-target.invalid:443")
 		ch <- dialResult{conn: conn, err: err}
 	}()
 	select {
@@ -109,15 +122,24 @@ func dumpConnectStubTimeout(t *testing.T, diagnostics ...func()) {
 func TestConnectResponseHeadByteBounded(t *testing.T) {
 	t.Parallel()
 
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
+	// An in-memory pipe, not kernel TCP: every flooded byte reaches the
+	// client exactly as the stub writes it and a Write returns only once
+	// the client consumed it or closed. Over loopback TCP the delivery
+	// rate depended on the runner's socket buffers and retransmit timers:
+	// a CI run showed the stub parked in Write, the client parked in Read,
+	// ~2.7 MB written and the dial unsettled after testAbortWait, with no
+	// defect in the head limit this test pins.
+	clientEnd, stubEnd := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientEnd.Close()
+		_ = stubEnd.Close()
+	})
 
 	// stubDone closes once the stub has flooded past the head budget
 	// and then observed a write failure or the client's close.
 	stubDone := make(chan struct{})
 	var mu sync.Mutex
-	phase := "accept"
+	phase := "start"
 	var responseBytes int64
 	var stubErr error
 	update := func(next string, n int, err error) {
@@ -142,16 +164,13 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 			}
 			mu.Unlock()
 		}()
-		conn, err := ln.Accept()
-		if err != nil {
-			update("accept error", 0, err)
-			return
-		}
+		conn := stubEnd
 		defer func() { _ = conn.Close() }()
 		update("draining request", 0, nil)
 
-		// Consume the CONNECT request head before answering (see
-		// drainConnectRequest's doc for why this must happen before Close).
+		// Consume the CONNECT request head before answering (a pipe
+		// Write blocks until the peer reads, so the client's request
+		// write needs this read to complete at all).
 		if err := drainConnectRequest(conn); err != nil {
 			update("draining request error", 0, err)
 			return
@@ -181,23 +200,9 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 				return
 			}
 		}
-
-		// The flood may still fit in kernel buffers; keep poking the
-		// socket until the close surfaces or the abort wait expires.
-		update("close-probe", 0, nil)
-		deadline := time.Now().Add(testAbortWait)
-		for time.Now().Before(deadline) {
-			n, err := conn.Write([]byte(pad))
-			update("close-probe", n, err)
-			if err != nil {
-				update("close-probe error", 0, err)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
 	}()
 
-	conn, err := dialThroughStub(t, ln, diagnostic)
+	conn, err := dialThroughPipe(t, clientEnd, diagnostic)
 	require.Error(t, err, "an over-budget CONNECT head must fail the dial")
 	require.Nil(t, conn)
 	require.Contains(t, err.Error(), "head limit")
