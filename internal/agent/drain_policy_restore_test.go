@@ -308,8 +308,8 @@ func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 	})
 	caps2 := newDiskCapabilityManager()
-	prevKindOverride := batchLeafKindOverride
-	t.Cleanup(func() { batchLeafKindOverride = prevKindOverride })
+	prevKindOverride := batchLeafKindOverride.Load()
+	t.Cleanup(func() { batchLeafKindOverride.Store(prevKindOverride) })
 	require.NoError(t, BindCoordinatorBatchRuntimeBindings(f.coord, &fakeBatchIngress{}, nil, caps2))
 	// AFTER the bind: wireRootDrainFence overwrites coord.diskCaps with the
 	// fence caps; caps2 keeps only the Construction owner.

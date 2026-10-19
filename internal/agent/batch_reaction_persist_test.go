@@ -12,12 +12,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -52,46 +55,32 @@ func seedBatchCompletionDebt(t *testing.T, f *attemptFixture, callID string) (*s
 		Ref:  callID,
 	})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		snap, readErr := store.Read(ctx, f.sessID, string(root))
-		return readErr == nil && snap.Root.State == "completed"
-	}, 5*time.Second, 5*time.Millisecond, "the root never settled completed")
 	won, err := install.Elector.ElectStarted(ctx, f.sessID, root)
 	require.NoError(t, err)
 	require.True(t, won, "the started ack election wins once")
 	_, ok, err := install.Done.AwaitDone(ctx, f.sessID, root)
 	require.NoError(t, err)
 	require.True(t, ok, "the root's completion envelope is available")
+	snap, err := store.Read(ctx, f.sessID, string(root))
+	require.NoError(t, err)
+	require.Equal(t, "completed", snap.Root.State, "the root has settled before its completion is pulled")
 	pulled, err := store.BatchPullNotices(ctx, f.env.messages, f.sessID, buildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "the settled root's completion notice is delivered")
 	return store, root
 }
 
-// TestBatchDrainTurnReactionMarksBatchNodesON drives the REAL Drain turn:
-// the scripted model answers the pulled batch completion with text, and
-// persistStepFinish's flag-ON write twin must mark the batch debt reacted in
-// the same one-transaction write (batch_nodes, reacted_failed cleared),
-// leaving no relaunch fuel and no wake_failed marker.
-//
-// REVERT CHECK (F1): remove the batchCutoverReactionStore routing from
-// persistStepFinish (agent_turn_step.go) so the reaction marks the legacy
-// async_jobs twin again. The first failing assertion is the reacted=1 check
-// below: the batch node keeps reacted=0 (the legacy marker never touches
-// batch_nodes) and wake_attempts=1 (the drain accounting then counts an
-// unreacted attempt), which in production relaunches the Drain up to the
-// settle-by-failure threshold and writes a false wake_failed marker --
-// exactly review finding F1.
 func TestBatchDrainTurnReactionMarksBatchNodesON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
-	f := newAttemptFixture(t, "batch-reaction-persist", attemptFixtureOpts{noIdle: true})
+	f := newAttemptFixture(t, "batch-reaction-persist", attemptFixtureOpts{})
 	store, root := seedBatchCompletionDebt(t, f, "call-bf1")
 	BindCoordinatorBatchCutoverFacts(f.coord, NewBatchCutoverNodeFacts(store, nil, f.env.conn))
 	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
 
 	_, runErr := f.drainRun(ctx)
 	require.NoError(t, runErr, "the reaction turn completes over the batch debt")
+	f.waitDrainIdle()
 	require.EqualValues(t, 1, f.requests.Load(), "exactly one provider call: the reaction itself -- no extra Drain turns")
 
 	var reacted, reactedFailed, wakeAttempts int64
@@ -106,6 +95,79 @@ func TestBatchDrainTurnReactionMarksBatchNodesON(t *testing.T) {
 	debt, err := store.BatchReactionVisibleDebtExists(ctx, f.sessID)
 	require.NoError(t, err)
 	require.False(t, debt, "the reacted completion is no longer debt: no relaunch fuel")
+}
+
+func TestBatchAskQuestionDrainReactionON(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	ctx := context.Background()
+	f := newAttemptFixture(t, "batch-ask-question-reaction", attemptFixtureOpts{
+		noIdle:  true,
+		tools:   []fantasy.AgentTool{tools.NewAskQuestionTool()},
+		handler: askQuestionResponse,
+	})
+	store, root := seedBatchCompletionDebt(t, f, "call-baq")
+	BindCoordinatorBatchCutoverFacts(f.coord, NewBatchCutoverNodeFacts(store, nil, f.env.conn))
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
+
+	_, err := f.drainRun(ctx)
+	var awaiting *AwaitingAnswerError
+	require.ErrorAs(t, err, &awaiting)
+
+	var reacted, reactedFailed, wakeAttempts int64
+	require.NoError(t, f.env.conn.QueryRowContext(ctx,
+		`SELECT reacted, reacted_failed, wake_attempts FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
+		string(root)).Scan(&reacted, &reactedFailed, &wakeAttempts))
+	require.EqualValues(t, 1, reacted)
+	require.EqualValues(t, 0, reactedFailed)
+	require.EqualValues(t, 0, wakeAttempts)
+
+	debt, err := store.BatchReactionVisibleDebtExists(ctx, f.sessID)
+	require.NoError(t, err)
+	require.False(t, debt)
+	require.EqualValues(t, 1, f.requests.Load())
+}
+
+func TestBatchGenericProviderErrorSettlesDebtByFailure(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	ctx := context.Background()
+	f := newAttemptFixture(t, "batch-generic-provider-error", attemptFixtureOpts{
+		noIdle: true,
+		handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"batch-error-probe","type":"invalid_request_error"}}`))
+		},
+	})
+	store, root := seedBatchCompletionDebt(t, f, "call-bge")
+	BindCoordinatorBatchCutoverFacts(f.coord, NewBatchCutoverNodeFacts(store, nil, f.env.conn))
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
+
+	_, err := f.drainRun(ctx)
+	require.Error(t, err)
+
+	var reacted, reactedFailed, wakeAttempts int64
+	require.NoError(t, f.env.conn.QueryRowContext(ctx,
+		`SELECT reacted, reacted_failed, wake_attempts FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
+		string(root)).Scan(&reacted, &reactedFailed, &wakeAttempts))
+	require.EqualValues(t, 1, reacted, "a terminal provider failure settles the batch debt reacted")
+	require.EqualValues(t, 1, reactedFailed, "the settle is the settle-by-failure form")
+	require.EqualValues(t, 1, wakeAttempts, "the failed turn was one counted attempt")
+	debt, err := store.BatchReactionVisibleDebtExists(ctx, f.sessID)
+	require.NoError(t, err)
+	require.False(t, debt, "the settle-by-failure consumed the batch completion debt")
+
+	messages, err := f.env.messages.List(ctx, f.sessID)
+	require.NoError(t, err)
+	var lastAssistant message.Message
+	for _, msg := range messages {
+		if msg.Role == message.Assistant {
+			lastAssistant = msg
+		}
+	}
+	require.NotEmpty(t, lastAssistant.ID, "the error finish is persisted")
+	finish := lastAssistant.FinishPart()
+	require.NotNil(t, finish, "the last assistant message has a finish")
+	require.Equal(t, message.FinishReasonError, finish.Reason)
 }
 
 // TestBatchStopWakeZeroAndRestartNoReactionTurn: Stop's wake-zero pass must
