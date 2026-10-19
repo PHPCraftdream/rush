@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,6 +160,218 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 				t.Fatal("terminal report not delivered")
 			}
 			assertHandoff(t, cache, tc.id, batchOutputRoot(tc.id), tc.want)
+		})
+	}
+}
+
+// captureShellHandle mirrors the real shell live contract
+// (internal/shell BackgroundExecution.ReadOutput on a finished stream with a
+// complete buffer, oldest = 0): start = max(cursor, 0) clamped to next,
+// Next = next, Truncated = cursor < 0 (always false here), EOF = done.
+type captureShellHandle struct {
+	done     chan struct{}
+	content  []byte
+	disposed bool
+}
+
+func (h *captureShellHandle) Stop(context.Context) error             { return nil }
+func (h *captureShellHandle) Done() <-chan struct{}                  { return h.done }
+func (*captureShellHandle) GetOutput() (string, string, bool, error) { return "", "", false, nil }
+func (h *captureShellHandle) ReadOutput(_ context.Context, cursor uint64) (shell.ExecutionOutput, error) {
+	next := uint64(len(h.content))
+	start := cursor
+	if start > next {
+		start = next
+	}
+	return shell.ExecutionOutput{Data: append([]byte(nil), h.content[start:]...), Next: next, EOF: true}, nil
+}
+
+func (h *captureShellHandle) Dispose(context.Context) error {
+	h.disposed = true
+	h.content = nil
+	return nil
+}
+
+// captureArgvHandle mirrors the real argv live contract
+// (tools.ArgvProcess.ReadOutput on a finished process with a complete
+// buffer, oldest = 0): negative or over-total cursors restart at zero,
+// Next = total, EOF = done, Truncated = cursor < 0 (always false here).
+type captureArgvHandle struct {
+	done     chan struct{}
+	content  []byte
+	disposed bool
+}
+
+func (p *captureArgvHandle) Done() <-chan struct{}             { return p.done }
+func (*captureArgvHandle) Outcome() (tools.ArgvOutcome, error) { return tools.ArgvOutcome{}, nil }
+func (*captureArgvHandle) Stop(context.Context) error          { return nil }
+func (p *captureArgvHandle) ReadOutput(_ context.Context, cursor int64) (jobbatch.OutputChunk, error) {
+	total := uint64(len(p.content))
+	if cursor < 0 || cursor > int64(total) {
+		cursor = 0
+	}
+	return jobbatch.OutputChunk{Data: append([]byte(nil), p.content[cursor:]...), Next: total, EOF: true}, nil
+}
+
+func (p *captureArgvHandle) Dispose(context.Context) error {
+	p.disposed = true
+	p.content = nil
+	return nil
+}
+
+// batchParityCursors derives the parity cursor set for retained content of
+// length l: boundaries inside and just outside the live range plus the extreme
+// cursors that exercise each family's clamp/restart contract. For l < 2 the
+// near-range cursors (1, l/2, l-1, l+1) are skipped; l-1 would underflow at 0.
+func batchParityCursors(l uint64) []uint64 {
+	if l < 2 {
+		return []uint64{0, math.MaxInt64, uint64(math.MaxInt64) + 1, math.MaxUint64 - 1, ^uint64(0)}
+	}
+	return []uint64{0, 1, l / 2, l - 1, l, l + 1, math.MaxInt64, uint64(math.MaxInt64) + 1, math.MaxUint64 - 1, ^uint64(0)}
+}
+
+func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
+	ctx := context.Background()
+	cache := newBatchOutputCache()
+	cases := []struct {
+		name    string
+		id      jobbatch.ID
+		cursors []uint64
+		run     func(*testing.T, func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk
+	}{
+		{
+			name: "generic", id: "cap.generic", cursors: batchParityCursors(14),
+			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
+				e := &batchGenericExecution{cache: cache, nodeID: "cap.generic", rootID: batchOutputRoot("cap.generic"), cancel: func() {}, done: make(chan struct{})}
+				cursors := batchParityCursors(14)
+				chunks := map[uint64]jobbatch.OutputChunk{}
+				e.run(ctx, terminalHandoffLeaf{content: "generic-result"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
+					for _, c := range cursors {
+						chunk, err := e.ReadOutput(ctx, c)
+						require.NoError(t, err)
+						chunks[c] = chunk
+					}
+					require.NoError(t, e.Dispose(ctx))
+					report(r)
+				})
+				return chunks
+			},
+		},
+		{
+			name: "agent", id: "cap.agent", cursors: batchParityCursors(13),
+			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
+				e := &batchAgentExecution{cache: cache, nodeID: "cap.agent", rootID: batchOutputRoot("cap.agent"), finished: make(chan struct{}), driverDone: make(chan struct{}), watcherDone: make(chan struct{}), cancel: func() {}}
+				e.scope = newBatchAgentScope()
+				close(e.driverDone)
+				close(e.watcherDone)
+				cursors := batchParityCursors(13)
+				chunks := map[uint64]jobbatch.OutputChunk{}
+				e.finish(jobbatch.Result{State: jobbatch.StateCompleted, Summary: "agent-summary"}, func(r jobbatch.Result) {
+					for _, c := range cursors {
+						chunk, err := e.ReadOutput(ctx, c)
+						require.NoError(t, err)
+						chunks[c] = chunk
+					}
+					require.NoError(t, e.Dispose(ctx))
+					report(r)
+				})
+				return chunks
+			},
+		},
+		{
+			name: "shell", id: "cap.shell", cursors: batchParityCursors(11),
+			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
+				h := &captureShellHandle{done: make(chan struct{}), content: []byte("shell-bytes")}
+				close(h.done)
+				e := &batchShellExecution{cache: cache, nodeID: "cap.shell", rootID: batchOutputRoot("cap.shell"), handle: h, cancel: func() {}, finished: make(chan struct{})}
+				cursors := batchParityCursors(11)
+				chunks := map[uint64]jobbatch.OutputChunk{}
+				e.run(ctx, terminalHandoffLeaf{content: "response-not-process-output"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
+					for _, c := range cursors {
+						chunk, err := e.ReadOutput(ctx, c)
+						require.NoError(t, err)
+						chunks[c] = chunk
+					}
+					require.NoError(t, e.Dispose(ctx))
+					report(r)
+				})
+				return chunks
+			},
+		},
+		{
+			name: "argv", id: "cap.argv", cursors: batchParityCursors(10),
+			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
+				p := &captureArgvHandle{done: make(chan struct{}), content: []byte("argv-bytes")}
+				close(p.done)
+				e := &batchArgvExecution{cache: cache, nodeID: "cap.argv", rootID: batchOutputRoot("cap.argv"), process: p, changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
+				leaf := &batchGenericTestTool{name: tools.RunCommandToolName, run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+					return fantasy.NewTextResponse("response-not-process-output"), nil
+				}}
+				cursors := batchParityCursors(10)
+				chunks := map[uint64]jobbatch.OutputChunk{}
+				e.run(ctx, leaf, fantasy.ToolCall{}, func(r jobbatch.Result) {
+					for _, c := range cursors {
+						chunk, err := e.ReadOutput(ctx, c)
+						require.NoError(t, err)
+						chunks[c] = chunk
+					}
+					require.NoError(t, e.Dispose(ctx))
+					report(r)
+				})
+				return chunks
+			},
+		},
+		{
+			// This row catches re-caching the rejection text (the leaf's
+			// resp.Content) — the live-vs-cached data divergence at cursor 0 —
+			// NOT a contract-constant mutation: with no process both contracts
+			// return an empty page at Next 0 for this empty entry. Argv
+			// contract-mutation coverage comes from the process-backed argv
+			// row above.
+			name: "argv-no-process", id: "cap.argvnopro", cursors: batchParityCursors(0),
+			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
+				e := &batchArgvExecution{cache: cache, nodeID: "cap.argvnopro", rootID: batchOutputRoot("cap.argvnopro"), changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
+				leaf := &batchGenericTestTool{name: tools.RunCommandToolName, run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+					return fantasy.NewTextResponse("rejected-content"), nil
+				}}
+				cursors := batchParityCursors(0)
+				chunks := map[uint64]jobbatch.OutputChunk{}
+				e.run(ctx, leaf, fantasy.ToolCall{}, func(r jobbatch.Result) {
+					for _, c := range cursors {
+						chunk, err := e.ReadOutput(ctx, c)
+						require.NoError(t, err)
+						chunks[c] = chunk
+					}
+					require.NoError(t, e.Dispose(ctx))
+					report(r)
+				})
+				return chunks
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reports := make(chan jobbatch.Result, 1)
+			chunks := tc.run(t, func(r jobbatch.Result) { reports <- r })
+			select {
+			case <-reports:
+			case <-time.After(time.Second):
+				t.Fatal("terminal report not delivered")
+			}
+			for _, cursor := range tc.cursors {
+				got, has := chunks[cursor]
+				if !has {
+					t.Fatalf("missing live chunk at cursor %d", cursor)
+				}
+				cached, found := cache.read(tc.id, cursor)
+				if !found {
+					t.Fatalf("%s: cache miss at cursor %d", tc.id, cursor)
+				}
+				if string(got.Data) != string(cached.Data) || got.Next != cached.Next || got.EOF != cached.EOF || got.Oldest != cached.Oldest || got.Truncated != cached.Truncated {
+					t.Fatalf("%s: cursor %d live=(data %q, next %d, eof %v, oldest %d, truncated %v) cached=(data %q, next %d, eof %v, oldest %d, truncated %v)",
+						tc.id, cursor, got.Data, got.Next, got.EOF, got.Oldest, got.Truncated, cached.Data, cached.Next, cached.EOF, cached.Oldest, cached.Truncated)
+				}
+			}
 		})
 	}
 }

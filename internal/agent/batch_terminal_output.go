@@ -134,12 +134,13 @@ func (c *batchOutputCache) readWithMetadata(id jobbatch.ID, cursor uint64) (jobb
 		return jobbatch.OutputChunk{}, 0, 0, false, false
 	}
 	start := cursor
+	argvRestart := false
 	if e.argvContract {
 		if start > math.MaxInt64 {
-			start = 0
+			start, argvRestart = 0, true
 		}
 		if start > e.total {
-			start = 0
+			start, argvRestart = 0, true
 		}
 	}
 	if start < e.oldest {
@@ -153,8 +154,15 @@ func (c *batchOutputCache) readWithMetadata(id jobbatch.ID, cursor uint64) (jobb
 		start = end
 	}
 	data := append([]byte(nil), e.data[start-e.oldest:end-e.oldest]...)
-	chunk := jobbatch.OutputChunk{Data: data, Next: start + uint64(len(data)), Oldest: e.oldest, EOF: true, Truncated: e.truncated || cursor < e.oldest}
-	return chunk, e.total, len(e.data), e.truncated || cursor < e.oldest, true
+	truncated := e.truncated || cursor < e.oldest
+	if argvRestart {
+		// tools.ArgvProcess.ReadOutput normalizes an out-of-range cursor to
+		// zero BEFORE computing Truncated (cursor < oldest); mirror that so a
+		// restarted cached read stays identical to the live one.
+		truncated = e.truncated || 0 < e.oldest
+	}
+	chunk := jobbatch.OutputChunk{Data: data, Next: start + uint64(len(data)), Oldest: e.oldest, EOF: true, Truncated: truncated}
+	return chunk, e.total, len(e.data), truncated, true
 }
 
 func (c *batchOutputCache) read(id jobbatch.ID, cursor uint64) (jobbatch.OutputChunk, bool) {
