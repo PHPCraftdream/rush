@@ -12,11 +12,14 @@
 //     batchDebtSnapshot = 2 statements (batchOutboxDebtNodesVoidAware raw
 //     QueryContext at batch_reaction.go:45-50 + BatchOutboxDebtNotices).
 //     The per-owner loop is PRODUCTION DESIGN (batch_reaction.go:163-165),
-//     so the honest relation is LINEAR in N with slope 2, not a constant;
+//     so the honest relation is LINEAR in N, not a constant;
 //   - batchCutoverLiveWork (app_batch_cutover_facts.go:78-107 →
-//     session/batch_read_live.go:49-79): BFS-chunked — one
-//     BatchLiveNodesForOwners chunk for all N owners at depth 0 (chunk size
-//     500), plus one chunk per further depth of delegation children;
+//     session/batch_read_live.go BatchLiveForSessions): a BFS over the
+//     delegation forest inside ONE read-only tx (TxStarter = the writer).
+//     The index-served fetch (batchLiveNodesForOwnersServed, D11-PERF) issues,
+//     per BFS depth, ONE ListLiveBatchRootsForOwner per owner of that depth
+//     and ONE ListBatchNodes per live root found, so no statement scans
+//     batch_nodes (it replaced the single join statement per chunk);
 //   - sessionEndReasons (app_session_activity.go:153-154 →
 //     ListSessionEndReasonsForIDs): ONE statement;
 //   - wake schedules: OpenOnceWakeSchedulesForOwners is NOT called — the
@@ -40,10 +43,12 @@
 //
 // Mutations this test catches:
 //   - the annotation replaced by per-session SessionActivity reads → the
-//     live-walk chunks and driver statements multiply by N → the exact
-//     constant C fails;
-//   - a per-owner transaction instead of the ONE shared tx → txs == N fails;
-//   - lost BFS chunking → the live-walk statements become N chunks → C fails;
+//     live-walk and driver statements multiply by N → the exact relation
+//     fails;
+//   - a per-owner transaction instead of the shared ones → txs grows with N
+//     and txs == 2 fails;
+//   - a duplicated or per-depth live walk (one tx per BFS depth) → txs/stmts
+//     fail;
 //   - broken instrumentation (the counting driver never installed, or reads
 //     bypassing the pool) → the >0 precondition fails at 0.
 package server
@@ -258,16 +263,24 @@ func reserveAnnotationRoot(t *testing.T, ctx context.Context, pool *sql.DB, owne
 //
 //	C = 1 ListSessions (db/sql/sessions.sql:94-98)
 //	  + 1 ListSessionDrivers (db/sql/session_drivers.sql:34)
-//	  + 2 BatchLiveNodesForOwners chunks (depth 0: all N owners, ≤500;
-//	    depth 1: the delegation children — batch_read_live.go:49-79)
 //	  + 1 ListSessionEndReasonsForIDs (db/sql/sessions.sql:196)
+//	  + 1 ListLiveBatchRootsForOwner per depth-1 owner (the 2 delegation
+//	    children seeded below, each with no root of its own)
 //	  = 5
 //
-// so the exact relation is stmts == 5 + 2*N and txs == 1 (the ONE shared
-// read-only tx of BatchReactionDebtOwners, batch_reaction.go:156-165), with
-// the debt slope +2/owner coming from the per-owner batchDebtSnapshot pair
-// (batchOutboxDebtNodesVoidAware + BatchOutboxDebtNotices,
-// batch_reaction.go:163-165 / :45-50 / :72). Host "on-annotation-host" is
+// and a per-owner part of 4 statements, every top-level owner carrying
+// exactly one live root:
+//
+//	2 batchDebtSnapshot pair (batchOutboxDebtNodesVoidAware +
+//	  BatchOutboxDebtNotices, batch_reaction.go)
+//	+ 1 ListLiveBatchRootsForOwner (depth 0)
+//	+ 1 ListBatchNodes for that root (batch_read_live.go
+//	  batchLiveNodesForOwnersServed)
+//
+// so the exact relation is stmts == 5 + 4*N and txs == 2: the ONE shared
+// read-only tx of BatchReactionDebtOwners (batch_reaction.go) plus the ONE
+// read-only tx of the whole live BFS (BatchLiveForSessions, TxStarter = the
+// writer; a vanished root would retry once, none vanishes here). Host "on-annotation-host" is
 // unregistered, so ProbeHostShared reads Dead; host death never settles
 // batch nodes (batch_read_live doc, and batchLiveReplay only downgrades on
 // HostStatusUnknown, batch_read_live.go:126-131), so the roots stay live and
@@ -278,8 +291,8 @@ func reserveAnnotationRoot(t *testing.T, ctx context.Context, pool *sql.DB, owne
 // and batchCutoverWriter/Reader all fall back to app.DB() = the counting
 // pool) → two rounds, counters reset right before each handleListSessions →
 // first assertion require.Greater(stmts, 0) (broken instrumentation fails
-// here) → the exact relations C + 2N / txs == 1 (per-session N-way
-// annotation, per-owner tx, or lost chunking fail there) → the parent
+// here) → the exact relations C + 4N / txs == 2 (per-session N-way
+// annotation, per-owner tx, or a duplicated live walk fail there) → the parent
 // annotations pinned on one delegation session.
 func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	// Non-parallel: t.Setenv pins the flag (Go 1.26 Setenv rule).
@@ -340,11 +353,11 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	require.Greater(t, c.stmts.Load(), int64(0),
 		"precondition: the counting pool must have served the reads — zero means the instrumentation is broken")
 
-	// Round A exact relation: C + 2*3.
-	require.Equal(t, int64(5+2*3), c.stmts.Load(),
-		"stmts(N=3) == C + 2*N with C = 1 ListSessions + 1 ListSessionDrivers + 2 live-walk chunks + 1 sessionEndReasons (wake skipped: no store); slope 2 = the per-owner debt pair")
-	require.Equal(t, int64(1), c.txs.Load(),
-		"ONE shared read-only tx for the whole owners batch (BatchReactionDebtOwners), never one per owner")
+	// Round A exact relation: C + 4*3.
+	require.Equal(t, int64(5+4*3), c.stmts.Load(),
+		"stmts(N=3) == C + 4*N with C = 1 ListSessions + 1 ListSessionDrivers + 1 sessionEndReasons + 2 depth-1 root lists (wake skipped: no store); slope 4 = the per-owner debt pair + one root list + one root node read")
+	require.Equal(t, int64(2), c.txs.Load(),
+		"exactly TWO read-only txs for the whole owners batch: one for BatchReactionDebtOwners and one for the whole live BFS, never one per owner")
 
 	// Parent annotations on one delegation session: the exact single-child
 	// slice (cf. handlers_sessions_batch_cutover_test.go:113), and the
@@ -357,10 +370,10 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	require.Equal(t, []string{firstChild}, row.LiveDescendantIDs,
 		"single seeded child: the slice is exactly that child id")
 
-	// Round B: 9 more owners the same way (12 total) → the slope, not the
-	// whole count, grows: +9 owners × 2 debt statements = +18, while the
-	// chunked live walk stays 2 statements (both depths stay ≤500 owners,
-	// batch_read_live.go:11, :57).
+	// Round B: 9 more owners the same way (12 total, one live root each, no
+	// further children) → the slope, not the constant, grows: +9 owners × 4
+	// statements = +36 (2 debt + 1 root list + 1 root node read), while the
+	// depth-1 root lists stay the 2 seeded delegation children.
 	for i := 3; i < 12; i++ {
 		addOwner(fmt.Sprintf("ann-owner-%d", i), false)
 	}
@@ -372,10 +385,10 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	rows = replies[len(replies)-1]
 	require.Len(t, rows, 12, "the twelve top-level sessions")
 	require.Greater(t, c.stmts.Load(), int64(0), "precondition (round B): instrumentation still live")
-	require.Equal(t, int64(5+2*12), c.stmts.Load(),
-		"stmts(N=12) == C + 2*N: the growth is the LINEAR debt slope (batch_reaction.go:163-165), NOT ~4x the whole count; the live walk stays chunked at 2")
-	require.Equal(t, int64(1), c.txs.Load(),
-		"still ONE shared tx at N=12 (batch_reaction.go:156-165)")
+	require.Equal(t, int64(5+4*12), c.stmts.Load(),
+		"stmts(N=12) == C + 4*N: the growth is the LINEAR per-owner slope (debt pair + served live reads), NOT ~4x the whole count")
+	require.Equal(t, int64(2), c.txs.Load(),
+		"still exactly TWO shared txs at N=12 (debt owners + the live BFS), independent of N")
 }
 
 func (c countingConn) ResetSession(ctx context.Context) error {
