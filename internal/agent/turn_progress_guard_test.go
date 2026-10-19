@@ -471,9 +471,13 @@ func (m *guardStepModel) Stream(context.Context, fantasy.Call) (fantasy.StreamRe
 		}) {
 			return
 		}
+		reason := fantasy.FinishReasonStop
+		if first {
+			reason = fantasy.FinishReasonToolCalls
+		}
 		yield(fantasy.StreamPart{
 			Type:         fantasy.StreamPartTypeFinish,
-			FinishReason: fantasy.FinishReasonStop,
+			FinishReason: reason,
 			Usage:        fantasy.Usage{InputTokens: 1, OutputTokens: 1},
 		})
 	}, nil

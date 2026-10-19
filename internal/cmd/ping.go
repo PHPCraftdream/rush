@@ -306,7 +306,8 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 
 	// Stream the response
 	streamCall := fantasy.AgentStreamCall{
-		Prompt: userPrompt,
+		MaxRetries: &rushagent.ProviderMaxRetries,
+		Prompt:     userPrompt,
 	}
 
 	resp, err := agent.Stream(ctx, streamCall)

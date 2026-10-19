@@ -67,7 +67,7 @@ func TestGetProviderOptionsReasoningEffort(t *testing.T) {
 func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
 	model := Model{
 		CatwalkCfg: catwalk.Model{
-			ID:              "gpt-5-test",
+			ID:              "chat-completions-test",
 			CanReason:       true,
 			ReasoningLevels: []string{"high", "max"},
 		},
@@ -85,6 +85,30 @@ func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, parsed.ReasoningEffort)
 	assert.Equal(t, "high", string(*parsed.ReasoningEffort))
+}
+
+func TestGetProviderOptionsResponsesReasoningEffortFallback(t *testing.T) {
+	model := Model{
+		CatwalkCfg: catwalk.Model{
+			ID:              "gpt-5-test",
+			CanReason:       true,
+			ReasoningLevels: []string{"high", "max"},
+		},
+		ModelCfg: config.SelectedModel{Provider: "openai"},
+	}
+	providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
+
+	opts := getProviderOptions("test-session", model, providerCfg)
+
+	raw, ok := opts[openai.Name]
+	require.True(t, ok)
+	parsed, ok := raw.(*openai.ResponsesProviderOptions)
+	require.True(t, ok)
+	require.NotNil(t, parsed.ReasoningEffort)
+	assert.Equal(t, openai.ReasoningEffort("high"), *parsed.ReasoningEffort)
+	require.NotNil(t, parsed.ReasoningSummary)
+	assert.Equal(t, "auto", *parsed.ReasoningSummary)
+	require.Contains(t, parsed.Include, openai.IncludeReasoningEncryptedContent)
 }
 
 // The fork's ZAI/GLM mapping (getProviderOptions, InferenceProviderZAI case)
@@ -326,10 +350,9 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 
 	t.Run("chat completions path sets stable prompt_cache_key", func(t *testing.T) {
 		model := Model{
-			// Fictional ID (not in fantasy's Responses-API model list) to
-			// force the Chat Completions parse path, same as
-			// TestGetProviderOptionsReasoningEffortFallback above.
-			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			// Fictional ID outside fantasy's Responses API generation classifier to
+			// force the Chat Completions parse path.
+			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
 			ModelCfg:   config.SelectedModel{Provider: "openai"},
 		}
 		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
@@ -365,7 +388,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 
 	t.Run("azure shares the openai prompt_cache_key behavior", func(t *testing.T) {
 		model := Model{
-			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
 			ModelCfg:   config.SelectedModel{Provider: "azure"},
 		}
 		providerCfg := config.ProviderConfig{ID: "azure", Type: azure.Name}
@@ -382,7 +405,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 
 	t.Run("user-supplied prompt_cache_key is not overwritten", func(t *testing.T) {
 		model := Model{
-			CatwalkCfg: catwalk.Model{ID: "gpt-5-test"},
+			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
 			ModelCfg: config.SelectedModel{
 				Provider: "openai",
 				ProviderOptions: map[string]any{

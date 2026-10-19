@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,5 +27,6 @@ func TestCLIProviderLimit1282CodexShape(t *testing.T) {
 	reset, parseErr := time.Parse(time.RFC3339, result.QuotaResetAt)
 	require.NoError(t, parseErr)
 	require.True(t, reset.After(before.Add(29*time.Minute)))
-	require.EqualValues(t, 3, h.requests.Load())
+	// initial attempt + 2 pinned retries.
+	require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load())
 }
