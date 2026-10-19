@@ -123,7 +123,7 @@ func TestRebuildSessionAgentCall_UnsupportedCallOptionsSpecVersion_RefusesRow(t 
 		"precondition: the row must have round-tripped with the current version before tampering")
 	decoded.CallOptionsSpec.Version = session.CallOptionsSpecVersion + 1
 
-	_, rebuildErr := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	_, rebuildErr := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.Error(t, rebuildErr,
 		"a durable row with an unsupported CallOptionsSpec version must refuse the row, not silently drop the field")
 	assert.True(t, errors.Is(rebuildErr, ErrCallOptionsSpecVersionUnsupported),

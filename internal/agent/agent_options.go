@@ -100,6 +100,12 @@ type SessionAgentOptions struct {
 	// rationale. 0 = use the built-in default; primarily exposed for tests
 	// that want a short bound instead of waiting out the real one.
 	SessionPreambleMaxDuration time.Duration
+	// diskCaps is the coordinator's App-owned capability manager
+	// (R12-H2b §2.4), wired unexported at construction: the durable enqueue
+	// producer on this agent (restartOrphanedWithRetry) holds row-keyed
+	// Continuation owners through it. Nil on bare fixtures — those never
+	// enqueue provider-carrying calls.
+	diskCaps *DiskProviderRegistry
 	// TitleGenerationMaxDuration overrides titleGenerationMaxDurationDefault
 	// when > 0 — the bound on the background title-generation goroutine. See
 	// titleGenerationMaxDurationDefault's doc for the full rationale. 0 = use

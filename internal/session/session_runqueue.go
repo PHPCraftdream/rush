@@ -246,6 +246,13 @@ type SessionAgentCallData struct {
 	// written by an older/newer binary, still fails CLOSED at the
 	// consumer (agent.RebuildSessionAgentCall) instead of failing open.
 	HostDiskProvider bool
+	// DiskRequirement is the call's process-bound execution requirement
+	// (R12-H2b): the opaque binding identity and policy baseline every
+	// continuation must restore (same process, binding still live) or
+	// fail closed on (restart, binding gone). nil for ordinary OS-disk
+	// calls. Kept alongside HostDiskProvider: the flag marks "cannot
+	// replay", the envelope names WHAT must be restored.
+	DiskRequirement *SessionExecutionRequirement `json:"disk_requirement,omitempty"`
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	SystemPromptOverride string
 	// MaxCost aborts the run if total session cost exceeds this value (0 = no cap)

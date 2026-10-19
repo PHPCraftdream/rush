@@ -308,7 +308,7 @@ func (m *modelCallSpyAgent) SetPersistentMode(persistent bool) {}
 
 func (m *modelCallSpyAgent) ResetAutoResumeCounter(sessionID string) {}
 
-func (m *modelCallSpyAgent) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (SessionAgentCall, error) {
+func (m *modelCallSpyAgent) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (SessionAgentCall, error) {
 	return SessionAgentCall{}, nil
 }
 

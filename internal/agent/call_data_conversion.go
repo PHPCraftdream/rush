@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -186,6 +187,34 @@ func fromSessionFolderScopeSpec(spec *session.FolderScopeSpec) *permission.Folde
 	return out
 }
 
+// diskRequirementForCall resolves the requirement envelope a call
+// carries into durable serialization (R12-H2b §2.2): the explicitly
+// stamped envelope wins, then the trusted call state's stamped options;
+// a call whose options carry a minted binding handle but no envelope
+// synthesizes one from that trusted state (binding ID plus the
+// serializable policy baseline) — never from a non-nil provider alone.
+func diskRequirementForCall(call SessionAgentCall) *session.SessionExecutionRequirement {
+	if call.DiskRequirement != nil {
+		return call.DiskRequirement
+	}
+	opts := call.CallOptions
+	if opts == nil {
+		return nil
+	}
+	if opts.Requirement != nil {
+		return opts.Requirement
+	}
+	if opts.DiskBindingID == "" || !tools.IsCustomDiskProvider(opts.DiskProvider) {
+		return nil
+	}
+	return &session.SessionExecutionRequirement{
+		BindingID:        opts.DiskBindingID,
+		FolderScopeSpec:  toSessionFolderScopeSpec(call.FolderScopeSpec),
+		RunAllowlistSpec: toSessionRunAllowlistSpec(call.RunAllowlistSpec),
+		CallPolicy:       toSessionCallOptionsSpec(opts),
+	}
+}
+
 // ToSessionAgentCallData converts agent.SessionAgentCall to session.SessionAgentCallData
 // for durable queue serialization (task #340, ROUND 3 migration).
 //
@@ -246,6 +275,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		// current producer already refuses to reach this point at all
 		// (Layer 1) when this is true.
 		HostDiskProvider: callCarriesDiskProvider(call),
+		DiskRequirement:  diskRequirementForCall(call),
 	}
 }
 
@@ -300,7 +330,31 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
 		CallOptions:          opts,
+		DiskRequirement:      callData.DiskRequirement,
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.
 	}, nil
+}
+
+// BuildSessionExecutionRequirement composes the durable requirement
+// envelope one admitted provider-backed invocation establishes (R12-H2b
+// §2.2): the minted binding identity, the admitting app/host marker, the
+// monotonic requirement epoch, and the serializable policy baseline
+// (folder-scope spec, restricted-run spec, call policy). The app stores
+// it as the session fence at admission; continuations restore or refuse
+// against it. An empty binding id or nil opts returns nil — never a fake
+// envelope.
+func BuildSessionExecutionRequirement(bindingID, owner string, epoch int64, folderScopeSpec *permission.FolderScopeSpec, runAllowlistSpec permission.RunAllowlistSpec, opts *CallOptions) *session.SessionExecutionRequirement {
+	if bindingID == "" || opts == nil {
+		return nil
+	}
+	spec := runAllowlistSpec
+	return &session.SessionExecutionRequirement{
+		BindingID:        bindingID,
+		Owner:            owner,
+		Epoch:            epoch,
+		FolderScopeSpec:  toSessionFolderScopeSpec(folderScopeSpec),
+		RunAllowlistSpec: toSessionRunAllowlistSpec(&spec),
+		CallPolicy:       toSessionCallOptionsSpec(opts),
+	}
 }
