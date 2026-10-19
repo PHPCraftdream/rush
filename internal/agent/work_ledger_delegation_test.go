@@ -635,38 +635,28 @@ func TestWorkLedger_ChildScopeClosesWithoutTicker(t *testing.T) {
 // TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation pins phase 3
 // step 2's deletion (spec §4.4): arming a delegation must not spawn any
 // additional long-lived goroutine (a ticker, if one still existed, would be
-// exactly that). settle() re-reads NumGoroutine() until it stabilizes
-// (Gosched between reads) rather than tolerating a fixed slack, since a
-// tolerant "+1" margin would silently mask exactly the one-goroutine leak
-// this test exists to catch.
+// exactly that). It compares goroutine identities (goroutine_identity_test.go)
+// instead of the process-wide count, which also moves with unrelated
+// goroutines (macOS CI: before=52 after=53 with nothing leaked).
 //
-// Revert-check performed: temporarily reintroduced a ticker-shaped leak --
+// Revert-check: a ticker-shaped leak
 // `go func() { t := time.NewTicker(time.Hour); <-t.C }()` right after
-// `l.byChild[job.childSession] = append(...)` in armDelegation (mirroring
-// where the real startTickerLocked() call used to sit) -- this test FAILED
-// consistently (5/5 repeats, goroutine count growing by 1 each run and never
-// settling back down). Removed the reintroduced line; re-ran 5/5, passed.
+// `l.byChild[job.childSession] = append(...)` in armDelegation creates a
+// goroutine whose "created by" frame names armDelegation, so the scan finds
+// it and the test fails after the bounded wait.
 func TestWorkLedger_NoLingeringTickerGoroutineAfterArmDelegation(t *testing.T) {
 	coord := newParkedOutcomeCoordinator(t, func(AsyncCompletion) {})
 	coord.currentAgent = &mockSessionAgent{}
 
-	settle := func() int {
-		var n int
-		for i := 0; i < 5; i++ {
-			runtime.Gosched()
-			n = runtime.NumGoroutine()
-		}
-		return n
-	}
-	before := settle()
+	before := goroutineIDSnapshot()
 
 	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, true)
 	parkDelegation(t, coord, parkedChildSession, "child yielded: still running")
 	require.True(t, coord.asyncJobs.hasParked())
 
-	after := settle()
-	require.LessOrEqual(t, after, before,
-		"armDelegation must not leave behind a long-lived goroutine (before=%d after=%d)", before, after)
+	requireNoNewGoroutinesNaming(t, before, 3*time.Second,
+		"armDelegation must not leave behind a long-lived ledger goroutine",
+		"armDelegation", "work_ledger", "(*workLedger)")
 
 	// Release the child's own job so the ledger doesn't leak the armed entry
 	// past this test.
