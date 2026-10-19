@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
@@ -148,7 +148,7 @@ func TestBatchDenyExecPolicyProcessSnapshot(t *testing.T) {
 	binary, err := os.Executable()
 	require.NoError(t, err)
 	for _, tc := range []struct{ value, mode string }{{"ci-only", "denied"}, {"ci-only", "inherited"}, {"ci-only", "allowed"}, {"", "disabled"}} {
-		cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestBatchDenyExecPolicyHelper$")
+		cmd := platform.Command(t.Context(), binary, "-test.run=^TestBatchDenyExecPolicyHelper$")
 		cmd.Env = append(os.Environ(), "RUSH_DENY_EXEC="+tc.value, batchDenyExecChild+"="+tc.mode)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))

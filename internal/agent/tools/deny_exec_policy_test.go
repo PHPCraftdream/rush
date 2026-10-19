@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"testing"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
@@ -56,7 +56,7 @@ func runPolicyChild(t *testing.T, value, mode string) string {
 	t.Helper()
 	binary, err := os.Executable()
 	require.NoError(t, err)
-	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestDenyExecPolicyHelper$")
+	cmd := platform.Command(t.Context(), binary, "-test.run=^TestDenyExecPolicyHelper$")
 	cmd.Env = append(os.Environ(), "RUSH_DENY_EXEC="+value, denyExecChild+"="+mode)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))

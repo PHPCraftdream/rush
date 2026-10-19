@@ -3,11 +3,11 @@ package cliprovider
 import (
 	"context"
 	"os"
-	"os/exec"
 	"sync/atomic"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
@@ -117,7 +117,7 @@ func TestMCPDenyExecPolicyProcessSnapshot(t *testing.T) {
 	binary, err := os.Executable()
 	require.NoError(t, err)
 	for _, tc := range []struct{ value, mode string }{{"ci-only", "ci-denied"}, {"ci-only", "ci-allowed"}, {"", "disabled"}} {
-		cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestMCPDenyExecPolicyHelper$")
+		cmd := platform.Command(t.Context(), binary, "-test.run=^TestMCPDenyExecPolicyHelper$")
 		cmd.Env = append(os.Environ(), "RUSH_DENY_EXEC="+tc.value, mcpDenyExecChild+"="+tc.mode)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
