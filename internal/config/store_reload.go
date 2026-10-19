@@ -521,6 +521,17 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
+	// Reject a candidate that would silently drop a live custom provider
+	// because its base_url is missing or empty (see
+	// store_reload_providers.go): publishing such a snapshot would leave
+	// role pins resolving to a provider that no longer exists. On error
+	// nothing below runs, so the previous snapshot, models, provider map
+	// and generation stay untouched. The initial Load keeps the
+	// warn-and-skip behaviour.
+	if err := rejectLiveProviderEndpointDrops(prev.config, cfg, providers); err != nil {
+		return fmt.Errorf("failed to configure providers during reload: %w", err)
+	}
+
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured after reload")
 	} else {
