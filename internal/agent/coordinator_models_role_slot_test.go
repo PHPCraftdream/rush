@@ -321,7 +321,7 @@ func TestRoleSlotOverride_CarriesExplicitEffort(t *testing.T) {
 	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
 }
 
-// TestRunSubAgent_DispatchRefreshesWorkerSlot is P2-3's real dispatch test:
+// TestRunSubAgent_DispatchRefreshesWorkerSlot is D3's production-dispatch assertion:
 // the sub-agent model dispatched through the PRODUCTION entry point
 // (runSubAgent) is rebuilt from the live worker slot, not the mock's
 // parent-turn-start build. Mirrors
@@ -418,13 +418,8 @@ func TestRunSubAgent_NonSlotDispatchKeepsModel(t *testing.T) {
 		"a non-slot sub-agent keeps its parent-turn-start model; no dispatch-time refresh")
 }
 
-// TestSubAgentDispatchRefreshesWorkerSlot is D3: refreshSubAgentSlotModel
-// rebuilds the sub-agent model from the live worker slot only when the slot
-// actually moved, and leaves the model alone when nothing is configured.
-// Revert-check: dropping the dispatch-time refresh (or gutting
-// refreshSubAgentSlotModel to a no-op) makes the first assertion fail with
-// ok=false; dropping the slot-match short-circuit makes the second fail
-// with ok=true.
+// TestSubAgentDispatchRefreshesWorkerSlot verifies dispatch-time refresh of the
+// effective live worker configuration (including same-ID settings changes).
 func TestSubAgentDispatchRefreshesWorkerSlot(t *testing.T) {
 	hbIsolateEnv(t)
 	env := testEnv(t)
@@ -441,27 +436,29 @@ func TestSubAgentDispatchRefreshesWorkerSlot(t *testing.T) {
 	oldSlot := config.SelectedModel{Provider: prov, Model: "m-old-worker"}
 	cfg.Models[config.SelectedModelTypeWorker] = oldSlot
 
+	ctx := context.Background()
+	ctx = WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeSmart})
 	stale, _, err := coord.buildModelsFromCfg(t.Context(), cfg, oldSlot, oldSlot, true)
 	require.NoError(t, err)
 
-	// The operator swaps the worker slot mid-turn; ctx carries no CallOptions,
-	// so workerSubAgentActiveForCall falls through to workerSubAgentActive:
-	// activeRole "" is smart-active and the worker slot is configured, so the
-	// worker slot is the refresh source.
+	// Active role smart makes the configured Worker slot the refresh source.
 	cfg.Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "m-new-worker"}
-	refreshed, ok := coord.refreshSubAgentSlotModel(context.Background(), stale)
+	refreshed, ok := coord.refreshSubAgentSlotModel(ctx, cfg, config.SelectedModelTypeWorker, stale)
 	require.True(t, ok, "a moved slot must rebuild the dispatch model")
 	require.Equal(t, "m-new-worker", refreshed.ModelCfg.Model)
 
-	// A model already matching the live slot comes back unchanged.
-	_, ok = coord.refreshSubAgentSlotModel(context.Background(), refreshed)
-	require.False(t, ok, "a matching model needs no rebuild")
+	// Restore the old identity-only shortcut: literal sampling and budget
+	// expectations must fail even though provider/model IDs are unchanged.
+	changedTemperature := 0.3
+	cfg.Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "m-new-worker", MaxTokens: 777, Temperature: &changedTemperature}
+	changed, ok := coord.refreshSubAgentSlotModel(ctx, cfg, config.SelectedModelTypeWorker, refreshed)
+	require.True(t, ok)
+	require.Equal(t, int64(777), changed.ModelCfg.MaxTokens)
+	require.Equal(t, 0.3, *changed.ModelCfg.Temperature)
 
-	// No slot configured at all: nothing to refresh. With the worker slot
-	// gone the coordinator falls back to the smart slot, so that must go
-	// too — otherwise the smart slot (still the old id) would rebuild.
+	// No worker slot configured: nothing to refresh.
 	delete(cfg.Models, config.SelectedModelTypeWorker)
 	delete(cfg.Models, config.SelectedModelTypeSmart)
-	_, ok = coord.refreshSubAgentSlotModel(context.Background(), refreshed)
+	_, ok = coord.refreshSubAgentSlotModel(ctx, cfg, config.SelectedModelTypeWorker, refreshed)
 	require.False(t, ok, "an unconfigured slot cannot refresh")
 }

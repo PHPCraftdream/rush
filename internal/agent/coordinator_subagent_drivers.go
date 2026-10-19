@@ -27,6 +27,7 @@ package agent
 import (
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -49,6 +50,9 @@ type subAgentDriver struct {
 	// to the process-wide gate. Empty for a driver registered without a
 	// known parent (should not happen in production; a nil-safe no-op).
 	parentSessionID string
+	// slotRole records live config-slot provenance from the original build;
+	// it is independent of current model IDs or whether a refresh succeeded.
+	slotRole config.SelectedModelType
 	// generation is THIS record's own monotonic registration id, assigned by
 	// register -- not the mailbox ownership epoch, not a turn's
 	// LogicalCallID. Phase 3 (§6.2) uses it to compare-and-delete this

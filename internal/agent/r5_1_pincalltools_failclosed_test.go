@@ -98,15 +98,11 @@ func breakTaskAgent(coord *coordinator) {
 	delete(coord.cfg.Config().Agents, config.AgentTask)
 }
 
-// armReadyGateSeam registers pinCallToolsReadyGateSeam to fail THIS call's
-// pinCallTools' own readyWg.Wait() drain, deterministically and without
-// touching the coordinator's top-level gate before the call even starts.
-// Returns a cleanup that must run (deferred) so the seam does not leak into
-// other tests in the same package/process.
+// armReadyGateSeam registers a failure on pinCallTools' own build gate.
 func armReadyGateSeam(t *testing.T, coord *coordinator) {
 	t.Helper()
-	pinCallToolsReadyGateSeam = func() {
-		coord.readyWg.Go(func() error { return errSimulatedReadyGateFailure })
+	pinCallToolsReadyGateSeam = func(gate *readyGate) {
+		gate.Go(func() error { return errSimulatedReadyGateFailure })
 	}
 	t.Cleanup(func() { pinCallToolsReadyGateSeam = nil })
 }

@@ -195,6 +195,10 @@ func (c *coordinator) Model() Model {
 	return smartModel
 }
 
+// updateModelsReadyGateSeam is a test hook after registration and before the
+// local drain, used to force cancellation/failure without affecting admission.
+var updateModelsReadyGateSeam func(context.Context, *readyGate)
+
 // UpdateModels refreshes the coordinator-wide default agent (models, prompt
 // prefix, toolset) from the LATEST config: config reloads (SetupAgents) and
 // credential refreshes use it to republish clients and tools — including
@@ -213,46 +217,30 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(smart, fast)
-
-	// Update prompt prefix for the new smart model provider
-	if smartProviderCfg, ok := cfg.Providers.Get(smart.ModelCfg.Provider); ok {
-		c.currentAgent.SetSystemPromptPrefix(smartProviderCfg.SystemPromptPrefix)
-	}
-
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
 		return errCoderAgentNotConfigured
 	}
-
+	// The live agent is only replaced after this rebuild has completed cleanly.
+	buildGate := &readyGate{}
+	ctx = withReadyGate(ctx, buildGate)
 	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
 	if err != nil {
+		_ = buildGate.Wait()
 		return err
 	}
+	if updateModelsReadyGateSeam != nil {
+		updateModelsReadyGateSeam(ctx, buildGate)
+	}
+	if err := buildGate.Wait(); err != nil {
+		return err
+	}
+	c.currentAgent.SetModels(smart, fast)
+	if smartProviderCfg, ok := cfg.Providers.Get(smart.ModelCfg.Provider); ok {
+		c.currentAgent.SetSystemPromptPrefix(smartProviderCfg.SystemPromptPrefix)
+	}
 	c.currentAgent.SetTools(tools)
-
-	// P1 (role-models hot reload, round 5): buildTools above (via agentTool
-	// -> buildAgent, coordinator_tools.go:28/agent_tool.go:37-47) registers
-	// the system-prompt and tool-build tasks on the SHARED c.readyWg gate —
-	// bound to THIS ctx. Those tasks run asynchronously; UpdateModels used
-	// to return without draining the gate, so every caller's deferred
-	// ctx cancellation (app_config_sync.go:55's `defer cancel()` on the
-	// poller's 30s rebuild ctx, a request-scoped ctx at the CLI credential
-	// paths, ...) fired while the tasks were still pending. The tasks then
-	// returned context.Canceled, and the gate is STICKY (ready_gate.go:
-	// 95-104): the FIRST error any task ever reported is returned to every
-	// later run entry point's readyWg.Wait (coordinator.go:544 and the
-	// other entry points) — so the next run issued after a poll-driven
-	// model adoption died at the gate with context.Canceled, before any
-	// provider request, and the app stamped the envelope "canceled" (the
-	// CI-observed "no provider request; turn 2 outcome err=run did not
-	// complete cleanly (canceled)" in
-	// TestRoleModelHotReload_NextTurnUsesNewSmart / ExplicitSessionChoiceSurvives).
-	// A model reload must never cancel or fail a run: drain the gate here,
-	// under the same ctx the tasks were registered with, so "UpdateModels
-	// returned" means "the shared agent is fully rebuilt" — and any build
-	// failure surfaces as UpdateModels' own error, not as a poisoned gate.
-	return c.readyWg.Wait()
+	return nil
 }
 
 // clearModelCache empties the model cache, forcing the next resolveSessionModels
