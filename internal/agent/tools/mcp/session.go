@@ -15,7 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func parseLevel(level mcp.LoggingLevel) slog.Level {
+func parseLevel(level mcp.LoggingLevel) slog.Level { //nolint:staticcheck // MCP logging is deprecated but functional until protocol removal.
 	switch level {
 	case "info":
 		return slog.LevelInfo
@@ -755,7 +755,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 			ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
 				notifyListChanged(admission, name, refreshResourcesKind)
 			},
-			LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
+			LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) { //nolint:staticcheck // MCP logging is deprecated but functional until protocol removal.
 				level := parseLevel(req.Params.Level)
 				slog.Log(ctx, level, "MCP log", "name", name, "logger", req.Params.Logger, "data", req.Params.Data)
 			},
