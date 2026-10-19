@@ -471,33 +471,41 @@ func sdkBatchStateTerminal(state string) bool {
 	return false
 }
 
+// sdkQueryBatchStates runs one batch_nodes distribution query and returns the
+// scan results. The rows resource is closed via defer before the caller's next
+// poll iteration, satisfying sqlclosecheck without accumulating deferred
+// closures across the polling loop.
+func sdkQueryBatchStates(t *testing.T, conn *sql.DB, sessionID string) (nonterminal, roots int, states map[string]int) {
+	t.Helper()
+	rows, err := conn.QueryContext(context.Background(),
+		`SELECT state, count(*), count(*) FILTER (WHERE parent_id IS NULL)
+		 FROM batch_nodes WHERE owner_session_id = ?1 GROUP BY state`, sessionID)
+	require.NoError(t, err)
+	defer rows.Close()
+	states, nonterminal, roots = map[string]int{}, 0, 0
+	for rows.Next() {
+		var state string
+		var n, r int
+		require.NoError(t, rows.Scan(&state, &n, &r))
+		states[state] = n
+		if !sdkBatchStateTerminal(state) {
+			nonterminal += n
+		}
+		roots += r
+	}
+	require.NoError(t, rows.Err())
+	return nonterminal, roots, states
+}
+
 // waitForBatchNodes polls the REAL persisted batch_nodes tree for sessionID
 // until done holds (same .rush dataDir the client opened). It fails with the
 // last observed state distribution when the budget expires.
 func waitForBatchNodes(t *testing.T, conn *sql.DB, sessionID string, budget time.Duration, done func(nonterminal, roots int, states map[string]int) bool, msg string) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
-	var nonterminal, roots int
-	var states map[string]int
 	for {
 		require.NoError(t, conn.PingContext(context.Background()))
-		rows, err := conn.QueryContext(context.Background(),
-			`SELECT state, count(*), count(*) FILTER (WHERE parent_id IS NULL)
-			 FROM batch_nodes WHERE owner_session_id = ?1 GROUP BY state`, sessionID)
-		require.NoError(t, err)
-		states, nonterminal, roots = map[string]int{}, 0, 0
-		for rows.Next() {
-			var state string
-			var n, r int
-			require.NoError(t, rows.Scan(&state, &n, &r))
-			states[state] = n
-			if !sdkBatchStateTerminal(state) {
-				nonterminal += n
-			}
-			roots += r
-		}
-		require.NoError(t, rows.Err())
-		require.NoError(t, rows.Close())
+		nonterminal, roots, states := sdkQueryBatchStates(t, conn, sessionID)
 		if done(nonterminal, roots, states) {
 			return
 		}
@@ -536,8 +544,6 @@ func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content = "scoped/cancel-work.txt", "cancel-work-data"
 	disk := newSDKGatedDisk()
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(disk.release) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if bytes.Contains(body, []byte(`"call_w"`)) {
@@ -588,6 +594,16 @@ func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
+	// Registered LAST so it unwinds FIRST (test cleanups run
+	// last-added-first-called): on a fatal assertion the gate is released
+	// before srv.Close/client.Close/db.Release, so client.Close's drain never
+	// hits the still-blocked gated provider (which ignores cancellation) and
+	// cannot be pushed onto the forced-shutdown path that retains DB and
+	// in-memory handles. The blocked writer waits on `<-gate` BEFORE the
+	// underlying OS provider call, so it holds NO OS file handle — the hazard
+	// is only the blocked goroutine forcing the shutdown path.
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(disk.release) })
 	waitForBatchNodes(t, conn, sessionID, 60*time.Second,
 		func(nonterminal, roots int, states map[string]int) bool { return nonterminal > 0 },
 		"the accepted fs_write batch tree never became visible in batch_nodes")

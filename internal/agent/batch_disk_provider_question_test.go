@@ -511,15 +511,17 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 	path2 := filepath.ToSlash(filepath.Join(realDir, "op2.txt"))
 	require.NoError(t, os.WriteFile(filepath.FromSlash(path1), []byte("q8-sentinel-1"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.FromSlash(path2), []byte("q8-sentinel-2"), 0o644))
-	// Seed the fake provider with the scoped directory in BOTH spellings,
-	// matching how other fixtures seed both forms. Without realDir in the
-	// fake's dirs, the REAL fs_write tool's resolveScopedPath finds no
-	// existing prefix, fsWriteExecuteGroup treats the parent as missing and
-	// its ancestor scope walk climbs above realDir and denies op2 before any
+	// Seed the fake provider with the scoped directory in its NATIVE
+	// spelling only: the fake normalizes keys to slash form itself
+	// (filepath.ToSlash(filepath.Clean(...))), so resolveScopedPath finds the
+	// existing prefix regardless of which spelling the production path
+	// resolver hands the provider. Without realDir in the fake's dirs, the
+	// REAL fs_write tool's resolveScopedPath finds no existing prefix,
+	// fsWriteExecuteGroup treats the parent as missing and its ancestor
+	// scope walk climbs above realDir and denies op2 before any
 	// fake-provider write. (MkdirAll bumps the fake's call counter, not its
 	// write counter, so the writeCount oracle below is unaffected.)
 	require.NoError(t, fake.MkdirAll(context.Background(), realDir, 0o755))
-	require.NoError(t, fake.MkdirAll(context.Background(), filepath.ToSlash(realDir), 0o755))
 	leaf := newQuestionProviderLeaf(t, bindingID, childSession, path1, path2,
 		realDir, sessions, messages, q, conn)
 	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})

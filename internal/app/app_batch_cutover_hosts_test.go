@@ -10,6 +10,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -189,35 +190,78 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	select {} // hold the OS host lock until the parent kills us
 }
 
+// insertBatchNodeOnConn mirrors insertBatchNode (app_batch_cutover_test.go:47)
+// exactly — same columns, same params, delivery defaulting to 'none' — but
+// takes a raw *sql.DB handle: at seed time (before the crash gate) no App
+// exists yet over the shared data dir, only the throwaway seedConn.
+func insertBatchNodeOnConn(t *testing.T, conn *sql.DB, f batchNodeFixture) {
+	t.Helper()
+	// delivery defaults to the schema default 'none': every unselected fixture
+	// row must carry a CHECK-legal value (the delivery CHECK rejects '').
+	if f.delivery == "" {
+		f.delivery = "none"
+	}
+	_, err := conn.ExecContext(context.Background(), `
+INSERT INTO batch_nodes (
+	node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
+	tool_call_id, input_hash, announced, announce_message_id, mode, task_kind,
+	child_session_id, state, notice_selected, notice_kind, notice_state,
+	notice_cause, notice_sequence, notice_ordinal, delivery, wake, reacted,
+	outcome_summary, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`,
+		f.nodeID, f.rootID, f.owner, f.host, f.parent, f.ordinal, f.kind,
+		f.toolCallID, f.inputHash, f.announced, f.announceMessageID, f.mode, f.taskKind,
+		f.childSessionID, f.state, f.noticeSelected, f.noticeKind, f.noticeState,
+		f.noticeCause, f.noticeSequence, f.noticeOrd, f.delivery, f.wake, f.reacted,
+		f.outcomeSummary)
+	require.NoError(t, err)
+}
+
 // TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery (R12-F acceptance:
 // "real locked-host fault subprocess plus subsequent recovery"): a real
 // subprocess holds a real host lock in a shared data dir; the parent probes
 // it ALIVE through the shared lock probe (a REAL lock the parent cannot
 // take), kills the holder (the crash model — the OS lock dies with the
 // process), probes it DEAD, and then a REAL flag-ON app built over the same
-// data dir runs the production dead-host recovery against the persisted work
-// before shutting down cleanly.
+// data dir drives the production dead-host recovery through the PUBLIC stop
+// dispatch before shutting down cleanly.
 //
-// Coverage: real batch work (a running root plus a running task child, seeded
-// through the real BatchStore reservation path before the crash) is settled
-// by the production dead-host recovery entry BatchRecoverDeadHost: the
-// unannounced root's whole subtree is deleted root-atomically
-// (BatchRecoveryOutcome.DeletedRoots == 1), an ANNOUNCED root with live nodes
-// takes the terminal-interruption arm (state = 'interrupted',
-// outcome_code = 'host_lost', Interrupted == 1, its root notice selected),
-// and a subsequent BatchRequestStop on the deleted root returns
-// session.ErrBatchControlStale (the dead-host dispatch path, which wires to
-// recovery) without further transitions; a second recovery is a no-op (no
-// replay).
+// Coverage: TWO batch roots are seeded through real persisted rows BEFORE
+// the crash gate (while the helper host is still ALIVE): the unannounced
+// root via the real BatchStore.Reserve path and an ANNOUNCED root via the
+// raw-INSERT helper insertBatchNodeOnConn (mirrors insertBatchNode exactly;
+// announced=1 carries a nonempty announce_message_id for the schema CHECK).
+// The recovery is then driven by BatchRequestStop (internal/session/
+// batch_control.go): for a provably dead host the switch at :63-65
+// dispatches to BatchRecoverDeadHost and returns ErrBatchControlStale
+// BEFORE creating any control request. Removing that dead-host dispatch
+// leaves BOTH roots 'running' and fails the persisted-state asserts below.
+// The two persisted arms are distinguished from each other: the unannounced
+// root's whole subtree is DELETED (zero batch_nodes rows for its root_id)
+// while the announced root takes the terminal-INTERRUPTION arm
+// (state='interrupted', outcome_state='interrupted') and still exists — that
+// pair separates the delete arm from the interrupt arm. A follow-up
+// BatchRequestStop on the ANNOUNCED (now terminal 'interrupted') target
+// returns session.ErrBatchControlStale via the !batchStateLive(root.State)
+// arm (batch_control.go:38-39; batchStateLive accepts only
+// pending/starting/running/cancelling, batch_store.go:265-267) — pinning
+// stale-after-terminal. The outcome counters are NOT asserted for the
+// dispatched recovery itself (BatchRequestStop does not return them); the
+// persisted-row asserts above are the stronger oracle. A second direct
+// BatchRecoverDeadHost over the already-recovered host proves NO REPLAY:
+// all four counters of BatchRecoveryOutcome (batch_recovery.go:21) are
+// zero and both persisted states are re-read fresh (the unannounced root
+// stays gone, the announced stays 'interrupted').
 //
-// Revert-check: removing the HostStatusDead -> BatchRecoverDeadHost branch at
-// internal/session/batch_control.go (the dead-host recovery dispatch) leaves
-// the seeded roots unsettled and fails the subtree-deleted and 'interrupted'
-// asserts; removing batchRecoverRoot's settlement (DeleteBatchSubtree) fails
-// the DeletedRoots count and removing the interrupt arm fails the
-// Interrupted count. Reverting the HostStore probe wiring (e.g. liveness
-// through a store that never sees the foreign lock) fails the Alive/Dead
-// asserts.
+// Revert-check: removing the HostStatusDead -> BatchRecoverDeadHost branch
+// at internal/session/batch_control.go leaves BOTH roots 'running' and
+// fails the persisted-state asserts; removing batchRecoverRoot's
+// DeleteBatchSubtree arm leaves the unannounced root present (fails its
+// zero-row assert); removing the interrupt arm leaves the announced root
+// 'running' (fails its 'interrupted' assert). Reverting the HostStore probe
+// wiring (e.g. liveness through a store that never sees the foreign lock)
+// fails the Alive/Dead asserts.
+
 func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -293,6 +337,23 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 		`SELECT state FROM batch_nodes WHERE root_id = ? AND node_id = root_id`, rootID).Scan(&seedState))
 	require.Equal(t, "running", seedState, "seeded root is live before the crash")
 
+	// Second (ANNOUNCED) root, seeded in the SAME pre-crash block while the
+	// helper host is still ALIVE: owner is a fresh session, host is the
+	// crashed helper host, announced=1 with a nonempty announce_message_id
+	// (the batch_projection migration's CHECK requires it for announced=1),
+	// state 'running' so the interrupt arm sees live nodes. No App exists
+	// yet, so the raw-INSERT helper insertBatchNodeOnConn (declared above,
+	// mirroring insertBatchNode) writes it through seedConn.
+	const announcedRootID = "root-r12f-announced"
+	_, aerr := seedQueries.CreateSession(ctx, db.CreateSessionParams{
+		ID: "r12f-announced", Title: "r12f-announced",
+	})
+	require.NoError(t, aerr)
+	announcedFixture := testBatchRoot("r12f-announced", announcedRootID,
+		"call-r12f-announced", "running", 1)
+	announcedFixture.host = hostID
+	insertBatchNodeOnConn(t, seedConn, announcedFixture)
+
 	// The locked-host fault, probed for real: the parent cannot win the
 	// lock while the helper lives.
 	st, err := session.ProbeHostShared(dataDir, hostID)
@@ -319,49 +380,35 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 		`SELECT COUNT(*) FROM async_hosts WHERE id = ?`, got).Scan(&hosts))
 	require.Equal(t, 1, hosts, "first real-schema assertion: recovered HostStore row")
 
-	// Production recovery entry: BatchRecoverDeadHost (internal/session/
-	// batch_recovery.go:25) against the crashed host. Two roots are listed by
-	// BatchRecoveryRoots (batch_recovery.sql:3-9):
-	//   - the unannounced root (announced=0 matches the first disjunct, line 5;
-	//     the seeded root keeps the schema's announced default) takes
-	//     batchRecoverRoot's DeleteBatchSubtree arm (batch_recovery.go:74-75):
-	//     DeletedRoots == 1;
-	//   - the ANNOUNCED root seeded below (announced=1, live 'running' nodes)
-	//     takes the terminal-interruption arm (batch_recovery.go:77+ via
-	//     BatchRecoveryInterrupt, batch_recovery.sql:18-26: state='interrupted',
-	//     outcome_code='host_lost'): Interrupted == 1, and its root notice is
-	//     selected by BatchRecoveryNotice (batch_recovery.sql:28-37, WHERE
-	//     announced=1 AND notice_selected=0 — the seeded default):
-	//     Notices == 1. No pending batch_control_requests exist, so
-	//     Controls == 0.
+	// The recovery is driven through the PUBLIC stop dispatch, not the
+	// direct BatchRecoverDeadHost entry: BatchRequestStop (internal/session/
+	// batch_control.go:48) probes the crashed host DEAD and the switch at
+	// :63-65 calls BatchRecoverDeadHost for BOTH seeded roots, then returns
+	// the zero request joined with session.ErrBatchControlStale — BEFORE any
+	// control request is created and BEFORE the caller sees the outcome
+	// counters. Both roots were seeded 'running' BEFORE the crash gate, so
+	// BatchRecoveryRoots (batch_recovery.sql:3-9) lists both: the unannounced
+	// root takes batchRecoverRoot's DeleteBatchSubtree arm
+	// (batch_recovery.go:74-75) and the announced root takes the
+	// terminal-interruption arm (batch_recovery.go:77+ via
+	// BatchRecoveryInterrupt, batch_recovery.sql:18-26).
 	stopStore := session.NewBatchStore(app.DB())
-	target := session.BatchControlTarget{
+	targetUnannounced := session.BatchControlTarget{
 		Owner: "r12f-parent", Host: hostID, Root: rootID, Node: rootID,
 	}
-	// Fixture for the second (announced) root through the raw-schema helper
-	// insertBatchNode (app_batch_cutover_test.go:47): owner is a fresh
-	// session, host is the crashed helper host, announced=1 with a nonempty
-	// announce_message_id (the batch_projection migration's CHECK requires it
-	// for announced=1), state 'running' so the interrupt arm sees live nodes.
-	const announcedRootID = "root-r12f-announced"
-	_, aerr := db.New(app.DB()).CreateSession(ctx, db.CreateSessionParams{
-		ID: "r12f-announced", Title: "r12f-announced",
-	})
-	require.NoError(t, aerr)
-	announcedFixture := testBatchRoot("r12f-announced", announcedRootID,
-		"call-r12f-announced", "running", 1)
-	announcedFixture.host = hostID
-	insertBatchNode(t, app, announcedFixture)
-	out, recErr := stopStore.BatchRecoverDeadHost(ctx, hostID, session.BatchSharedHostProbe(dataDir))
-	require.NoError(t, recErr)
-	require.Equal(t, int64(1), out.DeletedRoots, "the unannounced root's subtree is deleted")
-	require.Equal(t, int64(1), out.Interrupted, "the announced root is terminal-interrupted")
-	require.Equal(t, int64(1), out.Notices, "the announced root's notice is selected")
-	require.Zero(t, out.Controls, "no pending control requests existed")
+	stopped, stopErr := stopStore.BatchRequestStop(ctx, targetUnannounced, session.BatchSharedHostProbe(dataDir))
+	require.ErrorIs(t, stopErr, session.ErrBatchControlStale,
+		"the dead-host dispatch result: recovery ran, no request created")
+	require.Empty(t, stopped.RequestID, "the dead branch never creates a control request")
+
+	// The dispatch mutation is caught from PERSISTED ROWS: the unannounced
+	// root's subtree is DELETED (zero rows) while the announced root still
+	// EXISTS terminal-'interrupted' — that pair distinguishes the delete arm
+	// from the interrupt arm (any-recovery alone cannot).
 	var nodes int
 	require.NoError(t, app.DB().QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM batch_nodes WHERE root_id = ?`, rootID).Scan(&nodes))
-	require.Zero(t, nodes, "the settled unannounced root leaves no rows (deleted, not 'interrupted')")
+	require.Zero(t, nodes, "the dispatched recovery deleted the unannounced root's subtree")
 	var annState, annOutcome string
 	require.NoError(t, app.DB().QueryRowContext(context.Background(),
 		`SELECT state, outcome_state FROM batch_nodes WHERE root_id = ? AND node_id = root_id`,
@@ -369,21 +416,28 @@ func TestBatchHostStoreFlagOn_LockedHostFaultThenRecovery(t *testing.T) {
 	require.Equal(t, "interrupted", annState, "the announced root is persisted interrupted")
 	require.Equal(t, "interrupted", annOutcome, "its outcome_state is latched interrupted")
 
-	// The dead-host stop dispatch wires to recovery and returns BEFORE any
-	// request creation (batch_control.go:62-66 returns the empty request
-	// immediately): the unannounced root is gone, so batchControlTarget
-	// (batch_control.go:23-27) finds no rows and reports
-	// session.ErrBatchControlStale; the returned db.BatchControlRequest is
-	// the zero value (RequestID == "").
-	stopped, stopErr := stopStore.BatchRequestStop(ctx, target, session.BatchSharedHostProbe(dataDir))
-	require.ErrorIs(t, stopErr, session.ErrBatchControlStale,
-		"the documented dead-host result")
-	require.Empty(t, stopped.RequestID, "the dead branch never creates a control request")
+	// Follow-up stop on the ANNOUNCED target (owner r12f-announced): the
+	// root is now terminal ('interrupted'), so batchControlTarget returns
+	// session.ErrBatchControlStale via the !batchStateLive(root.State) arm
+	// (batch_control.go:38-39; batchStateLive accepts only
+	// pending/starting/running/cancelling, batch_store.go:265-267) —
+	// stale-after-terminal, without any further transition.
+	targetAnnounced := session.BatchControlTarget{
+		Owner: "r12f-announced", Host: hostID, Root: announcedRootID, Node: announcedRootID,
+	}
+	stopped2, stopErr2 := stopStore.BatchRequestStop(ctx, targetAnnounced, session.BatchSharedHostProbe(dataDir))
+	require.ErrorIs(t, stopErr2, session.ErrBatchControlStale,
+		"terminal roots are stale targets (batchStateLive excludes 'interrupted')")
+	require.Empty(t, stopped2.RequestID, "no control request against a terminal root")
 
-	// No replay: the second BatchRecoverDeadHost lists neither root anymore
-	// (the unannounced one is deleted, the announced one is terminal and its
-	// notice is already selected), so all four counters are zero. Both
-	// persisted states are re-read FRESH (no stale local variables).
+	// No replay: a second, direct BatchRecoverDeadHost over the
+	// already-recovered host lists neither root anymore (the unannounced one
+	// is deleted, the announced one is terminal and its notice is already
+	// selected), so all four counters of BatchRecoveryOutcome
+	// (batch_recovery.go:21) are zero — this is the ONLY place the counters
+	// are asserted (the dispatched call returns none; the persisted-row
+	// asserts above are the recovery oracle). Both persisted states are
+	// re-read FRESH (no stale local variables).
 	out2, recErr2 := stopStore.BatchRecoverDeadHost(ctx, hostID, session.BatchSharedHostProbe(dataDir))
 	require.NoError(t, recErr2)
 	require.Zero(t, out2.DeletedRoots)
