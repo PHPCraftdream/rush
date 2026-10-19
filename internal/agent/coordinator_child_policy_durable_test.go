@@ -68,7 +68,7 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 	require.NoError(t, err)
 
-	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed")
+	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
 
 	allowed, err := policyAllowed(coord, ctx, child.ID)
 	require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 			})
 			require.NoError(t, err)
 
-			seedFixtureDelegation(t, env.conn, store, parent.ID, "call-1", child.ID, kind, string(kind), "completed")
+			seedFixtureDelegation(t, env.conn, store, parent.ID, "call-1", child.ID, kind, string(kind), "completed", false)
 
 			allowed, err := policyAllowed(coord, ctx, child.ID)
 			require.NoError(t, err)
@@ -185,7 +185,7 @@ func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *t
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child-e2e")
 	require.NoError(t, err)
 
-	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed")
+	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
 	// Store-only seed: the pre-round-1 state was a direct-store claim with
 	// NOTHING in this process's in-memory workLedger. drainPolicy refuses
 	// before any in-memory use, and drainDecision reads store debt, so the
@@ -238,7 +238,7 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 	require.NoError(t, err)
 
 	if batchFlagEnabled() {
-		seedBatchDelegation(t, env.conn, child.ID, "call-1", "", "command", "running")
+		seedBatchDelegation(t, env.conn, child.ID, "call-1", "", "command", "running", false)
 	} else {
 		_, err = store.Claim(ctx, session.ClaimParams{Owner: child.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
 		require.NoError(t, err)
