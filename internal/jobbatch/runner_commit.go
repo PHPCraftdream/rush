@@ -16,6 +16,13 @@ type runnerPublication struct {
 	batches    map[ID]*Batch
 	request    *runnerRequest
 	answer     runnerAnswer
+	fenced     []fencedReply
+}
+
+// fencedReply is a recordless answer held behind an earlier queued item.
+type fencedReply struct {
+	q      *runnerRequest
+	answer runnerAnswer
 }
 
 type runnerCommitResult struct {
@@ -170,6 +177,10 @@ func (r *Runner) applyDurable(t Transition) (Transition, error) {
 			}
 			a.cancel()
 			a.retired = true
+			// Mirrors the non-durable retirement at runner.go:357; the attempt
+			// stays indexed for late physical returns, but its Launch payload
+			// must not stay reachable.
+			a.launch.Task.Payload = nil
 			if a.handle != nil {
 				a.handle.terminate()
 			}
@@ -227,8 +238,20 @@ func (r *Runner) acceptRequest(q *runnerRequest) {
 	}
 	item := r.currentPublication
 	if item == nil {
-		item = &runnerPublication{}
-		r.publicationQueue = append(r.publicationQueue, item)
+		if len(r.publicationQueue) == 0 {
+			// Nothing earlier is pending, so there is no fence to sit
+			// behind: reply immediately without allocating anything.
+			r.reply(q, answer)
+			return
+		}
+		// A recordless answer must not allocate a publication, but it stays
+		// fenced behind the newest queued item: publish or failCommit
+		// answers it right after that item's own outcome, preserving reply
+		// order without growing the bounded queue. The list is bounded by
+		// concurrently blocked callers, each holding its own request.
+		tail := r.publicationQueue[len(r.publicationQueue)-1]
+		tail.fenced = append(tail.fenced, fencedReply{q: q, answer: answer})
+		return
 	}
 	item.request, item.answer = q, answer
 	r.currentPublication = nil
@@ -314,6 +337,10 @@ func (r *Runner) publish(item *runnerPublication) {
 	if item.request != nil {
 		r.reply(item.request, item.answer)
 	}
+	for _, fr := range item.fenced {
+		r.reply(fr.q, fr.answer)
+	}
+	item.fenced = nil
 	for _, cmd := range t.Commands {
 		if cmd.Type == CommandStartLeaf {
 			r.dispatchStart(cmd.Launch)
@@ -346,6 +373,15 @@ func (r *Runner) failCommit(reason string) {
 				item.answer.handle.unpin()
 			}
 			r.reply(item.request, runnerAnswer{err: r.FaultErr()})
+		}
+		for _, fr := range item.fenced {
+			// The fenced caller never receives a handle answer, so the
+			// deferred unpin its wrapper would install never runs: release
+			// the pin here, mirroring the item.answer handling above.
+			if fr.answer.handle != nil {
+				fr.answer.handle.unpin()
+			}
+			r.reply(fr.q, runnerAnswer{err: r.FaultErr()})
 		}
 	}
 	r.publicationQueue = nil

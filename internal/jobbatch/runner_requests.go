@@ -148,6 +148,15 @@ func (r *Runner) handleRequest(q *runnerRequest) runnerAnswer {
 		if v.State.Terminal() {
 			return runnerAnswer{}
 		}
+		if r.commitHook != nil && v.State == StateCancelling && v.Cause != CauseNone && v.Control != ControlFailed && !r.engine.subtreeStopRetryable(e.Node) {
+			// A stop is already in flight for this leaf: repeated redundant
+			// stops coalesce into it instead of queueing another publication
+			// behind a held commit. This is an authorized behavior change: a
+			// coalesced stop no longer advances the sequence or appends a
+			// feed record. ControlFailed is excluded so the engine's retry
+			// path can still re-arm the stop.
+			return runnerAnswer{}
+		}
 	}
 	var batch *Batch
 	if e.Type == EventSubmit {

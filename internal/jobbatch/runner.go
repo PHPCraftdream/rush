@@ -276,6 +276,9 @@ func (r *Runner) loop() {
 			clear(r.frozenSnapshots)
 			clear(r.batches)
 			clear(r.feed.known)
+			// Final snapshots are frozen in the Runtime maps; the Engine's own
+			// TaskSpec payloads are dropped here, after the last apply.
+			r.engine.dropTaskPayloads()
 			// No further engine access after this point. Lifetime locks remain live.
 			close(r.exited)
 			r.inboxMu.Lock()
