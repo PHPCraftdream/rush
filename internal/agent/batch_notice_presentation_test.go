@@ -166,7 +166,7 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 	require.NoError(t, store.Project(ctx, session.BatchProjection{
 		Host: "fixture-host", RunnerID: "fixture-runner", Sequence: 2,
 		Roots: []session.BatchRootProjection{{
-			Owner: owner, Root: root,
+			Owner: owner.ID, Root: root,
 			Updates: []db.ProjectBatchNodeParams{
 				{NodeID: root, State: "completed", OutcomeState: "completed", OutcomeSummary: "released", ControlState: "none"},
 				{NodeID: childNode, State: "completed", OutcomeState: "completed", OutcomeSummary: "released", ControlState: "none"},
@@ -186,8 +186,6 @@ func TestBatchIdleChildSeparateRootKeepsScopeLiveThenCloses(t *testing.T) {
 	env := testEnv(t)
 	ctx := context.Background()
 
-	owner, err := env.sessions.Create(ctx, "w5-idle-parent")
-	require.NoError(t, err)
 	childOwner, err := env.sessions.Create(ctx, "w5-idle-child")
 	require.NoError(t, err)
 	root, child := w5SeedRunningRoot(t, env.conn, env.messages, childOwner.ID, "call-w5-idle")

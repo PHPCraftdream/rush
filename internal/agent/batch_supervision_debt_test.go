@@ -249,7 +249,7 @@ func TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle(t *testing.T) {
 	require.NoError(t, err)
 
 	facts := coordinatorBatchCutoverFacts(coord)
-	typed, ok := facts.(unknownBatchCutoverFacts)
+	_, ok := facts.(unknownBatchCutoverFacts)
 	require.True(t, ok, "an unbound flag-ON coordinator resolves to the documented fail-safe facts")
 
 	debt, err := facts.SelectedDebtExists(ctx, owner.ID)
