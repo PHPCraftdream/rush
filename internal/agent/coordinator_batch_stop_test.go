@@ -7,6 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,12 @@ func TestCoordinatorBatchStopZerosDelegatedChildWake(t *testing.T) {
 			require.NoError(t, err)
 			_, err = env.conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1, notice_kind='root', notice_state='completed', notice_cause='', notice_sequence=1, notice_ordinal=0, delivery='done', wake=1, reacted=0 WHERE root_id=? AND node_id=root_id`, snap.Snapshot.Root.RootID)
 			require.NoError(t, err)
+			_, won, err := env.store.BatchDeliveryElectStarted(ctx, env.messages, child, snap.Snapshot.Root.RootID, message.CreateMessageParams{
+				Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "batch stop test started"}},
+				AutoResumed: true, BackgroundJobNotice: true,
+			})
+			require.NoError(t, err)
+			require.True(t, won, "root announcement must be elected through the production delivery API")
 			var wake int
 			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT wake FROM batch_nodes WHERE root_id=? AND node_id=root_id`, snap.Snapshot.Root.RootID).Scan(&wake))
 			require.Equal(t, 1, wake, "seeded completion must be pending reaction debt")

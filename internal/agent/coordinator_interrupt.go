@@ -95,7 +95,13 @@ func (c *coordinator) stopTree(sessionID string) {
 		for _, id := range ids {
 			seen[id] = struct{}{}
 		}
-		for _, id := range c.asyncJobs.cancelTree(sessionID) {
+		var legacyIDs []string
+		if batchOn {
+			legacyIDs = c.asyncJobs.treeSessionIDs(sessionID)
+		} else {
+			legacyIDs = c.asyncJobs.cancelTree(sessionID)
+		}
+		for _, id := range legacyIDs {
 			if _, exists := seen[id]; !exists {
 				seen[id] = struct{}{}
 				ids = append(ids, id)
@@ -103,6 +109,9 @@ func (c *coordinator) stopTree(sessionID string) {
 		}
 	} else if len(ids) == 0 {
 		ids = []string{sessionID}
+	}
+	if batchOn {
+		c.stopBatchOwners(ids)
 	}
 	if batchOn && c.asyncJobs != nil {
 		for _, id := range ids {
