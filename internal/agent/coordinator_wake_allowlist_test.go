@@ -106,8 +106,10 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	}
 	coord := &coordinator{permissions: spy, subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent, parentSessionID: "parent-1"})
 
 	// Simulate the child's allowlist entry having been cleared already

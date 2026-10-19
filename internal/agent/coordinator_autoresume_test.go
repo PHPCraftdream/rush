@@ -267,8 +267,10 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 
 	var err error
 	require.NotPanics(t, func() {
@@ -309,8 +311,10 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 
 	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
 	err := coord.wakeSession(t.Context(), "child-1", true)

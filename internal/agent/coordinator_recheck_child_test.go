@@ -89,11 +89,12 @@ func newBlockingWakeCoordinator(t *testing.T, ids ...string) (coord *coordinator
 	t.Helper()
 	release = make(chan struct{})
 	entered = &atomic.Int32{}
-	store := newTestAsyncJobStore(t)
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
 	coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
 	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
 	coord.asyncJobs.store = store
 	coord.asyncJobs.coord = coord
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	blocked := &mockSessionAgent{runFunc: func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		entered.Add(1)
 		<-release
