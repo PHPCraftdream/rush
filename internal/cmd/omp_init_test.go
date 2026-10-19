@@ -1,4 +1,4 @@
-// Revert-check manifest: TestOMPInitScopesAndConflicts → omp_init.go:20-35, opencode_del.go:32-50 and ResolveCwd; TestOMPInitCommandsAndGuidance → opencode_init.go:75-132, multi_cli_convert.go:383-426, claude_slash_command.yaml block 1 (rush.md target fallback wording), claude_crush_fallback_command.yaml blocks 1-2 (rush-fallback single limitation), multi_cli_convert.go ompWrushLaunchGuidance (wrush absolute redirect); TestOMPInitRefreshOwnership → multi_cli_convert.go:327-354; TestOMPDelOwnedFilesIdempotent → omp_del.go:18-23, opencode_del.go:32-59, multi_cli_convert.go:350-379; TestOMPSourcesRejectMarkersForAllTargets → multi_cli_convert.go:101-145.
+// Revert-check manifest: TestOMPInitScopesAndConflicts → runOMPInit, runOMPDel, ResolveCwd; TestOMPInitCommandsAndGuidance → installMarkdownCommands, nativeFrontMatter, loadSkillSource; TestOMPInitRefreshOwnership → writeSentinelledFile; TestOMPDelOwnedFilesIdempotent → runOMPDel, removeMarkdownCommands; TestOMPSourcesRejectMarkersForAllTargets → parseStructuredSkillSource.
 package cmd
 
 import (
@@ -15,34 +15,59 @@ import (
 
 // Revert check: runOMPInit and runOMPDel resolve default/global/local/cwd scopes and reject conflicts.
 func TestOMPInitScopesAndConflicts(t *testing.T) {
-	home, cwd := t.TempDir(), t.TempDir()
-	orig, err := os.Getwd()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.Chdir(orig) })
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	for _, tc := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{}, filepath.Join(home, ".omp", "agent", "commands")},
-		{[]string{"--global"}, filepath.Join(home, ".omp", "agent", "commands")},
-		{[]string{"--local"}, filepath.Join(cwd, ompCommandsDir)},
-		{[]string{"--cwd", cwd}, filepath.Join(cwd, ompCommandsDir)},
-	} {
-		cmd := nativeCommandForTest(tc.args)
-		if containsFlag(tc.args, "--local") || containsFlag(tc.args, "--cwd") {
-			_ = cmd.Flags().Set("cwd", cwd)
-		}
-		require.NoError(t, runOMPInit(cmd, nil))
-		for _, name := range nativeCommandNames {
-			require.FileExists(t, filepath.Join(tc.want, name))
-		}
+	for _, scope := range []string{"default", "global", "local", "cwd"} {
+		t.Run(scope, func(t *testing.T) {
+			home, cwd, explicit := t.TempDir(), t.TempDir(), t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(cwd)
+			args := map[string][]string{
+				"default": nil, "global": {"--global"}, "local": {"--local"}, "cwd": {"--cwd", explicit},
+			}[scope]
+			cmd := nativeCommandForTest(args)
+			if scope == "cwd" {
+				_ = cmd.Flags().Set("cwd", explicit)
+			}
+			require.NoError(t, runOMPInit(cmd, nil))
+			dest := filepath.Join(home, ".omp", "agent", "commands")
+			if scope == "local" {
+				dest = filepath.Join(cwd, ompCommandsDir)
+			} else if scope == "cwd" {
+				dest = filepath.Join(explicit, ompCommandsDir)
+			}
+			assertOMPFiles(t, dest)
+			for _, other := range []string{filepath.Join(home, ".omp", "agent", "commands"), filepath.Join(cwd, ompCommandsDir), filepath.Join(explicit, ompCommandsDir)} {
+				if other != dest {
+					assertOMPFilesAbsent(t, other)
+				}
+			}
+		})
 	}
-	require.ErrorContains(t, runOMPInit(nativeCommandForTest([]string{"--global", "--local"}), nil), "mutually exclusive")
-	cmd := nativeCommandForTest([]string{"--global", "--cwd", cwd})
-	_ = cmd.Flags().Set("cwd", cwd)
-	require.ErrorContains(t, runOMPInit(cmd, nil), "mutually exclusive")
+	t.Run("conflicting flags", func(t *testing.T) {
+		home, cwd := t.TempDir(), t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		require.ErrorContains(t, runOMPInit(nativeCommandForTest([]string{"--global", "--local"}), nil), "mutually exclusive")
+		cmd := nativeCommandForTest([]string{"--global", "--cwd", cwd})
+		_ = cmd.Flags().Set("cwd", cwd)
+		require.ErrorContains(t, runOMPInit(cmd, nil), "mutually exclusive")
+		assertOMPFilesAbsent(t, filepath.Join(home, ".omp", "agent", "commands"))
+		assertOMPFilesAbsent(t, filepath.Join(cwd, ompCommandsDir))
+	})
+}
+
+func assertOMPFiles(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"rush.md", "rush-fallback.md", "wrush.md", "wcrush.md"} {
+		require.FileExists(t, filepath.Join(dir, name))
+	}
+}
+
+func assertOMPFilesAbsent(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"rush.md", "rush-fallback.md", "wrush.md", "wcrush.md"} {
+		assert.NoFileExists(t, filepath.Join(dir, name))
+	}
 }
 
 // Revert check: installMarkdownCommands, nativeFrontMatter, and converters emit native parseable Markdown commands.
@@ -66,8 +91,8 @@ func TestOMPInitCommandsAndGuidance(t *testing.T) {
 			assert.Contains(t, got, `"timeout": 0`)
 			assert.Contains(t, got, `"pty": false`)
 			assert.Contains(t, got, `"cwd"`)
-			assert.NotContains(t, got, "switch to that agent immediately and silently")
-			assert.Contains(t, got, "cannot arm an automatic switch")
+			assert.NotContains(t, strings.Join(strings.Fields(got), " "), "switch to that agent immediately and silently")
+			assert.Contains(t, strings.Join(strings.Fields(got), " "), "cannot arm an automatic switch")
 		}
 		fields := strings.SplitN(strings.TrimPrefix(got, "---\n"), "\n---\n", 2)
 		require.Len(t, fields, 2)
