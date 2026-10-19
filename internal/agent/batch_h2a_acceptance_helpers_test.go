@@ -232,6 +232,28 @@ func h2aProbe(env *h2aGatedInstall, hash, callID string) batchAttachProbe {
 	}
 }
 
+// h2aOwnerKindCount reads the disk capability manager's SYNCHRONIZED typed
+// owner set (disk_provider_capability.go) and counts owners of one kind.
+// OwnerDiagnostics only aggregates totals, which cannot separate the
+// fixture's Construction owner from an EXECUTION owner; this read filters
+// by kind, so an execution-owner assertion is isolated from fixture
+// housekeeping. Test-only diagnostic read: locks the same mutex as the
+// production accessors.
+func h2aOwnerKindCount(r *DiskProviderRegistry, kind diskOwnerKind) int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for k := range r.owners {
+		if k.kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
 // h2aTaskStates reads every durable node state of a root.
 func h2aTaskStates(t *testing.T, store *session.BatchStore, owner string, root jobbatch.ID) []string {
 	t.Helper()
