@@ -31,7 +31,7 @@ func (i *BatchInstall) SubmitCLI(ctx context.Context, owner string, spec jobbatc
 	if err := validateBatch(i.Runtime.cfg.Profile, batchRankContext{Root: root}, nil, []jobbatch.Spec{spec}, i.Runtime.cfg.MaxDepth, i.Runtime.cfg.MaxNodes, i.Runtime.cfg.Resolver); err != nil {
 		return nil, fmt.Errorf("batch CLI admission: %w", err)
 	}
-	batch, err := i.Runner.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: "batch-cli:" + string(root)})
+	_, batch, err := i.RunnerHandle.SubmitBound(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: "batch-cli:" + string(root)})
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +188,6 @@ func (i *BatchInstall) AddCLI(ctx context.Context, root, parent jobbatch.ID, ite
 	if err := validateBatch(i.Runtime.cfg.Profile, batchRankContext{Root: root}, nil, items, i.Runtime.cfg.MaxDepth-parentDepth, i.Runtime.cfg.MaxNodes-(1+len(snapshot.Descendants)), i.Runtime.cfg.Resolver); err != nil {
 		return fmt.Errorf("batch CLI add admission: %w", err)
 	}
-	_, err = i.Runner.Add(ctx, jobbatch.AddRequest{Parent: parent, Items: items, Ref: "batch-cli-add:" + string(root)})
+	_, err = i.RunnerHandle.Add(ctx, jobbatch.AddRequest{Parent: parent, Items: items, Ref: "batch-cli-add:" + string(root)})
 	return err
 }

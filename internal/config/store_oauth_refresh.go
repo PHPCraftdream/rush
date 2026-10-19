@@ -286,6 +286,9 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return fmt.Errorf("OAuth refresh for provider %s returned no valid token", pc.ID)
 	}
 	refreshed = normalizeOAuthRefresh(descriptor, pc.OAuthToken, refreshed)
+	if done, err := s.preflightCodexDiskAuthority(ctx, scope, pc.ID, used); done || err != nil {
+		return err
+	}
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)

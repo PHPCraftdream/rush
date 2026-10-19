@@ -57,11 +57,38 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	if err != nil {
 		return nil, err
 	}
+	if req.CallCredentials {
+		credentialLeaf, ok := leaf.(interface {
+			credentialEscrow() *batchCredentialEscrow
+		})
+		if !ok {
+			return nil, errBatchCredentialEscrowMissing
+		}
+		creds, releaseCredentials, err := credentialLeaf.credentialEscrow().consume(batchCredentialKey{
+			registryID: req.RegistryID, sessionID: req.SessionID, messageID: req.MessageID,
+			callID: req.ToolCallID, tool: req.Tool,
+		}, string(req.NodeID))
+		if err != nil {
+			return nil, err
+		}
+		return startBatchAgentTurn(ctx, req, host, leaf, creds, releaseCredentials)
+	}
+	return startBatchAgentTurn(ctx, req, host, leaf, nil, func() {})
+}
+
+func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost, leaf fantasy.AgentTool, creds *CredentialSet, releaseCredentials func()) (batchAgentTurn, error) {
+	if req.DiskBindingID != "" && batchDiskProviderFrom(ctx) == nil {
+		releaseCredentials()
+		return nil, ErrDiskProviderUnavailable
+	}
 	depth := batchAgentQuestionDepth(ctx) + 1
 	if depth <= 0 {
 		depth = 1
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if req.CallCredentials {
+		runCtx = withCallCredentials(runCtx, creds)
+	}
 	runCtx = withBatchAgentQuestionContext(runCtx, depth)
 	runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
 	runCtx = withBatchAgentLifecycle(runCtx, batchAgentLifecycle{BindChildSession: host.BindChildSession, NoChildSelected: host.NoChildSelected})
@@ -75,6 +102,7 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 		provider := batchDiskProviderFrom(ctx)
 		if provider == nil {
 			cancel()
+			releaseCredentials()
 			return nil, ErrDiskProviderUnavailable
 		}
 		co := boundCallOptions(provider, req.DiskBindingID, batchDiskRegistryFromContext(ctx))
@@ -89,8 +117,9 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	call := fantasy.ToolCall{ID: req.ToolCallID, Name: req.Tool, Input: string(req.Input)}
 	turn := &batchCoordinatorAgentTurn{cancel: cancel, done: make(chan struct{}), exit: make(chan struct{})}
 	go func() {
-		defer childScope.close()
 		defer close(turn.exit)
+		defer releaseCredentials()
+		defer childScope.close()
 		defer close(turn.done)
 		resp, runErr := func() (resp fantasy.ToolResponse, err error) {
 			defer func() {
