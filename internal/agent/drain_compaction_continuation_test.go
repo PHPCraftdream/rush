@@ -92,6 +92,7 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	ledger := newWorkLedger(nil)
 	ledger.store = store
+	a2AttachBatchFacts(t, env, ledger)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		DataDirectory: env.workingDir,
@@ -108,17 +109,7 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 
 	// Seed real VISIBLE debt: claim+finish a job, pull its notice into
 	// history -- the shape decideDrainTurn's first (main) evaluation needs.
-	_, existing, err := ledger.Start(sess.ID, "call-async-1", "call-async-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-async-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-async-1", State: "completed", ResultSummary: "async output", Wake: true,
-	})
-	require.NoError(t, err)
-	pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
+	seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, sess.ID, "call-async-1", true)
 
 	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sa.Run(ctx, drainCall)
