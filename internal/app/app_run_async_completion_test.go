@@ -206,39 +206,67 @@ func TestRunNonInteractiveWaitsForAsyncSubAgentResult(t *testing.T) {
 }
 
 func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
-	// Content-driven server: each request launches the next job until six are
-	// started; the final text comes only once all six completions are visible.
-	// Distinct commands: a byte-identical relaunch counts as idle polling for
-	// the reaction chain guard (A36).
 	var mu sync.Mutex
-	started := map[string]bool{}
-	envVars := []string{"GOOS", "GOARCH", "GOROOT", "GOPATH", "GOFLAGS", "GOVERSION"}
+	turnCount, launched := 0, 0
+	barriers := make([]chan struct{}, 6)
+	released := make([]bool, 6)
+	seen := make(map[int]bool)
+	for i := range barriers {
+		barriers[i] = make(chan struct{})
+	}
+	oldTurnDone := cliLoopTurnDoneSeam
+	cliLoopTurnDoneSeam = func() {
+		mu.Lock()
+		turnCount++
+		if launched > 0 && !released[launched-1] {
+			close(barriers[launched-1])
+			released[launched-1] = true
+		}
+		mu.Unlock()
+	}
+	t.Cleanup(func() { cliLoopTurnDoneSeam = oldTurnDone })
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		defer mu.Unlock()
-		acked := 0
-		for i := range envVars {
-			id := fmt.Sprintf("call-%d", i+1)
-			if started[id] && strings.Contains(string(body), "Async job "+id) {
-				acked++
+		_, lastUser, _ := lastTurnParts(body)
+		for i := range barriers {
+			if strings.TrimSpace(lastUser) == fmt.Sprintf("CHILD-WORK-%d", i+1) {
+				select {
+				case <-barriers[i]:
+				case <-r.Context().Done():
+					return
+				case <-t.Context().Done():
+					return
+				}
+				admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("child-%d", i+1), fmt.Sprintf("child %d complete", i+1)), admissionSSEStop(fmt.Sprintf("child-%d", i+1), "stop")})
+				return
 			}
 		}
-		switch {
-		case len(started) < len(envVars):
-			i := len(started)
-			id := fmt.Sprintf("call-%d", i+1)
-			started[id] = true
-			args := fmt.Sprintf(`{"program":"go","args":["env","%s"]}`, envVars[i])
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall(fmt.Sprintf("start-%d", i+1), id, "run_command", args),
-				admissionSSEStop(fmt.Sprintf("start-%d", i+1), "tool_calls"),
-			})
-		case acked == len(envVars):
-			admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
-		default:
-			admissionWriteSSE(w, []string{admissionSSEText("waiting", "waiting"), admissionSSEStop("waiting", "stop")})
+		mu.Lock()
+		defer mu.Unlock()
+		for i := 0; i < launched; i++ {
+			if strings.Contains(string(body), fmt.Sprintf("Async job call-%d", i+1)) {
+				seen[i] = true
+			}
 		}
+		if launched < len(barriers) && (launched == 0 || seen[launched-1] && turnCount >= launched) {
+			launched++
+			admissionWriteSSE(w, []string{
+				admissionSSEToolCall(fmt.Sprintf("start-%d", launched), fmt.Sprintf("call-%d", launched), "agent", fmt.Sprintf(`{"prompt":"CHILD-WORK-%d"}`, launched)),
+				admissionSSEStop(fmt.Sprintf("start-%d", launched), "tool_calls"),
+			})
+			return
+		}
+		if launched == len(barriers) {
+			all := true
+			for i := range barriers {
+				all = all && seen[i]
+			}
+			if all {
+				admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
+				return
+			}
+		}
+		admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("parent-%d", turnCount), "waiting"), admissionSSEStop(fmt.Sprintf("parent-%d", turnCount), "stop")})
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -247,8 +275,18 @@ func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "all six jobs finished", result.FinalText)
 	mu.Lock()
-	require.Len(t, started, 6)
+	gotLaunched, gotTurns, gotSeen := launched, turnCount, len(seen)
 	mu.Unlock()
+	require.Equal(t, 6, gotLaunched)
+	require.Equal(t, 7, gotTurns)
+	require.Equal(t, 6, gotSeen)
+	for _, barrier := range barriers {
+		select {
+		case <-barrier:
+		default:
+			t.Fatal("each child barrier must be released by its parent turn boundary")
+		}
+	}
 	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`))
 	messages, err := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, err)

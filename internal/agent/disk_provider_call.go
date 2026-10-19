@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -106,6 +107,39 @@ func BindCallDiskProvider(caps *DiskProviderRegistry, provider tools.DiskProvide
 	if opts.buildScope == nil {
 		opts.buildScope = newBuildResourceScope()
 	}
+	return opts, release, nil
+}
+
+// bindExistingCallDiskBinding binds a trusted call state to an EXISTING
+// binding (R12-H2b continuation dispatch): same contract as
+// BindCallDiskProvider, but no provider is registered — the binding ID
+// must already be live in caps, otherwise the typed acquire error fails
+// closed. The Call owner keyed by instance+bindingID is acquired here;
+// the returned closure releases EXACTLY that owner (idempotent).
+func bindExistingCallDiskBinding(caps *DiskProviderRegistry, bindingID string, instance string, opts *CallOptions) (*CallOptions, func(), error) {
+	if bindingID == "" {
+		return nil, nil, fmt.Errorf("%w: empty binding id", ErrDiskProviderUnavailable)
+	}
+	provider, err := caps.Lookup(bindingID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := caps.acquire(diskOwnerKey{kind: diskOwnerCall, instance: instance, bindingID: bindingID}); err != nil {
+		return nil, nil, err
+	}
+	if opts == nil {
+		opts = &CallOptions{}
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			caps.release(diskOwnerKey{kind: diskOwnerCall, instance: instance, bindingID: bindingID})
+		})
+	}
+	opts.DiskProvider = provider
+	opts.DiskBindingID = bindingID
+	opts.diskBinding = &callDiskBinding{id: bindingID, provider: provider, caps: caps}
+	EnsureCallBuildScope(opts)
 	return opts, release, nil
 }
 

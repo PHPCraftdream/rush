@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +72,10 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	primary.ModelRole = config.SelectedModelTypeSmart
 	primary.DisableSubAgents = false
 	primary.FolderScope = &permission.FolderScope{}
-
+	// R12-H2b §2.4: the durable requirement envelope must ride along with
+	// the binding identity — a reviewer follow-up without it would lose
+	// the admitted policy baseline.
+	primary.Requirement = &session.SessionExecutionRequirement{BindingID: "binding-review"}
 	got := reviewerCallOptions(primary)
 
 	pv, gv := reflect.ValueOf(*primary), reflect.ValueOf(*got)
@@ -91,6 +95,9 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	}
 	require.Equal(t, config.SelectedModelTypeReviewer, got.ModelRole)
 	require.True(t, got.DisableSubAgents)
+	// R12-H2b §2.4: the reviewer follow-up carries the invocation's
+	// requirement envelope (same pointer: trusted state, not a rebuild).
+	require.Same(t, primary.Requirement, got.Requirement)
 }
 
 const (
