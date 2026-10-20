@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
 	"runtime/pprof"
 	"slices"
@@ -361,8 +362,9 @@ func jsonString(s string) string {
 
 // wireRequest / wireMessage mirror the JSON shapes the provider stub sees.
 type wireMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string `json:"role"`
+	Content    any    `json:"content"`
+	ToolCallID string `json:"tool_call_id"`
 }
 
 type wireRequest struct {
@@ -378,7 +380,10 @@ type wireRequest struct {
 // child branch with them).
 func routeModelRequest(body []byte) string {
 	if f6BatchOn() {
-		return routeBatchModelRequest(body, "", "")
+		// This path is only reached when a caller forgot the flag guard; a
+		// fresh stateless router carries no cross-request state.
+		route, _ := newRBRouter().route(body)
+		return route
 	}
 	var req wireRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -492,13 +497,20 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 	var childID atomic.Value
 	childID.Store("")
 	var order safeRequestOrder
-	var childNoticeCount, parentFinalCount, stopCount, startedCount atomic.Int32
+	var stopIntentSeen atomic.Bool
+	var childNoticeCount, parentFinalCount, startedCount atomic.Int32
 	var liveApp atomic.Pointer[App]
 	var liveSession atomic.Value
+	router := newRBRouter()
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
-		switch routeBatchModelRequest(body, rootID.Load().(string), delegateRoot.Load().(string)) {
+		route, seqErr := router.route(body)
+		if seqErr != "" {
+			http.Error(w, "out-of-sequence batch request: "+seqErr, http.StatusBadRequest)
+			return
+		}
+		switch route {
 		case "title":
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Root Wait Child"), admissionSSEStop("title", "stop")})
 		case "root:delegate":
@@ -507,31 +519,74 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 		case "child:bash":
 			order.add("child:bash")
 			var id string
-			_ = liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `
+SELECT t.child_session_id
+FROM batch_nodes r
+JOIN batch_nodes t
+  ON t.owner_session_id = r.owner_session_id
+ AND t.root_id = r.root_id AND t.host_id = r.host_id
+ AND t.kind = 'task'
+WHERE r.owner_session_id = ? AND r.tool_call_id = 'call-agent'
+  AND r.node_id = r.root_id AND r.kind = 'batch'
+ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			if err != nil {
+				http.Error(w, "delegation child lookup failed: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if id == "" {
+				http.Error(w, "delegation child lookup returned an empty child id", http.StatusServiceUnavailable)
+				return
+			}
 			childID.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
 		case "child:started":
 			startedCount.Add(1)
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("child started tool result has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			rootID.Store(id)
 			input, err := json.Marshal(map[string]string{"root_id": id})
-			require.NoError(t, err)
+			if err != nil {
+				t.Errorf("marshal batch_stop input: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			admissionWriteSSE(w, []string{admissionSSEToolCall("stop", "call-stop", "batch_stop", string(input)), admissionSSEStop("stop", "tool_calls")})
 		case "child:stop":
 			if !strings.Contains(lastTool, `"accepted":true`) || !strings.Contains(lastTool, `"terminal":false`) {
 				http.Error(w, "batch_stop must expose cancellation intent, not terminal completion: "+lastTool, http.StatusServiceUnavailable)
 				return
 			}
-			if stopCount.CompareAndSwap(0, 1) {
-				order.add("child:stop")
-				releaseRecoveryJob(t, release)
-				admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+			stopIntentSeen.Store(true)
+			order.add("child:stop")
+			if err := releaseRecoveryJobAsync(release); err != nil {
+				t.Errorf("release the recovery job: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			order.add("child:stopAck")
+			admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+		case "child:stopAck":
+			// The stop-ack tool result stays in history; the router replays
+			// repeats here so the child can yield until its completion is
+			// pulled.
 			admissionWriteSSE(w, []string{admissionSSEText("stop-ack", "stop intent already recorded"), admissionSSEStop("stop-ack", "stop")})
 		case "child:final":
+			// Same-turn deliveries carry the stop ack in history, so the stop
+			// intent is provable without a dedicated ack turn.
+			var histReq wireRequest
+			if json.Unmarshal(body, &histReq) == nil {
+				for _, m := range histReq.Messages {
+					if m.Role != "tool" {
+						continue
+					}
+					if s, ok := m.Content.(string); ok && strings.Contains(s, `"accepted":true`) && strings.Contains(s, `"terminal":false`) {
+						stopIntentSeen.Store(true)
+					}
+				}
+			}
 			childNoticeCount.Add(1)
 			var state string
 			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
@@ -543,7 +598,11 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 			admissionWriteSSE(w, []string{admissionSSEText("child-final", "child final: terminal command result received"), admissionSSEStop("child-final", "stop")})
 		case "root:yield":
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("root started notice has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			delegateRoot.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "waiting for child completion"), admissionSSEStop("root-yield", "stop")})
 		case "root:final":
@@ -556,8 +615,18 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 			}
 			order.add("root:final")
 			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
+		case "child:wait":
+			// A replayed started announcement (also persisted as user history):
+			// the child just yields until its completion is pulled.
+			order.add("child:wait")
+			admissionWriteSSE(w, []string{admissionSSEText("child-wait", "child waiting for build"), admissionSSEStop("child-wait", "stop")})
+		case "root:wait":
+			// A replayed started announcement on the root side: yield until the
+			// delegation completion arrives.
+			order.add("root:wait")
+			admissionWriteSSE(w, []string{admissionSSEText("root-wait", "waiting for child completion"), admissionSSEStop("root-wait", "stop")})
 		default:
-			http.Error(w, "unexpected batch root-wait route="+routeBatchModelRequest(body, rootID.Load().(string), delegateRoot.Load().(string))+" system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
+			http.Error(w, "unexpected batch root-wait route="+route+" system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
 		}
 	})
 	liveApp.Store(application)
@@ -579,7 +648,7 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 	require.EqualValues(t, 1, childNoticeCount.Load())
 	require.EqualValues(t, 1, parentFinalCount.Load())
 	require.EqualValues(t, 1, startedCount.Load(), "one started identity is consumed")
-	require.EqualValues(t, 1, stopCount.Load(), "one durable stop request is issued")
+	require.True(t, stopIntentSeen.Load(), "one durable stop request is issued (dedicated ack turn or same-turn delivery)")
 	require.Equal(t, "root final answer", result.FinalText)
 	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`))
 	require.NotEmpty(t, childID.Load().(string))
@@ -593,44 +662,9 @@ func batchStartedRootID(text string) string {
 	return fields[2]
 }
 
-func routeBatchModelRequest(body []byte, commandRoot, delegateRoot string) string {
-	var req wireRequest
-	if json.Unmarshal(body, &req) != nil {
-		return "root:delegate"
-	}
-	var system strings.Builder
-	lastUser, lastTool := "", ""
-	for _, m := range req.Messages {
-		s, _ := m.Content.(string)
-		switch m.Role {
-		case "system":
-			system.WriteString(s)
-		case "user":
-			lastUser = s
-		case "tool":
-			lastTool = s
-		}
-	}
-	if strings.Contains(system.String(), "short title") {
-		return "title"
-	}
-	if commandRoot != "" && strings.HasPrefix(lastUser, "batch "+commandRoot+" node ") {
-		return "child:final"
-	}
-	if delegateRoot != "" && strings.HasPrefix(lastUser, "batch "+delegateRoot+" node ") {
-		return "root:final"
-	}
-	if strings.Contains(lastTool, `"accepted":true`) && strings.Contains(lastTool, `"terminal":false`) {
-		return "child:stop"
-	}
-	if strings.Contains(lastTool, "batch root ") && strings.Contains(lastTool, "started; completions arrive as selected notices") {
-		if strings.Contains(lastUser, "WORKER-MARKER") {
-			return "child:started"
-		}
-		return "root:yield"
-	}
-	if strings.Contains(lastUser, "WORKER-MARKER do the task") {
-		return "child:bash"
-	}
-	return "root:delegate"
+// releaseRecoveryJobAsync writes the recovery-job release sentinel without
+// touching testing state, so a helper goroutine may call it: require (and
+// t.Errorf after completion) panics when reached on a goroutine.
+func releaseRecoveryJobAsync(release string) error {
+	return os.WriteFile(release, nil, 0o644)
 }

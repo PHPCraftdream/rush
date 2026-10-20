@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,28 +101,60 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 	// flight, with zero timing sleeps.
 	holdEntered := make(chan struct{})
 	holdOpen := make(chan struct{})
+	holdEnteredClose := &sync.Once{}
+	holdOpenClose := &sync.Once{}
+	releaseOnce := &sync.Once{}
+	releaseErr := make(chan error, 1)
+	helperCtx, cancelHelper := context.WithCancel(context.Background())
 	var liveApp atomic.Pointer[App]
 	var liveSession atomic.Value
+	router := newRBRouter()
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
-		switch routeBatchModelRequest(body, commandRoot.Load().(string), delegateRoot.Load().(string)) {
+		route, seqErr := router.route(body)
+		if seqErr != "" {
+			http.Error(w, "out-of-sequence batch request: "+seqErr, http.StatusBadRequest)
+			return
+		}
+		switch route {
 		case "title":
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Child Result"), admissionSSEStop("title", "stop")})
 		case "root:delegate":
 			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER build it"}`), admissionSSEStop("delegate", "tool_calls")})
 		case "child:bash":
 			var id string
-			_ = liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `
+SELECT t.child_session_id
+FROM batch_nodes r
+JOIN batch_nodes t
+  ON t.owner_session_id = r.owner_session_id
+ AND t.root_id = r.root_id AND t.host_id = r.host_id
+ AND t.kind = 'task'
+WHERE r.owner_session_id = ? AND r.tool_call_id = 'call-agent'
+  AND r.node_id = r.root_id AND r.kind = 'batch'
+ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			if err != nil {
+				http.Error(w, "delegation child lookup failed: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if id == "" {
+				http.Error(w, "delegation child lookup returned an empty child id", http.StatusServiceUnavailable)
+				return
+			}
 			childID.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(gated)+`,"description":"build"}`), admissionSSEStop("child-bash", "tool_calls")})
 		case "child:started":
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("child started tool result has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			commandRoot.Store(id)
 			// HOLD this provider step: the child's turn is in flight
 			// while the command finishes outside.
-			close(holdEntered)
+			closeOnce(holdEnteredClose, holdEntered)
 			select {
 			case <-holdOpen:
 			case <-time.After(30 * time.Second):
@@ -145,9 +178,20 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child done: build output received "+marker), admissionSSEStop("child-result", "stop")})
 		case "root:yield":
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("root started notice has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			delegateRoot.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "root waiting"), admissionSSEStop("root-yield", "stop")})
+		case "child:wait":
+			// A replayed started announcement (also persisted as user history):
+			// the child just yields until its completion is pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("child-wait", "child waiting for build"), admissionSSEStop("child-wait", "stop")})
+		case "root:wait":
+			// A replayed started announcement on the root side.
+			admissionWriteSSE(w, []string{admissionSSEText("root-wait", "root waiting"), admissionSSEStop("root-wait", "stop")})
 		case "root:final":
 			// The parent's delegation notice carries the child's answer;
 			// the root answers only after the child's POST-result turn.
@@ -171,17 +215,48 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 	grantChildBackgroundShellTools(t, application)
 
 	// Release the command exactly once the child's provider step is HELD:
-	// entered -> release -> open. Deterministic, no sleeps.
+	// entered -> release -> open. Deterministic, no sleeps. The command is
+	// released FIRST, then the gate is opened, so the command provably
+	// finishes while the step is still held inside the handler.
+	holdHeld := make(chan struct{})
+	helperDone := make(chan struct{})
 	go func() {
+		defer close(helperDone)
 		select {
 		case <-holdEntered:
+		case <-helperCtx.Done():
+			return
 		case <-time.After(30 * time.Second):
-			close(holdOpen)
+			// The handler's own 30s hold refusal fails the run.
 			return
 		}
-		releaseRecoveryJob(t, release)
-		close(holdOpen)
+		close(holdHeld)
+		// command first, then the gate: the command provably finishes
+		// while the step is held
+		if err := releaseRecoveryJobAsync(release); err != nil {
+			select {
+			case releaseErr <- err:
+			default:
+			}
+			closeOnce(holdOpenClose, holdOpen)
+			return
+		}
+		closeOnce(holdOpenClose, holdOpen)
 	}()
+	// Teardown ordering: cancel the helper, open the gate (no-op if already
+	// open), release the command (idempotent), then join the goroutine
+	// boundedly and loudly. require and t.Errorf panic when reached on a
+	// goroutine, so the join must happen before the test returns.
+	t.Cleanup(func() {
+		cancelHelper()
+		closeOnce(holdOpenClose, holdOpen)
+		releaseOnce.Do(func() { _ = releaseRecoveryJobAsync(release) })
+		select {
+		case <-helperDone:
+		case <-time.After(35 * time.Second):
+			t.Errorf("helper goroutine did not exit before teardown")
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
@@ -190,6 +265,19 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 	}, true, RunModeJSON, sessionID, false)
 	require.NoError(t, err)
 	require.NotNil(t, result)
+
+	held := false
+	select {
+	case <-holdHeld:
+		held = true
+	default:
+	}
+	require.True(t, held, "the child's post-started provider step was never held")
+	select {
+	case err := <-releaseErr:
+		require.NoError(t, err, "helper failed to write the release sentinel")
+	default:
+	}
 
 	require.NotEmpty(t, childID.Load().(string))
 	require.NotEmpty(t, commandRoot.Load().(string))
