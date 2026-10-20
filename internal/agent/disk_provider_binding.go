@@ -162,3 +162,32 @@ func registerDiskBinding(provider tools.DiskProvider, reg *diskCapabilityManager
 	}
 	return reg.Register(provider)
 }
+
+// SetCoordinatorDiskCapabilityManager binds an App-owned capability
+// manager onto an already-constructed coordinator, mirroring what
+// BindCoordinatorBatchRuntimeBindings does for a batch-runtime install:
+// the coordinator field AND the already-built root agent both get the
+// registry (the root agent is constructed inside NewCoordinator, before
+// this bind, so its SessionAgentOptions.diskCaps was nil). internal/app's
+// InitCoderAgent calls this for an ephemeral flag-ON App (dataDir == "",
+// no batch runtime install) so continuations resolve bindings through the
+// SAME registry that app_run_setup.go's per-call BindCallDiskProvider
+// bound against. Fails closed on nil arguments or a non-standard
+// coordinator.
+func SetCoordinatorDiskCapabilityManager(c Coordinator, caps *DiskProviderRegistry) error {
+	if c == nil {
+		return errors.New("disk capability manager: nil coordinator")
+	}
+	if caps == nil {
+		return errors.New("disk capability manager: nil registry")
+	}
+	co, ok := c.(*coordinator)
+	if !ok {
+		return errors.New("disk capability manager: unsupported coordinator type")
+	}
+	co.diskCaps = caps
+	if sa, ok := co.currentAgent.(*sessionAgent); ok {
+		sa.bindDiskCaps(caps)
+	}
+	return nil
+}
