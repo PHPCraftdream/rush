@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -261,6 +262,16 @@ func TestSessionAgent_HandleWatchdogFire_UsesPassedSmartModelSnapshot(t *testing
 
 	require.Equal(t, int32(causeIdleStall), watchdogCauseVal.Load(),
 		"cause must still be stored regardless of the model-source fix")
+
+	// handleWatchdogFire dispatches the goroutine-dump write on its own
+	// goroutine and does not await it. That goroutine logs "... goroutine
+	// dump for watchdog fire" (wrote / failed to write) only AFTER its file
+	// I/O finished, so wait for that line before returning: otherwise the
+	// t.TempDir cleanup can run while the write is still creating files in
+	// the dump dir ("The directory is not empty" on Windows).
+	require.Eventually(t, func() bool {
+		return strings.Contains(logBuf.String(), "goroutine dump for watchdog fire")
+	}, 10*time.Second, 5*time.Millisecond, "the async dump write must finish before the test returns")
 
 	logged := logBuf.String()
 	assert.Contains(t, logged, "provider=snapshot-provider",
