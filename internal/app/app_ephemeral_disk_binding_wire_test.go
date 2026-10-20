@@ -77,6 +77,10 @@ func TestEphemeralAppCoordinatorBindsEphemeralDiskCaps(t *testing.T) {
 		Options: &config.Options{
 			DataDirectory:   "",
 			NoRealWorkspace: true,
+			// The bash tool dereferences Attribution while the ready gate
+			// builds the tool set; a bare Options (no config defaults)
+			// would panic that goroutine.
+			Attribution: &config.Attribution{TrailerStyle: config.TrailerStyleNone},
 		},
 		Providers:    csync.NewMap[string, config.ProviderConfig](),
 		Models:       make(map[config.SelectedModelType]config.SelectedModel),
