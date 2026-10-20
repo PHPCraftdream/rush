@@ -492,6 +492,8 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 	childID.Store("")
 	var order safeRequestOrder
 	var childNoticeCount, parentFinalCount, stopCount, startedCount atomic.Int32
+	var liveApp atomic.Pointer[App]
+	var liveSession atomic.Value
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
@@ -504,7 +506,7 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 		case "child:bash":
 			order.add("child:bash")
 			var id string
-			_ = application.DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, sessionID).Scan(&id)
+			_ = liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 			childID.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
 		case "child:started":
@@ -531,7 +533,7 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 		case "child:final":
 			childNoticeCount.Add(1)
 			var state string
-			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" {
 				http.Error(w, fmt.Sprintf("selected child notice before terminal state: %s (%v)", state, err), http.StatusServiceUnavailable)
 				return
@@ -546,7 +548,7 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 		case "root:final":
 			parentFinalCount.Add(1)
 			var state string
-			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" || childNoticeCount.Load() != 1 {
 				http.Error(w, fmt.Sprintf("parent completion before child terminal notice: %s notices=%d err=%v", state, childNoticeCount.Load(), err), http.StatusServiceUnavailable)
 				return
@@ -557,6 +559,8 @@ func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
 			http.Error(w, "unexpected batch root-wait route="+routeBatchModelRequest(body, rootID.Load().(string), delegateRoot.Load().(string))+" system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
 		}
 	})
+	liveApp.Store(application)
+	liveSession.Store(sessionID)
 	grantChildBackgroundShellTools(t, application)
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()

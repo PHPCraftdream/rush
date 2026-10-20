@@ -100,6 +100,8 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 	// flight, with zero timing sleeps.
 	holdEntered := make(chan struct{})
 	holdOpen := make(chan struct{})
+	var liveApp atomic.Pointer[App]
+	var liveSession atomic.Value
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
@@ -110,7 +112,7 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER build it"}`), admissionSSEStop("delegate", "tool_calls")})
 		case "child:bash":
 			var id string
-			_ = application.DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, sessionID).Scan(&id)
+			_ = liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 			childID.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(gated)+`,"description":"build"}`), admissionSSEStop("child-bash", "tool_calls")})
 		case "child:started":
@@ -135,7 +137,7 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 			// already be terminal "completed".
 			childSawMarker.Store(strings.Contains(lastUser, marker))
 			var state string
-			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
 			if err != nil || state != "completed" {
 				http.Error(w, "child completion notice before terminal completed row: "+state, http.StatusServiceUnavailable)
 				return
@@ -154,7 +156,7 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 				rootFinalSeen.Store(true)
 			}
 			var state string
-			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
 			if err != nil || state != "completed" {
 				http.Error(w, "parent final before the child command completed: "+state, http.StatusServiceUnavailable)
 				return
@@ -164,6 +166,8 @@ func testRunNonInteractiveChildReceivesBatchBashResultFinishedMidTurn(t *testing
 			http.Error(w, "unexpected batch midturn route system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
 		}
 	})
+	liveApp.Store(application)
+	liveSession.Store(sessionID)
 	grantChildBackgroundShellTools(t, application)
 
 	// Release the command exactly once the child's provider step is HELD:

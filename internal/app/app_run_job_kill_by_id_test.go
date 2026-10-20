@@ -171,6 +171,8 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 	extractedRootID.Store("")
 	var stopIntentObserved atomic.Bool
 	var terminalNoticeSeen atomic.Bool
+	var liveApp atomic.Pointer[App]
+	var liveSession atomic.Value
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
@@ -185,7 +187,7 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 		// production-proof, not stub-proof.)
 		case strings.HasPrefix(lastUser, "batch "+extractedRootID.Load().(string)+" node ") && strings.Contains(lastUser, `state "cancelled"`):
 			var state string
-			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, sessionID, extractedRootID.Load().(string)).Scan(&state)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, liveSession.Load().(string), extractedRootID.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" {
 				http.Error(w, "terminal notice before the command row was cancelled: "+state, http.StatusServiceUnavailable)
 				return
@@ -229,6 +231,8 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 			http.Error(w, "unexpected request: system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
 		}
 	})
+	liveApp.Store(application)
+	liveSession.Store(sessionID)
 	grantRootBatchStop(t, application)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
