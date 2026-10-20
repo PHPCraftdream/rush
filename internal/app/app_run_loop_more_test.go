@@ -417,7 +417,7 @@ ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 			order.add("root:final")
 			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
 		default:
-			http.Error(w, "unexpected batch retry route system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
+			http.Error(w, "unexpected batch retry route system="+pr2Excerpt(system)+" lastUser="+pr2Excerpt(lastUser)+" lastTool="+pr2Excerpt(lastTool), http.StatusBadRequest)
 		}
 	})
 	liveApp.Store(application)
