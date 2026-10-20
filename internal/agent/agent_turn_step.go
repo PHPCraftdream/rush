@@ -317,7 +317,22 @@ func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fan
 		origin := CallOriginFrom(callContext)
 		return origin == message.OriginCLI || origin == message.OriginWeb
 	}()
-	ownWork := async && ts.a.asyncJobs != nil && ts.a.asyncJobs.running(ts.call.SessionID)
+	// ownWork's source follows the runtime: under RUSH_BATCH_RUNTIME the ON
+	// turn never touches async_jobs, so the ledger map is empty by
+	// construction and the answer comes from the bound cutover facts
+	// (ownWorkBatch), the same seam CLIActiveWork reads. The helper is used
+	// only when the facts are INSTALLED (the same predicate CLIActiveWork's
+	// ON branch applies, so a flag-ON run without an installed runtime keeps
+	// the legacy ledger and never hides live legacy work); everything else
+	// stays byte-identical: the legacy ledger, read synchronously.
+	var ownWork bool
+	if async {
+		if batchFlagEnabled() && ts.a.asyncJobs != nil && batchOwnWorkFactsInstalled(ts.a.asyncJobs.coord) {
+			ownWork = ts.a.ownWorkBatch(callContext, ts.call.SessionID)
+		} else {
+			ownWork = ts.a.asyncJobs != nil && ts.a.asyncJobs.running(ts.call.SessionID)
+		}
+	}
 
 	guard := stepGuardFor(&ts.progress, ownWork, async)
 	guard.canEdit, guard.canDelegate = stepToolCapabilities(pinned)
