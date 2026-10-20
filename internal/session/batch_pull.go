@@ -202,6 +202,19 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
+	// N (package N): the selected notice's content must be the job's real
+	// result. Structural settlement (internal/jobbatch/tree_apply.go) does
+	// not copy a task outcome into the structural root, so an ordinary
+	// one-task root settles with an empty summary while its sole task
+	// child carries the output; the sync path projects root -> sole child
+	// the same way (batch_adapters.go BatchDeliveryOneItemCompletion).
+	// Multi-task roots, nested structural children, and non-root selected
+	// notices are never borrowed from: they keep the row's own summary.
+	projected, err := batchProjectSelectedNoticeSummary(ctx, tx, owner, n)
+	if err != nil {
+		return BatchPulledNotice{}, false, err
+	}
+	n.OutcomeSummary = projected
 	msg, err := messages.CreateTx(ctx, tx, owner, build(batchNoticeRow(n, r)))
 	if err != nil {
 		return BatchPulledNotice{}, false, err
@@ -214,4 +227,61 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	}
 	messages.PublishCreated(msg)
 	return BatchPulledNotice{Message: msg, Wake: n.Wake != 0, RootID: root, NodeID: node}, true, nil
+}
+
+// batchProjectSelectedNoticeSummary resolves the summary a selected notice
+// carries. A non-root selected notice (a NotifyEach task) and any root that
+// already carries its own summary pass through unchanged. An ordinary
+// ONE-TASK root with an empty summary resolves from its sole direct task
+// child: the state/cause on the row stay authoritative (a stopped or failed
+// root is never reclassified by the child), only the content is projected.
+// The read happens inside the caller's pull transaction, after the delivery
+// CAS, so a read error rolls the whole delivery back and the row stays
+// pending. Everything comes from durable rows; no process-local cache.
+// Only the textual summary is projected: the model-visible async completion
+// formatter is text-only (agent_notice_pull.go buildBatchNoticeMessageParams
+// -> coordinator_background.go FormatAsyncCompletion), and today's
+// detached/escaped paths carry text-only results, so a media-only detached
+// result is not reachable.
+func batchProjectSelectedNoticeSummary(ctx context.Context, dbtx db.DBTX, owner string, n db.BatchNode) (string, error) {
+	if n.NodeID != n.RootID || n.OutcomeSummary != "" {
+		return n.OutcomeSummary, nil
+	}
+	children, err := batchDirectChildOutcomes(ctx, dbtx, owner, n.RootID, n.NodeID)
+	if err != nil {
+		return "", err
+	}
+	// More than one child, or a structural (non-task) child: the root's
+	// own outcome is the only honest aggregate; never borrow one
+	// arbitrary task's result for a multi-task batch.
+	if len(children) != 1 || children[0].Kind != "task" {
+		return n.OutcomeSummary, nil
+	}
+	return children[0].Summary, nil
+}
+
+// batchChildOutcome is one direct child's kind and outcome summary.
+type batchChildOutcome struct{ Kind, Summary string }
+
+// batchDirectChildOutcomes reads every direct child of one node in a single
+// pass. The writer pool has exactly one connection
+// (internal/db/connect.go SetMaxOpenConns(1)), so the rows MUST be fully
+// read and closed before the caller runs its next statement; the deferred
+// Close inside this helper guarantees that.
+func batchDirectChildOutcomes(ctx context.Context, dbtx db.DBTX, owner, root, node string) ([]batchChildOutcome, error) {
+	rows, err := dbtx.QueryContext(ctx, `SELECT kind, outcome_summary FROM batch_nodes
+WHERE owner_session_id = ? AND root_id = ? AND parent_id = ?`, owner, root, node)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []batchChildOutcome
+	for rows.Next() {
+		var c batchChildOutcome
+		if err := rows.Scan(&c.Kind, &c.Summary); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
