@@ -619,6 +619,14 @@ func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
 		t.Fatal("the cancelled run never returned")
 	}
 
+	// Run returns on the caller's ctx without joining the tool goroutine that
+	// submits the Stop, so the Stop is only guaranteed once the engine has
+	// persisted it ('cancelling'). Releasing the gate earlier lets the write
+	// settle 'completed' before the Stop lands.
+	waitForBatchNodes(t, conn, sessionID, 60*time.Second,
+		func(nonterminal, roots int, states map[string]int) bool { return states["cancelling"] >= 1 },
+		"the caller's Stop never reached the accepted batch tree (no 'cancelling' node)")
+
 	// Release the physical write; the accepted tree settles: NO nonterminal
 	// node remains and the CauseStop terminal state 'cancelled' is recorded.
 	releaseOnce.Do(disk.release)
