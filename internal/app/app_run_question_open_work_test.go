@@ -6,11 +6,11 @@ package app
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,6 +26,10 @@ import (
 // request 2 never happens and this test goes red.
 func TestRunLoop_QuestionWithLiveDelegationContinuesWithHint(t *testing.T) {
 	var body2 atomic.Value // string
+	// The completer goroutine outlives neither the run nor the test: it is
+	// joined before any assertion so its require calls can never fire after
+	// the test completed.
+	var completers sync.WaitGroup
 	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, body []byte, _ bool, n int) {
 		switch n {
 		case 1:
@@ -33,14 +37,11 @@ func TestRunLoop_QuestionWithLiveDelegationContinuesWithHint(t *testing.T) {
 				admissionSSEToolCall("q", "call_q", "ask_question", `{"question":"which environment?"}`),
 				admissionSSEStop("q", "tool_calls"),
 			})
+			completers.Add(1)
 			go func() {
+				defer completers.Done()
 				time.Sleep(300 * time.Millisecond)
-				_, transitionErr := h.app.asyncJobStore.Transition(context.Background(),
-					session.TransitionParams{
-						Owner: h.sessionID, ToolCallID: "deleg-1", State: "completed",
-						ResultSummary: "done", Wake: true,
-					})
-				require.NoError(h.t, transitionErr)
+				f6CompleteDelegation(h.t, context.Background(), h.app, h.sessionID, "deleg-1", "done", true)
 			}()
 		case 2:
 			body2.Store(string(body))
@@ -53,14 +54,11 @@ func TestRunLoop_QuestionWithLiveDelegationContinuesWithHint(t *testing.T) {
 	t.Cleanup(cancel)
 	child, err := h.app.Sessions.Create(ctx, "child")
 	require.NoError(t, err)
-	_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: h.sessionID, ToolCallID: "deleg-1", Kind: session.JobKindAgent, Input: "x",
-		ChildSessionID: child.ID, ToolName: "agent",
-	})
-	require.NoError(t, err)
-	require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, h.sessionID, "deleg-1"))
+	f6ClaimDelegation(t, ctx, h.app, h.sessionID, "deleg-1", child.ID)
 
 	res, _, runErr := h.run(ctx, RunOverrides{})
+
+	completers.Wait()
 
 	require.NoError(t, runErr)
 	require.NoError(t, ctx.Err(), "the run finishes within ~15s")

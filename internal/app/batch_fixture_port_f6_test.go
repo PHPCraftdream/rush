@@ -67,26 +67,18 @@ func f6ReserveDelegation(t *testing.T, application *App, owner, toolCallID, chil
 }
 
 // f6FindDelegationNodes locates one fixture delegation's root and child node
-// ids by owner + tool call id.
+// ids by owner + tool call id. Only the ROOT row carries tool_call_id
+// (batchInsertTree stamps it on the root alone, children are NULL by design),
+// so the root is found by tool call id and the task child through root_id.
 func f6FindDelegationNodes(t *testing.T, application *App, owner, toolCallID string) (root, node string) {
 	t.Helper()
-	rows, err := application.DB().QueryContext(context.Background(),
-		`SELECT node_id, root_id, kind FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ? ORDER BY rowid`,
-		owner, toolCallID)
-	require.NoError(t, err)
-	defer rows.Close()
-	for rows.Next() {
-		var id, rootID, kind string
-		require.NoError(t, rows.Scan(&id, &rootID, &kind))
-		if kind == "batch" {
-			root = id
-		} else {
-			node = id
-		}
-	}
-	require.NoError(t, rows.Err())
-	require.NotEmpty(t, root, "fixture delegation root row missing")
-	require.NotEmpty(t, node, "fixture delegation child row missing")
+	ctx := context.Background()
+	require.NoError(t, application.DB().QueryRowContext(ctx,
+		`SELECT node_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ? AND kind = 'batch' ORDER BY rowid DESC LIMIT 1`,
+		owner, toolCallID).Scan(&root), "fixture delegation root row missing")
+	require.NoError(t, application.DB().QueryRowContext(ctx,
+		`SELECT node_id FROM batch_nodes WHERE root_id = ? AND kind = 'task' ORDER BY rowid LIMIT 1`,
+		root).Scan(&node), "fixture delegation child row missing")
 	return root, node
 }
 
