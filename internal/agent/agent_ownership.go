@@ -25,7 +25,9 @@ import (
 // populated, entries live forever" lifetime — see mailbox.go and
 // docs/plans/2026-08-04-session-owner-mailbox-design.md §1.
 func (a *sessionAgent) getMailbox(sessionID string) *mailbox {
-	return a.mailboxes.GetOrSet(sessionID, func() *mailbox { return &mailbox{} })
+	return a.mailboxes.GetOrSet(sessionID, func() *mailbox {
+		return &mailbox{armQueuedBuild: a.armQueuedBuildRetention}
+	})
 }
 
 // tryReserveSession is now a thin wrapper around mailbox.submit (design §3,
@@ -426,6 +428,13 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // instead of blocking indefinitely.
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
 	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
+	// Package L round 2: a retained queued call is NOT a waiter (its
+	// onQueueResolved is nil), so splitCallsWithoutWaiters above correctly
+	// KEPT it for durable re-enqueue -- the pump rebuilds a fresh call with
+	// its own build scope, so the in-process retention must be released at
+	// the handoff, exactly once. This is the waiters-classification-preserving
+	// release point (round-1 flaw B fixed: the hook is never touched).
+	releaseQueuedCallsBuildOwnership(calls)
 	if len(calls) == 0 {
 		return nil
 	}

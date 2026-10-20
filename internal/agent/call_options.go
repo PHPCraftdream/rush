@@ -52,6 +52,17 @@ type CallOptions struct {
 	// the options borrow the same scope.
 	buildScope *buildResourceScope
 
+	// buildScopeRetained marks buildScope as the RETAINED scope of an
+	// acknowledged queued call (armQueuedBuildRetention in
+	// queued_call_scope.go): a fresh scope holding ONLY that call's extra
+	// Construction owners, created at the moment the mailbox accepted the
+	// call into its submitted queue. Every queue-exit path closes it through
+	// releaseQueuedBuildOwnership; no other scope is ever marked, so a
+	// marked scope always belongs to queued-call retention and closing it is
+	// exactly the ownership release (close is idempotent). Internal trusted
+	// runtime metadata; never serialized.
+	buildScopeRetained bool
+
 	// ModelRole is the named model slot driving this run (smart, fast,
 	// worker, reviewer). Read by workerSubAgentActiveForCall to decide
 	// worker-slot preference for sub-agent builds, replacing the
