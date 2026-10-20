@@ -2,13 +2,17 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type cliQuotaStop struct {
@@ -126,7 +130,47 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 		childIDs = append(childIDs, child)
 	}
 	slices.Sort(childIDs)
+	questions := make(map[string]session.ChildQuestion)
+	if batchCutoverOn() {
+		facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStore(l.app.batchCutoverWriter()), nil, l.app.batchCutoverWriter())
+		owners := make(map[string]bool)
+		for _, row := range rows {
+			if row.OwnerSessionID != "" {
+				owners[row.OwnerSessionID] = true
+			}
+		}
+		for owner := range owners {
+			held, heldErr := facts.LiveHeldQuestions(l.ctx, owner)
+			if heldErr != nil {
+				final, exitErr := l.exitWait(heldErr)
+				return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
+			}
+			for _, heldRow := range held {
+				var noticeText string
+				err := l.app.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						continue
+					}
+					final, exitErr := l.exitWait(err)
+					return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
+				}
+				question, ok := session.ParseBatchChildQuestionNotice(noticeText)
+				if ok && question.NodeID == heldRow.NodeID && question.ChildSessionID == heldRow.ChildSessionID {
+					question.Question = quotaQuestionText(noticeText)
+					questions[question.ChildSessionID] = question
+				}
+			}
+		}
+	}
 	for _, child := range childIDs {
+		if question, ok := questions[child]; ok {
+			l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: question.Question, Details: question.Question})
+			continue
+		}
+		if batchCutoverOn() {
+			continue
+		}
 		msgs, err := l.app.Messages.List(l.ctx, child)
 		if err != nil {
 			final, exitErr := l.exitWait(err)
@@ -160,6 +204,17 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	l.tot.extraWarnings = append(l.tot.extraWarnings, "Own once schedules ignored for this run; persisted schedules may fire on a later host.")
 	final, err := l.exit(&runIncompleteError{reason: "provider_limit", detail: text, cause: l.quota.cause}, "provider_limit")
 	return cliStepResult{ev: evScopeStop, final: final, err: err}
+}
+
+func quotaQuestionText(notice string) string {
+	const prefix = "SUB-AGENT QUESTION: "
+	i := strings.Index(notice, prefix)
+	if i < 0 {
+		return ""
+	}
+	text := notice[i+len(prefix):]
+	const guidance = "\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
+	return strings.TrimSuffix(text, guidance)
 }
 
 // cliQuotaActiveWorkSeam injects read failures in real-loop tests only.
