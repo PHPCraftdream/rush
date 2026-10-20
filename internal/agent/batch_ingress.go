@@ -117,6 +117,7 @@ func (r *batchRuntime) invokeFresh(ctx context.Context, inv BatchInvocation, spe
 	probe := batchAttachProbe{
 		Owner: inv.SessionID, Host: r.cfg.Host, RunnerID: r.cfg.RunnerID,
 		ToolCallID: callID, InputHash: hash,
+		SubmittedMessageID: inv.MessageID, SubmittedRegistryID: inv.RegistryID,
 	}
 	root, attached, err := r.cfg.Attach.ProbeLive(ctx, probe)
 	if err != nil {
