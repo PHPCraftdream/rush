@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,15 +20,16 @@ func TestCLIQuotaBilling1281WaitsForCommand(t *testing.T) {
 		_, _ = w.Write(body)
 	})
 	ctx := loopCtx(t)
-	_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{Owner: h.sessionID, ToolCallID: "billing-command", Kind: session.JobKindCommand, ToolName: "bash", Input: "durable test command"})
-	require.NoError(t, err)
-	require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, h.sessionID, "billing-command"))
+	// Dual-mode seed: a live announced own command job (batch root flag ON,
+	// legacy async_jobs row OFF).
+	f6a2ClaimOwnCommandJob(t, ctx, h.app, h.sessionID, "billing-command")
 	completed := make(chan error, 1)
 	h.afterFirstTurn(func() {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_, completionErr := h.app.asyncJobStore.Transition(ctx, session.TransitionParams{Owner: h.sessionID, ToolCallID: "billing-command", State: "completed", ResultSummary: "billing-command-output", Wake: true})
-			completed <- completionErr
+			// The error-returning completion guarantees the channel always
+			// receives the outcome, even when a fixture step fails.
+			completed <- f6a2CompleteDelegationErr(ctx, h.app, h.sessionID, "billing-command", "billing-command-output", true)
 		}()
 	})
 	res, wire, runErr := h.run(ctx, RunOverrides{})
@@ -44,9 +44,11 @@ func TestCLIQuotaBilling1281WaitsForCommand(t *testing.T) {
 	require.Contains(t, res.Error, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.")
 	require.Contains(t, res.ResumeCommand, "--role smart --session "+h.sessionID)
 	require.Empty(t, res.QuotaResetAt)
-	jobs, err := h.app.asyncJobStore.ListAsyncJobsForOwner(ctx, h.sessionID)
-	require.NoError(t, err)
-	require.Len(t, jobs, 1)
-	require.Equal(t, "completed", jobs[0].State)
-	require.Equal(t, "pending", jobs[0].Delivery)
+	// Dual-mode readback (restored require.Len so a duplicate job is still
+	// detected): exactly ONE completed own job, its completion pending
+	// (never pulled).
+	count, state, delivery := f6a2OwnJobReadback(t, h.app, h.sessionID, "billing-command")
+	require.Equal(t, 1, count, "exactly one completed own job")
+	require.Equal(t, "completed", state)
+	require.Equal(t, "pending", delivery)
 }
