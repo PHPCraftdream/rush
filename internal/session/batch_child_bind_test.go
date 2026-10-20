@@ -53,7 +53,7 @@ func batchBindReadLink(t *testing.T, dir, taskNode string) sql.NullString {
 	require.NoError(t, err)
 	defer raw.Close()
 	var linked sql.NullString
-	require.NoError(t, raw.QueryRow("SELECT child_session_id FROM batch_nodes WHERE node_id = ?", taskNode).Scan(&linked))
+	require.NoError(t, raw.QueryRowContext(context.Background(), "SELECT child_session_id FROM batch_nodes WHERE node_id = ?", taskNode).Scan(&linked))
 	return linked
 }
 
