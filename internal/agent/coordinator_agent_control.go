@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -238,6 +239,20 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	}
 	busy := c.agentFor(childSessionID).IsSessionBusy(childSessionID)
 	if !interrupt {
+		// Batch held-question bridge (D1): a committed, CURRENT-incarnation
+		// held question of this child releases through the node's execution
+		// (Runner.Inject) instead of the mailbox. A sink-less coordinator or
+		// a "no held question" answer keeps the legacy path byte-identical.
+		fact, batchErr := c.deliverBatchHeldAnswer(ctx, callerSessionID, childSessionID, msg)
+		if batchErr == nil {
+			return fmt.Sprintf(
+				"Answer delivered to the held question of the existing batch node %s (token %d, depth %d); the sub-agent continues in the SAME batch execution - no new generation.",
+				fact.NodeID, fact.Token, fact.Depth,
+			), nil
+		}
+		if !errors.Is(batchErr, errBatchInjectBridgeMiss) {
+			return "", batchErr
+		}
 		if _, err := c.InjectMessage(ctx, childSessionID, msg); err != nil {
 			return "", err
 		}

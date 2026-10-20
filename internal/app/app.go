@@ -142,6 +142,11 @@ type App struct {
 	batchModelControl agent.BatchModelControl
 	batchLiveReader   *session.BatchLiveReader
 	batchTimeoutWake  *batchTimeoutWakeDispatcher
+	// batchHeldAnswerSink is the inject_agent held-question bridge over the
+	// installed batch Runner (agent.NewBatchHeldAnswerSink). Nil on flag-off
+	// Apps or a runnerless install; bound to the coordinator in agent setup
+	// and cleared on shutdown with the rest of the batch wiring.
+	batchHeldAnswerSink agent.BatchHeldAnswerSink
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.

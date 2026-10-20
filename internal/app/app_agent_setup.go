@@ -208,6 +208,12 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			return err
 		}
 	}
+	// Held-question inject bridge: bind the App-owned sink to THIS
+	// coordinator (never a process global) so non-interrupt inject_agent
+	// releases a child's committed held question through Runner.Inject.
+	if app.batchHeldAnswerSink != nil {
+		agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, app.batchHeldAnswerSink)
+	}
 	// R12-F P1: flag ON routes the CLI loop's durable driver markers through
 	// the job-independent HostStore (already released by the flag-ON shutdown
 	// drain gate), so the legacy AsyncJobStore never ensures a host and never
