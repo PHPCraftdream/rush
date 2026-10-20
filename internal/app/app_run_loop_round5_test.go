@@ -151,20 +151,6 @@ func newRunningChildHarness(t *testing.T) (h *loopHarness, childBlocked <-chan s
 	return h, blocked, func() { close(gate) }
 }
 
-// childSessionOf returns the async delegation child of the harness's root.
-func (h *loopHarness) childSessionOf(t *testing.T) string {
-	t.Helper()
-	rows, err := h.app.asyncJobStore.ListAsyncJobsForOwner(context.Background(), h.sessionID)
-	require.NoError(t, err)
-	for _, row := range rows {
-		if row.ChildSessionID.Valid && row.ChildSessionID.String != "" {
-			return row.ChildSessionID.String
-		}
-	}
-	t.Fatal("no delegation row")
-	return ""
-}
-
 func (h *loopHarness) costOf(t *testing.T, id string) float64 {
 	t.Helper()
 	// #1130: the root's "cost" is the subtree spend; the root's own row
@@ -234,7 +220,7 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			require.InDelta(t, spentBeforeExit, got.res.Usage.DeltaCostUSD, 0.001,
 				"the envelope reports the subtree spend from the claim to the exit")
 
-			child := h.childSessionOf(t)
+			child := f6a2ChildSessionOf(t, h.app, h.sessionID)
 			require.InDelta(t, r5ChildFirstCost, h.costOf(t, child), 0.01)
 			if tc.childLate > 0 {
 				release()
