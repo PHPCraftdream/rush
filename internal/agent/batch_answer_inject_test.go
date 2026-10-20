@@ -8,6 +8,7 @@ package agent
 // batchAgentExecution.Inject -> scope.deliver at the held depth).
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 		// needed -- the id only lands in the marker text and the publisher
 		// struct's ChildSessionID (which batch_install_question requires
 		// nonempty).
-		host.BindChildSession("sess-child-a5i")
+		host.BindChildSession(context.Background(), "sess-child-a5i")
 		askAndShape(t2, host, 1, "continue?")
 	}
 	reader := newBatchAgentTestReader(false, false)

@@ -42,7 +42,7 @@ func TestRunNonInteractive_AskQuestionWithRunningOwnJob_ContinuesRun(t *testing.
 			// Dual-mode completion: batch projection when the flag is ON,
 			// legacy row transition when OFF; wake=false in both so the
 			// finished own job stays debt-free.
-			f6CompleteDelegation(h.t, ctx, h.app, h.sessionID, "bg-1", "heavy run done", false)
+			f6a2CompleteDelegation(h.t, ctx, h.app, h.sessionID, "bg-1", "heavy run done", false)
 			loopText(w, "c", "continued after hint", 5, 5)
 		default:
 			t.Errorf("unexpected provider request #%d", n)

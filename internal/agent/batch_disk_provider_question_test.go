@@ -185,7 +185,7 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	// turn (mirrors the coordinator's runSubAgent binding via the
 	// driver-stamped batchAgentLifecycle).
 	if lifecycle, ok := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle); ok && lifecycle.BindChildSession != nil {
-		lifecycle.BindChildSession(l.childSession)
+		lifecycle.BindChildSession(context.Background(), l.childSession)
 	}
 	// The REAL child turn: a production sessionAgent over the SAME store
 	// with a SCRIPTED model (fake model BEHAVIOR only — the turn, the tool

@@ -370,7 +370,8 @@ func batchCommitFlag(b bool) int64 {
 
 // batchNodeUpdate maps a NodeView onto ProjectBatchNodeParams. Envelope,
 // reference and child-session fields stay NULL: the SQL COALESCEs preserve
-// facts written by earlier events.
+// facts written outside the projection — the durable child-link bind
+// (BatchBindChildSession) and response envelopes.
 func batchNodeUpdate(v jobbatch.NodeView) (db.ProjectBatchNodeParams, error) {
 	token, err := batchCommitUint64(v.Token)
 	if err != nil {

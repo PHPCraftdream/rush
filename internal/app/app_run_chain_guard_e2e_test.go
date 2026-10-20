@@ -4,7 +4,8 @@
 // Drain leg that polls for W with a pure wait command (`echo tick-N`). While
 // W is the session's own undelivered work the in-turn progress guard (§2.2 of
 // docs/plans/2026-10-01-in-turn-progress-guard.md) refuses every one of those
-// launches at once -- no workLedger.Start, no async_jobs row, no #1113 claim
+// launches at once -- no workLedger.Start, no durable row in either
+// authority, no #1113 claim
 // -- so a leg that carries neither a claim nor progress is invisible to
 // chainLink: no reaction chain forms, the "reaction chain stopped" line never
 // appears, and the loop simply keeps waiting on W. Releasing W (once both
@@ -16,7 +17,10 @@
 // The two timers are the legs' debt source: only a completed job is reaction
 // debt, and a Drain the loop would never open cannot be refused. The old
 // `sleep 1` tick of this scenario is gone -- the wait commands live in the
-// legs now, where the guard refuses them.
+// legs now, where the guard refuses them. Under RUSH_BATCH_RUNTIME=1 the
+// guard's own-work half is ledger-sourced and blind to batch work, so the
+// legs are not refused; the strict no-root oracle records that gap (see
+// .rush/stdin/jb-f6a3.findings.md, finding 4).
 //
 // Revert-check: dropping ownWork from refuseWait (turn_progress_guard.go)
 // lets the echo legs through -- each starts an async job whose completion
@@ -98,22 +102,27 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 			// No W: every sleep launches for real (ownWork is false and a
 			// leg's streak never reaches S), so each leg's completion feeds the
 			// next one and #1113 counts the chain.
+			// The ticks must detach in BOTH modes (legacy honors the explicit
+			// flag; batch escapes after the 3s window): a sync batch job would
+			// complete inside the window and never become reaction debt. The 4s
+			// commands are forced by the fixed 3s window
+			// (inlineWindowSeconds, batch_install_tools.go:271).
 			switch {
 			case n == 1:
-				calls := []string{admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"sleep 1","description":"tick"}`)}
+				calls := []string{admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"sleep 4","run_in_background":true,"description":"tick"}`)}
 				calls = append(calls, admissionSSEStop("turn", "tool_calls"))
 				admissionWriteSSE(w, calls)
 			case n == 2:
 				admissionWriteSSE(w, []string{admissionSSEText("a", "first answer"), admissionSSEStop("a", "stop")})
 			case n >= 3 && n <= 8:
-				// Each chain Drain is two provider steps: one bash `sleep 1`
+				// Each chain Drain is two provider steps: one detached bash `sleep 4`
 				// tool call, then a plain text step that ends the leg (the model
 				// has nothing to say while waiting). n=3/4 -> tick2, 5/6 -> tick3,
 				// 7/8 -> tick4.
 				step := n - 2
 				if step%2 == 1 {
 					admissionWriteSSE(w, []string{
-						admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"sleep 1","description":"tick"}`),
+						admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"sleep 4","run_in_background":true,"description":"tick"}`),
 						admissionSSEStop("t", "tool_calls"),
 					})
 					return
@@ -130,13 +139,20 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 		// call it marks Invalid never reaches the guard at all: its plain error
 		// result then classifies as act, the streak never grows and the guard
 		// would never refuse anything (the hang T5 hit first).
+		// The timers must detach in BOTH modes: under RUSH_BATCH_RUNTIME=1 a
+		// bash call without run_in_background is a sync batch job that
+		// completes inside the 3s inline window and never becomes reaction
+		// debt, so their completions could never open the poll legs (legacy
+		// honors the explicit flag; batch escapes after the 3s window). The 4s
+		// commands are forced by the fixed 3s window (inlineWindowSeconds,
+		// batch_install_tools.go:271).
 		switch n {
 		case 1:
 			calls := []string{
 				sseToolCallIndex("w", "call-w", "bash",
-					`{"command":"until [ -f `+donePath+` ]; do sleep 5; done; echo W-DONE","description":"held job"}`, 1),
-				sseToolCallIndex("t1", "call-timer1", "bash", `{"command":"sleep 1","description":"timer"}`, 2),
-				sseToolCallIndex("t2", "call-timer2", "bash", `{"command":"sleep 8","description":"timer"}`, 3),
+					`{"command":"until [ -f `+donePath+` ]; do sleep 5; done; echo W-DONE","run_in_background":true,"description":"held job"}`, 1),
+				sseToolCallIndex("t1", "call-timer1", "bash", `{"command":"sleep 4","run_in_background":true,"description":"timer"}`, 2),
+				sseToolCallIndex("t2", "call-timer2", "bash", `{"command":"sleep 8","run_in_background":true,"description":"timer"}`, 3),
 			}
 			calls = append(calls, admissionSSEStop("turn", "tool_calls"))
 			admissionWriteSSE(w, calls)
@@ -189,16 +205,22 @@ func TestRunNonInteractive_ChainGuardStopsAfterThreeDrainsWaitsForWork(t *testin
 	require.NotContains(t, stderr.String(), "reaction chain stopped",
 		"the refused waits start no jobs, so #1113 never sees a chain")
 	require.Empty(t, chainWarnings(res), "no chain stopped warning in the envelope either")
-	// The in-turn guard refuses each poll: no workLedger.Start, no async job.
+	// The in-turn guard refuses each poll: no job is ever created -- flag
+	// OFF: no async_jobs row; flag ON: no batch row in ANY state (terminal
+	// included). Under RUSH_BATCH_RUNTIME=1 this currently FAILS BY
+	// DESIGN OF THE ORACLE: the guard's own-work half reads only the
+	// legacy in-memory ledger (agent_turn_step.go:320, work_ledger.go
+	// running), which batch execution never populates, so the echo legs
+	// execute and leave terminal roots. That gap is recorded as finding 4
+	// in .rush/stdin/jb-f6a3.findings.md; the oracle stays strict.
 	for _, callID := range []string{"call-tick1", "call-tick2"} {
-		_, err := app.asyncJobStore.Get(context.Background(), sessionID, callID)
-		require.Error(t, err, "a refused wait starts no job: no async_jobs row for %s", callID)
+		f6a3NoWorkForCall(t, app, sessionID, callID)
 	}
 	require.Equal(t, "final answer", res.FinalText, "the W completion's drain is the answer")
 	require.Equal(t, "end_turn", res.ExitReason, "the guard never rewrites the exit reason")
 	require.Eventually(t, func() bool {
-		open, err := app.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
-		return err == nil && !open
+		debt, ok := f6a3ReactionDebtExistsOK(t, app, sessionID)
+		return ok && !debt
 	}, 10*time.Second, 10*time.Millisecond, "the W drain reacted W")
 }
 
@@ -210,8 +232,7 @@ func TestRunNonInteractive_ChainGuardExitsWithoutWork(t *testing.T) {
 	require.Len(t, chainWarnings(res), 1)
 	require.Equal(t, "end_turn", res.ExitReason, "the exit reason is the last drain's own, untouched")
 	require.Equal(t, "waiting 3", res.FinalText, "the last completed drain's text is the answer")
-	open, err := app.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
-	require.NoError(t, err)
+	open := f6a3ReactionDebtExists(t, app, sessionID)
 	require.True(t, open, "the deferred debt stays for the next turn")
 }
 

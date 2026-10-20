@@ -187,22 +187,25 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	}
 
 	// Delivery choice per family: bash keeps its auto-background window;
-	// every other family is sync with escape never. (Per-call authority,
-	// root and ledger counts: batch_install_inventory_test.go.)
-	for name, want := range map[string]struct{ escape, window string }{
-		"bash":            {batchEscapeAuto, inlineWindow.String()},
-		"run_command":     {batchEscapeNever, ""},
-		"agent":           {batchEscapeNever, ""},
-		"agentic_fetch":   {batchEscapeNever, ""},
-		"mcp_files__read": {batchEscapeNever, ""},
-		"view":            {batchEscapeNever, ""},
+	// agent and agentic_fetch are DETACHED (a delegation returns the batch
+	// started text in-turn; a sync wait deadlocks a parent whose child is
+	// gated or asks a question); every other family is sync with escape
+	// never. (Per-call authority, root and ledger counts:
+	// batch_install_inventory_test.go.)
+	for name, want := range map[string]struct{ escape, window, mode string }{
+		"bash":            {batchEscapeAuto, inlineWindow.String(), batchDeliverySync},
+		"run_command":     {batchEscapeNever, "", batchDeliverySync},
+		"agent":           {batchEscapeNever, "", batchDeliveryDetached},
+		"agentic_fetch":   {batchEscapeNever, "", batchDeliveryDetached},
+		"mcp_files__read": {batchEscapeNever, "", batchDeliverySync},
+		"view":            {batchEscapeNever, "", batchDeliverySync},
 	} {
 		armed := seen[name].(*batchIngressTool)
 		if armed.inv.BackgroundEscape != want.escape {
 			t.Fatalf("%s: escape %q want %q", name, armed.inv.BackgroundEscape, want.escape)
 		}
-		if armed.inv.Delivery.Mode != batchDeliverySync {
-			t.Fatalf("%s: mode %q want sync", name, armed.inv.Delivery.Mode)
+		if armed.inv.Delivery.Mode != want.mode {
+			t.Fatalf("%s: mode %q want %q", name, armed.inv.Delivery.Mode, want.mode)
 		}
 		if armed.inv.Delivery.Window != want.window {
 			t.Fatalf("%s: window %q want %q", name, armed.inv.Delivery.Window, want.window)
