@@ -45,6 +45,10 @@ import (
 // (workLedger.next()) this test's CLI-level pass depends on; this test adds
 // the black-box confirmation at the layer the task specifically asked for.
 func TestRunNonInteractiveExitsPromptlyWithSupervisionArmedAndNoOtherWork(t *testing.T) {
+	if f6BatchOn() {
+		svRunSupervisionBatchSynchronousCommand(t)
+		return
+	}
 	var requests atomic.Int32
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		switch requests.Add(1) {
