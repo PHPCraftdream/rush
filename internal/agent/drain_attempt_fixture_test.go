@@ -40,6 +40,9 @@ type attemptFixture struct {
 	srv           *httptest.Server
 	// authHeader is the Authorization header of the newest request.
 	authHeader atomic.Value
+	// guardBatch is the optional T5-only batch-row recorder (nil everywhere
+	// else); see turn_progress_batch_test.go.
+	guardBatch *guardBatchLedger
 
 	mu      sync.Mutex
 	handler http.HandlerFunc

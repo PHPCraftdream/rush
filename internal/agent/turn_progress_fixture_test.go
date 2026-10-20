@@ -101,10 +101,21 @@ func guardHeldTools(f *attemptFixture) []fantasy.AgentTool {
 	f.coord.background = manager
 	bash := tools.NewBashTool(f.env.permissions, f.env.workingDir, &config.Attribution{}, "", nil, manager)
 	runCommand := tools.NewRunCommandTool(f.env.permissions, f.env.workingDir)
-	return []fantasy.AgentTool{
-		&asyncTool{inner: bash, coordinator: f.coord, name: tools.BashToolName},
-		&asyncTool{inner: runCommand, coordinator: f.coord, name: tools.RunCommandToolName},
+	bashAsync := &asyncTool{inner: bash, coordinator: f.coord, name: tools.BashToolName}
+	wAsync := &asyncTool{inner: runCommand, coordinator: f.coord, name: tools.RunCommandToolName}
+	if batchFlagEnabled() {
+		// ON: asyncTool keeps its ledger wiring (the ON-branch assertions on
+		// jobOf still hold), but W is additionally wrapped so its launch also
+		// seeds the LIVE batch row ownWorkBatch reads (turn_progress_batch_
+		// test.go). Bash is NOT wrapped: its waits are supposed to be refused
+		// and start nothing.
+		f.guardBatch = newGuardBatchLedger(f.t, f.env.conn, f.sessID)
+		return []fantasy.AgentTool{
+			bashAsync,
+			&guardBatchTool{AgentTool: wAsync, batch: f.guardBatch},
+		}
 	}
+	return []fantasy.AgentTool{bashAsync, wAsync}
 }
 
 // killHeldJob ends W for real, through the very path the model's own job_kill
@@ -113,6 +124,14 @@ func guardHeldTools(f *attemptFixture) []fantasy.AgentTool {
 // TempDir cleanup), so t.Cleanup calls this whatever happens.
 func killHeldJob(f *attemptFixture) error {
 	_, _, err := f.ledger.StopRunCommandJob(f.sessID, "guard-w")
+	if err == nil && batchFlagEnabled() && f.guardBatch != nil {
+		// ON: W's live batch row (guardBatchTool's seed) must also go
+		// terminal, or ownWorkBatch keeps the session owning work forever.
+		// Idempotent (turn_progress_batch_test.go): a mid-test call followed
+		// by the t.Cleanup call is a no-op the second time, and a cleanup
+		// before W ever launched writes nothing.
+		err = f.guardBatch.terminalize("guard-w")
+	}
 	return err
 }
 
@@ -272,8 +291,9 @@ func TestInTurnGuard_StopsEchoWaitSpamWhileOwnJobRuns(t *testing.T) {
 	require.EqualValues(t, 5, f.requests.Load(),
 		"the held job plus four refused waits: the guard ends the turn on the fifth")
 	if batchFlagEnabled() {
-		// Flag ON the held job's authority is the in-memory ledger job; the
-		// batch store carries no row for it (asyncTool is retained wiring).
+		// Flag ON the held job keeps its in-memory ledger job (asyncTool is
+		// retained wiring) AND carries a live batch row, seeded by the
+		// guardBatchTool wrapper — that row is what ownWorkBatch reads.
 		require.NotNil(t, jobOf(f.ledger, f.sessID, "guard-w"), "W outlives the stopped turn")
 	} else {
 		wRow := f.row(ctx, "guard-w")
