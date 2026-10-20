@@ -318,7 +318,8 @@ func (d *batchStoreDoneSource) LoadDone(ctx context.Context, owner string, root 
 		return resp, true, nil
 	}
 	resp := fantasy.NewTextResponse(e.Summary)
-	resp.IsError = e.State == "failed" || e.State == "timed_out" || e.State == "cancelled"
+	// interrupted is the recovery outcome of a lost host: an error-shaped result, never a success.
+	resp.IsError = e.State == "failed" || e.State == "timed_out" || e.State == "cancelled" || e.State == "interrupted"
 	return resp, true, nil
 }
 
