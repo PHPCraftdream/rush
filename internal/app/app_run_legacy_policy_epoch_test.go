@@ -86,21 +86,21 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 			switch n {
 			case 1:
 				trace.recordCall("queued", "call_t2r1")
-				trace.record("req branch=queued n=1 emit=call_t2r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=queued n=1 emit=call_t2r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cy1", "call_t2r1", "bash", `{"command":"probe_cmd_two r1","description":"t2r1"}`),
 					admissionSSEStop("cy1", "tool_calls"),
 				})
 			case 2:
 				trace.recordCall("queued", "call_t2r2")
-				trace.record("req branch=queued n=2 emit=call_t2r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=queued n=2 emit=call_t2r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cy2", "call_t2r2", "bash", `{"command":"probe_cmd_one r2","description":"t2r2"}`),
 					admissionSSEStop("cy2", "tool_calls"),
 				})
 			default:
 				// Only reachable under the pre-fix bug (an extra grant extends a turn).
-				trace.record("req branch=queued n=%d emit=CANARY deniedSeen=%t bodyBytes=%d", n, deniedSeen, len(body))
+				trace.recordf("req branch=queued n=%d emit=CANARY deniedSeen=%t bodyBytes=%d", n, deniedSeen, len(body))
 				admissionWriteSSE(w, []string{admissionSSEText("cy", "T2_ROUND3_BUG_CANARY"), admissionSSEStop("cy", "stop")})
 			}
 			return
@@ -112,25 +112,25 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 				startOnce.Do(func() { close(started) })
 				<-gate1
 				trace.recordCall("owner", "call_t1r1")
-				trace.record("req branch=owner n=1 emit=call_t1r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=owner n=1 emit=call_t1r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cx1", "call_t1r1", "bash", `{"command":"probe_cmd_one r1","description":"t1r1"}`),
 					admissionSSEStop("cx1", "tool_calls"),
 				})
 			case 2:
 				trace.recordCall("owner", "call_t1r2")
-				trace.record("req branch=owner n=2 emit=call_t1r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=owner n=2 emit=call_t1r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cx2", "call_t1r2", "bash", `{"command":"probe_cmd_two r2","description":"t1r2"}`),
 					admissionSSEStop("cx2", "tool_calls"),
 				})
 			default:
-				trace.record("req branch=owner n=%d emit=CANARY deniedSeen=%t bodyBytes=%d", n, deniedSeen, len(body))
+				trace.recordf("req branch=owner n=%d emit=CANARY deniedSeen=%t bodyBytes=%d", n, deniedSeen, len(body))
 				admissionWriteSSE(w, []string{admissionSSEText("cx", "T1_ROUND3_BUG_CANARY"), admissionSSEStop("cx", "stop")})
 			}
 			return
 		}
-		trace.record("req branch=UNMATCHED deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
+		trace.recordf("req branch=UNMATCHED deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
 		admissionWriteSSE(w, []string{admissionSSEText("c0", "IGNORED"), admissionSSEStop("c0", "stop")})
 	}
 
@@ -166,7 +166,7 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 			select {
 			case decided <- n:
 			default:
-				trace.record("decision channel full; matrix consumer may miss call=%s", clip120(n.ToolCallID))
+				trace.recordf("decision channel full; matrix consumer may miss call=%s", clip120(n.ToolCallID))
 			}
 		}
 	}()
@@ -186,7 +186,7 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 		select {
 		case <-traceDone:
 		case <-time.After(2 * time.Second):
-			trace.record("recorder goroutine did not exit within 2s; dump may be incomplete")
+			trace.recordf("recorder goroutine did not exit within 2s; dump may be incomplete")
 		}
 		trace.dump(t)
 		t.Logf("TRACE flagOn=%t ownerRounds=%d queuedRounds=%d queuedPrompts=%d",
@@ -200,7 +200,7 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 
 	// Call 1 (owner): restricted, allows only probe_cmd_one.
 	start := make(chan struct{})
-	trace.record("launch idx=1 role=owner restricted=true allowCount=1 legacyQueueing=true")
+	trace.recordf("launch idx=1 role=owner restricted=true allowCount=1 legacyQueueing=true")
 	admissionLaunch(t, application, sessionID, outcomes, start, 1, "owner turn OWNER_TURN_MARKER", RunOverrides{
 		RestrictedRun: true,
 		AllowBash:     []string{"probe_cmd_one"},
@@ -208,14 +208,14 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 	close(start)
 	select {
 	case <-started:
-		trace.record("owner call reached the provider")
+		trace.recordf("owner call reached the provider")
 	case <-time.After(60 * time.Second):
 		t.Fatal("owner call never reached the provider; cannot stage the mid-turn owner")
 	}
 
 	// Call 2 (queued): restricted, allows only probe_cmd_two.
 	start2 := make(chan struct{})
-	trace.record("launch idx=2 role=queued restricted=true allowCount=1 legacyQueueing=true")
+	trace.recordf("launch idx=2 role=queued restricted=true allowCount=1 legacyQueueing=true")
 	admissionLaunch(t, application, sessionID, outcomes, start2, 2, "queued turn QUEUED_TURN_MARKER", RunOverrides{
 		RestrictedRun: true,
 		AllowBash:     []string{"probe_cmd_two"},
@@ -231,7 +231,7 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return application.AgentCoordinator.QueuedPrompts(sessionID) >= 1
 	}, 10*time.Second, time.Millisecond, "the queued call never reached the mailbox's submitted queue")
-	trace.record("queued call visible in the mailbox submitted queue")
+	trace.recordf("queued call visible in the mailbox submitted queue")
 
 	// Receive the QUEUED call's outcome while the owner is still parked
 	// mid-turn: the queueing caller's front-end ExecuteRun has FULLY
@@ -244,14 +244,14 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 		require.ErrorIs(t, o.err, ErrRunQueued)
 		require.Equal(t, "queued", o.res.ExitReason)
 		require.NotNil(t, o.res)
-		trace.record("outcome idx=2 queued acknowledged")
+		trace.recordf("outcome idx=2 queued acknowledged")
 	case <-time.After(60 * time.Second):
 		t.Fatal("queued call did not return while the owner was still mid-turn")
 	}
 
 	// Release the owner; the queued turn runs after the owner's turn ends.
 	close(gate1)
-	trace.record("gate1 released; owner follow-up and queued promotion expected")
+	trace.recordf("gate1 released; owner follow-up and queued promotion expected")
 
 	// NEW fail-fast precondition, strictly ADDITIVE (non-weakening): the
 	// MOCK HANDLER must have EMITTED all four scripted rounds — owner
@@ -288,10 +288,10 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 			}
 		}
 		for _, id := range append(append([]string(nil), ownerSeen...), queuedSeen...) {
-			trace.record("persisted tool result for %s present=%t", id, persisted[id])
+			trace.recordf("persisted tool result for %s present=%t", id, persisted[id])
 		}
 	} else {
-		trace.record("persisted tool result cross-check failed: %s", clip120(listErr.Error()))
+		trace.recordf("persisted tool result cross-check failed: %s", clip120(listErr.Error()))
 	}
 
 	// Collect exactly the four decisions, attributed by unique tool-call id.
@@ -328,7 +328,7 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 		require.Equal(t, 1, o.idx)
 		require.NoError(t, o.err, "owner call must not fail")
 		require.NotNil(t, o.res)
-		trace.record("outcome idx=1 owner completed")
+		trace.recordf("outcome idx=1 owner completed")
 	case <-time.After(60 * time.Second):
 		t.Fatal("owner call did not complete after the gate opened")
 	}
@@ -383,8 +383,8 @@ func (tr *legacyPolicyTrace) appendEvent(line string) {
 	tr.events = append(tr.events, line)
 }
 
-// record appends one clipped metadata line to the trace buffer.
-func (tr *legacyPolicyTrace) record(format string, args ...any) {
+// recordf appends one clipped metadata line to the trace buffer.
+func (tr *legacyPolicyTrace) recordf(format string, args ...any) {
 	line := clip120(fmt.Sprintf(format, args...))
 	tr.mu.Lock()
 	tr.appendEvent(line)
