@@ -271,6 +271,11 @@ func testBatchWaitsForAsyncSubAgentResult(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
 		switch {
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// Title requests quote the original prompt (agent_title.go), so
+			// the child's title carries WORKER-MARKER. Answer plainly and
+			// count nothing: a title request is not a child execution.
+			admissionWriteSSE(w, []string{admissionSSEText("title", "test title"), admissionSSEStop("title", "stop")})
 		case strings.Contains(lastUser, "Async job call-agent () finished"):
 			parentResumed.Add(1)
 			admissionWriteSSE(w, []string{admissionSSEText("final", "parent final"), admissionSSEStop("final", "stop")})
@@ -318,11 +323,13 @@ func testBatchWaitsForAsyncSubAgentResult(t *testing.T) {
 	require.EqualValues(t, 1, startedReplies.Load())
 	require.EqualValues(t, 1, parentResumed.Load())
 	require.EqualValues(t, 2, turns.Load())
-	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, ""))
+	// Only selected terminal completions carry NoticeKind "root"; the started
+	// announcement is also a BackgroundJobNotice but has no kind.
+	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, "root"))
 	messages, err := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, err)
 	for _, item := range messages {
-		if item.BackgroundJobNotice {
+		if item.BackgroundJobNotice && item.NoticeKind == "root" {
 			require.Contains(t, item.FullText(), "child actual text")
 		}
 	}
@@ -355,6 +362,12 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
+		if strings.Contains(lastUser, "Generate a concise title") {
+			// Title requests quote CHILD-WORK-N and the run prompt; answer
+			// them first and count nothing (not a launch, not a phase).
+			admissionWriteSSE(w, []string{admissionSSEText("title", "test title"), admissionSSEStop("title", "stop")})
+			return
+		}
 		for i := 1; i <= 6; i++ {
 			if strings.TrimSpace(lastUser) == fmt.Sprintf("CHILD-WORK-%d", i) {
 				children.Add(1)
@@ -376,9 +389,6 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 			admissionWriteSSE(w, []string{admissionSSEToolCall("start-1", "call-1", "agent", `{"prompt":"CHILD-WORK-1"}`), admissionSSEStop("start-1", "tool_calls")})
 			return
 		}
-		if strings.Contains(lastTool, "completions arrive as selected notices") && started < launched {
-			started++
-		}
 		matched := 0
 		for i := 1; i <= 6; i++ {
 			if strings.Contains(lastUser, fmt.Sprintf("Async job call-%d () finished", i)) {
@@ -391,6 +401,13 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 			}
 		}
 		if matched == 0 {
+			// The started tool result composes its own yield turn; only a NEW
+			// selected completion advances the sequence.
+			if strings.Contains(lastTool, "completions arrive as selected notices") && started < launched {
+				started++
+				admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("yield-%d", started), "job started"), admissionSSEStop(fmt.Sprintf("yield-%d", started), "stop")})
+				return
+			}
 			http.Error(w, "unexpected provider request", http.StatusBadRequest)
 			return
 		}
@@ -419,7 +436,8 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 	require.NoError(t, err)
 	counts := make(map[string]int)
 	for _, item := range messages {
-		if item.BackgroundJobNotice {
+		// Started announcements carry no NoticeKind; count completions only.
+		if item.BackgroundJobNotice && item.NoticeKind == "root" {
 			for i := 1; i <= 6; i++ {
 				id := fmt.Sprintf("call-%d", i)
 				if strings.Contains(item.FullText(), id) {

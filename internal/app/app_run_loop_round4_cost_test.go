@@ -85,6 +85,11 @@ func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
 	h = newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, body []byte, _ bool, _ int) {
 		_, lastUser, lastTool := lastTurnParts(body)
 		switch {
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// The child's title request quotes the worker prompt. Classify it
+			// FIRST so it never counts as child traffic, waits on the gate,
+			// or spends: answer plainly with zero tokens.
+			loopText(w, "child-title", "child title", 0, 0)
 		case strings.Contains(lastUser, "Async job call-agent () finished"):
 			completionCount.Add(1)
 			loopText(w, "root-final", "R4-ROOT-DONE", 11, 3)
@@ -92,8 +97,6 @@ func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
 			startedRequests.Add(1)
 			startedOnce.Do(func() { close(started) })
 			loopText(w, "root-yield", "root waiting", 11, 3)
-		case strings.Contains(lastUser, "Generate a concise title"):
-			loopText(w, "child-title", "child title", 0, 0)
 		case strings.Contains(lastUser, "WORKER-MARKER"):
 			childRequests.Add(1)
 			select {
@@ -157,11 +160,14 @@ func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, children, 1)
 	require.InDelta(t, r4ChildCost, children[0].OwnCost, 1e-9)
-	require.Equal(t, 1, countBackgroundNotices(t, h.app, h.sessionID, ""))
+	// Only the selected terminal completion carries NoticeKind "root"; the
+	// started announcement is a BackgroundJobNotice without a kind. Do not
+	// infer double billing from a notice count.
+	require.Equal(t, 1, countBackgroundNotices(t, h.app, h.sessionID, "root"))
 	messages, err := h.app.Messages.List(runCtx, h.sessionID)
 	require.NoError(t, err)
 	for _, item := range messages {
-		if item.BackgroundJobNotice {
+		if item.BackgroundJobNotice && item.NoticeKind == "root" {
 			require.Contains(t, item.FullText(), "child done")
 		}
 	}

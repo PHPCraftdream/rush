@@ -100,6 +100,10 @@ func testBatchWindowZeroKeepsStartedFlow(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
 		switch {
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// Title requests quote the run prompt ("run held job"); answer
+			// first and count nothing (not a launch, not a phase).
+			admissionWriteSSE(w, []string{admissionSSEText("title", "Window test"), admissionSSEStop("title", "stop")})
 		case strings.Contains(lastUser, "Async job call-1 () finished"):
 			completions.Add(1)
 			finalRequests.Add(1)
@@ -109,8 +113,6 @@ func testBatchWindowZeroKeepsStartedFlow(t *testing.T) {
 			startedReplies.Add(1)
 			startedOnce.Do(func() { close(started) })
 			admissionWriteSSE(w, []string{admissionSSEText("yield", "job started"), admissionSSEStop("yield", "stop")})
-		case strings.Contains(lastUser, "short title"):
-			admissionWriteSSE(w, []string{admissionSSEText("title", "Window test"), admissionSSEStop("title", "stop")})
 		default:
 			launches.Add(1)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(command)+`,"description":"held job"}`), admissionSSEStop("start", "tool_calls")})
@@ -142,7 +144,9 @@ func testBatchWindowZeroKeepsStartedFlow(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("completion text not observed")
 	}
-	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, ""))
+	// Only the selected terminal completion carries NoticeKind "root"; the
+	// started announcement is a BackgroundJobNotice without a kind.
+	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, "root"))
 }
 
 func TestRunNonInlineWindow_WindowZeroKeepsStartedFlow(t *testing.T) {
