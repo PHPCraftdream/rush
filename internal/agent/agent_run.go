@@ -28,6 +28,18 @@ import (
 // hadn't run yet), and got rejected with "already in use". runTurn below is
 // the extracted single-turn body; Run just loops it.
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	// Package L round 4, invariant I1: a retained (marked) call handed to
+	// this Run — the manual-compaction handoff pops it and re-runs it via a
+	// fresh Run (agent_compaction.go:295) — must be released on EVERY return
+	// of THIS invocation, including the pre-turn refusals below (inter-
+	// process lock :482-510, shutdown :61-62, admission setup :559-563)
+	// that return before the end-of-turn release at :724. The helper
+	// captures the scope pointer at entry; for the sender's own first Run
+	// (unmarked parameter — arming happens on the queued COPY) this defer is
+	// a no-op. The later end-of-turn close stays a harmless second release
+	// (idempotent). Evaluated immediately so the captured scope cannot be
+	// affected by any later field mutation.
+	defer deferReleaseRetainedRunScope(&call)()
 	// R7-1: capture the DIRECT caller's admission recorder, then detach it
 	// for everything downstream. A queued admission is only this Run
 	// invocation's own outcome; a nested Run reached through this turn's
@@ -712,14 +724,16 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// R12-H2a round 2: a popped replacement/queued call carries its OWN
 		// build-resource scope; close it when this turn finishes so its
 		// constructions release with the turn that used them (the durable
-		// path already does this in RunSessionAgentCall). Pointer identity
-		// against the Run's first call guarantees that call's scope is never
-		// closed early here.
-		if call.CallOptions != nil && call.CallOptions != originCallOpts && call.onQueueResolved == nil {
-			if sc := call.CallOptions.buildScope; sc != nil {
-				sc.close()
-			}
-		}
+		// path already does this in RunSessionAgentCall). The retained-
+		// marker rule (Package L round 3) also closes a retained scope even
+		// when the call is the dispatcher's FIRST call — the manual-
+		// compaction handoff (agent_compaction.go:295) re-runs the popped
+		// queued call via a fresh Run, so originCallOpts equals its own copy
+		// and a pointer-inequality-only test would leak the scope. The
+		// helper clears the marker afterwards so a re-queued closed-scope
+		// copy is freshly armed by submit (armQueuedBuildRetention skips
+		// only while buildScopeRetained is true).
+		turnEndRelease(&call, originCallOpts)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}
