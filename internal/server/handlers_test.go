@@ -11,6 +11,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,6 +119,9 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	// this dataDir's connection is fully closed regardless of how Shutdown
 	// behaved — see its own doc for why this is safe under t.Parallel().
 	t.Cleanup(func() { _ = db.ReleaseAll(resolvedDataDir) })
+	// Forced shutdown pins host handles; LIFO must release them after Shutdown
+	// and before DB/TempDir cleanup.
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest() })
 
 	a, err := appPkg.New(t.Context(), conn, store)
 	require.NoError(t, err)
