@@ -66,6 +66,19 @@ func batchWorkTarget(name string) bool {
 	return strings.HasPrefix(name, "mcp_")
 }
 
+// batchFamilyDelivery is the per-family delivery choice of a batch-armed work
+// tool: agent and agentic_fetch are DETACHED (a delegation returns the batch
+// started text in-turn and the child runs detached -- the legacy async_tool
+// contract; a synchronous wait would make the parent's tool call wait for a
+// child that may itself be waiting for the parent's answer, or for a gate the
+// parent turn opens); every other work family stays synchronous.
+func batchFamilyDelivery(name string) batchDeliveryChoice {
+	if name == AgentToolName || name == tools.AgenticFetchToolName {
+		return batchDeliveryChoice{Mode: batchDeliveryDetached}
+	}
+	return batchDeliveryChoice{Mode: batchDeliverySync}
+}
+
 // batchIngressTool is the model-facing shell of one batch-armed work tool.
 // Run resolves the pinned leaf (hooks/restricted wrappers retained,
 // execution wrappers stripped) and enters the ONE authority.
@@ -115,6 +128,8 @@ func (t *batchIngressTool) ensurePinned() (string, error) {
 // identity for the caller's Invoke: the record is created on the first
 // dispatch (acquireConstruction) and re-created if a prune dropped it
 // between dispatches; every later dispatch holds an independent owner key.
+// A prune that drops the record also deletes the registry-index entry; the
+// dispatch itself repairs that mismatch through holdPinned, never here.
 // The returned release MUST run after the Invoke returns — by then
 // invokeFresh holds the Root owner (pre-Submit) and executor.Start the
 // Execution owner, so the record dies by prune only after the root's Done
@@ -130,6 +145,49 @@ func (t *batchIngressTool) holdConstruction(id string) (func(), error) {
 	return func() { t.bind.diskBindings.release(key) }, nil
 }
 
+// holdPinned returns a LIVE registry identity with one held Construction
+// owner plus its release. It repairs the deferred-lifetime mismatch where
+// pruneLocked deletes the identity-index entry together with the
+// construction record while the deferred tool's pin-once identity stays
+// minted (ensurePinned): a later dispatch re-created only the construction
+// record (holdConstruction), so ResolveLeaf failed on the stale registry
+// and the root went terminal without a Settled envelope. When the index no
+// longer resolves id, the leaf registry is re-pinned under a fresh
+// identity and THAT identity's construction is held instead. No
+// process-wide retention: every re-pin dies by prune exactly like the
+// first pin, and the capability-manager policy is untouched. The check is
+// safe against concurrent prunes because the held Construction owner keeps
+// the record alive while the index is read; a failed check therefore means
+// the prune predates this dispatch.
+func (t *batchIngressTool) holdPinned(id string) (string, func(), error) {
+	t.mu.Lock()
+	if t.id != "" {
+		id = t.id
+	}
+	t.mu.Unlock()
+	release, err := t.holdConstruction(id)
+	if err != nil {
+		return "", nil, err
+	}
+	if _, rerr := t.bind.ingress.Registry(id); rerr == nil {
+		return id, release, nil
+	}
+	release()
+	t.mu.Lock()
+	fresh, perr := t.bind.pin(t.registry)
+	if perr != nil {
+		t.mu.Unlock()
+		return "", nil, perr
+	}
+	t.id = fresh
+	t.mu.Unlock()
+	release, err = t.holdConstruction(fresh)
+	if err != nil {
+		return "", nil, err
+	}
+	return fresh, release, nil
+}
+
 func (t *batchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	if t.bind == nil {
 		leaf, err := t.registry.resolve(call.Name)
@@ -143,7 +201,10 @@ func (t *batchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fant
 	// until THIS Invoke returns — invokeFresh acquires the Root owner
 	// before Submit and executor.Start the Execution owner, both naming
 	// the registry, so the record survives the pin release only until the
-	// root settles and physically disposes, then prunes to zero.
+	// root settles and physically disposes, then prunes to zero. A prune
+	// between dispatches deletes the identity index entry while this tool
+	// still holds the minted id; holdPinned re-pins in that case and the
+	// invocation names the LIVE identity, never the stale one.
 	id, err := t.ensurePinned()
 	if err != nil {
 		return fantasy.ToolResponse{}, err
@@ -158,11 +219,15 @@ func (t *batchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fant
 	if inv.Policy.RestrictedToolset == "" {
 		inv.Policy.RestrictedToolset = id
 	}
-	release, err := t.holdConstruction(id)
+	id, release, err := t.holdPinned(id)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 	defer release()
+	// holdPinned may have re-pinned after a prune: the invocation must
+	// name the LIVE identity, never the stale one.
+	inv.RegistryID = id
+	inv.Policy.RegistryID = id
 	return invokeBatchWithCallContext(ctx, t.ingress, inv, leaf, call)
 }
 
@@ -179,9 +244,11 @@ func (t errBatchIngressTool) Run(context.Context, fantasy.ToolCall) (fantasy.Too
 
 // newBatchWorkToolBuild pins the decorated slice and re-arms the work tools.
 // Per-build state: ONE fresh pinned registry identity per construction; the
-// per-invocation delivery choice follows the family — bash keeps its
-// auto-background window (sync + escape auto + the inline window), every
-// other family is sync with escape never.
+// per-invocation delivery choice follows the family: agent and agentic_fetch
+// are DETACHED (escape never — a delegation returns the batch started text
+// in-turn and the child runs detached, the legacy async_tool contract); bash
+// keeps sync + escape auto + the unchanged inline window; every other work
+// family stays sync with escape never.
 //
 // Construction ownership (R12-H2 §1.2): the pinned registry is published
 // with a Construction owner key ATOMICALLY with the pin, and that owner's
@@ -214,7 +281,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 			}
 			inv := BatchInvocation{
 				Origin:           "coordinator",
-				Delivery:         batchDeliveryChoice{Mode: batchDeliverySync},
+				Delivery:         batchFamilyDelivery(name),
 				BackgroundEscape: batchEscapeNever,
 				WaiterRank:       0,
 				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint},
@@ -256,7 +323,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 		inv := BatchInvocation{
 			RegistryID:       registryID,
 			Origin:           "coordinator",
-			Delivery:         batchDeliveryChoice{Mode: batchDeliverySync},
+			Delivery:         batchFamilyDelivery(name),
 			BackgroundEscape: batchEscapeNever,
 			WaiterRank:       0,
 			Policy: batchLeafPolicyContext{
