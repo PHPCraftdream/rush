@@ -65,17 +65,34 @@ func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	// binding, or a flag-ON CLIScope answers through
 	// unknownBatchCutoverFacts ("batch facts: node source unavailable").
 	bindBatchNodeFacts(t, c, conn, dataDir)
+	var batchRoot, batchChild string
+	var legacyBefore db.AsyncJob
 	if batchFlagEnabled() {
-		// Flag ON the same oracle is batch work on the probed dead host:
-		// running batch nodes on dead-host-x must be recovered (projected to
-		// interrupted) before the scope answer closes the scope.
-		b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "dead-host-x", "running")
+		batchRoot, batchChild = b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "dead-host-x", "running")
+		legacyBefore, err = store.Get(ctx, "sess-1", "call-1")
+		require.NoError(t, err)
 	}
 
 	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
 	require.False(t, st.WorkOpen, "an interrupted row (wake=0) with nothing else outstanding must close the scope")
 
+	if batchFlagEnabled() {
+		state, outcome := batchScopeRootState(t, conn, batchRoot)
+		require.Equal(t, "interrupted", state)
+		require.Equal(t, "host_lost", outcome)
+		count, wake := batchScopeSelectedNotices(t, conn, batchRoot)
+		require.Equal(t, 1, count)
+		require.Zero(t, wake)
+		var childState, childOutcome string
+		require.NoError(t, conn.QueryRowContext(ctx, `SELECT state, outcome_code FROM batch_nodes WHERE node_id = ?`, batchChild).Scan(&childState, &childOutcome))
+		require.Equal(t, "interrupted", childState)
+		require.Equal(t, "host_lost", childOutcome)
+		rowAfter, err := store.Get(ctx, "sess-1", "call-1")
+		require.NoError(t, err)
+		require.Equal(t, legacyBefore, rowAfter)
+		return
+	}
 	row, err := store.Get(ctx, "sess-1", "call-1")
 	require.NoError(t, err)
 	require.Equal(t, "interrupted", row.State, "CLIScope must have recovered the dead host's row, not merely skipped it")

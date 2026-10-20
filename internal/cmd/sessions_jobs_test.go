@@ -226,13 +226,15 @@ func TestSessionsJobsCmdRun_JSON(t *testing.T) {
 	require.NoError(t, err)
 
 	if batchOn {
-		seedBatchReadRoot(t, a, sess.ID)
-		a.Shutdown()
+		f := seedBatchReadRoot(t, a, sess.ID)
 		require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
 		t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
+		a.Shutdown()
+		holdSeedHost(t, dataDir, f.host)
 		stdout := runJobsCmd(t, sess.ID)
 		var item jobsJSONItem
 		require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &item), stdout)
+		require.Equal(t, f.rootID, item.BatchRootID)
 		require.Equal(t, "batch-read-call", item.ToolCallID)
 		require.Equal(t, "batch", item.Kind)
 		require.Equal(t, "pending", item.State)
@@ -275,6 +277,37 @@ func TestSessionsJobsCmdRun_JSON(t *testing.T) {
 	require.Equal(t, "peer", item.HostLabel)
 	require.Contains(t, item.Hint, killCommandFor(9911))
 	require.NotContains(t, item.Hint, "sessions kill")
+}
+
+func TestSessionsJobsCmdRun_JSONDeadHostDeletesUnannouncedSubtree(t *testing.T) {
+	if !config.BatchRuntimeEnabled() {
+		t.Skip("batch runtime is disabled")
+	}
+	a, dataDir := isolatedJobsEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "jobs-json-dead-sess", "dead batch host")
+	require.NoError(t, err)
+	f := seedBatchReadRoot(t, a, sess.ID)
+	var announced int
+	require.NoError(t, a.DB().QueryRowContext(ctx, `SELECT announced FROM batch_nodes WHERE node_id = ?`, f.rootID).Scan(&announced))
+	require.Zero(t, announced)
+	var beforeCount int
+	require.NoError(t, a.DB().QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id = ?`, f.rootID).Scan(&beforeCount))
+	require.Equal(t, 3, beforeCount)
+	a.Shutdown()
+	status, probeErr := session.ProbeHostShared(dataDir, f.host)
+	require.Equal(t, session.HostStatusDead, status)
+	require.NoError(t, probeErr)
+	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
+	t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
+	stdout := runJobsCmd(t, sess.ID)
+	require.Empty(t, stdout)
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, db.ReleaseConn(conn)) }()
+	var afterCount int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id = ?`, f.rootID).Scan(&afterCount))
+	require.Zero(t, afterCount)
 }
 
 // TestSessionsJobsCmdRun_NoJobs covers the empty case.

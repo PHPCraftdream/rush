@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -203,19 +204,33 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		}
 		ctx := context.Background()
 		store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-		// "scope-unknown-host" has NO lock file at all: the probe reports
-		// Unknown and the conservative answer is live, with nothing written.
+		require.NoError(t, os.MkdirAll(session.HostLockPath(dataDir, "scope-unknown-host"), 0o755))
+		probeStatus, probeErr := session.ProbeHostShared(dataDir, "scope-unknown-host")
+		require.Equal(t, session.HostStatusUnknown, probeStatus)
+		require.Error(t, probeErr)
 		c := &coordinator{}
 		c.asyncJobs = newWorkLedger(nil)
 		c.asyncJobs.store = store
 		bindBatchNodeFacts(t, c, conn, dataDir)
 		root, _ := b1SeedBatchRootOnHost(t, conn, "sess-unknown", "call-unknown", "scope-unknown-host", "running")
+		beforeNodes, err := db.New(conn).ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: root, OwnerSessionID: "sess-unknown"})
+		require.NoError(t, err)
 
+		beforeState, beforeOutcome := batchScopeRootState(t, conn, root)
+		require.Equal(t, "running", beforeState)
+		require.Empty(t, beforeOutcome)
 		st, err := c.CLIScope(ctx, "sess-unknown")
 		require.NoError(t, err)
 		require.True(t, st.WorkOpen, "an unknown host must keep the scope open (conservative)")
-		state, _ := batchScopeRootState(t, conn, root)
-		require.Equal(t, "running", state, "an unknown verdict must write nothing")
+		state, outcome := batchScopeRootState(t, conn, root)
+		require.Equal(t, beforeState, state)
+		require.Equal(t, beforeOutcome, outcome)
+		count, wake := batchScopeSelectedNotices(t, conn, root)
+		require.Zero(t, count)
+		require.Zero(t, wake)
+		afterNodes, err := db.New(conn).ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: root, OwnerSessionID: "sess-unknown"})
+		require.NoError(t, err)
+		require.Equal(t, beforeNodes, afterNodes)
 	})
 
 	t.Run("dead-with-probe-error", func(t *testing.T) {
@@ -243,6 +258,34 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		state, _ := batchScopeRootState(t, conn, root)
 		require.Equal(t, "running", state, "a failed probe must write nothing")
 	})
+}
+
+func TestBatchScopeRecovery_DeadHostMissingLock(t *testing.T) {
+	t.Parallel()
+	if !batchFlagEnabled() {
+		t.Skip("flag OFF never arms the batch scope hook")
+	}
+	ctx := context.Background()
+	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	c := &coordinator{}
+	c.asyncJobs = newWorkLedger(nil)
+	c.asyncJobs.store = store
+	bindBatchNodeFacts(t, c, conn, dataDir)
+	_, err := os.Stat(session.HostLockPath(dataDir, "scope-missing-lock"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	probeStatus, probeErr := session.ProbeHostShared(dataDir, "scope-missing-lock")
+	require.Equal(t, session.HostStatusDead, probeStatus)
+	require.NoError(t, probeErr)
+	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-missing", "call-missing", "scope-missing-lock", "running")
+	st, err := c.CLIScope(ctx, "sess-missing")
+	require.NoError(t, err)
+	require.False(t, st.WorkOpen)
+	state, outcome := batchScopeRootState(t, conn, root)
+	require.Equal(t, "interrupted", state)
+	require.Equal(t, "host_lost", outcome)
+	count, wake := batchScopeSelectedNotices(t, conn, root)
+	require.Equal(t, 1, count)
+	require.Zero(t, wake)
 }
 
 // TestBatchScopeRecovery_PreambleHookRecoversBeforePull pins the turn
