@@ -315,7 +315,16 @@ func TestRunNonInteractive_ChildQuestionRoundTrip(t *testing.T) {
 	require.NoError(t, listErr)
 	var resultNotice int
 	for _, item := range msgs {
-		if item.BackgroundJobNotice && strings.Contains(item.FullText(), "build used the answered port") {
+		if !item.BackgroundJobNotice {
+			continue
+		}
+		// Only a selected terminal completion counts: its text is
+		// "Async job <tool_call_id> (<tool>) finished." plus the result
+		// content. Question and started notices never carry that frame.
+		if !strings.Contains(item.FullText(), " finished.") {
+			continue
+		}
+		if strings.Contains(item.FullText(), "build used the answered port") {
 			resultNotice++
 		}
 	}
