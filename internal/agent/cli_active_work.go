@@ -127,6 +127,11 @@ var _ CLIActiveWorkSource = (*coordinator)(nil)
 // active (the OFF branch's exclusion, mirrored through batch facts). A
 // failed read fails closed with the error.
 func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
+	// H4 W2: the OFF branch's RecoverOwnerScope twin, scope-budgeted (one
+	// 10ms budget, one candidate root attempt): recover the dead hosts this
+	// read is about to count as live, then answer from fresh reads below.
+	// Best-effort; exhaustion keeps the conservative active answer.
+	recoverBatchScopeDeadCandidates(ctx, c, root)
 	own, descendants, err := facts.LiveWorkSummary(ctx, root)
 	if err != nil {
 		return false, err
