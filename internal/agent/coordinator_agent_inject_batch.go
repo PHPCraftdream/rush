@@ -109,36 +109,42 @@ func closedErr() error {
 	return fmt.Errorf("batch inject bridge closed: %w", jobbatch.ErrReleased)
 }
 
-func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner, childSessionID, text string) (BatchHeldQuestionFact, error) {
-	if s.closed.Load() {
-		return BatchHeldQuestionFact{}, closedErr()
-	}
-	// Phase 1: collect ALL candidate notice texts and CLOSE the rows before
-	// any second pool query — the single-connection writer would otherwise
-	// deadlock on the nested batch_nodes reads.
+// heldQuestionNotices returns the texts of the owner's unreacted wake=1
+// child_question notices, oldest first. Same retained-debt predicate
+// LiveHeldQuestions runs (pending OR already-delivered rows still hold the
+// session while unreacted and wake=1). The result set is fully read and
+// closed before the caller issues another query on the pool.
+func (s *batchHeldAnswerStoreSink) heldQuestionNotices(ctx context.Context, owner string) ([]string, error) {
 	rows, err := s.writer.QueryContext(ctx,
-		// Same retained-debt predicate LiveHeldQuestions runs (pending OR
-		// already-delivered rows still hold the session while unreacted and
-		// wake=1).
 		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0 ORDER BY id`,
 		owner, session.NoticeKindChildQuestion)
 	if err != nil {
-		return BatchHeldQuestionFact{}, err
+		return nil, err
 	}
+	defer rows.Close()
 	var notices []string
 	for rows.Next() {
 		var notice string
 		if err := rows.Scan(&notice); err != nil {
-			rows.Close()
-			return BatchHeldQuestionFact{}, err
+			return nil, err
 		}
 		notices = append(notices, notice)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	return notices, rows.Err()
+}
+
+func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner, childSessionID, text string) (BatchHeldQuestionFact, error) {
+	if s.closed.Load() {
+		return BatchHeldQuestionFact{}, closedErr()
+	}
+	// Phase 1: collect ALL candidate notice texts; the rows are closed when
+	// the helper returns, before any second pool query — the
+	// single-connection writer would otherwise deadlock on the nested
+	// batch_nodes reads.
+	notices, err := s.heldQuestionNotices(ctx, owner)
+	if err != nil {
 		return BatchHeldQuestionFact{}, err
 	}
-	rows.Close()
 	// Phase 2: per-candidate fence queries run with NO open rows.
 	var (
 		candidate bool // some parseable marker names THIS child
