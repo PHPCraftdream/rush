@@ -179,8 +179,10 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 		}
 		if n == 1 {
 			// The shell finished while the turn ran, after its last pull.
-			require.NoError(h.t, h.app.asyncJobStore.InsertSessionNotice(context.Background(), h.sessionID,
-				session.NoticeKindBGShellDone, "background shell finished: exit 0", true, ""))
+			if err := h.app.asyncJobStore.InsertSessionNotice(context.Background(), h.sessionID,
+				session.NoticeKindBGShellDone, "background shell finished: exit 0", true, ""); err != nil {
+				h.t.Errorf("seed the bg-shell-done notice: %v", err)
+			}
 		}
 		loopText(w, "a", "PRIMARY ANSWER", 11, 3)
 	})
@@ -305,10 +307,16 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 	var childReactionCount, childNoticeCount, parentFinalCount atomic.Int32
 	var liveApp atomic.Pointer[App]
 	var liveSession atomic.Value
+	router := newRBRouter()
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, lastTool := lastTurnParts(body)
-		switch routeBatchModelRequest(body, commandRoot.Load().(string), delegateRoot.Load().(string)) {
+		route, seqErr := router.route(body)
+		if seqErr != "" {
+			http.Error(w, "out-of-sequence batch request: "+seqErr, http.StatusBadRequest)
+			return
+		}
+		switch route {
 		case "title":
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Retry Child"), admissionSSEStop("title", "stop")})
 		case "root:delegate":
@@ -317,12 +325,33 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 		case "child:bash":
 			order.add("child:bash")
 			var id string
-			_ = liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `
+SELECT t.child_session_id
+FROM batch_nodes r
+JOIN batch_nodes t
+  ON t.owner_session_id = r.owner_session_id
+ AND t.root_id = r.root_id AND t.host_id = r.host_id
+ AND t.kind = 'task'
+WHERE r.owner_session_id = ? AND r.tool_call_id = 'call-agent'
+  AND r.node_id = r.root_id AND r.kind = 'batch'
+ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			if err != nil {
+				http.Error(w, "delegation child lookup failed: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if id == "" {
+				http.Error(w, "delegation child lookup returned an empty child id", http.StatusServiceUnavailable)
+				return
+			}
 			childID.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
 		case "child:started":
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("child started tool result has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			commandRoot.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEToolCall("stop", "call-stop", "batch_stop", `{"root_id":`+jsonString(id)+`}`), admissionSSEStop("stop", "tool_calls")})
 		case "child:stop":
@@ -330,8 +359,17 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 				http.Error(w, "batch_stop must expose cancellation intent: "+lastTool, http.StatusServiceUnavailable)
 				return
 			}
-			releaseRecoveryJob(t, release)
+			if err := releaseRecoveryJobAsync(release); err != nil {
+				t.Errorf("release the recovery job: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+		case "child:stopAck":
+			// The stop-ack tool result stays in history; the router replays
+			// repeats here so the child can yield until its completion is
+			// pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("stop-ack", "stop intent already recorded"), admissionSSEStop("stop-ack", "stop")})
 		case "child:final":
 			// The child's reaction turn: the FIRST one fails with the exact
 			// legacy 403 body; the recheck tick must retry this same child
@@ -343,7 +381,6 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":{"message":"forbidden by the fronting balancer","type":"x"}}`))
 				return
 			}
-			childNoticeCount.Add(1)
 			var state string
 			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" {
@@ -351,10 +388,22 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 				return
 			}
 			order.add("child:final")
+			childNoticeCount.Add(1)
 			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child final: retried reaction completed"), admissionSSEStop("child-result", "stop")})
+		case "child:wait":
+			// A replayed started announcement (also persisted as user history):
+			// the child just yields until its completion is pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("child-wait", "child waiting for build"), admissionSSEStop("child-wait", "stop")})
+		case "root:wait":
+			// A replayed started announcement on the root side.
+			admissionWriteSSE(w, []string{admissionSSEText("root-wait", "waiting for child completion"), admissionSSEStop("root-wait", "stop")})
 		case "root:yield":
 			id := batchStartedRootID(lastTool)
-			require.NotEmpty(t, id)
+			if id == "" {
+				t.Errorf("root started notice has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
 			delegateRoot.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "root yielded: delegation parked"), admissionSSEStop("root-yield", "stop")})
 		case "root:final":
@@ -407,14 +456,14 @@ func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 	var sawNotice, sawReaction bool
 	for _, m := range childMsgs {
 		text := m.FullText()
-		if strings.HasPrefix(text, "batch "+commandRoot.Load().(string)+" node ") {
+		if strings.HasPrefix(text, "Async job call-bash () was stopped (job_kill)") {
 			sawNotice = true
 		}
 		if strings.Contains(text, "retried reaction completed") {
 			sawReaction = true
 		}
 	}
-	require.True(t, sawNotice, "the child session pulled its own command completion notice")
+	require.True(t, sawNotice, "the child session pulled its own stopped-completion notice")
 	require.True(t, sawReaction, "the SAME child session recorded the successful retried reaction")
 	msgs, listErr := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, listErr)

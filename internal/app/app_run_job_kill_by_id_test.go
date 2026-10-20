@@ -162,8 +162,9 @@ func grantRootBatchStop(t *testing.T, application *App) {
 // started text ("batch root <id> started; completions arrive as selected
 // notices."). The root extracts the advertised root id and issues batch_stop
 // -- whose result is cancellation INTENT (accepted, not terminal) -- and the
-// run may only finish after the selected terminal notice confirms state
-// "cancelled".
+// run may only finish after the selected terminal stopped completion
+// (model-visible "Async job call-bash () was stopped (job_kill)"), with the
+// cancelled state confirmed in the DB.
 func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 	command, release := recoveryJobCommand(t)
 	defer releaseRecoveryJob(t, release)
@@ -180,12 +181,14 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 		case strings.Contains(system, "short title"):
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Job Kill By ID"), admissionSSEStop("title", "stop")})
 
-		// The selected terminal notice: `batch <root> node <node>: kind
-		// "task" state "cancelled" ...` arrived as the root's next user
-		// turn. This is the CONFIRMED terminal event; only now may the run
+		// The selected terminal notice arrives as the real model-visible
+		// "Async job call-bash () was stopped (job_kill)" text
+		// (FormatAsyncCompletion; Stopped is formatted before Cancelled, so
+		// cancelled state is established by the DB check below, never by the
+		// text). This is the CONFIRMED terminal event; only now may the run
 		// finish. (Checking the DB row as well makes the ordering
 		// production-proof, not stub-proof.)
-		case strings.HasPrefix(lastUser, "batch "+extractedRootID.Load().(string)+" node ") && strings.Contains(lastUser, `state "cancelled"`):
+		case strings.HasPrefix(lastUser, "Async job call-bash () was stopped (job_kill)"):
 			var state string
 			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, liveSession.Load().(string), extractedRootID.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" {
@@ -193,6 +196,19 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 				return
 			}
 			terminalNoticeSeen.Store(true)
+			// Same-turn deliveries carry the stop ack in history, so the
+			// intent is provable without a dedicated ack turn.
+			var histReq wireRequest
+			if json.Unmarshal(body, &histReq) == nil {
+				for _, m := range histReq.Messages {
+					if m.Role != "tool" {
+						continue
+					}
+					if s, ok := m.Content.(string); ok && strings.Contains(s, `"accepted":true`) && strings.Contains(s, `"terminal":false`) {
+						stopIntentObserved.Store(true)
+					}
+				}
+			}
 			admissionWriteSSE(w, []string{admissionSSEText("final", "root final: batch job stopped"), admissionSSEStop("final", "stop")})
 
 		// batch_stop's own response: accepted cancellation INTENT, never a
@@ -216,6 +232,13 @@ func testRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 				admissionSSEToolCall("stop", "call-stop", "batch_stop", `{"root_id":`+jsonString(id)+`}`),
 				admissionSSEStop("stop", "tool_calls"),
 			})
+
+		// The started announcement is persisted as a user history message,
+		// so an intermediate continuation turn's newest user text is the
+		// announcement, not the original prompt. Serve a yield; the run
+		// waits for the selected terminal notice.
+		case strings.HasPrefix(lastUser, "batch root ") && strings.Contains(lastUser, "started; completions arrive as selected notices."):
+			admissionWriteSSE(w, []string{admissionSSEText("yield", "awaiting terminal confirmation"), admissionSSEStop("yield", "stop")})
 
 		// Turn 1: the root's own long-running command. The gated command
 		// outlives the test many times over; if batch_stop resolution
