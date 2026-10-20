@@ -244,6 +244,7 @@ func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchAttachProbe) (
 	root, ok, err := a.store.BatchProbeLive(ctx, session.BatchLiveProbe{
 		Owner: p.Owner, Host: p.Host, RunnerID: p.RunnerID,
 		ToolCallID: p.ToolCallID, InputHash: p.InputHash,
+		SubmittedMessageID: p.SubmittedMessageID, SubmittedRegistryID: p.SubmittedRegistryID,
 	})
 	return jobbatch.ID(root), ok, err
 }

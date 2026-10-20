@@ -51,6 +51,8 @@ type batchAttachProbe struct {
 	Owner, Host, RunnerID string
 	ToolCallID            string
 	InputHash             string
+	SubmittedMessageID    string
+	SubmittedRegistryID   string
 }
 
 // batchAttachStore is the R11B seam: attach to an existing live root for
