@@ -141,6 +141,7 @@ type App struct {
 	batchWorkIngress  agent.BatchWorkIngress
 	batchModelControl agent.BatchModelControl
 	batchLiveReader   *session.BatchLiveReader
+	batchTimeoutWake  *batchTimeoutWakeDispatcher
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.

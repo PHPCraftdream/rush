@@ -79,9 +79,17 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if batchCutoverOn() {
+		app.batchTimeoutWake = newBatchTimeoutWakeDispatcher()
+		factory.wake = app.batchTimeoutWake.Wake
+	}
 	if factory.deps.Profile == nil {
 		profile, perr := agent.NewBatchProfileDefault()
 		if perr != nil {
+			if app.batchTimeoutWake != nil {
+				app.batchTimeoutWake.Stop()
+				app.batchTimeoutWake = nil
+			}
 			return perr
 		}
 		factory.deps.Profile = profile
@@ -91,12 +99,20 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	rt, install, err := factory.build(ctx)
 	if err != nil {
+		if app.batchTimeoutWake != nil {
+			app.batchTimeoutWake.Stop()
+			app.batchTimeoutWake = nil
+		}
 		return err
 	}
 	// R11F (M3): the exported one-authority ingress seam over the installed
 	// runtime; InitCoderAgent binds it to the coordinator.
 	app.batchWorkIngress, err = agent.NewBatchWorkIngressWithDiskBindings(install.Runtime, factory.deps.Registries, install.DiskBindings)
 	if err != nil {
+		if app.batchTimeoutWake != nil {
+			app.batchTimeoutWake.Stop()
+			app.batchTimeoutWake = nil
+		}
 		return err
 	}
 	// R12-H2 P1-2/P1-4: bind the ingress into the runtime so batchLeafEnv
@@ -134,6 +150,9 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	if batchRuntimeConfigHook != nil {
 		batchRuntimeConfigHook(&rt.cfg)
+	}
+	if batchCutoverOn() {
+		rt.cfg.TimeoutCheckin = batchTimeoutWakeRuntime{checkin: rt.cfg.TimeoutCheckin, dispatch: app.batchTimeoutWake}
 	}
 	app.batchRuntime = rt
 	app.batchInstall = install
@@ -194,6 +213,10 @@ func (app *App) releaseBatchWriter() error {
 func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, record func(error)) bool {
 	rt := app.batchRuntime
 	if rt == nil {
+		if app.batchTimeoutWake != nil {
+			app.batchTimeoutWake.Stop()
+			app.batchTimeoutWake = nil
+		}
 		// Defensive: a flag-off App must never take this path; keep the
 		// flag-off retention semantics if it somehow does. Flag ON: the
 		// HostStore twin.
@@ -213,6 +236,7 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 		}
 		return true
 	}
+	rt.Stop()
 	res := rt.DrainAndRelease(ctx, appBatchDrainTimeout)
 	if res.Err != nil {
 		record(res.Err)
