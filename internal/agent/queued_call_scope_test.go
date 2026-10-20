@@ -468,7 +468,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 
 	t.Run("unmarked origin copy untouched", func(t *testing.T) {
 		t.Parallel()
-		caps, a := newQueuedCallScopeFixture(t)
+		caps, _ := newQueuedCallScopeFixture(t)
 		pinTestConstruction(t, caps, "reg-ter3")
 		call := SessionAgentCall{
 			SessionID:   "s-ter3",
