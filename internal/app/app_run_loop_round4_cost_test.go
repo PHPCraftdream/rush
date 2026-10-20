@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,7 +78,6 @@ func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
 	var startedOnce sync.Once
 	var gateRelease sync.Once
 	release := func() { gateRelease.Do(func() { close(gate) }) }
-	var events <-chan session.Session
 	var h *loopHarness
 	var runCtx context.Context
 	runCtx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
@@ -110,7 +108,7 @@ func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
 		}
 	})
 	r4Models(t, h.app, 10)
-	events = h.app.Sessions.Subscribe(runCtx)
+	events := h.app.Sessions.Subscribe(runCtx)
 	old := cliLoopTurnDoneSeam
 	var once sync.Once
 	cliLoopTurnDoneSeam = func() {
