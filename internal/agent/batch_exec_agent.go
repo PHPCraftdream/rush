@@ -45,9 +45,11 @@ type batchAgentRunRequest struct {
 // factory. Ask parks the ask_question tool call on a held question until an
 // injected answer at the same depth arrives; the tool turns it into a
 // successful question-shaped response, keeping the node live meanwhile.
+// BindChildSession records the delegation child session; the returned error
+// is fatal to the launch — the child must not run.
 type batchAgentHost struct {
 	Ask              func(ctx context.Context, depth int, question string) (json.RawMessage, error)
-	BindChildSession func(string)
+	BindChildSession func(ctx context.Context, childSessionID string) error
 	NoChildSelected  func()
 }
 
@@ -93,6 +95,16 @@ type batchAgentDeps struct {
 	// Zero means a single read after the turn ends.
 	Poll              time.Duration
 	QuestionPublisher batchChildQuestionPublisher
+	// Host and RunnerID are the install's commit-hook identity; the bind
+	// closure fences the durable child-link write on them. Zero on
+	// flag-off and test installs.
+	Host, RunnerID string
+	// Bind persists the delegation child-session link durably BEFORE the
+	// child runs (task #1490). Non-nil, the lifecycle bind callback calls
+	// it and only on success updates req.ChildSessionID; an error is fatal
+	// to the launch. Nil keeps the flag-off memory-only behavior
+	// byte-identical.
+	Bind func(ctx context.Context, owner, root, node string, token uint64, child string) error
 }
 
 // batchAgentFamily implements the engine executor contract for the agent
@@ -193,10 +205,20 @@ func (e *batchAgentExecution) requestSnapshot() batchAgentRunRequest {
 	return e.req
 }
 
-func (e *batchAgentExecution) bindChildSession(id string) {
+func (e *batchAgentExecution) bindChildSession(ctx context.Context, id string) error {
+	if e.deps.Bind == nil {
+		e.mu.Lock()
+		e.req.ChildSessionID = id
+		e.mu.Unlock()
+		return nil
+	}
+	if err := e.deps.Bind(ctx, e.req.SessionID, string(e.rootID), string(e.nodeID), e.req.Token, id); err != nil {
+		return fmt.Errorf("batch bind child session: %w", err)
+	}
 	e.mu.Lock()
 	e.req.ChildSessionID = id
 	e.mu.Unlock()
+	return nil
 }
 
 func (e *batchAgentExecution) markNoChildSelected() {

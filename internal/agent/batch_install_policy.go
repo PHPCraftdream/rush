@@ -13,7 +13,7 @@ import (
 // logic lives in this file; sibling files carry only stated minimal hunks.
 
 type batchAgentLifecycle struct {
-	BindChildSession func(string)
+	BindChildSession func(ctx context.Context, childSessionID string) error
 	NoChildSelected  func()
 }
 
