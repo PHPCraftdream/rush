@@ -37,7 +37,7 @@ func batchScopeRecoveryFixture(t *testing.T, deadHost string) (*coordinator, *se
 func batchScopeRootState(t *testing.T, conn *sql.DB, rootID string) (string, string) {
 	t.Helper()
 	var state, outcome string
-	require.NoError(t, conn.QueryRow(`SELECT state, outcome_code FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, rootID).Scan(&state, &outcome))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT state, outcome_code FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, rootID).Scan(&state, &outcome))
 	return state, outcome
 }
 
@@ -46,7 +46,7 @@ func batchScopeRootState(t *testing.T, conn *sql.DB, rootID string) (string, str
 func batchScopeSelectedNotices(t *testing.T, conn *sql.DB, rootID string) (int, int) {
 	t.Helper()
 	var count, wake int
-	require.NoError(t, conn.QueryRow(`SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE root_id = ? AND notice_selected = 1`, rootID).Scan(&count, &wake))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE root_id = ? AND notice_selected = 1`, rootID).Scan(&count, &wake))
 	return count, wake
 }
 
@@ -63,7 +63,7 @@ func batchScopeInterruptedRoots(t *testing.T, conn *sql.DB, rootIDs ...string) i
 		placeholders += "?"
 		args = append(args, id)
 	}
-	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM batch_nodes WHERE kind = 'batch' AND state = 'interrupted' AND root_id IN (`+placeholders+`)`, args...).Scan(&n))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*) FROM batch_nodes WHERE kind = 'batch' AND state = 'interrupted' AND root_id IN (`+placeholders+`)`, args...).Scan(&n))
 	return n
 }
 
@@ -172,6 +172,7 @@ func TestBatchScopeRecovery_ZeroBudgetWritesNothing(t *testing.T) {
 // TestBatchScopeRecovery_NegativeVerdictsWriteNothing pins the dead-only
 // authority: alive hosts, unknown hosts and failed probes never write.
 func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("alive", func(t *testing.T) {
 		t.Parallel()
 		if !batchFlagEnabled() {

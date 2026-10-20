@@ -81,7 +81,7 @@ func seedBatchMaintenanceRoot(t *testing.T, a *App, conn *sql.DB, owner, callID,
 func batchMaintenanceRootState(t *testing.T, conn *sql.DB, rootID string) (string, string) {
 	t.Helper()
 	var state, outcome string
-	require.NoError(t, conn.QueryRow(`SELECT state, outcome_code FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, rootID).Scan(&state, &outcome))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT state, outcome_code FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, rootID).Scan(&state, &outcome))
 	return state, outcome
 }
 
@@ -90,7 +90,7 @@ func batchMaintenanceRootState(t *testing.T, conn *sql.DB, rootID string) (strin
 func batchMaintenanceNoticeStats(t *testing.T, conn *sql.DB, rootID string) (int, int) {
 	t.Helper()
 	var count, wake int
-	require.NoError(t, conn.QueryRow(`SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE root_id = ? AND notice_selected = 1`, rootID).Scan(&count, &wake))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE root_id = ? AND notice_selected = 1`, rootID).Scan(&count, &wake))
 	return count, wake
 }
 
@@ -199,7 +199,7 @@ func batchMaintenanceScan(t *testing.T, conn *sql.DB, roots []string, predicate 
 		args = append(args, id)
 	}
 	var count, wake int
-	require.NoError(t, conn.QueryRow(`SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE kind = 'batch' AND `+predicate+` AND root_id IN (`+placeholders+`)`, args...).Scan(&count, &wake))
+	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT count(*), coalesce(max(wake), 0) FROM batch_nodes WHERE kind = 'batch' AND `+predicate+` AND root_id IN (`+placeholders+`)`, args...).Scan(&count, &wake))
 	return count, wake
 }
 

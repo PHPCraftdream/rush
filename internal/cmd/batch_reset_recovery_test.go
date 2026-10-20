@@ -60,14 +60,14 @@ func TestBatchResetSessionHistory_RecoversDeadHostBeforeRefusal(t *testing.T) {
 	root := seedBatchResetRoot(t, a.DB(), sess.ID, "reset-batch-rec-call", "reset-dead-host")
 
 	var state string
-	require.NoError(t, a.DB().QueryRow(`SELECT state FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, root).Scan(&state))
+	require.NoError(t, a.DB().QueryRowContext(t.Context(), `SELECT state FROM batch_nodes WHERE root_id = ? AND kind = 'batch'`, root).Scan(&state))
 	require.Equal(t, "running", state, "precondition: the root is a nonterminal candidate")
 
 	_, err = batchResetSessionHistory(ctx, a, sess.ID)
 	require.NoError(t, err, "the dead host's running root must be recovered to interrupted BEFORE the reset's atomic refusal, so the reset proceeds")
 
 	var nodes int
-	require.NoError(t, a.DB().QueryRow(`SELECT count(*) FROM batch_nodes WHERE owner_session_id = ?`, sess.ID).Scan(&nodes))
+	require.NoError(t, a.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM batch_nodes WHERE owner_session_id = ?`, sess.ID).Scan(&nodes))
 	require.Zero(t, nodes, "the reset wiped the now-terminal root")
 
 	left, err := a.Messages.List(ctx, sess.ID)

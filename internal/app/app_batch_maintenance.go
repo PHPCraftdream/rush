@@ -96,7 +96,7 @@ func (app *App) batchMaintenancePass() {
 	defer loop.mu.Unlock()
 	ctx, cancel := context.WithTimeout(loop.baseCtx, batchMaintenancePassBudget)
 	defer cancel()
-	var cursor session.BatchRecoveryCursor = loop.cursor
+	cursor := loop.cursor
 	out, cursor, done, err := session.NewBatchStore(app.batchCutoverWriter()).
 		BatchRecoverPass(ctx, session.BatchSharedHostProbe(app.dataDir),
 			session.BatchRecoveryLimits{MaxRoots: batchMaintenanceMaxRoots, PageSize: batchMaintenancePageSize},
