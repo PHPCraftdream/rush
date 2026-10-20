@@ -714,6 +714,9 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	env := batchLeafEnv{OutputCache: cache, Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, Ingress: runtime.ingress}
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
+		deps.AgentDeps.Host = deps.Host
+		deps.AgentDeps.RunnerID = deps.RunnerID
+		deps.AgentDeps.Bind = batchStoreChildBind(deps.Store, deps.Host, deps.RunnerID)
 	}
 	executor := deps.Executor
 	if executor == nil {
@@ -795,4 +798,13 @@ func (i *BatchInstall) BuildRunner(ctx context.Context) (*jobbatch.Runner, error
 	i.Runner = runner
 	i.RunnerHandle.runner = runner
 	return runner, nil
+}
+
+// batchStoreChildBind adapts the store's durable child-link write onto the
+// agent family's bind seam; the install's host and runner identity close
+// over the returned closure.
+func batchStoreChildBind(store *session.BatchStore, host, runner string) func(context.Context, string, string, string, uint64, string) error {
+	return func(ctx context.Context, owner, root, node string, token uint64, child string) error {
+		return store.BatchBindChildSession(ctx, owner, host, runner, root, node, token, child)
+	}
 }
