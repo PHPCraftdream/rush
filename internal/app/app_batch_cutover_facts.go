@@ -143,11 +143,15 @@ type quotaWorkRow struct {
 	ChildSessionID string
 }
 
-// batchFinishedWork exports every row of the session's batch tree
+// batchFinishedWork exports every task node of the session's batch tree
 // (owner roots and, via child_session_id, the descendants' roots --
 // terminal roots INCLUDED, which is why the enumeration reads
-// BatchHistoryRootsForOwner, not the live-roots query). Errors report
-// incomplete, never a partial silent answer.
+// BatchHistoryRootsForOwner, not the live-roots query). Roots and nested
+// structural batch nodes are structure, never work, so they are not
+// exported. A one-task root keeps the original tool-call id as the
+// exported identity; a multi-task root exports each task by its node id.
+// The root/node Key keeps incarnations distinct for the quota terminal
+// latch. Errors report incomplete, never a partial silent answer.
 func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
 	conn := app.activityConn()
 	if conn == nil {
@@ -169,14 +173,29 @@ func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quot
 					return nil, true, fmt.Errorf("quota exit: batch finished work: nodes: %w", err)
 				}
 				announced := root.Announced != 0
+				// Export only task nodes; the root and nested batch nodes
+				// are structure. The child-link visiting must still run for
+				// every node so terminal descendant sessions stay reachable.
+				var tasks []db.BatchNode
 				for _, n := range nodes {
 					child := n.ChildSessionID.String
 					if n.ChildSessionID.Valid && child != "" && !visited[child] {
 						visited[child] = true
 						next = append(next, child)
 					}
+					if n.Kind == "task" {
+						tasks = append(tasks, n)
+					}
+				}
+				// An ordinary one-task root (the OneItem wrapper of a direct
+				// tool call) keeps the original tool-call id as its exported
+				// identity; a multi-task root exports each task by its node
+				// id. The Key stays root/node, so a reused id in a new root
+				// incarnation still yields a distinct row.
+				oneTask := len(tasks) == 1 && root.ToolCallID.Valid && root.ToolCallID.String != ""
+				for _, n := range tasks {
 					jobID := n.NodeID
-					if n.NodeID == n.RootID && root.ToolCallID.Valid && root.ToolCallID.String != "" {
+					if oneTask {
 						jobID = root.ToolCallID.String
 					}
 					out = append(out, quotaWorkRow{
@@ -186,7 +205,7 @@ func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quot
 						State:          n.State,
 						Announced:      announced,
 						Result:         n.OutcomeSummary,
-						ChildSessionID: child,
+						ChildSessionID: n.ChildSessionID.String,
 					})
 				}
 			}

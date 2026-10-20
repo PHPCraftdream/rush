@@ -194,10 +194,12 @@ func TestSessionActivityBatch_BatchRuntimeOffUnchanged(t *testing.T) {
 	}
 }
 
-// Flag ON: the quota finished-work export enumerates terminal batch
-// roots/nodes across the owner tree (terminal roots INCLUDED via the
-// history query), skips the live root as work-in-progress, and the quota
-// terminal snapshot dedupes on the root/node identity so a settled node is
+// Flag ON: the quota finished-work export enumerates only TASK batch nodes
+// across the owner tree -- roots and structural batch children are structure
+// and never export; a one-task root keeps the ROOT's original tool-call id
+// as the exported identity (Key = RootID/NodeID). The live root's task is
+// still enumerated and filtered by the terminal predicate, and the quota
+// terminal snapshot dedupes on the root/node Key so a settled node is
 // exported at most once.
 func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "false")
@@ -215,11 +217,15 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	rootOne.childSessionID = nullString(child)
 	rootOne.outcomeSummary = "root-one done"
 	insertBatchNode(t, h.app, rootOne)
-	insertBatchNode(t, h.app, testBatchTask(parent, "root-one", "root-one-task", "completed", sql.NullString{}))
-	// root-two: still live -- never finished work.
+	t1 := testBatchTask(parent, "root-one", "root-one-t1", "completed", sql.NullString{})
+	t1.outcomeSummary = "root-one done"
+	insertBatchNode(t, h.app, t1)
+	// root-two: still live, with a running task child.
 	insertBatchNode(t, h.app, testBatchRoot(parent, "root-two", "call-two", "running", 0))
+	insertBatchNode(t, h.app, testBatchTask(parent, "root-two", "root-two-t1", "running", sql.NullString{}))
 	// child-owned terminal root, reached only through the delegation link.
 	insertBatchNode(t, h.app, testBatchRoot(child, "root-child", "call-child", "completed", 1))
+	insertBatchNode(t, h.app, testBatchTask(child, "root-child", "root-child-t1", "completed", sql.NullString{}))
 
 	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	l := &cliLoop{app: h.app, ctx: ctx, sessionID: parent}
@@ -230,16 +236,20 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	for _, row := range rows {
 		byKey[row.Key] = row
 	}
-	// The tree walk saw every node of every root, terminal or not.
-	require.Len(t, byKey, 4)
-	require.Equal(t, "call-one", byKey["root-one/root-one"].ToolCallID)
-	require.Equal(t, "completed", byKey["root-one/root-one"].State)
-	require.True(t, byKey["root-one/root-one"].Announced, "the announced root is exported")
-	require.Equal(t, "root-one done", byKey["root-one/root-one"].Result)
-	require.Equal(t, "root-one-task", byKey["root-one/root-one-task"].ToolCallID)
-	require.Equal(t, "call-child", byKey["root-child/root-child"].ToolCallID, "the delegation child's terminal root is in the tree")
-	_, ok := byKey["root-two/root-two"]
-	require.True(t, ok, "the live root is enumerated, filtered by the terminal predicate instead")
+	// The export enumerates TASK nodes only -- roots and structural batch
+	// nodes are structure and never export. A one-task root keeps the root's
+	// original tool-call id as the exported identity, and the walk still
+	// enumerates the live root's task, filtered by the terminal predicate.
+	require.Len(t, byKey, 3, "exactly the three task rows export; roots are structure")
+	require.Equal(t, "call-one", byKey["root-one/root-one-t1"].ToolCallID, "the one-task root keeps its original call id")
+	require.Equal(t, "completed", byKey["root-one/root-one-t1"].State)
+	require.True(t, byKey["root-one/root-one-t1"].Announced, "the announced task is exported")
+	require.Equal(t, "root-one done", byKey["root-one/root-one-t1"].Result)
+	require.Equal(t, "call-child", byKey["root-child/root-child-t1"].ToolCallID, "the delegation child's one-task root keeps its call id")
+	require.Equal(t, "running", byKey["root-two/root-two-t1"].State, "the live root's task is enumerated, filtered by the terminal predicate instead")
+	require.NotContains(t, byKey, "root-one/root-one", "roots never export")
+	require.NotContains(t, byKey, "root-two/root-two", "roots never export")
+	require.NotContains(t, byKey, "root-child/root-child", "roots never export")
 
 	// The live root is not finished work; pending/starting are not either.
 	require.True(t, l.quotaTerminalState("completed"))
@@ -247,7 +257,7 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	require.False(t, l.quotaTerminalState("pending"), "flag ON: non-terminal batch states are not finished")
 
 	// Full export predicate (quotaPhase's), before the terminal snapshot:
-	// exactly the announced terminal nodes, the live root excluded.
+	// exactly the announced terminal task rows, the running task excluded.
 	export := func() []string {
 		var finished []string
 		for _, row := range rows {
@@ -258,7 +268,7 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 		return finished
 	}
 	l.quota = &cliQuotaStop{cause: nil, terminal: map[string]bool{}}
-	require.ElementsMatch(t, []string{"root-one/root-one", "root-one/root-one-task", "root-child/root-child"}, export())
+	require.ElementsMatch(t, []string{"root-one/root-one-t1", "root-child/root-child-t1"}, export())
 
 	// The terminal snapshot marks every already-terminal node, so a later
 	// pass exports nothing twice (the legacy latch semantics).
