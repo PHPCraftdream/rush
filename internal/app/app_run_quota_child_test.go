@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -144,24 +145,67 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	} else {
 		require.Contains(t, out.String(), "different-model child finished")
 	}
-	rows, listErr := application.asyncJobStore.ListAsyncJobsForOwner(ctx, sid)
-	require.NoError(t, listErr)
-	require.NotEmpty(t, rows)
 	if question {
-		resumeChildID = res.PendingChildQuestions[0].SessionID
-		store, dataDir := application.config, application.dataDir
-		application.Shutdown()
-		conn, e := db.Connect(ctx, dataDir)
-		require.NoError(t, e)
-		t.Cleanup(func() { _ = db.ReleaseConn(conn) })
-		fresh, e := New(ctx, conn, store)
-		require.NoError(t, e)
-		t.Cleanup(fresh.Shutdown)
-		resumed.Store(true)
-		var resumedOut syncBuffer
-		again, e := fresh.RunNonInteractiveWithResult(ctx, &resumedOut, "answer the pending child question", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sid, false)
-		require.NoError(t, e)
-		require.Equal(t, "answered child", again.FinalText)
-		require.True(t, resumeSawQuestion.Load())
+		if !f6BatchOn() {
+			// HEAD ran this readback in BOTH subtests; restored byte-for-byte.
+			rows, listErr := application.asyncJobStore.ListAsyncJobsForOwner(ctx, sid)
+			require.NoError(t, listErr)
+			require.NotEmpty(t, rows)
+			resumeChildID = res.PendingChildQuestions[0].SessionID
+			store, dataDir := application.config, application.dataDir
+			application.Shutdown()
+			conn, e := db.Connect(ctx, dataDir)
+			require.NoError(t, e)
+			t.Cleanup(func() { _ = db.ReleaseConn(conn) })
+			fresh, e := New(ctx, conn, store)
+			require.NoError(t, e)
+			t.Cleanup(fresh.Shutdown)
+			resumed.Store(true)
+			var resumedOut syncBuffer
+			again, e := fresh.RunNonInteractiveWithResult(ctx, &resumedOut, "answer the pending child question", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sid, false)
+			require.NoError(t, e)
+			require.Equal(t, "answered child", again.FinalText)
+			require.True(t, resumeSawQuestion.Load())
+		} else {
+			// ON: the run must have exited provider_limit with the pending
+			// question (shared assertions above), and the HELD identity must
+			// survive the host: the fenced LiveHeldQuestions row, its marker
+			// notice, and a child still inside its held Ask (no finished
+			// assistant message). No cross-host continuation is claimed: the
+			// design requires interruption after host shutdown.
+			facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStore(application.DB()), nil, application.DB())
+			held, heldErr := facts.LiveHeldQuestions(ctx, sid)
+			require.NoError(t, heldErr)
+			require.Len(t, held, 1)
+			require.Equal(t, res.PendingChildQuestions[0].SessionID, held[0].ChildSessionID)
+			var noticeText string
+			require.NoError(t, application.DB().QueryRowContext(ctx,
+				`SELECT text FROM session_notices WHERE id = ? AND owner = ?`, held[0].ID, sid).Scan(&noticeText))
+			parsed, ok := session.ParseBatchChildQuestionNotice(noticeText)
+			require.True(t, ok)
+			require.Equal(t, held[0].NodeID, parsed.NodeID)
+			require.Equal(t, held[0].ChildSessionID, parsed.ChildSessionID)
+			childMsgs, msgErr := application.Messages.List(ctx, held[0].ChildSessionID)
+			require.NoError(t, msgErr)
+			for _, msg := range childMsgs {
+				require.False(t, msg.Role == message.Assistant && msg.IsFinished(),
+					"the child remains inside its held Ask")
+			}
+		}
+	} else {
+		// The finished subtest only: the delegation COMPLETED here, so its
+		// root is terminal (the question subtest's delegation is HELD/live
+		// and must never be asserted completed).
+		if f6BatchOn() {
+			// ON: the two logical jobs are terminal in the batch tables -- one
+			// completed root per tool call id (the legacy async_jobs reader is
+			// empty ON, so it must not be required).
+			e3BatchJobIdentityPresent(t, application, sid, "bash-job", "quota-bash-output")
+			e3BatchJobIdentityPresent(t, application, sid, "delegation", "")
+		} else {
+			rows, listErr := application.asyncJobStore.ListAsyncJobsForOwner(ctx, sid)
+			require.NoError(t, listErr)
+			require.NotEmpty(t, rows)
+		}
 	}
 }
