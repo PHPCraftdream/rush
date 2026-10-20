@@ -368,7 +368,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		if err != nil || !batchNodeStateLive(state) || rowToken != token {
 			continue
 		}
-		out = append(out, session.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion})
+		out = append(out, session.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion, NodeID: node, ChildSessionID: batchQuestionMarkerChild(r.text)})
 	}
 	return out, nil
 }
@@ -411,6 +411,26 @@ func parseBatchQuestionMarker(text string) (string, int64, bool) {
 		return "", 0, false
 	}
 	return node, token, true
+}
+
+// batchQuestionMarkerChild extracts the child session field ("child=C") of a
+// published question marker header; "" when absent. The companion of
+// parseBatchQuestionMarker, which deliberately keeps its session-package
+// twin's signature.
+func batchQuestionMarkerChild(text string) string {
+	if !strings.HasPrefix(text, "[batch-question ") {
+		return ""
+	}
+	header := strings.TrimPrefix(text, "[batch-question ")
+	if idx := strings.Index(header, "]"); idx >= 0 {
+		header = header[:idx]
+	}
+	for _, field := range strings.Fields(header) {
+		if name, value, ok := strings.Cut(field, "="); ok && name == "child" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]session.PulledNotice, error) {
