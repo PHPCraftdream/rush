@@ -159,6 +159,20 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// Start arms the fault watcher (idempotent; SetRunner already ran inside
 	// build — Start and SetRunner are order-independent).
 	rt.Start()
+	// Held-question inject bridge (D1): with a live Runner and writer,
+	// install the sink inject_agent uses to release a child's
+	// CURRENT-incarnation held question through Runner.Inject. Flag OFF or
+	// a runnerless install (Start logged the RunnerFactory failure) leaves
+	// the sink nil and inject_agent keeps its legacy behaviour
+	// byte-identically.
+	if runner := install.Runner; runner != nil {
+		sink, serr := agent.NewBatchHeldAnswerSink(app.batchCutoverWriter(), runner)
+		if serr != nil {
+			slog.Warn("app: batch held-answer sink unavailable; inject_agent keeps the legacy path", "err", serr)
+		} else {
+			app.batchHeldAnswerSink = sink
+		}
+	}
 	// H4 W2: arm the App-owned dead-host maintenance (startup pass + 60s
 	// periodic pass) alongside the fault watcher. Covers CLI, server and
 	// SDK hosts; stopped and joined by releaseResources.
@@ -211,6 +225,18 @@ func (app *App) releaseBatchWriter() error {
 //   - Forced (stillBusy=true): same retention policy as flag-off — disarm
 //     the watcher, keep the host lock (CloseKeepLock), never touch the DB.
 func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, record func(error)) bool {
+	// Disarm the held-question inject bridge first: once the drain begins no
+	// answer may be routed into a draining Runner (the sink lookup is gone,
+	// so a racing inject_agent takes the legacy path instead).
+	// Close first: a sink already loaded by an in-flight inject_agent must
+	// fail deterministically (jobbatch.ErrReleased-shaped) instead of
+	// delivering into the draining Runner or silently degrading to the
+	// mailbox with a half-delivered answer.
+	if app.batchHeldAnswerSink != nil {
+		app.batchHeldAnswerSink.Close()
+	}
+	agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, nil)
+	app.batchHeldAnswerSink = nil
 	rt := app.batchRuntime
 	if rt == nil {
 		if app.batchTimeoutWake != nil {
