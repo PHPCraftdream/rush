@@ -158,6 +158,8 @@ func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutover
 type batchPausedChild struct {
 	toolCallID string
 	owner      string
+	nodeID     string
+	busy       bool
 }
 
 // batchActiveAfterQuestionPause answers the live-scope question with the
@@ -218,18 +220,20 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 		st := &childState{node: dc.node}
 		if ag := c.agentFor(dc.child); ag != nil && ag.IsSessionBusy(dc.child) {
 			st.busy = true
-		} else {
-			msgs, err := c.messages.List(ctx, dc.child)
-			if err != nil {
-				return false, err
+		}
+		msgs, err := c.messages.List(ctx, dc.child)
+		if err != nil {
+			return false, err
+		}
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
+				continue
 			}
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
-					continue
-				}
-				_, st.questionPaused = subAgentQuestionFromFinish(dc.child, msgs[i].FinishPart())
-				break
-			}
+			_, st.questionPaused = subAgentQuestionFromFinish(dc.child, msgs[i].FinishPart())
+			break
+		}
+		if st.busy {
+			st.questionPaused = true
 		}
 		states[dc.child] = st
 		order = append(order, dc.child)
@@ -237,7 +241,7 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 	paused := make(map[string]batchPausedChild, len(states))
 	for child, st := range states {
 		if st.questionPaused {
-			paused[child] = batchPausedChild{toolCallID: st.node.ToolCallID, owner: st.node.SessionID}
+			paused[child] = batchPausedChild{toolCallID: st.node.ToolCallID, owner: st.node.SessionID, nodeID: st.node.NodeID, busy: st.busy}
 		}
 	}
 	committed, err := c.batchCommittedQuestionChildren(ctx, facts, paused)
@@ -247,10 +251,10 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 	dormant := make(map[string]bool, len(states))
 	for _, child := range order {
 		st := states[child]
-		if st.busy {
-			continue // a busy child is never dormant
+		if st.busy && !committed[child] {
+			continue
 		}
-		if st.questionPaused && committed[child] {
+		if committed[child] {
 			dormant[child] = true
 			continue
 		}
@@ -313,7 +317,7 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 	for child, p := range paused {
 		byOwner[p.owner] = append(byOwner[p.owner], child)
 	}
-	for owner, children := range byOwner {
+	for owner := range byOwner {
 		held, herr := facts.LiveHeldQuestions(ctx, owner)
 		if herr != nil {
 			// Unknown debt for this owner: its children stay active, and the
@@ -321,15 +325,11 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 			unknownOwner[owner] = true
 			continue
 		}
-		heldChildren := make(map[string]bool, len(held))
 		for _, row := range held {
-			if row.ChildSessionID != "" {
-				heldChildren[row.ChildSessionID] = true
-			}
-		}
-		for _, child := range children {
-			if heldChildren[child] {
-				committed[child] = true
+			for child, p := range paused {
+				if p.owner == owner && row.ChildSessionID == child && row.NodeID == p.nodeID {
+					committed[child] = true
+				}
 			}
 		}
 	}
@@ -337,7 +337,7 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 		return committed, nil
 	}
 	for child, p := range paused {
-		if committed[child] || unknownOwner[p.owner] {
+		if p.busy || committed[child] || unknownOwner[p.owner] {
 			continue
 		}
 		notices, err := c.asyncJobs.store.ListSessionNotices(ctx, p.owner)
