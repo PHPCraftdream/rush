@@ -247,7 +247,198 @@ func TestWebAsyncCommandCompletionCreatesModelVisibleNotice(t *testing.T) {
 	}
 }
 
+func testBatchWaitsForAsyncSubAgentResult(t *testing.T) {
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	var turns atomic.Int32
+	var launches atomic.Int32
+	var startedReplies atomic.Int32
+	var parentResumed atomic.Int32
+	var releaseOnce sync.Once
+	var releaseStarted sync.Once
+	releaseChild := func() { releaseOnce.Do(func() { close(gate) }) }
+	old := cliLoopTurnDoneSeam
+	cliLoopTurnDoneSeam = func() {
+		turns.Add(1)
+		releaseStarted.Do(func() { close(started) })
+		releaseChild()
+	}
+	t.Cleanup(func() { cliLoopTurnDoneSeam = old })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	var childCalls atomic.Int32
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, lastUser, lastTool := lastTurnParts(body)
+		switch {
+		case strings.Contains(lastUser, "Async job call-agent () finished"):
+			parentResumed.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEText("final", "parent final"), admissionSSEStop("final", "stop")})
+		case strings.Contains(lastTool, "completions arrive as selected notices"):
+			startedReplies.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEText("yield", "agent launched"), admissionSSEStop("yield", "stop")})
+		case strings.Contains(lastUser, "WORKER-MARKER"):
+			childCalls.Add(1)
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			case <-ctx.Done():
+				return
+			}
+			admissionWriteSSE(w, []string{admissionSSEText("child", "child actual text"), admissionSSEStop("child", "stop")})
+		default:
+			launches.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER"}`), admissionSSEStop("delegate", "tool_calls")})
+		}
+	})
+	t.Cleanup(func() { releaseChild(); application.Shutdown() })
+	done := make(chan struct{})
+	var result *RunResult
+	var runErr error
+	go func() {
+		defer close(done)
+		result, runErr = application.RunNonInteractiveWithResult(ctx, io.Discard, "start a worker", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("parent turn did not yield")
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("run did not complete")
+	}
+	require.NoError(t, runErr)
+	require.NotNil(t, result)
+	require.Equal(t, "parent final", result.FinalText)
+	require.EqualValues(t, 1, childCalls.Load())
+	require.EqualValues(t, 1, launches.Load())
+	require.EqualValues(t, 1, startedReplies.Load())
+	require.EqualValues(t, 1, parentResumed.Load())
+	require.EqualValues(t, 2, turns.Load())
+	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, ""))
+	messages, err := application.Messages.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	for _, item := range messages {
+		if item.BackgroundJobNotice {
+			require.Contains(t, item.FullText(), "child actual text")
+		}
+	}
+}
+
+func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
+	var mu sync.Mutex
+	turns, launched, started, consumed := 0, 0, 0, 0
+	barriers := make([]chan struct{}, 6)
+	for i := range barriers {
+		barriers[i] = make(chan struct{})
+	}
+	old := cliLoopTurnDoneSeam
+	cliLoopTurnDoneSeam = func() {
+		mu.Lock()
+		turns++
+		if launched > 0 {
+			select {
+			case <-barriers[launched-1]:
+			default:
+				close(barriers[launched-1])
+			}
+		}
+		mu.Unlock()
+	}
+	t.Cleanup(func() { cliLoopTurnDoneSeam = old })
+	var children atomic.Int32
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, lastUser, lastTool := lastTurnParts(body)
+		for i := 1; i <= 6; i++ {
+			if strings.TrimSpace(lastUser) == fmt.Sprintf("CHILD-WORK-%d", i) {
+				children.Add(1)
+				select {
+				case <-barriers[i-1]:
+				case <-r.Context().Done():
+					return
+				case <-ctx.Done():
+					return
+				}
+				admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("child-%d", i), fmt.Sprintf("child %d actual", i)), admissionSSEStop(fmt.Sprintf("child-%d", i), "stop")})
+				return
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if launched == 0 {
+			launched = 1
+			admissionWriteSSE(w, []string{admissionSSEToolCall("start-1", "call-1", "agent", `{"prompt":"CHILD-WORK-1"}`), admissionSSEStop("start-1", "tool_calls")})
+			return
+		}
+		if strings.Contains(lastTool, "completions arrive as selected notices") && started < launched {
+			started++
+		}
+		matched := 0
+		for i := 1; i <= 6; i++ {
+			if strings.Contains(lastUser, fmt.Sprintf("Async job call-%d () finished", i)) {
+				if i != consumed+1 || i != started || !strings.Contains(lastUser, fmt.Sprintf("child %d actual", i)) {
+					http.Error(w, "unexpected or duplicate completion", http.StatusBadRequest)
+					return
+				}
+				matched = i
+				break
+			}
+		}
+		if matched == 0 {
+			http.Error(w, "unexpected provider request", http.StatusBadRequest)
+			return
+		}
+		consumed++
+		if consumed == 6 {
+			admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
+			return
+		}
+		launched++
+		admissionWriteSSE(w, []string{admissionSSEToolCall(fmt.Sprintf("start-%d", launched), fmt.Sprintf("call-%d", launched), "agent", fmt.Sprintf(`{"prompt":"CHILD-WORK-%d"}`, launched)), admissionSSEStop(fmt.Sprintf("start-%d", launched), "tool_calls")})
+	})
+	t.Cleanup(application.Shutdown)
+	result, err := application.RunNonInteractiveWithResult(ctx, io.Discard, "run six jobs", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "all six jobs finished", result.FinalText)
+	mu.Lock()
+	gotLaunch, gotStarted, gotConsumed, gotTurns := launched, started, consumed, turns
+	mu.Unlock()
+	require.Equal(t, 6, gotLaunch)
+	require.Equal(t, 6, gotStarted)
+	require.Equal(t, 6, gotConsumed)
+	require.Equal(t, 7, gotTurns)
+	require.EqualValues(t, 6, children.Load())
+	messages, err := application.Messages.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	counts := make(map[string]int)
+	for _, item := range messages {
+		if item.BackgroundJobNotice {
+			for i := 1; i <= 6; i++ {
+				id := fmt.Sprintf("call-%d", i)
+				if strings.Contains(item.FullText(), id) {
+					counts[id]++
+					require.Contains(t, item.FullText(), fmt.Sprintf("child %d actual", i))
+				}
+			}
+		}
+	}
+	for i := 1; i <= 6; i++ {
+		require.Equal(t, 1, counts[fmt.Sprintf("call-%d", i)])
+	}
+}
+
 func TestRunNonInteractiveWaitsForAsyncSubAgentResult(t *testing.T) {
+	if f6BatchOn() {
+		testBatchWaitsForAsyncSubAgentResult(t)
+		return
+	}
 	var childCalls atomic.Int32
 	var parentStarted atomic.Int32
 	var parentResumed atomic.Int32
@@ -316,6 +507,10 @@ func TestRunNonInteractiveWaitsForAsyncSubAgentResult(t *testing.T) {
 }
 
 func TestRunNonInteractiveContinuesPastFiveAsyncCompletions(t *testing.T) {
+	if f6BatchOn() {
+		testBatchContinuesPastFiveAsyncCompletions(t)
+		return
+	}
 	var mu sync.Mutex
 	turnCount, launched := 0, 0
 	barriers := make([]chan struct{}, 6)
