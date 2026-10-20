@@ -81,7 +81,13 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		reader := session.NewBatchLiveReader(db.New(writer), a.dataDir)
 		// TxStarter: every live read runs in ONE read-only tx on the writer.
 		reader.TxStarter = writer
-		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithLive(reader)
+		// Package S (jb/psc): keep the delegation open through the child's
+		// actionable/paced completion-reaction debt (CLIScope) and settle
+		// with the child's refreshed final outcome (review 4 §4.3 items
+		// 2-3). The coordinator is assigned later by InitCoderAgent, so
+		// the facts resolve it lazily per read.
+		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithChildScope(reader,
+			agent.PscCoordinatorChildReactionFactsLate(func() agent.Coordinator { return a.AgentCoordinator }))
 	}
 	if deps.Resolver == nil {
 		deps.Resolver = agent.BatchNonReentrantMCPResolver()
