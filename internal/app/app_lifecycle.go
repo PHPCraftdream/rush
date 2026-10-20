@@ -287,6 +287,12 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// process that has actually exited). Keep the lock held until the
 	// process itself exits, exactly like DB close is already skipped on this
 	// same path below -- CloseKeepLock only forgets the in-memory handle.
+
+	// H4 W2: stop and join the batch dead-host maintenance goroutine BEFORE
+	// any host-identity or writer release below: a pass must never run
+	// against a closing/released DB. Idempotent and nil-safe.
+	app.stopBatchMaintenance()
+
 	if app.batchRuntime != nil {
 		// R11F (M2) flag-on path: the drain gate replaces the host-identity
 		// release below — Runner drain, then host identity, then writer, all
@@ -349,7 +355,6 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	if app.config != nil {
 		app.config.StopOAuthDiskSync()
 	}
-
 	// Now run remaining cleanup tasks in parallel with an overall bounded timeout.
 	var wg sync.WaitGroup
 

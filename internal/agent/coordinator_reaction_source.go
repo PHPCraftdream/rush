@@ -318,8 +318,15 @@ func (c *coordinator) runningWorkOpen(ctx context.Context, sessionID string) (bo
 	// once recovered, correctly reported closed if nothing else is
 	// outstanding). Best-effort: RecoverOwnerScope never fails this call.
 	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: no ledger recovery write; liveness is a batch live read
-		// (conservative: an unreadable read reports open).
+		// Flag on: scope-time recovery first (below), then liveness from a
+		// FRESH batch live read (conservative: an unreadable read reports
+		// open).
+		// H4 W2: the OFF RecoverOwnerScope twin, scope-budgeted. Recover the
+		// dead hosts this owner's scope is about to report as live, then
+		// answer from the FRESH live read below. Best-effort: a failed or
+		// budget-exhausted recovery keeps the conservative live answer and
+		// the App's background maintenance pass completes it later.
+		recoverBatchScopeDeadCandidates(ctx, c, sessionID)
 		entries, scopeErr := facts.LiveScopeForOwners(ctx, []string{sessionID})
 		if scopeErr != nil {
 			return false, scopeErr

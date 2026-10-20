@@ -20,7 +20,10 @@ func BatchSharedHostProbe(dataDir string) BatchHostProbe {
 
 type BatchRecoveryOutcome struct{ Interrupted, DeletedRoots, Notices, Controls int64 }
 
-// BatchRecoverDeadHost is inert: no production caller, execution or history write.
+// BatchRecoverDeadHost now has a production caller (the batch reset entry's
+// owner-scope recovery); the App maintenance and scope-time paths go through
+// the bounded W1 primitives in batch_recovery_candidates.go. No recovery
+// path writes history or wakes work.
 // Each root commits separately; failures are returned without blocking other roots.
 func (s *BatchStore) BatchRecoverDeadHost(ctx context.Context, host string, probe BatchHostProbe) (BatchRecoveryOutcome, error) {
 	var total BatchRecoveryOutcome
@@ -107,7 +110,7 @@ func (s *BatchStore) batchRecoverRoot(ctx context.Context, listed db.BatchNode) 
 		}
 		// A terminal root keeps its outcome and projection sequence unchanged.
 		if batchStateLive(r.State) {
-			err = batchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: r.RootID, OwnerSessionID: r.OwnerSessionID, HostID: r.HostID, Sequence: sequence, UpdatedAt: now}))
+			err = batchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: r.RootID, OwnerSessionID: r.OwnerSessionID, HostID: r.HostID, RunnerID: r.RunnerID, Sequence: sequence, UpdatedAt: now}))
 			if err != nil {
 				return BatchRecoveryOutcome{}, err
 			}

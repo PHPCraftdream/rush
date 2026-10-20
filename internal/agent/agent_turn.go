@@ -373,6 +373,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if a.asyncJobs != nil && a.asyncJobs.store != nil && !batchFlagEnabled() {
 		a.asyncJobs.store.RecoverOwnerScope(preambleCtx, call.SessionID, a.messages)
 	}
+	// H4 W2: batch runtime ON recovery at the same BEFORE-the-pull position:
+	// the interruption discovered right now is already delivery='pending'
+	// and gets pulled into history in THIS turn, not a later one. Bounded
+	// and best-effort (one 10ms budget, one candidate root attempt); the
+	// background maintenance pass covers the rest. OFF stays byte-identical
+	// above.
+	if batchFlagEnabled() && a.asyncJobs != nil {
+		recoverBatchScopeDeadCandidates(preambleCtx, a.asyncJobs.coord, call.SessionID)
+	}
 
 	// Phase-4 step 3 (DUR-3, doc sec.3.3): the driver pulls pending
 	// async_jobs/session_notices rows into history BEFORE history loads for

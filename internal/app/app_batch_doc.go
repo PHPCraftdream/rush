@@ -62,14 +62,18 @@ package app
 //
 // NOT-DONE (left for R11F or later packages):
 //
-//   - No production call sites: nothing in app.go/app_lifecycle.go
-//     references BatchRuntime yet (R11F).
+//   - No production call sites: RESOLVED — R11F wired the runtime (app.go
+//     installBatchRuntime), and H4 W2 added the App-owned dead-host
+//     maintenance pass (app_batch_maintenance.go) started at install and
+//     joined in releaseResources.
 //   - No Runner construction, no commit-hook installation, no
 //     RUSH_BATCH_RUNTIME flag (R11F; flag listed as non-goal here).
 //   - No per-host-kind wiring: CLI/server/SDK all share the same handler;
 //     only the CLI subprocess is exercised end-to-end in tests because
 //     server/SDK hosts only exist after installation (R11F).
-//   - No integration with R9 recovery/probe (BatchRecoverDeadHost,
-//     BatchHostProbe) — the gate retains the lock on fault/timeout so the
-//     existing recovery sweep keeps treating this host as alive.
+//   - No integration with R9 recovery/probe: RESOLVED — H4 W2 wires the W1
+//     bounded recovery primitives (BatchRecoverPass/RecoverHostsOnce) into
+//     App startup/periodic maintenance, the turn preamble, runningWorkOpen,
+//     CLIActiveWork and the batch reset entry; the gate's fault/timeout
+//     retention semantics are unchanged.
 //   - No metrics, no configurable exit code (70 is fixed by D4).

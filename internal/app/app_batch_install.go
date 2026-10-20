@@ -140,6 +140,10 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// Start arms the fault watcher (idempotent; SetRunner already ran inside
 	// build — Start and SetRunner are order-independent).
 	rt.Start()
+	// H4 W2: arm the App-owned dead-host maintenance (startup pass + 60s
+	// periodic pass) alongside the fault watcher. Covers CLI, server and
+	// SDK hosts; stopped and joined by releaseResources.
+	app.startBatchMaintenance()
 	slog.Info("app: batch runtime installed", "host", host)
 	return nil
 }

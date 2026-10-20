@@ -62,7 +62,19 @@ func resetBatchFixture(t *testing.T, id, state string) (string, batchReadFixture
 	}
 	dataDir := a.Config().Options.DataDirectory
 	a.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 	return dataDir, f
+}
+
+// holdSeedHost keeps the seed host's lock for the test's duration. The seed
+// app's shutdown released it, which makes the host DEAD: the next app's
+// recovery then interrupts its nonterminal roots and deletes its unannounced
+// ones. Holding the lock keeps the fixture work a LIVE host owns.
+func holdSeedHost(t *testing.T, dataDir, host string) {
+	t.Helper()
+	hostLock, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, host))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = hostLock.Release() })
 }
 
 // runBatchReset runs the real reset command expecting success, returning
@@ -201,6 +213,7 @@ func TestSessionsGc_BatchHeldRootProtectsSessionFlagOn(t *testing.T) {
 	f := seedGcBatchSession(t, a, "gc-batch-protected")
 	dataDir := a.Config().Options.DataDirectory
 	shutdownSeed()
+	holdSeedHost(t, dataDir, f.host)
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 
@@ -271,6 +284,8 @@ func TestSessionsGc_BatchRetentionHonoursAgeFlagOn(t *testing.T) {
 		time.Now().Add(-8*24*time.Hour).Unix(), f.rootID)
 	require.NoError(t, err)
 	shutdownSeed()
+	// The root is unannounced: a dead host's recovery would delete it.
+	holdSeedHost(t, dataDir, f.host)
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 

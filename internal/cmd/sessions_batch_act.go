@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -97,8 +98,10 @@ func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) err
 
 // batchResetSessionHistory is the flag-ON reset path: the R10c batch reset
 // (check + delete in ONE writer transaction; refusal writes nothing). Its
-// atomic refusal of any nonterminal batch root IS the live-work gate -- no
-// legacy classifier or ledger recovery runs here. The plain-wipe fallback
+// atomic refusal of any nonterminal batch root IS the live-work gate -- the
+// only predecessor step is H4 W2's best-effort owner-scope dead-host
+// recovery (BatchRecoverOwnerScope), which never touches the legacy
+// ledger. The plain-wipe fallback
 // exists only for a configless App (nil DB). Known residual legacy touch: the
 // app-owned host-close query (DeleteAsyncHostIfNoJobs still reading async_jobs
 // at shutdown) belongs to the R12-A host-query split; every cmd-layer flag-ON
@@ -110,6 +113,18 @@ func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string)
 			return session.BatchResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
 		}
 		return session.BatchResetOutcome{}, nil
+	}
+	// H4 W2: the legacy reset's RecoverOwnerScope twin (sessions_reset.go
+	// recovers dead-host rows before its refusal): a dead host's running
+	// roots become interrupted/host_lost FIRST, so the atomic refusal below
+	// judges only work a live host still holds. Best-effort: a failed
+	// recovery keeps the conservative refusal. Accepted without a budget:
+	// an explicit user command, not a hot path — the OFF twin's
+	// RecoverOwnerScope is equally unbounded.
+	if config.BatchRuntimeEnabled() {
+		if _, err := session.NewBatchStore(a.DB()).BatchRecoverOwnerScope(ctx, sessionID, session.BatchSharedHostProbe(a.DataDirectory())); err != nil {
+			slog.Debug("sessions reset: batch dead-host recovery failed; refusal stays conservative", "session_id", sessionID, "err", err)
+		}
 	}
 	out, err := session.NewBatchStore(a.DB()).BatchResetOwnerHistory(ctx, a.Messages, sessionID)
 	var refusal *session.BatchResetRefusal

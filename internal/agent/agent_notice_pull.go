@@ -167,16 +167,25 @@ func buildSessionNoticeMessageParams(row session.SessionNoticeRow) message.Creat
 // the row's own notice_kind/state/cause and the root's outcome summary are
 // the single source of truth.
 func buildBatchNoticeMessageParams(row session.BatchNoticeRow) message.CreateMessageParams {
+	// H4 W2: a recovered node (State interrupted / OutcomeCode host_lost)
+	// is an interruption, not a finished job and not a stop: FormatAsync
+	// Completion checks Stopped BEFORE Interrupted (coordinator_background
+	// .go), so a Cause=="stop" node recovered to interrupted/host_lost must
+	// not keep Stopped. Cancelled is kept as-is: State "interrupted" never
+	// equals "cancelled", so a recovered node can never read as Cancelled.
+	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
 	completion := AsyncCompletion{
 		ToolCallID: row.ToolCallID,
 		ToolName:   "",
 		Content:    row.OutcomeSummary,
 		IsError:    row.State == "failed" || row.OutcomeCode == "failed",
 		TimedOut:   row.State == "timed_out",
-		Stopped:    row.Cause == "stop",
+		Stopped:    row.Cause == "stop" && !recovered,
 		Cancelled:  row.Cause == "stop" && row.State == "cancelled",
 	}
-	if row.Cause == "host_closing" {
+	// The structured state and the retained summary are kept; no cause or
+	// executor envelope is invented.
+	if row.Cause == "host_closing" || recovered {
 		completion.Interrupted = true
 	}
 	origin := message.OriginWeb
