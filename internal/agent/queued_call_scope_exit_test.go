@@ -128,6 +128,7 @@ func TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases(t *testing.T) {
 // MUTATION CAUGHT — removing the release in clearAll, or a non-idempotent
 // double release.
 func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("clearAll", func(t *testing.T) {
 		t.Parallel()
 		caps, a := newQueuedCallScopeFixture(t)
