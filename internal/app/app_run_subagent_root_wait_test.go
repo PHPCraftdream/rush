@@ -63,6 +63,10 @@ import (
 )
 
 func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
+	if f6BatchOn() {
+		testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t)
+		return
+	}
 	// childJobKilled is closed by the child's job_kill tool call, i.e. the
 	// moment the child's OWN background job becomes terminal. The root's
 	// final turn is gated on it.
@@ -329,6 +333,9 @@ func grantChildBackgroundShellTools(t *testing.T, application *App) {
 			tools = append(tools, name)
 		}
 	}
+	if f6BatchOn() && !slices.Contains(tools, "batch_stop") {
+		tools = append(tools, "batch_stop")
+	}
 	application.config.UpdateAgentAllowedTools(config.AgentTask, tools)
 }
 
@@ -369,6 +376,9 @@ type wireRequest struct {
 // continuation turns into the child branch (and the title requests into the
 // child branch with them).
 func routeModelRequest(body []byte) string {
+	if f6BatchOn() {
+		return routeBatchModelRequest(body, "", "")
+	}
 	var req wireRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return "root:delegate"
@@ -469,4 +479,153 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu <- struct{}{}
 	defer func() { <-b.mu }()
 	return b.Builder.Write(p)
+}
+
+func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
+	command, release := recoveryJobCommand(t)
+	defer releaseRecoveryJob(t, release)
+	var rootID atomic.Value
+	rootID.Store("")
+	var delegateRoot atomic.Value
+	delegateRoot.Store("")
+	var childID atomic.Value
+	childID.Store("")
+	var order safeRequestOrder
+	var childNoticeCount, parentFinalCount, stopCount, startedCount atomic.Int32
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		system, lastUser, lastTool := lastTurnParts(body)
+		switch routeBatchModelRequest(body, rootID.Load().(string), delegateRoot.Load().(string)) {
+		case "title":
+			admissionWriteSSE(w, []string{admissionSSEText("title", "Root Wait Child"), admissionSSEStop("title", "stop")})
+		case "root:delegate":
+			order.add("root:delegate")
+			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`), admissionSSEStop("delegate", "tool_calls")})
+		case "child:bash":
+			order.add("child:bash")
+			var id string
+			_ = application.DB().QueryRowContext(r.Context(), `SELECT child_session_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = 'call-agent' AND node_id = root_id ORDER BY rowid DESC LIMIT 1`, sessionID).Scan(&id)
+			childID.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
+		case "child:started":
+			startedCount.Add(1)
+			id := batchStartedRootID(lastTool)
+			require.NotEmpty(t, id)
+			rootID.Store(id)
+			input, err := json.Marshal(map[string]string{"root_id": id})
+			require.NoError(t, err)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("stop", "call-stop", "batch_stop", string(input)), admissionSSEStop("stop", "tool_calls")})
+		case "child:stop":
+			if !strings.Contains(lastTool, `"accepted":true`) || !strings.Contains(lastTool, `"terminal":false`) {
+				http.Error(w, "batch_stop must expose cancellation intent, not terminal completion: "+lastTool, http.StatusServiceUnavailable)
+				return
+			}
+			if stopCount.CompareAndSwap(0, 1) {
+				order.add("child:stop")
+				releaseRecoveryJob(t, release)
+				admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+				return
+			}
+			order.add("child:stopAck")
+			admissionWriteSSE(w, []string{admissionSSEText("stop-ack", "stop intent already recorded"), admissionSSEStop("stop-ack", "stop")})
+		case "child:final":
+			childNoticeCount.Add(1)
+			var state string
+			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" {
+				http.Error(w, fmt.Sprintf("selected child notice before terminal state: %s (%v)", state, err), http.StatusServiceUnavailable)
+				return
+			}
+			order.add("child:final")
+			admissionWriteSSE(w, []string{admissionSSEText("child-final", "child final: terminal command result received"), admissionSSEStop("child-final", "stop")})
+		case "root:yield":
+			id := batchStartedRootID(lastTool)
+			require.NotEmpty(t, id)
+			delegateRoot.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "waiting for child completion"), admissionSSEStop("root-yield", "stop")})
+		case "root:final":
+			parentFinalCount.Add(1)
+			var state string
+			err := application.DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" || childNoticeCount.Load() != 1 {
+				http.Error(w, fmt.Sprintf("parent completion before child terminal notice: %s notices=%d err=%v", state, childNoticeCount.Load(), err), http.StatusServiceUnavailable)
+				return
+			}
+			order.add("root:final")
+			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
+		default:
+			http.Error(w, "unexpected batch root-wait route="+routeBatchModelRequest(body, rootID.Load().(string), delegateRoot.Load().(string))+" system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
+		}
+	})
+	grantChildBackgroundShellTools(t, application)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	var output syncBuffer
+	result, err := application.RunNonInteractiveWithResult(ctx, &output, "start a worker", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	seen := order.snapshot()
+	require.Equal(t, 1, countLabel(seen, "root:delegate"))
+	require.Equal(t, 1, countLabel(seen, "child:bash"))
+	require.Equal(t, 1, countLabel(seen, "child:final"))
+	require.Equal(t, 1, countLabel(seen, "root:final"))
+	require.Less(t, indexOf(seen, "child:bash"), indexOf(seen, "child:final"))
+	require.Less(t, indexOf(seen, "child:final"), indexOf(seen, "root:final"))
+	require.EqualValues(t, 1, childNoticeCount.Load())
+	require.EqualValues(t, 1, parentFinalCount.Load())
+	require.EqualValues(t, 1, startedCount.Load(), "one started identity is consumed")
+	require.EqualValues(t, 1, stopCount.Load(), "one durable stop request is issued")
+	require.Equal(t, "root final answer", result.FinalText)
+	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`))
+	require.NotEmpty(t, childID.Load().(string))
+}
+
+func batchStartedRootID(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) < 4 || fields[0] != "batch" || fields[1] != "root" || fields[3] != "started;" {
+		return ""
+	}
+	return fields[2]
+}
+
+func routeBatchModelRequest(body []byte, commandRoot, delegateRoot string) string {
+	var req wireRequest
+	if json.Unmarshal(body, &req) != nil {
+		return "root:delegate"
+	}
+	var system strings.Builder
+	lastUser, lastTool := "", ""
+	for _, m := range req.Messages {
+		s, _ := m.Content.(string)
+		switch m.Role {
+		case "system":
+			system.WriteString(s)
+		case "user":
+			lastUser = s
+		case "tool":
+			lastTool = s
+		}
+	}
+	if strings.Contains(system.String(), "short title") {
+		return "title"
+	}
+	if commandRoot != "" && strings.HasPrefix(lastUser, "batch "+commandRoot+" node ") {
+		return "child:final"
+	}
+	if delegateRoot != "" && strings.HasPrefix(lastUser, "batch "+delegateRoot+" node ") {
+		return "root:final"
+	}
+	if strings.Contains(lastTool, `"accepted":true`) && strings.Contains(lastTool, `"terminal":false`) {
+		return "child:stop"
+	}
+	if strings.Contains(lastTool, "batch root ") && strings.Contains(lastTool, "started; completions arrive as selected notices") {
+		if strings.Contains(lastUser, "WORKER-MARKER") {
+			return "child:started"
+		}
+		return "root:yield"
+	}
+	if strings.Contains(lastUser, "WORKER-MARKER do the task") {
+		return "child:bash"
+	}
+	return "root:delegate"
 }
