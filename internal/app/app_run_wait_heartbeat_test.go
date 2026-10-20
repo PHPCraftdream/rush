@@ -73,15 +73,23 @@ func TestRunNonInteractive_WaitHeartbeatNamesJobAndHost(t *testing.T) {
 	q := db.New(h.app.DB())
 	_, err = q.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: "peer-host", Pid: 4242, Label: "peer", StartedAt: 1700000000})
 	require.NoError(t, err)
-	_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
-		OwnerSessionID: h.sessionID, ToolCallID: "peer-job-1", Kind: "command", ToolName: "run_command",
-		InputHash: "h", HostID: "peer-host", CreatedAt: 1700000000, UpdatedAt: 1700000000,
-	})
-	require.NoError(t, err)
-	_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: h.sessionID, ToolCallID: "own-job-1", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	if f6BatchOn() {
+		// ON reads BATCH facts: own live root on this process's host, plus
+		// a foreign-host root whose host lock and async_hosts row (above)
+		// are shared by both modes.
+		pt2ReserveLiveRoot(t, h.app, h.sessionID, "peer-host", "peer-job-1", "argv")
+		pt2ReserveLiveRoot(t, h.app, h.sessionID, f6HostID(t, h.app), "own-job-1", "shell")
+	} else {
+		_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
+			OwnerSessionID: h.sessionID, ToolCallID: "peer-job-1", Kind: "command", ToolName: "run_command",
+			InputHash: "h", HostID: "peer-host", CreatedAt: 1700000000, UpdatedAt: 1700000000,
+		})
+		require.NoError(t, err)
+		_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
+			Owner: h.sessionID, ToolCallID: "own-job-1", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash",
+		})
+		require.NoError(t, err)
+	}
 
 	runCtx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	defer cancel()
@@ -90,8 +98,18 @@ func TestRunNonInteractive_WaitHeartbeatNamesJobAndHost(t *testing.T) {
 
 	got := stderr.String()
 	require.Equal(t, 1, heartbeatLines(got), "one heartbeat line in this short wait: %s", got)
-	require.Contains(t, got, `bash "own-job-1" on this process`)
-	require.Contains(t, got, `run_command "peer-job-1" on host peer-host (PID 4242, alive)`)
+	// OFF keeps the legacy tool names; ON shows the durable task kind of
+	// the sole task child (production batchLeafKind: bash->shell,
+	// run_command->argv) -- the exact legacy tool name is not retained in
+	// batch facts, the kind label and the foreign PID are.
+	ownLine := `bash "own-job-1" on this process`
+	peerLine := `run_command "peer-job-1" on host peer-host (PID 4242, alive)`
+	if f6BatchOn() {
+		ownLine = `shell "own-job-1" on this process`
+		peerLine = `argv "peer-job-1" on host peer-host (PID 4242, alive)`
+	}
+	require.Contains(t, got, ownLine)
+	require.Contains(t, got, peerLine)
 }
 
 // The stderr line for debt no automatic turn is allowed for names the REAL
