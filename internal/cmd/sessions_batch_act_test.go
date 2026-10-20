@@ -62,6 +62,13 @@ func resetBatchFixture(t *testing.T, id, state string) (string, batchReadFixture
 	}
 	dataDir := a.Config().Options.DataDirectory
 	a.Shutdown()
+	// The seed app's shutdown released its host lock, which makes the host
+	// DEAD and its nonterminal roots recoverable: the reset recovers a dead
+	// host's roots BEFORE its refusal. Hold the host lock for the test's
+	// duration so the root stays work a LIVE host holds.
+	hostLock, lockErr := session.TryAcquireFileLock(session.HostLockPath(dataDir, f.host))
+	require.NoError(t, lockErr)
+	t.Cleanup(func() { _ = hostLock.Release() })
 	return dataDir, f
 }
 
