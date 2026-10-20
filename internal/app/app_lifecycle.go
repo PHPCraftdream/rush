@@ -291,6 +291,9 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// H4 W2: stop and join the batch dead-host maintenance goroutine BEFORE
 	// any host-identity or writer release below: a pass must never run
 	// against a closing/released DB. Idempotent and nil-safe.
+	if app.batchRuntime != nil {
+		app.batchRuntime.Stop()
+	}
 	app.stopBatchMaintenance()
 
 	if app.batchRuntime != nil {

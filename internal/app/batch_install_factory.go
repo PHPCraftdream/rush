@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -23,8 +24,10 @@ import (
 // install deps (profile, pinned registries, runner budgets, agent family
 // seams) are supplied by the flagged-install wiring (M2/M3).
 type batchRuntimeFactory struct {
-	deps agent.BatchInstallDeps
-	live *session.BatchLiveReader
+	deps   agent.BatchInstallDeps
+	live   *session.BatchLiveReader
+	writer *sql.DB
+	wake   func(context.Context, string)
 }
 
 // newBatchRuntimeFactory resolves the App-owned resources. It fails closed
@@ -101,7 +104,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	live := session.NewBatchLiveReader(db.New(writer), a.dataDir)
 	// TxStarter: every live read runs in ONE read-only tx on the writer.
 	live.TxStarter = writer
-	f := &batchRuntimeFactory{deps: deps, live: live}
+	f := &batchRuntimeFactory{deps: deps, live: live, writer: writer}
 	return f, nil
 }
 
@@ -118,7 +121,15 @@ func (f *batchRuntimeFactory) build(ctx context.Context) (rt *BatchRuntime, inst
 	if err != nil {
 		return nil, nil, fmt.Errorf("batch runtime factory: %w", err)
 	}
-	rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook})
+	if batchCutoverOn() {
+		checkin := session.NewBatchTimeoutCheckin(f.writer)
+		if f.wake != nil {
+			checkin.SetWakeFunc(f.wake)
+		}
+		rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook, TimeoutCheckin: checkin})
+	} else {
+		rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook})
+	}
 	// R11F P1-6: Start constructs the Runner from the install's deps before
 	// any Invoke can run (Start happens at New-time install; Invoke only
 	// after the App is built).

@@ -226,6 +226,9 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			ctrl.SetWakeScheduleStore(app.wakeScheduleStore)
 		}
 	}
+	if app.batchTimeoutWake != nil {
+		app.batchTimeoutWake.Attach(app.AgentCoordinator)
+	}
 	// Rate-limit wait diagnostics are run-scoped now: prepareExecuteRun
 	// attaches a CLI-origin-gated sink (agent.WithRateLimitNotifySink) to
 	// each run's context and the coordinator's notifier call site consumes

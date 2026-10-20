@@ -208,6 +208,11 @@ type batchTimeoutCheckinPayload struct {
 // genuinely level-readable: the next pass resumes exactly where the
 // backlog stands (a committed check-in removes the node from the set).
 func (s *BatchTimeoutCheckin) ScanOnce(ctx context.Context) (int, error) {
+	select {
+	case <-s.stop:
+		return 0, nil
+	default:
+	}
 	s.mu.Lock()
 	now, pageSize := s.now(), s.pageSize
 	budget := s.scanBudget
@@ -216,6 +221,11 @@ func (s *BatchTimeoutCheckin) ScanOnce(ctx context.Context) (int, error) {
 	var cursorNode string
 	committed := 0
 	for {
+		select {
+		case <-s.stop:
+			return committed, nil
+		default:
+		}
 		// The page is fully drained and its iterator closed BEFORE any write
 		// transaction: checkinRow opens a BeginTx on the same single pooled
 		// connection a live iterator would hold, so checking in inside
