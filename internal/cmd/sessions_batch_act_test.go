@@ -208,6 +208,12 @@ func TestSessionsGc_BatchHeldRootProtectsSessionFlagOn(t *testing.T) {
 	f := seedGcBatchSession(t, a, "gc-batch-protected")
 	dataDir := a.Config().Options.DataDirectory
 	shutdownSeed()
+	// The seed shutdown released its host lock, which makes the host DEAD and
+	// its pending root recoverable by the gc app's startup recovery. Hold the
+	// lock so the root stays work a LIVE host holds.
+	hostLock, lockErr := session.TryAcquireFileLock(session.HostLockPath(dataDir, f.host))
+	require.NoError(t, lockErr)
+	t.Cleanup(func() { _ = hostLock.Release() })
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 
