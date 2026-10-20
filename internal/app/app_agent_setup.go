@@ -181,6 +181,23 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			return err
 		}
 	}
+	// F7b: an ephemeral flag-ON App (dataDir == "") never installs the
+	// batch runtime, so BindCoordinatorBatchControls below never runs and
+	// the coordinator is left with NO capability manager. Its run path
+	// (coordinator.PrepareContinuation) then fails closed with
+	// agent.ErrDiskProviderUnavailable ("no capability manager is bound")
+	// for every custom-DiskProvider run whose admission persisted a
+	// session execution requirement — even though app_run_setup.go bound
+	// the Call owner against the App's own in-memory registry. Bind the
+	// SAME registry so continuations resolve through it. Flag-OFF Apps
+	// and persisted Apps are untouched: app.New constructs
+	// ephemeralDiskBindings only on the flag-ON ephemeral branch.
+	if app.ephemeralDiskBindings != nil {
+		if err := agent.SetCoordinatorDiskCapabilityManager(app.AgentCoordinator, app.ephemeralDiskBindings); err != nil {
+			slog.Error("Failed to bind ephemeral disk capability manager", "err", err)
+			return err
+		}
+	}
 	// R11F (M3): bind the coordinator to the flag-on batch runtime. After
 	// this every tool build re-arms its work tools through the ONE ingress
 	// authority and the old async/stall wrappers are not installed; flag-off
