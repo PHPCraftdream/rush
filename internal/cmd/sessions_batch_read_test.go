@@ -162,6 +162,7 @@ func TestSessionsJobsCmdRun_BatchLiveRootFlagOn(t *testing.T) {
 	require.NoError(t, a.AsyncJobStore().InsertSessionNotice(ctx, sess.ID,
 		session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child): QUESTION: proceed?", true, f.toolCallID))
 	a.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 
 	// (b) cancelling root: held, awaiting termination, not terminal. The
 	// held child_question notice also makes the root await an answer.
@@ -231,6 +232,7 @@ func TestSessionsJobsCmdRun_BoundQuestionStaysPerRoot(t *testing.T) {
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 
 	// JSON path: two root items; only root A awaits an answer.
 	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
@@ -312,6 +314,7 @@ func TestSessionsJobsCmdRun_CompletionDebtNotAwaitingAnswer(t *testing.T) {
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 
 	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))
 	t.Cleanup(func() { _ = sessionsJobsCmd.Flags().Set("json", "false") })
@@ -408,6 +411,7 @@ func TestSessionsListCmdRun_BatchFlagOnStatusAndJSON(t *testing.T) {
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	a.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 
 	stdout := captureStdout(t, func() {
 		require.NoError(t, sessionsListCmd.RunE(sessionsListCmd, nil))
@@ -462,6 +466,7 @@ func TestSessionsShowCmdRun_BatchFlagOnCounts(t *testing.T) {
 	// Prove the flag-ON path never queries the legacy ledger.
 	dropLegacyAsyncJobs(t, dataDir)
 	seed.Shutdown()
+	holdSeedHost(t, dataDir, f.host)
 
 	require.NoError(t, sessionsShowCmd.Flags().Set("json", "true"))
 	t.Cleanup(func() { _ = sessionsShowCmd.Flags().Set("json", "false") })
