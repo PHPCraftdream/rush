@@ -222,7 +222,7 @@ func TestBatchAttachAdapterFallbackCarriesGroupAndTimeout(t *testing.T) {
 	got, attached, err := adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &task})})
 	require.NoError(t, err)
 	require.True(t, attached, "the bare-task hash attaches through the RECONSTRUCTED fallback (group and timeout preserved)")
-	require.Equal(t, root, got)
+	require.Equal(t, jobbatch.ID(root), got)
 	diverged := task
 	diverged.Timeout = 6 * time.Second
 	_, _, err = adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &diverged})})
