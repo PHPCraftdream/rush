@@ -47,7 +47,10 @@ func pnCountSelectedCompletions(t *testing.T, application *App, sessionID string
 // the marker assertions fail.
 func TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce(t *testing.T) {
 	command, release := recoveryJobCommand(t)
-	command += "; echo PN-ESCAPED-MARKER"
+	// The marker is COMPUTED by the shell, so its literal never appears in the
+	// command text: the legacy (flag OFF) completion notice quotes the command,
+	// and counting a literal marker would see it twice (command + output).
+	command += "; echo PN-ESCAPED-$((40+2))"
 	completionText := make(chan string, 1)
 	started := make(chan struct{})
 	var startedOnce sync.Once
@@ -143,8 +146,8 @@ func TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce(t *testing.T) {
 	require.EqualValues(t, 0, duplicates.Load(), "a duplicate completion request is a double-delivery failure")
 	select {
 	case text := <-completionText:
-		require.Contains(t, text, "PN-ESCAPED-MARKER")
-		require.Equal(t, 1, strings.Count(text, "PN-ESCAPED-MARKER"), "the result must reach the model exactly once")
+		require.Contains(t, text, "PN-ESCAPED-42")
+		require.Equal(t, 1, strings.Count(text, "PN-ESCAPED-42"), "the result must reach the model exactly once")
 	case <-ctx.Done():
 		t.Fatal("completion text not observed")
 	}
