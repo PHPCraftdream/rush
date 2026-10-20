@@ -107,6 +107,11 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	f := newAttemptFixture(t, "gate-paid-dormant", attemptFixtureOpts{manualClock: true})
 	f.seedDebt(ctx, "call-1", false)
 	f.blockReactionsAndSettles(ctx)
+	// Under the batch runtime the release path can tear the driver down (see
+	// ensureDrainDriver); re-registering keeps every wake on the driver
+	// branch, exactly the OFF shape, so the gated wakes below never reach the
+	// root branch's nil-cfg drainCallFor.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
 	for range 2 {
 		f.waitReleases() // the attempt must finish and pace the gate first
@@ -118,6 +123,7 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind)
 
 	f.seedDebt(ctx, "call-2", false)
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
 	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a newer fact does not reopen a paid-dormant gate")
@@ -131,6 +137,9 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 
 	f.waitDrainIdle()
 	f.coord.ResetAutoResumeCounter(f.sessID)
+	// The one wake allowed through the reopened gate: the driver must be in
+	// place or the root branch panics on the bare fixture's nil cfg.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
 	f.waitDrainIdle()
 	f.coord.recheckMu.Lock()

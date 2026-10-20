@@ -35,6 +35,17 @@ func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapC
 	if batchFlagEnabled() {
 		att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
 		att.batchCaptured = true
+		// The leg models a link whose model actually REACTED to the rows it
+		// saw: in production the reaction marks the acted-on rows reacted=1
+		// during the turn, BEFORE closeDrainAttempt accounts the leg -- so
+		// the accounting finds them no longer in debt (decideAccount A5:
+		// "all rows reacted: gate reset"), never as unreacted paid attempts
+		// (A7) that would pace the gate behind the chain guard. Mark the
+		// snapshot's rows through the selected authority before the real
+		// accounting entry point.
+		for _, call := range snapCalls {
+			a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, call)
+		}
 		f.seedDebt(ctx, toolCallID, true)
 		identity := f.row(ctx, toolCallID).ToolCallID
 		if idle {

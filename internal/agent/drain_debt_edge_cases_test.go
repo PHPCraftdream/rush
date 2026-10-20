@@ -44,16 +44,19 @@ func TestCompaction_DoesNotClearUnreactedDebt(t *testing.T) {
 		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier work"}},
 	})
 	require.NoError(t, err)
-	f.claimAndFinish(t, ctx, "call-1")
-	_, err = f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	// Dual-mode seed+pull: ON projects the terminal wake=1 completion onto
+	// batch nodes and pulls through the selected authority (the legacy store
+	// has no row under the flag, so the direct store calls above would leave
+	// the delivery pending and the debt invisible); OFF keeps the exact
+	// claim+finish+pull shape.
+	f.finishAndPullVisible(t, ctx, "call-1")
 	require.True(t, f.debtVisible(t, ctx))
 
 	require.NoError(t, f.sa.runSummarizeBody(ctx, f.sessID, nil, f.model, ""))
 
 	require.True(t, f.debtVisible(t, ctx), "a compaction summary must never clear a notice's own debt")
-	job, err := f.store.Get(ctx, f.sessID, "call-1")
-	require.NoError(t, err)
+	// Dual-mode readback of the row the compaction must not have reacted.
+	job := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
 	require.EqualValues(t, 0, job.Reacted)
 }
 

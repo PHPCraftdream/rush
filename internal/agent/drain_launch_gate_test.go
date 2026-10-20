@@ -137,11 +137,18 @@ func TestDrainAttempt_AskQuestionReactsAndSuspends(t *testing.T) {
 	require.True(t, f.coord.autoResumeSuspended(f.sessID))
 
 	f.seedDebt(ctx, "call-2", false)
+	// Under the batch runtime the release path can tear the driver down (see
+	// ensureDrainDriver); the final wake below must take the driver branch
+	// (the root branch dereferences the fixture's nil cfg). The wake above
+	// stays gated by the suspension either way, so re-registering here does
+	// not disturb the no-turn assertion it precedes.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
 	f.waitReleases() // no wait-out needed: the gate is suspension-, not pacing-, shut
 	require.EqualValues(t, 1, f.requests.Load(), "no automatic turn while the question waits")
 
 	f.coord.ResetAutoResumeCounter(f.sessID)
+	f.ensureDrainDriver()
 	require.ErrorAs(t, f.wake(ctx, true), &awaiting)
 	f.waitReleases()
 	require.EqualValues(t, 2, f.requests.Load(), "a human message resumes automatic turns")
@@ -305,6 +312,23 @@ func TestDrainPolicy_ReadErrorFailsClosed(t *testing.T) {
 			f.exec(ctx, `ALTER TABLE session_drivers RENAME TO fx_session_drivers`)
 		}},
 		{"delegation state", "launch decision input unreadable", func(f *attemptFixture) {
+			// Dual-mode injector. OFF: the delegation-state input is the
+			// async_jobs row, renamed here. ON: this case can no longer isolate
+			// the delegation-state input, and that is a recorded limitation:
+			// every ON facts input is read from the ONE batch_nodes source
+			// through one binding (batch_cutover_facts.go: PendingInclusiveDebt
+			// is read first at :496, the delegation-state read
+			// LiveDelegationChildOf only runs later at :535 and only for a
+			// session with a parent), and SQLite offers no read-failure seam --
+			// a table rename fails the earlier debt read first. A child-session
+			// fixture would additionally change the policy context the other
+			// three cases pin. What stays pinned under ON is the fail-closed
+			// contract itself: deferred + recheck + error + the shared
+			// "launch decision input unreadable" reason.
+			if batchFlagEnabled() {
+				f.exec(ctx, `ALTER TABLE batch_nodes RENAME TO fx_batch_nodes`)
+				return
+			}
 			f.exec(ctx, `ALTER TABLE async_jobs RENAME TO fx_async_jobs`)
 		}},
 		{"delegation identity", "launch decision input unreadable", func(f *attemptFixture) {
