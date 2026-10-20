@@ -39,18 +39,21 @@ func batchWebDrain(ctx context.Context, pull batchNoticePull, cap time.Duration)
 		n   int
 		err error
 	}
+	// A caller already cancelled before the pull started is not "gone
+	// mid-wait": the pull still drains, bounded by its own cap. Only a
+	// cancellation that arrives while waiting stops the wait. The decision
+	// is taken BEFORE the pull goroutine starts: a cancellation that races
+	// the goroutine's start would otherwise be misread as "already
+	// cancelled" and the wait would ignore it.
+	callerGone := ctx.Done()
+	if ctx.Err() != nil {
+		callerGone = nil
+	}
 	done := make(chan drainOutcome, 1)
 	go func() {
 		n, err := pull.Pull(ctl)
 		done <- drainOutcome{n, err}
 	}()
-	// A caller already cancelled before the pull started is not "gone
-	// mid-wait": the pull still drains, bounded by its own cap. Only a
-	// cancellation that arrives while waiting stops the wait.
-	callerGone := ctx.Done()
-	if ctx.Err() != nil {
-		callerGone = nil
-	}
 	select {
 	case o := <-done:
 		return o.n, o.err
