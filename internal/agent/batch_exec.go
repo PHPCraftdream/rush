@@ -37,9 +37,28 @@ type batchLeafPayload struct {
 	RegistryID      string                  `json:"registry_id,omitempty"`
 	Policy          *batchLeafPolicyContext `json:"policy,omitempty"`
 	CallCredentials bool                    `json:"call_credentials,omitempty"`
+	// Timeout carries a normalized direct/explicit-leaf wake_only timeout
+	// intent: the originally requested seconds. The ABSOLUTE call-start due
+	// time is deliberately NOT carried: a now()-derived field would make
+	// the canonical spec hash (batch_invocation.go batchInvocationHash,
+	// mirroring internal/session/batch_commit.go batchCommitSpecHash)
+	// nondeterministic across retries of one logical call, breaking
+	// in-flight singleflight matching and live-root attach. The durable
+	// call-start anchor is batch_nodes.created_at (set once at reservation,
+	// never updated); the session-package check-in scanner
+	// (batch_timeout_checkin.go) computes due = created_at + seconds. The
+	// scanner reads this JSON shape from batch_nodes.task_payload; the json
+	// tags are a cross-package contract, do not rename them.
+	Timeout *batchLeafTimeoutSpec `json:"timeout,omitempty"`
 	// diskProvider is the in-process resolution of Policy.DiskBindingID,
 	// stamped by the executor router before family start; never serialized.
 	diskProvider tools.DiskProvider `json:"-"`
+}
+
+// batchLeafTimeoutSpec is the durable payload form of a wake_only intent.
+type batchLeafTimeoutSpec struct {
+	Kind    string `json:"kind"`    // always "wake_only" today
+	Seconds int    `json:"seconds"` // originally requested duration
 }
 
 type batchLeafEnv struct {

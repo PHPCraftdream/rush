@@ -130,6 +130,16 @@ type BatchRunnerCheckpoint struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type BatchTimeoutCheckin struct {
+	RootID         string `json:"root_id"`
+	NodeID         string `json:"node_id"`
+	HostID         string `json:"host_id"`
+	Token          int64  `json:"token"`
+	Kind           string `json:"kind"`
+	OwnerSessionID string `json:"owner_session_id"`
+	CreatedAt      int64  `json:"created_at"`
+}
+
 type File struct {
 	ID        string `json:"id"`
 	SessionID string `json:"session_id"`

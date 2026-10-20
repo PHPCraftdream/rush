@@ -76,6 +76,15 @@ type BatchRuntimeConfig struct {
 	// exclusive with constructing the Runner before NewBatchRuntime (an
 	// eager SetRunner still wins).
 	RunnerFactory func() (batchRunner, error)
+
+	// TimeoutCheckin, when non-nil, is the wake_only check-in timer service
+	// owned by the batch runtime: Start arms it (inside Start's once block,
+	// after the fault watcher is up) and Stop disarms it. Nil disables the
+	// service. Declared as an interface so app never imports session here.
+	TimeoutCheckin interface {
+		Start()
+		Stop()
+	}
 }
 
 // DefaultBatchFaultContainment is the bounded containment wait the fault
@@ -202,6 +211,9 @@ func (rt *BatchRuntime) Start() {
 			}
 		}
 		go rt.watchFaults()
+		if rt.cfg.TimeoutCheckin != nil {
+			rt.cfg.TimeoutCheckin.Start()
+		}
 	})
 }
 
@@ -209,11 +221,14 @@ func (rt *BatchRuntime) Start() {
 // release anything — that is DrainAndRelease's job.
 func (rt *BatchRuntime) Stop() {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	select {
 	case <-rt.stop:
 	default:
 		close(rt.stop)
+	}
+	rt.mu.Unlock()
+	if rt.cfg.TimeoutCheckin != nil {
+		rt.cfg.TimeoutCheckin.Stop()
 	}
 }
 

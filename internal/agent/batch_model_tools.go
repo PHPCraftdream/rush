@@ -208,16 +208,40 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if e != nil {
 			return jobbatch.Spec{}, fmt.Errorf("tool %q input: %w", it.Tool, e)
 		}
-		payload, e := json.Marshal(batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy})
+		// Normalize the leaf's own tool-input timeout intent once, at
+		// ingress, exactly like the direct path: a terminate intent feeds
+		// the SAME timeout variable the explicit string form fills, a
+		// wake_only intent rides durably in the payload.
+		intent, e := batchParseTimeoutParam(it.Tool, string(input))
 		if e != nil {
 			return jobbatch.Spec{}, e
 		}
+		if it.Timeout != "" && intent != nil {
+			// An item deadline and a nested tool-input timeout are two
+			// unresolvable authorities on one leaf: refuse rather than
+			// silently prefer one.
+			return jobbatch.Spec{}, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
+		}
+		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy}
 		timeout := time.Duration(0)
 		if it.Timeout != "" {
 			timeout, e = time.ParseDuration(it.Timeout)
 			if e != nil || timeout <= 0 {
 				return jobbatch.Spec{}, errors.New("timeout must be a positive duration")
 			}
+		} else if intent != nil {
+			if intent.Kind == batchTimeoutTerminateAndWake {
+				timeout = intent.Duration
+			} else {
+				leafPayload.Timeout = &batchLeafTimeoutSpec{
+					Kind:    batchTimeoutWakeOnly,
+					Seconds: intent.Seconds,
+				}
+			}
+		}
+		payload, e := json.Marshal(leafPayload)
+		if e != nil {
+			return jobbatch.Spec{}, e
 		}
 		items = append(items, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchLeafKind(it.Tool), Payload: payload, Timeout: timeout}})
 	}

@@ -15,7 +15,7 @@ var storeV1Tables = []string{
 	"sessions", "messages", "files", "read_files", "session_permissions", "queue_tasks",
 	"pending_injects", "session_run_queue", "orphan_call_outbox", "async_hosts",
 	"session_drivers", "session_notices", "wake_schedules", "batch_nodes",
-	"batch_control_requests", "batch_runner_checkpoints",
+	"batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins",
 }
 
 func openFixture(t *testing.T, fixture bool) *sql.DB {
@@ -199,6 +199,7 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		"batch_nodes":              {"node_id", "root_id", "owner_session_id", "host_id", "parent_id", "ordinal", "kind", "tool_call_id", "input_hash", "announced", "announce_message_id", "origin_cli", "mode", "on_fail", "notify", "max_parallel", "task_kind", "task_group", "task_payload", "timeout_ns", "child_session_id", "state", "cause", "token", "attempts", "control_state", "control_error", "control_pending", "outcome_state", "outcome_code", "outcome_summary", "response_envelope_ref", "response_envelope", "runner_id", "root_sequence", "projection_sequence", "notice_selected", "notice_kind", "notice_state", "notice_cause", "notice_sequence", "notice_ordinal", "notice_pending", "notice_active", "notice_completed", "notice_failed", "notice_cancelled", "notice_timed_out", "notice_interrupted", "notice_skipped", "delivery", "notice_message_id", "wake", "reacted", "wake_attempts", "reacted_failed", "created_at", "updated_at"},
 		"batch_control_requests":   {"request_id", "owner_session_id", "root_id", "node_id", "host_id", "runner_id", "operation", "status", "answer_code", "answer_sequence", "created_at", "answered_at"},
 		"batch_runner_checkpoints": {"host_id", "runner_id", "sequence", "event_type", "final", "created_at", "updated_at"},
+		"batch_timeout_checkins":   {"root_id", "node_id", "host_id", "token", "kind", "owner_session_id", "created_at"},
 	}
 	for table, want := range expectedColumns {
 		require.ElementsMatch(t, want, tableColumns(t, conn, table), table)
@@ -257,7 +258,7 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 			t.Errorf("unexpected embedded sqlite_master object: %s", key)
 		}
 	}
-	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints"} {
+	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints", "table:batch_timeout_checkins"} {
 		require.Contains(t, fixtureObjects, tableKey)
 	}
 	require.Equal(t, embeddedObjects, fixtureObjects)

@@ -27,6 +27,7 @@ var LegacyImportPolicy = []LegacyTablePolicy{
 	{Name: "batch_nodes", Carry: false, Reason: "preparation-era batch projection is explicitly abandoned"},
 	{Name: "batch_control_requests", Carry: false, Reason: "preparation-era control intent is explicitly abandoned"},
 	{Name: "batch_runner_checkpoints", Carry: false, Reason: "preparation-era runner lifecycle state is explicitly abandoned"},
+	{Name: "batch_timeout_checkins", Carry: false, Reason: "preparation-era check-in receipts are explicitly abandoned"},
 	{Name: "goose_db_version", Carry: false, Reason: "engine-managed migration metadata; initialize fresh lineage only"},
 	{Name: "sqlite_sequence", Carry: false, Reason: "SQLite-managed AUTOINCREMENT state, rebuilt by carried inserts; the legacy seq is not carried, so notice ids deleted by retention may be reissued (nothing durable references notice ids)"},
 }

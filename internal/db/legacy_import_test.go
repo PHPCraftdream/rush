@@ -189,7 +189,7 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	}
 	require.Equal(t, 2, len(queryAllRows(t, newDB, `SELECT owner,kind,text,delivery,wake,reacted,job_tool_call_id FROM session_notices ORDER BY rowid`)))
 	require.Equal(t, "[]", mustScalar(t, newDB, `SELECT parts FROM messages WHERE id='wal-committed'`))
-	for _, table := range []string{"async_hosts", "session_drivers", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints"} {
+	for _, table := range []string{"async_hosts", "session_drivers", "batch_nodes", "batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins"} {
 		var count int
 		require.NoError(t, newDB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+quoteIdentifier(table)).Scan(&count), table)
 		require.Zero(t, count, table)
