@@ -174,8 +174,8 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 		// refuse anything (the hang T5 hit first). Timer 2 and W are
 		// sentinel-held, not timed: no release file is written before the
 		// handler has served the phase that must precede their completion.
-		switch {
-		case n == 1:
+		switch n {
+		case 1:
 			calls := []string{
 				sseToolCallIndex("w", "call-w", "bash",
 					`{"command":`+jsonString(wCmd)+`,"run_in_background":true,"description":"held job"}`, 1),
