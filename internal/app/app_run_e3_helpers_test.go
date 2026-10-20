@@ -167,20 +167,33 @@ func e3PublishHeldQuestion(t *testing.T, ctx context.Context, application *App, 
 }
 
 // e3BatchJobIdentityPresent requires exactly one completed batch ROOT row for
-// owner + tool call id (one logical job, no second generation), optionally
-// pinned to an outcome summary when wantSummary is non-empty. The root/task
+// owner + tool call id (one logical job, no second generation) and one
+// corresponding completed TASK child whose outcome summary carries the
+// marker. The structural ROOT row's outcome_summary is empty by design
+// (tree_apply never copies task outcomes into roots), so the marker is
+// asserted on the TASK row with Contains -- the task output is formatted
+// content that embeds the cwd, not the bare command stdout. The root/task
 // double-export of batchFinishedWork is package D and is not asserted here.
-func e3BatchJobIdentityPresent(t *testing.T, application *App, owner, toolCallID, wantSummary string) {
+func e3BatchJobIdentityPresent(t *testing.T, application *App, owner, toolCallID, wantMarker string) {
 	t.Helper()
-	query := `SELECT COUNT(*) FROM batch_nodes
-		WHERE owner_session_id = ? AND tool_call_id = ? AND node_id = root_id AND state = 'completed'`
-	args := []any{owner, toolCallID}
-	if wantSummary != "" {
-		query += ` AND outcome_summary = ?`
-		args = append(args, wantSummary)
-	}
+	ctx := context.Background()
 	var count int
-	require.NoError(t, application.DB().QueryRowContext(context.Background(), query, args...).Scan(&count),
+	require.NoError(t, application.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM batch_nodes
+		 WHERE owner_session_id = ? AND tool_call_id = ? AND node_id = root_id AND state = 'completed'`,
+		owner, toolCallID).Scan(&count),
 		"completed batch root for tool call %s", toolCallID)
 	require.Equal(t, 1, count, "exactly one completed batch root for tool call %s", toolCallID)
+	var rootID, taskSummary string
+	require.NoError(t, application.DB().QueryRowContext(ctx,
+		`SELECT root.node_id, task.outcome_summary
+		 FROM batch_nodes AS root
+		 JOIN batch_nodes AS task ON task.root_id = root.node_id AND task.kind = 'task' AND task.state = 'completed'
+		 WHERE root.owner_session_id = ? AND root.tool_call_id = ? AND root.node_id = root.root_id AND root.state = 'completed'`,
+		owner, toolCallID).Scan(&rootID, &taskSummary),
+		"the completed task child of the root for tool call %s", toolCallID)
+	if wantMarker != "" {
+		require.Contains(t, taskSummary, wantMarker,
+			"the task's outcome summary must carry the command output marker")
+	}
 }
