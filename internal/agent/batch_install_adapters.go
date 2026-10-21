@@ -574,6 +574,12 @@ type BatchInstallDeps struct {
 	// completion wake bridge; the App wires the bounded timeout-wake
 	// dispatcher). Nil keeps the plain durable commit hook.
 	CompletionWake func(context.Context, string)
+	// ArmSupervision, when non-nil, arms the invoking session's supervision
+	// timer when a batch delivery answers with the started response (psv
+	// legacy-parity restoration). The app factory wires
+	// PsvBatchSupervisionArmingLate over the late-bound coordinator. Nil
+	// (older wiring, tests) arms nothing.
+	ArmSupervision func(context.Context, string)
 	Sessions       session.Service
 	DiskBindings   *DiskProviderRegistry
 }
@@ -727,7 +733,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	runnerAdapter := &batchRunnerAdapter{outputCache: cache, credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
-	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter})
+	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter, ArmSupervision: deps.ArmSupervision})
 	if err != nil {
 		return nil, err
 	}

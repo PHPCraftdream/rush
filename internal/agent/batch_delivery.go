@@ -78,6 +78,17 @@ type batchDeliveryDeps struct {
 	// Runner is the engine handle; SYNC caller cancellation submits Stop
 	// through it (cancelBatchCall). Required, fails closed without it.
 	Runner batchRunnerHandle
+	// ArmSupervision arms (or resumes) the owner session's supervision
+	// timer when this delivery answers with the STARTED response — the
+	// legacy asyncTool arming point restored for the batch runtime (package
+	// psv). It is called only after the started election returned
+	// successfully AND was won by THIS caller, never for an
+	// inline-answered completion, a sync answer, a lost election or a
+	// failed election (a loser must not arm: noteWorkStarted's resume
+	// branch would spuriously lift another session's supervision pause).
+	// Nil-safe: nil (flag-OFF installs and existing tests) arms nothing and
+	// keeps delivery behaviour byte-identical.
+	ArmSupervision func(context.Context, string)
 	// Timer sleeps for the escape window; nil selects time.After (test seam
 	// so window tests fire deterministically without sleeps).
 	Timer func(time.Duration) <-chan time.Time
@@ -221,6 +232,9 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, owner string, roo
 	if !ok {
 		// Held termination: the root never reported. Return the already
 		// elected started history; the completion stays with the outbox.
+		// The work stays live in the background: arm supervision (psv),
+		// the legacy inline started-fallback arming point.
+		b.psvArmSupervision(ctx, owner)
 		return batchStartedResponse(root), nil
 	}
 	return b.electCompletion(ctx, owner, root, envelope)
@@ -254,8 +268,14 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner s
 		}
 		return a.envelope, nil
 	case <-b.after(window):
-		if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
+		started, err := b.deps.Elect.ElectStarted(ctx, owner, root)
+		if err != nil {
 			return fantasy.ToolResponse{}, err
+		}
+		if started {
+			// The execution escaped to the background: arm supervision
+			// (psv), exactly like the legacy window-elapsed fallback.
+			b.psvArmSupervision(ctx, owner)
 		}
 		return batchStartedResponse(root), nil
 	}
@@ -306,8 +326,17 @@ func (b *batchDeliveryImpl) electCompletion(ctx context.Context, owner string, r
 // deliverDetached returns the started response immediately. Later completions
 // arrive ONLY through selected notices (R8), never as a second launch.
 func (b *batchDeliveryImpl) deliverDetached(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
-	if _, err := b.deps.Elect.ElectStarted(ctx, owner, root); err != nil {
+	started, err := b.deps.Elect.ElectStarted(ctx, owner, root)
+	if err != nil {
 		return fantasy.ToolResponse{}, err
+	}
+	if started {
+		// Won started election: work continues detached in the
+		// background — arm supervision (psv), the legacy detached
+		// launch arming point. A lost election must NOT arm: the winner
+		// owns the delivery, and arming would spuriously resume a
+		// paused session.
+		b.psvArmSupervision(ctx, owner)
 	}
 	return batchStartedResponse(root), nil
 }
