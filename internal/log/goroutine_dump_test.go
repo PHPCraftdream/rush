@@ -282,3 +282,146 @@ func TestWriteGoroutineDump_TestBinaryWithoutDirWritesNothing(t *testing.T) {
 	require.ErrorIs(t, err, errNoDumpDirInTest)
 	require.Empty(t, path)
 }
+
+// TestWriteGoroutineDumpNamed_ResolvesDirBeforeDelayHook is the
+// regression test for the CI flake in internal/agent's
+// TestTurnStallDumpFileModeAndPrefix (TempDir RemoveAll "directory not
+// empty"). WriteGoroutineDumpNamed used to read the package-global
+// logDir AFTER running the write-delay hook, so an async dump-write
+// goroutine parked in a hook installed by one test resolved the
+// directory at WAKE time — by which point a later test's
+// SetLogDirForTest had repointed logDir at its own t.TempDir, and the
+// write landed there, racing that test's TempDir RemoveAll ("directory
+// not empty"). The fix resolves the directory BEFORE the hook.
+//
+// Revert check: reverting the hook/dir ordering in
+// WriteGoroutineDumpNamed makes the dump land in dir2, so the
+// require.Len(dir1) assertion below fails with 0 files in dir1.
+func TestWriteGoroutineDumpNamed_ResolvesDirBeforeDelayHook(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	prev := logDir.Load()
+	logDir.Store(dir1)
+	t.Cleanup(func() {
+		if s, ok := prev.(string); ok {
+			logDir.Store(s)
+		} else {
+			logDir.Store("")
+		}
+	})
+
+	hookEntered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Leak-proof: unblocks the parked writer even if a fatal fires early.
+	defer releaseOnce.Do(func() { close(release) })
+	SetWriteDelayHookForTest(t, func() {
+		close(hookEntered)
+		<-release
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := WriteGoroutineDump([]byte("parked-write test"))
+		done <- err
+	}()
+
+	select {
+	case <-hookEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write goroutine never reached the delay hook")
+	}
+
+	// Simulate the NEXT test repointing the global while this write is
+	// still parked in the hook — exactly what the victim test's
+	// SetLogDirForTest call does in the flake.
+	logDir.Store(dir2)
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write goroutine never finished after release")
+	}
+
+	// The dump must be in dir1 — the directory current when
+	// WriteGoroutineDumpNamed was CALLED — and must never have landed
+	// in dir2, the directory some later test had installed by wake time.
+	matches1, err := filepath.Glob(filepath.Join(dir1, "goroutines-*.txt"))
+	require.NoError(t, err)
+	require.Len(t, matches1, 1,
+		"the dump must land in the directory that was current at call time, not at wake time")
+	matches2, err := filepath.Glob(filepath.Join(dir2, "goroutines-*.txt"))
+	require.NoError(t, err)
+	assert.Empty(t, matches2,
+		"a write parked in the delay hook must never follow logDir into a later test's directory")
+}
+
+// TestPfkWaitForInflightDumpsBlocksUntilWriteFinishes proves the drain
+// used by SetLogDirForTest actually waits for an in-flight write (one
+// parked in the delay hook is still counted, because the in-flight
+// counter is incremented before the hook) and returns once it
+// completes — the property that makes SetLogDirForTest safe to call
+// while a previous test's dump write is still pending.
+func TestPfkWaitForInflightDumpsBlocksUntilWriteFinishes(t *testing.T) {
+	dir := t.TempDir()
+	prev := logDir.Load()
+	logDir.Store(dir)
+	t.Cleanup(func() {
+		if s, ok := prev.(string); ok {
+			logDir.Store(s)
+		} else {
+			logDir.Store("")
+		}
+	})
+
+	hookEntered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Leak-proof: unblocks the parked writer even if a fatal fires early.
+	defer releaseOnce.Do(func() { close(release) })
+	SetWriteDelayHookForTest(t, func() {
+		close(hookEntered)
+		<-release
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := WriteGoroutineDump([]byte("drain test"))
+		done <- err
+	}()
+	select {
+	case <-hookEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write goroutine never reached the delay hook")
+	}
+
+	drained := make(chan bool, 1)
+	go func() {
+		drained <- pfkWaitForInflightDumps()
+	}()
+
+	// While the write is parked in the hook the drain must NOT report
+	// completion. This is a non-completion check, so a short bounded
+	// wait is enough to make it meaningful.
+	select {
+	case got := <-drained:
+		t.Fatalf("pfkWaitForInflightDumps returned %v while a write was still parked in the hook", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case got := <-drained:
+		assert.True(t, got, "the drain must complete once the parked write finishes")
+	case <-time.After(2 * time.Second):
+		t.Fatal("pfkWaitForInflightDumps never returned after the write finished")
+	}
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write goroutine never finished after release")
+	}
+}

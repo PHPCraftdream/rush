@@ -241,8 +241,12 @@ waitInFlight:
 	require.Equal(t, int64(4), counters.perms.Load(),
 		"the permission gate was asked exactly once per executed leaf")
 	for _, p := range []string{path1, path2, path3, path4} {
-		got, ok := env.fake.has(p)
-		require.True(t, ok, "distinct key %s must be written through provider A", p)
+		// runCount()==4 only proves the leaves STARTED; each provider write
+		// runs after the gate is released, so wait for it (a single read
+		// raced the fourth write on slow runners).
+		require.Eventually(t, func() bool { _, ok := env.fake.has(p); return ok },
+			5*time.Second, time.Millisecond, "distinct key %s must be written through provider A", p)
+		got, _ := env.fake.has(p)
 		require.Equal(t, "lifecycle-data", got)
 	}
 	require.Zero(t, other.writeCount())
