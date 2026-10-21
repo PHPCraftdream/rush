@@ -182,12 +182,17 @@ func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Serv
 }
 
 func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Service, owner, root, node string, build func(BatchNoticeRow) message.CreateMessageParams) (BatchPulledNotice, bool, error) {
+	// See batch_tool_result.go: prepare before the tx holds the pool's only
+	// connection.
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return BatchPulledNotice{}, false, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	// Go-side CAS: BatchOutboxPull + the root-void NOT EXISTS (see
 	// batchOutboxPullVoidAware; fold back into batch_outbox.sql when sqlc
 	// regeneration is available). Same statement, same RETURNING * scan.

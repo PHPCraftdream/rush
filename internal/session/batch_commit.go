@@ -435,7 +435,11 @@ type batchCommitEnvelope struct {
 // transitions (admission, Release) project under the row's owner, never the
 // hook identity's owner. It is a single read, not a lock across writer I/O.
 func (s *BatchStore) RootOwner(ctx context.Context, root string) (string, error) {
-	row, err := db.New(s.writer).GetBatchRootIdentity(ctx, root)
+	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
+	if err != nil {
+		return "", err
+	}
+	row, err := q.GetBatchRootIdentity(ctx, root)
 	if err != nil {
 		return "", err
 	}

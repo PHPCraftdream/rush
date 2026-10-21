@@ -509,6 +509,10 @@ func ReleaseAll(dataDir string) error {
 // principle any future caller that intentionally shares one *sql.DB between
 // both roles) by only closing the reader when it is a distinct handle.
 func closeEntry(entry *connEntry) error {
+	// Drop the batch prepared-statement cache (pda_batch_prepare.go) before
+	// the pool handles die; its close errors are merged without masking the
+	// DB close errors.
+	dropErr := pdaDropBatchStmts(entry.db)
 	var readErr error
 	if entry.readDB != nil && entry.readDB != entry.db {
 		readErr = entry.readDB.Close()
@@ -516,6 +520,9 @@ func closeEntry(entry *connEntry) error {
 	writeErr := entry.db.Close()
 	if writeErr != nil {
 		return writeErr
+	}
+	if dropErr != nil {
+		return dropErr
 	}
 	return readErr
 }
