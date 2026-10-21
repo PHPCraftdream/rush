@@ -199,6 +199,26 @@ func pp4ReserveUnannouncedRoot(t *testing.T, application *App, owner, toolCallID
 	return root, node
 }
 
+// pp4SelectedNoticeCount counts the session's persisted background-job
+// messages that carry a SELECTED notice kind (task / batch / root). Under the
+// batch runtime every detached root also persists its STARTED announcement
+// (BatchAnnounceStarted: a background-job message with an EMPTY notice kind);
+// that announcement is not a delivered or recovered notice and must not be
+// counted as one, so the batch scenarios count by kind instead of taking the
+// total.
+func pp4SelectedNoticeCount(t *testing.T, application *App, sessionID string) int {
+	t.Helper()
+	msgs, err := application.Messages.List(context.Background(), sessionID)
+	require.NoError(t, err)
+	n := 0
+	for _, m := range msgs {
+		if m.BackgroundJobNotice && m.NoticeKind != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // pp4PullNotices moves the owner's pending selected notices into history
 // through the selected authority's pull: BatchPullNotices with the
 // production-shaped notice builder ON, the legacy PullJobNotices with the
