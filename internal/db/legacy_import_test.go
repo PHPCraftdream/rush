@@ -56,7 +56,7 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 	t.Helper()
 	path := storepath.DataDirPath(dataDir, storepath.LegacyFilename)
 	conn := openTestDB(t, path)
-	require.NoError(t, Migrate(t.Context(), conn))
+	require.NoError(t, migrateLegacySnapshot(t.Context(), conn))
 	_, err := conn.ExecContext(t.Context(), `PRAGMA wal_autocheckpoint=0`)
 	require.NoError(t, err)
 	_, err = conn.ExecContext(t.Context(), `INSERT INTO sessions (id,title,updated_at,created_at,cancel_requested) VALUES ('s','s',1700000000,1700000000,1)`)
@@ -82,6 +82,7 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 		`INSERT INTO batch_nodes (node_id,root_id,owner_session_id,host_id,ordinal,kind,tool_call_id,input_hash,mode,state,created_at,updated_at) VALUES ('b','b','s','old-host',0,'batch','call','hash','parallel','pending',1,1)`,
 		`INSERT INTO batch_control_requests (request_id,owner_session_id,root_id,node_id,host_id,created_at) VALUES ('br','s','b','b','old-host',1)`,
 		`INSERT INTO batch_runner_checkpoints (host_id,runner_id,sequence,created_at,updated_at) VALUES ('old-host','runner',1,1,1)`,
+		`INSERT INTO batch_timeout_checkins (root_id,node_id,host_id,token,kind,owner_session_id,created_at) VALUES ('b','b','old-host',0,'pimCheckin','s',1)`,
 	} {
 		_, err := conn.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
@@ -126,6 +127,7 @@ func TestLegacyImportPolicyExhaustive(t *testing.T) {
 
 func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	t.Parallel()
+	t.Run("pimJournalModes", pimJournalModes)
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()
@@ -204,6 +206,7 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 
 func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 	t.Parallel()
+	t.Run("pimFailureRetry", pimFailureRetry)
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()
@@ -225,6 +228,7 @@ func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 
 func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 	t.Parallel()
+	t.Run("pimExistingDestination", pimExistingDestination)
 	dataDir := t.TempDir()
 	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{})
 	require.NoError(t, err)
@@ -241,6 +245,7 @@ func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 
 func TestLegacyImportLiveHostRefuses(t *testing.T) {
 	t.Parallel()
+	t.Run("pimHostRefusal", pimHostRefusal)
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	before := legacyImportHashes(t, legacy)
@@ -558,6 +563,7 @@ func TestLegacyImportRefusesUnknownColumns(t *testing.T) {
 
 func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
 	t.Parallel()
+	t.Run("pimPrepublicationCrashRetry", pimPrepublicationCrashRetry)
 	dataDir := t.TempDir()
 	_, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()
