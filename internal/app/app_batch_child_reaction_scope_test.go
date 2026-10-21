@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -31,6 +32,14 @@ func TestBatchChildReactionScope_ParentSettlesOnlyAfterChildReaction(t *testing.
 	if !f6BatchOn() {
 		t.Skip("flag-ON batch runtime fixture")
 	}
+	// The paced retry of the failed child reaction is driven by the
+	// coordinator's recheck pass (60s production ticker, 60s production
+	// pace after an unreacted attempt — coordinator_recheck.go /
+	// drain_attempt.go). Shrink both knobs through the exported test seam
+	// and drive RecheckPass on a fast loop below, so the paced retry fires
+	// at test timescale. Production behavior is untouched.
+	restorePacing := agent.SetDrainPacingForTest(2*time.Second, 0, 500*time.Millisecond)
+	t.Cleanup(restorePacing)
 	const marker = "BUILD-MARKER-42"
 	command, release := recoveryJobCommand(t)
 	// The gated command prints the marker ONLY after the release sentinel
@@ -226,9 +235,41 @@ ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	result, err := application.RunNonInteractiveWithResult(ctx, io.Discard, "delegate a build", RunOverrides{
+	testCtx, testCancel := context.WithTimeout(t.Context(), 120*time.Second)
+	defer testCancel()
+	runCtx, runCancel := context.WithTimeout(testCtx, 90*time.Second)
+	defer runCancel()
+	// Drive the coordinator's recheck pass every 300ms so the paced retry
+	// of the 403-failed child reaction fires within the run budget (the
+	// production 60s ticker is far slower than any test deadline).
+	rp, rpOK := application.AgentCoordinator.(interface{ RecheckPass(context.Context) })
+	require.True(t, rpOK, "the app coordinator must expose RecheckPass")
+	recheckDone := make(chan struct{})
+	go func() {
+		defer close(recheckDone)
+		ticker := time.NewTicker(300 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				rp.RecheckPass(runCtx)
+			}
+		}
+	}()
+	// Join the recheck loop before the test returns (no require here: this
+	// can run during a failing teardown path).
+	t.Cleanup(func() {
+		runCancel()
+		testCancel()
+		select {
+		case <-recheckDone:
+		case <-time.After(5 * time.Second):
+			t.Errorf("recheck-pass goroutine did not exit before teardown")
+		}
+	})
+	result, err := application.RunNonInteractiveWithResult(runCtx, io.Discard, "delegate a build", RunOverrides{
 		Origin: message.OriginCLI,
 	}, true, RunModeJSON, sessionID, false)
 	require.NoError(t, err)
