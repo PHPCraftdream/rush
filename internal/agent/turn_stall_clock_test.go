@@ -64,6 +64,13 @@ func TestTurnStallSamplerWarnsOncePerWindow(t *testing.T) {
 	sessionID := "abcdef1234567890"
 	armedStallClocks.Store(sessionID, sc)
 	t.Cleanup(func() { armedStallClocks.Delete(sessionID) })
+	// The warn+dump path dispatches its dump write on its own goroutine
+	// and is not awaited (turn_stall_clock.go): join it before the test
+	// ends, or a late write can resolve the process-global log dir after
+	// the NEXT test has repointed it at its own t.TempDir and race that
+	// test's TempDir RemoveAll ("directory not empty") — the exact CI
+	// flake seen in TestTurnStallDumpFileModeAndPrefix.
+	t.Cleanup(stallDumpWrites.Wait)
 
 	// First crossing is past the pinned 10m warn threshold: warn+dump fire.
 	set(t0.Add(11 * time.Minute))

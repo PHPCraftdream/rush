@@ -73,6 +73,12 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 
 	hookEntered := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Leak-proof the hook-blocked dump writer: if any assertion below
+	// fails before the explicit release, the cleanup still unblocks the
+	// goroutine so it cannot stay parked in the hook holding the log
+	// package's in-flight counter for the rest of the process.
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	rushlog.SetWriteDelayHookForTest(t, func() {
 		close(hookEntered)
 		<-release
@@ -133,7 +139,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 		"handleWatchdogFire must return before the dump write completes; "+
 			"a file present this early means the write was awaited inline, not dispatched async")
 
-	close(release) // let the real write proceed
+	releaseOnce.Do(func() { close(release) }) // let the real write proceed
 
 	// (3) The real write must complete shortly after being released and
 	// land actual goroutine-stack content on disk — proving the async
