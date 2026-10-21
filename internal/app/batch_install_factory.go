@@ -60,6 +60,10 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	deps.Store = session.NewBatchStore(writer)
 	deps.Messages = a.Messages
 	deps.Sessions = a.Sessions
+	// Package psv: restore legacy supervision arming at the batch started
+	// boundary. The coordinator is assigned later by InitCoderAgent, so the
+	// getter re-reads it per call; a not-yet-bound coordinator is a no-op.
+	deps.ArmSupervision = agent.PsvBatchSupervisionArmingLate(func() agent.Coordinator { return a.AgentCoordinator })
 	// R11F (M3): closed defaults so a bare install never builds half-wired.
 	// Flag-off Apps never reach the factory; the flag-on install keeps its
 	// own idempotent guards on top.
