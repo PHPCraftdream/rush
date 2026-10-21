@@ -195,9 +195,6 @@ func pimCrashChild() {
 
 func pimPrepublicationCrashRetry(t *testing.T) {
 	t.Helper()
-	if os.Getenv(pimCrashHelperEnv) == "1" {
-		pimCrashChild()
-	}
 	dataDir := t.TempDir()
 	legacy, conn := createLegacyFixture(t, dataDir)
 	defer conn.Close()
