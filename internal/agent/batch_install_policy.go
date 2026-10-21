@@ -195,9 +195,9 @@ func pscChildScopeOpen(st CLIScopeState) bool {
 	return st.WorkOpen || st.Drain == DrainOwed || st.Drain == DrainPaced
 }
 
-// pscErrChildScopeUnavailable: no bound coordinator answered the child's
+// errPscChildScopeUnavailable: no bound coordinator answered the child's
 // CLIScope read. The caller treats it as an incomplete read (stay open).
-var pscErrChildScopeUnavailable = errors.New("batch child reaction scope: coordinator unavailable")
+var errPscChildScopeUnavailable = errors.New("batch child reaction scope: coordinator unavailable")
 
 // pscChildReactionFacts is the production BatchChildReactionFacts over two
 // injected functions.
@@ -241,11 +241,11 @@ func PscCoordinatorChildReactionFactsLate(get func() Coordinator) BatchChildReac
 		scope: func(ctx context.Context, childSessionID string) (CLIScopeState, error) {
 			c := get()
 			if c == nil {
-				return CLIScopeState{}, pscErrChildScopeUnavailable
+				return CLIScopeState{}, errPscChildScopeUnavailable
 			}
 			src, ok := c.(ReactionDebtSource)
 			if !ok {
-				return CLIScopeState{}, pscErrChildScopeUnavailable
+				return CLIScopeState{}, errPscChildScopeUnavailable
 			}
 			return src.CLIScope(ctx, childSessionID)
 		},
