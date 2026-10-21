@@ -48,9 +48,8 @@ incompatible_prefixes = [
 # Reviewed exceptions. `ecosystem` is "go" or "npm"; `name` is a Go package
 # path prefix (matched on path-segment boundaries) or an exact npm package
 # name; `reason` is mandatory and must say why the license is acceptable.
-# Example:
-#
-# [[exceptions]]
-# ecosystem = "go"
-# name = "example.com/some/module"
-# reason = "dual-licensed; the MIT grant is selected, see upstream LICENSE"
+
+[[exceptions]]
+ecosystem = "go"
+name = "github.com/segmentio/asm"
+reason = "MIT-0 (upstream LICENSE is 'MIT No Attribution', an allowed license, verified at v1.2.1); the go-licenses classifier cannot identify MIT-0 and reports Unknown. Re-verify when the module is bumped."
