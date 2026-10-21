@@ -453,6 +453,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// owns, close the MCP owner, return no App).
 	if app.asyncJobStore != nil && config.BatchRuntimeEnabled() {
 		if err := app.installBatchRuntime(ctx); err != nil {
+			// PE: the install may have failed AFTER the host identity was
+			// ensured (half-installed runtime). Release what New owns --
+			// runtime state and host identity -- before giving up; the DB
+			// references below keep their task #778 ownership split.
+			app.peReleaseBatchRuntimeOnNewError(context.Background())
 			if app.mcpOwner != nil {
 				if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
 					slog.Error("Failed to close MCP owner after batch runtime install failure", "error", closeErr)
@@ -481,6 +486,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 			var err error
 			mcpOwner, err = mcp.Acquire()
 			if err != nil {
+				// PE: the flagged install already ran above; tear its
+				// runtime and host identity down before returning nil.
+				app.peReleaseBatchRuntimeOnNewError(context.Background())
 				if readConn != nil {
 					if relErr := db.ReleaseConn(readConn); relErr != nil {
 						slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
@@ -550,6 +558,13 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
+		// PE: installBatchRuntime already ran above and holds the batch
+		// host identity (hosts/<uuid>.lock) plus the runtime goroutines.
+		// No *App is returned, so Shutdown will never run: tear the
+		// runtime and host identity down here (bounded, idempotent, and
+		// WITHOUT touching the DB references -- readConn is released just
+		// below and conn is the caller's, per the ownership split above).
+		app.peReleaseBatchRuntimeOnNewError(context.Background())
 		if app.mcpOwner != nil {
 			if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
 				slog.Error("Failed to close MCP owner after app initialization failure", "error", closeErr)

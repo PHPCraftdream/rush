@@ -81,7 +81,15 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	if batchCutoverOn() {
 		app.batchTimeoutWake = newBatchTimeoutWakeDispatcher()
+		// Ordinary completions ride the same bounded dispatcher: the commit
+		// hook enqueues the touched root (nonblocking, off the Runner commit
+		// stack); the dispatcher resolves the owner from the durable row and
+		// hands it to the coordinator's existing wake gates. The dispatcher
+		// is NOT a delivery authority — the durable selected notice stays
+		// the only fact; the wake only schedules the reaction turn.
+		app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
 		factory.wake = app.batchTimeoutWake.Wake
+		factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
 	}
 	if factory.deps.Profile == nil {
 		profile, perr := agent.NewBatchProfileDefault()

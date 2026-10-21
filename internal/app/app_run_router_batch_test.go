@@ -21,9 +21,12 @@ package app
 //     does, so the system prompt identifies the ACTOR.
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // closeOnce closes c exactly once through o, so handler branches, helper
@@ -56,10 +59,67 @@ type rbRouter struct {
 	// seen counts routed phases per actor, key "actor|phase". Counts are
 	// validation-only: routing never consults them.
 	seen map[string]int
+	// last maps actor -> the last phase ROUTED successfully for that actor,
+	// so a retried request tailing with the synthetic Drain nudge can be
+	// served as a continuation of that phase without re-validating it.
+	last map[string]string
 }
 
 func newRBRouter() *rbRouter {
-	return &rbRouter{seen: make(map[string]int)}
+	return &rbRouter{seen: make(map[string]int), last: make(map[string]string)}
+}
+
+// pr2DrainNudge reports whether text is one of production's NON-PERSISTED
+// synthetic Drain nudges (internal/agent/agent_turn.go, the IsDrain &&
+// Prompt == "" path). A retry that follows a dangling assistant turn ends
+// its provider request with this user message instead of the phase's own
+// tail text, so the router must treat it as a continuation of the actor's
+// last routed phase, never as a new delegation.
+func pr2DrainNudge(text string) bool {
+	return text == "Continue based on the notice(s) above." ||
+		text == "The conversation was summarized; continue reacting to the notice(s) above."
+}
+
+// pr2Excerpt bounds a diagnostic to one line of at most 80 characters, so a
+// rejection message identifies the offending request without dumping the
+// whole prompt body.
+func pr2Excerpt(text string) string {
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\n", " "), "\r", " ")
+	if len(text) > 80 {
+		return text[:80] + "..."
+	}
+	return text
+}
+
+// pr2AwaitShellTerminal polls the batch projection until the shell node of
+// the command root owned by sessionID reaches a terminal state, so a
+// fixture goroutine can observe the command's REAL completion while a held
+// provider response is still blocked (a deterministic mid-turn gate, no
+// sleeps on the completion path). It returns an error naming the last
+// observed state once the wait elapses.
+func pr2AwaitShellTerminal(app *App, sessionID, rootID string, wait time.Duration) error {
+	terminal := map[string]bool{
+		"completed": true, "failed": true, "cancelled": true,
+		"timed_out": true, "interrupted": true, "skipped": true,
+	}
+	deadline := time.Now().Add(wait)
+	last := "no row observed"
+	for time.Now().Before(deadline) {
+		var state string
+		err := app.DB().QueryRowContext(context.Background(),
+			`SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`,
+			sessionID, rootID).Scan(&state)
+		switch {
+		case err == nil && terminal[state]:
+			return nil
+		case err == nil:
+			last = state
+		default:
+			last = err.Error()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("command root never reached a terminal state within %s (last: %s)", wait, last)
 }
 
 // route returns the phase route for the request and a non-empty seqErr when
@@ -95,6 +155,18 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 	switch lastRole {
 	case "user":
 		switch {
+		case pr2DrainNudge(text):
+			// A retry whose tail is the synthetic Drain nudge continues the
+			// actor's LAST routed phase: serve it again WITHOUT re-validation
+			// (that phase already passed sequence validation) and without
+			// mutating the seen counters. Historical events are never replayed.
+			r.mu.Lock()
+			last, ok := r.last[actor]
+			r.mu.Unlock()
+			if !ok {
+				return actor + ":continuation", "continuation nudge with no prior " + actor + " phase"
+			}
+			return last, ""
 		case rbCompletionCallID(text) != "":
 			id := rbCompletionCallID(text)
 			switch {
@@ -118,9 +190,21 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 		case actor == "child" && strings.Contains(text, "WORKER-MARKER"):
 			route = "child:bash"
 		case actor == "root":
+			r.mu.Lock()
+			reissued := false
+			for key := range r.seen {
+				if strings.HasPrefix(key, "root|") {
+					reissued = true
+					break
+				}
+			}
+			r.mu.Unlock()
+			if reissued {
+				return "root:delegate", "unexpected root user last message after routed root phases (not a fresh delegation): " + pr2Excerpt(text)
+			}
 			route = "root:delegate"
 		default:
-			seqErr = "unexpected user last message"
+			seqErr = "unexpected user last message actor=" + actor + " text=" + pr2Excerpt(text)
 		}
 	case "tool":
 		switch {
@@ -131,7 +215,7 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 		case callID == "call-agent" && batchStartedRootID(text) != "":
 			route = "root:yield"
 		default:
-			seqErr = "unexpected tool last message call=" + callID
+			seqErr = "unexpected tool last message call=" + callID + " text=" + pr2Excerpt(text)
 		}
 	case "assistant":
 		// The assistant answered, so the previous tool/user event can never
@@ -147,7 +231,7 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 		case strings.Contains(text, "root final answer"):
 			route = "root:done"
 		default:
-			seqErr = "unexpected assistant last message"
+			seqErr = "unexpected assistant last message text=" + pr2Excerpt(text)
 		}
 	default:
 		seqErr = "unexpected last message role=" + lastRole
@@ -155,6 +239,9 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if seqErr == "" {
+		r.last[actor] = route
+	}
 	fail := func(msg string) {
 		if seqErr == "" {
 			seqErr = msg

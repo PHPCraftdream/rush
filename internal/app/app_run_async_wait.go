@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -98,7 +99,8 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
 	defer cancel()
-	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	readQ := db.New(app.batchCutoverReader(writer))
+	reader := session.NewBatchLiveReader(readQ, app.dataDir)
 	// TxStarter: every live read runs in ONE read-only tx on the writer.
 	reader.TxStarter = writer
 	res := reader.BatchLiveForOwner(ctx, l.sessionID)
@@ -111,7 +113,10 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 			parts = append(parts, fmt.Sprintf("%d more", len(res.Own)-cliOpenWorkNamed))
 			break
 		}
-		what := n.TaskKind
+		what := pt2SoleTaskLabel(ctx, readQ, n)
+		if what == "" {
+			what = n.TaskKind
+		}
 		if what == "" {
 			what = n.Kind
 		}
@@ -119,16 +124,19 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 		if n.ChildSessionID != "" {
 			part += fmt.Sprintf(" (child session %s)", n.ChildSessionID)
 		}
-		part += " on " + describeBatchHost(app.dataDir, n.HostID, n.HostStatus)
+		part += " on " + describeBatchHost(ctx, readQ, app.dataDir, n.HostID, n.HostStatus)
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")
 }
 
 // describeBatchHost renders a batch node's host: this process, or "host
-// <id> (<status>)" with the reader's probe verdict (re-probed only if the
-// reader could not decide).
-func describeBatchHost(dataDir, hostID string, st session.HostLockStatus) string {
+// <id> (PID n, <status>)" for another one -- the PID is the retained
+// display-only async_hosts row (written by every host registration,
+// flag-independent), "host <id> (<status>)" when no row is readable. The
+// reader's probe verdict is re-probed only if it could not decide. Display
+// only; a host-read failure never changes the verdict.
+func describeBatchHost(ctx context.Context, q *db.Queries, dataDir, hostID string, st session.HostLockStatus) string {
 	if session.IsOwnHostID(hostID) {
 		return "this process"
 	}
@@ -137,7 +145,15 @@ func describeBatchHost(dataDir, hostID string, st session.HostLockStatus) string
 			st = s
 		}
 	}
-	return fmt.Sprintf("host %s (%s)", hostID, st)
+	desc := "host " + hostID
+	pid := int64(0)
+	if h, err := q.GetAsyncHostRow(ctx, hostID); err == nil {
+		pid = h.Pid
+	}
+	if pid > 0 {
+		return fmt.Sprintf("%s (PID %d, %s)", desc, pid, st)
+	}
+	return fmt.Sprintf("%s (%s)", desc, st)
 }
 
 // joinOpenWork is the shared schedule-plus-fallback join.
@@ -146,4 +162,28 @@ func joinOpenWork(schedule []string, generic string) string {
 		return strings.Join(schedule, "; ")
 	}
 	return generic
+}
+
+// pt2SoleTaskLabel resolves the meaningful label of one live batch root:
+// the sole direct task child's task kind when the root wraps exactly one
+// task (the one-task delegation wrapper), the empty string otherwise.
+// Multi-task and nested-batch roots keep the structural label; a read
+// failure falls back to it too. Read only, display only.
+func pt2SoleTaskLabel(ctx context.Context, q *db.Queries, n session.BatchLiveNode) string {
+	children, err := q.ListBatchChildren(ctx, db.ListBatchChildrenParams{
+		RootID:         n.Ref.RootID,
+		ParentID:       sql.NullString{String: n.Ref.RootID, Valid: true},
+		OwnerSessionID: n.SessionID,
+	})
+	if err != nil {
+		return ""
+	}
+	label := ""
+	for _, c := range children {
+		if c.Kind != "task" || label != "" {
+			return ""
+		}
+		label = c.TaskKind.String
+	}
+	return label
 }

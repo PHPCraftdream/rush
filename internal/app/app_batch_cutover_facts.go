@@ -110,11 +110,17 @@ func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[stri
 
 // batchCutoverHostLiveness decides host liveness for the flag-ON driver
 // facts with the shared, non-acquiring probe (the same predicate
-// BatchLiveReader uses), never through the AsyncJobStore.
+// BatchLiveReader uses), never through the AsyncJobStore. A host id
+// registered as this process's own is Alive by definition (the shared
+// probe refuses to answer it with ErrProbeOwnHost); foreign hosts keep
+// the conservative probe verdict.
 func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
 	return func(hostID string) session.HostLockStatus {
 		if hostID == "" || app.dataDir == "" {
 			return session.HostStatusUnknown
+		}
+		if session.IsOwnHostID(hostID) {
+			return session.HostStatusAlive
 		}
 		st, err := session.ProbeHostShared(app.dataDir, hostID)
 		if err != nil {

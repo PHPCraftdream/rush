@@ -337,7 +337,8 @@ func testBatchWaitsForAsyncSubAgentResult(t *testing.T) {
 
 func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 	var mu sync.Mutex
-	turns, launched, started, consumed := 0, 0, 0, 0
+	turns, launched, consumed, started := 0, 0, 0, 0
+	startedAcks := make(map[int]bool)
 	barriers := make([]chan struct{}, 6)
 	for i := range barriers {
 		barriers[i] = make(chan struct{})
@@ -361,63 +362,96 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 	defer cancel()
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		_, lastUser, lastTool := lastTurnParts(body)
-		if strings.Contains(lastUser, "Generate a concise title") {
-			// Title requests quote CHILD-WORK-N and the run prompt; answer
-			// them first and count nothing (not a launch, not a phase).
+		event := pf2Classify(body)
+		switch event.kind {
+		case "title":
+			// Title requests quote the run prompt (agent_title.go); answer
+			// plainly and count nothing.
 			admissionWriteSSE(w, []string{admissionSSEText("title", "test title"), admissionSSEStop("title", "stop")})
-			return
-		}
-		for i := 1; i <= 6; i++ {
-			if strings.TrimSpace(lastUser) == fmt.Sprintf("CHILD-WORK-%d", i) {
-				children.Add(1)
-				select {
-				case <-barriers[i-1]:
-				case <-r.Context().Done():
-					return
-				case <-ctx.Done():
-					return
-				}
-				admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("child-%d", i), fmt.Sprintf("child %d actual", i)), admissionSSEStop(fmt.Sprintf("child-%d", i), "stop")})
+		case "child":
+			mu.Lock()
+			late := event.index > launched
+			gotLaunched := launched
+			mu.Unlock()
+			if late {
+				http.Error(w, fmt.Sprintf("child %d before its launch (launched=%d)", event.index, gotLaunched), http.StatusBadRequest)
 				return
 			}
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if launched == 0 {
-			launched = 1
-			admissionWriteSSE(w, []string{admissionSSEToolCall("start-1", "call-1", "agent", `{"prompt":"CHILD-WORK-1"}`), admissionSSEStop("start-1", "tool_calls")})
-			return
-		}
-		matched := 0
-		for i := 1; i <= 6; i++ {
-			if strings.Contains(lastUser, fmt.Sprintf("Async job call-%d () finished", i)) {
-				if i != consumed+1 || i != started || !strings.Contains(lastUser, fmt.Sprintf("child %d actual", i)) {
-					http.Error(w, "unexpected or duplicate completion", http.StatusBadRequest)
-					return
-				}
-				matched = i
-				break
+			children.Add(1)
+			select {
+			case <-barriers[event.index-1]:
+			case <-r.Context().Done():
+				return
+			case <-ctx.Done():
+				return
 			}
-		}
-		if matched == 0 {
+			admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("child-%d", event.index), fmt.Sprintf("child %d actual", event.index)), admissionSSEStop(fmt.Sprintf("child-%d", event.index), "stop")})
+		case "delegate":
+			mu.Lock()
+			if launched != 0 {
+				gotLaunched := launched
+				mu.Unlock()
+				http.Error(w, fmt.Sprintf("duplicate initial delegation (launched=%d)", gotLaunched), http.StatusBadRequest)
+				return
+			}
+			launched = 1
+			mu.Unlock()
+			admissionWriteSSE(w, []string{admissionSSEToolCall("start-1", "call-1", "agent", `{"prompt":"CHILD-WORK-1"}`), admissionSSEStop("start-1", "tool_calls")})
+		case "started":
+			idx := pf2CallIndex(event.callID)
+			mu.Lock()
+			reject := ""
+			switch {
+			case idx == 0:
+				reject = "started tool result without a call-N id: " + event.detail
+			case startedAcks[idx]:
+				reject = fmt.Sprintf("duplicate started ack for %s", event.callID)
+			case idx != launched:
+				gotLaunched := launched
+				reject = fmt.Sprintf("started for %s but launched=call-%d", event.callID, gotLaunched)
+			default:
+				startedAcks[idx] = true
+				started++
+			}
+			mu.Unlock()
+			if reject != "" {
+				http.Error(w, "started-phase rejection: "+reject, http.StatusBadRequest)
+				return
+			}
 			// The started tool result composes its own yield turn; only a NEW
 			// selected completion advances the sequence.
-			if strings.Contains(lastTool, "completions arrive as selected notices") && started < launched {
-				started++
-				admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("yield-%d", started), "job started"), admissionSSEStop(fmt.Sprintf("yield-%d", started), "stop")})
+			admissionWriteSSE(w, []string{admissionSSEText(fmt.Sprintf("yield-%d", started), "job started"), admissionSSEStop(fmt.Sprintf("yield-%d", started), "stop")})
+		case "completion":
+			idx := pf2CallIndex(event.callID)
+			mu.Lock()
+			reject := ""
+			switch {
+			case idx != consumed+1:
+				gotConsumed, gotLaunched, gotStarted := consumed, launched, started
+				reject = fmt.Sprintf("expected completion call-%d, found %s (consumed=%d, launched=%d, started=%d)", gotConsumed+1, event.callID, gotConsumed, gotLaunched, gotStarted)
+			case !strings.Contains(event.text, fmt.Sprintf("child %d actual", idx)):
+				reject = fmt.Sprintf("completion %s lost the child result (want %q)", event.callID, fmt.Sprintf("child %d actual", idx))
+			default:
+				consumed++
+			}
+			mu.Unlock()
+			if reject != "" {
+				http.Error(w, "completion-phase rejection: "+reject, http.StatusBadRequest)
 				return
 			}
-			http.Error(w, "unexpected provider request", http.StatusBadRequest)
-			return
+			mu.Lock()
+			if consumed == 6 {
+				mu.Unlock()
+				admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
+				return
+			}
+			launched++
+			next := launched
+			mu.Unlock()
+			admissionWriteSSE(w, []string{admissionSSEToolCall(fmt.Sprintf("start-%d", next), fmt.Sprintf("call-%d", next), "agent", fmt.Sprintf(`{"prompt":"CHILD-WORK-%d"}`, next)), admissionSSEStop(fmt.Sprintf("start-%d", next), "tool_calls")})
+		default:
+			http.Error(w, "unexpected provider request: "+event.detail, http.StatusBadRequest)
 		}
-		consumed++
-		if consumed == 6 {
-			admissionWriteSSE(w, []string{admissionSSEText("finished", "all six jobs finished"), admissionSSEStop("finished", "stop")})
-			return
-		}
-		launched++
-		admissionWriteSSE(w, []string{admissionSSEToolCall(fmt.Sprintf("start-%d", launched), fmt.Sprintf("call-%d", launched), "agent", fmt.Sprintf(`{"prompt":"CHILD-WORK-%d"}`, launched)), admissionSSEStop(fmt.Sprintf("start-%d", launched), "tool_calls")})
 	})
 	t.Cleanup(application.Shutdown)
 	result, err := application.RunNonInteractiveWithResult(ctx, io.Discard, "run six jobs", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
@@ -427,10 +461,15 @@ func testBatchContinuesPastFiveAsyncCompletions(t *testing.T) {
 	mu.Lock()
 	gotLaunch, gotStarted, gotConsumed, gotTurns := launched, started, consumed, turns
 	mu.Unlock()
-	require.Equal(t, 6, gotLaunch)
-	require.Equal(t, 6, gotStarted)
-	require.Equal(t, 6, gotConsumed)
-	require.Equal(t, 7, gotTurns)
+	// turns counts CLI LOOP turns (cliLoopTurnDoneSeam fires once per
+	// ExecuteRun, app_run_async.go), not provider requests: the started
+	// tool result and its yield text are steps of the SAME run as the launch.
+	// 7 = the initial run (call-1 + yield) + one Drain per selected completion
+	// (completions 1-5 each launch the next call and yield; completion 6 ends).
+	require.Equal(t, 6, gotLaunch, fmt.Sprintf("launched=%d started=%d consumed=%d turns=%d", gotLaunch, gotStarted, gotConsumed, gotTurns))
+	require.Equal(t, 6, gotStarted, fmt.Sprintf("launched=%d started=%d consumed=%d turns=%d", gotLaunch, gotStarted, gotConsumed, gotTurns))
+	require.Equal(t, 6, gotConsumed, fmt.Sprintf("launched=%d started=%d consumed=%d turns=%d", gotLaunch, gotStarted, gotConsumed, gotTurns))
+	require.Equal(t, 7, gotTurns, fmt.Sprintf("launched=%d started=%d consumed=%d turns=%d", gotLaunch, gotStarted, gotConsumed, gotTurns))
 	require.EqualValues(t, 6, children.Load())
 	messages, err := application.Messages.List(t.Context(), sessionID)
 	require.NoError(t, err)
