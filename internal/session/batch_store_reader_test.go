@@ -51,11 +51,8 @@ func TestBatchStoreReadThroughReader(t *testing.T) {
 	holdTx, err := w.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = holdTx.Rollback() }()
-	rows, err := holdTx.QueryContext(ctx, "SELECT 1")
-	require.NoError(t, err)
-	for rows.Next() {
-	}
-	require.NoError(t, rows.Close())
+	var one int
+	require.NoError(t, holdTx.QueryRowContext(ctx, "SELECT 1").Scan(&one))
 
 	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

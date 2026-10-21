@@ -178,21 +178,21 @@ func (b *pdbBatchTxBinder) bind(ctx context.Context, query string) (*sql.Stmt, b
 }
 
 func (b *pdbBatchTxBinder) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	if stmt, ok := b.bind(ctx, query); ok {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
 		return stmt.ExecContext(ctx, args...)
 	}
 	return b.tx.ExecContext(ctx, query, args...)
 }
 
 func (b *pdbBatchTxBinder) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	if stmt, ok := b.bind(ctx, query); ok {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
 		return stmt.QueryContext(ctx, args...)
 	}
 	return b.tx.QueryContext(ctx, query, args...)
 }
 
 func (b *pdbBatchTxBinder) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	if stmt, ok := b.bind(ctx, query); ok {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
 		return stmt.QueryRowContext(ctx, args...)
 	}
 	return b.tx.QueryRowContext(ctx, query, args...)
