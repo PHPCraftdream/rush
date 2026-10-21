@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -132,6 +134,9 @@ const batchArmingPolicyNote = "Flag-on work refuses any trusted CallOptions Disk
 // optimistic true.
 type batchCoordinatorDescendants struct {
 	live *session.BatchLiveReader
+	// child (package S, jb/psc) extends the read with the delegation
+	// child's completion-reaction scope; nil keeps the R10a behavior.
+	child BatchChildReactionFacts
 }
 
 func (d batchCoordinatorDescendants) DescendantsLive(ctx context.Context, req batchAgentRunRequest) (bool, bool) {
@@ -142,7 +147,116 @@ func (d batchCoordinatorDescendants) DescendantsLive(ctx context.Context, req ba
 		return false, false
 	}
 	res := d.live.BatchLiveForOwner(ctx, req.ChildSessionID)
-	return res.HasLive(), res.Complete
+	return pscCombineDescendantFacts(ctx, d.child, req.ChildSessionID, res.HasLive(), res.Complete)
+}
+
+// BatchChildReactionFacts is the delegation child's completion-reaction
+// seam (package S, jb/psc; review consultation 4, §4.3 items 2-3). The
+// batch delegation's scope used to close on live descendants alone, so a
+// child whose shell was terminal but which still owed — or was still
+// running — its own completion reaction let the parent settle with a
+// yielded/pre-result answer. Every answer is conservative: a failed or
+// incomplete read reports the scope OPEN, never idle.
+type BatchChildReactionFacts interface {
+	// ChildReactionScopeOpen reports whether childSessionID still owes an
+	// ACTIONABLE or PACED completion reaction (CLIScope's
+	// WorkOpen/DrainOwed/DrainPaced predicate — the same one the legacy
+	// release path used) or owns an active reaction turn. Deferred (held
+	// question, Stop, policy) and Stuck debt deliberately reports
+	// open=false so genuinely non-actionable debt cannot hang a
+	// delegation forever. complete=false marks an unreadable read.
+	ChildReactionScopeOpen(ctx context.Context, childSessionID string) (open bool, complete bool)
+	// ChildFinalOutcome refreshes the captured initial completion with
+	// the child's final outcome for THIS delegation (incarnation-exact
+	// child identity; reaction-failure markers take priority, then the
+	// child's last finished assistant message, a held question delivered
+	// as a paused sub-agent). ok=false keeps the captured initial
+	// completion.
+	ChildFinalOutcome(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool)
+}
+
+// pscCombineDescendantFacts merges one live-descendant read with the
+// child's reaction scope. The child read can only widen liveness and
+// never repairs incompleteness: the delegation stays open while either
+// half is open or either half is unreadable.
+func pscCombineDescendantFacts(ctx context.Context, child BatchChildReactionFacts, childSessionID string, live, complete bool) (bool, bool) {
+	if child == nil || childSessionID == "" {
+		return live, complete
+	}
+	open, childComplete := child.ChildReactionScopeOpen(ctx, childSessionID)
+	return live || open, complete && childComplete
+}
+
+// pscChildScopeOpen is the arbiter-classified debt predicate, equal to the
+// legacy release path's (workLedger.childScopeOpenAcrossProcesses):
+// running work on a live host, debt a Drain may run now (Owed), or debt
+// held by or paced after a reaction attempt (Paced).
+func pscChildScopeOpen(st CLIScopeState) bool {
+	return st.WorkOpen || st.Drain == DrainOwed || st.Drain == DrainPaced
+}
+
+// errPscChildScopeUnavailable: no bound coordinator answered the child's
+// CLIScope read. The caller treats it as an incomplete read (stay open).
+var errPscChildScopeUnavailable = errors.New("batch child reaction scope: coordinator unavailable")
+
+// pscChildReactionFacts is the production BatchChildReactionFacts over two
+// injected functions.
+type pscChildReactionFacts struct {
+	scope   func(ctx context.Context, childSessionID string) (CLIScopeState, error)
+	outcome func(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool)
+}
+
+func (f pscChildReactionFacts) ChildReactionScopeOpen(ctx context.Context, childSessionID string) (bool, bool) {
+	if f.scope == nil || childSessionID == "" {
+		return false, false
+	}
+	st, err := f.scope(ctx, childSessionID)
+	if err != nil {
+		return true, false
+	}
+	return pscChildScopeOpen(st), true
+}
+
+func (f pscChildReactionFacts) ChildFinalOutcome(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool) {
+	if f.outcome == nil || childSessionID == "" {
+		return initial, false
+	}
+	return f.outcome(ctx, childSessionID, initial)
+}
+
+// PscCoordinatorChildReactionFactsLate builds the production child
+// reaction facts for an App-level wiring site whose coordinator is
+// assigned AFTER the batch install is built: get is re-read on every
+// call, so a not-yet-bound coordinator reports the conservative answers
+// (scope open/incomplete; initial outcome kept) until it is. The outcome
+// half reuses coordinator.refreshSubAgentCompletion — the legacy release
+// path's refresh — so reaction-failure markers, the paused-question
+// delivery and the empty-final-text notice keep their existing
+// semantics.
+func PscCoordinatorChildReactionFactsLate(get func() Coordinator) BatchChildReactionFacts {
+	if get == nil {
+		return nil
+	}
+	return pscChildReactionFacts{
+		scope: func(ctx context.Context, childSessionID string) (CLIScopeState, error) {
+			c := get()
+			if c == nil {
+				return CLIScopeState{}, errPscChildScopeUnavailable
+			}
+			src, ok := c.(ReactionDebtSource)
+			if !ok {
+				return CLIScopeState{}, errPscChildScopeUnavailable
+			}
+			return src.CLIScope(ctx, childSessionID)
+		},
+		outcome: func(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool) {
+			cc, ok := get().(*coordinator)
+			if !ok || cc == nil {
+				return initial, false
+			}
+			return cc.refreshSubAgentCompletion(childSessionID, initial), true
+		},
+	}
 }
 
 // CoordinatorBatchAgentDepsWithLive builds the flagged agent-family seams
@@ -153,5 +267,19 @@ func CoordinatorBatchAgentDepsWithLive(live *session.BatchLiveReader) BatchAgent
 	return batchAgentDeps{
 		Runs:        batchCoordinatorAgentRuns{},
 		Descendants: batchCoordinatorDescendants{live: live},
+	}
+}
+
+// CoordinatorBatchAgentDepsWithChildScope is the flagged install seam with
+// the child reaction-scope reader wired (package S, jb/psc). Poll is
+// raised from the 10ms default: each poll now runs the child's full
+// CLIScope read (live scope, debt, arbiter verdict), which must not run
+// at 100Hz.
+func CoordinatorBatchAgentDepsWithChildScope(live *session.BatchLiveReader, child BatchChildReactionFacts) BatchAgentDeps {
+	return batchAgentDeps{
+		Runs:        batchCoordinatorAgentRuns{},
+		Descendants: batchCoordinatorDescendants{live: live, child: child},
+		ChildFacts:  child,
+		Poll:        250 * time.Millisecond,
 	}
 }

@@ -105,6 +105,12 @@ type batchAgentDeps struct {
 	// to the launch. Nil keeps the flag-off memory-only behavior
 	// byte-identical.
 	Bind func(ctx context.Context, owner, root, node string, token uint64, child string) error
+	// ChildFacts (package S, jb/psc): the delegation child's
+	// completion-reaction seam. Non-nil, the watcher keeps the scope open
+	// through the child's actionable/paced reaction debt and ownership
+	// and refreshes the settled result with the child's final outcome at
+	// confirmed closure. Nil keeps the previous behavior byte-identical.
+	ChildFacts BatchChildReactionFacts
 }
 
 // batchAgentFamily implements the engine executor contract for the agent
@@ -348,7 +354,10 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 	if !e.scope.markClosed() {
 		return // Another path closed it; report exactly once.
 	}
-	e.finish(batchAgentScopeResult(turn.Result(), turn.Err(), e.scope.stop()), report)
+	// Package S (jb/psc): settle with the child's refreshed final outcome
+	// for this delegation, never the captured initial (pre-reaction)
+	// answer.
+	e.finish(batchAgentScopeResult(pscRefreshedTurnResult(e.deps.ChildFacts, e.requestSnapshot(), turn.Result(), turn.Err()), turn.Err(), e.scope.stop()), report)
 }
 
 // finish fixes the terminal result once, retains the output and reports.
@@ -496,4 +505,34 @@ func batchAgentScopeResult(res batchAgentTurnResult, turnErr error, stopped bool
 	}
 	r.Details = batchEnvelope(res.Response)
 	return r
+}
+
+// pscRefreshTimeout bounds one child final-outcome refresh at closure.
+const pscRefreshTimeout = 5 * time.Second
+
+// pscRefreshedTurnResult (package S, jb/psc) replaces the captured initial
+// response with the child's refreshed final outcome at confirmed closure.
+// A leaf-run infrastructure error (turnErr non-nil) is never refreshed —
+// the run failed before a child outcome exists. No child selected (or no
+// facts wired): nothing to refresh. A refreshed failed initial keeps
+// failing: the facts' marker-aware refresh (refreshSubAgentCompletion)
+// checks reaction-failure markers FIRST, so a permanently failed reaction
+// settlement delivers its failure, never a stale success.
+func pscRefreshedTurnResult(facts BatchChildReactionFacts, req batchAgentRunRequest, res batchAgentTurnResult, turnErr error) batchAgentTurnResult {
+	if facts == nil || req.ChildSessionID == "" || req.NoChildSelected || turnErr != nil {
+		return res
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pscRefreshTimeout)
+	defer cancel()
+	refreshed, ok := facts.ChildFinalOutcome(ctx, req.ChildSessionID, AsyncCompletion{
+		SessionID: req.ChildSessionID, ToolCallID: req.ToolCallID, ToolName: req.Tool,
+		Content: res.Response.Content, IsError: res.Response.IsError,
+	})
+	if !ok {
+		return res
+	}
+	// A refreshed outcome replaces the captured response entirely; the
+	// initial turn's task_outcome declaration is not carried over — the
+	// child's final turn supersedes it.
+	return batchAgentTurnResult{Response: fantasy.ToolResponse{Content: refreshed.Content, IsError: refreshed.IsError}}
 }
