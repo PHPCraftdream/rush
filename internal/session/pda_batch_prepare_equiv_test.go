@@ -164,13 +164,12 @@ func pdaEquivSettleOne(t *testing.T, ctx context.Context, s *BatchStore, conn *s
 	return pdaEquivState{root: snap.Root.RootID, leaf: snap.Nodes[1].NodeID, nodes: pdaEquivNodeIDs(snap)}
 }
 
-func pdaEquivSeedNotice(t *testing.T, ctx context.Context, conn *sql.DB, extraUpdate string) string {
+func pdaEquivSeedNotice(t *testing.T, ctx context.Context, conn *sql.DB, extraUpdate string) {
 	t.Helper()
 	n, err := db.New(conn).InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: "owner", Kind: NoticeKindChildQuestion, Text: "question", Wake: 1, CreatedAt: 1, UpdatedAt: 1})
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, "UPDATE session_notices SET "+extraUpdate+" WHERE id=?", n.ID)
 	require.NoError(t, err)
-	return n.ID
 }
 
 func pdaEquivCases() []pdaEquivCase {
@@ -438,8 +437,8 @@ func pdaEquivCases() []pdaEquivCase {
 			// of the mark-reacted owner update.
 			name: "markSessionNoticesReactedForOwner",
 			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
-				id := pdaEquivSeedNotice(t, ctx, conn, "delivery='done'")
-				return pdaEquivState{ids: []string{id}}
+				pdaEquivSeedNotice(t, ctx, conn, "delivery='done'")
+				return pdaEquivState{}
 			},
 			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
 				rows, err := q.MarkSessionNoticesReactedForOwner(ctx, db.MarkSessionNoticesReactedForOwnerParams{UpdatedAt: 7, Owner: "owner"})
@@ -451,8 +450,8 @@ func pdaEquivCases() []pdaEquivCase {
 		{
 			name: "clearSessionNoticesReactedFailedForOwner",
 			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
-				id := pdaEquivSeedNotice(t, ctx, conn, "reacted_failed=1")
-				return pdaEquivState{ids: []string{id}}
+				pdaEquivSeedNotice(t, ctx, conn, "reacted_failed=1")
+				return pdaEquivState{}
 			},
 			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
 				rows, err := q.ClearSessionNoticesReactedFailedForOwner(ctx, db.ClearSessionNoticesReactedFailedForOwnerParams{UpdatedAt: 7, Owner: "owner"})

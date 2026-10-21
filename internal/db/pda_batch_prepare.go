@@ -85,7 +85,7 @@ func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts,
 		{&c.clearSessionNoticesReactedFailedForOwner, "clearSessionNoticesReactedFailedForOwner", clearSessionNoticesReactedFailedForOwner},
 	}
 	for _, p := range order {
-		stmt, err := writer.PrepareContext(ctx, p.query)
+		stmt, err := writer.PrepareContext(ctx, p.query) //nolint:sqlclosecheck // owned by the cache; closed in pdaDropBatchStmts
 		if err != nil {
 			// Close what was opened, drop the half-built entry, wrap the
 			// error the same way the generated code does. The caller holds
