@@ -26,6 +26,7 @@ import (
 type pdaBatchStmts struct {
 	owner                                    *sql.DB
 	closed                                   bool
+	byQuery                                  map[string]*sql.Stmt
 	getLiveBatchRoot                         *sql.Stmt
 	reserveBatchNode                         *sql.Stmt
 	projectBatchNode                         *sql.Stmt
@@ -57,7 +58,7 @@ var (
 // given writer. The caller must hold pdaBatchStmtsMu. On any error, every
 // statement opened so far is closed and the partial registry entry removed.
 func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts, error) {
-	c := &pdaBatchStmts{owner: writer}
+	c := &pdaBatchStmts{owner: writer, byQuery: make(map[string]*sql.Stmt, 19)}
 	type pending struct {
 		field **sql.Stmt
 		name  string
@@ -98,6 +99,7 @@ func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts,
 			return nil, fmt.Errorf("error preparing query %s: %w", p.name, err)
 		}
 		*p.field = stmt
+		c.byQuery[p.query] = stmt
 		c.all = append(c.all, stmt)
 	}
 	return c, nil
@@ -146,13 +148,82 @@ func PdaBatchEnsure(ctx context.Context, writer *sql.DB) error {
 	return err
 }
 
+// pdbBatchTxBinder implements db.DBTX over one transaction: each distinct
+// query is bound to the transaction via tx.StmtContext at most once, on
+// first use, from the DB-level prepared statements cached for the writer
+// pool. Queries missing from the cache fall back to raw SQL through the tx
+// (identical to the pre-PD11A path); the binder NEVER prepares on its own.
+// Used only by the single goroutine that owns the transaction.
+type pdbBatchTxBinder struct {
+	tx    *sql.Tx
+	stmts map[string]*sql.Stmt
+	bound map[string]*sql.Stmt
+}
+
+// bind returns the tx-bound statement for query, binding the cached DB-level
+// statement on first use. A failed StmtContext still memoises the returned
+// (non-nil) statement: database/sql defers the error to the first use of
+// that statement, which matches the eager PD11A path exactly.
+func (b *pdbBatchTxBinder) bind(ctx context.Context, query string) (*sql.Stmt, bool) {
+	if stmt, ok := b.bound[query]; ok {
+		return stmt, true
+	}
+	dbStmt, ok := b.stmts[query]
+	if !ok {
+		return nil, false
+	}
+	stmt := b.tx.StmtContext(ctx, dbStmt)
+	b.bound[query] = stmt
+	return stmt, true
+}
+
+func (b *pdbBatchTxBinder) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
+		return stmt.ExecContext(ctx, args...)
+	}
+	return b.tx.ExecContext(ctx, query, args...)
+}
+
+func (b *pdbBatchTxBinder) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
+		return stmt.QueryContext(ctx, args...)
+	}
+	return b.tx.QueryContext(ctx, query, args...)
+}
+
+func (b *pdbBatchTxBinder) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if stmt, ok := b.bind(ctx, query); ok { //nolint:sqlclosecheck // tx-bound: closed by tx.Commit/Rollback
+		return stmt.QueryRowContext(ctx, args...)
+	}
+	return b.tx.QueryRowContext(ctx, query, args...)
+}
+
+func (b *pdbBatchTxBinder) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return b.tx.PrepareContext(ctx, query)
+}
+
+// PdbBatchTxBoundCount reports how many distinct statements the lazy tx
+// binder behind q has bound so far. It returns -1 when q was not built by
+// PdaBatchTxQueries (nil binder, plain tx, or pool), so tests can assert
+// the Queries they hold really is the lazy-bound one.
+func PdbBatchTxBoundCount(q *Queries) int {
+	b, ok := q.db.(*pdbBatchTxBinder)
+	if !ok {
+		return -1
+	}
+	return len(b.bound)
+}
+
 // PdaBatchTxQueries returns a Queries bound to tx whose statements are
-// re-bindings of the cached DB-level statements. tx.StmtContext reuses an
+// re-bindings of the cached DB-level statements, bound LAZILY: each distinct
+// query is bound via tx.StmtContext at most once, on first use, by the
+// pdbBatchTxBinder behind the returned Queries. tx.StmtContext reuses an
 // already-prepared statement on the tx's underlying connection without
-// re-preparing (the writer pool has SetMaxOpenConns(1), so the tx is always
-// on the same connection; even if it were not, database/sql re-prepares
-// transparently and correctly). The tx-bound statements are closed
-// automatically by tx.Commit()/tx.Rollback(); do NOT close them here.
+// re-preparing, so the bound statement executes byte-identical SQL to the
+// eager PD11A path; only the number of bindings per tx changes, from 19 to
+// the number of distinct queries actually executed. The tx-bound statements
+// are closed automatically by tx.Commit()/tx.Rollback(); do NOT close them
+// here.
 //
 // This function NEVER prepares: if the cache is missing (e.g. a pool release
 // raced between PdaBatchEnsure and BeginTx, or Ensure was skipped), it returns
@@ -164,48 +235,7 @@ func PdaBatchTxQueries(ctx context.Context, writer *sql.DB, tx *sql.Tx) *Queries
 	if !ok {
 		return &Queries{db: tx}
 	}
-	bind := func(stmt *sql.Stmt) *sql.Stmt { return tx.StmtContext(ctx, stmt) }
-	getLiveBatchRoot := bind(c.getLiveBatchRoot)
-	reserveBatchNode := bind(c.reserveBatchNode)
-	projectBatchNode := bind(c.projectBatchNode)
-	advanceBatchRootSequence := bind(c.advanceBatchRootSequence)
-	getBatchNode := bind(c.getBatchNode)
-	selectBatchNodeNotice := bind(c.selectBatchNodeNotice)
-	updateBatchRunnerCheckpoint := bind(c.updateBatchRunnerCheckpoint)
-	getBatchRoot := bind(c.getBatchRoot)
-	listBatchNodes := bind(c.listBatchNodes)
-	batchOutboxAnnounce := bind(c.batchOutboxAnnounce)
-	batchOutboxSetAnnouncementMessage := bind(c.batchOutboxSetAnnouncementMessage)
-	batchOutboxInlineElect := bind(c.batchOutboxInlineElect)
-	batchOutboxNameMessage := bind(c.batchOutboxNameMessage)
-	batchOutboxConsumeWithToolResult := bind(c.batchOutboxConsumeWithToolResult)
-	getBatchRootIdentity := bind(c.getBatchRootIdentity)
-	deleteBatchSubtree := bind(c.deleteBatchSubtree)
-	getMessage := bind(c.getMessage)
-	markSessionNoticesReactedForOwner := bind(c.markSessionNoticesReactedForOwner)
-	clearSessionNoticesReactedFailedForOwner := bind(c.clearSessionNoticesReactedFailedForOwner)
-	return &Queries{
-		db:                                           tx,
-		getLiveBatchRootStmt:                         getLiveBatchRoot,
-		reserveBatchNodeStmt:                         reserveBatchNode,
-		projectBatchNodeStmt:                         projectBatchNode,
-		advanceBatchRootSequenceStmt:                 advanceBatchRootSequence,
-		getBatchNodeStmt:                             getBatchNode,
-		selectBatchNodeNoticeStmt:                    selectBatchNodeNotice,
-		updateBatchRunnerCheckpointStmt:              updateBatchRunnerCheckpoint,
-		getBatchRootStmt:                             getBatchRoot,
-		listBatchNodesStmt:                           listBatchNodes,
-		batchOutboxAnnounceStmt:                      batchOutboxAnnounce,
-		batchOutboxSetAnnouncementMessageStmt:        batchOutboxSetAnnouncementMessage,
-		batchOutboxInlineElectStmt:                   batchOutboxInlineElect,
-		batchOutboxNameMessageStmt:                   batchOutboxNameMessage,
-		batchOutboxConsumeWithToolResultStmt:         batchOutboxConsumeWithToolResult,
-		getBatchRootIdentityStmt:                     getBatchRootIdentity,
-		deleteBatchSubtreeStmt:                       deleteBatchSubtree,
-		getMessageStmt:                               getMessage,
-		markSessionNoticesReactedForOwnerStmt:        markSessionNoticesReactedForOwner,
-		clearSessionNoticesReactedFailedForOwnerStmt: clearSessionNoticesReactedFailedForOwner,
-	}
+	return &Queries{db: &pdbBatchTxBinder{tx: tx, stmts: c.byQuery, bound: make(map[string]*sql.Stmt)}}
 }
 
 // PdaBatchWriterQueries returns a Queries bound to the writer pool whose

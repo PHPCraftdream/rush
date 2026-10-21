@@ -24,9 +24,39 @@ var (
 
 // BatchStore is inert persistence. It neither executes work nor chooses outcomes.
 // The supplied DB is the single-connection writer; no store locks span I/O.
-type BatchStore struct{ writer *sql.DB }
+type BatchStore struct {
+	writer *sql.DB
+	// reader is the optional read pool for pure read snapshots. nil (or
+	// equal to writer, the degraded mode where the read pool failed to
+	// open) keeps the pre-PD11B behaviour exactly: read txs on the writer.
+	reader *sql.DB
+}
 
 func NewBatchStore(writer *sql.DB) *BatchStore { return &BatchStore{writer: writer} }
+
+// NewBatchStoreWithReader returns a BatchStore that routes pure read
+// snapshots to the optional read pool. A nil reader, or a reader identical
+// to the writer, keeps writer-routed reads. The reader pool must be a WAL
+// read handle for the same database file, as returned by db.ConnectRead;
+// WAL read-your-committed-write guarantees a read tx that begins after a
+// writer Commit returned observes it.
+func NewBatchStoreWithReader(writer, reader *sql.DB) *BatchStore {
+	if reader == nil || reader == writer {
+		return &BatchStore{writer: writer}
+	}
+	return &BatchStore{writer: writer, reader: reader}
+}
+
+// beginReadTx opens the read-only transaction used by pure read paths: on
+// the reader pool when one is wired, else on the writer (pre-PD11B
+// behavior).
+func (s *BatchStore) beginReadTx(ctx context.Context) (*sql.Tx, error) {
+	pool := s.writer
+	if s.reader != nil {
+		pool = s.reader
+	}
+	return pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+}
 
 // BatchReservationNode contains accepted values; identity and times are assigned by the store.
 type BatchReservationNode struct {
@@ -287,7 +317,7 @@ func batchStateLive(state string) bool {
 }
 
 func (s *BatchStore) Read(ctx context.Context, owner, root string) (BatchSnapshot, error) {
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginReadTx(ctx)
 	if err != nil {
 		return BatchSnapshot{}, err
 	}

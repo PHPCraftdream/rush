@@ -57,7 +57,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 			deps.Host = a.asyncJobStore.HostID()
 		}
 	}
-	deps.Store = session.NewBatchStore(writer)
+	deps.Store = session.NewBatchStoreWithReader(writer, a.batchCutoverReader(writer))
 	deps.Messages = a.Messages
 	deps.Sessions = a.Sessions
 	// Package psv: restore legacy supervision arming at the batch started
