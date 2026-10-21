@@ -40,8 +40,14 @@ func TestRunTimeoutWaitPhases(t *testing.T) {
 				h.afterFirstTurn(h.seedDebt)
 			}
 			if phase == "live-job" || phase == "quota" {
-				_, err := h.app.asyncJobStore.Claim(t.Context(), session.ClaimParams{Owner: h.sessionID, ToolCallID: "held", Kind: session.JobKindCommand, ToolName: "bash", Input: "held"})
-				require.NoError(t, err)
+				if f6BatchOn() {
+					// ON reads BATCH facts: seed a real constraint-valid
+					// live one-task root the wait/timeout paths can see.
+					pt2ReserveLiveRoot(t, h.app, h.sessionID, f6HostID(t, h.app), "held", "shell")
+				} else {
+					_, err := h.app.asyncJobStore.Claim(t.Context(), session.ClaimParams{Owner: h.sessionID, ToolCallID: "held", Kind: session.JobKindCommand, ToolName: "bash", Input: "held"})
+					require.NoError(t, err)
+				}
 			}
 			duration := 3 * time.Second
 			if phase == "quota" {
