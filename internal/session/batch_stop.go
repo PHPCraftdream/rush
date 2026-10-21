@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/google/uuid"
 )
 
 type BatchStopOwnerTarget struct {
@@ -37,7 +36,7 @@ func (s *BatchStore) BatchStopOwners(ctx context.Context, owners []string) ([]Ba
 			SET status = 'answered', answer_code = 'accepted',
 				answer_sequence = (SELECT root_sequence FROM batch_nodes r WHERE r.root_id = batch_control_requests.root_id AND r.node_id = r.root_id AND r.owner_session_id = batch_control_requests.owner_session_id AND r.host_id = batch_control_requests.host_id AND r.runner_id = batch_control_requests.runner_id),
 				answered_at = ?
-			WHERE owner_session_id = ? AND node_id = root_id AND operation = 'stop' AND status = 'pending'
+			WHERE `+psfOwnerStopSQLPredicate("batch_control_requests")+` AND owner_session_id = ? AND node_id = root_id AND operation = 'stop' AND status = 'pending'
 				AND EXISTS (SELECT 1 FROM batch_nodes r WHERE r.root_id = batch_control_requests.root_id AND r.node_id = r.root_id AND r.owner_session_id = batch_control_requests.owner_session_id AND r.host_id = batch_control_requests.host_id AND r.runner_id = batch_control_requests.runner_id AND r.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped') AND r.root_sequence > 0)`, time.Now().Unix(), owner); err != nil {
 			return nil, err
 		}
@@ -47,17 +46,27 @@ func (s *BatchStore) BatchStopOwners(ctx context.Context, owners []string) ([]Ba
 		}
 		for _, root := range roots {
 			var requestID, runnerID, status string
-			err := tx.QueryRowContext(ctx, `SELECT request_id, runner_id, status FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = root_id ORDER BY created_at, request_id LIMIT 1`, owner, root.HostID, root.RootID).Scan(&requestID, &runnerID, &status)
+			err := tx.QueryRowContext(ctx, `SELECT request_id, runner_id, status FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = root_id AND runner_id = ? AND `+psfOwnerStopSQLPredicate("")+` ORDER BY created_at, request_id LIMIT 1`, owner, root.HostID, root.RootID, root.RunnerID).Scan(&requestID, &runnerID, &status)
 			if errors.Is(err, sql.ErrNoRows) {
-				request, createErr := q.CreateBatchControlRequest(ctx, db.CreateBatchControlRequestParams{RequestID: uuid.NewString(), OwnerSessionID: owner, HostID: root.HostID, RootID: root.RootID, NodeID: root.RootID, CreatedAt: time.Now().Unix()})
+				requestID = psfOwnerStopRequestID()
+				result, createErr := tx.ExecContext(ctx, `INSERT INTO batch_control_requests (request_id, owner_session_id, root_id, node_id, host_id, operation, status, answer_code, answer_sequence, created_at, answered_at, runner_id)
+					SELECT ?, ?, ?, ?, ?, 'stop', 'pending', '', NULL, ?, NULL, r.runner_id FROM batch_nodes r
+					WHERE r.root_id = ? AND r.node_id = r.root_id AND r.owner_session_id = ? AND r.host_id = ? AND r.runner_id = ?`, requestID, owner, root.RootID, root.RootID, root.HostID, time.Now().Unix(), root.RootID, owner, root.HostID, root.RunnerID)
 				if createErr != nil {
 					return nil, createErr
 				}
-				requestID, runnerID, status = request.RequestID, request.RunnerID, request.Status
+				n, affectedErr := result.RowsAffected()
+				if affectedErr != nil {
+					return nil, affectedErr
+				}
+				if n != 1 {
+					return nil, ErrBatchProjectionConflict
+				}
+				runnerID, status = root.RunnerID, "pending"
 			} else if err != nil {
 				return nil, err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE batch_nodes SET wake = 0, updated_at = ? WHERE owner_session_id = ? AND root_id = ? AND notice_selected = 1 AND wake = 1`, time.Now().Unix(), owner, root.RootID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE batch_nodes SET wake = 0, updated_at = ? WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND runner_id = ? AND notice_selected = 1 AND wake = 1`, time.Now().Unix(), owner, root.HostID, root.RootID, root.RunnerID); err != nil {
 				return nil, err
 			}
 			targets = append(targets, BatchStopOwnerTarget{BatchControlTarget: BatchControlTarget{Owner: owner, Host: root.HostID, Root: root.RootID, Node: root.RootID}, RequestID: requestID, RunnerID: runnerID, Status: status})
@@ -84,11 +93,8 @@ func (s *BatchStore) BatchAnswerOwnerStop(ctx context.Context, target BatchStopO
 	if err != nil {
 		return err
 	}
-	if request.NodeID != target.Node || request.RunnerID != target.RunnerID {
+	if !psfIsOwnerStopRequestID(request.RequestID) || request.NodeID != target.Node || request.NodeID != request.RootID || request.RunnerID != target.RunnerID {
 		return ErrBatchControlStale
-	}
-	if request.Status == "answered" {
-		return tx.Commit()
 	}
 	root, err := q.GetBatchRoot(ctx, db.GetBatchRootParams{RootID: target.Root, OwnerSessionID: target.Owner})
 	if err != nil {
@@ -96,6 +102,9 @@ func (s *BatchStore) BatchAnswerOwnerStop(ctx context.Context, target BatchStopO
 	}
 	if root.RunnerID != target.RunnerID || root.HostID != target.Host {
 		return ErrBatchControlStale
+	}
+	if request.Status == "answered" {
+		return tx.Commit()
 	}
 	if root.RootSequence <= 0 {
 		return ErrBatchProjectionConflict

@@ -120,8 +120,58 @@ func loopToolCallWithUsage(w http.ResponseWriter, id, callID, name, args string,
 func newRunningChildHarness(t *testing.T) (h *loopHarness, childBlocked <-chan struct{}, release func()) {
 	t.Helper()
 	blocked, gate := make(chan struct{}), make(chan struct{})
-	var once sync.Once
+	var once, pcfGateOnce sync.Once
+	var pcfRouter *pcfCostRouter
+	var pcfErrors *pcfFixtureErrors
+	if f6BatchOn() {
+		pcfRouter = pcfNewCostRouter()
+		pcfErrors = &pcfFixtureErrors{}
+		t.Cleanup(func() {
+			for _, pcfMessage := range pcfErrors.pcfAll() {
+				t.Errorf("pcf batch fixture: %s", pcfMessage)
+			}
+		})
+	}
 	h = newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, body []byte, _ bool, _ int) {
+		if f6BatchOn() {
+			pcfPhase, pcfErr := pcfRouter.pcfRoute(body)
+			if pcfErr != nil {
+				pcfErrors.pcfRecord(pcfErr.Error())
+				http.Error(w, "pcf batch routing: "+pcfErr.Error(), http.StatusBadRequest)
+				return
+			}
+			switch pcfPhase {
+			case "title":
+				loopText(w, "title", "Title", 5, 1)
+			case "root:delegate":
+				admissionWriteSSE(w, []string{
+					admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER build it"}`),
+					admissionSSEStop("delegate", "tool_calls"),
+				})
+			case "root:yield":
+				loopText(w, "root-yield", "root waiting", 11, 3)
+			case "root:final":
+				loopText(w, "root-final", "R5-ROOT-DONE", 11, 3)
+			case "child:bash":
+				loopToolCallWithUsage(w, "child-ls", "call-ls", "ls", `{"path":"."}`, 100000)
+			case "child:yield":
+				loopText(w, "child-yield", "child waiting", 0, 0)
+			case "child:done":
+				loopText(w, "child-done", "child done", 0, 0)
+			case "child:blocked":
+				once.Do(func() { close(blocked) })
+				select {
+				case <-gate:
+				case <-h.t.Context().Done():
+					return
+				}
+				loopText(w, "child-done", "child done", 50000, 0)
+			default:
+				pcfErrors.pcfRecord("unrouted phase " + pcfPhase)
+				http.Error(w, "pcf batch routing: unrouted phase "+pcfPhase, http.StatusBadRequest)
+			}
+			return
+		}
 		system, lastUser, lastTool := lastTurnParts(body)
 		switch {
 		case strings.Contains(system, "short title"):
@@ -147,8 +197,17 @@ func newRunningChildHarness(t *testing.T) (h *loopHarness, childBlocked <-chan s
 			})
 		}
 	})
+	if f6BatchOn() {
+		t.Cleanup(func() { pcfGateOnce.Do(func() { close(gate) }) })
+	}
 	r4Models(t, h.app, 10)
-	return h, blocked, func() { close(gate) }
+	return h, blocked, func() {
+		if f6BatchOn() {
+			pcfGateOnce.Do(func() { close(gate) })
+		} else {
+			close(gate)
+		}
+	}
 }
 
 func (h *loopHarness) costOf(t *testing.T, id string) float64 {
@@ -183,12 +242,29 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			h, childBlocked, release := newRunningChildHarness(t)
 			ctx, cancel := context.WithCancel(loopCtx(t))
 			defer cancel()
+			var pcfChildID string
+			var pcfRunFinished chan struct{}
+			if f6BatchOn() {
+				pcfRunFinished = make(chan struct{})
+				t.Cleanup(func() {
+					cancel()
+					release()
+					select {
+					case <-pcfRunFinished:
+					case <-time.After(30 * time.Second):
+						t.Errorf("run goroutine did not finish")
+					}
+				})
+			}
 			type outcome struct {
 				res *RunResult
 				err error
 			}
 			done := make(chan outcome, 1)
 			go func() {
+				if f6BatchOn() {
+					defer close(pcfRunFinished)
+				}
 				res, _, err := h.run(ctx, RunOverrides{})
 				done <- outcome{res, err}
 			}()
@@ -196,6 +272,20 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 			case <-childBlocked:
 			case <-time.After(30 * time.Second):
 				t.Fatal("the child never reached its second request")
+			}
+			if f6BatchOn() {
+				var pcfRootCount, pcfChildCount int
+				pcfDB := h.app.DB()
+				require.NoError(t, pcfDB.QueryRowContext(context.Background(), `SELECT count(*) FROM batch_nodes WHERE owner_session_id=? AND node_id=root_id AND kind='batch' AND tool_call_id='call-agent'`, h.sessionID).Scan(&pcfRootCount))
+				require.Equal(t, 1, pcfRootCount)
+				require.NoError(t, pcfDB.QueryRowContext(context.Background(), `SELECT count(*) FROM batch_nodes n JOIN batch_nodes r ON r.root_id=n.root_id WHERE n.owner_session_id=? AND n.kind='task' AND n.child_session_id IS NOT NULL AND n.child_session_id!='' AND r.node_id=r.root_id AND r.kind='batch' AND r.tool_call_id='call-agent'`, h.sessionID).Scan(&pcfChildCount))
+				require.Equal(t, 1, pcfChildCount)
+				pcfChildID = ""
+				pcfChildErr := pcfDB.QueryRowContext(context.Background(), `SELECT n.child_session_id FROM batch_nodes n JOIN batch_nodes r ON r.root_id=n.root_id WHERE n.owner_session_id=? AND n.kind='task' AND n.child_session_id IS NOT NULL AND n.child_session_id!='' AND r.node_id=r.root_id AND r.kind='batch' AND r.tool_call_id='call-agent'`, h.sessionID).Scan(&pcfChildID)
+				require.NoError(t, pcfChildErr)
+				pcfChildSession, pcfChildErr := h.app.Sessions.Get(context.Background(), pcfChildID)
+				require.NoError(t, pcfChildErr)
+				require.InDelta(t, r5ChildFirstCost, pcfChildSession.OwnCost, 0.01)
 			}
 			// At this point the subtree already holds the running child's
 			// first-turn spend: the child paid its own row the moment it spent.
@@ -221,6 +311,9 @@ func TestRunNonInteractive_CancelExitCostIncludesRunningChildSpend(t *testing.T)
 				"the envelope reports the subtree spend from the claim to the exit")
 
 			child := f6a2ChildSessionOf(t, h.app, h.sessionID)
+			if f6BatchOn() {
+				require.Equal(t, pcfChildID, child)
+			}
 			require.InDelta(t, r5ChildFirstCost, h.costOf(t, child), 0.01)
 			if tc.childLate > 0 {
 				release()

@@ -288,10 +288,13 @@ func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
 
 	// Exactly one recovered notice. The interruption is the notice's
 	// STATE/outcome/text under batch authority (the selected kind is the
-	// root's, not a legacy per-state message kind), so ON counts every
-	// background notice and OFF keeps the legacy "interrupted" kind count.
+	// root's, not a legacy per-state message kind), so ON counts the SELECTED
+	// notices only: every root also carries its persisted STARTED
+	// announcement (a background-job message with an empty notice kind) that
+	// must not be counted as a second recovered notice. OFF keeps the legacy
+	// "interrupted" kind count.
 	if f6BatchOn() {
-		require.Equal(t, 1, countBackgroundNotices(t, appB, sessionID, ""), "exactly one recovered root notice")
+		require.Equal(t, 1, pp4SelectedNoticeCount(t, appB, sessionID), "exactly one recovered root notice")
 	} else {
 		require.Equal(t, 1, countBackgroundNotices(t, appB, sessionID, "interrupted"), "exactly one interrupted notice")
 	}
@@ -329,6 +332,14 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		case completionSeen:
 			admissionWriteSSE(w, []string{admissionSSEText("reacted", "job finished, all good"), admissionSSEStop("reacted", "stop")})
+		case f6BatchOn() && strings.TrimSpace(lastTool) != "":
+			// ON: the quick echo can be elected INLINE, so the last tool
+			// result is the command's plain output, not the started text and
+			// not a completion notice. Any tool result for the delegated call
+			// ends the turn with the answer; falling through to the default
+			// branch re-issued the call until the loop detector stopped the
+			// run on a tool_use finish.
+			admissionWriteSSE(w, []string{admissionSSEText("reacted", "job finished, all good"), admissionSSEStop("reacted", "stop")})
 		default:
 			requestsA.Add(1)
 			admissionWriteSSE(w, []string{
@@ -361,6 +372,11 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 	fact := pp4JobFactByCall(t, appA, sessionID, "call-1")
 	require.Equal(t, "completed", fact.State, "A's own run must have finished the quick job")
 	before := countBackgroundNotices(t, appA, sessionID, "")
+	if f6BatchOn() {
+		// Count SELECTED notices only: a detached root also persists its
+		// STARTED announcement (empty notice kind), which is not a delivery.
+		before = pp4SelectedNoticeCount(t, appA, sessionID)
+	}
 	if !f6BatchOn() {
 		require.Equal(t, 1, before, "A's own run must have delivered exactly one notice")
 	} else if before == 0 {
@@ -384,6 +400,9 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 	require.EqualValues(t, 1, requestsB.Load(), "B must need only its own plain continuation turn")
 
 	after := countBackgroundNotices(t, appB, sessionID, "")
+	if f6BatchOn() {
+		after = pp4SelectedNoticeCount(t, appB, sessionID)
+	}
 	require.Equal(t, before, after, "B must add NO extra notice over an already-delivered job")
 }
 
@@ -542,7 +561,7 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	require.Equal(t, "end_turn", resB.ExitReason, "warnings=%v", resB.Warnings)
 	require.EqualValues(t, 1, requestsB.Load(), "both interrupted notices must be visible in B's FIRST turn")
 	if f6BatchOn() {
-		require.Equal(t, 2, countBackgroundNotices(t, appB, sessionID, ""), "one recovered notice PER task, and the restart must not duplicate one")
+		require.Equal(t, 2, pp4SelectedNoticeCount(t, appB, sessionID), "one recovered notice PER task (the started announcements carry no notice kind and are not counted), and the restart must not duplicate one")
 	} else {
 		require.Equal(t, 2, countBackgroundNotices(t, appB, sessionID, "interrupted"), "one interrupted notice PER task")
 	}
