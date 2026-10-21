@@ -4,7 +4,6 @@ import (
 	"context"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -201,7 +201,7 @@ func pimPrepublicationCrashRetry(t *testing.T) {
 	before := legacyImportHashes(t, legacy)
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestLegacyImportSweepsDebrisFromCrashedRun$/^pimPrepublicationCrashRetry$")
+	cmd := platform.Command(t.Context(), exe, "-test.run=^TestLegacyImportSweepsDebrisFromCrashedRun$/^pimPrepublicationCrashRetry$")
 	cmd.Env = append(os.Environ(), pimCrashHelperEnv+"=1", "RUSH_PIM_DATA_DIR="+dataDir)
 	output, err := cmd.CombinedOutput()
 	require.Error(t, err, "%s", output)
