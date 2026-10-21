@@ -70,14 +70,18 @@ func newRBRouter() *rbRouter {
 }
 
 // pr2DrainNudge reports whether text is one of production's NON-PERSISTED
-// synthetic Drain nudges (internal/agent/agent_turn.go, the IsDrain &&
-// Prompt == "" path). A retry that follows a dangling assistant turn ends
-// its provider request with this user message instead of the phase's own
-// tail text, so the router must treat it as a continuation of the actor's
-// last routed phase, never as a new delegation.
+// synthetic user tails: the Drain nudges (internal/agent/agent_turn.go, the
+// IsDrain && Prompt == "" path) and the todo reminder that preparePrompt
+// appends in a <system_reminder> wrapper (internal/agent/agent_prompt.go,
+// recognised in production by isTodoReminder, agent_drain.go). A retry that
+// follows a dangling assistant turn ends its provider request with one of
+// these user messages instead of the phase's own tail text, so the router
+// must treat it as a continuation of the actor's last routed phase, never as
+// a new delegation.
 func pr2DrainNudge(text string) bool {
 	return text == "Continue based on the notice(s) above." ||
-		text == "The conversation was summarized; continue reacting to the notice(s) above."
+		text == "The conversation was summarized; continue reacting to the notice(s) above." ||
+		strings.HasPrefix(text, "<system_reminder>")
 }
 
 // pr2Excerpt bounds a diagnostic to one line of at most 80 characters, so a
