@@ -88,8 +88,12 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	t.Setenv("XDG_CONFIG_HOME", isolationConfigDir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", isolationConfigDir)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
-
 	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		if f6BatchOn() {
+			require.NoError(t, os.RemoveAll(dataDir))
+		}
+	})
 
 	srvA := httptest.NewServer(handlerA)
 	t.Cleanup(srvA.Close)
@@ -204,6 +208,10 @@ func countBackgroundNotices(t *testing.T, app *App, sessionID, noticeKind string
 // command is sentinel-blocked and only released in cleanup, so a rerun
 // would leave the root running, never interrupted.
 func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
+	if f6BatchOn() {
+		pcrRunCrashScenario(t)
+		return
+	}
 	var requestsA, requestsB atomic.Int32
 	jobCommand, jobRelease := recoveryJobCommand(t)
 	handlerA := func(w http.ResponseWriter, r *http.Request) {

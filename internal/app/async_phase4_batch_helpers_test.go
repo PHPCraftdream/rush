@@ -80,12 +80,27 @@ func pp4DriverHostID(t *testing.T, application *App) string {
 	return application.asyncJobStore.HostID()
 }
 
-// pp4CrashSimulate releases the App's host lock WITHOUT transitioning
-// anything (the kill -9 model) through the selected authority's crash seam:
-// HostStore.SimulateCrashForTest ON, AsyncJobStore.SimulateCrashForTest OFF.
-func pp4CrashSimulate(t *testing.T, application *App) {
+// pp4CrashSimulate models a killed process ON: active work is killed and joined
+// in a subprocess; idle fixtures close their empty Runner before releasing only
+// the host lock. OFF retains the legacy crash seam unchanged.
+func pp4CrashSimulate(t *testing.T, application *App, process ...*pcrCrashProcess) {
 	t.Helper()
 	if f6BatchOn() {
+		if len(process) > 0 && process[0] != nil {
+			require.NoError(t, process[0].pcrKillAndWait())
+			return
+		}
+		if application.batchInstall != nil && application.batchInstall.Runner != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), appBatchDrainTimeout)
+			defer cancel()
+			runner := application.batchInstall.Runner
+			observeCtx, cancelObserve := context.WithCancel(ctx)
+			cancelObserve()
+			events, err := runner.Events(observeCtx, 1)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Zero(t, events.Head, "lock-only crash fixture Runner must have no observed work")
+			require.NoError(t, runner.Close(ctx), "fixture Runner must be idle before lock-only crash")
+		}
 		require.NoError(t, application.BatchHostStore().SimulateCrashForTest())
 		return
 	}
