@@ -250,7 +250,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, tx *sql.Tx, host, runn
 			continue
 		}
 		var fenced int
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = ?)`, p.Owner, host, p.Root, p.Root).Scan(&fenced); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = ? AND runner_id = ? AND `+psfOwnerStopSQLPredicate("")+`)`, p.Owner, host, p.Root, p.Root, root.RunnerID).Scan(&fenced); err != nil {
 			return err
 		}
 		if fenced != 0 {
