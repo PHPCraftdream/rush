@@ -18,7 +18,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -416,23 +415,27 @@ func TestAppBatchProviderCrashAfterCompletionSubprocess(t *testing.T) {
 	require.Positive(t, witnessBefore)
 
 	pass := runProviderCrashSweep(t, f.store, sessionID, f.dataDir)
-	// The inline call completed, so its root is terminal but was never
-	// announced: recovery removes such a leaked root (batch_recovery.go
-	// deletes an unannounced root's subtree; BatchRecoveryRoots lists
-	// "terminal unannounced leaks"). The invariant is that a committed root
-	// is never interrupted or noticed.
-	require.Len(t, pass, 1, "recovery must visit exactly the dead child host")
-	for host, out := range pass {
-		require.Zero(t, out.Interrupted, "a committed root must not be interrupted (host %s)", host)
-		require.Zero(t, out.Notices, "a committed root must not be noticed (host %s)", host)
-		require.Equal(t, int64(1), out.DeletedRoots, "the leaked terminal root is deleted (host %s)", host)
-	}
+	// The inline call completed and its result travelled as the persisted
+	// Tool result, which consumed the root in the same transaction (PDC):
+	// the root is announced/done, so it is no recovery candidate and the
+	// sweep has nothing to visit. Before PDC the root stayed unannounced and
+	// recovery had to delete it as a "terminal unannounced leak". The
+	// invariant is unchanged: a committed root is never interrupted, noticed
+	// or deleted.
+	require.Empty(t, pass, "a consumed committed root is not a recovery candidate: recovery has nothing to visit")
 	require.Zero(t, f.executor.starts.Load(), "recovery must not execute anything")
 
-	_, err := db.New(f.observing.batchCutoverWriter()).GetBatchRoot(
+	row, err := db.New(f.observing.batchCutoverWriter()).GetBatchRoot(
 		context.Background(), db.GetBatchRootParams{RootID: rootID, OwnerSessionID: sessionID})
-	require.ErrorIs(t, err, sql.ErrNoRows, "the leaked terminal root must be gone after recovery")
+	require.NoError(t, err, "the consumed committed root must survive recovery (retention reaps it later)")
 	require.NotEmpty(t, committed.State, "the root had reached a committed terminal state before the kill")
+	require.Equal(t, committed.State, row.State, "the committed outcome must be untouched by recovery")
+	require.EqualValues(t, 1, row.Announced, "the Tool result consumed the root")
+	require.Equal(t, "done", row.Delivery)
+	require.Zero(t, row.Wake)
+	require.EqualValues(t, 1, row.Reacted)
+	require.True(t, row.AnnounceMessageID.Valid, "the consumed root names the persisted Tool-result message")
+	require.Equal(t, row.AnnounceMessageID, row.NoticeMessageID)
 	require.Equal(t, witnessBefore, providerCrashWitnessLines(f.witness),
 		"the witness journal must be unchanged after recovery")
 	sentinel, err := os.ReadFile(f.target)

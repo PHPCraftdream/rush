@@ -99,6 +99,8 @@ type Querier interface {
 	// Ack election is independent of execution state; both fields change together.
 	BatchOutboxAnnounce(ctx context.Context, arg BatchOutboxAnnounceParams) (int64, error)
 	BatchOutboxClearFailure(ctx context.Context, arg BatchOutboxClearFailureParams) (int64, error)
+	// Persist the actual Tool result as both durable delivery identities under the full root incarnation fence.
+	BatchOutboxConsumeWithToolResult(ctx context.Context, arg BatchOutboxConsumeWithToolResultParams) (int64, error)
 	BatchOutboxDebtNodes(ctx context.Context, owner string) ([]BatchNode, error)
 	BatchOutboxDebtNotices(ctx context.Context, owner string) ([]SessionNotice, error)
 	BatchOutboxFailedNodes(ctx context.Context, owner string) ([]BatchNode, error)

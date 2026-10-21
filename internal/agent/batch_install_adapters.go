@@ -733,7 +733,30 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	runnerAdapter := &batchRunnerAdapter{outputCache: cache, credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
 	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
 	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
-	delivery, err := newBatchDelivery(batchDeliveryDeps{Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter, ArmSupervision: deps.ArmSupervision})
+	delivery, err := newBatchDelivery(batchDeliveryDeps{
+		Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter, ArmSupervision: deps.ArmSupervision,
+		ToolResultReceipt: func(ctx context.Context, owner string, root jobbatch.ID, callID string, sink *toolResultReceiptSink) error {
+			if sink == nil {
+				return nil
+			}
+			snapshot, err := deps.Store.Read(ctx, owner, string(root))
+			if err != nil {
+				return err
+			}
+			n := snapshot.Root
+			if !n.ToolCallID.Valid || n.ToolCallID.String == "" || n.ToolCallID.String != callID || n.OwnerSessionID != owner || n.RootID != string(root) || n.NodeID != n.RootID || n.HostID == "" || n.RunnerID == "" {
+				return errors.New("batch tool result: root identity mismatch")
+			}
+			return sink.add(toolResultReceipt{
+				identity: session.BatchToolResultIdentity{Owner: owner, RootID: n.RootID, NodeID: n.NodeID, HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String},
+				persist: func(ctx context.Context, params message.CreateMessageParams) (message.Message, bool, error) {
+					return deps.Store.BatchConsumeToolResult(ctx, deps.Messages, owner,
+						session.BatchToolResultIdentity{Owner: owner, RootID: n.RootID, NodeID: n.NodeID, HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String},
+						params)
+				},
+			})
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

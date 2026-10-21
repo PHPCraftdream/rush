@@ -125,6 +125,47 @@ func (q *Queries) BatchOutboxClearFailure(ctx context.Context, arg BatchOutboxCl
 	return result.RowsAffected()
 }
 
+const batchOutboxConsumeWithToolResult = `-- name: BatchOutboxConsumeWithToolResult :execrows
+UPDATE batch_nodes SET announced = 1, announce_message_id = ?1, notice_message_id = ?1,
+  delivery = 'done', wake = 0, reacted = 1, updated_at = ?2
+WHERE batch_nodes.owner_session_id = ?3 AND batch_nodes.root_id = ?4 AND batch_nodes.node_id = ?5
+  AND batch_nodes.node_id = batch_nodes.root_id AND batch_nodes.host_id = ?6 AND batch_nodes.runner_id = ?7
+  AND batch_nodes.tool_call_id = ?8
+  AND batch_nodes.announced = 0 AND batch_nodes.notice_selected = 1 AND batch_nodes.delivery = 'pending'
+  AND batch_nodes.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped')
+  AND (SELECT count(*) FROM batch_nodes c WHERE c.root_id = batch_nodes.root_id AND c.node_id != c.root_id) = 1
+  AND EXISTS (SELECT 1 FROM batch_nodes c WHERE c.parent_id = batch_nodes.root_id AND c.kind = 'task')
+`
+
+type BatchOutboxConsumeWithToolResultParams struct {
+	MessageID  sql.NullString `json:"message_id"`
+	UpdatedAt  int64          `json:"updated_at"`
+	Owner      string         `json:"owner"`
+	RootID     string         `json:"root_id"`
+	NodeID     string         `json:"node_id"`
+	HostID     string         `json:"host_id"`
+	RunnerID   string         `json:"runner_id"`
+	ToolCallID sql.NullString `json:"tool_call_id"`
+}
+
+// Persist the actual Tool result as both durable delivery identities under the full root incarnation fence.
+func (q *Queries) BatchOutboxConsumeWithToolResult(ctx context.Context, arg BatchOutboxConsumeWithToolResultParams) (int64, error) {
+	result, err := q.exec(ctx, q.batchOutboxConsumeWithToolResultStmt, batchOutboxConsumeWithToolResult,
+		arg.MessageID,
+		arg.UpdatedAt,
+		arg.Owner,
+		arg.RootID,
+		arg.NodeID,
+		arg.HostID,
+		arg.RunnerID,
+		arg.ToolCallID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const batchOutboxDebtNodes = `-- name: BatchOutboxDebtNodes :many
 SELECT n.node_id, n.root_id, n.owner_session_id, n.host_id, n.parent_id, n.ordinal, n.kind, n.tool_call_id, n.input_hash, n.announced, n.announce_message_id, n.origin_cli, n.mode, n.on_fail, n.notify, n.max_parallel, n.task_kind, n.task_group, n.task_payload, n.timeout_ns, n.child_session_id, n.state, n.cause, n.token, n.attempts, n.control_state, n.control_error, n.control_pending, n.outcome_state, n.outcome_code, n.outcome_summary, n.response_envelope_ref, n.root_sequence, n.projection_sequence, n.notice_selected, n.notice_kind, n.notice_state, n.notice_cause, n.notice_sequence, n.notice_ordinal, n.notice_pending, n.notice_active, n.notice_completed, n.notice_failed, n.notice_cancelled, n.notice_timed_out, n.notice_interrupted, n.notice_skipped, n.delivery, n.notice_message_id, n.wake, n.reacted, n.wake_attempts, n.reacted_failed, n.created_at, n.updated_at, n.runner_id, n.response_envelope FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.owner_session_id = ?1 AND n.notice_selected = 1 AND r.announced = 1
