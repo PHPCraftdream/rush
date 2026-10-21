@@ -38,8 +38,9 @@ import (
 // model/provider/sampling shape the delegation was launched with -- only the
 // prompt changes.
 type subAgentDriver struct {
-	agent SessionAgent
-	call  SessionAgentCall
+	agent       SessionAgent
+	call        SessionAgentCall
+	pctReleases []func() // pct: retained child construction refs released at confirmed closure.
 	// parentSessionID is the delegating session that originally armed this
 	// child's restricted-run allowlist baseline (runSubAgent's
 	// InheritSessionRunAllowlistForGeneration). wakeSession re-inherits from
@@ -114,12 +115,17 @@ func newSubAgentDriverRegistry() *subAgentDriverRegistry {
 // since register always assigns >= 1).
 func (r *subAgentDriverRegistry) register(childSessionID string, driver subAgentDriver) uint64 {
 	if r == nil || childSessionID == "" {
+		pctReleaseScopeRefs(driver.pctReleases) // pct: release retained refs if registration cannot be stored.
 		return 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextGen++
 	driver.generation = r.nextGen
+	old := r.byChild[childSessionID]
+	if len(old.pctReleases) != 0 {
+		driver.pctReleases = append(driver.pctReleases, old.pctReleases...)
+	}
 	r.byChild[childSessionID] = driver
 	return driver.generation
 }
@@ -149,6 +155,7 @@ func (r *subAgentDriverRegistry) releaseIfCurrent(childSessionID string, g uint6
 	defer r.mu.Unlock()
 	if current, ok := r.byChild[childSessionID]; ok && current.generation == g {
 		delete(r.byChild, childSessionID)
+		pctReleaseScopeRefs(current.pctReleases) // pct: release generation-owned refs only on current closure.
 		return true
 	}
 	return false
@@ -179,7 +186,17 @@ func (r *subAgentDriverRegistry) allDriverAgents() []SessionAgent {
 			continue
 		}
 		seen[d.agent] = struct{}{}
-		out = append(out, d.agent)
+		var allReleases []func()
+		for _, sameAgent := range r.byChild {
+			if sameAgent.agent == d.agent {
+				allReleases = append(allReleases, sameAgent.pctReleases...)
+			}
+		}
+		var driverAgent SessionAgent = d.agent
+		if len(allReleases) != 0 {
+			driverAgent = &pctDriverDisposer{SessionAgent: d.agent, releases: allReleases}
+		}
+		out = append(out, driverAgent)
 	}
 	return out
 }

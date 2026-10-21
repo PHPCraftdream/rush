@@ -26,6 +26,7 @@ type batchAgentRunRequest struct {
 	MessageID       string
 	DiskBindingID   string
 	Policy          *batchLeafPolicyContext
+	pctHandoff      *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
 	CallCredentials bool
 	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
 	// Dispatch resolves the pinned leaf by this name and names the call
@@ -151,12 +152,14 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			return ""
 		}(),
 		Policy: p.Policy, Tool: p.Tool, CallCredentials: p.CallCredentials,
-		Ingress: callIngress(env),
+		pctHandoff: pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
+		Ingress:    callIngress(env),
 	}
 	e := &batchAgentExecution{
 		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
 		deps:        f.deps,
 		req:         req,
+		pctHandoff:  req.pctHandoff,
 		scope:       newBatchAgentScope(),
 		driverDone:  make(chan struct{}),
 		watcherDone: make(chan struct{}),
@@ -166,6 +169,9 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	e.cancel = cancel
 	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
 		cancel()
+		if e.pctHandoff != nil {
+			e.pctHandoff.pctRelease()
+		}
 		return nil, ErrDiskProviderUnavailable
 	}
 	// R12-H2 P1-4: carry the App-owned binding registry into the driver so
@@ -184,9 +190,16 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
 	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: p.RegistryID, MessageID: messageID})
+	if e.pctHandoff != nil {
+		// pct: carry this executor's handoff into the child agent run context.
+		runCtx = context.WithValue(runCtx, pctDelegationHandoffKey{}, e.pctHandoff)
+	}
 	turn, err := e.launch(runCtx)
 	if err != nil {
 		cancel()
+		if e.pctHandoff != nil {
+			e.pctHandoff.pctRelease()
+		}
 		return nil, err
 	}
 	e.mu.Lock()
@@ -254,14 +267,14 @@ type batchAgentExecution struct {
 	scope  *batchAgentScope
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	turn     batchAgentTurn
-	stopped  bool
-	disposed bool
-	content  []byte
-	result   jobbatch.Result
-	reported bool
-
+	mu               sync.Mutex
+	turn             batchAgentTurn
+	stopped          bool
+	disposed         bool
+	content          []byte
+	result           jobbatch.Result
+	reported         bool
+	pctHandoff       *pctDelegationHandoff
 	driverDone       chan struct{} // Driver goroutine exit: late kill barrier.
 	watcherDone      chan struct{}
 	finished         chan struct{}  // Closed once, when the scope result is fixed.
@@ -474,6 +487,10 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	}
 	e.disposed = true
 	e.content = nil
+	if e.pctHandoff != nil {
+		// pct: release the executor-owned handoff on confirmed disposal.
+		e.pctHandoff.pctRelease()
+	}
 	return nil
 }
 

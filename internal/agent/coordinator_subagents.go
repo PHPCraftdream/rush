@@ -44,7 +44,8 @@ type subAgentParams struct {
 	// role slot (the agent tool's buildAgent cascade). Only such dispatches
 	// may be refreshed at dispatch time; agentic_fetch's fast-built child
 	// and any other caller are exempt.
-	slotModel bool
+	slotModel  bool
+	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
 // runSubAgent runs a sub-agent and handles session management and cost accumulation.
@@ -52,7 +53,14 @@ type subAgentParams struct {
 // runs the agent with the given prompt, and propagates the cost to the parent
 // session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
-	childSelected := false
+	var childSelected bool
+	var pctReleases []func()
+	var pctDriverTransferred bool
+	defer func() {
+		if !pctDriverTransferred {
+			pctReleaseScopeRefs(pctReleases)
+		}
+	}()
 	lifecycle, lifecycleBound := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
 	defer func() {
 		if !childSelected && lifecycleBound && lifecycle.NoChildSelected != nil {
@@ -294,7 +302,14 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 	}
-	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole})
+	if params.pctHandoff != nil {
+		pctReleases = params.pctHandoff.pctClaimDriver()
+	}
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole, pctReleases: pctReleases})
+	pctDriverTransferred = generation != 0
+	if !pctDriverTransferred {
+		pctReleaseScopeRefs(pctReleases)
+	}
 	// R1-1: inherit the parent run's per-session restricted-run gate too, so
 	// a delegated sub-agent's tool calls are judged by its own run's policy
 	// rather than by whatever a concurrent run last armed on the

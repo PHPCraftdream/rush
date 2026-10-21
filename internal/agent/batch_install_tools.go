@@ -94,11 +94,12 @@ type batchIngressTool struct {
 	// stays alive from before invokeFresh's Root owner (pre-Submit) until
 	// the executor's Execution owner holds it, and dies by prune after the
 	// root's Done + physical dispose (no process-lifetime fallback).
-	bind *batchCoordinatorBinding
-	once sync.Once
-	mu   sync.Mutex
-	id   string
-	perr error
+	bind          *batchCoordinatorBinding
+	pctChildScope *pctChildToolScope // pct: exact captured task-agent build scope.
+	once          sync.Once
+	mu            sync.Mutex
+	id            string
+	perr          error
 }
 
 // ensurePinned publishes the deferred build's registry identity exactly
@@ -189,10 +190,27 @@ func (t *batchIngressTool) holdPinned(id string) (string, func(), error) {
 }
 
 func (t *batchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	// pct: clear inherited delegation state before ordinary work invocations.
+	ctx = context.WithValue(ctx, pctDelegationHandoffKey{}, (*pctDelegationHandoff)(nil))
 	if t.bind == nil {
 		leaf, err := t.registry.resolve(call.Name)
 		if err != nil {
 			return fantasy.ToolResponse{}, err
+		}
+		if t.pctChildScope != nil {
+			lease := t.pctChildScope.pctRetain()
+			if lease == nil {
+				return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
+			}
+			handoff := pctNewDelegationHandoff([]func(){lease})
+			handoff.pctChild = t.pctChildScope
+			if captured := pctCapturedToolFrom(leaf); captured == nil || !captured.pctRegister(pctInvocationKey(tools.GetSessionFromContext(ctx), call.ID), handoff) {
+				handoff.pctRelease()
+				return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
+			}
+			defer handoff.pctReleasePending()
+			ctx = context.WithValue(ctx, pctDelegationHandoffKey{}, handoff)
+			return invokeBatchWithCallContext(ctx, t.ingress, t.inv, leaf, call)
 		}
 		return invokeBatchWithCallContext(ctx, t.ingress, t.inv, leaf, call)
 	}
@@ -337,7 +355,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 			inv.BackgroundEscape = batchEscapeAuto
 			inv.Delivery.Window = inlineWindow.String()
 		}
-		built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv}
+		built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, pctChildScope: pctCapturedScopeFromTool(tool)}
 	}
 	return built, nil
 }
