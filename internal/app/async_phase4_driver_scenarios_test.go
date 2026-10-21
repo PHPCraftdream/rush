@@ -10,6 +10,14 @@
 //	    host dead and reacts itself.
 //	(ж2) same, but the CLI dies BEFORE the job finishes: W reacts on the
 //	    completion hint itself, without waiting for the 60s pass.
+//
+// The scripts are dual-mode: flag OFF keeps the legacy async_jobs reads and
+// the legacy "Async bash job call-N started" literals byte-for-byte; flag ON
+// (RUSH_BATCH_RUNTIME) reads batch_nodes and the App's real HostStore through
+// the pp4 helpers (async_phase4_batch_helpers_test.go), matches the real
+// started/completion texts, and never re-uses a tool call id across turns
+// (the invocation hash includes the enclosing assistant message identity, so
+// a repeated id is correctly refused by the live-input fence).
 package app
 
 import (
@@ -36,21 +44,36 @@ import (
 // job notice is in the last user message). The returned release path
 // unblocks the job's sentinel-blocked command (recoveryJobCommand) at the
 // point in each scenario where the job is meant to finish; tests that never
-// start the job ignore it.
+// start the job ignore it. Handler branches never call require: they run on
+// httptest's goroutine and report through t.Errorf + an HTTP error instead.
 func driverScenarioHandlers(t *testing.T, requestsW, requestsC *atomic.Int32) (w, c http.HandlerFunc, jobRelease string) {
 	blockedCommand, jobRelease := recoveryJobCommand(t)
 	w = func(rw http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
 		requestsW.Add(1)
+		completionSeen := strings.Contains(lastUser, "call-1 (bash)") || pp4CompletionSeen(string(body), "call-1")
+		startedSeen := pp4StartedSeen(lastTool, "call-1")
+		// The started tool result stays the LAST tool-role message forever,
+		// so once a completion exists it must win the match. OFF keeps the
+		// legacy branch order (started first) byte-for-byte; ON checks the
+		// completion first.
 		switch {
-		case strings.Contains(lastTool, "Async bash job call-1 started"):
+		case completionSeen && (f6BatchOn() || !startedSeen):
+			admissionWriteSSE(rw, []string{admissionSSEText("wreact", "web reacted to the job"), admissionSSEStop("wreact", "stop")})
+		case startedSeen && !f6BatchOn():
 			admissionWriteSSE(rw, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
-		case strings.Contains(lastUser, "call-1 (bash)"):
+		case startedSeen:
+			admissionWriteSSE(rw, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
+		case completionSeen:
 			admissionWriteSSE(rw, []string{admissionSSEText("wreact", "web reacted to the job"), admissionSSEStop("wreact", "stop")})
 		default:
+			// A unique call id per turn ON: the invocation hash includes the
+			// enclosing assistant message identity, so a repeated call id
+			// with a fresh message is correctly refused by the attach fence.
+			id := pp4NextCallID("call-1", requestsW.Load())
 			admissionWriteSSE(rw, []string{
-				admissionSSEToolCall("start", "call-1", "bash",
+				admissionSSEToolCall("start", id, "bash",
 					`{"command":`+jsonString(blockedCommand)+`,"description":"long job"}`),
 				admissionSSEStop("start", "tool_calls"),
 			})
@@ -60,7 +83,7 @@ func driverScenarioHandlers(t *testing.T, requestsW, requestsC *atomic.Int32) (w
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, _ := lastTurnParts(body)
 		requestsC.Add(1)
-		if strings.Contains(lastUser, "call-1 (bash)") {
+		if strings.Contains(lastUser, "call-1 (bash)") || pp4CompletionSeen(lastUser, "call-1") {
 			admissionWriteSSE(rw, []string{admissionSSEText("creact", "the job finished; answered in the CLI"), admissionSSEStop("creact", "stop")})
 			return
 		}
@@ -77,13 +100,6 @@ func startWebJob(t *testing.T, ctx context.Context, appW *App, sessionID string)
 		Mode: RunModeJSON, ContinueSessionID: sessionID, Stdout: io.Discard, Stderr: io.Discard, HideSpinner: true,
 	})
 	require.NoError(t, err)
-}
-
-func jobRow(t *testing.T, app *App, sessionID string) db.AsyncJob {
-	t.Helper()
-	row, err := app.asyncJobStore.Get(context.Background(), sessionID, "call-1")
-	require.NoError(t, err)
-	return row
 }
 
 func driverSource(t *testing.T, app *App) agent.ReactionDebtSource {
@@ -128,7 +144,8 @@ func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 	defer cancel()
 	startWebJob(t, ctx, appW, sessionID)
 	require.EqualValues(t, 2, requestsW.Load(), "W's own turn: tool call + yield")
-	require.Equal(t, "running", jobRow(t, appW, sessionID).State, "the job must outlive W's turn")
+	fact := pp4JobFactByCall(t, appW, sessionID, "call-1")
+	require.Equal(t, "running", fact.State, "the job must outlive W's turn")
 	// Let the sentinel-blocked job finish now; the completion is one poll
 	// iteration away instead of a wall-clock estimate.
 	// Claim BEFORE C's run: W's completion decision must see a live foreign
@@ -145,7 +162,7 @@ func TestTwoAppScenarioE_WebJobWhileCLIDrives_RootAnswersInCLI(t *testing.T) {
 	require.EqualValues(t, 2, requestsC.Load(), "C: its own continuation turn plus the reaction turn")
 	require.Contains(t, resC.FinalText, "answered in the CLI", "the root's answer must come from the CLI loop")
 	require.EqualValues(t, 2, requestsW.Load(), "W must not have reacted: a live CLI loop drives the session")
-	row := jobRow(t, appW, sessionID)
+	row := pp4JobFactByCall(t, appW, sessionID, "call-1")
 	require.Equal(t, "completed", row.State)
 	require.EqualValues(t, 1, row.Reacted, "the reaction was recorded")
 
@@ -180,19 +197,24 @@ func TestTwoAppScenarioF_DriverCrash_WebTakesOver(t *testing.T) {
 	releaseRecoveryJob(t, jobRelease)
 
 	// ... the job finishes while C drives: W parks the wake instead of reacting.
-	require.Eventually(t, func() bool { return jobRow(t, appW, sessionID).State == "completed" },
-		20*time.Second, 50*time.Millisecond, "the job must finish in W")
+	require.Eventually(t, func() bool {
+		fact, ok := pp4JobFactRead(appW, sessionID, "call-1")
+		return ok && fact.Found && fact.State == "completed"
+	}, 20*time.Second, 50*time.Millisecond, "the job must finish in W")
 	require.Never(t, func() bool { return requestsW.Load() > 2 }, 500*time.Millisecond, 20*time.Millisecond,
 		"W must not react while a live CLI drives the session")
-	require.EqualValues(t, 0, jobRow(t, appW, sessionID).Reacted)
+	fact := pp4JobFactByCall(t, appW, sessionID, "call-1")
+	require.Zero(t, fact.Reacted)
 
 	// kill -9 of C: the host lock drops, the marker row stays.
-	require.NoError(t, appC.asyncJobStore.SimulateCrashForTest())
+	pp4CrashSimulate(t, appC)
 
 	appW.AgentCoordinator.(interface{ RecheckPass(context.Context) }).RecheckPass(ctx)
 
-	require.Eventually(t, func() bool { return jobRow(t, appW, sessionID).Reacted == 1 },
-		20*time.Second, 50*time.Millisecond, "W must take the session over and react")
+	require.Eventually(t, func() bool {
+		f, ok := pp4JobFactRead(appW, sessionID, "call-1")
+		return ok && f.Found && f.Reacted == 1
+	}, 20*time.Second, 50*time.Millisecond, "W must take the session over and react")
 	require.EqualValues(t, 3, requestsW.Load(), "W's reaction turn")
 	require.Zero(t, requestsC.Load(), "the dead CLI's provider is never called")
 }
@@ -220,13 +242,16 @@ func TestTwoAppScenarioF2_DriverCrashBeforeCompletion_WebReactsOnHint(t *testing
 	defer cancel()
 	startWebJob(t, ctx, appW, sessionID)
 	require.NoError(t, driverSource(t, appC).ClaimExternalDriver(ctx, sessionID))
-	require.Equal(t, "running", jobRow(t, appW, sessionID).State)
+	fact := pp4JobFactByCall(t, appW, sessionID, "call-1")
+	require.Equal(t, "running", fact.State)
 
-	require.NoError(t, appC.asyncJobStore.SimulateCrashForTest())
+	pp4CrashSimulate(t, appC)
 	releaseRecoveryJob(t, jobRelease)
 
-	require.Eventually(t, func() bool { return jobRow(t, appW, sessionID).Reacted == 1 },
-		30*time.Second, 50*time.Millisecond, "W must react on the completion hint: the driver is dead")
+	require.Eventually(t, func() bool {
+		f, ok := pp4JobFactRead(appW, sessionID, "call-1")
+		return ok && f.Found && f.Reacted == 1
+	}, 30*time.Second, 50*time.Millisecond, "W must react on the completion hint: the driver is dead")
 	require.EqualValues(t, 3, requestsW.Load())
 }
 
@@ -260,7 +285,9 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 
 	var elsewhere *session.ErrSessionDrivenElsewhere
 	require.ErrorAs(t, err, &elsewhere, "the second loop must be refused with the typed error")
-	require.Equal(t, appDriver.asyncJobStore.HostID(), elsewhere.HostID)
+	// The host id the refusal names is the DRIVER's registered host id in the
+	// selected authority: the App's real HostStore ON, the legacy store OFF.
+	require.Equal(t, pp4DriverHostID(t, appDriver), elsewhere.HostID)
 	require.Nil(t, res, "no turn ran, so there is no result")
 	require.Zero(t, requestsC.Load(), "the provider must not be called")
 	after, err := appLate.Sessions.Get(ctx, sessionID)
@@ -272,7 +299,7 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 	// The refused loop must not have disturbed the live driver's marker.
 	row, err := db.New(appLate.DB()).GetSessionDriver(ctx, sessionID)
 	require.NoError(t, err)
-	require.Equal(t, appDriver.asyncJobStore.HostID(), row.HostID)
+	require.Equal(t, pp4DriverHostID(t, appDriver), row.HostID)
 }
 
 // TestRunLoop_DurableDriverReleasedInNonPersistentMode: C4 keeps a
