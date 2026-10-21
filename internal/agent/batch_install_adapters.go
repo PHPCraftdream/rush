@@ -568,9 +568,51 @@ type BatchInstallDeps struct {
 	RecordRetention               int
 	// DonePoll is the done source's durable poll cadence; zero selects the
 	// default.
-	DonePoll     time.Duration
-	Sessions     session.Service
-	DiskBindings *DiskProviderRegistry
+	DonePoll time.Duration
+	// CompletionWake, when non-nil, receives the touched root after every
+	// successful commit that selected completion notices (the ordinary
+	// completion wake bridge; the App wires the bounded timeout-wake
+	// dispatcher). Nil keeps the plain durable commit hook.
+	CompletionWake func(context.Context, string)
+	Sessions       session.Service
+	DiskBindings   *DiskProviderRegistry
+}
+
+// pwCompletionWakeHook wraps a durable batch commit hook with the ordinary
+// selected-completion wake. After a SUCCESSFUL commit whose transition
+// selected completion notices, it calls wake with the touched root; the
+// receiving dispatcher resolves the owner from the durable row. Host-closing
+// mirrors the wrapped hook's sticky closing flag: a HostClosing commit (and
+// every later interrupted settlement, whose notices persist wake=0) never
+// wakes, so shutdown and recovery launches nothing. The wake is fired
+// AFTER the commit returned nil and is nonblocking; a failed commit never
+// wakes.
+func pwCompletionWakeHook(next func(context.Context, jobbatch.Transition) error, wake func(context.Context, string)) func(context.Context, jobbatch.Transition) error {
+	closing := false
+	return func(ctx context.Context, t jobbatch.Transition) error {
+		err := next(ctx, t)
+		if err == nil && t.Event.Type == jobbatch.EventHostClosing {
+			closing = true
+		}
+		if err != nil || closing || wake == nil || len(t.Notices) == 0 {
+			return err
+		}
+		// The touched roots come from the SELECTED NOTICES: Event.Root is
+		// zero for a settled/control event (only submit and release carry
+		// it), so it cannot identify the root of an ordinary completion.
+		var woken map[jobbatch.ID]bool
+		for _, n := range t.Notices {
+			if n.Root == "" || woken[n.Root] {
+				continue
+			}
+			if woken == nil {
+				woken = make(map[jobbatch.ID]bool, len(t.Notices))
+			}
+			woken[n.Root] = true
+			wake(ctx, string(n.Root))
+		}
+		return nil
+	}
 }
 
 // BatchInstall is one fully adapted, still-dormant installation.
@@ -730,6 +772,16 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	commitHook := session.NewBatchCommitHook(deps.Store, session.BatchCommitIdentity{
 		Host: deps.Host, Runner: deps.RunnerID, Owner: owner, OwnerFor: batchCommitOwnerFor,
 	})
+	// Ordinary-completion wake bridge: after a SUCCESSFUL durable commit
+	// that selected completion notices, notify the owning session so the
+	// coordinator can run the reaction through its existing gates. The
+	// wrapper only ENQUEUES the touched root (nonblocking, bounded on the
+	// receiver side); it never runs a provider turn on the Runner commit
+	// stack and never adds a second delivery authority. Nil (flag-OFF
+	// installs, dormant tests) keeps the hook byte-identical.
+	if deps.CompletionWake != nil {
+		commitHook = pwCompletionWakeHook(commitHook, deps.CompletionWake)
+	}
 	runnerCfg := jobbatch.RunnerConfig{
 		CommitHook: commitHook, CommitTimeout: deps.CommitTimeout,
 		Limits: deps.Limits, Executor: executor,
