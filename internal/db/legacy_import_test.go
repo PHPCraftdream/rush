@@ -127,7 +127,10 @@ func TestLegacyImportPolicyExhaustive(t *testing.T) {
 
 func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	t.Parallel()
-	t.Run("pimJournalModes", pimJournalModes)
+	t.Run("pimJournalModes", func(t *testing.T) {
+		t.Parallel()
+		pimJournalModes(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()
@@ -206,7 +209,10 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 
 func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 	t.Parallel()
-	t.Run("pimFailureRetry", pimFailureRetry)
+	t.Run("pimFailureRetry", func(t *testing.T) {
+		t.Parallel()
+		pimFailureRetry(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()
@@ -228,7 +234,10 @@ func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 
 func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 	t.Parallel()
-	t.Run("pimExistingDestination", pimExistingDestination)
+	t.Run("pimExistingDestination", func(t *testing.T) {
+		t.Parallel()
+		pimExistingDestination(t)
+	})
 	dataDir := t.TempDir()
 	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{})
 	require.NoError(t, err)
@@ -245,7 +254,10 @@ func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 
 func TestLegacyImportLiveHostRefuses(t *testing.T) {
 	t.Parallel()
-	t.Run("pimHostRefusal", pimHostRefusal)
+	t.Run("pimHostRefusal", func(t *testing.T) {
+		t.Parallel()
+		pimHostRefusal(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	before := legacyImportHashes(t, legacy)
@@ -563,7 +575,13 @@ func TestLegacyImportRefusesUnknownColumns(t *testing.T) {
 
 func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
 	t.Parallel()
-	t.Run("pimPrepublicationCrashRetry", pimPrepublicationCrashRetry)
+	t.Run("pimPrepublicationCrashRetry", func(t *testing.T) {
+		// The re-executed child must run the helper at once and exit.
+		if os.Getenv(pimCrashHelperEnv) != "1" {
+			t.Parallel()
+		}
+		pimPrepublicationCrashRetry(t)
+	})
 	dataDir := t.TempDir()
 	_, legacyConn := createLegacyFixture(t, dataDir)
 	defer legacyConn.Close()

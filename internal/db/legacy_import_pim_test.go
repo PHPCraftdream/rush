@@ -21,6 +21,7 @@ func pimExistingDestination(t *testing.T) {
 	t.Helper()
 	for _, valid := range []bool{false, true} {
 		t.Run(map[bool]string{false: "invalid", true: "valid"}[valid], func(t *testing.T) {
+			t.Parallel()
 			dataDir := t.TempDir()
 			_, source := createLegacyFixture(t, dataDir)
 			defer source.Close()
@@ -50,6 +51,7 @@ func pimHostRefusal(t *testing.T) {
 	t.Helper()
 	for _, mode := range []string{"alive", "unknown"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			dataDir := t.TempDir()
 			legacy, conn := createLegacyFixture(t, dataDir)
 			defer conn.Close()
@@ -85,6 +87,7 @@ func pimJournalModes(t *testing.T) {
 	t.Helper()
 	for _, mode := range []string{"DELETE", "WAL"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			dataDir := t.TempDir()
 			legacy, conn := createLegacyFixture(t, dataDir)
 			defer conn.Close()
