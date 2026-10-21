@@ -1,5 +1,7 @@
 # R12 Old-Path Inventory Manifest (2026-10-14)
 
+> **Historical snapshot.** Superseded for the current HEAD by `docs/plans/2026-10-21-h4-execution-manifest.md`; do not use this document as a deletion list. Preserve it as historical evidence; do not regenerate it as a current inventory.
+
 ## Provenance
 
 - Generator script: `tools/r12a_old_path_manifest.py` (stdlib only, deterministic, no network, not run in CI).
