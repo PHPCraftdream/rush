@@ -66,8 +66,57 @@ review item: decision, priority, rationale, guarding test.
    Guard: `internal/agent/batch_supervision_debt_test.go`
    (TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle).
 
-## Operator sign-off needed
+8. **Heartbeat label under the batch runtime** — ACCEPT, no change.
+   The wait heartbeat names the task kind (`shell` / `argv`) and the owning
+   host PID instead of the tool name (`bash` / `run_command`), because the batch
+   task row stores the kind, not the tool name (package T2 restored the PID).
+   Storing the tool name would need a schema change; not worth it.
+   Guard: the T2 heartbeat tests (`app_run_wait_heartbeat_test.go`).
 
-- Item 4 — silence flagging in batch supervision (accept removal, P3).
-- Item 5 — repeating question text in the supervision summary (accept removal, P3).
-- Item 6 — idle-child own-jobs explanatory line (accept removal, P3).
+9. **Supervision arming under the batch runtime** — RESTORED (package SV, PR #171).
+   Rationale: the legacy arming points did not exist under the flag; the orchestrator
+   restored them at the batch started boundary. A paused supervision entry whose
+   work drains without a later notice, cancel or new work keeps its registry
+   entry (bounded by sessions; P2, recorded in PR #171).
+   Guard: `internal/agent/batch_supervision_arming_test.go`.
+
+## Operator sign-off (recorded)
+
+Signed off by the operator on 2026-10-21 ("делай как ты рекомендуешь"), accepting
+the recommendations as written:
+
+- Item 4 — silence flagging in batch supervision: removal accepted (P3).
+- Item 5 — repeating question text in the supervision summary: removal accepted (P3).
+- Item 6 — idle-child own-jobs explanatory line: removal accepted (P3).
+- Item 8 — heartbeat shows the task kind, not the tool name: accepted.
+
+Items 3 and 7 stay deferred P2 (not mandatory for H4 without a new reproducible P1).
+
+## H4 rollout decisions (same sign-off, 2026-10-21)
+
+Source: docs/reviews/2026-10-19-h4-prerequisites-review.md and the H4 execution
+plan (reviewer consultation #7). These bind the H4 documentation and tests.
+
+1. **Data semantics.** The importer carries durable history, settings, queues and
+   schedules; it discards old and preparation-era execution and control state
+   (`async_jobs`, batch/control/checkpoint/check-in rows, hosts, drivers). H4 does
+   not continue in-flight jobs across the upgrade.
+2. **Quiescence.** Stop every old rush process and any automatic restart for the
+   whole import; there is no registration fence against a process that starts
+   during it. Mixed-generation use of shared locks, config and attachments is
+   unsupported.
+3. **Owner-stop fences from before the `owner_stop:` namespace (package SF).**
+   No hot continuity: stop all preparation hosts before upgrading; bare-UUID
+   control rows are never relabelled as owner-stop.
+4. **Existing `rush_store_v1.db`.** Never overwritten and never re-imported. To
+   re-import, the operator moves the file (and its sidecars) aside by hand.
+5. **Imported queued work.** Running operator tasks and leased continuations are
+   reclaimed and retried; a retry can repeat an external side effect. The importer
+   is not exactly-once for external effects. State this in the rollout notes.
+6. **Historical web completion display.** Keep it as read-only compatibility for
+   imported transcripts; do not remove the rendering together with the legacy rows.
+7. **SDK execution fence.** Keep the interim reserved `session_run_queue` row
+   through H4 (it is not a legacy execution authority); the move to a
+   `sessions.execution_requirement` column is a separate later change.
+8. **Versions.** H4 does not bump any version, tag or release. Incompatibility and
+   rollback are documented without touching version numbers.
