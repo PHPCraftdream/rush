@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,9 +203,26 @@ func pwInstallWakeApp(t *testing.T) (*App, *sql.DB, agent.BatchInstallDeps, chan
 	var deps agent.BatchInstallDeps
 	batchInstallDepsHook = func(d *agent.BatchInstallDeps) { deps = *d }
 	t.Cleanup(func() { batchInstallDepsHook = nil })
+	// DORMANT install: these tests drive the REAL install commit hook with
+	// hand-built transitions, so a LIVE Runner must never exist — at
+	// shutdown it would commit its own HostClosing/final transitions
+	// through the same hook, and their engine sequences (starting at 1)
+	// lose the projection fences against the hand-committed higher
+	// sequences (AdvanceBatchRootSequence / ProjectBatchNode require a
+	// strictly greater sequence), latching a Runner commit fault whose
+	// forced shutdown retains the host lock and breaks TempDir cleanup.
+	// Runnerless also keeps DrainAndRelease on the graceful releaseAll
+	// path (Forced=false on every OS).
+	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
+		cfg.RunnerFactory = func() (batchRunner, error) {
+			return nil, errors.New("pw completion wake test: dormant install")
+		}
+	}
+	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
 	require.NotNil(t, a.batchTimeoutWake, "the flagged install must arm the wake dispatcher")
+	require.Nil(t, a.batchRuntime.Runner(), "the pw install must stay runnerless")
 	wakes := pwAttachWakeRecorder(a.batchTimeoutWake)
 	return a, conn, deps, wakes
 }
@@ -250,7 +268,7 @@ func TestBatchCompletionWake_CommitHookSettledNoticeWakesOwner(t *testing.T) {
 	defer func() { require.False(t, a.ShutdownWithResult().Forced) }()
 	owner, err := a.Sessions.Create(context.Background(), "pw hook owner")
 	require.NoError(t, err)
-	root, node := pwReserveWakeDelegation(t, a, owner.ID, "pw-hook-call", deps)
+	root, node, _ := pwReserveWakeDelegation(t, a, owner.ID, "pw-hook-call", deps)
 	pwCommitSettledNotice(t, a, deps, root, node, 2)
 	select {
 	case rec := <-wakes:
@@ -280,9 +298,11 @@ func TestBatchCompletionWake_CommitHookSettledNoticeWakesOwner(t *testing.T) {
 }
 
 // pwReserveWakeDelegation reserves the fixture root under the INSTALLED
-// runner identity so the real commit hook's projection fences match, and
-// returns the root and task node ids.
-func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps agent.BatchInstallDeps) (string, string) {
+// runner identity so the real commit hook's projection fences match, with
+// TWO task children so two distinct transitions can each select one notice
+// (SelectBatchNodeNotice refuses a node whose notice is already selected),
+// and returns the root and the two task node ids.
+func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps agent.BatchInstallDeps) (string, string, string) {
 	t.Helper()
 	host := a.BatchHostStore().HostID()
 	res, err := session.NewBatchStore(a.DB()).Reserve(context.Background(), session.BatchReservation{
@@ -293,14 +313,20 @@ func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps ag
 				Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
 				State: "running", ControlState: "none",
 			},
-			Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{
-				Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true},
-				State: "running", ControlState: "none",
-			}}},
+			Children: []session.BatchReservationNode{
+				{Values: db.ReserveBatchNodeParams{
+					Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true},
+					State: "running", ControlState: "none",
+				}},
+				{Values: db.ReserveBatchNodeParams{
+					Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true},
+					State: "running", ControlState: "none",
+				}},
+			},
 		},
 	})
 	require.NoError(t, err)
-	root, node := res.Snapshot.Root.RootID, res.Snapshot.Nodes[1].NodeID
+	root, node1, node2 := res.Snapshot.Root.RootID, res.Snapshot.Nodes[1].NodeID, res.Snapshot.Nodes[2].NodeID
 	// Announce the started root: the pull predicate only surfaces notices
 	// whose root is announced (batchOutboxPendingVoidAware).
 	start, err := session.NewBatchStore(a.DB()).BatchAnnounceStarted(
@@ -312,7 +338,7 @@ func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps ag
 		})
 	require.NoError(t, err)
 	require.NotEmpty(t, start.ID)
-	return root, node
+	return root, node1, node2
 }
 
 // TestBatchCompletionWake_ShutdownClosingCommitsWakeZero: a HostClosing
@@ -328,7 +354,7 @@ func TestBatchCompletionWake_ShutdownClosingCommitsWakeZero(t *testing.T) {
 	defer func() { require.False(t, a.ShutdownWithResult().Forced) }()
 	owner, err := a.Sessions.Create(context.Background(), "pw closing owner")
 	require.NoError(t, err)
-	root, node := pwReserveWakeDelegation(t, a, owner.ID, "pw-closing-call", deps)
+	root, nodeClosing, nodeAfter := pwReserveWakeDelegation(t, a, owner.ID, "pw-closing-call", deps)
 
 	ctx, cancel := context.WithTimeout(context.Background(), pwWakeTimeout)
 	defer cancel()
@@ -337,29 +363,31 @@ func TestBatchCompletionWake_ShutdownClosingCommitsWakeZero(t *testing.T) {
 		Sequence: 2,
 		Event:    jobbatch.Event{Type: jobbatch.EventHostClosing},
 		Changed: []jobbatch.NodeView{{
-			ID: jobbatch.ID(node), Root: jobbatch.ID(root), Kind: jobbatch.KindTask,
+			ID: jobbatch.ID(nodeClosing), Root: jobbatch.ID(root), Kind: jobbatch.KindTask,
 			State: jobbatch.StateInterrupted, Token: 1,
 			Outcome: jobbatch.Outcome{State: jobbatch.StateInterrupted},
 		}},
 		Notices: []jobbatch.Notice{{
-			Root: jobbatch.ID(root), Node: jobbatch.ID(node), Kind: jobbatch.KindTask,
+			Root: jobbatch.ID(root), Node: jobbatch.ID(nodeClosing), Kind: jobbatch.KindTask,
 			State: jobbatch.StateInterrupted, Counts: jobbatch.Counts{Interrupted: 1},
 		}},
 	}))
-	// A later interrupted settlement after closing must also wake=0.
+	// A later interrupted settlement after closing must also wake=0. It
+	// selects the SECOND child's notice: re-selecting the SAME node is a
+	// projection conflict (SelectBatchNodeNotice requires notice_selected=0).
 	require.NoError(t, a.batchInstall.CommitHook(ctx, jobbatch.Transition{
 		Sequence: 3,
 		Event: jobbatch.Event{
-			Type: jobbatch.EventSettled, Node: jobbatch.ID(node),
+			Type: jobbatch.EventSettled, Node: jobbatch.ID(nodeAfter),
 			Result: jobbatch.Result{State: jobbatch.StateInterrupted},
 		},
 		Changed: []jobbatch.NodeView{{
-			ID: jobbatch.ID(node), Root: jobbatch.ID(root), Kind: jobbatch.KindTask,
+			ID: jobbatch.ID(nodeAfter), Root: jobbatch.ID(root), Kind: jobbatch.KindTask,
 			State: jobbatch.StateInterrupted, Token: 2,
 			Outcome: jobbatch.Outcome{State: jobbatch.StateInterrupted},
 		}},
 		Notices: []jobbatch.Notice{{
-			Root: jobbatch.ID(root), Node: jobbatch.ID(node), Kind: jobbatch.KindTask,
+			Root: jobbatch.ID(root), Node: jobbatch.ID(nodeAfter), Kind: jobbatch.KindTask,
 			State: jobbatch.StateInterrupted, Counts: jobbatch.Counts{Interrupted: 1},
 		}},
 	}))
