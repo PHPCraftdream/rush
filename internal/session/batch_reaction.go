@@ -279,13 +279,18 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 	if msg.SessionID != owner {
 		return ErrBatchProjectionConflict
 	}
+	// See batch_tool_result.go: prepare before the tx holds the pool's only
+	// connection.
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	// Take the writer before UpdateTx so accounting cannot race another writer.
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	now := time.Now().Unix()
 	if _, err = tx.ExecContext(ctx, batchOutboxReactNodesVoidAware, now, owner); err != nil {
 		return err

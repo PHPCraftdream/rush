@@ -23,6 +23,14 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 	if owner == "" || owner != identity.Owner || identity.RootID == "" || identity.NodeID != identity.RootID || identity.HostID == "" || identity.RunnerID == "" || identity.ToolCallID == "" || params.Role != message.Tool {
 		return message.Message{}, false, ErrBatchToolResultIdentity
 	}
+	// Prepare the batch statement cache BEFORE opening the tx: the writer pool
+	// has exactly one connection, and preparing while the tx holds it would
+	// deadlock (PdaBatchTxQueries itself never prepares; on a miss it falls
+	// back to raw SQL, which would only happen if a pool release raced with
+	// the Ensure below).
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return message.Message{}, false, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return message.Message{}, false, err
@@ -32,7 +40,7 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 	if err != nil {
 		return message.Message{}, false, err
 	}
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	rows, err := q.BatchOutboxConsumeWithToolResult(ctx, db.BatchOutboxConsumeWithToolResultParams{
 		MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
 		Owner: owner, RootID: identity.RootID, NodeID: identity.NodeID, HostID: identity.HostID,

@@ -77,12 +77,20 @@ func (s *BatchStore) Reserve(ctx context.Context, p BatchReservation) (BatchRese
 // projects initial views and notices in ONE transaction. Live attachment
 // compares input hash, owning host and Runner incarnation before reuse.
 func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (BatchReservationResult, error) {
+	// Prepare the batch statement cache BEFORE opening the tx: the writer pool
+	// has exactly one connection, and preparing while the tx holds it would
+	// deadlock (PdaBatchTxQueries itself never prepares; on a miss it falls
+	// back to raw SQL, which would only happen if a pool release raced with
+	// the Ensure above).
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return BatchReservationResult{}, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return BatchReservationResult{}, err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	live, err := q.GetLiveBatchRoot(ctx, db.GetLiveBatchRootParams{OwnerSessionID: p.Owner, ToolCallID: sql.NullString{String: p.ToolCallID, Valid: true}})
 	attached := err == nil
 	root := live.RootID
@@ -185,12 +193,17 @@ func batchRequireRow(n int64, err error) error {
 // Project commits one accepted transition, including the (host, incarnation)
 // sequence checkpoint. Any missing update rolls everything back.
 func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
+	// See ReserveIdentity: prepare before the tx holds the pool's only
+	// connection.
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	if p.Checkpoint != nil {
 		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
 			return err
@@ -306,5 +319,9 @@ func (s *BatchStore) AnswerControl(ctx context.Context, p db.AnswerBatchControlR
 }
 
 func (s *BatchStore) DeleteRoot(ctx context.Context, owner, host, root string) error {
-	return batchRequireRow(db.New(s.writer).DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
+	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
+	if err != nil {
+		return err
+	}
+	return batchRequireRow(q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
 }
