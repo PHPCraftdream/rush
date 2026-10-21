@@ -30,10 +30,10 @@ import (
 // root run that starts one background command (arming supervision the
 // instant it starts) must exit as soon as that command's own work drains --
 // not wait for, or be delayed by, the supervision timer in any way. The
-// 5-second context bound is far tighter than the 5-minute default
-// supervision interval: only a supervision-shaped hang (or its absence)
-// could plausibly separate a pass from a timeout here, unlike a looser
-// bound that would also pass for unrelated reasons.
+// 30-second context bound is an order of magnitude tighter than the
+// 5-minute default supervision interval: only a supervision-shaped hang (or
+// its absence) could plausibly separate a pass from a timeout here, unlike
+// a looser bound that would also pass for unrelated reasons.
 //
 // Revert-check: not performed by neutering production code (that would
 // require literally making supervision hold the ledger's job map open,
@@ -71,7 +71,12 @@ func TestRunNonInteractiveExitsPromptlyWithSupervisionArmedAndNoOtherWork(t *tes
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// 30 s: the background command is a real `go version` process, whose
+	// cold start on a loaded CI runner can exceed a 5 s bound (the observed
+	// flake); the bound only has to stay an order of magnitude below the
+	// 5-minute supervision interval to keep telling a supervision-shaped
+	// hang from a pass.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	var stdout bytes.Buffer
 	result, err := application.RunNonInteractiveWithResult(ctx, &stdout, "start a background command", RunOverrides{

@@ -252,7 +252,7 @@ ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 			rootFinals.Add(1)
 			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root done"), admissionSSEStop("root-final", "stop")})
 		default:
-			http.Error(w, "unexpected batch route system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
+			http.Error(w, "unexpected batch route system="+pr2Excerpt(system)+" lastUser="+pr2Excerpt(lastUser)+" lastTool="+pr2Excerpt(lastTool), http.StatusBadRequest)
 		}
 	})
 	liveApp.Store(application)
@@ -283,6 +283,15 @@ ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 			case releaseErr <- err:
 			default:
 			}
+			closeOnce(holdOpenClose, holdOpen)
+			return
+		}
+		// REAL mid-turn gate: hold the response closed until the command's
+		// batch row is terminal, so "terminal while the step was held" is
+		// observed, not assumed. The child's provider step stays blocked the
+		// whole time; no sleep-based timing.
+		if err := pr2AwaitShellTerminal(liveApp.Load(), childID.Load().(string), commandRoot.Load().(string), 30*time.Second); err != nil {
+			t.Errorf("command never became terminal while the held step was still blocked: %v", err)
 			closeOnce(holdOpenClose, holdOpen)
 			return
 		}
