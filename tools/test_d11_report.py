@@ -319,6 +319,33 @@ class D11ReportTests(unittest.TestCase):
         self.assertIn("Median ratio", report); self.assertIn("Pinned baseline", report)
         self.assertIn("Call origin", report); self.assertIn("Turn-health", report)
 
+    # Trace: the step-summary rendering drops the raw samples and the merged JSON (GITHUB_STEP_SUMMARY caps at 1 MiB) but keeps every gate row.
+    def test_summary_rendering_omits_raw_evidence_and_keeps_gate_rows(self):
+        baselines, candidates = pair()
+        result = d11_report.evaluate(baselines, candidates)
+        full, compact = d11_report.render(result), d11_report.render(result, evidence=False)
+        self.assertIn("raw_ms", full); self.assertIn("Merged JSON", full)
+        self.assertNotIn("raw_ms", compact); self.assertNotIn("Merged JSON", compact); self.assertNotIn("Raw run evidence\n", compact)
+        self.assertIn("Median ratio", compact); self.assertIn("Turn-health", compact); self.assertIn("Throughput calls/s", compact)
+        self.assertLess(len(compact), len(full))
+
+    # Trace: --summary-out writes the compact form next to the full report, and the full report keeps the raw evidence.
+    def test_cli_writes_compact_summary_next_to_full_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baselines, candidates = pair()
+            summaries = [baselines["direct-view"], candidates["direct-view"], baselines["legacy-bash"], candidates["legacy-bash"]]
+            paths = [os.path.join(tmp, "%d.log" % i) for i in range(4)]
+            for path, summary in zip(paths, summaries):
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(d11_report.BEGIN + "\n" + json.dumps(summary) + "\n" + d11_report.END + "\n")
+            report, compact = os.path.join(tmp, "report.md"), os.path.join(tmp, "summary.md")
+            with mock.patch.object(sys, "argv", ["d11_report", *paths, "-o", report, "--summary-out", compact]):
+                d11_report.main()
+            with open(report, encoding="utf-8") as stream: full_text = stream.read()
+            with open(compact, encoding="utf-8") as stream: compact_text = stream.read()
+            self.assertIn("Merged JSON", full_text); self.assertNotIn("Merged JSON", compact_text)
+            self.assertIn("Median ratio", compact_text); self.assertLess(len(compact_text), len(full_text))
+
     # Trace: four-input CLI emits both reports and structured invalid artifact when a workload log is absent or malformed.
     def test_cli_writes_four_workload_logs_and_failure_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
