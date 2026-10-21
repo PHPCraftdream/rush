@@ -192,7 +192,7 @@ func (r *subAgentDriverRegistry) allDriverAgents() []SessionAgent {
 				allReleases = append(allReleases, sameAgent.pctReleases...)
 			}
 		}
-		var driverAgent SessionAgent = d.agent
+		driverAgent := d.agent
 		if len(allReleases) != 0 {
 			driverAgent = &pctDriverDisposer{SessionAgent: d.agent, releases: allReleases}
 		}
