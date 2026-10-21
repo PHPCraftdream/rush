@@ -56,7 +56,7 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 	t.Helper()
 	path := storepath.DataDirPath(dataDir, storepath.LegacyFilename)
 	conn := openTestDB(t, path)
-	require.NoError(t, Migrate(t.Context(), conn))
+	require.NoError(t, migrateLegacySnapshot(t.Context(), conn))
 	_, err := conn.ExecContext(t.Context(), `PRAGMA wal_autocheckpoint=0`)
 	require.NoError(t, err)
 	_, err = conn.ExecContext(t.Context(), `INSERT INTO sessions (id,title,updated_at,created_at,cancel_requested) VALUES ('s','s',1700000000,1700000000,1)`)
@@ -82,6 +82,7 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 		`INSERT INTO batch_nodes (node_id,root_id,owner_session_id,host_id,ordinal,kind,tool_call_id,input_hash,mode,state,created_at,updated_at) VALUES ('b','b','s','old-host',0,'batch','call','hash','parallel','pending',1,1)`,
 		`INSERT INTO batch_control_requests (request_id,owner_session_id,root_id,node_id,host_id,created_at) VALUES ('br','s','b','b','old-host',1)`,
 		`INSERT INTO batch_runner_checkpoints (host_id,runner_id,sequence,created_at,updated_at) VALUES ('old-host','runner',1,1,1)`,
+		`INSERT INTO batch_timeout_checkins (root_id,node_id,host_id,token,kind,owner_session_id,created_at) VALUES ('b','b','old-host',0,'pimCheckin','s',1)`,
 	} {
 		_, err := conn.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
@@ -126,9 +127,13 @@ func TestLegacyImportPolicyExhaustive(t *testing.T) {
 
 func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	t.Parallel()
+	t.Run("pimJournalModes", func(t *testing.T) {
+		t.Parallel()
+		pimJournalModes(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
-	defer legacyConn.Close()
+	t.Cleanup(func() { _ = legacyConn.Close() })
 	// Independent WAL proof: copy only the main legacy db file (no -wal/-shm);
 	// the late committed 'wal-committed' row lives in the -wal, so a main-only
 	// copy must not see it while the live connection does.
@@ -152,7 +157,7 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	require.Equal(t, LegacyImportImported, result.Status)
 	require.Equal(t, before, legacyImportHashes(t, legacy), "source must be identical while still open")
 	newDB := openTestDB(t, storepath.StoreV1Path(dataDir))
-	defer newDB.Close()
+	t.Cleanup(func() { _ = newDB.Close() })
 	newDB.SetMaxOpenConns(1)
 	// Full-row comparison: every carried table, all intersecting columns,
 	// ordered by rowid, with the production normalization applied to the
@@ -204,9 +209,13 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 
 func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 	t.Parallel()
+	t.Run("pimFailureRetry", func(t *testing.T) {
+		t.Parallel()
+		pimFailureRetry(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
-	defer legacyConn.Close()
+	t.Cleanup(func() { _ = legacyConn.Close() })
 	_, err := legacyConn.ExecContext(t.Context(), `INSERT INTO read_files (session_id,path,read_at) VALUES ('s','boom',3)`)
 	require.NoError(t, err)
 	expected := legacyImportHashes(t, legacy)
@@ -225,6 +234,10 @@ func TestLegacyImportMidCopyFailureRollsBack(t *testing.T) {
 
 func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 	t.Parallel()
+	t.Run("pimExistingDestination", func(t *testing.T) {
+		t.Parallel()
+		pimExistingDestination(t)
+	})
 	dataDir := t.TempDir()
 	result, err := ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{})
 	require.NoError(t, err)
@@ -241,13 +254,17 @@ func TestLegacyImportNoopExistingOrMissing(t *testing.T) {
 
 func TestLegacyImportLiveHostRefuses(t *testing.T) {
 	t.Parallel()
+	t.Run("pimHostRefusal", func(t *testing.T) {
+		t.Parallel()
+		pimHostRefusal(t)
+	})
 	dataDir := t.TempDir()
 	legacy, legacyConn := createLegacyFixture(t, dataDir)
 	before := legacyImportHashes(t, legacy)
-	defer legacyConn.Close()
+	t.Cleanup(func() { _ = legacyConn.Close() })
 	lock, err := filelock.TryAcquireFileLock(filepath.Join(dataDir, "hosts", "old-host.lock"))
 	require.NoError(t, err)
-	defer lock.Release()
+	t.Cleanup(func() { _ = lock.Release() })
 	_, err = ImportLegacyStore(t.Context(), dataDir, LegacyImportOptions{Schema: legacyImportSchema(t)})
 	require.ErrorIs(t, err, ErrLegacyImportLiveHosts)
 	require.Equal(t, before, legacyImportHashes(t, legacy))
@@ -557,10 +574,15 @@ func TestLegacyImportRefusesUnknownColumns(t *testing.T) {
 }
 
 func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
+	pimCrashChild() // re-executed crash child: runs the import and exits
 	t.Parallel()
+	t.Run("pimPrepublicationCrashRetry", func(t *testing.T) {
+		t.Parallel()
+		pimPrepublicationCrashRetry(t)
+	})
 	dataDir := t.TempDir()
 	_, legacyConn := createLegacyFixture(t, dataDir)
-	defer legacyConn.Close()
+	t.Cleanup(func() { _ = legacyConn.Close() })
 	staleSnapshot := filepath.Join(dataDir, ".rush-import-snapshot-crashed")
 	staleProbe := filepath.Join(dataDir, ".rush-host-probe-crashed")
 	staleBuilding := filepath.Join(dataDir, ".rush-import-building-crashed.db")

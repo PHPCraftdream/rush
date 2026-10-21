@@ -16,6 +16,7 @@ package session_test
 import (
 	"context"
 	"database/sql"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -40,13 +42,15 @@ func TestLegacyImportNormalizedProcessingOutboxIsDrainedEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
-	// 1. Build a legacy store at the legacy path: Migrate applies the
-	// embedded LEGACY chain (db.Migrate -> migrationFS, connect.go:575-581),
-	// the same fixture shape the package-db tests use
-	// (legacy_import_test.go:55-62 createLegacyFixture).
+	// 1. Build a legacy store at the legacy path using the frozen importer-owned chain.
 	legacyConn := openSQLite(t, storepath.DataDirPath(dataDir, storepath.LegacyFilename))
-	require.NoError(t, db.Migrate(ctx, legacyConn))
-	_, err := legacyConn.ExecContext(ctx,
+	legacyMigrations, err := fs.Sub(os.DirFS(filepath.Join("..", "db")), "legacymigrations")
+	require.NoError(t, err)
+	legacyProvider, err := goose.NewProvider(goose.DialectSQLite3, legacyConn, legacyMigrations, goose.WithLogger(goose.NopLogger()))
+	require.NoError(t, err)
+	_, err = legacyProvider.Up(ctx)
+	require.NoError(t, err)
+	_, err = legacyConn.ExecContext(ctx,
 		`INSERT INTO sessions (id,title,updated_at,created_at,cancel_requested) VALUES ('s','s',1700000000,1700000000,0)`)
 	require.NoError(t, err)
 	// The stranded pre-P0-4 claim: 'processing' is NOT scannable by the
