@@ -542,3 +542,67 @@ func TestPdaBatchReserveAfterReleaseIsCleanError(t *testing.T) {
 	_, err := s.Reserve(ctx, batchStoreTestReservation())
 	require.Error(t, err, "use-after-release must error cleanly, never panic")
 }
+
+// PD11B change (b): the tx binder binds ONLY the statements the transaction
+// actually uses, lazily. Two fresh databases are seeded identically (same
+// pattern as pdaEquivRun), then GetBatchRoot/ListBatchNodes run through the
+// binder path on one and the raw path on the other; scrubbed results must be
+// identical. Mutation caught: eager binding of all 19 statements would make
+// PdbBatchTxBoundCount 19 instead of 2, a per-use re-bind would make it 3
+// after three executions of two distinct queries, and binding the wrong
+// statement would return different rows than the raw path.
+func TestPdaBatchTxBindsOnlyUsedStatements(t *testing.T) {
+	ctx := context.Background()
+	openSeeded := func(t *testing.T) (*sql.DB, pdaEquivState) {
+		t.Helper()
+		conn, err := db.Connect(ctx, t.TempDir())
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
+		require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+		st := pdaEquivReserve(t, ctx, NewBatchStore(conn))
+		return conn, st
+	}
+	pConn, pSt := openSeeded(t)
+	rConn, rSt := openSeeded(t)
+	require.Equal(t, len(pSt.nodes), len(rSt.nodes))
+
+	require.NoError(t, db.PdaBatchEnsure(ctx, pConn))
+	tx, err := pConn.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback() //nolint:errcheck
+	q := db.PdaBatchTxQueries(ctx, pConn, tx)
+	require.Equal(t, 0, db.PdbBatchTxBoundCount(q), "nothing bound before first use")
+
+	// Three executions of two DISTINCT queries; memoisation keeps the count
+	// at exactly 2.
+	root, err := q.GetBatchRoot(ctx, db.GetBatchRootParams{RootID: pSt.root, OwnerSessionID: "owner"})
+	require.NoError(t, err)
+	require.Equal(t, 1, db.PdbBatchTxBoundCount(q))
+	nodes, err := q.ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: pSt.root, OwnerSessionID: "owner"})
+	require.NoError(t, err)
+	require.Equal(t, 2, db.PdbBatchTxBoundCount(q))
+	rootAgain, err := q.GetBatchRoot(ctx, db.GetBatchRootParams{RootID: pSt.root, OwnerSessionID: "owner"})
+	require.NoError(t, err)
+	require.Equal(t, 2, db.PdbBatchTxBoundCount(q), "GetBatchRoot must be memoised, not re-bound")
+	require.Equal(t, root.RootID, rootAgain.RootID, "memoised re-execution returns the same row")
+	require.NoError(t, tx.Rollback())
+
+	// Raw path on the second fresh database.
+	rtx, err := rConn.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer rtx.Rollback() //nolint:errcheck
+	rq := db.New(rtx)
+	rawRoot, err := rq.GetBatchRoot(ctx, db.GetBatchRootParams{RootID: rSt.root, OwnerSessionID: "owner"})
+	require.NoError(t, err)
+	rawNodes, err := rq.ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: rSt.root, OwnerSessionID: "owner"})
+	require.NoError(t, err)
+	require.NoError(t, rtx.Rollback())
+
+	idsP := pSt.scrubList()
+	idsR := rSt.scrubList()
+	require.Equal(t, pdaEquivScrub(fmt.Sprintf("%+v", rawRoot), idsR), pdaEquivScrub(fmt.Sprintf("%+v", root), idsP))
+	require.Equal(t, pdaEquivScrub(fmt.Sprintf("%+v", rawNodes), idsR), pdaEquivScrub(fmt.Sprintf("%+v", nodes), idsP))
+
+	// The binder path stays -1 for plain tx/pool Queries.
+	require.Equal(t, -1, db.PdbBatchTxBoundCount(db.New(tx)))
+}

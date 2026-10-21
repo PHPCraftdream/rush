@@ -32,7 +32,7 @@ func (a *App) BatchCLIStore() (*BatchCLIStore, error) {
 	if read == nil {
 		read = writer
 	}
-	return &BatchCLIStore{session.NewBatchStore(writer), session.NewBatchLiveReader(db.New(read), a.dataDir)}, nil
+	return &BatchCLIStore{session.NewBatchStoreWithReader(writer, read), session.NewBatchLiveReader(db.New(read), a.dataDir)}, nil
 }
 
 func (a *App) BatchOwnerRuntime() bool {

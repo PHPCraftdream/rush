@@ -174,7 +174,7 @@ func batchDebtSnapshot(ctx context.Context, dbtx db.DBTX, owner string, visible 
 
 // BatchReactionCaptureDebtSnapshot pins both tables in one read transaction.
 func (s *BatchStore) BatchReactionCaptureDebtSnapshot(ctx context.Context, owner string) (BatchDebtSnapshot, error) {
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginReadTx(ctx)
 	if err != nil {
 		return BatchDebtSnapshot{}, err
 	}
@@ -187,7 +187,7 @@ func (s *BatchStore) BatchReactionCaptureDebtSnapshot(ctx context.Context, owner
 }
 
 func (s *BatchStore) batchReactionDebtExists(ctx context.Context, owner string, visible bool) (bool, error) {
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginReadTx(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -208,7 +208,7 @@ func (s *BatchStore) BatchReactionVisibleDebtExists(ctx context.Context, owner s
 }
 
 func (s *BatchStore) BatchReactionPendingInclusiveDebtRows(ctx context.Context, owner string) (BatchPendingDebt, error) {
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginReadTx(ctx)
 	if err != nil {
 		return BatchPendingDebt{}, err
 	}

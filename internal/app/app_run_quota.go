@@ -132,7 +132,8 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	slices.Sort(childIDs)
 	questions := make(map[string]session.ChildQuestion)
 	if batchCutoverOn() {
-		facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStore(l.app.batchCutoverWriter()), nil, l.app.batchCutoverWriter())
+		writer := l.app.batchCutoverWriter()
+		facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.app.batchCutoverReader(writer)), nil, writer)
 		owners := make(map[string]bool)
 		for _, row := range rows {
 			if row.OwnerSessionID != "" {

@@ -237,7 +237,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 				// TxStarter: every live read runs in ONE read-only tx on the writer.
 				live.TxStarter = writer
 			}
-			agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStore(writer), live, writer))
+			agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, app.batchCutoverReader(writer)), live, writer))
 		}
 	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
