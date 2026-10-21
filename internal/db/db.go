@@ -78,6 +78,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.batchOutboxClearFailureStmt, err = db.PrepareContext(ctx, batchOutboxClearFailure); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchOutboxClearFailure: %w", err)
 	}
+	if q.batchOutboxConsumeWithToolResultStmt, err = db.PrepareContext(ctx, batchOutboxConsumeWithToolResult); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxConsumeWithToolResult: %w", err)
+	}
 	if q.batchOutboxDebtNodesStmt, err = db.PrepareContext(ctx, batchOutboxDebtNodes); err != nil {
 		return nil, fmt.Errorf("error preparing query BatchOutboxDebtNodes: %w", err)
 	}
@@ -816,6 +819,11 @@ func (q *Queries) Close() error {
 	if q.batchOutboxClearFailureStmt != nil {
 		if cerr := q.batchOutboxClearFailureStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing batchOutboxClearFailureStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxConsumeWithToolResultStmt != nil {
+		if cerr := q.batchOutboxConsumeWithToolResultStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxConsumeWithToolResultStmt: %w", cerr)
 		}
 	}
 	if q.batchOutboxDebtNodesStmt != nil {
@@ -1950,6 +1958,7 @@ type Queries struct {
 	batchOutboxAccountNoticeStmt                         *sql.Stmt
 	batchOutboxAnnounceStmt                              *sql.Stmt
 	batchOutboxClearFailureStmt                          *sql.Stmt
+	batchOutboxConsumeWithToolResultStmt                 *sql.Stmt
 	batchOutboxDebtNodesStmt                             *sql.Stmt
 	batchOutboxDebtNoticesStmt                           *sql.Stmt
 	batchOutboxFailedNodesStmt                           *sql.Stmt
@@ -2189,6 +2198,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		batchOutboxAccountNoticeStmt:                         q.batchOutboxAccountNoticeStmt,
 		batchOutboxAnnounceStmt:                              q.batchOutboxAnnounceStmt,
 		batchOutboxClearFailureStmt:                          q.batchOutboxClearFailureStmt,
+		batchOutboxConsumeWithToolResultStmt:                 q.batchOutboxConsumeWithToolResultStmt,
 		batchOutboxDebtNodesStmt:                             q.batchOutboxDebtNodesStmt,
 		batchOutboxDebtNoticesStmt:                           q.batchOutboxDebtNoticesStmt,
 		batchOutboxFailedNodesStmt:                           q.batchOutboxFailedNodesStmt,

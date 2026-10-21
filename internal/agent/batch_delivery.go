@@ -92,6 +92,10 @@ type batchDeliveryDeps struct {
 	// Timer sleeps for the escape window; nil selects time.After (test seam
 	// so window tests fire deterministically without sleeps).
 	Timer func(time.Duration) <-chan time.Time
+	// ToolResultReceipt, when non-nil, registers the fused tool-result
+	// receipt in the per-step sink after store.Read validates the root's
+	// immutable incarnation (nil keeps delivery behaviour byte-identical).
+	ToolResultReceipt func(context.Context, string, jobbatch.ID, string, *toolResultReceiptSink) error
 }
 
 // batchDeliveryImpl implements the batchDelivery seam defined in
@@ -144,11 +148,11 @@ func (b *batchDeliveryImpl) DeliverBatch(ctx context.Context, root jobbatch.ID, 
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
-		return b.deliverWithEscapeWindow(ctx, b.owner(inv), root, window)
+		return b.deliverWithEscapeWindow(ctx, b.owner(inv), root, window, inv.CallID)
 	}
 	switch mode {
 	case batchDeliverySync:
-		return b.deliverSync(ctx, b.owner(inv), root)
+		return b.deliverSync(ctx, b.owner(inv), root, inv.CallID)
 	case batchDeliveryInline:
 		return b.deliverInline(ctx, b.owner(inv), root)
 	case batchDeliveryDetached:
@@ -167,7 +171,7 @@ func (b *batchDeliveryImpl) DeliverBatch(ctx context.Context, root jobbatch.ID, 
 // control context and the caller's ctx error is returned promptly — never a
 // Stop-derived envelope, and Settled stays false. ONLY sync does this: an
 // inline or detached caller leaving never cancels the root.
-func (b *batchDeliveryImpl) deliverSync(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) deliverSync(ctx context.Context, owner string, root jobbatch.ID, callID string) (fantasy.ToolResponse, error) {
 	envelope, ok, err := b.deps.Done.AwaitDone(ctx, owner, root)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -182,6 +186,9 @@ func (b *batchDeliveryImpl) deliverSync(ctx context.Context, owner string, root 
 	}
 	if !ok {
 		return fantasy.ToolResponse{}, fmt.Errorf("%w: root %s", errBatchDoneUnavailable, root)
+	}
+	if err := b.registerToolResultReceipt(ctx, owner, root, callID); err != nil {
+		return fantasy.ToolResponse{}, err
 	}
 	return envelope, nil
 }
@@ -247,7 +254,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, owner string, roo
 // second Submit and without a second executor — the waiter keeps waiting for
 // the real Done and completion arrives via selected notices. If both resolve
 // together the select commits to exactly ONE outcome.
-func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner string, root jobbatch.ID, window time.Duration) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner string, root jobbatch.ID, window time.Duration, callID string) (fantasy.ToolResponse, error) {
 	type awaited struct {
 		envelope fantasy.ToolResponse
 		ok       bool
@@ -265,6 +272,9 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner s
 		}
 		if !a.ok {
 			return fantasy.ToolResponse{}, fmt.Errorf("%w: root %s", errBatchDoneUnavailable, root)
+		}
+		if err := b.registerToolResultReceipt(ctx, owner, root, callID); err != nil {
+			return fantasy.ToolResponse{}, err
 		}
 		return a.envelope, nil
 	case <-b.after(window):
@@ -302,6 +312,14 @@ func batchEscapeWindow(window string) (time.Duration, error) {
 		return 0, fmt.Errorf("%w: %q", errBatchEscapeWindowInvalid, window)
 	}
 	return d, nil
+}
+
+func (b *batchDeliveryImpl) registerToolResultReceipt(ctx context.Context, owner string, root jobbatch.ID, callID string) error {
+	sink, ok := ctx.Value(toolReceiptContextKey{}).(*toolResultReceiptSink)
+	if !ok || sink == nil || b.deps.ToolResultReceipt == nil {
+		return nil
+	}
+	return b.deps.ToolResultReceipt(ctx, owner, root, callID, sink)
 }
 
 // electCompletion elects the completion envelope inline with bounded retries
