@@ -191,8 +191,8 @@ type Querier interface {
 	// row instead of being a no-op. Re-enabling a disabled-then-regranted
 	// rule is handled explicitly via UpdatePermissionEnabled, not here.
 	CreateSessionPermission(ctx context.Context, arg CreateSessionPermissionParams) error
-	// Host-row deletion guard, re-pointed from jobs to nodes. OLD semantics
-	// (DeleteAsyncHostIfNoJobs in async_jobs.sql) deleted the host row only when
+	// Host-row deletion guard, re-pointed from jobs to nodes. LEGACY semantics
+	// (the deleted async_jobs host queries) deleted the host row only when
 	// ZERO async_jobs rows of ANY state referenced it -- terminal/delivered rows
 	// still counted, exactly like running ones, until a separate retention pass
 	// purged them.
@@ -269,7 +269,7 @@ type Querier interface {
 	DeleteSession(ctx context.Context, id string) error
 	// A driver releases only its OWN claim (scoped to its host id).
 	DeleteSessionDriver(ctx context.Context, arg DeleteSessionDriverParams) (int64, error)
-	// Host exit (AsyncJobStore.Close) or dead-host purge: every marker naming
+	// Host exit (batch runner shutdown) or dead-host purge: every marker naming
 	// the host goes with it.
 	DeleteSessionDriversForHost(ctx context.Context, hostID string) (int64, error)
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
@@ -277,7 +277,7 @@ type Querier interface {
 	// Rerun truncation (message.Service.DeleteTx): unconditional delete of an
 	// explicit id set inside the caller's transaction. RETURNING is the exact
 	// set of rows this statement removed (an id someone else already deleted is
-	// simply absent), which the caller reconciles async_jobs against.
+	// simply absent), which the caller reconciles its batch state against.
 	DeleteSessionMessagesByIDs(ctx context.Context, arg DeleteSessionMessagesByIDsParams) ([]Message, error)
 	// ON CONFLICT DO NOTHING makes this idempotent on id (P2-1): a caller that
 	// retries with the same, stable idempotency key must not error just because
@@ -681,15 +681,11 @@ type Querier interface {
 	// the same tx as the advance), so no duplicate is possible (SCHED-2).
 	RecoverExpiredWakeLeases(ctx context.Context, arg RecoverExpiredWakeLeasesParams) (int64, error)
 	// RETAINED host queries (package R12-D chunk 1): host-only bookkeeping,
-	// job-independent. async_jobs lives in async_jobs.sql and is dropped by a
-	// later package (R12-H); these are the NEW-name equivalents of that file's
-	// host section (RegisterAsyncHost/GetAsyncHost/ListAsyncHosts/
-	// DeleteAsyncHostIfNoJobs/ListAsyncHostsWithNoJobs), re-pointed at
+	// job-independent. These are the batch-world host queries, re-pointed at
 	// batch_nodes so the retained host lifecycle outlives the job table.
 	//
 	// Naming: the *Row/*s suffixes mark "host row readers/writers" and keep the
-	// generated method names distinct from the async_jobs.sql originals -- both
-	// sets are generated onto the same db.Queries struct.
+	// generated method names distinct.
 	// Same lazy-registration shape as async_jobs.sql's RegisterAsyncHost (doc
 	// sec.3.6): the host row is display-only bookkeeping, created once per
 	// process lifetime alongside the OS lock file. Never consulted to decide
