@@ -170,6 +170,7 @@ func TestCorpusShape(t *testing.T) {
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == "manifest.json" || name == "boundary-fixtures.json" ||
+			name == ".gitattributes" ||
 			strings.HasPrefix(name, "LICENSE-") {
 			continue
 		}
