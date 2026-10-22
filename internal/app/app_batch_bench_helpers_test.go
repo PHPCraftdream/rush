@@ -1,6 +1,6 @@
 // D11 benchmark helpers. Timed calls are real App.AgentCoordinator.Run turns.
 // The fixture workload uses the direct view tool; the wrapped workload uses
-// the production bash async wrapper with the same harmless command in both modes.
+// the production bash tool with the same harmless command in both modes.
 package app
 
 import (
@@ -820,14 +820,17 @@ func d11LogRoundState(t *testing.T, e *d11Env, round int) {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	dbBytes, walBytes, shmBytes := int64(-1), int64(-1), int64(-1)
-	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db")); err == nil {
-		dbBytes = fi.Size()
-	}
-	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db-wal")); err == nil {
-		walBytes = fi.Size()
-	}
-	if fi, err := os.Stat(filepath.Join(e.dir, "rush.db-shm")); err == nil {
-		shmBytes = fi.Size()
+	storeNames := []string{"rush_store_v1.db", "rush.db"}
+	for _, storeName := range storeNames {
+		if fi, err := os.Stat(filepath.Join(e.dir, storeName)); err == nil {
+			dbBytes = fi.Size()
+		}
+		if fi, err := os.Stat(filepath.Join(e.dir, storeName+"-wal")); err == nil {
+			walBytes = fi.Size()
+		}
+		if fi, err := os.Stat(filepath.Join(e.dir, storeName+"-shm")); err == nil {
+			shmBytes = fi.Size()
+		}
 	}
 	t.Logf("D11 ROUND %d STATE: batch_nodes=%d checkpoints=%d session_notices=%d orphan_outbox=%d messages=%d sessions=%d db_bytes=%d wal_bytes=%d shm_bytes=%d goroutines=%d heap_inuse=%d",
 		round, count("batch_nodes"), count("batch_runner_checkpoints"), count("session_notices"),
