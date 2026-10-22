@@ -1,24 +1,31 @@
-// R11F round-2 (P2 m4-flag-parse): the shared RUSH_BATCH_RUNTIME parser must
-// treat an unparseable value as OFF (unset/unparseable means off), and only
-// the exact boolean forms flip it on. Compile-only in this worktree; CI runs
-// it and it kills the `err`-dropping mutation of BatchRuntimeEnabled.
+// R12-H4: the batch runtime is unconditional, so EVERY RUSH_BATCH_RUNTIME
+// value - unset, empty, boolean-off forms, garbage, boolean-on forms -
+// selects batch. This kills any resurrection of a parse-based selector
+// (the old OFF-for-unset/garbage behavior) and pins the flag-erasure
+// contract lane R12-I inherits.
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestBatchRuntimeEnabledGarbageMeansOff(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "sometimes")
-	require.False(t, BatchRuntimeEnabled(), "unparseable RUSH_BATCH_RUNTIME means OFF")
+func TestBatchRuntimeEnabledAllValuesSelectBatch(t *testing.T) {
+	for _, value := range []string{"", "0", "false", "off", "sometimes", "1", "true"} {
+		t.Setenv("RUSH_BATCH_RUNTIME", value)
+		require.True(t, BatchRuntimeEnabled(),
+			"RUSH_BATCH_RUNTIME=%q must select the batch runtime", value)
+	}
+}
+
+func TestBatchRuntimeEnabledWhenGenuinelyUnset(t *testing.T) {
+	// t.Setenv registers the restore of the inherited state; the
+	// Unsetenv then makes the variable truly absent for this test.
 	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.False(t, BatchRuntimeEnabled(), "empty RUSH_BATCH_RUNTIME means OFF")
-	t.Setenv("RUSH_BATCH_RUNTIME", "0")
-	require.False(t, BatchRuntimeEnabled(), "explicit zero means OFF")
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-	require.True(t, BatchRuntimeEnabled(), "exact boolean true means ON")
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, BatchRuntimeEnabled(), "exact boolean one means ON")
+	require.NoError(t, os.Unsetenv("RUSH_BATCH_RUNTIME"))
+	_, present := os.LookupEnv("RUSH_BATCH_RUNTIME")
+	require.False(t, present, "fixture must leave the variable absent")
+	require.True(t, BatchRuntimeEnabled(), "unset RUSH_BATCH_RUNTIME selects batch")
 }
