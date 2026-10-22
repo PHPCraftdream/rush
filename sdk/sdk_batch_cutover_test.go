@@ -1,6 +1,6 @@
 package sdk_test
 
-// R12-H2: real SDK custom-provider acceptance under RUSH_BATCH_RUNTIME=1.
+// SDK custom-provider acceptance under the default batch runtime.
 // This chunk adds canonical OS, non-comparable custom, typed-nil rejection,
 // two-client isolation, and an external public-sentinel consumer trace.
 
@@ -28,11 +28,11 @@ import (
 )
 
 // TestSDKBatchRuntimeOnCustomDiskProviderSupported verifies the actual scoped
-// fs_write/fs_read path under the batch runtime; first assertions inspect the
+// fs_write/fs_read path under the default batch runtime; first assertions inspect the
 // provider contents and confirm the real path is absent.
 func TestSDKBatchRuntimeOnCustomDiskProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
@@ -61,12 +61,12 @@ func TestSDKBatchRuntimeOnCustomDiskProviderSupported(t *testing.T) {
 }
 
 // TestSDKBatchRuntimeOnCanonicalOSDiskProviderSupported proves an explicit
-// public OSDiskProvider is a supported flag-ON binding (not the nil/default
-// path). First mutation-sensitive assertion: Stat on the scoped temporary
+// public OSDiskProvider is supported with the default batch runtime. First
+// mutation-sensitive assertion: Stat on the scoped temporary
 // file succeeds on the scoped real filesystem path.
 func TestSDKBatchRuntimeOnCanonicalOSDiskProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content, marker = "scoped/os-provider.txt", "canonical-os-provider", "BATCH_OS_DISK_OK"
@@ -194,7 +194,7 @@ var _ sdk.DiskProvider = batchSDKSliceDisk{}
 // ingress with a custom provider whose interface dynamic value has a slice.
 func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content, marker = "scoped/slice-provider.txt", "slice-provider-content", "BATCH_SLICE_DISK_OK"
@@ -227,7 +227,7 @@ func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 // each run's read result came from its own call-local provider binding.
 func TestSDKBatchRuntimeTwoClientsIsolateEqualPaths(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 	workA, workB := evalTempDir(t), evalTempDir(t)
 	for _, dir := range []string{workA, workB} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "scoped"), 0o755))
@@ -314,7 +314,7 @@ func TestSDKBatchRuntimeTwoClientsIsolateEqualPaths(t *testing.T) {
 // provider fails closed before a model request rather than selecting OS disk.
 func TestSDKBatchRuntimeTypedNilProviderRejected(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	var hits atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +347,7 @@ func TestSDKExternalUnavailableSentinelClassifies(t *testing.T) {
 
 func TestSDKBatchRuntimeOnRunContextCancellation(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	const marker = "BATCH_RUNTIME_CANCEL_RECOVERY_OK"
@@ -392,7 +392,7 @@ func TestSDKBatchRuntimeOnRunContextCancellation(t *testing.T) {
 	deadline := time.Now().Add(60 * time.Second)
 	for hits.Load() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("the flag-ON run never reached the provider")
+			t.Fatal("the default batch run never reached the provider")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -401,9 +401,9 @@ func TestSDKBatchRuntimeOnRunContextCancellation(t *testing.T) {
 	select {
 	case err := <-errCh:
 		require.ErrorIs(t, err, context.Canceled,
-			"cancelling the caller's context must abort the flag-ON run, got %v", err)
+			"cancelling the caller's context must abort the default batch run, got %v", err)
 	case <-time.After(60 * time.Second):
-		t.Fatal("the cancelled flag-ON run never returned")
+		t.Fatal("the cancelled default batch run never returned")
 	}
 
 	// The client must survive the cancellation: a follow-up run on a fresh
@@ -538,7 +538,7 @@ func waitForBatchNodes(t *testing.T, conn *sql.DB, sessionID string, budget time
 //     fails with the last observed state distribution.
 func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
