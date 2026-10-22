@@ -93,5 +93,46 @@ func TestPdaBatchEnsurePreparesOnce(t *testing.T) {
 	second := pdaBatchStmtsByDB[writer]
 	pdaBatchStmtsMu.Unlock()
 	require.Same(t, first, second, "Ensure must not re-prepare an open cache")
-	require.Len(t, first.all, 19, "the full batch statement set is prepared once")
+	// 19 generated statements plus the three PD11C message statements. The
+	// registered (non-generated) statements are NOT counted here: the db
+	// package registers none, but other packages' init() registrations are a
+	// process-wide global, so the expectation adds the live count.
+	pdaBatchStmtsMu.Lock()
+	registered := len(pdcRegisteredBatchSQL)
+	pdaBatchStmtsMu.Unlock()
+	require.Len(t, first.all, 22+registered, "the full batch statement set is prepared once")
+}
+
+// PD11C (e): registration is idempotent, affects only caches built after it,
+// and unregistered queries still execute through the raw fallback.
+func TestPdbBatchRegisterSQLOrderingAndIdempotence(t *testing.T) {
+	ctx := context.Background()
+	probe := "SELECT 1 AS pdc_registration_probe"
+	// Before Ensure: registered statements are part of the built cache.
+	writer, err := Connect(ctx, t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ReleaseConn(writer)) })
+	PdbBatchRegisterSQL(probe)
+	PdbBatchRegisterSQL(probe) // idempotent
+	require.NoError(t, PdaBatchEnsure(ctx, writer))
+	require.True(t, PdbBatchCacheHasSQL(writer, probe), "a statement registered before Ensure is cached")
+	// After Ensure: the existing cache is untouched; the statement stays raw.
+	late := "SELECT 2 AS pdc_registration_probe"
+	PdbBatchRegisterSQL(late)
+	require.False(t, PdbBatchCacheHasSQL(writer, late), "a cache built before registration must not gain the statement")
+	// The late registration still applies to a NEW cache.
+	writer2, err := Connect(ctx, t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ReleaseConn(writer2)) })
+	require.NoError(t, PdaBatchEnsure(ctx, writer2))
+	require.True(t, PdbBatchCacheHasSQL(writer2, late))
+	// An unregistered query falls through the binder to raw SQL cleanly.
+	tx, err := writer2.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback() //nolint:errcheck
+	q := PdaBatchTxQueries(ctx, writer2, tx)
+	var answer int
+	require.NoError(t, q.PdbBatchRawQueryRow(ctx, "SELECT 6*7").Scan(&answer))
+	require.Equal(t, 42, answer)
+	require.NoError(t, tx.Rollback())
 }

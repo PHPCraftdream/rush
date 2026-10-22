@@ -37,7 +37,7 @@ func (s *BatchStore) BatchAnnounceStarted(ctx context.Context, messages message.
 	if n != 1 {
 		return message.Message{}, ErrBatchAnnouncementLost
 	}
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, params)
 	if err != nil {
 		return message.Message{}, err
 	}
