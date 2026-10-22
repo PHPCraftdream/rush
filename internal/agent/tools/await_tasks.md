@@ -24,7 +24,7 @@ Wait for your live background work to finish before continuing.
 
 <important>
 This is the correct way to wait for running work. Never wait by calling
-ask_question, and never poll inspect_agent/job_output in a loop — those
+ask_question, and never poll inspect_agent/batch_output in a loop — those
 spend tokens and wait for nothing.
 </important>
 

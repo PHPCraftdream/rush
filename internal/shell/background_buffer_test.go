@@ -138,7 +138,7 @@ func TestBackgroundShell_WaitForChange_DetectsGrowthAfterOverflow(t *testing.T) 
 // TestBackgroundShell_ConcurrentReadWrite exercises concurrent GetOutput /
 // WaitForChange readers against a concurrent writer goroutine (mirroring the
 // real ExecStream call pattern where the shell interpreter writes
-// continuously while job_output/bash poll concurrently). Intended to run
+// continuously while bash/await_tasks poll concurrently). Intended to run
 // under `-race`: it must complete without triggering the race detector and
 // without ever observing a snapshot larger than the cap.
 func TestBackgroundShell_ConcurrentReadWrite(t *testing.T) {
@@ -162,7 +162,7 @@ func TestBackgroundShell_ConcurrentReadWrite(t *testing.T) {
 		}
 	})
 
-	// Readers: simulate job_output polling via GetOutput and WaitForChange.
+	// Readers: simulate batch_output polling via GetOutput and WaitForChange.
 	for range 4 {
 		wg.Go(func() {
 			for i := 0; i < 200; i++ {
