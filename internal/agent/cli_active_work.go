@@ -2,9 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -22,95 +20,18 @@ type CLIActiveWorkSource interface {
 }
 
 // CLIActiveWork excludes schedules, debt, and question-paused delegations, but
-// includes those children's jobs and completion-persistence holds.
+// includes those children's jobs and completion-persistence holds. Batch-only:
+// the live scope comes from batch_nodes (the node-backed fact source bound at
+// install). An UNBOUND coordinator (no bound facts) answers false: no batch
+// runtime means no batch work can be pending for it. A failed read fails
+// closed with the error (the quota loop retries it under its bounded window,
+// never silently reads "idle").
 func (c *coordinator) CLIActiveWork(ctx context.Context, root string) (bool, error) {
-	// Flag ON: the live scope comes from batch_nodes (the node-backed fact
-	// source bound at install), never from the ledger. An unbound flag-ON
-	// coordinator keeps the legacy path below — no batch runtime means no
-	// batch work can be pending for it. A failed read fails closed with the
-	// error (the quota loop retries it under its bounded window, never
-	// silently reads "idle").
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		if _, unbound := facts.(unknownBatchCutoverFacts); !unbound {
-			return c.cliActiveWorkBatch(ctx, facts, root)
-		}
+	facts := coordinatorBatchCutoverFacts(c)
+	if _, unbound := facts.(unknownBatchCutoverFacts); unbound {
+		return false, nil
 	}
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return false, errors.New("active work store unavailable")
-	}
-	c.asyncJobs.store.RecoverOwnerScope(ctx, root, c.messages)
-	owners := map[string]bool{root: true}
-	tree, treeIncomplete := c.asyncJobs.store.JobsInTree(ctx, root)
-	if treeIncomplete {
-		return false, errors.New("work tree read incomplete")
-	}
-	for _, row := range tree {
-		owners[row.OwnerSessionID] = true
-		if row.ChildSessionID.Valid {
-			owners[row.ChildSessionID.String] = true
-		}
-	}
-	active := false
-	for owner := range owners {
-		if c.background != nil && (c.background.ActiveOwned(owner) > 0 || c.background.PendingCompletionsOwned(owner) > 0) {
-			active = true
-		}
-	}
-	jobs, incomplete := c.asyncJobs.store.LiveJobs(ctx, root)
-	if incomplete {
-		return false, errors.New("active work read incomplete")
-	}
-	for _, job := range jobs {
-		owners[job.SessionID] = true
-		if job.ChildSessionID == "" {
-			active = true
-			continue
-		}
-		owners[job.ChildSessionID] = true
-		// Read durable finish metadata even if the question's delegation is no
-		// longer in this process's ledger. A busy child is never paused.
-		ag := c.agentFor(job.ChildSessionID)
-		if ag != nil && ag.IsSessionBusy(job.ChildSessionID) {
-			active = true
-			continue
-		}
-		msgs, err := c.messages.List(ctx, job.ChildSessionID)
-		if err != nil {
-			return false, err
-		}
-		paused := false
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
-				continue
-			}
-			_, paused = subAgentQuestionFromFinish(job.ChildSessionID, msgs[i].FinishPart())
-			break
-		}
-		if !paused {
-			active = true
-		} else {
-			// A held question is announced asynchronously by the existing ledger
-			// recheck. Do not release the CLI before that parent notice commits.
-			c.asyncJobs.recheckChild(job.ChildSessionID)
-			if c.asyncJobs.heldQuestionJob(job.ChildSessionID) != nil {
-				notices, err := c.asyncJobs.store.ListSessionNotices(ctx, job.SessionID)
-				if err != nil {
-					return false, err
-				}
-				persisted := false
-				for _, notice := range notices {
-					if notice.Kind == "child_question" && strings.Contains(notice.Text, "SUB-AGENT QUESTION (session "+job.ChildSessionID+")") && strings.Contains(notice.Text, "job "+job.ToolCallID+" stays open") {
-						persisted = true
-						break
-					}
-				}
-				if !persisted {
-					active = true
-				}
-			}
-		}
-	}
-	return active, nil
+	return c.cliActiveWorkBatch(ctx, facts, root)
 }
 
 // IsAwaitingAnswerFinish identifies durable question-stop metadata.
@@ -127,7 +48,7 @@ var _ CLIActiveWorkSource = (*coordinator)(nil)
 // active (the OFF branch's exclusion, mirrored through batch facts). A
 // failed read fails closed with the error.
 func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
-	// H4 W2: the OFF branch's RecoverOwnerScope twin, scope-budgeted (one
+	// Scope-budgeted recovery (one
 	// 10ms budget, one candidate root attempt): recover the dead hosts this
 	// read is about to count as live, then answer from fresh reads below.
 	// Best-effort; exhaustion keeps the conservative active answer.
@@ -312,7 +233,6 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 // owner's children active (conservative).
 func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
 	committed := make(map[string]bool, len(paused))
-	unknownOwner := make(map[string]bool)
 	byOwner := make(map[string][]string)
 	for child, p := range paused {
 		byOwner[p.owner] = append(byOwner[p.owner], child)
@@ -320,9 +240,7 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 	for owner := range byOwner {
 		held, herr := facts.LiveHeldQuestions(ctx, owner)
 		if herr != nil {
-			// Unknown debt for this owner: its children stay active, and the
-			// legacy fallback below must not decide for them either.
-			unknownOwner[owner] = true
+			// Unknown debt for this owner: its children stay active.
 			continue
 		}
 		for _, row := range held {
@@ -331,37 +249,6 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 					committed[child] = true
 				}
 			}
-		}
-	}
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return committed, nil
-	}
-	for child, p := range paused {
-		if p.busy || committed[child] || unknownOwner[p.owner] {
-			continue
-		}
-		notices, err := c.asyncJobs.store.ListSessionNotices(ctx, p.owner)
-		if err != nil {
-			return nil, err
-		}
-		for _, notice := range notices {
-			if notice.Kind != session.NoticeKindChildQuestion {
-				continue
-			}
-			// A batch-marker notice commits only through the fenced
-			// LiveHeldQuestions rows above; its body may quote the legacy
-			// frame (the raw question), so never match it textually.
-			if _, isMarker := session.ParseBatchChildQuestionNotice(notice.Text); isMarker {
-				continue
-			}
-			if !strings.Contains(notice.Text, "SUB-AGENT QUESTION (session "+child+")") {
-				continue
-			}
-			if p.toolCallID != "" && !strings.Contains(notice.Text, "job "+p.toolCallID+" stays open") {
-				continue
-			}
-			committed[child] = true
-			break
 		}
 	}
 	return committed, nil

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -95,8 +96,8 @@ func newControlRealAgent(t *testing.T, env fakeEnv, srvURL string) SessionAgent 
 // newControlCoordinator builds the minimal coordinator the sub-agent control
 // tools (coordinator_agent_control.go) need: a real session/message store, a
 // resolvable model config pointing at a never-called SSE stand-in, a REAL
-// root agent (inject paths must persist), and a ledger with a durable test
-// store.
+// root agent (inject paths must persist), and the batch node facts bound
+// (delegation state and ListDelegations read them).
 func newControlCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 	t.Helper()
 	env := testEnv(t)
@@ -122,10 +123,10 @@ func newControlCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 		currentAgent: newControlRealAgent(t, env, srv.URL),
 		modelCache:   csync.NewMap[string, cachedModelPair](),
 	}
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
-	coord.asyncJobs.coord = coord
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
+	controlTestConn = env.conn
+	t.Cleanup(func() { controlTestConn = nil })
 	return coord, env
 }
 
@@ -140,22 +141,35 @@ func controlChild(t *testing.T, env fakeEnv, suffix string) (parentID, childID s
 	return parent.ID, child.ID
 }
 
-// armDelegation registers a running non-sync delegation job for childID in
-// the ledger — Start (bySession[parent]) PLUS armDelegation (the parked
-// byChild[childID] entry stop_agent targets), exactly what runSubAgent does.
-// Callers set coord.asyncJobs.onWebDone themselves.
-func armDelegation(t *testing.T, coord *coordinator, parentID, childID string) *asyncJob {
+// seedControlDelegation seeds the LIVE delegation child-link parent->child in the
+// batch store (a running agent task node naming childID) — the durable state
+// childDelegationState/ListDelegations/StopAgent read. Callers pass any
+// coordinator; the seed goes through the shared batch helper.
+func seedControlDelegation(t *testing.T, coord *coordinator, parentID, childID string) {
 	t.Helper()
-	job, _, err := coord.asyncJobs.Start(parentID, "call-"+childID, "{}", "agent", childID, true, false, nil, func() {})
+	_ = coord
+	seedBatchDelegation(t, controlTestConn, parentID, "call-"+childID, childID, "agent", "running", false)
+}
+
+// controlTestConn is set by newControlCoordinator for seedControlDelegation (the
+// batch seed needs the raw conn; the fixture's env owns it).
+var controlTestConn *sql.DB
+
+// releaseDelegation projects the delegation root AND child terminal — the
+// delivered shape the history fallback then answers from.
+func releaseDelegation(t *testing.T, owner, childID, state string) {
+	t.Helper()
+	ctx := context.Background()
+	var rootID string
+	require.NoError(t, controlTestConn.QueryRowContext(ctx,
+		`SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id ORDER BY rowid DESC LIMIT 1`,
+		owner, "call-"+childID).Scan(&rootID))
+	var nodeID string
+	require.NoError(t, controlTestConn.QueryRowContext(ctx,
+		`SELECT node_id FROM batch_nodes WHERE root_id=? AND node_id<>root_id LIMIT 1`, rootID).Scan(&nodeID))
+	_, err := controlTestConn.ExecContext(ctx,
+		`UPDATE batch_nodes SET state=?, outcome_state=? WHERE node_id IN (?, ?)`, state, state, rootID, nodeID)
 	require.NoError(t, err)
-	// The started result would have been announced by asyncTool's real
-	// caller; deliverLocked's ack-gate refuses unannounced jobs.
-	coord.asyncJobs.mu.Lock()
-	job.announced = true
-	coord.asyncJobs.mu.Unlock()
-	// armDelegation takes l.mu itself -- do NOT hold it here.
-	coord.asyncJobs.armDelegation(job, jobResult{content: "in progress"})
-	return job
 }
 
 func TestAgentControl_MissingChildRefusedAllThree(t *testing.T) {
@@ -223,25 +237,27 @@ func TestInspectAgent_Statuses(t *testing.T) {
 	require.Equal(t, "awaiting_answer", insp.Status)
 
 	// Armed-but-not-running and terminal states on a SECOND child (the
-	// awaiting literal legitimately outranks the registry per §4.1's
-	// priority, so it must not sit in this child's history here). The
-	// driver must be BUSY while arming, or Start's own recheck would
-	// deliver the captured result immediately (drained scope) and leave no
-	// registry entry; it goes idle afterwards, which is §4.1's idle case:
-	// registry entry still running, child not executing a turn.
+	// awaiting literal legitimately outranks per §4.1's priority, so it must
+	// not sit in this child's history here). A LIVE batch delegation with an
+	// idle driver is §4.1's idle case: the delegation is still live, the
+	// child not executing a turn.
 	parent2, child2 := controlChild(t, env, "insp2")
 	stub2 := &controlStubAgent{}
-	stub2.setBusy(true)
 	coord.subAgentDrivers.register(child2, subAgentDriver{agent: stub2, parentSessionID: parent2})
-	armDelegation(t, coord, parent2, child2)
-	stub2.setBusy(false)
+	seedControlDelegation(t, coord, parent2, child2)
 	insp, err = coord.InspectAgent(ctx, parent2, child2)
 	require.NoError(t, err)
 	require.Equal(t, "idle", insp.Status)
 
-	coord.asyncJobs.mu.Lock()
-	coord.asyncJobs.byChild[child2][0].transitionToTerminal(phaseCancelled, jobResult{content: "sub-agent canceled", isError: true})
-	coord.asyncJobs.mu.Unlock()
+	// Terminal: release the delegation, then let the child's own finished
+	// assistant message (a cancelled finish, what a stopped delegation's
+	// history records) answer through the history fallback.
+	releaseDelegation(t, parent2, child2, "cancelled")
+	_, err = env.messages.Create(ctx, child2, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.Finish{Reason: message.FinishReasonCanceled}},
+	})
+	require.NoError(t, err)
 	insp, err = coord.InspectAgent(ctx, parent2, child2)
 	require.NoError(t, err)
 	require.Equal(t, "cancelled", insp.Status)
@@ -260,7 +276,8 @@ func TestStopAgent_IdempotentRefusalWhenNothingToStop(t *testing.T) {
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
 	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
-	armDelegation(t, coord, parent, child)
+	seedControlDelegation(t, coord, parent, child)
+	t.Cleanup(func() { releaseDelegation(t, parent, child, "cancelled") })
 	text, err := coord.StopAgent(ctx, parent, child)
 	require.NoError(t, err)
 	require.Contains(t, text, "Sub-agent session "+child+" stopped")
@@ -280,41 +297,28 @@ func TestStopAgent_StopsOnlyThisChild_DeliversExactlyOneEvent(t *testing.T) {
 	siblingParent, siblingChild := controlChild(t, env, "sibling")
 	ctx := t.Context()
 
-	var deliveries []AsyncCompletion
-	// The child's driver must report busy BEFORE the delegation is armed, or
-	// Start's own recheck would deliver the captured result immediately
-	// (child scope drained) and leave nothing to stop.
+	// The child's driver must report busy, or StopAgent refuses a child with
+	// nothing active.
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
 	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
-	armDelegation(t, coord, parent, child)
-	// The sibling needs its own busy driver too, or arming it on an idle
-	// scope would deliver and gc it immediately (drained child scope).
+	seedControlDelegation(t, coord, parent, child)
 	sib := &controlStubAgent{}
 	sib.setBusy(true)
 	coord.subAgentDrivers.register(siblingChild, subAgentDriver{agent: sib, parentSessionID: siblingParent})
-	armDelegation(t, coord, siblingParent, siblingChild)
-	// Recording sink installed AFTER arming: an earlier install would also
-	// capture the sibling's own (legitimate) drained-scope delivery.
-	coord.asyncJobs.onWebDone = func(c AsyncCompletion) { deliveries = append(deliveries, c) }
+	seedControlDelegation(t, coord, siblingParent, siblingChild)
 
 	text, err := coord.StopAgent(ctx, parent, child)
 	require.NoError(t, err)
 	require.Contains(t, text, "stopped")
+	require.Contains(t, stub.cancelled, child, "this child's driver generation must be cancelled")
+	require.Empty(t, sib.cancelled, "the sibling's driver must be untouched by stop_agent on another child")
+	require.False(t, stub.IsSessionBusy(child), "the stopped child's turn must be cancelled")
 
-	require.Eventually(t, func() bool {
-		// After delivery the entry is gc'd out of byChild (deliverLocked's
-		// removal), so "gone" IS the terminal outcome here.
-		state, ok := coord.childDelegationState(child)
-		return !ok || state != phaseRunning
-	}, 5*time.Second, 10*time.Millisecond, "the delegation must reach a terminal state")
-
-	// Exactly ONE stop event reaches THIS parent; the sibling delegation is
-	// untouched and still running.
-	require.Equal(t, 1, len(deliveries), "the parent must receive exactly one stop event")
-	sibState, ok := coord.childDelegationState(siblingChild)
+	// The sibling delegation is untouched and still running.
+	sibState, ok := coord.childDelegationState(ctx, siblingChild)
 	require.True(t, ok)
-	require.Equal(t, phaseRunning, sibState, "a sibling delegation must be untouched by stop_agent on another child")
+	require.Equal(t, "running", sibState, "a sibling delegation must be untouched by stop_agent on another child")
 }
 
 func TestInjectAgent_QueuesForIdleChildWithoutStartingTurn(t *testing.T) {
@@ -416,28 +420,29 @@ func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
 	secondChild := second.ID
 	ctx := t.Context()
 
-	// A plain async job (bash, no child session) owned by the same caller:
-	// NOT a delegation. It must never appear in ListDelegations' output or
-	// its count -- only childSession-carrying (agent/agentic_fetch) jobs are
-	// delegations. Revert-check: dropping the childSession filter (M7) in
-	// ListDelegations makes the assertions below fail on this job.
-	_, _, err = coord.asyncJobs.Start(parent, "bash-call-list", "{}", "bash", "", true, false, nil, func() {})
-	require.NoError(t, err)
+	// A plain batch command root (no child session) owned by the same
+	// caller: NOT a delegation. It must never appear in ListDelegations'
+	// output or its count -- only childSession-carrying task nodes are
+	// delegations. Revert-check: dropping the ChildSessionID filter in
+	// ListDelegations makes the assertions below fail on this root.
+	seedBatchDelegation(t, controlTestConn, parent, "bash-call-list", "", "command", "running", false)
 
 	got, err := coord.ListDelegations(ctx, parent)
 	require.NoError(t, err)
 	require.Empty(t, got)
 
 	// Two live delegations for parent (second child of the same caller) and
-	// one for the sibling caller, each armed on a BUSY driver (or Start's
-	// own recheck would deliver and gc it immediately), then left idle.
+	// one for the sibling caller.
 	for _, tc := range []struct{ owner, driver string }{{parent, child}, {parent, secondChild}, {otherParent, otherChild}} {
 		stub := &controlStubAgent{}
-		stub.setBusy(true)
 		coord.subAgentDrivers.register(tc.driver, subAgentDriver{agent: stub, parentSessionID: tc.owner})
-		armDelegation(t, coord, tc.owner, tc.driver)
-		stub.setBusy(false)
+		seedControlDelegation(t, coord, tc.owner, tc.driver)
 	}
+	t.Cleanup(func() {
+		releaseDelegation(t, parent, child, "cancelled")
+		releaseDelegation(t, parent, secondChild, "cancelled")
+		releaseDelegation(t, otherParent, otherChild, "cancelled")
+	})
 
 	// AgeSeconds is a whole-second truncation of time.Since(startedAt), so
 	// the listing right after arming would legitimately read 0 -- wait out a

@@ -39,10 +39,7 @@ func TestRefreshSubAgentCompletion_NoFinalTextUsesFixedWording(t *testing.T) {
 	require.NoError(t, err)
 	writeParkedChildTurnNoText(t, env, child.ID, message.FinishReasonEndTurn)
 
-	coord := &coordinator{}
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
-	coord.asyncJobs.coord = coord
+	coord := newBatchRuntimeCoordinator()
 	coord.messages = env.messages
 
 	captured := AsyncCompletion{Content: "child yielded: gate still running", ToolCallID: "parent-call"}
@@ -63,10 +60,7 @@ func TestRefreshSubAgentCompletion_TextStillWins(t *testing.T) {
 	require.NoError(t, err)
 	writeParkedChildTurn(t, env, child.ID, "the real final answer", message.FinishReasonEndTurn)
 
-	coord := &coordinator{}
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
-	coord.asyncJobs.coord = coord
+	coord := newBatchRuntimeCoordinator()
 	coord.messages = env.messages
 
 	got := coord.refreshSubAgentCompletion(child.ID, AsyncCompletion{Content: "stale"})

@@ -5,12 +5,10 @@ import (
 	"log/slog"
 )
 
-// ownWorkBatch is the in-turn guard's flag-ON own-work predicate. Under the
-// batch runtime the ON turn never touches async_jobs (agent_turn.go), so the
-// legacy ledger's map is empty by construction and running() would answer
-// false while live batch work runs — armProgressGuard must answer the same
-// "does this owner have live work" question CLIActiveWork answers, through
-// the same bound cutover-facts seam.
+// ownWorkBatch is the in-turn guard's own-work predicate on batch facts. The
+// turn never touches a legacy job store (agent_turn.go), so the guard answers
+// the same "does this owner have live work" question CLIActiveWork answers,
+// through the same bound cutover-facts seam.
 //
 // The predicate is CLIActiveWork's flag-ON body WITHOUT
 // recoverBatchScopeDeadCandidates: that recovery already ran at this turn's
@@ -23,14 +21,15 @@ import (
 // session is treated as having live work (ownWork=true), never as silently
 // idle.
 func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool {
-	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
+	if a.coord == nil {
 		return false
 	}
-	coord := a.asyncJobs.coord
+	coord := a.coord
 	if !batchOwnWorkFactsInstalled(coord) {
 		// No batch runtime installed for this coordinator (cli_active_work.go's
-		// unbound rule): the caller keeps the legacy ledger expression, and the
-		// helper itself never answers from batch rows.
+		// unbound rule): the guard never answers from batch rows and the
+		// caller treats the session as idle -- an unbound coordinator has no
+		// durable live-work source to consult.
 		return false
 	}
 	facts := coordinatorBatchCutoverFacts(coord)
@@ -60,19 +59,15 @@ func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool 
 }
 
 // batchOwnWorkFactsInstalled is the guard's "batch facts installed" predicate:
-// true only when the batch cutover facts are bound and installed for coord.
-// It is the same rule CLIActiveWork's ON branch uses (cli_active_work.go) — a
-// flag-ON coordinator without an installed runtime keeps its legacy path
-// there, so the guard must keep the legacy ledger expression too and never
-// hide live legacy work behind an unbound helper.
+// true only when a concrete (node-backed) batch cutover facts source is bound
+// for coord. It is the same rule CLIActiveWork uses (cli_active_work.go) — an
+// unbound coordinator keeps the conservative idle answer and never hides live
+// work behind an unbound helper.
 func batchOwnWorkFactsInstalled(coord *coordinator) bool {
 	if coord == nil {
 		return false
 	}
 	facts := coordinatorBatchCutoverFacts(coord)
-	if facts == nil {
-		return false
-	}
 	_, unbound := facts.(unknownBatchCutoverFacts)
 	return !unbound
 }

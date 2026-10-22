@@ -135,8 +135,7 @@ func TestConstructionScopeBoundary(t *testing.T) {
 		controls:     failing,
 		diskBindings: caps,
 	}
-	failedCoord := &coordinator{asyncJobs: newWorkLedger(nil)}
-	failedCoord.asyncJobs.inlineWindow = inlineWindow
+	failedCoord := newBatchRuntimeCoordinator()
 	coordinatorBatchBindings.Store(failedCoord, failedBind)
 	t.Cleanup(func() { coordinatorBatchBindings.Delete(failedCoord) })
 
@@ -153,7 +152,7 @@ func TestConstructionScopeBoundary(t *testing.T) {
 		registries.Delete(id)
 	})
 	preBuildOwners := caps.ownerCount()
-	_, err = failedCoord.finishToolAssembly(failedCtx, batchTestTools("bash", "view", "job_output"), nil, false, []string{"batch_run", "batch_add"})
+	_, err = failedCoord.finishToolAssembly(failedCtx, batchTestTools("bash", "view", "agentic_fetch"), nil, false, []string{"batch_run", "batch_add"})
 	caps.setRegistryDrop(registries.Delete)
 	require.Error(t, err, "the controls stub must fail the assembly after the pin")
 	require.Contains(t, err.Error(), "assembly failure", "the failure is the stub's, raised through the real assembly")

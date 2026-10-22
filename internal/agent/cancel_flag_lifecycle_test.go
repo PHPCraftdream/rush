@@ -175,7 +175,7 @@ func TestCancelFlag_InTurnAbortHonoursAndClearsIt(t *testing.T) {
 func TestCancelFlag_LoopDrivenSessionKeepsItAfterTheAbort(t *testing.T) {
 	ctx := context.Background()
 	f := newTwoStepFixture(t, attemptFixtureOpts{noIdle: true, noDriver: true})
-	f.ledger.claimExternalDriver(f.sessID)
+	f.coord.driverHints.claimExternalDriver(f.sessID)
 	f.seedDebt(ctx, "call-1", false)
 	require.NoError(t, f.env.sessions.RequestCancel(ctx, f.sessID))
 
@@ -184,7 +184,7 @@ func TestCancelFlag_LoopDrivenSessionKeepsItAfterTheAbort(t *testing.T) {
 	require.EqualValues(t, 1, f.steps.Load())
 	require.True(t, f.cancelRequested(), "the loop's flag survives the Drain that honoured it")
 
-	f.ledger.releaseExternalDriver(f.sessID)
+	f.coord.driverHints.releaseExternalDriver(f.sessID)
 	f.steps.Store(0)
 	f.seedDebt(ctx, "call-2", false) // the aborted turn's first step already reacted to call-1
 	_, err = f.sa.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID, MaxOutputTokens: 100}))

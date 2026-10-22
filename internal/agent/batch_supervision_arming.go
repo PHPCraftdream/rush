@@ -1,12 +1,10 @@
-// Package-agent file for the psv supervision-arming restoration: under
-// RUSH_BATCH_RUNTIME=ON the batch delivery seam replaces the legacy
-// asyncTool launch path, so the legacy noteWorkStarted arming points
-// (async_tool.go's launchExecutor and the inline window-elapsed fallback)
-// are re-created at the batch delivery's STARTED boundaries. The delivery
-// answers with the started response exactly when live work escaped to the
-// background — the same condition the legacy path armed on — and never for
-// an inline-answered completion, a sync answer, a denied/failed invocation
-// or a lost started election.
+// Package-agent file for the psv supervision-arming restoration: the batch
+// delivery seam is the work-STARTED boundary (the deleted asyncTool launch
+// path's replacement), so arming points are created at the batch delivery's
+// STARTED boundaries. The delivery answers with the started response exactly
+// when live work escaped to the background — the same condition the legacy
+// path armed on — and never for an inline-answered completion, a sync
+// answer, a denied/failed invocation or a lost started election.
 package agent
 
 import "context"
@@ -28,8 +26,8 @@ func (b *batchDeliveryImpl) psvArmSupervision(ctx context.Context, owner string)
 // PsvBatchSupervisionArmingLate builds the production batch delivery
 // arming func for an app-level wiring site whose coordinator is assigned
 // AFTER the batch install is built (get is re-read on every call). The
-// returned func calls the late-bound coordinator's work ledger
-// noteWorkStarted, which already: exempts delegated children
+// returned func calls the late-bound coordinator's noteWorkStarted, which
+// already: exempts delegated children
 // (subAgentDrivers), resolves config + per-call CallOptions
 // (--no-supervision / --supervision-interval) from the PASSED ctx, is
 // idempotent for an already-armed session, and resumes a paused session
@@ -42,9 +40,9 @@ func PsvBatchSupervisionArmingLate(get func() Coordinator) func(context.Context,
 			return
 		}
 		cc, ok := get().(*coordinator)
-		if !ok || cc == nil || cc.asyncJobs == nil {
+		if !ok || cc == nil {
 			return
 		}
-		cc.asyncJobs.noteWorkStarted(ctx, owner)
+		cc.noteWorkStarted(ctx, owner)
 	}
 }

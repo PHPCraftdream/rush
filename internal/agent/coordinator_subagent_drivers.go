@@ -85,7 +85,7 @@ func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 // early would silently fall back to c.currentAgent for that later resume --
 // reproducing task #1049 for old sessions. Phase 3 (§6.2) removes an entry
 // once its child's scope is CONFIRMED closed (releaseDriverIfScopeClosed,
-// called from recheckChild), which does not reopen that risk: a later
+// called from the release path), which does not reopen that risk: a later
 // resume_session_id always goes through runSubAgent's own register() call
 // again BEFORE the child's next turn runs (proven by
 // TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist), so a resumed
@@ -139,6 +139,20 @@ func (r *subAgentDriverRegistry) get(childSessionID string) (subAgentDriver, boo
 	defer r.mu.Unlock()
 	d, ok := r.byChild[childSessionID]
 	return d, ok
+}
+
+// childSessions lists the child session ids with a live driver registration.
+func (r *subAgentDriverRegistry) childSessions() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.byChild))
+	for id := range r.byChild {
+		out = append(out, id)
+	}
+	return out
 }
 
 // releaseIfCurrent removes childSessionID's driver record ONLY if it is

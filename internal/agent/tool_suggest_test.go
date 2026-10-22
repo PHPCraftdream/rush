@@ -65,7 +65,7 @@ func TestAugmentUnknownToolResult(t *testing.T) {
 func TestToolNameSuggestion(t *testing.T) {
 	t.Parallel()
 
-	available := []string{"bash", "grep", "view", "edit", "job_output"}
+	available := []string{"bash", "grep", "view", "edit", "batch_output"}
 	require.Equal(t, "bash", toolNameSuggestion("gash", available))
 	require.Equal(t, "grep", toolNameSuggestion("brep", available))
 	require.Equal(t, "", toolNameSuggestion("totally_unrelated_name", available))

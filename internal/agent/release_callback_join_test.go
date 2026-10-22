@@ -12,8 +12,7 @@ import (
 )
 
 func newReleaseJoinCoordinator() (*coordinator, *sessionAgent) {
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
+	c := newBatchRuntimeCoordinator()
 	a := NewSessionAgent(SessionAgentOptions{OnSessionIdle: c.onSessionIdleHook}).(*sessionAgent)
 	c.currentAgent = a
 	return c, a

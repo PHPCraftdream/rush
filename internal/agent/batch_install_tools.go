@@ -22,7 +22,7 @@ import (
 // batchWorkTarget reports whether a constructed tool is a batch-admissible
 // work leaf: the D1 complement (never a control-plane tool) restricted to
 // the families the R11A admission validator can classify. Tools outside
-// every family (todos, job_output, rush_info, ...) keep their direct pinned
+// every family (todos, rush_info, ...) keep their direct pinned
 // leaf — forcing them through the ingress would only convert every call
 // into errBatchUnknownTool.
 // Completeness inventory (R11F round-2), per non-wrapped tool of the D1
@@ -33,11 +33,9 @@ import (
 //     is batch-admissible (batchIOTools), so its invocation enters the ONE
 //     authority like any other state-changing leaf. The admission validator
 //     classifies it in the io group.
-//   - job_output, job_kill: (i) D1-ADJACENT LEGACY CONTROLS — the legacy
-//     async-ledger read/kill surfaces slated for removal in R12/D6; they
-//     are control-plane (batchControlTarget/BatchNonWorkTarget) and are
-//     never batch-wrapped. Anchor: the legacy workLedger
-//     (async_job_bgshell.go / coordinator recheck loop) they operate on.
+//   - batch_status/batch_output/batch_stop: (i) D1 CONTROLS —
+//     control-plane (batchControlTarget/BatchNonWorkTarget), never
+//     batch-wrapped.
 //   - rush_info, rush_logs: (ii) NOT WORK — pure read-only host/process
 //     introspection with no external effect and no session-state mutation;
 //     direct pinned leaf.

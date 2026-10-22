@@ -13,14 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// a3DebtRowIdentity is the dual-mode chain identity of one seeded debt row:
-// the legacy claim id OFF, the root tool_call_id ON (batch chains key on the
-// launched root's call id, never on claims).
+// a3DebtRowIdentity is the chain identity of one seeded debt row: the root
+// tool_call_id (batch chains key on the launched root's call id, never on
+// claims).
 func a3DebtRowIdentity(row db.AsyncJob) string {
-	if batchFlagEnabled() {
-		return row.ToolCallID
-	}
-	return row.ClaimID
+	return row.ToolCallID
 }
 
 // a3MarkRowsReacted marks the debt rows seeded under callIDs reacted through
@@ -39,7 +36,7 @@ func a3MarkRowsReacted(t *testing.T, ctx context.Context, conn *sql.DB, owner st
 	}
 }
 
-// a3BatchDebtSnapshotForCalls builds the ON acted-on set: the pending-inclusive
+// a3BatchDebtSnapshotForCalls builds the acted-on set: the pending-inclusive
 // debt rows whose ROOT tool_call_id is one of calls -- the batch twin of the
 // legacy tests' crafted claim snapshots (the rows of PREVIOUS legs' launches).
 func a3BatchDebtSnapshotForCalls(t *testing.T, ctx context.Context, conn *sql.DB, owner string, calls []string) session.BatchDebtSnapshot {
@@ -79,26 +76,16 @@ func a3SeedChainBatchRoots(c *coordinator, sessionID string, links int, roots ..
 	})
 }
 
-// a3ChainHasIdentity is the dual-mode has-claim read (ON: the chain's batch
-// roots; OFF: reactionChainHasClaim).
+// a3ChainHasIdentity is the has-identity read over the chain's batch roots.
 func a3ChainHasIdentity(c *coordinator, sessionID, identity string) bool {
-	if batchFlagEnabled() {
-		_, ok := c.arb.snapshot(sessionID).ChainBatchRoots[identity]
-		return ok
-	}
-	return c.reactionChainHasClaim(sessionID, identity)
+	_, ok := c.arb.snapshot(sessionID).ChainBatchRoots[identity]
+	return ok
 }
 
-// a3DebtOpen is the dual-mode open-reaction-debt predicate (the batch twin of
-// AsyncJobStore.ReactionDebtExists is BatchReactionDebtExists).
-func a3DebtOpen(t *testing.T, ctx context.Context, conn *sql.DB, legacy *session.AsyncJobStore, owner string) bool {
+// a3DebtOpen is the open-reaction-debt predicate over the batch store.
+func a3DebtOpen(t *testing.T, ctx context.Context, conn *sql.DB, owner string) bool {
 	t.Helper()
-	if batchFlagEnabled() {
-		open, err := session.NewBatchStore(conn).BatchReactionDebtExists(ctx, owner)
-		require.NoError(t, err)
-		return open
-	}
-	open, err := legacy.ReactionDebtExists(ctx, owner)
+	open, err := session.NewBatchStore(conn).BatchReactionDebtExists(ctx, owner)
 	require.NoError(t, err)
 	return open
 }

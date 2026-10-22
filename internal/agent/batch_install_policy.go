@@ -187,10 +187,9 @@ func pscCombineDescendantFacts(ctx context.Context, child BatchChildReactionFact
 	return live || open, complete && childComplete
 }
 
-// pscChildScopeOpen is the arbiter-classified debt predicate, equal to the
-// legacy release path's (workLedger.childScopeOpenAcrossProcesses):
-// running work on a live host, debt a Drain may run now (Owed), or debt
-// held by or paced after a reaction attempt (Paced).
+// pscChildScopeOpen is the arbiter-classified debt predicate (the retained
+// release-scope rule): running work on a live host, debt a Drain may run
+// now (Owed), or debt held by or paced after a reaction attempt (Paced).
 func pscChildScopeOpen(st CLIScopeState) bool {
 	return st.WorkOpen || st.Drain == DrainOwed || st.Drain == DrainPaced
 }

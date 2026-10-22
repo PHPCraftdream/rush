@@ -21,7 +21,7 @@ func batchTerminalTestDoneSource(store *session.BatchStore) *batchStoreDoneSourc
 }
 
 // batchTerminalTestReserve reserves a one-item root directly against the
-// store (the test DB has foreign keys off, matching the isolated ledger
+// store (the test DB has foreign keys off, matching the isolated
 // convention) and returns the root id.
 func batchTerminalTestReserve(t *testing.T, store *session.BatchStore, ctx context.Context, owner, call, hash string) string {
 	t.Helper()

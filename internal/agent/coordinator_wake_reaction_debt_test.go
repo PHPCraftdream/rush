@@ -2,7 +2,7 @@
 // by VISIBLE debt (delivery='done'), never by the plain reaction-debt
 // predicate (which includes 'pending' rows a broken pull can never clear),
 // and settle-by-failure's classification/threshold behavior. Real SQLite
-// throughout (newTestAsyncJobStore).
+// throughout (batch store over the test env's conn).
 package agent
 
 import (
@@ -47,8 +47,6 @@ func (f *failingCreateTxMessages) CreateTx(ctx context.Context, tx *sql.Tx, sess
 // cfg/model resolution).
 type wakeDebtFixture struct {
 	coord    *coordinator
-	ledger   *workLedger
-	store    *session.AsyncJobStore
 	sa       *sessionAgent
 	model    Model
 	messages *failingCreateTxMessages
@@ -65,12 +63,7 @@ type wakeDebtFixture struct {
 // itself uses (doc sec.6 review fix).
 func (f *wakeDebtFixture) debtVisible(t *testing.T, ctx context.Context) bool {
 	t.Helper()
-	if batchFlagEnabled() {
-		visible, err := session.NewBatchStore(f.env.conn).BatchReactionVisibleDebtExists(ctx, f.sessID)
-		require.NoError(t, err)
-		return visible
-	}
-	visible, err := f.store.VisibleReactionDebtExists(ctx, f.sessID)
+	visible, err := session.NewBatchStore(f.env.conn).BatchReactionVisibleDebtExists(ctx, f.sessID)
 	require.NoError(t, err)
 	return visible
 }
@@ -129,12 +122,7 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	require.NoError(t, err)
 	f.sessID = sess.ID
 
-	f.store = newTestAsyncJobStore(t)
-	f.coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	f.ledger = newWorkLedger(f.coord.notifyAsyncCompletion)
-	f.ledger.store = f.store
-	f.ledger.coord = f.coord
-	f.coord.asyncJobs = f.ledger
+	f.coord = newBatchRuntimeCoordinator()
 	f.env = env
 	f.coord.sessions, f.coord.messages, f.coord.permissions = env.sessions, env.messages, env.permissions
 	// Standalone fixture: an explicit node-facts binding is required under
@@ -145,7 +133,7 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	opts := SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		Sessions: env.sessions, Messages: f.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: f.ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: f.coord,
 	}
 	if wireOnSessionIdle {
 		opts.OnSessionIdle = f.coord.onSessionIdleHook
@@ -156,48 +144,21 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	return f
 }
 
-// claimAndFinish claims toolCallID for f.sessID, announces it, and
-// terminal-transitions it to 'completed' with wake=1 -- the shape a real
-// async job leaves behind, delivery='pending' until something pulls it.
-//
-// Registers the claim through f.ledger.Start (not the store directly) so
-// the in-memory ledger keeps an open job for f.sessID -- l.running stays
-// true, which is what keeps recheckChild/releaseDriverIfScopeClosed from
-// concluding this bare test session's scope is closed and yanking its
-// driver registration out from under a later wakeSession call. The DB-side
-// terminal transition still goes straight through the store (bypassing
-// l.finish), so memory and DB deliberately disagree exactly the way a
-// store.Transition-only completion (this fixture's whole point) would.
+// claimAndFinish seeds toolCallID's terminal wake-armed debt for f.sessID in
+// batch_nodes (delivery='pending' until something pulls it).
 func (f *wakeDebtFixture) claimAndFinish(t *testing.T, ctx context.Context, toolCallID string) {
 	t.Helper()
-	if batchFlagEnabled() {
-		// ON: the same terminal wake-armed debt, in batch_nodes (the ledger
-		// Start registration is legacy-only bookkeeping the ON path never
-		// reads).
-		seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, false)
-		return
-	}
-	_, existing, err := f.ledger.Start(f.sessID, toolCallID, toolCallID, "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, f.store.MarkAnnounced(ctx, f.sessID, toolCallID))
-	_, err = f.store.Transition(ctx, session.TransitionParams{
-		Owner: f.sessID, ToolCallID: toolCallID, State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
+	_ = ctx
+	// The terminal wake-armed debt lives in batch_nodes only.
+	seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, false)
 }
 
 // finishAndPullVisible is claimAndFinish plus the notice pull that makes the
 // debt VISIBLE (delivery='done'), through the selected authority.
 func (f *wakeDebtFixture) finishAndPullVisible(t *testing.T, ctx context.Context, toolCallID string) {
 	t.Helper()
-	if batchFlagEnabled() {
-		seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, true)
-		return
-	}
-	f.claimAndFinish(t, ctx, toolCallID)
-	_, err := f.store.PullJobNotices(ctx, f.messages, f.sessID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
+	_ = ctx
+	seedBatchJobDebt(t, f.env.conn, f.sessID, toolCallID, true)
 }
 
 // breakNoticePulls makes every subsequent notice-pull history insert fail
@@ -205,11 +166,7 @@ func (f *wakeDebtFixture) finishAndPullVisible(t *testing.T, ctx context.Context
 // messages table; the legacy path fails CreateTx through the wrapper).
 func (f *wakeDebtFixture) breakNoticePulls(t *testing.T) {
 	t.Helper()
-	if batchFlagEnabled() {
-		failFixturePull(t, f.env.conn)
-		return
-	}
-	f.messages.fail.Store(true)
+	failFixturePull(t, f.env.conn)
 }
 
 // TestDrainTurn_PermanentPullFailure_NoProviderCallEver is the P1 fix's core
@@ -239,7 +196,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "a permanently failing pull must never reach the provider")
 
-	row := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
+	row := readFixtureJobDebt(t, f.env.conn, f.sessID, "call-1")
 	require.Equal(t, "pending", row.Delivery, "the row must still be stuck at pending -- the pull never succeeded")
 	require.EqualValues(t, 0, row.Reacted)
 
@@ -260,7 +217,7 @@ func TestDrainTurn_PermanentPullFailure_NoProviderCallEver(t *testing.T) {
 	f.coord.waitRecheckWakes() // the pass's wakes are detached
 	require.Zero(t, f.requests.Load(), "the 60s pass must not force a provider call over permanently-pending debt either")
 
-	row = readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
+	row = readFixtureJobDebt(t, f.env.conn, f.sessID, "call-1")
 	require.Equal(t, "pending", row.Delivery)
 }
 
@@ -293,12 +250,12 @@ func TestWakeSession_ExternalDriver_HintOnlyNeverBuildsDrainCall(t *testing.T) {
 	f.finishAndPullVisible(t, ctx, "call-1")
 
 	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
-	before := f.ledger.hintSeqOf(f.sessID)
+	before := f.coord.driverHints.hintSeqOf(f.sessID)
 
 	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.Zero(t, f.requests.Load(), "an external-driver session must never get a Drain turn, only a hint")
-	require.NotEqual(t, before, f.ledger.hintSeqOf(f.sessID), "the hint must still be delivered so the loop can react")
+	require.NotEqual(t, before, f.coord.driverHints.hintSeqOf(f.sessID), "the hint must still be delivered so the loop can react")
 
 	f.coord.ReleaseExternalDriver(ctx, f.sessID)
 	err = f.coord.wakeSession(ctx, f.sessID, true)

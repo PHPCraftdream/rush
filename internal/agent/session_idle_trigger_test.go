@@ -87,15 +87,19 @@ func (*blockUntilReleasedModel) Provider() string { return "test" }
 func (*blockUntilReleasedModel) Model() string    { return "block-until-released" }
 
 // TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger is the
-// orchestrator-mandated proof: a child turn run through its REAL driver
-// (bypassing coordinator.runInternal entirely, exactly like wakeSession's
-// production agent.Run call does) delivers the parent's parked delegation
-// once it ends, with no ticker running and no test-side manual trigger call.
+// orchestrator-mandated proof (batch edition): a child turn run through its
+// REAL driver (bypassing coordinator.runInternal entirely, exactly like
+// wakeSession's production agent.Run call does) puts the child into the
+// coordinator's recheck set once it ends -- the release-shaped retry the
+// deleted ledger delivery became (coordinator_work_scope.go:
+// noteSubAgentChildRunEnded) -- with no ticker running and no test-side
+// manual trigger call.
 //
-// Revert-check performed: removed the `a.onSessionIdle(sessionID)` call from
-// abandonOwnershipWithHandoff -- this test hung until its own 5s timeout and
-// failed with "the parked delegation must be delivered once the driver's
-// real turn ends". Restored the call; re-ran, passed.
+// Revert-check performed (legacy): removing the `a.onSessionIdle(sessionID)`
+// call from abandonOwnershipWithHandoff left the delivered channel empty
+// until the 5s timeout. The batch twin: dropping OnSessionIdle's wiring (or
+// noteSubAgentChildRunEnded's addToRecheckSet) leaves the recheck-set
+// assertion below red.
 func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) {
 	env := testEnv(t)
 
@@ -106,19 +110,13 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 	require.NoError(t, err)
 	childSession := child.ID
 
-	delivered := make(chan AsyncCompletion, 4)
-	coord := &coordinator{}
-	coord.asyncJobs = newWorkLedger(func(c AsyncCompletion) { delivered <- c })
-	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
-	// recheckChild scope read (childScopeOpenAcrossProcesses -> CLIScope ->
-	// node facts) needs both to bind a real (here: empty) node source, or the
-	// unknown-facts fail-open keeps the parked delegation undelivered even
-	// once the driver's real turn ends.
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
+	coord := newBatchRuntimeCoordinator()
+	// The recheck pass's scope re-derivation reads batch facts; bind a real
+	// (here: empty) node source.
+	conn, dataDir := batchFixtureConn(t)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.sessions = env.sessions
+	_ = dataDir
 
 	model := newBlockUntilReleasedModel()
 	driver := NewSessionAgent(SessionAgentOptions{
@@ -127,7 +125,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 		IsYolo:     true,
 		Sessions:   env.sessions,
 		Messages:   env.messages,
-		AsyncJobs:  coord.asyncJobs,
+		Coord:      coord,
 		// The exact wiring buildAgent does for every driver it builds
 		// (coordinator_tools.go) -- this test wires it directly since it
 		// builds the driver without going through buildAgent.
@@ -159,16 +157,17 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 		return driver.IsSessionBusy(childSession)
 	}, 2*time.Second, 5*time.Millisecond, "the child's real turn must be mid-flight before the delegation arms")
 
-	// Park a delegation while the driver is genuinely busy: armDelegation's
-	// own synchronous trigger (i) must NOT deliver it, since childScopeDrained
-	// reads the driver's real (busy) IsSessionBusy.
-	_, _, err = coord.asyncJobs.Start(parentSession, parentCall, "", AgentToolName, childSession, false, false, nil, func() {})
-	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parentSession, parentCall))
-	coord.asyncJobs.armDelegation(jobOf(coord.asyncJobs, parentSession, parentCall), jobResult{content: "child yielded: still working"})
-	require.True(t, coord.asyncJobs.hasParked())
-	require.Empty(t, drainCompletions(delivered),
-		"the delegation must not be delivered while the real driver is still busy")
+	// Arm a delegation while the driver is genuinely busy: the live batch
+	// child-link is what a later wake re-derives the release from.
+	seedBatchDelegation(t, conn, parentSession, parentCall, childSession, AgentToolName, "running", false)
+	inRecheck := func() bool {
+		coord.recheckMu.Lock()
+		defer coord.recheckMu.Unlock()
+		_, ok := coord.recheckSet[childSession]
+		return ok
+	}
+	require.False(t, inRecheck(),
+		"no retry may be scheduled while the real driver's turn is still running")
 
 	// Let the child's turn actually finish -- this is the ONLY thing that
 	// makes the mailbox mbIdle; no test code calls recheckChild/
@@ -181,15 +180,10 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 		t.Fatal("the driver's real turn did not finish")
 	}
 
-	var got []AsyncCompletion
-	require.Eventually(t, func() bool {
-		got = append(got, drainCompletions(delivered)...)
-		return len(got) > 0
-	}, 5*time.Second, 5*time.Millisecond,
-		"the parked delegation must be delivered once the driver's real turn ends")
-	require.Len(t, got, 1)
-	require.Equal(t, parentCall, got[0].ToolCallID)
-	require.Contains(t, got[0].Content, "child yielded")
-	require.False(t, coord.asyncJobs.hasParked())
+	// The run's own release path (onSessionIdle -> noteSubAgentChildRunEnded)
+	// must have scheduled the release-shaped retry: the child sits in the
+	// recheck set, and the next RecheckPass re-derives its wake from the DB.
+	require.Eventually(t, inRecheck, 5*time.Second, 5*time.Millisecond,
+		"the child must join the recheck set once the driver's real turn ends")
 	require.False(t, driver.IsSessionBusy(childSession))
 }

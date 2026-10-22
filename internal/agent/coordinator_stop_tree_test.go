@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +45,7 @@ func TestStop_OneSecondAfterNaturalFinish_NoNewTurn(t *testing.T) {
 	// batch_nodes (claimAndFinish's ON branch), so the legacy async_jobs
 	// Get has no row to return ("sql: no rows"). readFixtureJobDebt maps
 	// the selected child node's wake onto the same AsyncJob view.
-	row := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
+	row := readFixtureJobDebt(t, f.env.conn, f.sessID, "call-1")
 	require.EqualValues(t, 0, row.Wake, "Stop's wake-zero pass must have closed the race")
 
 	// A late/duplicate hint for the SAME completion (exactly what a
@@ -57,9 +56,9 @@ func TestStop_OneSecondAfterNaturalFinish_NoNewTurn(t *testing.T) {
 	require.Zero(t, f.requests.Load(), "Stop must prevent any turn over a race-won natural completion")
 }
 
-// stopTreeChild is one child session in TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere's
-// delegation tree: its own bash job (claimed directly, in-memory too so
-// l.running stays true) plus a mock driver counting provider calls.
+// stopTreeChild is one child session in
+// TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere's delegation tree: its own
+// finished wake-armed bash debt plus a mock driver counting provider calls.
 type stopTreeChild struct {
 	sessID string
 	agent  *mockSessionAgent
@@ -67,17 +66,21 @@ type stopTreeChild struct {
 }
 
 // TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere: a root delegates to N
-// child sessions, each of which has its OWN running bash job. Cancel(root)
-// must walk the whole live delegation tree (workLedger.cancelTree) and zero
-// every descendant's wake -- no session in the tree may get a turn
-// afterward, matching doc sec.3.8's "Stop is transitive" and "a stopped
-// delegation's child has no right to a turn".
+// child sessions, each of which has its OWN finished, wake-armed bash debt in
+// batch_nodes. Cancel(root) must walk the whole live delegation tree from the
+// batch facts (stopTree's LiveDelegationNodes walk) and zero every
+// descendant's wake -- no session in the tree may get a turn afterward,
+// matching doc sec.3.8's "Stop is transitive" and "a stopped delegation's
+// child has no right to a turn". (The batch twin over the full runtime,
+// including the delegation roots' terminal projection by the batch runner,
+// is coordinator_batch_stop_test.go.)
 //
-// REVERT CHECK: changed coordinator.Cancel to call c.asyncJobs.cancelSession
-// (single id) instead of cancelTree -- this test's per-child assertions
-// FAILED (both children's bash jobs still had wake=1, and calling
-// wakeSession for a child produced a provider call). Restored cancelTree;
-// re-ran, passed.
+// REVERT CHECK (ledger era): changed coordinator.Cancel to walk a single id
+// instead of the tree -- this test's per-child assertions FAILED (both
+// children's bash debts still had wake=1, and calling wakeSession for a child
+// produced a provider call). The same mutation in the batch world (dropping
+// the LiveDelegationNodes walk from stopTree) leaves the seeded children out
+// of the wake-zero owner set and this test red the same way.
 func TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -86,12 +89,8 @@ func TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere(t *testing.T) {
 	root, err := env.sessions.Create(ctx, "stop-tree-root")
 	require.NoError(t, err)
 
-	store := newTestAsyncJobStore(t)
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), currentAgent: &mockSessionAgent{}}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := a2AttachBatchFacts(t, env)
+	coord.currentAgent = &mockSessionAgent{}
 
 	children := make([]stopTreeChild, n)
 	for i := range n {
@@ -106,36 +105,25 @@ func TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere(t *testing.T) {
 		}}
 		coord.subAgentDrivers.register(childSess.ID, subAgentDriver{agent: children[i].agent, call: SessionAgentCall{SessionID: childSess.ID}})
 
-		// Root's delegation row to this child, still RUNNING (armed) --
-		// this is what makes cancelTree walk to the child at all.
-		_, _, err = ledger.Start(root.ID, "delegate-"+childSess.ID, "do work", AgentToolName, childSess.ID, false, false, nil, func() {})
-		require.NoError(t, err)
+		// Root's live delegation link to this child -- this is what makes
+		// stopTree's batch walk reach the child at all.
+		seedBatchDelegation(t, env.conn, root.ID, "delegate-"+childSess.ID, childSess.ID, "agent", "running", false)
 
-		// The child's OWN bash job, finished (wake=1, delivery=pending) --
-		// registered in-memory too (l.Start) so its scope looks open and
-		// its driver survives the release-triggered recheckChild path.
-		_, existing, err := ledger.Start(childSess.ID, "call-bash", "x", "bash", "", false, false, nil, func() {})
-		require.NoError(t, err)
-		require.False(t, existing)
-		require.NoError(t, store.MarkAnnounced(ctx, childSess.ID, "call-bash"))
-		_, err = store.Transition(ctx, session.TransitionParams{
-			Owner: childSess.ID, ToolCallID: "call-bash", State: "completed", ResultSummary: "done", Wake: true,
-		})
-		require.NoError(t, err)
+		// The child's OWN bash debt, finished with wake=1 and delivery
+		// still pending (a natural finish a moment before Stop).
+		seedBatchJobDebt(t, env.conn, childSess.ID, "call-bash", false)
 	}
 
 	coord.Cancel(root.ID)
 
 	for _, child := range children {
-		row, err := store.Get(ctx, child.sessID, "call-bash")
-		require.NoError(t, err)
-		require.EqualValues(t, 0, row.Wake, "child %s's own bash job must have its wake zeroed", child.sessID)
+		row := readFixtureJobDebt(t, env.conn, child.sessID, "call-bash")
+		require.EqualValues(t, 0, row.Wake, "child %s's own bash debt must have its wake zeroed", child.sessID)
 
-		delegationRow, err := store.Get(ctx, root.ID, "delegate-"+child.sessID)
-		require.NoError(t, err)
-		require.NotEqual(t, "running", delegationRow.State, "the delegation row itself must no longer be running")
+		require.True(t, coord.arb.snapshot(child.sessID).Suspended,
+			"the transitive stop must suspend every tree member, %s included", child.sessID)
 
-		err = coord.wakeSession(ctx, child.sessID, true)
+		err := coord.wakeSession(ctx, child.sessID, true)
 		require.NoError(t, err)
 	}
 

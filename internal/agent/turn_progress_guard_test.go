@@ -532,7 +532,7 @@ func TestProgressGuardToolRefusesWait(t *testing.T) {
 	result := runGuardTool(t, stepGuard{streak: 0, ownWork: true, async: true},
 		tools.BashToolName, `{"command":"echo x"}`, &spy)
 
-	require.Zero(t, spy.Load(), "the inner tool must never run on a refusal — no ledger Start, no notice, no claim")
+	require.Zero(t, spy.Load(), "the inner tool must never run on a refusal — no reservation, no notice, no claim")
 	text := guardErrorText(t, result)
 	require.Contains(t, text, "does not wait", "refusal text must say the command does not wait")
 	require.Contains(t, text, "NO tool call", "refusal text must tell the model how to end the turn")

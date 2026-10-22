@@ -5,6 +5,13 @@
 // so without a wake its debt stayed DrainOwed with nothing to launch it and the
 // parent's delegation hung. drainPermitted stays the single launch gate, and a
 // ROOT session keeps the cap and the auto-resume policy.
+//
+// Ledger-era halves deleted with the workLedger park: the hasParked armed-
+// result assertion and the delivered-channel content match ("the parent gets
+// the child's reaction") -- batch delegation delivery is the batch executor's
+// (see coordinator_child_question_test.go's file doc). What remains pinned
+// here is the WAKE contract: one Drain whatever the claim says, and the cap
+// for a root that merely owns a running delegation.
 package agent
 
 import (
@@ -12,17 +19,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
-// childBGFixture is a parent delegating to a child whose first turn ended
-// while a background shell of its own still runs (the delegation is parked).
+// childBGFixture is a parent delegating to a child whose live delegation link
+// is seeded in batch_nodes and whose first turn ended while a background shell
+// of its own still runs.
 type childBGFixture struct {
 	*attemptFixture
 	parentID, childID string
-	delivered         chan AsyncCompletion
 	runs              *countingAgent
 	held              *shell.BackgroundShell
 	mgr               *shell.BackgroundShellManager
@@ -38,7 +44,7 @@ type childBGMode struct {
 // newChildBGFixture must not be parallel (OAuth fixture isolates global paths).
 func newChildBGFixture(t *testing.T, m childBGMode) *childBGFixture {
 	t.Helper()
-	f, parentID, childID, delivered := childDelegationBase(t, attemptFixtureOpts{
+	f, parentID, childID := childDelegationBase(t, attemptFixtureOpts{
 		noIdle: m.noIdle, oauthProvider: oauthTestProvider,
 	})
 	f.rotateCredentials(oauthTestProvider)
@@ -62,25 +68,20 @@ func newChildBGFixture(t *testing.T, m childBGMode) *childBGFixture {
 	held, err := mgr.StartOwned(t.Context(), childID, f.env.workingDir, nil, "sleep 30", "held")
 	require.NoError(t, err)
 	return &childBGFixture{
-		attemptFixture: f, parentID: parentID, childID: childID, delivered: delivered,
+		attemptFixture: f, parentID: parentID, childID: childID,
 		runs: runs, held: held, mgr: mgr,
 	}
 }
 
-// park ends the child's first turn: its own shell still runs, so the
-// delegation stays armed.
+// park ends the child's first turn: its own pending wake-armed debt is seeded
+// and the delegation row is live in the batch store. (The deleted ledger half
+// asserted hasParked; the durable batch rows are the only representation now.)
 func (c *childBGFixture) park() {
 	c.t.Helper()
-	c.ledger.armDelegation(jobOf(c.ledger, c.parentID, "delegate-1"), jobResult{content: "first turn text"})
-	require.True(c.t, c.ledger.hasParked(), "the child's running shell keeps the delegation armed")
-	// hasParked is the process-local armed-result half (no batch
-	// representation: the captured first-turn text lives only in this
-	// process); the DURABLE half is the delegation row itself, read through
-	// the selected authority: live in async_jobs (OFF) and batch_nodes (ON).
-	view := readFixtureDelegation(c.t, c.env.conn, c.store, c.ledger, c.parentID, "delegate-1")
-	require.Equal(c.t, "running", view.State, "the delegation runs in the selected authority")
+	seedFixtureJobDebt(c.t, c.env.conn, c.childID, "bg-call", false)
+	view := readFixtureDelegation(c.t, c.env.conn, c.parentID, "delegate-1")
+	require.Equal(c.t, "running", view.State, "the delegation runs in the batch store")
 	require.Equal(c.t, c.childID, view.ChildSessionID)
-	require.Empty(c.t, c.delivered)
 }
 
 // finishShell is the shell's completion as the bash tool reports it.
@@ -92,28 +93,28 @@ func (c *childBGFixture) finishShell() {
 	c.coord.waitRecheckWakes()
 }
 
+// awaitRelease waits for the release's observable effect (the child's one
+// Drain ran). The deleted ledger-era implementation read the onWebDone
+// delivery channel; batch delivery is the batch executor's.
 func (c *childBGFixture) awaitRelease() AsyncCompletion {
 	c.t.Helper()
-	select {
-	case got := <-c.delivered:
-		return got
-	case <-time.After(10 * time.Second):
-		scope, err := c.coord.CLIScope(context.Background(), c.childID)
-		c.t.Fatalf("the delegation never released (child scope %+v, err %v, Drain runs %d)", scope, err, c.runs.runs.Load())
-		return AsyncCompletion{}
-	}
+	require.Eventually(c.t, func() bool { return c.runs.runs.Load() >= 1 },
+		10*time.Second, 10*time.Millisecond,
+		"the delegation never released (the child's Drain never ran)")
+	return AsyncCompletion{ToolCallID: "delegate-1"}
 }
 
 // TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays: the child's shell
-// finishes while the delegation is parked; the claim is refused (web with
+// finishes while its debt is pending; the claim is refused (web with
 // auto-resume off; web with every slot spent; CLI, where persistentMode is
-// false) yet ONE Drain reaches the provider and the delegation releases.
-// Before the fix: no request, CLIScope(child).Drain stayed DrainOwed and the
-// delegation never released.
+// false) yet ONE Drain reaches the provider. Before the fix: no request and
+// CLIScope(child).Drain stayed DrainOwed. (The deleted ledger-era content
+// assertion on the parent's delivery channel is replaced by the drain count
+// and the post-release scope read.)
 //
 // Revert-check: dropping the delegated-child wake from notifyBackgroundJobDone
 // (launching on the claim alone) turns the four refused-claim cases red on the
-// release timeout; "a free slot" launches through the claim and stays green (the
+// drain count; "a free slot" launches through the claim and stays green (the
 // control that the claim path itself still works).
 func TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays(t *testing.T) {
 	cases := []struct {
@@ -133,16 +134,14 @@ func TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays(t *testing.T) {
 
 			c.finishShell()
 
-			got := c.awaitRelease()
-			require.Equal(t, "delegate-1", got.ToolCallID)
-			require.False(t, got.IsError)
-			require.Equal(t, "reacted", got.Content, "the parent gets the child's reaction, not its stale first-turn text")
-			require.EqualValues(t, 1, c.runs.runs.Load(), "one Drain: the wake, the release hook and the re-check never launch a second")
-			require.EqualValues(t, 1, c.requests.Load())
+			require.Eventually(c.t, func() bool { return c.runs.runs.Load() == 1 },
+				10*time.Second, 10*time.Millisecond,
+				"one Drain: the wake, the release hook and the re-check never launch a second")
+			require.Equal(c.t, int32(1), c.requests.Load(),
+				"the one Drain reached the provider exactly once")
 			scope, err := c.coord.CLIScope(context.Background(), c.childID)
-			require.NoError(t, err)
-			require.NotEqual(t, DrainOwed, scope.Drain)
-			require.False(t, c.ledger.hasParked())
+			require.NoError(c.t, err)
+			require.NotEqual(c.t, DrainOwed, scope.Drain)
 		})
 	}
 }
@@ -170,7 +169,7 @@ func TestBGShellDone_ParentOfARunningDelegationKeepsTheCap(t *testing.T) {
 			c := newChildBGFixture(t, tc.mode)
 			rootRuns := &countingAgent{SessionAgent: c.sa}
 			c.coord.currentAgent = rootRuns
-			running, err := c.ledger.hasRunningDelegationFor(ctx, c.childID)
+			running, err := coordinatorBatchCutoverFacts(c.coord).LiveDelegationChildOf(ctx, c.parentID, c.childID)
 			require.NoError(t, err)
 			require.True(t, running, "the parent owns a running delegation")
 
@@ -189,14 +188,14 @@ func TestBGShellDone_ParentOfARunningDelegationKeepsTheCap(t *testing.T) {
 }
 
 // TestDelegatedChildDriven_ReadsTheDurableRow: "a child whose delegation runs"
-// is the durable row, not this process's memory: a row another process claimed
-// counts with no ledger job and no driver here; without a running row a
-// registered driver alone does not (the released child's Drain would be
-// refused by the policy anyway), and an unreadable row falls back to the
-// driver, so the wake goes through the policy instead of being lost.
+// is the durable batch row, not this process's memory: a live delegation
+// seeded by another process counts with no driver here; without a running
+// delegation a registered driver alone does not (the released child's Drain
+// would be refused by the policy anyway), and an unreadable read falls back to
+// the driver, so the wake goes through the policy instead of being lost.
 //
 // Revert-check: answering from the in-memory byChild index (or the driver
-// registry) instead of HasRunningDelegationFor turns the first case red.
+// registry) instead of LiveDelegationChildOf turns the first case red.
 func TestDelegatedChildDriven_ReadsTheDurableRow(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "durable-child", attemptFixtureOpts{noDriver: true})
@@ -207,23 +206,20 @@ func TestDelegatedChildDriven_ReadsTheDurableRow(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, driven, "no delegation names the session")
 
-	// A delegation another process claimed: only the row exists.
-	_, err = f.store.Claim(ctx, session.ClaimParams{
-		Owner: f.sessID, ToolCallID: "remote-delegate", Kind: session.JobKindAgent, Input: "x", ToolName: AgentToolName, ChildSessionID: child.ID,
-	})
-	require.NoError(t, err)
+	// A live delegation another process seeded: only the batch rows exist.
+	seedBatchDelegation(t, f.env.conn, f.sessID, "remote-delegate", child.ID, "agent", "running", false)
 	driven, err = f.coord.delegatedChildDriven(ctx, child.ID)
 	require.NoError(t, err)
-	require.True(t, driven, "a running row on the store is enough")
+	require.True(t, driven, "a live batch delegation is enough")
 
-	// An unreadable row: fall back to the driver registration.
+	// An unreadable read: fall back to the driver registration.
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	driven, err = f.coord.delegatedChildDriven(cancelled, "other-session")
 	require.Error(t, err)
-	require.False(t, driven, "no row readable and no driver: not driven")
+	require.False(t, driven, "no delegation readable and no driver: not driven")
 	f.coord.subAgentDrivers.register("other-session", subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: "other-session"}})
 	driven, err = f.coord.delegatedChildDriven(cancelled, "other-session")
 	require.Error(t, err)
-	require.True(t, driven, "a registered driver stands in for an unreadable row")
+	require.True(t, driven, "a registered driver stands in for an unreadable read")
 }

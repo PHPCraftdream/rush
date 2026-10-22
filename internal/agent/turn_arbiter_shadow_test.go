@@ -141,23 +141,13 @@ func newShadowFixture(t *testing.T, title string) *attemptFixture {
 // false. The child keeps its durable delegation identity either way.
 func newShadowDelegationFixture(t *testing.T, running bool) (*attemptFixture, string, string) {
 	t.Helper()
-	f, parentID, childID, _ := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
-	if batchFlagEnabled() {
-		// ON: childDelegationBase already seeded the live parent->child
-		// link in batch_nodes (b1SeedDelegationChildLink); a SECOND
-		// seedBatchDelegation for the same (owner, call id) loses
-		// BatchAnnounceStarted's election. A released child only needs the
-		// already-seeded live root projected to its terminal state.
-		if !running {
-			x2ReleaseBatchDelegation(t, f.env.conn, parentID, "delegate-1")
-		}
-		return f, parentID, childID
-	}
+	f, parentID, childID := childDelegationBase(t, attemptFixtureOpts{noIdle: true})
+	// childDelegationBase already seeded the live parent->child link in
+	// batch_nodes; a SECOND seedBatchDelegation for the same (owner, call id)
+	// loses BatchAnnounceStarted's election. A released child only needs the
+	// already-seeded live root projected to its terminal state.
 	if !running {
-		_, err := f.store.Transition(context.Background(), session.TransitionParams{
-			Owner: parentID, ToolCallID: "delegate-1", State: "completed", ResultSummary: "done", Wake: true,
-		})
-		require.NoError(t, err)
+		x2ReleaseBatchDelegation(t, f.env.conn, parentID, "delegate-1")
 	}
 	return f, parentID, childID
 }
@@ -179,7 +169,7 @@ func TestShadow_PacedGate(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-paced")
 	f.seedDebt(ctx, "shadow-paced-1", true)
-	f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, true, pacePaidUnreacted)
+	f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, pacePaidUnreacted)
 	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "paced gate", true)
 	require.Equal(t, VDefer, rep.arbiter.Kind)
 	require.Contains(t, shadowArbiterWord(rep.arbiter), "paced")
@@ -194,9 +184,9 @@ func TestShadow_PaidDormantGate(t *testing.T) {
 	f := newShadowFixture(t, "shadow-paid-dormant")
 	f.seedDebt(ctx, "shadow-paid-dormant-1", true)
 	for range turnDormantStreak {
-		f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, false, pacePaidUnreacted)
+		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, false, pacePaidUnreacted)
 	}
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "paid-dormant gate", true)
 	require.Equal(t, "deferred(stuck): repeated unreacted attempts", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
@@ -210,14 +200,14 @@ func TestShadow_FreeDormantGateHintOpens(t *testing.T) {
 	f := newShadowFixture(t, "shadow-free-dormant")
 	f.seedDebt(ctx, "shadow-free-dormant-1", true)
 	for range turnDormantStreak {
-		f.ledger.paceDrainGate(f.sessID, f.ledger.hintSeqOf(f.sessID), time.Minute, true, paceFreeNoTurn)
+		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, paceFreeNoTurn)
 	}
 	// Without a newer fact: stuck on both sides.
 	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "free-dormant, no hint", true)
 	require.Equal(t, "deferred(stuck): repeated unreacted attempts", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	// With one: open on both sides.
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	rep = checkShadow(ctx, t, f, f.sessID, siteTick, "free-dormant, newer hint", true)
 	require.Equal(t, "run", rep.code)
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
@@ -254,12 +244,8 @@ func TestShadow_ChainGuard(t *testing.T) {
 	f.seedDebt(ctx, "shadow-chain-claim", false) // pending job debt
 	identity := a3DebtRowIdentity(f.row(ctx, "shadow-chain-claim"))
 	require.NotEmpty(t, identity)
-	if batchFlagEnabled() {
-		// ON the guard owns debt by ROOT tool_call_id, not by claim id.
-		a3SeedChainBatchRoots(f.coord, f.sessID, turnReactionChainLimit, identity)
-	} else {
-		f.coord.setReactionChain(f.sessID, turnReactionChainLimit, map[string]struct{}{identity: {}}, false)
-	}
+	// The guard owns debt by ROOT tool_call_id, not by claim id.
+	a3SeedChainBatchRoots(f.coord, f.sessID, turnReactionChainLimit, identity)
 	// The running code's guard inserts a marker notice for a non-CLI session
 	// on the FIRST deferred read; pre-mark it so the comparison stays
 	// read-only (the marker insert is the executor's job).
@@ -279,7 +265,7 @@ func TestShadow_ChainGuard(t *testing.T) {
 func TestShadow_BGShellOnlyAutoResumeOff(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-bgoff")
-	_, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
+	_, err := noticesFor(f).InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
 	require.NoError(t, err)
 	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "bg-shell only, autonomy off", true)
 	require.Contains(t, rep.code, "auto-resume off")
@@ -301,7 +287,7 @@ func TestShadow_OverCapBGShellDebt(t *testing.T) {
 	const n = 3
 	ids := make([]int64, 0, n)
 	for i := range n {
-		id, err := f.store.InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
+		id, err := noticesFor(f).InsertSessionNoticeReturningID(ctx, f.sessID, session.NoticeKindBGShellDone, "done", true, "")
 		require.NoError(t, err)
 		ids = append(ids, id)
 		_ = i
@@ -323,8 +309,7 @@ func TestShadow_ForeignLiveDriver(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-foreign")
 	f.seedDebt(ctx, "shadow-foreign-1", true)
-	other := session.NewAsyncJobStore(f.env.conn, f.env.workingDir, os.Getpid()+7777, "shadow-other-host")
-	t.Cleanup(func() { _ = other.Close(context.Background()) })
+	other := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+7777, "shadow-other-host")
 	require.NoError(t, other.ClaimSessionDriver(ctx, f.sessID))
 	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "foreign live driver", false)
 	require.Contains(t, rep.code, "another process drives")
@@ -357,4 +342,10 @@ func TestShadow_ReleasedDelegationChild(t *testing.T) {
 	require.Equal(t, rep.code, shadowArbiterWord(rep.arbiter))
 	require.True(t, rep.facts.Session.DurableChild)
 	require.False(t, rep.facts.Session.RunningDelegation)
+}
+
+// noticesFor is the retained SessionNoticeStore over the fixture's conn: the
+// deleted AsyncJobStore.InsertSessionNoticeReturningID's batch replacement.
+func noticesFor(f *attemptFixture) *session.SessionNoticeStore {
+	return session.NewSessionNoticeStore(f.env.conn)
 }

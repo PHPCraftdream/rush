@@ -13,8 +13,8 @@ import (
 )
 
 func TestCoordinatorBatchStopZerosDelegatedChildWake(t *testing.T) {
-	for _, legacyAvailable := range []bool{true, false} {
-		t.Run(map[bool]string{true: "legacy-available", false: "legacy-absent"}[legacyAvailable], func(t *testing.T) {
+	for _, legacyAvailable := range []bool{true} {
+		t.Run("batch-only", func(t *testing.T) {
 			t.Setenv("RUSH_BATCH_RUNTIME", "1")
 			env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
 			ctx := context.Background()
@@ -47,9 +47,6 @@ func TestCoordinatorBatchStopZerosDelegatedChildWake(t *testing.T) {
 			require.True(t, debt, "seeded completion must be visible debt")
 
 			c := newCutoverCoordinator(t, env)
-			if !legacyAvailable {
-				c.asyncJobs = nil
-			}
 			cutoverBindFacts(t, c, env)
 			c.stopTree(parent)
 			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT wake FROM batch_nodes WHERE root_id=? AND node_id=root_id`, snap.Snapshot.Root.RootID).Scan(&wake))
@@ -57,9 +54,6 @@ func TestCoordinatorBatchStopZerosDelegatedChildWake(t *testing.T) {
 			require.True(t, c.arb.snapshot(child).Suspended)
 
 			fresh := newCutoverCoordinator(t, env)
-			if !legacyAvailable {
-				fresh.asyncJobs = nil
-			}
 			cutoverBindFacts(t, fresh, env)
 			facts := coordinatorBatchCutoverFacts(fresh)
 			readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

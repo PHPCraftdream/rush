@@ -62,15 +62,10 @@ var readTurnFactsGateSeam atomic.Pointer[func()]
 // failed write is logged and the slot decision is made anyway, as before, but
 // with no row id: nothing exists to defer, so nothing is recorded as over-cap.
 //
-// The shell's own async_jobs row (kind=bg_shell, claimed by
-// asyncTool.claimBackgroundShellRow at the background escape) is NOT written
-// here: its terminal Transition belongs to the observer registered at claim
-// time (bgshell_claim.go), so it happens whether or not a notification
-// callback exists. This function writes only the wake channel -- a
-// kind=bg_shell_done notice, whose id is what the arbiter's over-cap set is
-// keyed by -- and takes the slot decision on it. Shells without a row (started
-// before the claim existed, and store-less test fixtures) get the same notice,
-// which drains through the existing pull.
+// This function writes only the wake channel -- a kind=bg_shell_done
+// session_notices row, whose id is what the arbiter's over-cap set is keyed
+// by -- and takes the slot decision on it. Fixtures without a bound notice
+// store get no row (only the log); the pull drains whatever exists.
 func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary string) (claimed bool) {
 	if seam := bgArrivalEnteredSeam.Load(); seam != nil {
 		(*seam)(sessionID)
@@ -83,10 +78,10 @@ func (c *coordinator) persistBGShellCompletion(sessionID, shellID, summary strin
 		return false
 	}
 	var rowID int64
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+	if store := c.sessionNoticeStore(); store != nil {
 		c.pruneBGShellOverCap(sessionID)
 		insertCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		id, err := c.asyncJobs.store.InsertSessionNoticeReturningID(insertCtx, sessionID, session.NoticeKindBGShellDone, summary, true, "")
+		id, err := store.InsertSessionNoticeReturningID(insertCtx, sessionID, session.NoticeKindBGShellDone, summary, true, "")
 		cancel()
 		if err != nil {
 			slog.Error("failed to persist background-shell-done notice",
@@ -110,11 +105,11 @@ func (c *coordinator) pruneBGShellOverCap(sessionID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recheckDebtCheckBudget)
 	defer cancel()
-	_, notices, _, err := c.asyncJobs.store.PendingInclusiveDebtRows(ctx, sessionID)
+	rows, err := coordinatorBatchCutoverFacts(c).PendingInclusiveDebt(ctx, sessionID)
 	if err != nil {
 		return
 	}
-	c.arb.pruneOverCap(sessionID, notices)
+	c.arb.pruneOverCap(sessionID, rows.Notices)
 }
 
 // bgShellOverCapCount returns how many over-cap completion rows sessionID

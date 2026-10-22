@@ -1,5 +1,5 @@
 // Exact-incarnation rerun stop routing (R12-F, cutover acceptance 3): the
-// flag-on counterpart of Coordinator.StopRerunJobs (coordinator_rerun.go).
+// batch-only post-commit executor stop (the retained rerun contract).
 // The durable reconciliation is session.BatchStore.BatchRerunReconcile's
 // single transaction (R10c); retirement is DURABLE and written THERE, in the
 // truncation transaction (R12-F round 4: the live-root void runs in-tx, so
@@ -21,10 +21,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// BatchRerunStopper is the flag-on rerun stop surface. It is an OPTIONAL
-// interface: the rerun handler type-asserts it when the batch runtime flag is
-// on, so coordinator fakes stay untouched and the flag-off path keeps its
-// VoidedAsyncJob contract byte-for-byte.
+// BatchRerunStopper is the rerun stop surface (the only one; the legacy
+// StopRerunJobs / session.VoidedAsyncJob contract is gone). It is an
+// OPTIONAL interface so coordinator fakes can stay narrow: the rerun
+// handler type-asserts it.
 type BatchRerunStopper interface {
 	BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode)
 }
@@ -40,7 +40,7 @@ func batchRerunStopWorthy(state string) bool {
 	return false
 }
 
-// batchRerunRuntime unwraps the coordinator's bound flag-on runtime into the
+// batchRerunRuntime unwraps the coordinator's bound batch runtime into the
 // engine handle, owning host and batch store the stop needs. The binding is
 // per-coordinator (BindCoordinatorBatchRuntime, batch_install_ingress.go);
 // nil means not bound — the caller and its log treat that as "retire by
@@ -60,10 +60,9 @@ func batchRerunRuntime(c *coordinator) (runner batchRunnerHandle, host string, s
 	return wi.rt.cfg.Runner, wi.rt.cfg.Host, store
 }
 
-// BatchRerunStopVoided implements the flag-on post-commit stop: stop exactly
+// BatchRerunStopVoided implements the post-commit stop: stop exactly
 // the local live engine roots the committed reconciliation voided, and stop
-// every voided delegation's child tree (same shape as the flag-off
-// StopRerunJobs). The durable void marks were already written by
+// every voided delegation's child tree (the retained transitive-stop shape). The durable void marks were already written by
 // BatchRerunReconcile in its truncation transaction; nothing here touches
 // delivery state.
 // Best effort and idempotent: the rows are already void-delivery, and the
@@ -84,7 +83,7 @@ func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string
 	for i := range voided {
 		v := voided[i]
 		// Stop every voided delegation's child tree first, regardless of the
-		// root's own state (same shape as the flag-off StopRerunJobs).
+		// root's own state (the retained transitive-stop shape).
 		if v.ChildSessionID != "" {
 			c.stopTree(v.ChildSessionID)
 		}

@@ -755,7 +755,7 @@ func TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination(t *testin
 		// escape hatches
 		"download", "git_read", "agentic_fetch", "rush_logs", "list_mcp_resources", "read_mcp_resource",
 		// command tools without KeepsCommandTools
-		"bash", "run_command", "job_output", "job_kill",
+		"bash", "run_command", "batch_output", "batch_stop",
 		// fs_* tools whose op the scope does not grant
 		"fs_write", "fs_replace", "fs_write_lines", "fs_delete")
 
@@ -923,7 +923,7 @@ func TestFolderScope_CommandToolsFollowKeepsCommandTools(t *testing.T) {
 	require.True(t, ok, "coder agent must be configured")
 	cfgSnap, _ := coord.cfg.Snapshot()
 
-	commandTools := []string{"bash", "run_command", "job_output", "job_kill"}
+	commandTools := []string{"bash", "run_command"}
 
 	keptScope, err := permission.BuildFolderScope(permission.FolderScopeSpec{
 		WorkingDir:       env.workingDir,

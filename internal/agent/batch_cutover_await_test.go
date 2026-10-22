@@ -209,20 +209,14 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 	}
 }
 
-// newCutoverCoordinator builds the fixture coordinator over env's conn: a
-// real workLedger (its async_jobs store is a SEPARATE test DB, unused on the
-// ON path) and a REAL sessions service for parent resolution (fix 2) and
-// flag tests.
+// newCutoverCoordinator builds the fixture coordinator over env's conn: the
+// rehomed runtime state plus a REAL sessions service for parent resolution
+// (fix 2) and the notice store the delivery paths write.
 func newCutoverCoordinator(t *testing.T, env *cutoverEnv) *coordinator {
 	t.Helper()
-	coord := &coordinator{
-		subAgentDrivers: newSubAgentDriverRegistry(),
-		sessions:        session.NewService(db.New(env.conn), env.conn),
-	}
-	l := newWorkLedger(coord.notifyAsyncCompletion)
-	l.store = newTestAsyncJobStore(t)
-	l.coord = coord
-	coord.asyncJobs = l
+	coord := newBatchRuntimeCoordinator()
+	coord.sessions = session.NewService(db.New(env.conn), env.conn)
+	coord.noticeStore = session.NewSessionNoticeStore(env.conn)
 	return coord
 }
 
@@ -478,13 +472,14 @@ func dbQueryTerminal(t *testing.T, conn *sql.DB, ctx context.Context, owner, roo
 	return false
 }
 
-// asyncJobsCount counts the OLD ledger's rows for the owner (must stay 0).
+// asyncJobsCount pins the removed legacy authority: the async_jobs table no
+// longer exists in the batch-only schema, so ANY read of it fails.
 func (e *cutoverEnv) asyncJobsCount() int64 {
 	e.t.Helper()
 	var n int64
-	require.NoError(e.t, e.conn.QueryRowContext(e.ctx,
-		`SELECT COUNT(*) FROM async_jobs WHERE owner_session_id = ?1`, e.sessionID).Scan(&n))
-	return n
+	err := e.conn.QueryRowContext(e.ctx, `SELECT COUNT(*) FROM async_jobs`).Scan(&n)
+	require.Error(e.t, err, "the legacy async_jobs authority is gone from the schema")
+	return 0
 }
 
 // backgroundNoticeCount counts delivered background notices in history.
@@ -673,7 +668,7 @@ func TestAWa1ChildSettlementNoWakeNoDebt(t *testing.T) {
 	require.False(t, env.debtExists(), "no selected debt for the owner while the root is live")
 	_, _, _, rootSelected := env.nodeNotice(rootID)
 	require.Zero(t, rootSelected, "the live root has no selected notice")
-	require.Zero(t, env.asyncJobsCount(), "no async_jobs rows for the owner")
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 
 	// Releasing the second child settles the root: the selected debt commits.
 	leaf.letGo(calls[1])

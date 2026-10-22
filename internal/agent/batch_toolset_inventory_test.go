@@ -92,17 +92,14 @@ func batchInventoryBuildNames(t *testing.T, coord *coordinator, agentCfg config.
 	return names
 }
 
-// newBatchInventoryCoordinator builds the worker-tool test coordinator and
-// gives it a work ledger (finishToolAssembly's wrappers and the flagged
-// assembly read it). The flag must be set by the caller BEFORE this runs
-// whenever the case's AllowedTools must include the native names (SetupAgents
-// bakes allToolNames() at fixture-build time).
+// newBatchInventoryCoordinator builds the worker-tool test coordinator (the
+// batch world has no in-process ledger to attach; the assembly reads only
+// the coordinator's own runtime state). The flag must be set by the caller
+// BEFORE this runs whenever the case's AllowedTools must include the native
+// names (SetupAgents bakes allToolNames() at fixture-build time).
 func newBatchInventoryCoordinator(t *testing.T, env fakeEnv, includeWorker bool) *coordinator {
 	t.Helper()
-	coord := newWorkerToolTestCoordinator(t, env, includeWorker)
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.inlineWindow = inlineWindow
-	return coord
+	return newWorkerToolTestCoordinator(t, env, includeWorker)
 }
 
 // contains reports whether names holds want.
@@ -115,13 +112,13 @@ func contains(names []string, want string) bool {
 	return false
 }
 
-// TestBatchToolsetInventoryBothPreparationModes runs, per toolset family, a
-// flag-OFF build and a flag-ON build and asserts the control inventory of
-// each. AllowedTools (and therefore the by-name grants) is baked ON at
-// fixture-build time in every case: the flag-OFF build proves the natives
-// are absent anyway (no binding => no control placeholders, and the legacy
-// runtime keeps job_output/job_kill), so the shared fixture keeps each
-// subtest's OFF/ON pair comparable.
+// TestBatchToolsetInventoryBothPreparationModes (name kept for the lane
+// disposition trace) runs, per toolset family, ONE batch-only build and
+// asserts its control inventory. The deleted flag-OFF halves (they asserted
+// the legacy runtime's job_output/job_kill coexistence) are obsolete
+// contracts: the batch runtime is unconditional and those tools are removed.
+// AllowedTools (and therefore the by-name grants) is baked ON at
+// fixture-build time in every case.
 func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 	// The fixture must bake the flag-ON AllowedTools: setenv FIRST.
 	t.Setenv("RUSH_BATCH_RUNTIME", "true")
@@ -132,27 +129,18 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
 		require.True(t, ok, "coder agent must be configured")
 
-		// Flag OFF: no binding, no native controls; the legacy runtime names stay.
-		t.Setenv("RUSH_BATCH_RUNTIME", "false")
-		off := batchInventoryBuildNames(t, coord, coderCfg, false, nil)
+		// Batch-only: all five natives present once the binding is in; no
+		// binding => no control placeholders.
+		noBind := batchInventoryBuildNames(t, coord, coderCfg, false, nil)
 		for _, name := range batchInventoryNativeControls {
-			require.NotContains(t, off, name, "flag-off build must never surface native control %q", name)
+			require.NotContains(t, noBind, name, "an unbound build must never surface native control %q", name)
 		}
-		for _, name := range []string{"job_output", "job_kill", "await_tasks"} {
-			require.Contains(t, off, name, "flag-off legacy runtime must keep %q", name)
-		}
-
-		// Flag ON: all five natives present; await_tasks present; the legacy
-		// job_output/job_kill names still coexist until H4 deletes them.
-		t.Setenv("RUSH_BATCH_RUNTIME", "true")
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, coderCfg, false, nil)
 		for _, name := range batchInventoryNativeControls {
-			require.Contains(t, on, name, "flag-on coder build must surface native control %q", name)
+			require.Contains(t, on, name, "the coder build must surface native control %q", name)
 		}
 		require.Contains(t, on, "await_tasks")
-		require.Contains(t, on, "job_output", "legacy job_output coexists with the natives until H4")
-		require.Contains(t, on, "job_kill", "legacy job_kill coexists with the natives until H4")
 	})
 
 	t.Run("worker sub-agent", func(t *testing.T) {
@@ -161,25 +149,14 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
 		require.True(t, ok, "task agent must be configured")
 
-		// Flag OFF: the worker layering keeps job_output and never granted job_kill.
-		t.Setenv("RUSH_BATCH_RUNTIME", "false")
-		off := batchInventoryBuildNames(t, coord, taskCfg, true, nil)
-		require.Contains(t, off, "job_output")
-		require.NotContains(t, off, "job_kill", "worker layering never granted a stop control")
-		for _, name := range batchInventoryNativeControls {
-			require.NotContains(t, off, name, "flag-off worker build must never surface native control %q", name)
-		}
-
-		// Flag ON: the layering swaps job_output for batch_status/batch_output;
-		// batch_stop stays out exactly as job_kill always was; the legacy name
-		// is replaced, not kept.
-		t.Setenv("RUSH_BATCH_RUNTIME", "true")
+		// The worker layering surfaces batch_status/batch_output; batch_stop
+		// stays out exactly as job_kill always was.
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, taskCfg, true, nil)
 		require.Contains(t, on, "batch_status")
 		require.Contains(t, on, "batch_output")
 		require.NotContains(t, on, "batch_stop", "worker layering never granted a stop control")
-		require.NotContains(t, on, "job_output", "flag-on layering replaces the legacy poll name")
+		require.NotContains(t, on, "job_output", "the removed legacy poll tool is gone from the worker layering")
 		require.Contains(t, on, "batch_run")
 		require.Contains(t, on, "batch_add")
 		require.Contains(t, on, "await_tasks")
@@ -192,17 +169,8 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		require.True(t, ok, "coder agent must be configured")
 		reviewer := func(opts *CallOptions) { opts.ModelRole = config.SelectedModelTypeReviewer }
 
-		// Flag OFF: the reviewer read-only filter keeps no control-plane names.
-		t.Setenv("RUSH_BATCH_RUNTIME", "false")
-		off := batchInventoryBuildNames(t, coord, coderCfg, false, reviewer)
-		for _, name := range batchInventoryNativeControls {
-			require.NotContains(t, off, name)
-		}
-		require.NotContains(t, off, "job_kill", "reviewerReadOnlyToolNames never held job_kill")
-
-		// Flag ON: reviewerReadOnlyToolNames keeps none of the native controls
-		// either — parity with the legacy names it never held.
-		t.Setenv("RUSH_BATCH_RUNTIME", "true")
+		// reviewerReadOnlyToolNames keeps none of the native controls —
+		// parity with the legacy names it never held.
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, coderCfg, false, reviewer)
 		require.NotContains(t, on, "batch_status")
@@ -226,23 +194,8 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		require.NoError(t, err)
 		scoped := func(opts *CallOptions) { opts.FolderScope = &scope }
 
-		// Flag OFF: the legacy command set follows KeepCommandTools; no natives.
-		t.Setenv("RUSH_BATCH_RUNTIME", "false")
-		off := batchInventoryBuildNames(t, coord, coderCfg, false, scoped)
-		for _, name := range batchInventoryNativeControls {
-			require.NotContains(t, off, name)
-		}
-		if keepCommands {
-			require.Contains(t, off, "job_output", "a scope that keeps command tools keeps job_output")
-		} else {
-			require.NotContains(t, off, "job_output")
-			require.NotContains(t, off, "job_kill")
-			require.NotContains(t, off, "bash")
-		}
-
-		// Flag ON: the native twins strip with the command tools; the
-		// by-name read controls survive exactly when the commands do.
-		t.Setenv("RUSH_BATCH_RUNTIME", "true")
+		// The native twins strip with the command tools; the by-name read
+		// controls survive exactly when the commands do.
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, coderCfg, false, scoped)
 		if keepCommands {
@@ -275,23 +228,11 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		require.True(t, ok, "coder agent must be configured")
 		banned := func(opts *CallOptions) { opts.DisableSubAgents = true }
 
-		// Flag OFF: the floor strips the host-touching tools; the legacy
-		// async read tool survives (it is ledger-backed, not host-backed).
-		t.Setenv("RUSH_BATCH_RUNTIME", "false")
-		off := batchInventoryBuildNames(t, coord, coderCfg, false, banned)
-		for _, name := range batchInventoryNativeControls {
-			require.NotContains(t, off, name)
-		}
-		require.NotContains(t, off, "bash")
-		require.Contains(t, off, "job_output")
-
-		// Flag ON: the floor strips CONSTRUCTED tools, not by-name grants —
-		// the native names survive in AllowedTools, so the read controls
-		// stay. The floor also leaves the non-host work leaves (todos,
-		// fetch, sourcegraph) constructed and allowed, so batch_run/
-		// batch_add stay granted; the delegation tool is gone with the
-		// sub-agent ban.
-		t.Setenv("RUSH_BATCH_RUNTIME", "true")
+		// The floor strips CONSTRUCTED tools, not by-name grants — the
+		// native names survive in AllowedTools, so the read controls stay.
+		// The floor also leaves the non-host work leaves (todos, fetch,
+		// sourcegraph) constructed and allowed, so batch_run/batch_add stay
+		// granted; the delegation tool is gone with the sub-agent ban.
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, coderCfg, false, banned)
 		require.Contains(t, on, "await_tasks")
@@ -383,13 +324,12 @@ func TestNativeControlsNeverResolveThroughOldNames(t *testing.T) {
 	names := batchInventoryBuildNames(t, coord, cfg.Agents[config.AgentCoder], false, nil)
 
 	// The read controls are granted BY NAME only: with the native names gone
-	// from AllowedTools they must vanish, even though job_output/job_kill are
-	// still constructed and present.
+	// from AllowedTools they must vanish. The removed legacy names
+	// (job_output/job_kill) resolve nothing at all any more.
 	for _, name := range []string{"batch_status", "batch_output", "batch_stop"} {
 		require.NotContains(t, names, name,
 			"native control %q must never resolve through the legacy job_kill/job_output names", name)
 	}
-	// Sanity: the legacy runtime names the pre-H1 code keyed on are still there.
-	require.Contains(t, names, "job_output")
-	require.Contains(t, names, "job_kill")
+	require.NotContains(t, names, "job_output", "the removed legacy poll tool is gone from every build")
+	require.NotContains(t, names, "job_kill", "the removed legacy stop tool is gone from every build")
 }

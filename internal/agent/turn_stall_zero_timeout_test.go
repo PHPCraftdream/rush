@@ -182,7 +182,7 @@ func TestTurnStallReasoningDeltaHookLeavesProgressPinned(t *testing.T) {
 
 	// Begin the step's assistant row exactly like prepareStep does, against
 	// a real message service (same helper as the retry fixture).
-	_, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn := batchFixtureConnNoFK(t)
 	svc := message.NewService(db.New(conn))
 	msg, err := svc.Create(context.Background(), "sess-reason", message.CreateMessageParams{
 		Role:  message.Assistant,

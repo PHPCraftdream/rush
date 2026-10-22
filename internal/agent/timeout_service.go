@@ -1,6 +1,6 @@
-// The single per-process deadline timer (timeoutService), moved verbatim
-// from work_ledger_timeout.go (R12-H1): supervision.go's check-in deadlines
-// share this service, and supervision survives the H4 work_ledger deletion.
+// The single per-process deadline timer (timeoutService): supervision.go's
+// check-in deadlines share this service; it was rehomed off the deleted
+// workLedger onto the coordinator.
 package agent
 
 import (
@@ -38,48 +38,31 @@ func (h *jobDeadlineHeap) Pop() any {
 	return item
 }
 
-// timeoutService is the single per-process timer for every asyncJob with a
-// non-zero deadline: ONE goroutine sleeping until the nearest deadline,
-// never one goroutine per job. Lazy deletion: an entry popped from the heap
-// is re-checked against the job's CURRENT state under l.mu before acting --
-// a job that already reached a terminal state via finish/cancelSession/
-// recheckChild (the ordinary CAS race, ASYNC-03) makes the popped entry a
-// silent no-op, exactly like every other transitionToTerminal race.
+// timeoutService is the single per-process deadline timer (supervision.go's
+// check-ins share it): ONE goroutine sleeping until the nearest deadline,
+// never one goroutine per entry. Lazy deletion: an entry popped from the
+// heap is re-checked by its fire callback against CURRENT state before
+// acting -- a stale generation or a since-closed scope makes the popped
+// entry a silent no-op (the ordinary CAS race, ASYNC-03).
 type timeoutService struct {
-	ledger    *workLedger
 	mu        sync.Mutex
 	heap      jobDeadlineHeap
 	wake      chan struct{} // buffered 1: "recompute the nearest deadline"
 	stop      chan struct{}
-	closeOnce sync.Once // workLedger.close() is not itself guaranteed single-call (e.g. CancelAll during shutdown); close() below must survive a repeat
+	closeOnce sync.Once // close is not itself guaranteed single-call (e.g. CancelAll during shutdown); close() below must survive a repeat
 }
 
-func newTimeoutService(l *workLedger) *timeoutService {
-	s := &timeoutService{ledger: l, wake: make(chan struct{}, 1), stop: make(chan struct{})}
+func newTimeoutService() *timeoutService {
+	s := &timeoutService{wake: make(chan struct{}, 1), stop: make(chan struct{})}
 	go s.run()
 	return s
 }
 
-// arm adds job to the heap. l.mu need not be held by the caller (arm takes
-// its own s.mu, a DIFFERENT lock than l.mu, to avoid making the ledger's hot
-// path -- every Start/finish/cancelSession -- contend on the same mutex the
-// timer goroutine polls). s.mu and l.mu are never held nested in either
-// order (arm/fire release s.mu before acquiring l.mu, see fireDue/
-// workLedger.handleTimeout), so this cannot deadlock.
-func (s *timeoutService) arm(job *asyncJob) {
-	if s == nil || job == nil {
-		return
-	}
-	s.armFunc(job.deadline, func() { s.ledger.handleTimeout(job) })
-}
-
 // armFunc adds an arbitrary (deadline, fire) pair to the single per-process
-// heap -- arm above is the asyncJob-specific wrapper every existing call
-// site uses; supervision.go's root-session check-in is the second, more
-// general caller this generalization exists for (see timeoutEntry's doc).
-// Same locking contract as arm: s.mu is a DIFFERENT lock than l.mu, taken
-// and released here without ever calling into the ledger, so this cannot
-// nest under or deadlock against anything holding l.mu.
+// heap. The fire callback re-checks its own state (supervision.go's
+// generation guard) before acting: s.mu is taken and released here without
+// calling into any owner lock, so this cannot nest under or deadlock
+// against anything else.
 func (s *timeoutService) armFunc(deadline time.Time, fire func()) {
 	if s == nil || fire == nil {
 		return
@@ -138,8 +121,7 @@ func (s *timeoutService) fireDue() {
 	}
 }
 
-// close stops the timer goroutine. Nil-safe so an isolated ledger test that
-// never wires a timeoutService can still call workLedger.close() unconditionally.
+// close stops the timer goroutine. Nil-safe.
 func (s *timeoutService) close() {
 	if s == nil {
 		return

@@ -37,52 +37,37 @@ func (c *coordinator) controlChild(ctx context.Context, callerSessionID, childSe
 	return nil
 }
 
-// childDelegationState snapshots the armed delegation ledger entry for
-// childID (the `agent`/`agentic_fetch` call parked in byChild[childID]).
-// ok is false when no entry exists — a child that was never delegated, or
-// one whose entry was already delivered and gc'd (gcChildLocked drops
-// terminal entries, so a delivered delegation is invisible here by design;
-// inspect_agent then falls back to the child's message history).
-func (c *coordinator) childDelegationState(childID string) (state jobPhase, ok bool) {
-	if c.asyncJobs == nil {
-		return 0, false
+// childDelegationState reports childID's LIVE delegation state from the
+// batch facts: "running" when the parent's live tree still names childID as
+// its delegation child. ok is false when no live delegation exists — a
+// child that was never delegated, or one whose delegation already delivered
+// (invisible here by design; inspect_agent then falls back to the child's
+// message history).
+func (c *coordinator) childDelegationState(ctx context.Context, childID string) (state string, ok bool) {
+	parent := c.childParentSession(childID)
+	if parent == "" {
+		return "", false
 	}
-	c.asyncJobs.mu.Lock()
-	defer c.asyncJobs.mu.Unlock()
-	entries := c.asyncJobs.byChild[childID]
-	if len(entries) == 0 {
-		return 0, false
+	live, err := coordinatorBatchCutoverFacts(c).LiveDelegationChildOf(ctx, parent, childID)
+	if err != nil || !live {
+		return "", false
 	}
-	job := entries[len(entries)-1]
-	return job.state, true
+	return "running", true
 }
 
 // childHasActiveWork reports whether childID has anything stop_agent could
-// stop: a live turn (via its driver-aware busy check) or a running ledger
-// entry — either the delegation parked on it as a child, or work it owns
-// itself (its own bash/run_command jobs).
+// stop: a live turn (via its driver-aware busy check), live batch work it
+// owns (its own task roots), or owned background shells. A failed live read
+// is conservative (active).
 func (c *coordinator) childHasActiveWork(childID string) bool {
 	if c.agentFor(childID).IsSessionBusy(childID) {
 		return true
 	}
-	if c.asyncJobs == nil {
-		return false
+	own, desc, err := coordinatorBatchCutoverFacts(c).LiveWorkSummary(context.Background(), childID)
+	if err != nil || own+desc > 0 {
+		return true
 	}
-	c.asyncJobs.mu.Lock()
-	defer c.asyncJobs.mu.Unlock()
-	if s := c.asyncJobs.bySession[childID]; s != nil {
-		for _, job := range s.jobs {
-			if job.state == phaseRunning {
-				return true
-			}
-		}
-	}
-	for _, job := range c.asyncJobs.byChild[childID] {
-		if job.state == phaseRunning {
-			return true
-		}
-	}
-	return false
+	return c.background != nil && (c.background.ActiveOwned(childID) > 0 || c.background.PendingCompletionsOwned(childID) > 0)
 }
 
 // childLastActivity reads the child's last FINISHED assistant message for
@@ -128,11 +113,9 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 	case awaiting:
 		insp.Status = "awaiting_answer"
 	default:
-		state, ok := c.childDelegationState(childSessionID)
-		if ok && state.terminal() {
-			insp.Status = terminalStatusFor(state)
-		} else if ok {
-			insp.Status = "idle"
+		state, ok := c.childDelegationState(ctx, childSessionID)
+		if ok {
+			insp.Status = state
 		} else if last != nil {
 			// Delivered (gc'd) delegation: derive the terminal state from
 			// the last message's finish reason.
@@ -153,31 +136,33 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 
 // ListDelegations implements tools.AgentControl: the no-argument
 // inspect_agent listing. Live means the caller still owns the delegation in
-// the work ledger (bySession[caller].jobs with a non-empty childSession);
-// a delivered delegation is gone from the ledger by design and is not
+// the batch facts (a live delegation node naming a child session); a
+// delivered delegation is terminal in the facts by design and is not
 // listed. Ordered oldest-first by start time.
 func (c *coordinator) ListDelegations(ctx context.Context, callerSessionID string) ([]tools.AgentDelegationSummary, error) {
-	if c.asyncJobs == nil {
-		return nil, nil
+	nodes, err := coordinatorBatchCutoverFacts(c).LiveDelegationNodes(ctx, callerSessionID)
+	if err != nil {
+		return nil, err
 	}
 	type liveEntry struct {
 		childID   string
 		toolName  string
 		startedAt time.Time
 	}
-	c.asyncJobs.mu.Lock()
-	var entries []liveEntry
-	if s := c.asyncJobs.bySession[callerSessionID]; s != nil {
-		for _, job := range s.jobs {
-			if job.childSession != "" {
-				entries = append(entries, liveEntry{childID: job.childSession, toolName: job.toolName, startedAt: job.startedAt})
-			}
+	entries := make([]liveEntry, 0, len(nodes))
+	for _, node := range nodes {
+		if node.ChildSessionID == "" {
+			continue
 		}
+		toolName := node.TaskKind
+		if toolName == "" {
+			toolName = "agent"
+		}
+		entries = append(entries, liveEntry{childID: node.ChildSessionID, toolName: toolName, startedAt: node.StartedAt})
 	}
-	c.asyncJobs.mu.Unlock()
 	// Oldest first, with the child id breaking ties: two delegations armed
 	// inside the same clock tick read an equal startedAt (the process clock
-	// is far coarser than the gap between two Start calls), and an unstable
+	// is far coarser than the gap between two launches), and an unstable
 	// sort would then list them in random map order.
 	sort.Slice(entries, func(i, j int) bool {
 		if !entries[i].startedAt.Equal(entries[j].startedAt) {
@@ -201,21 +186,6 @@ func (c *coordinator) ListDelegations(ctx context.Context, callerSessionID strin
 		})
 	}
 	return summaries, nil
-}
-
-func terminalStatusFor(state jobPhase) string {
-	switch state {
-	case phaseCompleted:
-		return "finished"
-	case phaseFailed:
-		return "failed"
-	case phaseCancelled:
-		return "cancelled"
-	case phaseTimedOut:
-		return "timed_out"
-	default:
-		return "running"
-	}
 }
 
 // finishedStatusFor derives a terminal inspect status from a delivered
@@ -301,10 +271,9 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	return "child session was idle, nothing to interrupt — message queued instead; call agent with resume_session_id to resume it", nil
 }
 
-// StopAgent implements tools.AgentControl (§4.3): ledger cancellation via
-// the existing cancelSession(childID) (captures both the delegation parked on
-// the child and any work the child owns, and delivers the parent exactly one
-// cancelled notice) plus the driver-aware Cancel for the child's live
+// StopAgent implements tools.AgentControl (§4.3): batch Stop via Cancel
+// (stopTree: the child's live work, its own roots, wake zeroing and
+// auto-resume suspension) plus the driver-aware Cancel for the child's live
 // generation. Idempotent: a second call finds nothing left to stop.
 func (c *coordinator) StopAgent(ctx context.Context, callerSessionID, childSessionID string) (string, error) {
 	if err := c.controlChild(ctx, callerSessionID, childSessionID, "stop"); err != nil {

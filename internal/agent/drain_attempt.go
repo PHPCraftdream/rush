@@ -105,8 +105,9 @@ type drainAttempt struct {
 	// hintAt is the hint counter read BEFORE the turn-start pull: a fact that
 	// lands during the attempt is never absorbed by it.
 	hintAt uint64
-	// snapshot is the visible debt AFTER this Drain's own pull.
-	snapshot session.DebtSnapshot
+	// snapshot is retained struct shape only: batch accounting reads
+	// batchSnapshot exclusively (att.snapshot stays zero).
+	snapshot session.BatchDebtSnapshot
 	outcome  drainOutcome
 	// pendingLeft (no-turn): pending-inclusive debt remains -- the pull fails.
 	pendingLeft bool
@@ -168,8 +169,8 @@ func (a *sessionAgent) newDrainAttempt(call SessionAgentCall) *drainAttempt {
 		return nil
 	}
 	att := &drainAttempt{sessionID: call.SessionID}
-	if a.asyncJobs != nil {
-		att.hintAt = a.asyncJobs.hintSeqOf(call.SessionID)
+	if a.coord != nil {
+		att.hintAt = a.coord.driverHints.hintSeqOf(call.SessionID)
 	}
 	return att
 }
@@ -182,12 +183,12 @@ func (a *sessionAgent) closeDrainAttempt(att *drainAttempt, turnErr error) {
 		return
 	}
 	att.closed = true
-	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
+	if a.coord == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
 	defer cancel()
-	a.asyncJobs.coord.accountDrainAttempt(ctx, att, turnErr)
+	a.coord.accountDrainAttempt(ctx, att, turnErr)
 }
 
 // failure is the error the leg ended with: the turn loop's own error, else
@@ -246,15 +247,14 @@ func drainFailureTerminal(err error, turnCtxDone bool) bool {
 // failed snapshot read, a failed settle) keep today's behavior: pace the
 // gate like an unreacted paid attempt and stay in the recheck set.
 func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt, turnErr error) {
-	l := c.asyncJobs
-	if l == nil || att == nil || att.sessionID == "" {
+	if c == nil || att == nil || att.sessionID == "" {
 		return
 	}
 	sid := att.sessionID
 	turnErr = att.failure(turnErr)
 	turnCtxDone := att.turnCtxDone.Load()
 	facts := TurnFacts{Now: c.arb.now(), Site: siteAccount}
-	facts.Session.ExternallyDrivenSelf = l.isExternalDriver(sid)
+	facts.Session.ExternallyDrivenSelf = c.driverHints.isExternalDriver(sid)
 	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
 	// "drain/reaction"): the leg's error is the ONLY place the run-queue/
 	// runOwned ownership refusal is visible from here -- the DB half of the
@@ -281,11 +281,11 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		// skipped for drainTurnCommitted), so att.batchCaptured true here
 		// means the capture succeeded.
 		batchRefused := att.batchCaptured && !att.batchSnapshot.Empty()
-		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: !att.snapshot.Empty() || batchRefused}
+		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: batchRefused}
 		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), 0)
 		return
 	}
-	if drainAttemptExempt(att, turnErr) || l.store == nil {
+	if drainAttemptExempt(att, turnErr) {
 		return
 	}
 	pace := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
@@ -298,24 +298,22 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		// accounting below, which will not count it). The batch guard
 		// compares ROOT tool_call_ids, so the acted-on rows are resolved
 		// into the identity vocabulary first.
-		if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
-			if !att.batchCaptured {
-				slog.Warn("drain attempt: pull-time batch debt capture missing; link unaccounted",
-					"session_id", sid)
-				pace()
-				return
-			}
-			att.batchDebtCallIDs = bfacts.DebtToolCallIDs(ctx, att.batchSnapshot)
+		bfacts := coordinatorBatchCutoverFacts(c)
+		if !att.batchCaptured {
+			slog.Warn("drain attempt: pull-time batch debt capture missing; link unaccounted",
+				"session_id", sid)
+			pace()
+			return
 		}
-		c.arb.chainLink(sid, att, att.snapshot)
+		att.batchDebtCallIDs = bfacts.DebtToolCallIDs(ctx, att.batchSnapshot)
+		c.arb.chainLink(sid, att, att.batchSnapshot)
 	}
-	var rows snapshotAttempts
-	if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil {
-		// Flag on: count and reread through the ACTED-ON snapshot captured at
-		// the turn-start pull (att.batchSnapshot); async_jobs is never
-		// written or read. A leg without that capture is not counted and
-		// settles nothing -- a late recapture would widen the acted-on set
-		// with rows that arrived after the pull.
+	// Count and reread through the ACTED-ON snapshot captured at
+	// the turn-start pull (att.batchSnapshot). A leg without that capture is
+	// not counted and settles nothing -- a late recapture would widen the
+	// acted-on set with rows that arrived after the pull.
+	{
+		bfacts := coordinatorBatchCutoverFacts(c)
 		if !att.batchCaptured {
 			slog.Warn("drain attempt: no pull-time batch debt snapshot; attempt uncounted",
 				"session_id", sid)
@@ -334,7 +332,6 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 			pace()
 			return
 		}
-		rows = snapshotAttempts{open: batchRows.Open, max: batchRows.Max, atKCount: len(batchRows.AtK.Nodes) + len(batchRows.AtK.Notices)}
 		facts.Attempt = AttemptFacts{
 			MaxWakeAttempts: batchRows.Max,
 			OpenRows:        batchRows.Open,
@@ -343,29 +340,8 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 			Terminal:        c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone),
 		}
 		facts.BatchSnapshot = snap
-		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), rows.open)
-		return
+		c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), batchRows.Open)
 	}
-	if err := l.store.IncrementWakeAttempts(ctx, sid, att.snapshot); err != nil {
-		slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
-		pace()
-		return
-	}
-	var err error
-	rows, err = c.snapshotAttempts(ctx, sid, att.snapshot)
-	if err != nil {
-		slog.Error("drain attempt: read wake attempts failed", "session_id", sid, "err", err)
-		pace()
-		return
-	}
-	facts.Attempt = AttemptFacts{
-		MaxWakeAttempts: rows.max,
-		OpenRows:        rows.open,
-		AtK:             rows.atK,
-		Terminal:        c.drainAttemptTerminal(ctx, att, turnErr, turnCtxDone),
-	}
-	facts.Snapshot = att.snapshot
-	c.executeAccountVerdict(ctx, sid, att, turnErr, decideAccount(facts), rows.open)
 }
 
 // executeAccountVerdict executes decideAccount's verdict on the real state:
@@ -373,7 +349,6 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 // count of still-open snapshot rows (the VClose executor keeps the retry
 // pace for the rows it did not close).
 func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att *drainAttempt, turnErr error, v Verdict, openRows int) {
-	l := c.asyncJobs
 	pacePaid := func() { c.paceUnreacted(sid, att.hintAt, false, pacePaidUnreacted) }
 	switch {
 	case v.Kind == VDefer && v.Reason == "launch refused":
@@ -389,11 +364,9 @@ func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att
 		if turnErr != nil {
 			cause = redactNetworkURLs(turnErr.Error())
 		}
-		if bfacts := coordinatorBatchCutoverFacts(c); bfacts != nil && !v.BatchRows.Empty() {
-			// Flag on: the settle closes EXACTLY the verdict's rows; no
-			// async_jobs row is touched and nothing is mirrored into the old
-			// tables. The marker names the acted-on tool-call ids, mirroring
-			// settleDrainDebtTail's two forms.
+		if bfacts := coordinatorBatchCutoverFacts(c); !v.BatchRows.Empty() {
+			// The settle closes EXACTLY the verdict's rows. The marker names
+			// the acted-on tool-call ids.
 			ids := bfacts.DebtToolCallIDs(ctx, v.BatchRows)
 			trimmed := make([]string, 0, len(ids))
 			for _, id := range ids {
@@ -414,21 +387,12 @@ func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att
 				pacePaid()
 				return
 			}
-			l.resetGate(sid)
+			c.arb.resetGate(sid)
 			closed := len(v.BatchRows.Nodes) + len(v.BatchRows.Notices)
 			if closed < openRows {
 				pacePaid()
 			}
 			return
-		}
-		if err := c.settleDrainDebtTail(ctx, sid, v.Rows, cause, settleTailFor(turnErr)); err != nil {
-			pacePaid()
-			return
-		}
-		l.resetGate(sid)
-		closed := len(v.Rows.Jobs) + len(v.Rows.Notices)
-		if closed < openRows {
-			pacePaid()
 		}
 	case v.Kind == VDefer && v.Reason == foreignWorkspaceReason:
 		// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
@@ -453,7 +417,7 @@ func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att
 		}
 	case v.Reason == "no debt: gate reset" || v.Reason == "all rows reacted: gate reset":
 		// A3/A5: nothing owed (or every visible row reacted): the gate opens.
-		l.resetGate(sid)
+		c.arb.resetGate(sid)
 	}
 }
 
@@ -477,58 +441,6 @@ func (c *coordinator) drainAttemptTerminal(ctx context.Context, att *drainAttemp
 	return true
 }
 
-// snapshotAttempts is the per-row picture of a snapshot after an attempt was
-// counted on it.
-type snapshotAttempts struct {
-	// open: rows still debt (still the row the snapshot saw).
-	open int
-	// max: the highest per-row attempt counter read (0 iff open == 0); the
-	// arbiter's A5 input (every visible row reacted).
-	max int
-	// atK: the rows whose own counter reached drainFailureSettleThreshold.
-	atK      session.DebtSnapshot
-	atKCount int
-}
-
-// snapshotAttempts reads each snapshot row's OWN wake_attempts (one row per
-// read: MaxWakeAttempts of a single-row snapshot), so the close can be limited
-// to the rows that really used up their attempts.
-func (c *coordinator) snapshotAttempts(ctx context.Context, sessionID string, snap session.DebtSnapshot) (snapshotAttempts, error) {
-	var out snapshotAttempts
-	store := c.asyncJobs.store
-	for _, ref := range snap.Jobs {
-		n, err := store.MaxWakeAttempts(ctx, sessionID, session.DebtSnapshot{Jobs: []session.DebtJobRef{ref}})
-		if err != nil {
-			return out, err
-		}
-		if n == 0 {
-			continue // no longer debt
-		}
-		out.open++
-		out.max = max(out.max, n)
-		if n >= drainFailureSettleThreshold {
-			out.atK.Jobs = append(out.atK.Jobs, ref)
-			out.atKCount++
-		}
-	}
-	for _, ref := range snap.Notices {
-		n, err := store.MaxWakeAttempts(ctx, sessionID, session.DebtSnapshot{Notices: []session.DebtNoticeRef{ref}})
-		if err != nil {
-			return out, err
-		}
-		if n == 0 {
-			continue
-		}
-		out.open++
-		out.max = max(out.max, n)
-		if n >= drainFailureSettleThreshold {
-			out.atK.Notices = append(out.atK.Notices, ref)
-			out.atKCount++
-		}
-	}
-	return out, nil
-}
-
 // noteDrainRefused is the one handler of an admission refusal (lock busy or
 // unwritable, model persist failure, provider not configured, peak hours,
 // shutdown, an unreadable pre-turn DB read). A refusal is neither counted nor
@@ -536,16 +448,15 @@ func (c *coordinator) snapshotAttempts(ctx context.Context, sessionID string, sn
 // by a `rush run` loop that drives the session itself, at the next re-check
 // tick otherwise. A newer fact opens the gate early.
 func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
-	l := c.asyncJobs
-	if l == nil || sessionID == "" {
+	if c == nil || sessionID == "" {
 		return
 	}
-	external := l.isExternalDriver(sessionID)
+	external := c.driverHints.isExternalDriver(sessionID)
 	wait := drainRetryAfterFailure()
 	if external {
 		wait = drainRefusalPauseLoop()
 	}
-	l.arbPace(sessionID, l.hintSeqOf(sessionID), wait, true, paceUncounted)
+	c.arb.pace(sessionID, c.driverHints.hintSeqOf(sessionID), wait, true, paceUncounted)
 	if !external {
 		c.addToRecheckSet(sessionID)
 	}
@@ -556,58 +467,19 @@ func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
 // provider failure: no paid reaction turn right behind a failed user turn.
 // Nothing is counted; a newer fact does not open the gate early.
 func (c *coordinator) noteTurnFailed(sessionID string) {
-	if c.asyncJobs == nil || sessionID == "" {
+	if c == nil || sessionID == "" {
 		return
 	}
-	c.asyncJobs.arbPace(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
-}
-
-// settleDrainDebt closes the snapshot's debt by failure and writes the
-// visible wake_failed marker in one transaction (marker only if a row was
-// really settled). The marker names the snapshot's own tool_call_ids.
-func (c *coordinator) settleDrainDebt(ctx context.Context, sessionID string, snap session.DebtSnapshot, cause string) error {
-	return c.settleDrainDebtTail(ctx, sessionID, snap, cause, settleTailNextTurn)
-}
-
-// settleDrainDebtTail is settleDrainDebt with the marker's closing sentence
-// chosen by the caller (settleTailFor).
-func (c *coordinator) settleDrainDebtTail(ctx context.Context, sessionID string, snap session.DebtSnapshot, cause, tail string) error {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil || snap.Empty() {
-		return nil
-	}
-	ids := make([]string, 0, len(snap.Jobs))
-	for _, ref := range snap.Jobs {
-		id, _, _ := strings.Cut(ref.ToolCallID, "#reused#")
-		ids = append(ids, id)
-	}
-	var text string
-	if len(ids) > 0 {
-		text = fmt.Sprintf(
-			"Не удалось продолжить работу после события %s: %s. %s",
-			strings.Join(ids, ", "), cause, tail)
-	} else {
-		text = fmt.Sprintf(
-			"Не удалось продолжить работу после ошибки провайдера: %s. %s",
-			cause, tail)
-	}
-	settled, err := c.asyncJobs.store.SettleReactedFailedWithMarker(ctx, sessionID, snap, text)
-	if err != nil {
-		slog.Error("drain attempt: settle by failure failed", "session_id", sessionID, "err", err)
-		return err
-	}
-	if settled == 0 {
-		slog.Debug("drain attempt: snapshot already resolved, nothing settled", "session_id", sessionID)
-	}
-	return nil
+	c.arb.pace(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
 }
 
 // noteRefusal reports a pre-loop refusal of any call kind to the gate: the
 // release that follows must not immediately relaunch a Drain.
 func (a *sessionAgent) noteRefusal(sessionID string, cause error) {
-	if a.asyncJobs == nil || a.asyncJobs.coord == nil {
+	if a.coord == nil {
 		return
 	}
-	a.asyncJobs.coord.noteDrainRefused(sessionID, cause)
+	a.coord.noteDrainRefused(sessionID, cause)
 }
 
 // afterTurn is runOwned's per-leg epilogue, run right after runTurn returns
@@ -622,17 +494,17 @@ func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err e
 		att.turnCtxDone.Store(true)
 	}
 	a.closeDrainAttempt(att, err)
-	if a.asyncJobs != nil {
+	if a.coord != nil {
 		var awaiting *AwaitingAnswerError
-		coord := a.asyncJobs.coord
+		coord := a.coord
 		switch {
-		case coord != nil && errors.As(err, &awaiting):
+		case errors.As(err, &awaiting):
 			coord.suspendAutoResume(call.SessionID)
-		case coord != nil && att == nil && err != nil && providerTurnFailed(err, turnCtxDone):
+		case att == nil && err != nil && providerTurnFailed(err, turnCtxDone):
 			coord.noteTurnFailed(call.SessionID)
 		}
 		if att == nil || att.outcome == drainAttempted {
-			a.asyncJobs.pushDeadlineOnTurnEnd(call.SessionID)
+			coord.pushDeadlineOnTurnEnd(call.SessionID)
 		}
 	}
 	if att != nil && att.outcome == drainNotAttempted {
@@ -658,7 +530,7 @@ func providerTurnFailed(err error, turnCtxDone bool) bool {
 // human message; paid attempts whose close kept failing only by a human
 // message or a restart.
 func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool, kind drainPace) {
-	if c.asyncJobs.arbPace(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, kind) {
+	if c.arb.pace(sessionID, hintAt, drainRetryAfterFailure(), hintOpens, kind) {
 		if kind == paceFreeNoTurn {
 			slog.Warn("drain launches for this session are paused: the notice pull keeps failing; a new event or a human message resumes them",
 				"session_id", sessionID)

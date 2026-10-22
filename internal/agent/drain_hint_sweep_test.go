@@ -18,22 +18,22 @@ func TestHintSweep_KeepsCounterBehindDormantGate(t *testing.T) {
 	f := newAttemptFixture(t, "hint-sweep-dormant", attemptFixtureOpts{noIdle: true, noDriver: true})
 
 	// A dormant free gate whose HintSeen names the entry's current counter.
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
 		s.gate = GateFacts{HintSeen: 1, HintOpens: true, FreeStreak: drainDormantStreak}
 	})
-	require.Equal(t, uint64(1), f.ledger.hintSeqOf(f.sessID))
+	require.Equal(t, uint64(1), f.coord.driverHints.hintSeqOf(f.sessID))
 
-	f.ledger.sweepIdleSessions()
+	f.coord.sweepArbiterEntries()
 
-	require.Equal(t, uint64(1), f.ledger.hintSeqOf(f.sessID),
+	require.Equal(t, uint64(1), f.coord.driverHints.hintSeqOf(f.sessID),
 		"the sweep must keep the hint counter while the gate records HintSeen")
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind,
 		"no newer fact arrived: the dormant gate must stay shut")
 
 	// A genuinely newer fact (a real counter increment past HintSeen) still
 	// reopens the gate: keeping the counter never freezes it.
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	require.Equal(t, drainAllow, f.coord.drainPermitted(ctx, f.sessID, false).kind,
 		"a genuinely newer fact reopens a free-dormant gate")
 }

@@ -23,27 +23,23 @@ func armOwnWork(t *testing.T, sa *sessionAgent, sessionID string) bool {
 	return ts.progress.guard.ownWork
 }
 
-// TestOwnWorkBatch_LiveOwnCommandFlagOn: ON with installed facts and a live
-// own batch command, the guard's ownWork is true even though the legacy
-// ledger is empty.
-// First production-facing assertion: the require.NoError after db.Connect in
-// newTestAsyncJobStoreWithDataDir (coordinator_scope_recovery_test.go:26-27).
-// FIRST REGRESSION-SENSITIVE ASSERTION: line 48 (armOwnWork true) — the
-// call-site mutation "drop the batchOwnWorkFactsInstalled gate and the
-// batchFlagEnabled branch (revert to the ledger-only read)" makes
-// armProgressGuard arm ownWork from the empty ledger and flips it to false;
-// assertions on lines 38-39 still pass under that mutation (the helper
-// itself is not reverted by it).
+// TestOwnWorkBatch_LiveOwnCommandFlagOn: with installed facts and a live own
+// batch command, the guard's ownWork is true (batch facts are the only
+// source; the deleted in-process ledger map no longer exists).
+// First production-facing assertion: the require.NoError inside
+// batchQuestionFixture's connection setup.
+// FIRST REGRESSION-SENSITIVE ASSERTION: armOwnWork true — the call-site
+// mutation "drop the batchOwnWorkFactsInstalled gate" makes armProgressGuard
+// arm ownWork from the unknown (unbound) helper and flips it to false.
 func TestOwnWorkBatch_LiveOwnCommandFlagOn(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-ownwork-cmd"
 	createSessionRow(t, db.New(conn), ctx, owner)
 	seedBatchDelegation(t, conn, owner, "call-ownwork-cmd", "", "command", "running", false)
-	sa := &sessionAgent{asyncJobs: coord.asyncJobs}
+	sa := &sessionAgent{coord: coord}
 
-	require.False(t, coord.asyncJobs.running(owner), "the ON ledger map must be empty (the premise of the gap)")
-	require.True(t, sa.ownWorkBatch(ctx, owner), "a live own batch command keeps ownWork true")
+	require.True(t, sa.ownWorkBatch(ctx, owner), "a live own batch command keeps ownWork true (there is no in-process map left to be empty: the facts are the only source)")
 
 	require.True(t, armOwnWork(t, sa, owner), "armProgressGuard must arm ownWork from the batch facts")
 }
@@ -51,8 +47,8 @@ func TestOwnWorkBatch_LiveOwnCommandFlagOn(t *testing.T) {
 // TestOwnWorkBatch_HeldQuestionMatchesCLIActiveWork: a live held-question
 // delegation answers per the same rule as CLIActiveWork — active until the
 // child_question marker notice is durably committed, released after.
-// First production-facing assertion: the require.NoError after db.Connect in
-// newTestAsyncJobStoreWithDataDir (coordinator_scope_recovery_test.go:26-27).
+// First production-facing assertion: the require.NoError inside
+// batchQuestionFixture's connection setup.
 // FIRST REGRESSION-SENSITIVE ASSERTION: line 81 — deleting
 // batchActiveAfterQuestionPause's committed-notice exclusion (answering true
 // whenever live work exists) makes the post-commit False assertion fail;
@@ -67,7 +63,7 @@ func TestOwnWorkBatch_HeldQuestionMatchesCLIActiveWork(t *testing.T) {
 	createSessionRow(t, db.New(conn), ctx, "sess-ownwork-q-child")
 	_, nodeID := seedDelegation(t, conn, owner, "call-ownwork-q", "sess-ownwork-q-child", 7)
 	seedQuestionStop(t, coord, "sess-ownwork-q-child")
-	sa := &sessionAgent{asyncJobs: coord.asyncJobs}
+	sa := &sessionAgent{coord: coord}
 
 	cliActive, err := coord.CLIActiveWork(ctx, owner)
 	require.NoError(t, err)
@@ -83,8 +79,8 @@ func TestOwnWorkBatch_HeldQuestionMatchesCLIActiveWork(t *testing.T) {
 
 // TestOwnWorkBatch_TerminalWorkFalse: terminal batch work (and no work at
 // all) reads false.
-// First production-facing assertion: the require.NoError after db.Connect in
-// newTestAsyncJobStoreWithDataDir (coordinator_scope_recovery_test.go:26-27).
+// First production-facing assertion: the require.NoError inside
+// batchQuestionFixture's connection setup.
 // FIRST REGRESSION-SENSITIVE ASSERTION: line 102 — a predicate that answers
 // true unconditionally (e.g. the conservative fail-closed branch leaked into
 // the happy path) fails the terminal and empty assertions.
@@ -96,54 +92,33 @@ func TestOwnWorkBatch_TerminalWorkFalse(t *testing.T) {
 	createSessionRow(t, db.New(conn), ctx, owner)
 	createSessionRow(t, db.New(conn), ctx, idle)
 	seedBatchDelegation(t, conn, owner, "call-ownwork-done", "", "command", "completed", false)
-	sa := &sessionAgent{asyncJobs: coord.asyncJobs}
+	sa := &sessionAgent{coord: coord}
 
 	require.False(t, sa.ownWorkBatch(ctx, owner), "terminal batch work is not live own work")
 	require.False(t, sa.ownWorkBatch(ctx, idle), "a session with no batch work reads idle")
 }
 
-// TestOwnWorkBatch_UnboundFactsKeepLedger: with the cutover facts UNBOUND the
-// guard keeps the legacy ledger expression under BOTH flag values — an
-// unbound helper must never hide a live legacy ledger entry, and the ON arm
-// falls back to it exactly like CLIActiveWork's unbound rule. Runs the same
-// body under RUSH_BATCH_RUNTIME=0 and =1 so the flag-ON CI suite (which
-// inherits RUSH_BATCH_RUNTIME=1) is covered deterministically, not by the
-// inherited environment.
-// First production-facing assertion (both subtests): the require.NoError
-// after db.Connect in newTestAsyncJobStoreWithDataDir
-// (coordinator_scope_recovery_test.go:26-27).
-// FIRST REGRESSION-SENSITIVE ASSERTION (both subtests): line 146 — the
-// call-site mutation "use ownWorkBatch whenever the flag is ON, ignoring the
-// installed-facts gate" makes the ON subtest's armProgressGuard answer from
-// the unbound helper (false) and flips this to false; the OFF subtest then
-// still passes, which is why the ON subtest exists.
-func TestOwnWorkBatch_UnboundFactsKeepLedger(t *testing.T) {
-	for _, tc := range []struct{ name, flag string }{{"flag_off", "0"}, {"flag_on", "1"}} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("RUSH_BATCH_RUNTIME", tc.flag)
-			store, _, conn := newTestAsyncJobStoreWithDataDir(t)
-			coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), messages: message.NewService(db.New(conn))}
-			l := newWorkLedger(coord.notifyAsyncCompletion)
-			l.store = store
-			l.coord = coord
-			coord.asyncJobs = l
-			// Deliberately NO cutover-facts binding. Seed one live batch row
-			// through the constraint-valid helper to prove the unbound path
-			// ignores it.
-			const owner = "sess-ownwork-unbound"
-			createSessionRow(t, db.New(conn), context.Background(), owner)
-			seedBatchDelegation(t, conn, owner, "call-ownwork-unbound-batch", "", "command", "running", false)
-			sa := &sessionAgent{asyncJobs: coord.asyncJobs}
+// TestOwnWorkBatch_UnboundFactsIdle: with the cutover facts UNBOUND the
+// guard reads idle even though live batch rows exist -- an unbound helper
+// must never answer "live" (the deleted legacy-ledger fallback is gone; the
+// conservative "unknown = live" rule belongs to the DURABLE consumers, which
+// do their own reads, exactly like CLIActiveWork's unbound rule).
+// First production-facing assertion: the require.NoError inside
+// batchQuestionFixture's connection setup.
+// FIRST REGRESSION-SENSITIVE ASSERTION: armOwnWork false -- the call-site
+// mutation "use ownWorkBatch's happy path ignoring the installed-facts gate"
+// answers from the unbound helper as if live and flips this to true.
+func TestOwnWorkBatch_UnboundFactsIdle(t *testing.T) {
+	_, _, conn, _, ctx := batchQuestionFixture(t)
+	coord := newBatchRuntimeCoordinator()
+	coord.messages = message.NewService(db.New(conn))
+	// Deliberately NO cutover-facts binding. Seed one live batch row through
+	// the constraint-valid helper to prove the unbound path ignores it.
+	const owner = "sess-ownwork-unbound"
+	createSessionRow(t, db.New(conn), ctx, owner)
+	seedBatchDelegation(t, conn, owner, "call-ownwork-unbound-batch", "", "command", "running", false)
+	sa := &sessionAgent{coord: coord}
 
-			require.False(t, sa.ownWorkBatch(context.Background(), owner), "an unbound coordinator has no batch facts: the helper answers false")
-
-			_, existing, err := l.Start(owner, "call-ownwork-unbound-ledger", "call-ownwork-unbound-ledger", "bash", "", false, false, nil, func() {})
-			require.NoError(t, err)
-			require.False(t, existing)
-			require.True(t, l.running(owner), "premise: the legacy ledger entry is live")
-
-			require.True(t, armOwnWork(t, sa, owner), "the unbound arm still reads the legacy ledger")
-		})
-	}
+	require.False(t, sa.ownWorkBatch(ctx, owner), "an unbound coordinator has no batch facts: the helper answers false")
+	require.False(t, armOwnWork(t, sa, owner), "the unbound arm must not invent live own work")
 }

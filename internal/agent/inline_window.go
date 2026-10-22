@@ -1,7 +1,7 @@
-// Package agent inline-window constant and test seam, moved verbatim from
-// work_ledger_inline.go (R12-H1): the A14 inline-window constant and test
-// seam, kept here because the batch runtime and the app test harness
-// outlive the H4 work_ledger deletion.
+// Package agent inline-window constant and test seam: the A14 inline-window
+// constant, kept here because the batch runtime and the app test harness
+// consume it (the per-ledger setter of the deleted work_ledger_inline.go
+// became a retained no-op seam).
 package agent
 
 import "time"
@@ -16,7 +16,7 @@ const inlineWindowSeconds = 3
 const inlineWindow = inlineWindowSeconds * time.Second
 
 // inlineWindowDisabler is the test seam the app package reaches through:
-// only the real coordinator's ledger carries the window; test fakes that
+// only the real coordinator carries the window; test fakes that
 // implement Coordinator another way simply return false.
 type inlineWindowDisabler interface {
 	disableInlineWindowForTest()
@@ -40,12 +40,11 @@ type inlineWindowSetter interface {
 	setInlineWindowForTest(on bool)
 }
 
+// setInlineWindowForTest is retained as a no-op seam: the batch delivery
+// window is the package constant (batch_install_tools.go reads
+// inlineWindow directly); there is no per-coordinator override to zero.
+// The seam stays so the app harness's disable/re-enable calls keep
+// compiling and reporting "handled".
 func (c *coordinator) setInlineWindowForTest(on bool) {
-	if c != nil && c.asyncJobs != nil {
-		if on {
-			c.asyncJobs.inlineWindow = inlineWindow
-		} else {
-			c.asyncJobs.inlineWindow = 0
-		}
-	}
+	_ = on
 }
