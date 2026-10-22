@@ -270,7 +270,7 @@ func (bs *BackgroundShell) Elapsed() time.Duration {
 // TotalWrittenBytes returns the total number of stdout+stderr bytes ever
 // written by the job so far, independent of how much is still resident after
 // bounded-buffer truncation. Callers that want to poll for "has more output
-// arrived" (job_output's wait:true path) MUST use this — not
+// arrived" (batch_output's polling path) MUST use this — not
 // len(stdout)+len(stderr) from GetOutput's bounded snapshot — as the baseline
 // passed to WaitForChange. Once a stream has overflowed its cap, the
 // snapshot's length no longer grows 1:1 with real output, so a baseline
