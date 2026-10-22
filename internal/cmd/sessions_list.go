@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -70,48 +69,37 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// "delegating", crashed -> "crashed", ended -> "done", idle -> blank
 		// (at rest). In-process knowledge (the coordinator's parked-delegation
 		// registry) is deliberately not consulted: a parked delegation keeps
-		// its own async_jobs row live, so another process sees the same
+		// its own live batch root, so another process sees the same
 		// verdict (decision 9).
-		//
-		// R12-B: with the batch runtime on, NO legacy store read runs at all.
-		// Flag off: batchFacts is nil and the legacy path below is unchanged.
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
 		var awaitingByID map[string]session.ChildQuestion
-		if batchFacts != nil {
-			activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
-			if actErr != nil {
-				return fmt.Errorf("failed to classify sessions: %w", actErr)
+		activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
+		if actErr != nil {
+			return fmt.Errorf("failed to classify sessions: %w", actErr)
+		}
+		statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
+		for _, id := range ids {
+			bf := batchFacts[id]
+			st := statusByID[id]
+			if bf.Unknown {
+				st += " (batch unknown)"
+			} else if bf.Live {
+				st += " (batch live)"
 			}
-			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
-			for _, id := range ids {
-				bf := batchFacts[id]
-				st := statusByID[id]
-				if bf.Unknown {
-					st += " (batch unknown)"
-				} else if bf.Live {
-					st += " (batch live)"
+			// A held batch question annotates the status with the
+			// same "(awaiting answer)" substate the legacy path used to print.
+			// The fallback also surfaces when the status is empty (at
+			// rest), so a held question never renders as blank/at rest.
+			if bf.HasQuestion {
+				if st == "" {
+					st = "batch question awaiting answer"
+				} else if !strings.Contains(st, "awaiting answer") {
+					st += " (awaiting answer)"
 				}
-				// F3/#R12-B: a held batch question annotates the status, the
-				// same "(awaiting answer)" substate the legacy path prints.
-				// The fallback also surfaces when the status is empty (at
-				// rest), so a held question never renders as blank/at rest.
-				if bf.HasQuestion {
-					if st == "" {
-						st = "batch question awaiting answer"
-					} else if !strings.Contains(st, "awaiting answer") {
-						st += " (awaiting answer)"
-					}
-				}
-				statusByID[id] = st
 			}
-		} else {
-			activities, err := a.SessionActivityBatch(cmd.Context(), ids)
-			if err != nil {
-				return fmt.Errorf("failed to classify sessions: %w", err)
-			}
-			statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
+			statusByID[id] = st
 		}
 
 		if asJSON {
@@ -178,21 +166,14 @@ func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
 	if a == nil {
 		return nil
 	}
-	if config.BatchRuntimeEnabled() {
-		if a.DB == nil {
-			return nil
-		}
-		conn := a.DB()
-		if conn == nil {
-			return nil
-		}
-		return session.NewSessionNoticeStore(conn)
-	}
-	store := a.AsyncJobStore()
-	if store == nil {
+	if a.DB == nil {
 		return nil
 	}
-	return store
+	conn := a.DB()
+	if conn == nil {
+		return nil
+	}
+	return session.NewSessionNoticeStore(conn)
 }
 
 // listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
@@ -297,8 +278,7 @@ type sessionListItem struct {
 	AwaitingAnswer   bool   `json:"awaiting_answer,omitempty"`
 	AwaitingChild    string `json:"awaiting_child,omitempty"`
 	AwaitingQuestion string `json:"awaiting_question,omitempty"`
-	// Batch read fields (R12-B, flag ON only): additive, zero on the legacy
-	// path so the flag-OFF wire shape stays byte-identical. BatchStatus is
+	// Batch read fields: BatchStatus is
 	// "live" (held batch root) or "unknown" (incomplete/failed read).
 	BatchRoots  int    `json:"batch_roots,omitempty"`
 	BatchDebt   int64  `json:"batch_debt,omitempty"`

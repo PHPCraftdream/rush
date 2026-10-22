@@ -23,7 +23,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,31 +47,17 @@ CREATE TABLE messages (
 	updated_at INTEGER,
 	notice_kind TEXT DEFAULT ''
 );
-CREATE TABLE async_jobs (
-	owner_session_id TEXT,
-	tool_call_id TEXT,
-	kind TEXT,
-	state TEXT,
-	child_session_id TEXT,
-	created_at INTEGER,
-	updated_at INTEGER,
-	PRIMARY KEY (owner_session_id, tool_call_id)
-);
 `
 
-// auditBatchProjectionDDL carries the batch projection tables the audit's
-// flag-ON paths touch: batch_nodes verbatim from the production migration
+// auditBatchProjectionDDL carries the batch projection tables the audit
+// reads: batch_nodes verbatim from the production migration
 // (internal/db/migrations/20261012000001_batch_projection.sql, the CREATE
 // TABLE and its five indexes) and session_notices verbatim from
-// internal/db/migrations/20260928000002_add_async_phase4_core.sql. The DDL
-// is GATED on config.BatchRuntimeEnabled(): with RUSH_BATCH_RUNTIME=1 the
-// audit refuses a rush.db without batch_nodes (sessions_audit_db.go) and
-// reads batch facts through reduceBatchSessionFacts, whose bound-notice and
-// debt queries also read session_notices (sessions_batch_read.go), so the
-// flag-ON fixtures carry both tables. Flag OFF no audit query touches either
-// table — auditInspectSchema only runs PRAGMA table_info on batch_nodes and
-// auditFindings reads messages/async_jobs — so the flag-OFF fixtures are
-// byte-identical to HEAD in schema AND output.
+// internal/db/migrations/20260928000002_add_async_phase4_core.sql. The audit
+// refuses a store without batch_nodes (sessions_audit_db.go) and reads batch
+// facts through reduceBatchSessionFacts, whose bound-notice and debt queries
+// also read session_notices (sessions_batch_read.go), so every fixture
+// carries both tables.
 const auditBatchProjectionDDL = `
 CREATE TABLE batch_nodes (
     node_id TEXT PRIMARY KEY,
@@ -183,25 +169,19 @@ CREATE TABLE session_notices (
 );
 `
 
-// auditDDLForTest appends the batch projection DDL only when the batch
-// runtime flag is on: flag-OFF fixtures stay schema-identical to the legacy
-// ones, flag-ON fixtures carry the tables the schema guard and the batch
-// scan need.
+// auditDDLForTest appends the batch projection DDL: every fixture carries
+// the tables the schema guard and the batch scan need.
 func auditDDLForTest() string {
-	schema := auditSchemaFixture
-	if config.BatchRuntimeEnabled() {
-		schema += auditBatchProjectionDDL
-	}
-	return schema
+	return auditSchemaFixture + auditBatchProjectionDDL
 }
 
-// seedAuditFixtureDB writes a Rush-shaped rush.db into dataDir and returns
-// its path. dataDir must be a t.TempDir(): the audit command is pointed at
-// it, and the whole test asserts nothing else touches it.
+// seedAuditFixtureDB writes a Rush-shaped session store into dataDir and
+// returns its path. dataDir must be a t.TempDir(): the audit command is
+// pointed at it, and the whole test asserts nothing else touches it.
 func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 	t.Helper()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -228,11 +208,6 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 		('m2', 'audit-alpha-1', 'assistant', '[]', ?, ?, '')`,
 		now, now, now, now)
 	require.NoError(t, err)
-	_, err = db.ExecContext(context.Background(), `INSERT INTO async_jobs
-		(owner_session_id, tool_call_id, kind, state, child_session_id, created_at, updated_at)
-		VALUES ('audit-alpha-1', 'call-1', 'command', 'running', NULL, ?, ?)`, now, now)
-	require.NoError(t, err)
-
 	// A clean close is what leaves the database with no journal file at all.
 	require.NoError(t, db.Close())
 	closed = true
@@ -305,7 +280,7 @@ func auditDirNames(t *testing.T, dir string) []string {
 
 // TestSessionsAudit_IsStrictlyReadOnly is the command's core guarantee:
 // running it against a data directory changes NOTHING in it — not a byte of
-// rush.db, not the file list (no -wal/-shm/journal/migrate.lock appears).
+// the store file, not the file list (no -wal/-shm/journal/migrate.lock appears).
 //
 // Revert-check: with the fixture above the audit only ever reads, so the
 // assertions are also what makes a regression visible — the run is repeated
@@ -318,7 +293,7 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := seedAuditFixtureDB(t, dataDir)
 
-	require.Equal(t, []string{"rush.db"}, auditDirNames(t, dataDir),
+	require.Equal(t, []string{storeBaseName()}, auditDirNames(t, dataDir),
 		"precondition: the fixture must leave a clean, sidecar-free database")
 	beforeHash := auditFileSHA256(t, dbPath)
 
@@ -327,8 +302,8 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 		require.NoError(t, err, "audit pass %d stderr: %s", pass, stderr)
 
 		require.Equal(t, beforeHash, auditFileSHA256(t, dbPath),
-			"audit pass %d modified rush.db", pass)
-		require.Equal(t, []string{"rush.db"}, auditDirNames(t, dataDir),
+			"audit pass %d modified the session store", pass)
+		require.Equal(t, []string{storeBaseName()}, auditDirNames(t, dataDir),
 			"audit pass %d created or removed a file in the data directory", pass)
 		require.Contains(t, stdout, "audit-alpha-1",
 			"audit pass %d must actually report the seeded session", pass)
@@ -349,8 +324,8 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 // listing going from three entries to one:
 //
 //	audit created or removed a file in the data directory
-//	    expected: [rush.db rush.db-shm rush.db-wal]
-//	    actual  : [rush.db]
+//	    expected: [<store> <store>-shm <store>-wal]
+//	    actual  : [<store>]
 //
 // which is precisely the damage the read-only contract forbids.
 func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
@@ -361,14 +336,14 @@ func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
 
 	require.FileExists(t, dbPath+"-wal", "precondition: the fixture must leave a pending WAL")
 	beforeFiles := auditDirNames(t, dataDir)
-	require.Len(t, beforeFiles, 3, "precondition: rush.db with WAL sidecars")
+	require.Len(t, beforeFiles, 3, "precondition: store file with WAL sidecars")
 	beforeHash := auditFileSHA256(t, dbPath)
 
 	stdout, stderr, err := runAuditCmd(t, "--data-dir", dataDir, "--all")
 	require.NoError(t, err, "audit stderr: %s", stderr)
 
 	require.Equal(t, beforeHash, auditFileSHA256(t, dbPath),
-		"audit must not checkpoint a pending WAL into rush.db")
+		"audit must not checkpoint a pending WAL into the store file")
 	require.Equal(t, beforeFiles, auditDirNames(t, dataDir),
 		"a read-only connection must not checkpoint and remove the WAL sidecars")
 	require.Contains(t, stdout, "wal", "the health block must report the WAL size")
@@ -383,7 +358,7 @@ func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
 func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 	t.Helper()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -397,7 +372,7 @@ func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 	_, err = db.ExecContext(context.Background(), auditDDLForTest())
 	require.NoError(t, err)
 	// journal_mode must be set before the inserts for the data to land in
-	// the -wal rather than being checkpointed straight into rush.db.
+	// the -wal rather than being checkpointed straight into the store file.
 	_, err = db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL;`)
 	require.NoError(t, err)
 
@@ -427,7 +402,7 @@ func holdAuditSidecars(t *testing.T, dataDir string) func() {
 	if runtime.GOOS == "windows" {
 		// Windows refuses to delete a file that still has an open handle
 		// without FILE_SHARE_DELETE, which os.OpenFile does not request.
-		for _, name := range []string{"rush.db-wal", "rush.db-shm"} {
+		for _, name := range []string{storeBaseName() + "-wal", storeBaseName() + "-shm"} {
 			file, err := os.OpenFile(filepath.Join(dataDir, name), os.O_RDONLY, 0)
 			if err != nil {
 				continue
@@ -469,14 +444,14 @@ func TestOpenAuditRO_RefusesWrites(t *testing.T) {
 	require.Equal(t, before, auditFileSHA256(t, dbPath), "a refused write must not modify the file")
 }
 
-// TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal: a rush.db that is
-// not a Rush session database (a foreign one, or one far too old) is
+// TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal: a store file that
+// is not a Rush session database (a foreign one, or one far too old) is
 // reported and left completely alone — audit exits 0 and writes nothing.
 func TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal(t *testing.T) {
 	isolateConfigEnvForTests(t)
 
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -499,8 +474,8 @@ CREATE TABLE something_else (x INTEGER);`)
 }
 
 // TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing: a data
-// directory without rush.db is a message, not an empty directory the command
-// goes on to create.
+// directory without a session store is a message, not an empty directory the
+// command goes on to create.
 func TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing(t *testing.T) {
 	isolateConfigEnvForTests(t)
 
@@ -509,7 +484,7 @@ func TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing(t *testing.T) {
 	stdout, stderr, err := runAuditCmd(t, "--data-dir", dataDir, "--all")
 	require.NoError(t, err, "stderr: %s", stderr)
 
-	require.Contains(t, stdout, "no rush.db found in "+dataDir)
+	require.Contains(t, stdout, "no session store found in "+dataDir)
 	require.Contains(t, stdout, "does not create anything")
 	require.Empty(t, auditDirNames(t, dataDir), "audit must not create the data directory's contents")
 }
@@ -549,6 +524,9 @@ func TestSessionsAudit_PrefixSelection(t *testing.T) {
 	require.NotContains(t, stdout, "sessions (", "an ambiguous prefix must not audit anything")
 }
 
+// storeBaseName is the fixture's store file name (the active store filename).
+func storeBaseName() string { return storepath.ActiveFilename }
+
 // timeNowUnix keeps the fixture's timestamps in Unix seconds, the unit the
 // real schema stores (a millisecond fixture is how #1162 shipped with 1970
 // dates and an empty --since window).
@@ -585,7 +563,7 @@ func TestSessionsAudit_JSONOutput(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &reports))
 	require.Len(t, reports, 1)
 	require.Equal(t, dataDir, reports[0].DataDir)
-	require.Equal(t, filepath.Join(dataDir, "rush.db"), reports[0].DBPath)
+	require.Equal(t, storepath.ActivePath(dataDir), reports[0].DBPath)
 	require.NotNil(t, reports[0].Health, "the health block must be in the JSON output")
 	require.Greater(t, reports[0].Health.PageSize, int64(0))
 	require.Greater(t, reports[0].Health.PageCount, int64(0))

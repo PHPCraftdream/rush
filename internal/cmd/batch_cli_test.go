@@ -28,7 +28,7 @@ type batchCLIResult struct {
 	Error  string
 }
 
-func TestBatchCLISubprocessShowInstalledDatabaseWithRuntimeOff(t *testing.T) {
+func TestBatchCLISubprocessShowInstalledDatabase(t *testing.T) {
 	if os.Getenv(batchCLIHelperEnv) == "1" {
 		executeBatchCLIHelper()
 		return
@@ -198,7 +198,7 @@ func TestBatchCLIShowIncompleteTreeRefusesTerminalShape(t *testing.T) {
 type batchCLIAcceptanceFixture struct {
 	dir, root, host string
 	conn            *sql.DB
-	store           *session.AsyncJobStore
+	store           *session.HostStore
 }
 
 func seedBatchCLIAcceptance(t *testing.T) batchCLIAcceptanceFixture {
@@ -207,7 +207,7 @@ func seedBatchCLIAcceptance(t *testing.T) batchCLIAcceptanceFixture {
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
+	store := session.NewHostStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
 	f := &batchCLIAcceptanceFixture{dir: dir, conn: conn, store: store}
 	t.Cleanup(func() {
 		if f.store != nil {
@@ -245,8 +245,8 @@ func runBatchCLIProcess(t *testing.T, fixture batchCLIAcceptanceFixture, args []
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := platform.Command(ctx, exe, "-test.run=^TestBatchCLISubprocessShowInstalledDatabaseWithRuntimeOff$")
-	cmd.Env = append(os.Environ(), batchCLIHelperEnv+"=1", "R14_BATCH_CLI_ARGS="+string(encoded), "RUSH_BATCH_RUNTIME=off", "RUSH_GLOBAL_DATA="+t.TempDir(), "RUSH_GLOBAL_CONFIG="+t.TempDir())
+	cmd := platform.Command(ctx, exe, "-test.run=^TestBatchCLISubprocessShowInstalledDatabase$")
+	cmd.Env = append(os.Environ(), batchCLIHelperEnv+"=1", "R14_BATCH_CLI_ARGS="+string(encoded), "RUSH_GLOBAL_DATA="+t.TempDir(), "RUSH_GLOBAL_CONFIG="+t.TempDir())
 	output, runErr := cmd.CombinedOutput()
 	var got batchCLIResult
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output), &got), "helper must emit only its result envelope: %s", output)
@@ -316,17 +316,6 @@ func TestBatchSpecDefaultsAndNestedValidInput(t *testing.T) {
 	require.Len(t, spec.Batch.Items, 2)
 	require.NotNil(t, spec.Batch.Items[1].Batch)
 	require.Equal(t, jobbatch.ModeSequential, spec.Batch.Items[1].Batch.Mode)
-}
-
-func TestBatchRunRefusesWhenRuntimeOffBeforeAppSetup(t *testing.T) {
-	old := os.Getenv("RUSH_BATCH_RUNTIME")
-	require.NoError(t, os.Setenv("RUSH_BATCH_RUNTIME", "off"))
-	t.Cleanup(func() { _ = os.Setenv("RUSH_BATCH_RUNTIME", old) })
-	cmd := &cobra.Command{}
-	cmd.Flags().Bool("detach", false, "")
-	cmd.Flags().String("spec", "-", "")
-	err := batchRun(cmd, nil)
-	require.EqualError(t, err, "batch runtime is disabled; set RUSH_BATCH_RUNTIME=1")
 }
 
 func execErrorAs(err error, target any) bool { return errors.As(err, target) }

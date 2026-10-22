@@ -5,15 +5,12 @@ package cmd
 // first.
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -104,37 +101,23 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
-		if config.BatchRuntimeEnabled() {
-			// F8: the live-loop gate first -- the batch reset's atomic refusal
-			// covers batch work, but a live `rush run` loop between turns
-			// holds no batch root and no lock, so it must refuse exactly like
-			// the legacy path (the R8A-3 bug).
-			if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
-				return err
-			}
-			// Flag ON: history (messages and batch rows) goes through the
-			// R10c batch reset, which refuses atomically while the owner
-			// has any nonterminal root; the legacy async-ledger wipe below
-			// stays the flag-off path.
-			batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID)
-			if err != nil {
-				return err
-			}
-			return finishSessionReset(cmd, a, sess.ID, force, fmt.Sprintf(
-				"batch reset: deleted %d message(s), %d batch node(s), voided %d notice(s), cancelled %d schedule(s)",
-				batchOutcome.MessagesDeleted, batchOutcome.NodesDeleted, batchOutcome.NoticesVoided, batchOutcome.SchedulesCancelled))
+		// F8: the live-loop gate first -- the batch reset's atomic refusal
+		// covers batch work, but a live `rush run` loop between turns
+		// holds no batch root and no lock, so it must refuse exactly like
+		// the legacy path did (the R8A-3 bug).
+		if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
+			return err
 		}
-
-		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID, force)
+		// History (messages and batch rows) goes through the
+		// R10c batch reset, which refuses atomically while the owner
+		// has any nonterminal root.
+		batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID)
 		if err != nil {
 			return err
 		}
-		summary := ""
-		if outcome.JobsVoided+outcome.NoticesVoided > 0 {
-			summary = fmt.Sprintf("voided %d background job notice(s) and %d session notice(s) of the wiped history",
-				outcome.JobsVoided, outcome.NoticesVoided)
-		}
-		return finishSessionReset(cmd, a, sess.ID, force, summary)
+		return finishSessionReset(cmd, a, sess.ID, force, fmt.Sprintf(
+			"batch reset: deleted %d message(s), %d batch node(s), voided %d notice(s), cancelled %d schedule(s)",
+			batchOutcome.MessagesDeleted, batchOutcome.NodesDeleted, batchOutcome.NoticesVoided, batchOutcome.SchedulesCancelled))
 	},
 }
 
@@ -165,45 +148,9 @@ func finishSessionReset(cmd *cobra.Command, a *app.App, sessID string, force boo
 	return nil
 }
 
-// resetSessionHistory is the wipe itself (R8A-3): it refuses while the session
-// is still worked on, then deletes the messages and voids the session's
-// async notice rows in one transaction, so the next run starts from a truly
-// clean slate. Refusal, not stopping, because the live work belongs to other
-// processes this command cannot stop safely: voiding a running job would
-// leave its process editing the workspace with its result silently dropped,
-// and a loop between turns would run its next Drain on the wiped history.
-func resetSessionHistory(ctx context.Context, a *app.App, sessionID string, force bool) (session.ResetOutcome, error) {
-	store := a.AsyncJobStore()
-	if store == nil {
-		// No async data can exist without a store: the plain wipe is all there is.
-		if err := a.Messages.DeleteSessionMessages(ctx, sessionID); err != nil {
-			return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-		}
-		return session.ResetOutcome{}, nil
-	}
-	// Dead-host rows (a force-killed run) become 'interrupted' first: only
-	// rows on a live host still count as running.
-	store.RecoverOwnerScope(ctx, sessionID, a.Messages)
-	// The classifier decides "still being worked on". --force skips only the
-	// LOCK half of it: the caller has just killed/proven the lock holder and
-	// holds the real OS lock across the wipe -- but a live driver, running
-	// job or delegation is work --force cannot safely drop, and still refuses
-	// (conscious R-ACT-2 change: a plain reset now refuses mid-turn too,
-	// where it used to be lock-blind and wipe under a live holder).
-	// Shared with the flag-ON batch path (resetActivityRefusal).
-	if err := resetActivityRefusal(ctx, a, sessionID, force); err != nil {
-		return session.ResetOutcome{}, err
-	}
-	outcome, err := store.ResetOwnerHistory(ctx, a.Messages, sessionID)
-	if errors.Is(err, session.ErrResetJobsRunning) {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, err.Error())
-	}
-	if err != nil {
-		return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-	}
-	return outcome, nil
-}
-
+// resetRefusedError is the shared reset-refusal shape: the batch reset's
+// atomic refusal and the live-loop gate render their "still being worked
+// on" reason through it.
 func resetRefusedError(sessionID, what string) error {
 	return fmt.Errorf("session %s is still being worked on (%s); nothing was reset. "+
 		"Stop it first (`rush sessions cancel %s`: a waiting rush run exits at its next wake; a hung one can be ended by its PID, shown by `rush sessions jobs %s`, "+

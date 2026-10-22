@@ -1,12 +1,12 @@
 package cmd
 
 // Batch mutation/guard side of the four session action commands (R12-B part
-// 2): with RUSH_BATCH_RUNTIME on, `sessions reset` wipes history through the
+// 2): `sessions reset` wipes history through the
 // R10c BatchResetOwnerHistory (refusing while any root is nonterminal),
 // `sessions gc` refuses to collect sessions that own live or unknown batch
 // work, `sessions compact` refuses while batch work is live, and `sessions
 // kill` annotates its report so a held batch root is never read as "nothing
-// running". Flag off, every command keeps its legacy path byte-for-byte.
+// running".
 // Guards are conservative (R10a rule): an incomplete read counts as live
 // work, never as absence.
 
@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -60,31 +59,11 @@ func batchResetRefusedError(sessionID string, refusal *session.BatchResetRefusal
 		sessionID, refusal.RootID, refusal.ToolCallID, state, sessionID)
 }
 
-// resetActivityRefusal is the legacy reset path's live-work gate: the legacy
-// classifier decides "still being worked on" (driver, running jobs,
-// delegations); --force skips only the lock half, which the caller handled.
-// The flag-ON batch path does NOT use it: the R10c batch reset refuses
-// atomically on any nonterminal root, which is its live-work gate.
-func resetActivityRefusal(ctx context.Context, a *app.App, sessionID string, force bool) error {
-	act, actErr := a.SessionActivity(ctx, sessionID)
-	if actErr != nil {
-		return resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
-	}
-	if f := act.Facts; force {
-		if f.Driver != nil || f.OwnRunningJobs > 0 || f.LiveDelegations > 0 || len(f.OpenSchedules) > 0 || len(f.Unreadable) > 0 {
-			return resetRefusedError(sessionID, act.Verdict.Description)
-		}
-	} else if kindIsLive(act.Verdict.Kind) {
-		return resetRefusedError(sessionID, act.Verdict.Description)
-	}
-	return nil
-}
-
-// resetLiveLoopRefusal is the flag-ON reset's live-loop gate: the batch
+// resetLiveLoopRefusal is the reset's live-loop gate: the batch
 // reset's atomic refusal covers batch work, but a live `rush run` loop
 // between turns holds no batch root and no lock, so `reset --force` would
 // otherwise wipe a session a loop still drives (the R8A-3 bug). Refuses
-// under --force too, exactly like the legacy gate.
+// under --force too.
 func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) error {
 	act, actErr := a.SessionActivity(ctx, sessionID)
 	if actErr != nil {
@@ -96,16 +75,13 @@ func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) err
 	return nil
 }
 
-// batchResetSessionHistory is the flag-ON reset path: the R10c batch reset
+// batchResetSessionHistory is the reset path: the R10c batch reset
 // (check + delete in ONE writer transaction; refusal writes nothing). Its
 // atomic refusal of any nonterminal batch root IS the live-work gate -- the
 // only predecessor step is H4 W2's best-effort owner-scope dead-host
 // recovery (BatchRecoverOwnerScope), which never touches the legacy
 // ledger. The plain-wipe fallback
-// exists only for a configless App (nil DB). Known residual legacy touch: the
-// app-owned host-close query (DeleteAsyncHostIfNoJobs still reading async_jobs
-// at shutdown) belongs to the R12-A host-query split; every cmd-layer flag-ON
-// path here is legacy-free.
+// exists only for a configless App (nil DB).
 func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.BatchResetOutcome, error) {
 	if a.DB() == nil {
 		// No database can hold batch rows: the plain wipe is all there is.
@@ -114,17 +90,14 @@ func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string)
 		}
 		return session.BatchResetOutcome{}, nil
 	}
-	// H4 W2: the legacy reset's RecoverOwnerScope twin (sessions_reset.go
-	// recovers dead-host rows before its refusal): a dead host's running
+	// H4 W2: the legacy reset's RecoverOwnerScope twin
+	// recovers dead-host roots before its refusal: a dead host's running
 	// roots become interrupted/host_lost FIRST, so the atomic refusal below
 	// judges only work a live host still holds. Best-effort: a failed
 	// recovery keeps the conservative refusal. Accepted without a budget:
-	// an explicit user command, not a hot path — the OFF twin's
-	// RecoverOwnerScope is equally unbounded.
-	if config.BatchRuntimeEnabled() {
-		if _, err := session.NewBatchStore(a.DB()).BatchRecoverOwnerScope(ctx, sessionID, session.BatchSharedHostProbe(a.DataDirectory())); err != nil {
-			slog.Debug("sessions reset: batch dead-host recovery failed; refusal stays conservative", "session_id", sessionID, "err", err)
-		}
+	// an explicit user command, not a hot path.
+	if _, err := session.NewBatchStore(a.DB()).BatchRecoverOwnerScope(ctx, sessionID, session.BatchSharedHostProbe(a.DataDirectory())); err != nil {
+		slog.Debug("sessions reset: batch dead-host recovery failed; refusal stays conservative", "session_id", sessionID, "err", err)
 	}
 	out, err := session.NewBatchStore(a.DB()).BatchResetOwnerHistory(ctx, a.Messages, sessionID)
 	var refusal *session.BatchResetRefusal
@@ -149,9 +122,6 @@ func gcDropBatchProtected(a *app.App, candidates []gcItem) []gcItem {
 		ids[i] = c.ID
 	}
 	facts := batchRuntimeFacts(context.Background(), a, a.Config().Options.DataDirectory, ids)
-	if facts == nil {
-		return candidates
-	}
 	kept := make([]gcItem, 0, len(candidates))
 	for _, c := range candidates {
 		if reason := batchSessionGuardReason(facts[c.ID]); reason != "" {
@@ -176,12 +146,8 @@ func gcBatchRetention(ctx context.Context, a *app.App, dryRun bool, age time.Dur
 }
 
 // compactBatchLiveSessions lists the sessions whose batch facts show live or
-// unknown work (or debt), as "id (reason)" offender strings. Nil, nil when
-// the flag is off.
+// unknown work (or debt), as "id (reason)" offender strings.
 func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) ([]string, error) {
-	if !config.BatchRuntimeEnabled() {
-		return nil, nil
-	}
 	sessions, err := a.Sessions.ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("batch gate: list sessions: %w", err)
@@ -191,9 +157,6 @@ func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) (
 		ids[i] = s.ID
 	}
 	facts := batchRuntimeFacts(ctx, a, dataDir, ids)
-	if facts == nil {
-		return nil, nil
-	}
 	var offenders []string
 	for _, s := range sessions {
 		if reason := batchSessionGuardReason(facts[s.ID]); reason != "" {
@@ -203,15 +166,12 @@ func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) (
 	return offenders, nil
 }
 
-// batchKillLiveNote is the `sessions kill` guard: with the flag on, a session
+// batchKillLiveNote is the `sessions kill` guard: a session
 // whose batch roots are held (or whose batch read was incomplete) must never
 // be reported as at rest just because its lock file is free -- batch nodes
-// are not process-lock holders. Returns "" when off, at rest, or unreadable
+// are not process-lock holders. Returns "" when at rest or unreadable
 // (the read itself reports its own conservative note).
 func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) string {
-	if !config.BatchRuntimeEnabled() {
-		return ""
-	}
 	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {
 		return fmt.Sprintf("note: batch work for session %s could not be read (%v); treat live batch work as unknown", sessionID, err)

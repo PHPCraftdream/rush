@@ -1,11 +1,11 @@
 package cmd
 
-// R12-B part 2 coverage: with RUSH_BATCH_RUNTIME on, the session action
-// commands guard on batch facts (real SQLite fixtures seeded through
-// session.BatchStore.Reserve/Project, never :memory:): reset refuses or wipes
-// through the R10c batch reset, gc never collects a session with live or
-// unknown batch work, compact refuses while batch work is live, and kill
-// never reports a held-root session at rest. Flag off, behavior is unchanged.
+// R12-B part 2 coverage: the session action commands guard on batch facts
+// (real SQLite fixtures seeded through session.BatchStore.Reserve/Project,
+// never :memory:): reset refuses or wipes through the R10c batch reset, gc
+// never collects a session with live or unknown batch work, compact refuses
+// while batch work is live, and kill never reports a held-root session at
+// rest.
 
 import (
 	"context"
@@ -62,19 +62,10 @@ func resetBatchFixture(t *testing.T, id, state string) (string, batchReadFixture
 	}
 	dataDir := a.Config().Options.DataDirectory
 	a.Shutdown()
-	holdSeedHost(t, dataDir, f.host)
+	// The fixture's HostStore stays open until cleanup, so its OS lock keeps
+	// the host alive for the command run (no second acquire: holdSeedHost
+	// would contend with the held lock).
 	return dataDir, f
-}
-
-// holdSeedHost keeps the seed host's lock for the test's duration. The seed
-// app's shutdown released it, which makes the host DEAD: the next app's
-// recovery then interrupts its nonterminal roots and deletes its unannounced
-// ones. Holding the lock keeps the fixture work a LIVE host owns.
-func holdSeedHost(t *testing.T, dataDir, host string) {
-	t.Helper()
-	hostLock, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, host))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = hostLock.Release() })
 }
 
 // runBatchReset runs the real reset command expecting success, returning
@@ -103,7 +94,7 @@ func runBatchResetErr(t *testing.T, sessID string, fragments ...string) {
 	}
 }
 
-// TestSessionsReset_BatchPendingRootRefusesFlagOn: with the flag on, a
+// TestSessionsReset_BatchPendingRootRefuses: a
 // pending batch root refuses the reset; the refusal names the root, and
 // nothing is deleted.
 //
@@ -112,11 +103,8 @@ func runBatchResetErr(t *testing.T, sessID string, fragments ...string) {
 // Reserve, which seedBatchReadRoot drives; ctx is non-nil (command context,
 // Background inside the reader); the fixture's own registered host resolves
 // as live like in the part-1 tests.
-func TestSessionsReset_BatchPendingRootRefusesFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsReset_BatchPendingRootRefuses(t *testing.T) {
 	dataDir, f := resetBatchFixture(t, "reset-batch-pending", "")
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
 
 	runBatchResetErr(t, f.owner,
 		"still being worked on",
@@ -126,12 +114,10 @@ func TestSessionsReset_BatchPendingRootRefusesFlagOn(t *testing.T) {
 	require.Equal(t, 1, countActMessages(t, dataDir, f.owner), "a refused reset deletes nothing")
 }
 
-// TestSessionsReset_BatchCancellingRootRefusesFlagOn: cancelling counts as
+// TestSessionsReset_BatchCancellingRootRefuses: cancelling counts as
 // held, nonterminal work, surfaced as "stopped but awaiting termination".
-func TestSessionsReset_BatchCancellingRootRefusesFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsReset_BatchCancellingRootRefuses(t *testing.T) {
 	dataDir, f := resetBatchFixture(t, "reset-batch-cancelling", "cancelling")
-	dropLegacyAsyncJobs(t, dataDir)
 
 	runBatchResetErr(t, f.owner,
 		"still being worked on",
@@ -140,36 +126,19 @@ func TestSessionsReset_BatchCancellingRootRefusesFlagOn(t *testing.T) {
 	require.Equal(t, 1, countActMessages(t, dataDir, f.owner), "a refused reset deletes nothing")
 }
 
-// TestSessionsReset_BatchTerminalRootResetsFlagOn: with an all-terminal
-// root, the R10c batch reset runs and reports its outcome; the legacy reset
-// line survives. NodesDeleted is BatchResetDeleteOwnerNodes's RowsAffected --
+// TestSessionsReset_BatchTerminalRootResets: with an all-terminal
+// root, the R10c batch reset runs and reports its outcome. NodesDeleted is BatchResetDeleteOwnerNodes's RowsAffected --
 // the DIRECT DELETE's rows (root rows only; the two task children vanish by
 // FK cascade and are not counted; precedent
 // internal/session/batch_history_reset_test.go:149-152: two root rows ⇒ 2).
-func TestSessionsReset_BatchTerminalRootResetsFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsReset_BatchTerminalRootResets(t *testing.T) {
 	dataDir, f := resetBatchFixture(t, "reset-batch-done", "completed")
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
 
 	stderr := runBatchReset(t, f.owner)
 	require.Contains(t, stderr, "reset session "+f.owner)
 	require.Contains(t, stderr, "batch reset: deleted 1 message(s)")
 	require.Contains(t, stderr, "1 batch node(s)", "RowsAffected counts the direct DELETE's root row only")
 	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "the wipe removed the history")
-}
-
-// TestSessionsReset_BatchPendingRootFlagOffRegression: with the flag unset,
-// the same pending-root fixture behaves exactly as today -- the legacy reset
-// ignores batch rows and wipes the history.
-func TestSessionsReset_BatchPendingRootFlagOffRegression(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
-	dataDir, f := resetBatchFixture(t, "reset-batch-flagoff", "")
-
-	stderr := runBatchReset(t, f.owner)
-	require.Contains(t, stderr, "reset session "+f.owner)
-	require.NotContains(t, stderr, "batch reset:")
-	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "legacy reset wipes the history")
 }
 
 // seedGcBatchSession creates an old empty session with a pending batch root
@@ -201,21 +170,16 @@ func runBatchGc(t *testing.T, dryRun bool) (string, string) {
 	return stdout, stderr
 }
 
-// TestSessionsGc_BatchHeldRootProtectsSessionFlagOn: with the flag on, gc
-// refuses to collect a session whose batch root is pending; dry-run reports
+// TestSessionsGc_BatchHeldRootProtectsSession: gc refuses to collect a session whose batch root is pending; dry-run reports
 // the keep, the real run purges nothing.
 //
 // Static trace: same Reserve-satisfied batch_nodes CHECK/FKs and live own
 // host as the reset fixture; ctx non-nil throughout.
-func TestSessionsGc_BatchHeldRootProtectsSessionFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsGc_BatchHeldRootProtectsSession(t *testing.T) {
 	a, shutdownSeed := isolatedGcEnv(t)
 	f := seedGcBatchSession(t, a, "gc-batch-protected")
 	dataDir := a.Config().Options.DataDirectory
 	shutdownSeed()
-	holdSeedHost(t, dataDir, f.host)
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
 
 	_, stderr := runBatchGc(t, true)
 	require.Contains(t, stderr, "kept session", "dry run must report the protected keep")
@@ -232,16 +196,12 @@ func TestSessionsGc_BatchHeldRootProtectsSessionFlagOn(t *testing.T) {
 	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "and its data is untouched")
 }
 
-// TestSessionsGc_BatchRetentionSummaryFlagOn: with the flag on, the
-// --jobs-older-than run reports the batch-side numbers through the R10c
-// retention API as an additive JSON line.
-func TestSessionsGc_BatchRetentionSummaryFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	a, shutdownSeed := isolatedGcEnv(t)
-	dataDir := a.Config().Options.DataDirectory
+// TestSessionsGc_BatchRetentionSummary: the --jobs-older-than run reports
+// the batch-side numbers through the R10c retention API as an additive JSON
+// line.
+func TestSessionsGc_BatchRetentionSummary(t *testing.T) {
+	_, shutdownSeed := isolatedGcEnv(t)
 	shutdownSeed()
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
 
 	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "false"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "1d"))
@@ -256,7 +216,7 @@ func TestSessionsGc_BatchRetentionSummaryFlagOn(t *testing.T) {
 	require.NotContains(t, stdout, `"kind":"async_jobs"`)
 }
 
-// TestSessionsGc_BatchRetentionHonoursAgeFlagOn: the flag-ON --jobs-older-than
+// TestSessionsGc_BatchRetentionHonoursAge: the --jobs-older-than
 // cutoff honours the caller-chosen age through BatchRetentionRoots. An 8-day-
 // old debt-free terminal root is NOT expired at a 30d cutoff (this is what
 // fails against the old fixed-7d behavior) and IS purged at a 1d cutoff.
@@ -269,8 +229,7 @@ func TestSessionsGc_BatchRetentionSummaryFlagOn(t *testing.T) {
 // child-session notices. The session is kept fresh so gc's old-empty rule
 // cannot collect it (batch_nodes.owner_session_id cascades on session
 // delete, which would silently remove the rows under test).
-func TestSessionsGc_BatchRetentionHonoursAgeFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsGc_BatchRetentionHonoursAge(t *testing.T) {
 	a, shutdownSeed := isolatedGcEnv(t)
 	ctx := context.Background()
 	f := seedGcBatchSession(t, a, "gc-batch-age")
@@ -284,10 +243,8 @@ func TestSessionsGc_BatchRetentionHonoursAgeFlagOn(t *testing.T) {
 		time.Now().Add(-8*24*time.Hour).Unix(), f.rootID)
 	require.NoError(t, err)
 	shutdownSeed()
-	// The root is unannounced: a dead host's recovery would delete it.
-	holdSeedHost(t, dataDir, f.host)
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
+	// The root is unannounced and the fixture's HostStore lock stays held
+	// until cleanup, so no other process's recovery can delete it.
 
 	// 30d cutoff: the 8-day-old rows are retained.
 	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "false"))
@@ -311,43 +268,19 @@ func TestSessionsGc_BatchRetentionHonoursAgeFlagOn(t *testing.T) {
 	require.Equal(t, 0, countBatchNodes(t, dataDir, f.rootID), "the rows are gone")
 }
 
-// TestSessionsGc_BatchHeldRootFlagOffRegression: with the flag unset, the
-// same pending-root fixture is collected exactly as today.
-func TestSessionsGc_BatchHeldRootFlagOffRegression(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
-	a, shutdownSeed := isolatedGcEnv(t)
-	f := seedGcBatchSession(t, a, "gc-batch-flagoff")
-	dataDir := a.Config().Options.DataDirectory
-	shutdownSeed()
-
-	_, stderr := runBatchGc(t, false)
-	require.Contains(t, stderr, "deleted 1 session(s)")
-
-	conn, err := db.Connect(context.Background(), dataDir)
-	require.NoError(t, err)
-	defer func() { _ = db.ReleaseConn(conn) }()
-	var count int
-	require.NoError(t, conn.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM sessions WHERE id = ?`, f.owner).Scan(&count))
-	require.Zero(t, count, "flag-off gc collects the session exactly as before")
-}
-
-// TestSessionsCompact_BatchLiveRootRefusesFlagOn: with the flag on, a
+// TestSessionsCompact_BatchLiveRootRefuses: a
 // database holding a live batch root refuses compaction even with --force;
 // once the root is terminal the compaction proceeds.
 //
 // Static trace: same Reserve-satisfied root CHECK/FKs; host probing resolves
 // the fixture's own live host; the terminal projection makes every root
 // state batchRootHeld=false, clearing the gate.
-func TestSessionsCompact_BatchLiveRootRefusesFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsCompact_BatchLiveRootRefuses(t *testing.T) {
 	_, built, run := isolatedCompactEnv(t)
 	ctx := context.Background()
 	sess, err := built.Sessions.CreateWithID(ctx, "compact-batch-sess", "compact batch fixture")
 	require.NoError(t, err)
 	f := seedBatchReadRoot(t, built, sess.ID)
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, built.Config().Options.DataDirectory)
 	bloatCompactDBConn(t, built.DB(), 2<<20)
 
 	// Offender strings render as "<session hash prefix> (batch root <short
@@ -369,27 +302,7 @@ func TestSessionsCompact_BatchLiveRootRefusesFlagOn(t *testing.T) {
 	require.NoError(t, runErr, "a terminal batch root clears the gate")
 }
 
-// TestSessionsCompact_BatchLiveRootFlagOffRegression: with the flag unset,
-// the same live-root database compacts exactly as today (no batch gate).
-func TestSessionsCompact_BatchLiveRootFlagOffRegression(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
-	_, built, run := isolatedCompactEnv(t)
-	ctx := context.Background()
-	sess, err := built.Sessions.CreateWithID(ctx, "compact-batch-off", "compact batch fixture")
-	require.NoError(t, err)
-	f := seedBatchReadRoot(t, built, sess.ID)
-	// The seed's fallback host lock must not trip the host gate.
-	if f.closeAsync != nil {
-		f.closeAsync()
-	}
-	bloatCompactDBConn(t, built.DB(), 2<<20)
-
-	stdout, stderr, runErr := run(t)
-	require.NoError(t, runErr)
-	require.Contains(t, stdout+stderr, "reclaimed", "flag-off compaction runs despite the live batch root")
-}
-
-// TestSessionsKill_BatchHeldRootNoteFlagOn: with the flag on, killing a
+// TestSessionsKill_BatchHeldRootNote: killing a
 // session whose batch root is pending must not read as "nothing running" --
 // an additive note names the live batch work even when no lock file exists.
 //
@@ -398,26 +311,7 @@ func TestSessionsCompact_BatchLiveRootFlagOffRegression(t *testing.T) {
 // satisfies; ctx is Background (non-nil); the host lock is held by this live
 // test process, so host probing resolves it like the part-1 EnsureHost
 // tests.
-func TestSessionsKill_BatchHeldRootNoteFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	dataDir, sessID, closeFixture := seedKillBatchFixture(t)
-	defer closeFixture()
-	isolateKillCmdEnv(t, dataDir)
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
-
-	stderr := captureStderr(t, func() {
-		require.NoError(t, sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID}))
-	})
-	require.Contains(t, stderr, "no lock file at", "the legacy branch output is unchanged")
-	require.Contains(t, stderr, "batch work for session "+sessID, "the note must report the held batch work")
-	require.Contains(t, stderr, "pending", "and the root's state")
-}
-
-// TestSessionsKill_BatchHeldRootFlagOffRegression: with the flag unset, the
-// same fixture produces today's output exactly -- no batch note.
-func TestSessionsKill_BatchHeldRootFlagOffRegression(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
+func TestSessionsKill_BatchHeldRootNote(t *testing.T) {
 	dataDir, sessID, closeFixture := seedKillBatchFixture(t)
 	defer closeFixture()
 	isolateKillCmdEnv(t, dataDir)
@@ -426,7 +320,8 @@ func TestSessionsKill_BatchHeldRootFlagOffRegression(t *testing.T) {
 		require.NoError(t, sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID}))
 	})
 	require.Contains(t, stderr, "no lock file at")
-	require.NotContains(t, stderr, "batch work", "flag off adds nothing")
+	require.Contains(t, stderr, "batch work for session "+sessID, "the note must report the held batch work")
+	require.Contains(t, stderr, "pending", "and the root's state")
 }
 
 // isolateKillCmdEnv points sessionsKillCmd at the fixture data dir in an
@@ -458,7 +353,7 @@ func seedKillBatchFixture(t *testing.T) (string, string, func()) {
 	ctx := context.Background()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "kill-batch-fixture")
+	store := session.NewHostStore(conn, dir, os.Getpid(), "kill-batch-fixture")
 	_, err = db.New(conn).CreateSession(ctx, db.CreateSessionParams{ID: "kill-batch-sess", Title: "kill batch fixture", Origin: "cli"})
 	require.NoError(t, err)
 	host, err := store.EnsureHost(ctx)
@@ -509,7 +404,7 @@ func boolStr(b bool) string {
 	return "false"
 }
 
-// TestSessionsGc_TerminalRootDebtProtectsSessionFlagOn: terminal completion
+// TestSessionsGc_TerminalRootDebtProtectsSession: terminal completion
 // debt -- a completed root's selected, unreacted notice -- must protect the
 // session from gc exactly like live work, and the protection is the debt,
 // not the terminal root: once the notice stops being debt the session is
@@ -525,8 +420,7 @@ func boolStr(b bool) string {
 // filter, so the TERMINAL root's node debt counts). NO message is seeded:
 // the old-empty gc rule needs MessageCount == 0, so the session IS a gc
 // candidate and the protection proof is the debt alone.
-func TestSessionsGc_TerminalRootDebtProtectsSessionFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsGc_TerminalRootDebtProtectsSession(t *testing.T) {
 	a, shutdownSeed := isolatedGcEnv(t)
 	ctx := context.Background()
 	f := seedGcBatchSession(t, a, "gc-batch-debt")
@@ -542,8 +436,6 @@ func TestSessionsGc_TerminalRootDebtProtectsSessionFlagOn(t *testing.T) {
 		 WHERE node_id = ? AND parent_id = ?`, f.nodeA, f.rootID)
 	require.NoError(t, err)
 	shutdownSeed()
-	// Prove the flag-ON path never queries the legacy ledger.
-	dropLegacyAsyncJobs(t, dataDir)
 
 	_, stderr := runBatchGc(t, true)
 	require.Contains(t, stderr, "kept session", "dry run must report the debt keep")

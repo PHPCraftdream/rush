@@ -1,15 +1,13 @@
 package cmd
 
-// Batch-side facts for `rush sessions audit` (R12-B part 3): with
-// RUSH_BATCH_RUNTIME on, the audit counts live batch node rows through the
+// Batch-side facts for `rush sessions audit` (R12-B part 3): the audit
+// counts live batch node rows through the
 // R10a live reader plus the R10c history snapshot, and per-owner task state
 // counts through the BatchHistoryStateCounts query (batch_history.sql), all
 // over the same strictly read-only handle the audit already opened — never a
-// second, read-write connection. The legacy async_jobs ledger is not read
-// with the flag on: the unfinished_jobs rule counts held batch roots instead.
-// A missing legacy table is a normal flag-on state and is reported, never
-// treated as a silent disable. Flag off, none of this runs and the report
-// carries no batch block at all.
+// second, read-write connection. The legacy async_jobs ledger is not read:
+// the unfinished_jobs rule counts held batch roots instead. A leftover legacy
+// table is reported via the audit report, never treated as a silent disable.
 
 import (
 	"context"
@@ -161,7 +159,7 @@ func (r *auditBatchReport) printText(w io.Writer) {
 	if r == nil {
 		return
 	}
-	fmt.Fprintf(w, "batch runtime on: unfinished_jobs %s\n", r.UnfinishedJobsRule)
+	fmt.Fprintf(w, "batch: unfinished_jobs %s\n", r.UnfinishedJobsRule)
 	ids := make([]string, 0, len(r.Sessions))
 	for id := range r.Sessions {
 		ids = append(ids, id)

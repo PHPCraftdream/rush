@@ -1,8 +1,8 @@
 package cmd
 
 // The readers and normalizers the rules in sessions_audit_findings.go count
-// with: one query over the selected sessions' messages, one over their
-// unfinished async jobs, and the per-part folding in between.
+// with: one query over the selected sessions' messages and the per-part
+// folding in between.
 //
 // Both queries read only the columns a rule needs, and never SELECT *: the
 // messages of a live session can carry very large parts, and an audit that
@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,14 +36,8 @@ const (
 	auditNoticeWakeFailed  = "wake_failed"
 )
 
-// The async job states that mean "this delegation never came back".
-const (
-	auditJobRunning     = "running"
-	auditJobInterrupted = "interrupted"
-)
-
-// auditDigits folds every run of digits, so `sleep 5`, `sleep 42` and
-// `job_output 12` collapse onto one key.
+// auditDigits folds every run of digits, so `sleep 5` and `sleep 42`
+// collapse onto one key.
 var auditDigits = regexp.MustCompile(`[0-9]+`)
 
 // auditNormalizeCommand folds a command's numbers and cuts it to the length a
@@ -280,62 +273,4 @@ func (tally *auditTally) count(counters map[string]map[string]int, sessionID, de
 		counters[sessionID] = map[string]int{}
 	}
 	counters[sessionID][detail]++
-}
-
-// auditScanAsyncJobs counts the jobs of the selected sessions that never came
-// back. It uses only the columns the schema actually has: state,
-// owner_session_id and tool_call_id are what the rule is about, so a schema
-// missing any of them loses the rule rather than the audit, and kind is the
-// one part of the detail that can be absent.
-func auditScanAsyncJobs(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, tally *auditTally) error {
-	if !schema.HasAsyncJobs {
-		return nil
-	}
-	for _, required := range []string{"owner_session_id", "tool_call_id", "state"} {
-		if !slices.Contains(schema.AsyncJobColumns, required) {
-			return nil
-		}
-	}
-	withKind := slices.Contains(schema.AsyncJobColumns, "kind")
-
-	columns := []string{"owner_session_id", "tool_call_id"}
-	if withKind {
-		columns = append(columns, "kind")
-	}
-	query := "SELECT " + strings.Join(columns, ", ") + " FROM async_jobs" +
-		" WHERE owner_session_id IN (" + auditPlaceholders(len(ids)) + ")" +
-		" AND state IN ('" + auditJobRunning + "','" + auditJobInterrupted + "')" +
-		" ORDER BY owner_session_id, tool_call_id"
-
-	params := make([]any, 0, len(ids))
-	for _, id := range ids {
-		params = append(params, id)
-	}
-
-	rows, err := db.QueryContext(ctx, query, params...)
-	if err != nil {
-		return fmt.Errorf("query async_jobs: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var owner, callID string
-		var kind sql.NullString
-		dest := []any{&owner, &callID}
-		if withKind {
-			dest = append(dest, &kind)
-		}
-		if err := rows.Scan(dest...); err != nil {
-			return fmt.Errorf("scan async_jobs: %w", err)
-		}
-		job := callID
-		if withKind && kind.String != "" {
-			job = callID + ":" + kind.String
-		}
-		tally.unfinishedJobs[owner] = append(tally.unfinishedJobs[owner], job)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate async_jobs: %w", err)
-	}
-	return nil
 }
