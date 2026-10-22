@@ -10,6 +10,7 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/spf13/cobra"
 )
 
@@ -58,7 +59,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 		return nil
 	}
 
-	fmt.Fprintf(w, "== %s (rush.db)\n", report.DataDir)
+	fmt.Fprintf(w, "== %s (%s)\n", report.DataDir, storepath.ActiveFilename)
 
 	for _, issue := range report.SchemaIssues {
 		fmt.Fprintf(w, "%s: this does not look like a Rush session database (a foreign one, or one too old to analyse); audit is read-only and changed nothing\n", issue)

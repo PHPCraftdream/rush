@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/queue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,12 +192,16 @@ func TestQueueRunCmdRun_CorruptChildStdout_MarksTaskFailedNotDone(t *testing.T) 
 //
 // To force a deterministic UpdateStatus failure without fighting SQLite
 // concurrent-connection semantics, the queueTaskExecOverride callback (which
-// runs synchronously inside runQueueTask, strictly BEFORE the parent loop's
-// subsequent q.UpdateStatus call for the same task) opens its own short-lived
-// connection to the exact same rush.db file and drops the queue_tasks
-// table. By the time control returns to queueRunCmd.RunE's loop and it calls
-// UpdateStatus, the table no longer exists, so the write fails every time —
-// no timing race.
+// runs on a worker goroutine inside queueRunCmd.RunE, strictly BEFORE the
+// parent loop's subsequent q.UpdateStatus call for the same task) opens its
+// own short-lived connection to the ACTIVE store file
+// (storepath.StoreV1Path(dataDir)) and drops the queue_tasks table. By the
+// time control returns to queueRunCmd.RunE's loop and it calls UpdateStatus,
+// the table no longer exists, so the write fails every time — no timing
+// race. The override never calls require/FailNow: it runs on a non-test
+// goroutine, where FailNow would Goexit the wrong goroutine and hang the
+// run loop; failures are recorded with t.Errorf and surfaced as a returned
+// error instead.
 func TestQueueRunCmdRun_UpdateStatusFailure_SurfacesError(t *testing.T) {
 	tmp := isolateConfigEnvForTests(t)
 
@@ -227,7 +233,7 @@ func TestQueueRunCmdRun_UpdateStatusFailure_SurfacesError(t *testing.T) {
 	os.Stdin = oldStdin
 	require.NoError(t, addErr)
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.StoreV1Path(dataDir)
 
 	// The child "succeeds" with valid JSON, but as a side effect drops the
 	// queue_tasks table out from under the still-open app DB connection —
@@ -236,10 +242,15 @@ func TestQueueRunCmdRun_UpdateStatusFailure_SurfacesError(t *testing.T) {
 	// reproduce the underlying I/O failure itself.
 	queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) {
 		sabotage, sabErr := sql.Open("sqlite", dbPath)
-		require.NoError(t, sabErr)
+		if sabErr != nil {
+			t.Errorf("sabotage connection failed to open %s: %v", dbPath, sabErr)
+			return nil, fmt.Errorf("sabotage open failed: %w", sabErr)
+		}
 		defer sabotage.Close()
-		_, sabErr = sabotage.ExecContext(t.Context(), "DROP TABLE queue_tasks")
-		require.NoError(t, sabErr, "sabotage connection must succeed in dropping queue_tasks for this test to be meaningful")
+		if _, sabErr = sabotage.ExecContext(context.Background(), "DROP TABLE queue_tasks"); sabErr != nil {
+			t.Errorf("sabotage connection must succeed in dropping queue_tasks for this test to be meaningful: %v", sabErr)
+			return nil, fmt.Errorf("sabotage DROP TABLE queue_tasks failed: %w", sabErr)
+		}
 
 		out, _ := json.Marshal(map[string]any{
 			"cost_usd":    0.01,
@@ -351,7 +362,7 @@ func TestQueueRunCmdRun_DoesNotReclaimTaskFromLiveRunner(t *testing.T) {
 	// (acquireSpawnLock, then ClaimPending) but staying "in the middle of a
 	// tool call" indefinitely instead of finishing.
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.StoreV1Path(dataDir)
 	liveConn, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	// Closed explicitly (not via t.Cleanup) right before

@@ -11,6 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -278,7 +279,10 @@ func mustEmbeddedVersions(t *testing.T) []int64 {
 // see the test-only probe because it migrates with the embedded set.
 func TestConnect_OpenUpToDateDatabase(t *testing.T) {
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "rush.db")
+	// Seed the ACTIVE store file: Connect opens storepath.StoreV1Path, and
+	// seeding the legacy name instead would silently exercise the legacy
+	// import path, not the up-to-date open this test pins.
+	dbPath := storepath.StoreV1Path(dataDir)
 	seed := openTestDB(t, dbPath)
 	require.NoError(t, Migrate(context.Background(), seed))
 
