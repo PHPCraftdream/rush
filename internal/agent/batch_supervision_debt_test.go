@@ -37,6 +37,7 @@ import (
 func w5SeedRunningRoot(t *testing.T, conn *sql.DB, messages message.Service, owner, callID string) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: "fixture-host", RunnerID: "fixture-runner", ToolCallID: callID,
@@ -60,6 +61,7 @@ func w5SeedRunningRoot(t *testing.T, conn *sql.DB, messages message.Service, own
 // InsertSessionNotice(..., session.NoticeKindSupervision, text, true, "")).
 func w5InsertSupervisionNotice(t *testing.T, conn *sql.DB, owner, text string) {
 	t.Helper()
+	ensureFixtureSession(t, conn, owner)
 	require.NoError(t, session.NewSessionNoticeStore(conn).InsertSessionNotice(
 		context.Background(), owner, session.NoticeKindSupervision, text, true, ""))
 }

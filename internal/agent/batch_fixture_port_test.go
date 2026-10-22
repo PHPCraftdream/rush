@@ -80,6 +80,7 @@ func batchFixtureMessage(text string) message.CreateMessageParams {
 func seedBatchJobDebt(t *testing.T, conn *sql.DB, owner, callID string, visible bool) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: "fixture-host", RunnerID: "fixture-runner", ToolCallID: callID,
@@ -138,6 +139,7 @@ func seedBatchJobDebt(t *testing.T, conn *sql.DB, owner, callID string, visible 
 func seedBatchDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, kind, state string, withNotice bool) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: "fixture-host", RunnerID: "fixture-runner", ToolCallID: callID,

@@ -25,6 +25,9 @@ import (
 func b1BGShellFixture(t *testing.T) (*coordinator, *sql.DB, *shell.BackgroundShellManager, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
+	// Callers start shells owned by the literal id "session"; its bg_shell_done
+	// notices FK-anchor on sessions (id).
+	ensureFixtureSession(t, conn, "session")
 	mgr := shell.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(context.Background()) })
 	coord := newBatchRuntimeCoordinator()
@@ -70,6 +73,7 @@ func b1SeedDelegationChildLink(t *testing.T, conn *sql.DB, owner, callID, childI
 func b1SeedBatchRootOnHost(t *testing.T, conn *sql.DB, owner, callID, host, state string) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: host, RunnerID: "fixture-runner", ToolCallID: callID,

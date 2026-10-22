@@ -108,6 +108,7 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 	conn, dataDir := batchFixtureConn(t)
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
+	ensureFixtureSession(t, conn, "child-1")
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent, parentSessionID: "parent-1"})
 
 	// Simulate the child's allowlist entry having been cleared already

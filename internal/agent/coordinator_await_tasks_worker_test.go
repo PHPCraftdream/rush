@@ -45,6 +45,15 @@ func awtShrinkBlockCap(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { batchAwaitWorkerCap = old })
 }
 
+// awtShrinkMinWait shrinks the max_wait floor (batchAwaitMinWaitSeconds —
+// BatchAwaitWorker validates against it even on the direct worker path).
+func awtShrinkMinWait(t *testing.T, seconds int) {
+	t.Helper()
+	old := batchAwaitMinWaitSeconds
+	batchAwaitMinWaitSeconds = seconds
+	t.Cleanup(func() { batchAwaitMinWaitSeconds = old })
+}
+
 // awtBindControls gives AwaitTasks its flag-ON live binding (bind.live): the
 // worker and top-level paths both error "batch live reader unavailable"
 // without it (coordinator_await_tasks.go:93-96, :142-145). Flag OFF binds
@@ -251,6 +260,9 @@ func TestAwaitTasksWorkerCancelUnblocks(t *testing.T) {
 // it calls awaitTasksForWorker directly to bypass the top-level 60s bound.
 func TestAwaitTasksWorkerDeadlineReturnsRemaining(t *testing.T) {
 	awtShrinkPoll(t, 10*time.Millisecond)
+	// BatchAwaitWorker validates max_wait against the shared floor; shrink
+	// it so max_wait=1 still reaches the deadline arm.
+	awtShrinkMinWait(t, 1)
 	env, c := newAwaitWorkerEnv(t)
 	child := childSession(t, env, "call-child-5", "parent-1")
 	ctx := context.Background()

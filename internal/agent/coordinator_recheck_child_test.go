@@ -36,6 +36,7 @@ func newBlockingWakeCoordinator(t *testing.T, ids ...string) (coord *coordinator
 		return nil, nil
 	}}
 	for _, id := range ids {
+		ensureFixtureSession(t, conn, id)
 		notices := session.NewSessionNoticeStore(conn)
 		require.NoError(t, notices.InsertSessionNotice(context.Background(), id, "manual_test_notice", "owed", true, ""))
 		coord.subAgentDrivers.register(id, subAgentDriver{agent: blocked, call: SessionAgentCall{SessionID: id}})

@@ -6,6 +6,7 @@ package agent
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -50,6 +51,24 @@ func newBatchRuntimeCoordinator() *coordinator {
 	c.timeouts = newTimeoutService()
 	c.subAgentDrivers = newSubAgentDriverRegistry()
 	return c
+}
+
+// ensureFixtureSession inserts a bare sessions row for id IF it does not
+// exist yet: the single-store schema's foreign keys (session_notices.owner,
+// batch_nodes' owner_session_id) all anchor on sessions (id), so any fixture
+// that seeds child rows under a literal id must have the row first. Callers
+// may create the same id through the sessions service or another helper
+// beforehand; the read-before-insert keeps the insert idempotent.
+func ensureFixtureSession(t *testing.T, conn *sql.DB, id string) {
+	t.Helper()
+	q := db.New(conn)
+	if _, err := q.GetSessionByID(t.Context(), id); err == nil {
+		return
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		require.NoError(t, err)
+		return
+	}
+	createSessionRow(t, q, t.Context(), id)
 }
 
 // batchFixtureConnNoFK is batchFixtureConn with foreign keys disabled, the

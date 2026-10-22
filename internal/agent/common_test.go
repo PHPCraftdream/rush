@@ -101,6 +101,10 @@ func testEnv(t *testing.T) fakeEnv {
 	conn, err := db.Connect(t.Context(), dbDir)
 	require.NoError(t, err)
 
+	// Many fixtures seed notices/batch rows under the literal id "session";
+	// the single-store schema's FKs anchor them on sessions (id).
+	ensureFixtureSession(t, conn, "session")
+
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)

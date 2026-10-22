@@ -31,6 +31,7 @@ func batchQuestionFixture(t *testing.T) (*coordinator, *session.SessionNoticeSto
 func seedDelegation(t *testing.T, conn *sql.DB, owner, callID, childID string, token int64) (rootID, childNodeID string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	bs := session.NewBatchStore(conn)
 	res, err := bs.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: "fixture-host", RunnerID: "fixture-runner", ToolCallID: callID,

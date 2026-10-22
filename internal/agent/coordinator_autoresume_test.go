@@ -268,6 +268,7 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
 	conn, _ := batchFixtureConn(t)
+	ensureFixtureSession(t, conn, "sess-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
 
 	var err error
@@ -309,6 +310,7 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	coord := newBatchRuntimeCoordinator()
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
 	conn, _ := batchFixtureConn(t)
+	ensureFixtureSession(t, conn, "child-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
 
 	require.NoError(t, coord.noticeStore.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))

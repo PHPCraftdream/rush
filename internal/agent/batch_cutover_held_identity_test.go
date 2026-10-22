@@ -20,6 +20,7 @@ func TestBatchLiveHeldQuestionsCarryNodeAndChildIdentity(t *testing.T) {
 	ctx := context.Background()
 	const owner = "sess-bq-held-owner"
 	const child = "sess-bq-held-child"
+	ensureFixtureSession(t, conn, owner)
 	_, nodeID := seedDelegation(t, conn, owner, "call-bq-id", child, 21)
 	commitMarkerNotice(t, conn, owner, nodeID, child, 21)
 

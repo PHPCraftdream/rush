@@ -35,6 +35,9 @@ import (
 func newBGShellCompletionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *shell.BackgroundShellManager, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
+	// The shells are owned by the literal id "session"; its bg_shell_done
+	// notices FK-anchor on sessions (id).
+	ensureFixtureSession(t, conn, "session")
 	mgr := shell.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(t.Context()) })
 	coord := newBatchRuntimeCoordinator()
