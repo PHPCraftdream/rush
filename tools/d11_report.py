@@ -14,6 +14,11 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 WORKLOADS = ("direct-view", "legacy-bash")
 EVENTS = ("submit", "started", "settled")
 QUANTUM_BUDGET_MS = 20.0
+# Minimum median eight-session throughput ratio (ON/OFF) per workload. direct-view is 0.75 by the
+# operator decision of 2026-10-22 (docs/reviews/2026-10-22-d11-direct-view-budget.md): the batch
+# path adds the Submit/Started/Settled/Release commits to a call that the OFF path serves with no
+# job machinery at all. legacy-bash stays at the original 0.80.
+THROUGHPUT_MIN_RATIO = {"direct-view": 0.75, "legacy-bash": 0.80}
 BASELINE_DESCRIPTION = ("integration branch at %s, batch runtime flag OFF; D11 measures ON vs OFF at the integration branch, not against pre-batch main" % PINNED)
 
 
@@ -246,7 +251,8 @@ def evaluate_pair(baseline, candidate, workload):
         "throughput_ratio_median": median_ratio, "throughput_ratio_worst": min(ratios),
         "durability": {"baseline": baseline["durability"], "candidate": candidate["durability"]},
         "runs": {"baseline": baseline["runs"], "candidate": candidate["runs"]},
-        "gates": {"sequential_p95": delta <= 15.0, "throughput": median_ratio >= .8,
+        "throughput_min_ratio": THROUGHPUT_MIN_RATIO[workload],
+        "gates": {"sequential_p95": delta <= 15.0, "throughput": median_ratio >= THROUGHPUT_MIN_RATIO[workload],
                   "zero_errors": baseline["errors"] == candidate["errors"] == 0,
                   "durability": True, "transition_commits": True},
     }
@@ -275,7 +281,8 @@ def evaluate(baselines, candidates):
 def render(result, evidence=True):
     workloads = result["workloads"]
     rows = ["# D11 baseline/candidate comparison", "",
-            "Each workload independently gates sequential p95 delta <=15 ms, median eight-session throughput ratio >=0.80 over all rounds, zero turn-health violations, and a bash-vs-view p50 quantum sanity bound of 20 ms per mode.", "",
+            "Each workload independently gates sequential p95 delta <=15 ms, median eight-session throughput ratio over all rounds (legacy-bash >=%.2f; direct-view >=%.2f, operator budget of 2026-10-22), zero turn-health violations, and a bash-vs-view p50 quantum sanity bound of 20 ms per mode." % (
+                THROUGHPUT_MIN_RATIO["legacy-bash"], THROUGHPUT_MIN_RATIO["direct-view"]), "",
             "Pinned baseline %s: %s." % (PINNED, BASELINE_DESCRIPTION),
             "Call origin / wait path (both modes): %s." % workloads[WORKLOADS[0]]["off_wait_path"],
             "Bash-vs-view OFF p50 quantum: %.3f ms (gate <=20 ms, %s); ON: %.3f ms (%s)." % (
@@ -293,7 +300,7 @@ def render(result, evidence=True):
         rows.extend(["", "| Round | OFF calls/s | ON calls/s | ratio |", "|---|---:|---:|---:|"])
         for round_row in item["throughput_rounds"]:
             rows.append("| %s | %.2f | %.2f | %.3f |" % (round_row["phase"], round_row["cps_off"], round_row["cps_on"], round_row["ratio"]))
-        rows.append("| Median ratio (worst %.3f) | | | %.3f | %s |" % (item["throughput_ratio_worst"], item["throughput_ratio_median"], "PASS" if gates["throughput"] else "FAIL"))
+        rows.append("| Median ratio (worst %.3f; gate >=%.2f) | | | %.3f | %s |" % (item["throughput_ratio_worst"], item["throughput_min_ratio"], item["throughput_ratio_median"], "PASS" if gates["throughput"] else "FAIL"))
         rows.append("")
         rows.append("| Turn-health violations | %d | %d | — | %s |" % (item["health_violations"]["baseline"], item["health_violations"]["candidate"], "PASS" if item["health_violations"]["baseline"] == item["health_violations"]["candidate"] == 0 else "FAIL"))
         rows.append("| Errors | %d | %d | — | %s |" % (item["errors_off"], item["errors_on"], "PASS" if gates["zero_errors"] else "FAIL"))
