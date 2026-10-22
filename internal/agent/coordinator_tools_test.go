@@ -598,8 +598,6 @@ func TestAllToolNames_CoversUnconditionallyBuiltTools(t *testing.T) {
 		// rush_logs is no longer unconditionally constructed: buildTools
 		// skips it when Options.DataDirectory is empty (R15-1), so it is
 		// not part of the set this slice mirrors.
-		"job_output",
-		"job_kill",
 		"download",
 		"edit",
 		"multiedit",

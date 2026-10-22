@@ -584,49 +584,6 @@ type BatchInstallDeps struct {
 	DiskBindings   *DiskProviderRegistry
 }
 
-// batchDeniedEnvelope is the projection of a leaf envelope (jobbatch
-// Result.Details, marshaled by batchEnvelope from the fantasy.ToolResponse)
-// the wake hook needs to recognize a permission denial.
-type batchDeniedEnvelope struct {
-	IsError  bool `json:"is_error"`
-	StopTurn bool `json:"stop_turn"`
-}
-
-// batchDeniedSettledNotice reports whether notice n is the root notice of a
-// one-leaf batch whose only leaf settled as a permission denial --
-// tools.NewPermissionDeniedResponse (internal/agent/tools/tools.go:138), the
-// only ordinary leaf producer of IsError+StopTurn: a call refused at the
-// permission gate that was NEVER EXECUTED. The notice is keyed by the ROOT
-// (NotifyAll), while the settled event names the leaf, so the leaf's root is
-// resolved through the transition's changed nodes; Counts pins the batch to
-// exactly that one failed leaf. Such a settle must not bridge a completion
-// wake: the denied call produced no work the owner needs to hear about, and a
-// wake=1 here queues a Drain behind the very turn whose permission gate just
-// ended it, running a real provider round for work that never happened.
-func batchDeniedSettledNotice(t jobbatch.Transition, n jobbatch.Notice) bool {
-	if t.Event.Type != jobbatch.EventSettled || len(t.Event.Result.Details) == 0 {
-		return false
-	}
-	if n.Counts != (jobbatch.Counts{Failed: 1}) {
-		return false
-	}
-	var leafRoot jobbatch.ID
-	for _, v := range t.Changed {
-		if v.ID == t.Event.Node {
-			leafRoot = v.Root
-			break
-		}
-	}
-	if leafRoot == "" || leafRoot != n.Root {
-		return false
-	}
-	var d batchDeniedEnvelope
-	if err := json.Unmarshal(t.Event.Result.Details, &d); err != nil {
-		return false
-	}
-	return d.IsError && d.StopTurn
-}
-
 // pwCompletionWakeHook wraps a durable batch commit hook with the ordinary
 // selected-completion wake. After a SUCCESSFUL commit whose transition
 // selected completion notices, it calls wake with the touched root; the
@@ -652,12 +609,6 @@ func pwCompletionWakeHook(next func(context.Context, jobbatch.Transition) error,
 		var woken map[jobbatch.ID]bool
 		for _, n := range t.Notices {
 			if n.Root == "" || woken[n.Root] {
-				continue
-			}
-			// A permission-denied, never-executed one-leaf settle wakes
-			// NOTHING (batchDeniedSettledNotice); every other notice is
-			// unaffected.
-			if batchDeniedSettledNotice(t, n) {
 				continue
 			}
 			if woken == nil {
