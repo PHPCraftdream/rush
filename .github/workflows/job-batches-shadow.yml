@@ -552,9 +552,13 @@ jobs:
             "$RUNNER_TEMP/d11-baseline-legacy-bash.log" \
             "$RUNNER_TEMP/d11-candidate-legacy-bash.log" \
             --json-out "$RUNNER_TEMP/d11-summary.json" \
+            --summary-out "$RUNNER_TEMP/d11-summary.md" \
             -o "$RUNNER_TEMP/d11-report.md"
           rc=$?
-          if [ -f "$RUNNER_TEMP/d11-report.md" ]; then cat "$RUNNER_TEMP/d11-report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          # The full report embeds the raw samples (~1.4 MiB) and exceeds the
+          # 1 MiB GITHUB_STEP_SUMMARY cap; the summary gets the compact form,
+          # the full report stays an uploaded artifact.
+          if [ -f "$RUNNER_TEMP/d11-summary.md" ]; then cat "$RUNNER_TEMP/d11-summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$rc"
       - name: Print pprof tops
         if: always()

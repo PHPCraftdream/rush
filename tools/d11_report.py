@@ -272,7 +272,7 @@ def evaluate(baselines, candidates):
     return result
 
 
-def render(result):
+def render(result, evidence=True):
     workloads = result["workloads"]
     rows = ["# D11 baseline/candidate comparison", "",
             "Each workload independently gates sequential p95 delta <=15 ms, median eight-session throughput ratio >=0.80 over all rounds, zero turn-health violations, and a bash-vs-view p50 quantum sanity bound of 20 ms per mode.", "",
@@ -299,7 +299,10 @@ def render(result):
         rows.append("| Errors | %d | %d | — | %s |" % (item["errors_off"], item["errors_on"], "PASS" if gates["zero_errors"] else "FAIL"))
         rows.append("| Commit count | %d | %d | — | recorded |" % (item["commits_off"], item["commits_on"]))
         rows.extend(["", "Candidate per-call committed checkpoint evidence: %d rows." % len(item["call_transactions"]), ""])
-    rows.extend(["## Raw run evidence", "", "```json", json.dumps({name: result["workloads"][name]["runs"] for name in WORKLOADS}, indent=2, sort_keys=True), "```", "", "## Merged JSON", "", "```json", json.dumps(result, indent=2, sort_keys=True), "```", ""])
+    if evidence:
+        rows.extend(["## Raw run evidence", "", "```json", json.dumps({name: result["workloads"][name]["runs"] for name in WORKLOADS}, indent=2, sort_keys=True), "```", "", "## Merged JSON", "", "```json", json.dumps(result, indent=2, sort_keys=True), "```", ""])
+    else:
+        rows.extend(["Raw run evidence and the merged JSON are in the d11-report.md and d11-summary.json artifacts (GITHUB_STEP_SUMMARY is capped at 1 MiB).", ""])
     return "\n".join(rows)
 
 
@@ -311,16 +314,19 @@ def main():
     parser.add_argument("candidate_bash")
     parser.add_argument("-o", "--out")
     parser.add_argument("--json-out")
+    parser.add_argument("--summary-out", help="compact markdown without the raw evidence, for GITHUB_STEP_SUMMARY")
     args = parser.parse_args()
     try:
         baselines = {"direct-view": extract_summary(args.baseline_view), "legacy-bash": extract_summary(args.baseline_bash)}
         candidates = {"direct-view": extract_summary(args.candidate_view), "legacy-bash": extract_summary(args.candidate_bash)}
         result = evaluate(baselines, candidates)
         report = render(result)
+        summary = render(result, evidence=False)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         reason = str(exc)
         result = {"status": "invalid", "reason": reason, "gates": {}}
         report = "# D11 comparison unavailable\n\nValidation failed: %s\n" % reason
+        summary = report
         print("d11_report: error: %s" % reason, file=sys.stderr)
     try:
         if args.out:
@@ -328,6 +334,9 @@ def main():
                 stream.write(report)
         else:
             sys.stdout.write(report)
+        if args.summary_out:
+            with open(args.summary_out, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(summary)
         if args.json_out:
             with open(args.json_out, "w", encoding="utf-8", newline="\n") as stream:
                 json.dump(result, stream, sort_keys=True, separators=(",", ":"))
