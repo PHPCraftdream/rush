@@ -1,17 +1,12 @@
-// R11F shared flag parser for the inert batch runtime (RUSH_BATCH_RUNTIME).
-// Lives in the lowest-level config package so both internal/app (host
-// lifecycle install) and internal/server (web surface) read ONE flag
-// definition. Same idiom as the keepalive cache flag
-// (internal/agent/agent_cache_keepalive.go): unset or unparseable means OFF.
+// R12-H4 atomic activation: the batch runtime is the only runtime, so
+// BatchRuntimeEnabled is unconditional. The RUSH_BATCH_RUNTIME symbol is
+// kept for one lane so the other packages' selectors can be rewritten in
+// the same series; lane R12-I erases this file afterwards.
 package config
 
-import (
-	"os"
-	"strconv"
-)
-
-// BatchRuntimeEnabled reports whether the batch runtime is switched on.
+// BatchRuntimeEnabled always reports true: selection of the batch
+// runtime is unconditional for every RUSH_BATCH_RUNTIME value, set or
+// unset.
 func BatchRuntimeEnabled() bool {
-	on, err := strconv.ParseBool(os.Getenv("RUSH_BATCH_RUNTIME"))
-	return err == nil && on
+	return true
 }
