@@ -80,7 +80,7 @@ func loadCorpusManifest(t *testing.T) *corpusManifest {
 		"manifest.json has trailing data")
 	require.Equal(t, 1, m.SchemaVersion, "unsupported schema_version")
 	require.NotEmpty(t, m.Categories, "manifest has no categories")
-	return m
+	return &m
 }
 
 // fixturePart splits a category-relative file into stem and companion
