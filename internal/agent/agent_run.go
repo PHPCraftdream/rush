@@ -632,6 +632,13 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// entry-point defers; any call this loop POPS from the mailbox drain (a
 	// queued `next` or an interrupt replacement) carries its OWN scope,
 	// closed at that turn's end below.
+	// The loop's carried outcome: the last iteration that produced a real
+	// result or error. A trailing refused no-turn Drain leg returns
+	// (nil, nil) (agent_turn.go's drain-refusal branch) and must never
+	// overwrite it — runOwned's caller maps a bare (nil, nil) to the
+	// "queued" contract, which would misreport a finished turn.
+	var carriedResult *fantasy.AgentResult
+	var carriedErr error
 	originCallOpts := call.CallOptions
 	for {
 		// Test-only seam (#289): fires strictly after any end-of-turn drain
@@ -721,6 +728,9 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		att := a.newDrainAttempt(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
+		// A real result or error replaces the carry; a (nil, nil)
+		// iteration (a refused no-turn Drain leg) leaves it untouched.
+		carriedResult, carriedErr, _ = mergeTurnOutcome(carriedResult, carriedErr, result, err)
 		// R12-H2a round 2: a popped replacement/queued call carries its OWN
 		// build-resource scope; close it when this turn finishes so its
 		// constructions release with the turn that used them (the durable
@@ -739,12 +749,38 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 		mb.clearCurrentCall(epoch)
 		turnCancel()
+		// A trailing refused no-turn Drain leg (nil result, nil error,
+		// hasNext=false) must not clobber the carried outcome of an earlier
+		// real turn in this loop; a loop that never produced a real outcome
+		// still returns (nil, nil), which is the mailbox queueing contract's
+		// own shape and is untouched (a queued loser returns before runOwned
+		// is ever entered).
 		if !hasNext {
-			return result, err
+			return finalTurnOutcome(result, err, carriedResult, carriedErr)
 		}
 		inheritReplacementIdentityCallback(&call, &next)
 		call = next
 	}
+}
+
+// mergeTurnOutcome folds one loop iteration's outcome into the carried
+// outcome: a real result or error replaces the carry; a (nil, nil)
+// iteration (a refused no-turn Drain leg) leaves it untouched.
+func mergeTurnOutcome(carried *fantasy.AgentResult, carriedErr error, result *fantasy.AgentResult, err error) (*fantasy.AgentResult, error, bool) {
+	if result != nil || err != nil {
+		return result, err, true
+	}
+	return carried, carriedErr, false
+}
+
+// finalTurnOutcome is the loop's exit rule: a trailing (nil, nil) iteration
+// returns the carried outcome of the last real turn; anything else returns
+// its own outcome unchanged.
+func finalTurnOutcome(result *fantasy.AgentResult, err error, carried *fantasy.AgentResult, carriedErr error) (*fantasy.AgentResult, error) {
+	if result == nil && err == nil && (carried != nil || carriedErr != nil) {
+		return carried, carriedErr
+	}
+	return result, err
 }
 
 func inheritReplacementIdentityCallback(previous, next *SessionAgentCall) {

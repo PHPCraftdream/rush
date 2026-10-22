@@ -923,6 +923,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if !ok {
 		return result, SessionAgentCall{}, false, err
 	}
-	// There are queued messages — the caller's loop runs another turn.
-	return nil, firstQueuedMessage, true, nil
+	// There are queued messages — the caller's loop runs another turn. The
+	// finished turn's own outcome is NOT dropped: returning it here lets the
+	// loop's per-iteration onQueueResolved hook deliver the real result/err
+	// for the call that just completed, instead of a spurious (nil, nil).
+	return result, firstQueuedMessage, true, nil
 }
