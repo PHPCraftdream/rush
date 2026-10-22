@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -25,30 +24,24 @@ import (
 )
 
 // pnCountSelectedCompletions counts only the selected terminal completion
-// notices. Under the batch flag the started announcement is ALSO a
-// background-job user message with an empty notice kind
-// (batch_install_adapters.go ElectStarted), so the legacy "" count would see
-// two messages; only the selected completion carries notice kind "root"
-// (internal/jobbatch/notice.go selectNotices names the root kind). Flag OFF
-// keeps the legacy shape: the legacy started path persists no background
-// message, so "" counts exactly the one completion notice.
+// notices. The batch runtime's started announcement is ALSO a background-job
+// user message with an empty notice kind (batch_install_adapters.go
+// ElectStarted), so counting "" would see two messages; only the selected
+// completion carries notice kind "root" (internal/jobbatch/notice.go
+// selectNotices names the root kind).
 func pnCountSelectedCompletions(t *testing.T, application *App, sessionID string) int {
 	t.Helper()
-	if f6BatchOn() {
-		return countBackgroundNotices(t, application, sessionID, "root")
-	}
-	return countBackgroundNotices(t, application, sessionID, "")
+	return countBackgroundNotices(t, application, sessionID, "root")
 }
 
-// TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce runs in BOTH
-// flag modes: the OFF legacy path already carries the output in the notice,
-// the ON path exercises the new pull-side projection. Reverting the
+// TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce pins the batch
+// pull-side projection. Reverting the
 // projection reproduces "Async job call-1 () finished.\n\n(no output)" and
 // the marker assertions fail.
 func TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce(t *testing.T) {
 	command, release := recoveryJobCommand(t)
 	// The marker is COMPUTED by the shell, so its literal never appears in the
-	// command text: the legacy (flag OFF) completion notice quotes the command,
+	// command text: the completion notice quotes the command,
 	// and counting a literal marker would see it twice (command + output).
 	command += "; echo PN-ESCAPED-$((40+2))"
 	completionText := make(chan string, 1)
@@ -104,13 +97,6 @@ func TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce(t *testing.T) {
 			admissionWriteSSE(w, []string{admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(command)+`,"description":"held job"}`), admissionSSEStop("start", "tool_calls")})
 		}
 	})
-	if !f6BatchOn() {
-		// Flag OFF only: restore the real legacy 3 s inline window that the
-		// shared harness disables, so the held command genuinely escapes it
-		// and the OFF branch proves escape too; flag ON keeps the real
-		// window via batch_install_tools.go.
-		require.True(t, agent.SetInlineWindowForTest(application.AgentCoordinator, true), "the legacy coordinator carries the inline window seam")
-	}
 	done := make(chan struct{})
 	// Cleanup order: unblock, join the run goroutine bounded, check the
 	// recorded release error, then shut the app down.
@@ -162,7 +148,7 @@ func TestBatchNoticeResultE2E_EscapedBashMarkerReachesModelOnce(t *testing.T) {
 // detached agent child e2e is owned by package F
 // (TestRunNonInteractiveWaitsForAsyncSubAgentResult); batchFamilyDelivery
 // returns batchDeliveryDetached for agent tools, so children never execute
-// inline under the batch flag.
+// inline.
 func TestBatchNoticeResultE2E_DurableRowAnswerReachesProviderOnce(t *testing.T) {
 	var seenMax int
 	var seenMu sync.Mutex
@@ -180,32 +166,19 @@ func TestBatchNoticeResultE2E_DurableRowAnswerReachesProviderOnce(t *testing.T) 
 		admissionWriteSSE(w, []string{admissionSSEText("done", "say done"), admissionSSEStop("done", "stop")})
 	})
 	t.Cleanup(func() { application.Shutdown() })
-	if f6BatchOn() {
-		root, node := f6ReserveDelegation(t, application, sessionID, "call-pn-det", "", "agent", "completed")
-		proj := session.BatchProjection{
-			Host: f6HostID(t, application), RunnerID: f6BatchRunner, Sequence: 2,
-			Roots: []session.BatchRootProjection{{Owner: sessionID, Root: root, Updates: []db.ProjectBatchNodeParams{
-				{NodeID: root, State: "completed", OutcomeState: "completed", OutcomeSummary: "", ControlState: "none"},
-				{NodeID: node, State: "completed", OutcomeState: "completed", OutcomeSummary: "PN-CHILD-ANSWER", ControlState: "none"},
-			}, Notices: []db.SelectBatchNodeNoticeParams{{
-				NodeID:     root,
-				NoticeKind: sql.NullString{String: "root", Valid: true}, NoticeState: sql.NullString{String: "completed", Valid: true}, NoticeCause: sql.NullString{String: "", Valid: true},
-				NoticeOrdinal: sql.NullInt64{Int64: 0, Valid: true}, NoticeCompleted: 1, Wake: 1,
-			}}}},
-		}
-		require.NoError(t, session.NewBatchStore(application.DB()).Project(context.Background(), proj))
-	} else {
-		ctx := context.Background()
-		_, err := application.asyncJobStore.Claim(ctx, session.ClaimParams{
-			Owner: sessionID, ToolCallID: "call-pn-det", Kind: session.JobKindAgent, Input: "x", ToolName: "agent",
-		})
-		require.NoError(t, err)
-		require.NoError(t, application.asyncJobStore.MarkAnnounced(ctx, sessionID, "call-pn-det"))
-		_, err = application.asyncJobStore.Transition(ctx, session.TransitionParams{
-			Owner: sessionID, ToolCallID: "call-pn-det", State: "completed", ResultSummary: "PN-CHILD-ANSWER", Wake: true,
-		})
-		require.NoError(t, err)
+	root, node := f6ReserveDelegation(t, application, sessionID, "call-pn-det", "", "agent", "completed")
+	proj := session.BatchProjection{
+		Host: f6HostID(t, application), RunnerID: f6BatchRunner, Sequence: 2,
+		Roots: []session.BatchRootProjection{{Owner: sessionID, Root: root, Updates: []db.ProjectBatchNodeParams{
+			{NodeID: root, State: "completed", OutcomeState: "completed", OutcomeSummary: "", ControlState: "none"},
+			{NodeID: node, State: "completed", OutcomeState: "completed", OutcomeSummary: "PN-CHILD-ANSWER", ControlState: "none"},
+		}, Notices: []db.SelectBatchNodeNoticeParams{{
+			NodeID:     root,
+			NoticeKind: sql.NullString{String: "root", Valid: true}, NoticeState: sql.NullString{String: "completed", Valid: true}, NoticeCause: sql.NullString{String: "", Valid: true},
+			NoticeOrdinal: sql.NullInt64{Int64: 0, Valid: true}, NoticeCompleted: 1, Wake: 1,
+		}}}},
 	}
+	require.NoError(t, session.NewBatchStore(application.DB()).Project(context.Background(), proj))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := application.RunNonInteractiveWithResult(ctx, io.Discard, "say done", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)

@@ -20,8 +20,7 @@ func TestCLIQuotaBilling1281WaitsForCommand(t *testing.T) {
 		_, _ = w.Write(body)
 	})
 	ctx := loopCtx(t)
-	// Dual-mode seed: a live announced own command job (batch root flag ON,
-	// legacy async_jobs row OFF).
+	// Batch seed: a live announced own command job (a "command" batch root).
 	f6a2ClaimOwnCommandJob(t, ctx, h.app, h.sessionID, "billing-command")
 	completed := make(chan error, 1)
 	h.afterFirstTurn(func() {
@@ -44,7 +43,7 @@ func TestCLIQuotaBilling1281WaitsForCommand(t *testing.T) {
 	require.Contains(t, res.Error, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.")
 	require.Contains(t, res.ResumeCommand, "--role smart --session "+h.sessionID)
 	require.Empty(t, res.QuotaResetAt)
-	// Dual-mode readback (restored require.Len so a duplicate job is still
+	// Batch readback (restored require.Len so a duplicate job is still
 	// detected): exactly ONE completed own job, its completion pending
 	// (never pulled).
 	count, state, delivery := f6a2OwnJobReadback(t, h.app, h.sessionID, "billing-command")

@@ -263,30 +263,27 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 		errMu.Unlock()
 	}
 
-	// Release this App's phase-4 host identity (docs/plans/2026-09-28-async-
-	// phase4-durable-core.md sec.3.6) AFTER agent work has been cancelled
+	// Release this App's host identity AFTER agent work has been cancelled
 	// (cancelAgentsBeforeRelease already ran, above, on every path into
 	// releaseResources) -- graceful exit is deliberately NOT a clean
-	// transition of any still-running row (sec.3.7: "graceful exit = crash"),
-	// this only releases the OS lock / deletes the host's own row if it has
-	// no jobs left.
+	// transition of any still-running work: this only releases the OS lock
+	// / deletes the host's own row if it has no live nodes left.
 	//
 	// Run SEQUENTIALLY, before the parallel cleanup batch below, and bounded
-	// by the same shutdownCtx -- not inside the parallel wg. DeleteAsyncHost
-	// IfNoJobs is a DB write that must complete (or be abandoned on its own
+	// by the same shutdownCtx -- not inside the parallel wg. The host
+	// release is a DB write that must complete (or be abandoned on its own
 	// bounded budget) before anything else in this function assumes the DB
 	// is free to close; racing it against an arbitrary set of cleanupFuncs
 	// under one best-effort timeout (which can abandon a goroutine still
 	// mid-write) is exactly the ordering this sequencing avoids.
 	//
-	// A12 (docs/reviews/2026-09-29-async-phase4-round1.md): on the FORCED
-	// path, live Run goroutines did not finish within the grace period and
-	// may still be writing through this store -- releasing the host lock
+	// A12: on the FORCED path, live Run goroutines did not finish within
+	// the grace period and may still be writing -- releasing the host lock
 	// here would let another process recover this host's still-in-flight
-	// rows while they are still being written (DUR-5 only holds for a
-	// process that has actually exited). Keep the lock held until the
-	// process itself exits, exactly like DB close is already skipped on this
-	// same path below -- CloseKeepLock only forgets the in-memory handle.
+	// work while it is still being written. Keep the lock held until the
+	// process itself exits, exactly like DB close is already skipped on
+	// this same path below -- CloseKeepLock only forgets the in-memory
+	// handle.
 
 	// H4 W2: stop and join the batch dead-host maintenance goroutine BEFORE
 	// any host-identity or writer release below: a pass must never run
@@ -297,44 +294,20 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	app.stopBatchMaintenance()
 
 	if app.batchRuntime != nil {
-		// R11F (M2) flag-on path: the drain gate replaces the host-identity
-		// release below — Runner drain, then host identity, then writer, all
-		// inside DrainAndRelease. A Close timeout or fault fence promotes the
+		// R11F (M2) path: the drain gate releases host identity and writer
+		// — Runner drain, then host identity, then writer, all inside
+		// DrainAndRelease. A Close timeout or fault fence promotes the
 		// shutdown to Forced (resources retained).
-		//
-		// R12-F: the gate releases only the HostStore identity. A flag-ON app
-		// can also hold a LEGACY AsyncJobStore host (ensured directly by a
-		// caller, e.g. a pre-R12-F fixture; production flag-ON code ensures
-		// only the HostStore). Release it here, BEFORE the gate — the gate
-		// releases the DB writer, and a post-writer store write would hit a
-		// released pool. Same graceful/forced split as below; a no-op when
-		// the legacy store never ensured a host, and exactly-once with the
-		// flag-off branch (an else-if below this one).
-		if app.asyncJobStore != nil {
-			if stillBusy {
-				app.asyncJobStore.CloseKeepLock()
-			} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
-				slog.Warn("Failed to release legacy async job store host identity on shutdown", "error", err)
-				recordCleanupError(err)
-			}
-		}
 		stillBusy = app.releaseBatchRuntimeGate(shutdownCtx, stillBusy, recordCleanupError)
-	} else if batchCutoverOn() && app.batchHostStore() != nil {
-		// R12-F: a flag-ON app whose batch runtime was never installed still
-		// owns a HostStore identity if anything ensured it — release it here
+	} else if app.batchHostStore() != nil {
+		// An App whose batch runtime was never installed still owns a
+		// HostStore identity if anything ensured it — release it here
 		// exactly like the drain gate's graceful/forced split, so every
-		// flag-ON host lock is released on the real shutdown path.
+		// host lock is released on the real shutdown path.
 		if stillBusy {
 			app.batchHostReleaseKeepLock()
 		} else if err := app.batchHostRelease(shutdownCtx); err != nil {
 			slog.Warn("Failed to release batch host identity on shutdown", "error", err)
-			recordCleanupError(err)
-		}
-	} else if app.asyncJobStore != nil {
-		if stillBusy {
-			app.asyncJobStore.CloseKeepLock()
-		} else if err := app.asyncJobStore.Close(shutdownCtx); err != nil {
-			slog.Warn("Failed to release async job store host identity on shutdown", "error", err)
 			recordCleanupError(err)
 		}
 	}
@@ -404,10 +377,10 @@ func (app *App) releaseResources(stillBusy bool) ShutdownResult {
 	// - Graceful shutdown (stillBusy=false): Close the DB synchronously.
 	// - Forced shutdown (stillBusy=true): Skip DB close to avoid corrupting
 	//   live writers; the OS will reclaim file descriptors on process exit.
-	// R11F (M2): on the flag-on graceful path the writer was already released
-	// by the drain gate (ReleaseWriter), so the DB block runs only for flag-off
-	// Apps (unchanged) or flag-on forced shutdowns (which skip the release via
-	// stillBusy, exactly as before).
+	// R11F (M2): on the graceful path the writer was already released
+	// by the drain gate (ReleaseWriter), so the DB block runs only for
+	// Apps without an installed runtime or on forced shutdowns (which skip
+	// the release via stillBusy, exactly as before).
 	if app.dataDir != "" && (app.batchRuntime == nil || stillBusy) {
 		if !stillBusy {
 			// Graceful shutdown: wait synchronously for generation-safe releases.

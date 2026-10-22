@@ -1,10 +1,10 @@
-// Flag-ON acceptance tests for App.batchFinishedWork, the quota
+// Acceptance tests for App.batchFinishedWork, the quota
 // finished-work export over batch nodes: a one-task root exports ONE row
 // keyed by the task with the root's ORIGINAL tool-call id; a multi-task
 // root exports each task with ToolCallID = node id; structural batch
 // children never export; child-session links are traversed. These tests
-// are flag-ON only by construction: batchFinishedWork IS the flag-ON
-// branch of the finished-work reader.
+// are batch-only by construction: batchFinishedWork IS the
+// finished-work reader over the batch authority.
 package app
 
 import (
@@ -16,11 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Flag ON: the one-task root exports a single row keyed by the task with
+// the one-task root exports a single row keyed by the task with
 // the root's original tool-call id (not the node id) and the root's
 // outcome summary as the result.
 func TestBatchFinishedWork_OneTaskRootExportsCallID(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -35,7 +34,6 @@ func TestBatchFinishedWork_OneTaskRootExportsCallID(t *testing.T) {
 	task.outcomeSummary = "one done"
 	insertBatchNode(t, h.app, task)
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	rows, incomplete, err := h.app.batchFinishedWork(context.Background(), owner)
 	require.NoError(t, err)
 	require.False(t, incomplete)
@@ -48,11 +46,10 @@ func TestBatchFinishedWork_OneTaskRootExportsCallID(t *testing.T) {
 	require.Equal(t, "", rows[0].ChildSessionID)
 }
 
-// Flag ON: a tree with a nested structural batch child exports ONLY the
+// a tree with a nested structural batch child exports ONLY the
 // task rows -- the root and the structural child never become rows, the
 // nested child's tasks do, in BatchLevelNodes order (ordinal, node_id).
 func TestBatchFinishedWork_MultiTaskTreeExportsTasksOnly(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -84,7 +81,6 @@ func TestBatchFinishedWork_MultiTaskTreeExportsTasksOnly(t *testing.T) {
 	t3.ordinal = 4
 	insertBatchNode(t, h.app, t3)
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	rows, incomplete, err := h.app.batchFinishedWork(context.Background(), owner)
 	require.NoError(t, err)
 	require.False(t, incomplete)
@@ -108,11 +104,10 @@ func TestBatchFinishedWork_MultiTaskTreeExportsTasksOnly(t *testing.T) {
 	require.Equal(t, "root-fw-multi/root-fw-multi-t3", rows[2].Key, "stable order: t3 third")
 }
 
-// Flag ON: two batch roots sharing one tool-call id export DISTINCT rows
+// two batch roots sharing one tool-call id export DISTINCT rows
 // keyed by root/node identity, so the quota terminal latch on the old
 // incarnation never suppresses the new one.
 func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -125,7 +120,6 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 	insertBatchNode(t, h.app, testBatchRoot(owner, "root-fw-new", "call-fw-reused", "running", 1))
 	insertBatchNode(t, h.app, testBatchTask(owner, "root-fw-new", "root-fw-new-t1", "completed", sql.NullString{}))
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	rows, incomplete, err := h.app.batchFinishedWork(context.Background(), owner)
 	require.NoError(t, err)
 	require.False(t, incomplete)
@@ -161,11 +155,10 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 		"the latch on the old incarnation must not suppress the new one")
 }
 
-// Flag ON: the child_session_id delegation link is traversed -- the
+// the child_session_id delegation link is traversed -- the
 // descendant session's one-task root exports its own row keeping its own
 // call id, next to the parent's task row carrying the link.
 func TestBatchFinishedWork_ChildLinkTraversalExportsDescendantTasks(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -182,7 +175,6 @@ func TestBatchFinishedWork_ChildLinkTraversalExportsDescendantTasks(t *testing.T
 	insertBatchNode(t, h.app, testBatchRoot(child, "root-fw-c", "call-fw-c", "completed", 1))
 	insertBatchNode(t, h.app, testBatchTask(child, "root-fw-c", "root-fw-c-t1", "completed", sql.NullString{}))
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	rows, incomplete, err := h.app.batchFinishedWork(context.Background(), parent)
 	require.NoError(t, err)
 	require.False(t, incomplete)

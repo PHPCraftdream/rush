@@ -62,20 +62,20 @@ func newLoopHarness(t *testing.T, reply loopReply) *loopHarness {
 
 func (h *loopHarness) seedDebt() {
 	h.t.Helper()
-	require.NoError(h.t, h.app.asyncJobStore.InsertSessionNotice(context.Background(), h.sessionID,
+	require.NoError(h.t, h.app.BatchNoticeStore().InsertSessionNotice(context.Background(), h.sessionID,
 		"manual_test_notice", loopNoticeMarker+" something happened", true, ""))
 }
 
 func (h *loopHarness) debtOpen() bool {
 	h.t.Helper()
-	open, err := h.app.asyncJobStore.ReactionDebtExists(context.Background(), h.sessionID)
+	debts, err := h.app.batchCutoverDebtOwners(context.Background(), []string{h.sessionID})
 	require.NoError(h.t, err)
-	return open
+	return debts[h.sessionID]
 }
 
 func (h *loopHarness) markers() int {
 	h.t.Helper()
-	notices, err := h.app.asyncJobStore.ListSessionNotices(context.Background(), h.sessionID)
+	notices, err := h.app.BatchNoticeStore().ListSessionNotices(context.Background(), h.sessionID)
 	require.NoError(h.t, err)
 	n := 0
 	for _, no := range notices {
@@ -350,19 +350,13 @@ func TestRunNonInteractive_FormerDelegationChildReacts(t *testing.T) {
 	require.NoError(t, err)
 	h.afterFirstTurn(func() {
 		// Between the turns a parent's delegation names the loop's session as
-		// its (finished) child.
+		// its (finished) child: the sessions-table parent link plus a live,
+		// announced batch delegation that is then completed WITHOUT a wake
+		// notice (the child's own debt already drives the loop).
 		_, err := h.app.DB().ExecContext(ctx, `UPDATE sessions SET parent_session_id = ? WHERE id = ?`, parent.ID, h.sessionID)
 		require.NoError(t, err)
-		_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
-			Owner: parent.ID, ToolCallID: "deleg-1", Kind: session.JobKindAgent, Input: "x",
-			ChildSessionID: h.sessionID, ToolName: "agent",
-		})
-		require.NoError(t, err)
-		require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, parent.ID, "deleg-1"))
-		_, err = h.app.asyncJobStore.Transition(ctx, session.TransitionParams{
-			Owner: parent.ID, ToolCallID: "deleg-1", State: "completed", ResultSummary: "done", Wake: false,
-		})
-		require.NoError(t, err)
+		f6ClaimDelegation(t, ctx, h.app, parent.ID, "deleg-1", h.sessionID)
+		f6CompleteDelegation(t, ctx, h.app, parent.ID, "deleg-1", "done", false)
 		h.seedDebt()
 	})
 

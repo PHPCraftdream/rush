@@ -1,6 +1,6 @@
 package app
 
-// F7b regression pin: with RUSH_BATCH_RUNTIME=1, an ephemeral library-mode
+// F7b regression pin: an ephemeral library-mode
 // App (dataDir == "") built by F7 owned an in-memory DiskProviderRegistry
 // (app_ephemeral_disk_binding.go) and app_run_setup.go bound per-call Call
 // owners against it — but the coordinator's diskCaps was never bound. Only
@@ -59,7 +59,6 @@ func openEphemeralWireTestDB(t *testing.T, ctx context.Context) *sql.DB {
 }
 
 func TestEphemeralAppCoordinatorBindsEphemeralDiskCaps(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	isolateAppNewTestEnv(t)
 
 	ctx := context.Background()
@@ -99,10 +98,10 @@ func TestEphemeralAppCoordinatorBindsEphemeralDiskCaps(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
 
-	// Preconditions: the flag-ON ephemeral branch built its own registry and
+	// Preconditions: the ephemeral branch built its own registry and
 	// never installed the batch runtime.
 	require.NotNil(t, application.AgentCoordinator)
-	require.NotNil(t, application.ephemeralDiskBindings, "flag-ON ephemeral App must own an in-memory binding registry")
+	require.NotNil(t, application.ephemeralDiskBindings, "ephemeral App must own an in-memory binding registry")
 	require.Nil(t, application.batchInstall, "ephemeral App never installs the batch runtime")
 
 	// Register a live binding in the App's OWN registry, exactly the way

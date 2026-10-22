@@ -104,7 +104,6 @@ func launchProviderCrashChild(t *testing.T, f *providerCrashFixture, block strin
 		"XDG_CONFIG_HOME="+childConfig,
 		"RUSH_GLOBAL_CONFIG="+childConfig,
 		"RUSH_PROVIDER_CACHE_ONLY=1",
-		"RUSH_BATCH_RUNTIME=1",
 	)
 	cmd.Stdout = &f.output
 	cmd.Stderr = &f.output
@@ -142,14 +141,13 @@ func providerCrashWitnessLines(path string) int {
 // newProviderCrashFixture builds the parent-side world: the shared dataDir
 // with the pre-seeded REAL OS sentinel at the target, and the observing
 // app (its pump running) built with the counting executor already hooked
-// into the flagged install (the hook applies at install time, so it must
+// into the install (the hook applies at install time, so it must
 // be installed BEFORE New).
 func newProviderCrashFixture(t *testing.T) *providerCrashFixture {
 	t.Helper()
-	// The batch runtime flag must be on BEFORE New: the flagged install
-	// (real Runner, real host identity) happens inside New, and the
-	// counting-executor hook decorates that one install.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	// The batch install (real Runner, real host identity) happens inside New
+	// unconditionally; the counting-executor hook decorates that one
+	// install.
 	f := &providerCrashFixture{dataDir: t.TempDir()}
 	f.scopeDir = filepath.Join(f.dataDir, "crash-scope")
 	require.NoError(t, os.MkdirAll(f.scopeDir, 0o755))

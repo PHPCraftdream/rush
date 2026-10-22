@@ -1,7 +1,7 @@
 // E3 (test fixtures only): e3-prefixed helpers shared by the package-E3
-// dual-mode ports. Nothing here mutates the batch-runtime flag or touches
-// production code; every helper either branches on f6BatchOn() or is called
-// only from a flag-ON branch. The batch completion-notice delivery identity
+// ports. Nothing here touches production code; every helper drives the
+// batch authority only (batch_nodes through the production BatchStore API).
+// The batch completion-notice delivery identity
 // is read from batch_nodes.delivery (the f6/a2 projection path selects
 // notices onto the node rows; batch_commit.go's batchCommitNotice maps them
 // into ProjectBatchNode params, not session_notices rows).
@@ -54,20 +54,13 @@ func e3GrantCoderInjectAgent(t *testing.T, application *App) {
 }
 
 // e3CompleteOwnJobErr is the goroutine-safe completion of an own command job.
-// ON it resolves the batch ROOT by owner + tool call id and delegates to
+// It resolves the batch ROOT by owner + tool call id and delegates to
 // f6a2CompleteDelegationErr: the coherent completion projects the root AND
 // its task child terminal with the wake notice selected on the CHILD node --
 // exactly what production selects on (an own command job still owns one
-// running "command" task node under the batch runtime). OFF it transitions
-// the legacy async_jobs row with Wake: true, byte-equivalent to the pre-E3
-// write. Every failure returns so a caller goroutine can deliver the outcome.
+// running "command" task node under the batch runtime). Every failure
+// returns so a caller goroutine can deliver the outcome.
 func e3CompleteOwnJobErr(ctx context.Context, application *App, owner, toolCallID, summary string) error {
-	if !f6BatchOn() {
-		_, err := application.asyncJobStore.Transition(ctx, session.TransitionParams{
-			Owner: owner, ToolCallID: toolCallID, State: "completed", ResultSummary: summary, Wake: true,
-		})
-		return err
-	}
 	var rootID string
 	err := application.DB().QueryRowContext(ctx,
 		`SELECT node_id FROM batch_nodes
@@ -77,19 +70,16 @@ func e3CompleteOwnJobErr(ctx context.Context, application *App, owner, toolCallI
 	if err != nil {
 		return fmt.Errorf("e3 own job root row missing for tool call %s: %w", toolCallID, err)
 	}
-	// ON reuses the coherent f6a2 completion: root AND its task child
-	// terminal, with the wake notice selected on the CHILD node -- exactly
-	// what production selects on (an own command job still owns one running
-	// "command" task node under the batch runtime).
+	_ = rootID
+	// The coherent f6a2 completion: root AND its task child terminal, with
+	// the wake notice selected on the CHILD node -- exactly what production
+	// selects on (an own command job still owns one running "command" task
+	// node under the batch runtime).
 	return f6a2CompleteDelegationErr(ctx, application, owner, toolCallID, summary, true)
 }
 
-// e3BatchNoticeDeliveries returns the delivery state of every completed batch
-// node whose completion notice is selected (the f6/a2 readback predicate):
-// 'pending' before the resume run consumed the notice, 'done' after.
 func e3BatchNoticeDeliveries(t *testing.T, application *App, owner string) []string {
 	t.Helper()
-	require.True(t, f6BatchOn(), "e3BatchNoticeDeliveries is a flag-ON readback")
 	rows, err := application.DB().QueryContext(context.Background(),
 		`SELECT delivery FROM batch_nodes
 		 WHERE owner_session_id = ? AND state = 'completed' AND notice_selected = 1
@@ -154,7 +144,6 @@ func e3ReserveDelegationWithToken(t *testing.T, application *App, owner, toolCal
 // is byte-identical to the production publisher's (internal/agent/batch_install_question.go:35-37).
 func e3PublishHeldQuestion(t *testing.T, ctx context.Context, application *App, owner, toolCallID, childSessionID, question string) {
 	t.Helper()
-	require.True(t, f6BatchOn(), "e3PublishHeldQuestion is a flag-ON seed")
 	_, node := f6FindDelegationNodes(t, application, owner, toolCallID)
 	var token int64
 	require.NoError(t, application.DB().QueryRowContext(ctx,

@@ -5,14 +5,14 @@ package app
 // release callbacks, no direct DrainAndRelease driving.
 //
 // Production entry points exercised:
-//   - App built through the REAL New() with RUSH_BATCH_RUNTIME=1 (the app
+//   - App built through the REAL New() (the app
 //     install path: real Runner budgets — ControlTimeout 60s, CommitTimeout
 //     5s, RecordRetention 256 — real default batchExecutor, real commit
 //     hook, real HostStore host identity and OS host lock).
 //   - Provider-backed work submitted through the app's own run path:
 //     ExecuteRun with RunOverrides.DiskProvider (a custom gated provider) +
 //     FolderScopes and a scripted openaicompat model emitting a REAL
-//     fs_write tool call. Under the flag the pinned fs_write leaf executes
+//     fs_write tool call. The pinned fs_write leaf executes
 //     through the REAL ingress Invoke → REAL default executor — no seam.
 //   - app.ShutdownWithResult (the public CLI-shape shutdown): CancelAgents
 //     → the batch drain gate (DrainAndRelease via releaseBatchRuntimeGate)
@@ -306,9 +306,8 @@ func newShutdownAcceptanceAppWithDecorator(t *testing.T, forced bool, handler ht
 		batchInstallDepsHook = func(deps *agent.BatchInstallDeps) { deps.DecorateExecution = decorate }
 		defer func() { batchInstallDepsHook = previous }()
 	}
-	// The batch runtime flag must be on BEFORE New: the flagged install
-	// (real Runner, real budgets, real host identity) happens inside New.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	// The batch runtime install (real Runner, real budgets, real host
+	// identity) happens inside New, unconditionally.
 
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
@@ -372,7 +371,7 @@ func newShutdownAcceptanceAppWithDecorator(t *testing.T, forced bool, handler ht
 	agent.BindCoordinatorBatchCutoverFacts(application.AgentCoordinator,
 		agent.NewBatchCutoverNodeFacts(session.NewBatchStore(appCutoverWriter), application.batchLiveReader, appCutoverWriter))
 
-	require.NotNil(t, application.batchInstall, "flag on: the batch runtime is installed through the app install path")
+	require.NotNil(t, application.batchInstall, "batch-only: the batch runtime is installed through the app install path")
 	// REAL runner budgets, not zeros: a zero CommitTimeout/ControlTimeout/
 	// RecordRetention would have been rejected by jobbatch.NewRunner during
 	// the install above (the review's P1-4 fixture defect).
@@ -399,7 +398,7 @@ func newShutdownAcceptanceAppWithDecorator(t *testing.T, forced bool, handler ht
 	if application.batchHostStore() != nil {
 		hostID = application.batchHostStore().HostID()
 	}
-	require.NotEmpty(t, hostID, "the flagged install registered the real host identity")
+	require.NotEmpty(t, hostID, "the batch install registered the real host identity")
 	return &shutdownAcceptanceApp{
 		t: t, app: application, sessionID: sess.ID, dataDir: dataDir,
 		// The production fs_* family hands SLASHED absolute paths to the

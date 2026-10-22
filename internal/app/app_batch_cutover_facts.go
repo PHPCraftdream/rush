@@ -1,11 +1,9 @@
-// Flag-ON (RUSH_BATCH_RUNTIME) fact readers for the app layer's activity
-// and quota surfaces (package R12-F): reaction debt, live work, host
+// Batch fact readers for the app layer's activity
+// and quota surfaces: reaction debt, live work, host
 // liveness and finished-work export read ONLY batch node state
-// (batch_nodes and its debt predicates). The flag-OFF branches in
-// app_session_activity.go and app_run_quota.go keep the AsyncJobStore
-// readers byte-for-byte. Nothing here reads async_jobs. The readers build
-// their own handles from the App's pools, so they work on an App with no
-// batch runtime installed (no provider configured).
+// (batch_nodes and its debt predicates). Nothing here reads async_jobs.
+// The readers build their own handles from the App's pools, so they work
+// on an App with no batch runtime installed (no provider configured).
 
 package app
 
@@ -14,13 +12,12 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// batchWorkFacts is the runtime-neutral live-work shape both flag branches
-// fill: the counts and the unreadable flags the classifier consumes.
+// batchWorkFacts is the live-work shape the classifier consumes:
+// the counts and the unreadable flags.
 type batchWorkFacts struct {
 	Own, Descendants      int
 	DescendantSessionIDs  []string
@@ -28,9 +25,11 @@ type batchWorkFacts struct {
 	DescendantsIncomplete bool
 }
 
-// batchCutoverOn reads the flag at call time, exactly like the R11F
-// install gate (app.go) and the other R12 consumers select behavior.
-func batchCutoverOn() bool { return config.BatchRuntimeEnabled() }
+// batchCutoverOn reports that the batch authority is the one live reader
+// selection: batch installs are unconditional, so this is always true. It
+// is retained (always-true) only for the residual callers in retained
+// files; new code must not branch on it.
+func batchCutoverOn() bool { return true }
 
 // batchCutoverWriter is the pool the batch debt store opens its read-only
 // transactions on (same pool choice as BatchCLIStore). Nil without a DB.
@@ -108,9 +107,9 @@ func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[stri
 	return out
 }
 
-// batchCutoverHostLiveness decides host liveness for the flag-ON driver
+// batchCutoverHostLiveness decides host liveness for the driver
 // facts with the shared, non-acquiring probe (the same predicate
-// BatchLiveReader uses), never through the AsyncJobStore. A host id
+// BatchLiveReader uses). A host id
 // registered as this process's own is Alive by definition (the shared
 // probe refuses to answer it with ErrProbeOwnHost); foreign hosts keep
 // the conservative probe verdict.
@@ -133,12 +132,10 @@ func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
 	}
 }
 
-// quotaWorkRow is the runtime-neutral finished-work row both flag branches
-// fill. Key is the per-node identity the quota terminal snapshot dedupes
-// on (the claim id on the legacy path, the root/node incarnation on the
-// batch path); Announced mirrors the legacy announced flag, batch rows
-// inheriting the ROOT row's announcement (the tree's delivery is announced
-// by the root).
+// quotaWorkRow is the finished-work row the quota terminal snapshot
+// consumes. Key is the per-node identity the quota terminal snapshot dedupes
+// on (the root/node incarnation); Announced mirrors the root row's
+// announcement (the tree's delivery is announced by the root).
 type quotaWorkRow struct {
 	OwnerSessionID string
 	Key            string

@@ -18,7 +18,7 @@
 //
 // No sleeps: the shrunk retry bounds (below) and the between-turns seam
 // (cliLoopTurnDoneSeam via h.afterFirstTurn) are the only synchronization.
-// No t.Parallel(): t.Setenv and shared package binding state.
+// No t.Parallel(): shared package binding state.
 package app
 
 import (
@@ -67,13 +67,13 @@ func (c *countingScopeSource) scopeCalls() int {
 // through the production run loop on a flag-ON app, then asserts the FINAL
 // result of the whole invocation.
 //
-// The node-backed facts binding is NOT installed here: the test's
-// t.Setenv("RUSH_BATCH_RUNTIME", "true") runs BEFORE newLoopHarness ->
-// newLockBusyCLITestApp -> config.Init/app.New, so the PRODUCTION binding
-// (app_agent_setup.go:202-208, BindCoordinatorBatchCutoverFacts with the
-// node-backed source) already fires during harness construction.
+// The node-backed facts binding is NOT installed here by the test: the
+// harness construction (newLoopHarness ->
+// newLockBusyCLITestApp -> config.Init/app.New) already fires the PRODUCTION
+// binding (app_agent_setup.go, BindCoordinatorBatchCutoverFacts with the
+// node-backed source) inside New.
 //
-// Revert-check: deleting the production binding block leaves the flag-ON
+// Revert-check: deleting the production binding block leaves the
 // coordinator on the conservative unknownBatchCutoverFacts fail-safe, whose
 // LiveScopeForOwners returns entries with agent.ErrBatchFactsSourceUnavailable
 // (batch_cutover_facts.go:146-152) -> runningWorkOpen errors
@@ -83,7 +83,6 @@ func (c *countingScopeSource) scopeCalls() int {
 // SelectedDebtExists returns (true, nil), but the loop's scope read hits the
 // LIVE read first, which is the one that fails.)
 func TestAppRun_BoundFactSource_CompletesEndToEnd(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "first answer", 1, 1)
 	})
@@ -136,7 +135,6 @@ func TestAppRun_UnavailableFactSource_TypedErrorEndToEnd(t *testing.T) {
 	cliDBRetryPause = time.Millisecond
 	t.Cleanup(func() { cliDBRetryPause = oldPause })
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "first answer", 1, 1)
 	})

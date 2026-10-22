@@ -7,7 +7,7 @@
 // Shutdown, so the lock file stays held and the runtime goroutines keep
 // running for the life of the process. Invisible to CLI callers (the
 // process exits), fatal for long-lived processes (tests, the web server):
-// a flag-ON shadow run reported TempDir RemoveAll failing on
+// a shadow run reported TempDir RemoveAll failing on
 // hosts/<uuid>.lock ("being used by another process").
 //
 // This file gives New's error paths the SAME teardown primitives
@@ -42,12 +42,12 @@ const peNewErrorReleaseTimeout = appBatchDrainTimeout
 // gave this (about-to-be-discarded) App, EXCEPT DB references: stop the
 // fault watcher and the dead-host maintenance goroutine, drain the Runner
 // (bounded), and release the host identity. Call it from New's error paths
-// after the flagged install block -- including the install-failure branch
+// after the install block -- including the install-failure branch
 // itself, where the host may already be ensured even though no runtime
 // was built (installBatchRuntime ensures the host first, then builds the
 // factory; a factory failure leaves the host registered). Safe to call
 // when nothing was installed: every step is nil-safe or a documented
-// no-op on a store that never ensured a host.
+// no-op on a host that was never ensured.
 func (app *App) peReleaseBatchRuntimeOnNewError(ctx context.Context) {
 	// H4 W2: stop and join the dead-host maintenance goroutine first, so
 	// no maintenance pass runs against a host identity being released.
@@ -56,9 +56,8 @@ func (app *App) peReleaseBatchRuntimeOnNewError(ctx context.Context) {
 	rt := app.batchRuntime
 	if rt == nil {
 		// Half-installed (or never installed): the host identity may
-		// already be ensured. HostStore.Close and AsyncJobStore.Close are
-		// documented no-ops without an ensured host, so release
-		// unconditionally.
+		// already be ensured. HostStore.Close is a documented no-op
+		// without an ensured host, so release unconditionally.
 		app.peReleaseNewErrorHostIdentity(ctx)
 		// rt.Stop() normally stops the timeout wake dispatcher via
 		// cfg.TimeoutCheckin; with no runtime that never ran.
@@ -118,8 +117,8 @@ func (app *App) peDrainRunnerAndReleaseHost(ctx context.Context, rt *BatchRuntim
 }
 
 // peReleaseNewErrorHostIdentity releases the host identity with the same
-// primitive the graceful Shutdown path uses (HostStore.Close /
-// AsyncJobStore.Close): OS lock release plus row cleanup. The DB writer is
+// primitive the graceful Shutdown path uses (HostStore.Close):
+// OS lock release plus row cleanup. The DB writer is
 // still open here -- New's error path releases its own ConnectRead only
 // AFTER this returns, and the caller's conn reference is never New's to
 // release. drainResidualConstructions mirrors the ReleaseHostIdentity seam
@@ -127,16 +126,8 @@ func (app *App) peDrainRunnerAndReleaseHost(ctx context.Context, rt *BatchRuntim
 // the host release.
 func (app *App) peReleaseNewErrorHostIdentity(ctx context.Context) {
 	app.drainResidualConstructions()
-	if batchCutoverOn() {
-		if err := app.batchHostRelease(ctx); err != nil {
-			slog.Warn("app: failed to release batch host identity after New failed", "error", err)
-		}
-		return
-	}
-	if app.asyncJobStore != nil {
-		if err := app.asyncJobStore.Close(ctx); err != nil {
-			slog.Warn("app: failed to release legacy async host identity after New failed", "error", err)
-		}
+	if err := app.batchHostRelease(ctx); err != nil {
+		slog.Warn("app: failed to release batch host identity after New failed", "error", err)
 	}
 }
 
@@ -144,11 +135,5 @@ func (app *App) peReleaseNewErrorHostIdentity(ctx context.Context) {
 // forget the in-memory handle, pin the OS lock until process exit. Same
 // graceful/forced split as releaseResources.
 func (app *App) peRetainNewErrorHostIdentity() {
-	if batchCutoverOn() {
-		app.batchHostReleaseKeepLock()
-		return
-	}
-	if app.asyncJobStore != nil {
-		app.asyncJobStore.CloseKeepLock()
-	}
+	app.batchHostReleaseKeepLock()
 }

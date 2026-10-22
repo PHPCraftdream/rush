@@ -1,8 +1,7 @@
-// T2 flag-ON live-wait/timeout batch fixtures (package T2, RUSH_BATCH_RUNTIME
-// shadow): the live-work seeds the ON wait, timeout and heartbeat paths read
-// (batch_nodes through the production BatchStore). Dual-mode with the legacy
-// AsyncJobStore seeds is kept in the tests themselves byte-for-byte; these
-// helpers are ON-side only and never touch the flag.
+// T2 live-wait/timeout batch fixtures: the live-work seeds the wait, timeout
+// and heartbeat paths read (batch_nodes through the production BatchStore).
+// Batch-only (H4 atomic activation): the former dual-mode/legacy AsyncJobStore
+// seeds are gone; these helpers never read an environment variable.
 package app
 
 import (

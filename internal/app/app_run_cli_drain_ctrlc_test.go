@@ -49,18 +49,16 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 			// would keep matching the "yield" branch below on every later
 			// request too. The batch completion notice carries an empty tool
 			// name (agent_notice_pull.go sets ToolName ""), so the drain body
-			// matches on "Async job call-1" in both modes (legacy: "call-1
-			// (bash) finished", batch: "call-1 () finished"); the yield texts
-			// ("Async bash job call-1 started", "batch root ... started;
-			// ...") never contain that substring. Bounded regardless of the client so this
+			// matches on "Async job call-1" (batch: "call-1 () finished"); the
+			// yield texts ("batch root ... started; ...") never contain that
+			// substring. Bounded regardless of the client so this
 			// handler always returns and httptest.Server.Close never hangs.
 			drainOnce.Do(func() { close(drainReqReached) })
 			select {
 			case <-r.Context().Done():
 			case <-time.After(5 * time.Second):
 			}
-		case strings.Contains(lastTool, "Async bash job call-1 started") ||
-			strings.Contains(lastTool, "completions arrive as selected notices"):
+		case strings.Contains(lastTool, "completions arrive as selected notices"):
 			// The batch detached-start tool result reads "batch root <id>
 			// started; completions arrive as selected notices."
 			// (batch_delivery.go batchStartedResponse).
@@ -93,13 +91,11 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 			Origin: message.OriginCLI,
 		}, true, RunModeJSON, sessionID, false)
 	}()
-
 	// The job must be claimed first, and the sentinel is released only
 	// after detached delivery is an OBSERVED FACT: the started tool result
-	// reached the provider (legacy: "Async bash job call-1 started" at
-	// once; batch: after the 3s escape window, batch_delivery.go
-	// deliverWithEscapeWindow). Releasing earlier lets the job finish
-	// INLINE inside the window and the Drain never fires.
+	// reached the provider (batch: after the 3s escape window,
+	// batch_delivery.go deliverWithEscapeWindow). Releasing earlier lets the
+	// job finish INLINE inside the window and the Drain never fires.
 	require.Eventually(t, func() bool {
 		return f6a3JobRunning(t, app, sessionID, "call-1")
 	}, 10*time.Second, 20*time.Millisecond, "the job must be claimed and running before it is released")
@@ -131,7 +127,7 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 	require.EqualValues(t, 0, f6a3JobWakeAttempts(t, app, sessionID, "call-1"),
 		"an interrupted Drain is not evidence about the debt: not counted")
 
-	notices, err := app.asyncJobStore.ListSessionNotices(context.Background(), sessionID)
+	notices, err := app.BatchNoticeStore().ListSessionNotices(context.Background(), sessionID)
 	require.NoError(t, err)
 	for _, n := range notices {
 		require.NotEqual(t, "wake_failed", n.Kind, "Ctrl-C mid-Drain must never write a settle marker")

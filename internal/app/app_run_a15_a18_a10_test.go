@@ -39,8 +39,7 @@ func TestRunNonInteractive_AskQuestionWithRunningOwnJob_ContinuesRun(t *testing.
 			// loop would rightly wait on open work forever.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			// Dual-mode completion: batch projection when the flag is ON,
-			// legacy row transition when OFF; wake=false in both so the
+			// Batch completion projection; wake=false so the
 			// finished own job stays debt-free.
 			f6a2CompleteDelegation(h.t, ctx, h.app, h.sessionID, "bg-1", "heavy run done", false)
 			loopText(w, "c", "continued after hint", 5, 5)
@@ -51,8 +50,7 @@ func TestRunNonInteractive_AskQuestionWithRunningOwnJob_ContinuesRun(t *testing.
 	})
 
 	ctx := loopCtx(t)
-	// Dual-mode seed: a live own background job (batch node when the flag is
-	// ON, async_jobs row when OFF).
+	// Batch seed: a live own background job (a "command" batch root).
 	f6ClaimOwnJob(t, ctx, h.app, h.sessionID, "bg-1")
 
 	res, _, runErr := h.run(ctx, RunOverrides{})

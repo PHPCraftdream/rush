@@ -46,9 +46,9 @@ func pf2Classify(body []byte) pf2Event {
 		event.callID = last.ToolCallID
 		event.index = pf2CallIndex(last.ToolCallID)
 	case role == "user" && rbCompletionCallID(text) != "":
-		// Selected completions are model-visible FormatAsyncCompletion texts
-		// with an EMPTY tool name; they arrive as the request's LAST user
-		// message when the parent resumes.
+		// Selected completions are model-visible batch completion texts
+		// ("Async job <id> () finished.") with an EMPTY tool name; they
+		// arrive as the request's LAST user message when the parent resumes.
 		event.kind = "completion"
 		event.callID = rbCompletionCallID(text)
 		event.index = pf2CallIndex(rbCompletionCallID(text))

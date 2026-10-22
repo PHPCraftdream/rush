@@ -28,7 +28,7 @@ func TestExecuteRun_ReviewerPassSkipLineGoesToRequestStderr(t *testing.T) {
 	gate := filepath.ToSlash(filepath.Join(t.TempDir(), "never"))
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, body []byte, _ bool, _ int) {
 		_, _, lastTool := lastTurnParts(body)
-		if strings.Contains(lastTool, "Async bash job") || (config.BatchRuntimeEnabled() && strings.Contains(lastTool, "batch root ") && strings.Contains(lastTool, " started")) {
+		if strings.Contains(lastTool, "batch root ") && strings.Contains(lastTool, " started") {
 			loopText(w, "wait", "waiting for the job", 11, 3)
 			return
 		}

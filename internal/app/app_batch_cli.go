@@ -36,7 +36,7 @@ func (a *App) BatchCLIStore() (*BatchCLIStore, error) {
 }
 
 func (a *App) BatchOwnerRuntime() bool {
-	return a != nil && a.batchRuntime != nil && a.batchInstall != nil && a.batchInstall.Runner != nil && a.asyncJobStore != nil
+	return a != nil && a.batchRuntime != nil && a.batchInstall != nil && a.batchInstall.Runner != nil
 }
 
 func (a *App) DataDirectory() string {
@@ -144,7 +144,7 @@ func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.
 	if nodeIdentity.Owner != rootIdentity.Owner || nodeIdentity.Root != rootIdentity.Root {
 		return errors.New("node does not belong to selected root")
 	}
-	if a.asyncJobStore.HostID() != rootIdentity.Host {
+	if hs := a.batchHostStore(); hs == nil || hs.HostID() != rootIdentity.Host {
 		return errors.New("batch add is owner-process-only; use rush batch stop for cross-process control")
 	}
 	if a.batchInstall.CLIOwner(jobbatch.ID(rootID)) != rootIdentity.Owner {

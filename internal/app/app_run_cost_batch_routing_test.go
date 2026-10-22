@@ -170,9 +170,6 @@ func (r *pcfCostRouter) pcfRoute(body []byte) (string, error) {
 }
 
 func TestPcfCostRouterCurrentTail(t *testing.T) {
-	if !f6BatchOn() {
-		t.Skip("batch runtime disabled")
-	}
 	pcfBody := func(ms ...wireMessage) []byte {
 		t.Helper()
 		b, err := json.Marshal(wireRequest{Messages: ms})

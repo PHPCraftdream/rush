@@ -1,11 +1,11 @@
-// P4 test-only ON-aware helper layer for the two-App Phase-4 scenarios.
+// P4 test-only helper layer for the two-App Phase-4 scenarios, batch-only
+// (H4 atomic activation: the batch runtime is the only authority; the
+// legacy async_jobs arms and the RUSH_BATCH_RUNTIME selector are gone).
 // Every identifier carries the pp4 package tag. The helpers read the
-// SELECTED authority's facts: flag ON (RUSH_BATCH_RUNTIME) they read
-// batch_nodes / the App's real HostStore; flag OFF they keep the legacy
-// async_jobs reads byte-for-byte. No helper mutates the flag: CI selects
-// the mode. Handlers and goroutines must never call require through these
-// helpers: the read helpers come in a plain (value, error) form plus a
-// test-goroutine wrapper.
+// batch facts: batch_nodes and the App's real HostStore. No helper touches
+// an environment variable. Handlers and goroutines must never call require
+// through these helpers: the read helpers come in a plain (value, error)
+// form plus a test-goroutine wrapper.
 package app
 
 import (
@@ -30,100 +30,82 @@ import (
 const pp4BatchRunner = "pp4-fixture-runner"
 
 // pp4StartedSeen reports whether lastTool IS the production started tool
-// result. ON: the batch started response "batch root <uuid> started;
+// result: the batch started response "batch root <uuid> started;
 // completions arrive as selected notices." (batch_delivery.go), matched by
 // the shared batchStartedRootID parser -- never by call id, which the
-// started text does not carry. OFF: the legacy per-call literal, unchanged.
-func pp4StartedSeen(lastTool, legacyCallID string) bool {
-	if f6BatchOn() {
-		return batchStartedRootID(strings.TrimSpace(lastTool)) != ""
-	}
-	return strings.Contains(lastTool, "Async bash job "+legacyCallID+" started")
+// started text does not carry. The variadic call-id tail is retained only
+// for callers in files whose own rewrites still pass the legacy call id.
+func pp4StartedSeen(lastTool string, _ ...string) bool {
+	return batchStartedRootID(strings.TrimSpace(lastTool)) != ""
 }
 
 // pp4CompletionSeen reports whether body carries the batch completion notice
 // text for callID: FormatAsyncCompletion with an EMPTY tool name (batch
 // leaves resolve by payload, not by tool identity), finished/failed or the
-// host-lost interruption wording. OFF returns false: legacy handlers match
-// their own literals.
+// host-lost interruption wording.
 func pp4CompletionSeen(body, callID string) bool {
-	if !f6BatchOn() {
-		return false
-	}
 	return strings.Contains(body, "Async job "+callID+" () finished") ||
 		strings.Contains(body, "Async job "+callID+" () failed") ||
 		strings.Contains(body, "Async job "+callID+" () was interrupted")
 }
 
 // pp4NextCallID returns the tool call id a provider script's default
-// (re-issue) branch must use. OFF: always the legacy base id, byte-for-byte.
-// ON: the base for the first emission, then a UNIQUE id per request -- the
+// (re-issue) branch must use. The base for the first emission, then a
+// UNIQUE id per request -- the
 // invocation hash includes the enclosing assistant message identity
 // (batch_install_ingress.go Policy.MessageID), so re-attaching the same
 // call id with a fresh message is correctly refused by the live-input fence.
 func pp4NextCallID(base string, requestIndex int32) string {
-	if !f6BatchOn() || requestIndex <= 1 {
+	if requestIndex <= 1 {
 		return base
 	}
 	return fmt.Sprintf("%s-r%d", base, requestIndex)
 }
 
-// pp4DriverHostID is the host identity the selected authority stamps on its
-// claims: the App's real HostStore host id ON, the legacy AsyncJobStore's
-// OFF. An empty id ON means the host never registered -- a bug this helper
-// surfaces through the callers' comparisons.
+// pp4DriverHostID is the host identity the authority stamps on its
+// reservations: the App's real HostStore host id. An empty id means the
+// host never registered -- a bug this helper surfaces through the callers'
+// comparisons.
 func pp4DriverHostID(t *testing.T, application *App) string {
 	t.Helper()
-	if f6BatchOn() {
-		return f6HostID(t, application)
-	}
-	return application.asyncJobStore.HostID()
+	return f6HostID(t, application)
 }
 
-// pp4CrashSimulate models a killed process ON: active work is killed and joined
-// in a subprocess; idle fixtures close their empty Runner before releasing only
-// the host lock. OFF retains the legacy crash seam unchanged.
+// pp4CrashSimulate models a killed process: active work is killed and joined
+// in a subprocess; idle fixtures close their empty Runner before releasing
+// only the host lock.
 func pp4CrashSimulate(t *testing.T, application *App, process ...*pcrCrashProcess) {
 	t.Helper()
-	if f6BatchOn() {
-		if len(process) > 0 && process[0] != nil {
-			require.NoError(t, process[0].pcrKillAndWait())
-			return
-		}
-		if application.batchInstall != nil && application.batchInstall.Runner != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), appBatchDrainTimeout)
-			defer cancel()
-			runner := application.batchInstall.Runner
-			observeCtx, cancelObserve := context.WithCancel(ctx)
-			cancelObserve()
-			events, err := runner.Events(observeCtx, 1)
-			require.ErrorIs(t, err, context.Canceled)
-			require.Zero(t, events.Head, "lock-only crash fixture Runner must have no observed work")
-			require.NoError(t, runner.Close(ctx), "fixture Runner must be idle before lock-only crash")
-		}
-		require.NoError(t, application.BatchHostStore().SimulateCrashForTest())
+	if len(process) > 0 && process[0] != nil {
+		require.NoError(t, process[0].pcrKillAndWait())
 		return
 	}
-	require.NoError(t, application.asyncJobStore.SimulateCrashForTest())
+	if application.batchInstall != nil && application.batchInstall.Runner != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), appBatchDrainTimeout)
+		defer cancel()
+		runner := application.batchInstall.Runner
+		observeCtx, cancelObserve := context.WithCancel(ctx)
+		cancelObserve()
+		events, err := runner.Events(observeCtx, 1)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, events.Head, "lock-only crash fixture Runner must have no observed work")
+		require.NoError(t, runner.Close(ctx), "fixture Runner must be idle before lock-only crash")
+	}
+	require.NoError(t, application.BatchHostStore().SimulateCrashForTest())
 }
 
-// pp4GracefulClose releases the App's host identity through the selected
-// authority's REAL clean-exit path (a `rush run` process that finished
-// normally): HostStore.Close ON, AsyncJobStore.Close OFF.
+// pp4GracefulClose releases the App's host identity through the REAL
+// clean-exit path (a `rush run` process that finished normally):
+// HostStore.Close.
 func pp4GracefulClose(t *testing.T, application *App) {
 	t.Helper()
-	ctx := context.Background()
-	if f6BatchOn() {
-		require.NoError(t, application.BatchHostStore().Close(ctx))
-		return
-	}
-	require.NoError(t, application.asyncJobStore.Close(ctx))
+	require.NoError(t, application.BatchHostStore().Close(context.Background()))
 }
 
-// pp4JobFact is the authority-neutral readback of one job (root): Found
+// pp4JobFact is the readback of one job (root): Found
 // false means the call never became work (or, for the deletion oracle, that
 // it is gone). State/Cause/OutcomeCode are the root row's durable facts;
-// Announced/Wake/Reacted mirror the legacy row columns (the notice and its
+// Announced/Wake/Reacted mirror the root row columns (the notice and its
 // accounting live on the root row: batchCommitNotice selects the root for
 // one-task completions and recovery).
 type pp4JobFact struct {
@@ -134,36 +116,23 @@ type pp4JobFact struct {
 
 // pp4JobFactRead is the non-failing read: it never calls require, so it is
 // safe inside require.Eventually conditions and on helper goroutines. An
-// unreadable authority reports ok=false, never a fake fact.
+// unreadable store reports ok=false, never a fake fact.
 func pp4JobFactRead(application *App, owner, callID string) (fact pp4JobFact, ok bool) {
-	if f6BatchOn() {
-		err := application.DB().QueryRowContext(context.Background(),
-			`SELECT state, cause, outcome_code, host_id, announced, wake, reacted
+	err := application.DB().QueryRowContext(context.Background(),
+		`SELECT state, cause, outcome_code, host_id, announced, wake, reacted
 			 FROM batch_nodes
 			 WHERE owner_session_id = ? AND tool_call_id = ? AND kind = 'batch' AND node_id = root_id
 			 ORDER BY rowid DESC LIMIT 1`,
-			owner, callID).Scan(&fact.State, &fact.Cause, &fact.OutcomeCode, &fact.HostID,
-			&fact.Announced, &fact.Wake, &fact.Reacted)
-		if errors.Is(err, sql.ErrNoRows) {
-			return pp4JobFact{}, true
-		}
-		if err != nil {
-			return pp4JobFact{}, false
-		}
-		fact.Found = true
-		return fact, true
-	}
-	row, err := application.asyncJobStore.Get(context.Background(), owner, callID)
+		owner, callID).Scan(&fact.State, &fact.Cause, &fact.OutcomeCode, &fact.HostID,
+		&fact.Announced, &fact.Wake, &fact.Reacted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return pp4JobFact{}, true
 	}
 	if err != nil {
 		return pp4JobFact{}, false
 	}
-	return pp4JobFact{
-		Found: true, State: row.State, Cause: "", OutcomeCode: "", HostID: row.HostID,
-		Announced: row.Announced, Wake: row.Wake, Reacted: row.Reacted,
-	}, true
+	fact.Found = true
+	return fact, true
 }
 
 // pp4JobFactByCall is the test-goroutine wrapper: it fails the test on a
@@ -177,8 +146,7 @@ func pp4JobFactByCall(t *testing.T, application *App, owner, callID string) pp4J
 }
 
 // pp4BatchRowsForRoot counts every batch_nodes row of one root (the subtree
-// deletion oracle: a deleted unannounced root leaves zero rows). Legacy mode
-// has no batch rows; callers gate on f6BatchOn.
+// deletion oracle: a deleted unannounced root leaves zero rows).
 func pp4BatchRowsForRoot(t *testing.T, application *App, rootID string) int64 {
 	t.Helper()
 	var rows int64
@@ -235,28 +203,18 @@ func pp4SelectedNoticeCount(t *testing.T, application *App, sessionID string) in
 }
 
 // pp4PullNotices moves the owner's pending selected notices into history
-// through the selected authority's pull: BatchPullNotices with the
-// production-shaped notice builder ON, the legacy PullJobNotices with the
-// file's own legacy builder OFF. Returns how many notices were delivered.
+// through the production pull: BatchPullNotices with the production-shaped
+// notice builder. Returns how many notices were delivered.
 func pp4PullNotices(t *testing.T, application *App, owner string) int {
 	t.Helper()
 	ctx := context.Background()
-	if f6BatchOn() {
-		pulled, err := session.NewBatchStore(application.DB()).BatchPullNotices(
-			ctx, application.Messages, owner, pp4BuildBatchNoticeParams)
-		require.NoError(t, err)
-		return len(pulled)
-	}
-	pulled, err := application.asyncJobStore.PullJobNotices(
-		ctx, application.Messages, owner, recoveryScenarioEBuildJobNoticeParams)
+	pulled, err := session.NewBatchStore(application.DB()).BatchPullNotices(
+		ctx, application.Messages, owner, pp4BuildBatchNoticeParams)
 	require.NoError(t, err)
 	return len(pulled)
 }
 
 // pp4BuildBatchNoticeParams mirrors the production buildBatchNoticeMessage
-// Params (agent_notice_pull.go) for the test's direct pull: batch notices
-// carry NO tool name; host-lost/interrupted rows are interruptions; the
-// message's NoticeKind is the row's own selected notice kind.
 func pp4BuildBatchNoticeParams(row session.BatchNoticeRow) message.CreateMessageParams {
 	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
 	completion := agent.AsyncCompletion{
