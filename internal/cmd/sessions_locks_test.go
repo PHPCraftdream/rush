@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -773,4 +774,30 @@ func TestVerdictPulse(t *testing.T) {
 		require.Equal(t, tc.label, label, "%s/%s", tc.pulse, tc.v.Kind)
 		require.Equal(t, tc.between, between, "%s/%s", tc.pulse, tc.v.Kind)
 	}
+}
+
+// TestLockHolderProvablyDead_JoinsSlowMetadataCleanup: Release waits only
+// releaseMetadataCleanupBound (50 ms) for the probe's metadata cleanup, so a
+// slower cleanup keeps the lock file open after Release returns -- a Windows
+// sharing violation for the caller's os.Remove (a spurious "could not remove"
+// warning and a lock left behind). The probe must join that cleanup before
+// it reports the holder dead.
+func TestLockHolderProvablyDead_JoinsSlowMetadataCleanup(t *testing.T) {
+	dataDir := t.TempDir()
+	lockDir := filepath.Join(dataDir, "locks")
+	require.NoError(t, os.MkdirAll(lockDir, 0o755))
+	lockPath := filepath.Join(lockDir, "session-join-cleanup.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte("999999\n"), 0o644))
+
+	var cleanupFinished atomic.Bool
+	orig := lockProbeOptions
+	lockProbeOptions = []session.LockOption{session.WithClearHolderMetadataFn(func(string, string) {
+		time.Sleep(300 * time.Millisecond)
+		cleanupFinished.Store(true)
+	})}
+	t.Cleanup(func() { lockProbeOptions = orig })
+
+	require.True(t, lockHolderProvablyDead(dataDir, "join-cleanup"))
+	require.True(t, cleanupFinished.Load(),
+		"the probe returned while its metadata cleanup was still running: the caller's os.Remove would race the cleanup's open handle")
 }

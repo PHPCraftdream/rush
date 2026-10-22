@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,17 +33,64 @@ const (
 	pcrReadyEnv    = "PCR_PHASE4_READY_FILE"
 )
 
+const (
+	// pcrExitBound bounds how long the killed child may take to leave.
+	pcrExitBound = 20 * time.Second
+	// pcrRemoveBound bounds the TempDir removal retry: Windows drops a
+	// dead process's handles (and its short-lived ping grandchildren
+	// exit) a moment after the process itself is gone.
+	pcrRemoveBound = 15 * time.Second
+	pcrTailLimit   = 64 << 10
+)
+
 type pcrCrashProcess struct {
 	kill func() error
 	done <-chan struct{}
 }
 
+// pcrKillAndWait kills a live child and waits for it to leave. The root
+// exiting is the proof of the crash: `taskkill /T` also exits 128 when a
+// descendant (the job's ping poller) vanishes between the tree walk and
+// its kill, so a kill error is only reported when the root stayed alive.
 func (process *pcrCrashProcess) pcrKillAndWait() error {
-	if err := process.kill(); err != nil {
-		return err
+	if pcrProcessDone(process.done) {
+		return fmt.Errorf("crash child exited before the kill")
 	}
-	<-process.done
-	return nil
+	killErr := process.kill()
+	select {
+	case <-process.done:
+		return nil
+	case <-time.After(pcrExitBound):
+		if killErr != nil {
+			return killErr
+		}
+		return fmt.Errorf("crash child did not exit within %s after the kill", pcrExitBound)
+	}
+}
+
+// pcrTailBuffer keeps the last pcrTailLimit bytes of the child's output so
+// a failing run carries the child's own log.
+type pcrTailBuffer struct{ buf []byte }
+
+func (b *pcrTailBuffer) Write(p []byte) (int, error) {
+	b.buf = append(b.buf, p...)
+	if over := len(b.buf) - pcrTailLimit; over > 0 {
+		b.buf = b.buf[over:]
+	}
+	return len(p), nil
+}
+
+func pcrRemoveAllEventually(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(pcrRemoveBound)
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil || time.Now().After(deadline) {
+			require.NoError(t, err)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func pcrRunCrashScenario(t *testing.T) {
@@ -51,7 +99,7 @@ func pcrRunCrashScenario(t *testing.T) {
 		return
 	}
 	dataDir := t.TempDir()
-	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dataDir)) })
+	t.Cleanup(func() { pcrRemoveAllEventually(t, dataDir) })
 	isolation := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolation)
 	t.Setenv("RUSH_GLOBAL_DATA", isolation)
@@ -115,7 +163,8 @@ func pcrRunCrashScenario(t *testing.T) {
 	t.Cleanup(timeoutCancel)
 	cmd := platform.Command(timeoutCtx, os.Args[0], "-test.run=^TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted$")
 	cmd.Env = append(os.Environ(), pcrChildEnv+"=1", pcrDataEnv+"="+dataDir, pcrSessionEnv+"="+sess.ID, pcrProviderEnv+"="+srvA.URL, pcrReadyEnv+"="+readyPath, "RUSH_BATCH_RUNTIME=true")
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	childOut := &pcrTailBuffer{}
+	cmd.Stdout, cmd.Stderr = childOut, childOut
 	require.NoError(t, cmd.Start())
 	done := make(chan struct{})
 	var waitErr error
@@ -129,7 +178,9 @@ func pcrRunCrashScenario(t *testing.T) {
 				killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				kill := platform.Command(killCtx, "taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
-				killErr = kill.Run()
+				if out, err := kill.CombinedOutput(); err != nil {
+					killErr = fmt.Errorf("taskkill: %w: %s", err, strings.TrimSpace(string(out)))
+				}
 			} else {
 				killErr = cmd.Process.Kill()
 			}
@@ -143,6 +194,9 @@ func pcrRunCrashScenario(t *testing.T) {
 			}
 		}
 		<-done
+		if t.Failed() {
+			t.Logf("crash child output (tail):\n%s", childOut.buf)
+		}
 		releaseRecoveryJob(t, jobRelease)
 	})
 	require.Eventually(t, func() bool { _, err := os.Stat(readyPath); return err == nil }, 60*time.Second, 20*time.Millisecond)
