@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -44,9 +43,6 @@ func seedBatchResetRoot(t *testing.T, conn *sql.DB, owner, callID, host string) 
 // root must be recovered BEFORE the reset's atomic refusal, so the reset
 // wipes the owner instead of refusing.
 func TestBatchResetSessionHistory_RecoversDeadHostBeforeRefusal(t *testing.T) {
-	if !config.BatchRuntimeEnabled() {
-		t.Skip("the batch reset path is flag-ON only; the OFF twin is the legacy reset suite")
-	}
 	a, _ := isolatedResetEnv(t)
 	ctx := context.Background()
 

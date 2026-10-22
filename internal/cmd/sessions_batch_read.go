@@ -1,10 +1,9 @@
 package cmd
 
-// Batch read side of the four session status commands (R12-B part 1): with
-// RUSH_BATCH_RUNTIME on, `sessions jobs/why/show/list` read live batch node
+// Batch read side of the four session status commands (R12-B part 1):
+// `sessions jobs/why/show/list` read live batch node
 // rows through the R10c session read APIs (BatchLiveReader +
-// BatchHistorySnapshot) instead of the legacy async_jobs ledger. Flag off,
-// every command keeps its legacy path byte-for-byte. Reads are conservative
+// BatchHistorySnapshot). Reads are conservative
 // (R10a rule): an incomplete or failed read is reported as UNKNOWN, never as
 // absence -- a command must never print "idle"/no-work while a read is
 // incomplete. A cancelling root is held, nonterminal work: "stopped but
@@ -20,7 +19,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -34,8 +32,10 @@ type batchRootFact struct {
 	State                     string
 	Held                      bool // pending | starting | running | cancelling
 	Cancelling                bool
-	AwaitingTermination       bool // cancelling: stopped but awaiting termination
-	AwaitingAnswer            bool // a held child_question notice is bound to this root
+	AwaitingTermination       bool   // cancelling: stopped but awaiting termination
+	AwaitingAnswer            bool   // a held child_question notice is bound to this root
+	QuestionChildID           string // parsed from the bound notice's frame, when held
+	QuestionText              string
 	Debt                      int64
 	Tasks                     session.BatchLiveCounts
 	Unknown                   bool // this root's own read was incomplete or failed
@@ -55,6 +55,11 @@ type batchSessionFacts struct {
 	GuardDebt   bool
 	GuardDebtN  int
 	HasQuestion bool // a held child_question notice awaits an answer
+	// QuestionChildID/QuestionText are the parsed bound notice's frame (the
+	// first root that carries one); empty when only the session-level
+	// fallback flagged the question.
+	QuestionChildID string
+	QuestionText    string
 }
 
 // awaitingAnswer reports whether any held batch question (session-level
@@ -71,8 +76,31 @@ func (f batchSessionFacts) awaitingAnswer() bool {
 	return false
 }
 
+// renderBatchQuestionNote prints the awaiting-answer section of `sessions
+// why`: the generic conservative note plus, when the bound notice's frame
+// parsed, the child that asked and how the orchestrating agent answers.
+// The legacy render's operator relay line (`rush sessions inject <owner>`,
+// shown when no live driver existed) is NOT reproduced: which relay command
+// applies to a batch question is not decided (OPERATOR-SIGNOFF NEEDED); the
+// renderer states the in-process answer path instead.
+func renderBatchQuestionNote(f batchSessionFacts, out io.Writer) {
+	if !f.HasQuestion {
+		return
+	}
+	fmt.Fprintln(out, "note: a held batch question is awaiting an answer")
+	if f.QuestionChildID == "" && f.QuestionText == "" {
+		return
+	}
+	fmt.Fprintf(out, "  waiting for your answer: child %s asked: %s\n", f.QuestionChildID, f.QuestionText)
+	fmt.Fprintf(out, "  answer: the orchestrating agent must call `agent` with resume_session_id=%q and its answer as prompt.\n", f.QuestionChildID)
+}
+
 func (f *batchSessionFacts) addRoot(r batchRootFact) {
 	f.Roots = append(f.Roots, r)
+	if r.QuestionChildID != "" && f.QuestionChildID == "" {
+		f.QuestionChildID = r.QuestionChildID
+		f.QuestionText = r.QuestionText
+	}
 	f.Debt += r.Debt
 	f.Tasks.Pending += r.Tasks.Pending
 	f.Tasks.Starting += r.Tasks.Starting
@@ -185,6 +213,12 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 							(n.Delivery == "pending" || n.Delivery == "done") {
 							rf.AwaitingAnswer = true
 							f.HasQuestion = true
+							// The notice text embeds the canonical question frame;
+							// parse it once here so every surface can quote it.
+							if q, ok := session.ParseChildQuestionNotice(n.Text, rf.ToolCallID); ok {
+								rf.QuestionChildID = q.ChildSessionID
+								rf.QuestionText = q.Question
+							}
 						}
 					}
 				}
@@ -212,6 +246,12 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 						f.HasQuestion = true
 					}
 				}
+				// Batch-published questions are unbound (job_tool_call_id NULL),
+				// so the per-root query above never sees them: quote the asking
+				// child from the pending notice's batch frame.
+				if f.HasQuestion && f.QuestionChildID == "" && q != nil {
+					fillBatchQuestionFromPending(ctx, q, id, &f)
+				}
 			}
 		}
 		out[id] = f
@@ -221,10 +261,8 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 
 // unavailableBatchFacts marks every requested id with explicit unknown facts
 // (Unknown + Live): a configless App's batch facts are UNAVAILABLE — a
-// conservative unknown — never "no live work". This is distinct from the
-// flag-off nil: nil means the flag is off and callers keep the legacy path;
-// a non-nil unknown map means the flag is on but the evidence could not be
-// read, so consumers must refuse to report idle.
+// conservative unknown — never "no live work". Consumers must refuse to
+// report idle.
 func unavailableBatchFacts(ids []string) map[string]batchSessionFacts {
 	out := make(map[string]batchSessionFacts, len(ids))
 	for _, id := range ids {
@@ -233,17 +271,12 @@ func unavailableBatchFacts(ids []string) map[string]batchSessionFacts {
 	return out
 }
 
-// batchRuntimeFacts is the flag-gated production entry point. Flag off
-// (RUSH_BATCH_RUNTIME disabled) → nil: callers keep the legacy path untouched,
-// so nil means "flag off" ONLY. Flag on but no readable database (nil App,
-// nil DB func, or nil handle) → explicit unknown facts from
+// batchRuntimeFacts is the production entry point. A nil App or a nil/absent
+// database handle → explicit unknown facts from
 // unavailableBatchFacts — never nil, never a panic, and never an "at rest"
 // verdict on unreadable evidence. Otherwise the live batch facts of the
 // requested sessions.
 func batchRuntimeFacts(ctx context.Context, a *app.App, dataDir string, ids []string) map[string]batchSessionFacts {
-	if !config.BatchRuntimeEnabled() {
-		return nil
-	}
 	if a == nil || a.DB == nil {
 		return unavailableBatchFacts(ids)
 	}
@@ -261,8 +294,7 @@ func batchRuntimeFacts(ctx context.Context, a *app.App, dataDir string, ids []st
 // renderBatchRootsForWhy renders the `sessions why` batch section from
 // already-read facts: one line per root (identity, state, held/termination
 // verdict, debt), then the conservative unknown line when the read was
-// incomplete. Replaces the legacy async-jobs section while RUSH_BATCH_RUNTIME
-// is on.
+// incomplete.
 func renderBatchRootsForWhy(f batchSessionFacts, out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Batch roots:")
@@ -295,12 +327,9 @@ func renderBatchRootsForWhy(f batchSessionFacts, out io.Writer) {
 	if f.Unknown {
 		fmt.Fprintln(out, "  note: the batch read was incomplete; treat live batch work as unknown")
 	}
-	if f.HasQuestion {
-		fmt.Fprintln(out, "  note: a held batch question is awaiting an answer")
-	}
 }
 
-// explainWhyBatch is the flag-ON `sessions why` body: batch facts plus the
+// explainWhyBatch is the `sessions why` body: batch facts plus the
 // session lock fact decide the status; no legacy async_jobs read runs.
 func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string, out io.Writer) error {
 	facts := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})
@@ -338,9 +367,7 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 	}
 	printStallHeader(ctx, a, dataDir, sessionID, status, lock, out)
 	fmt.Fprintf(out, "reason: %s.\n", reason)
-	if f.HasQuestion {
-		fmt.Fprintln(out, "note: a held batch question is awaiting an answer")
-	}
+	renderBatchQuestionNote(f, out)
 	msgs, msgsErr := a.Messages.List(ctx, sessionID)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Last assistant message:")
@@ -357,7 +384,17 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 		if last == nil {
 			fmt.Fprintln(out, "  (none)")
 		} else {
-			fmt.Fprintf(out, "  finish_reason: %s\n", finishReasonOrUnknown(last.FinishPart()))
+			finish := last.FinishPart()
+			fmt.Fprintf(out, "  finish_reason: %s\n", finishReasonOrUnknown(finish))
+			// The legacy render surfaced a stored error finish's text so the
+			// operator sees the cause; the batch render keeps that contract.
+			if finish != nil && finish.Reason == message.FinishReasonError {
+				errText := finish.Message
+				if errText == "" {
+					errText = "(error finish reason but no error text stored)"
+				}
+				fmt.Fprintf(out, "  error:         %s\n", errText)
+			}
 		}
 	}
 	if activity.Facts.Driver != nil {
@@ -368,14 +405,10 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 	return nil
 }
 
-// renderSessionsJobsBatch is the flag-ON `sessions jobs` path: batch roots of
+// renderSessionsJobsBatch is the `sessions jobs` path: batch roots of
 // the session and its delegation tree instead of async_jobs rows.
 func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID string, asJSON bool) error {
 	facts := batchRuntimeFacts(ctx, a, dataDir, []string{sessionID})
-	if facts == nil {
-		fmt.Println("(batch runtime flag off)")
-		return nil
-	}
 	f := facts[sessionID]
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -459,4 +492,25 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 		fmt.Fprintln(os.Stderr, "warning: the batch read was incomplete; some batch roots may be missing")
 	}
 	return nil
+}
+
+// fillBatchQuestionFromPending parses the owner's pending unbound
+// child_question notices with the batch frame parser and records the first
+// parsable one on the session-level facts. A read error or an unparsable
+// frame leaves the generic note, never a guess.
+func fillBatchQuestionFromPending(ctx context.Context, q *db.Queries, owner string, f *batchSessionFacts) {
+	rows, err := q.ListPendingSessionNoticesForOwner(ctx, owner)
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		if row.Kind != session.NoticeKindChildQuestion || row.JobToolCallID.Valid {
+			continue
+		}
+		if cq, ok := session.ParseBatchChildQuestionNotice(row.Text); ok {
+			f.QuestionChildID = cq.ChildSessionID
+			f.QuestionText = cq.Question
+			return
+		}
+	}
 }
