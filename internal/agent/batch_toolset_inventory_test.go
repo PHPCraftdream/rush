@@ -28,7 +28,6 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/require"
@@ -249,41 +248,37 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 // TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy pins the H4-cutover
 // safety of the worker layering (batch_allowed_controls.go
 // workerToolNamesBatch): the native batch_status/batch_output grants are
-// declared unconditionally, NOT derived from the legacy job_output entry,
-// which is filtered rather than translated. The test passes BOTH with and
-// without the legacy entry still present in workerToolNames: with it, the
-// batched layering drops it; without it (the cutover state), the native
-// grants still appear.
+// declared unconditionally -- appended to whatever list the caller supplies,
+// never derived from any legacy entry name.
 func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 	t.Parallel()
 
-	// With the legacy entry present: it is filtered out (replaced, not kept),
-	// and the native reads are layered in.
+	// The production worker list (post-cutover: it carries no poll-tool
+	// entry at all) always gets the native reads layered in.
 	batched := workerToolNamesBatch(workerToolNames)
-	require.NotContains(t, batched, tools.JobOutputToolName,
-		"the flag-on worker layering replaces the legacy poll name")
+	require.NotContains(t, batched, "job_output",
+		"the deleted legacy poll name is absent from the worker layering")
 	require.Contains(t, batched, "batch_status")
 	require.Contains(t, batched, "batch_output")
 	require.NotContains(t, batched, "batch_stop", "worker layering never granted a stop control")
 
-	// Cutover simulation: H4 deletes the legacy entry from workerToolNames.
-	// The native grants must NOT travel through the old name -- they must
-	// appear on their own. Under the pre-H2 derivation (natives appended only
-	// when name == tools.JobOutputToolName) this assertion fails with the
-	// grants silently vanishing at cutover.
-	filtered := make([]string, 0, len(workerToolNames)-1)
+	// Independence proof: a stripped list that carries NONE of the native
+	// read names still comes out with them appended. Under any derivation
+	// that translated a legacy entry name, the grants would silently vanish
+	// here.
+	stripped := make([]string, 0, len(workerToolNames))
 	for _, name := range workerToolNames {
-		if name == tools.JobOutputToolName {
+		if name == "batch_status" || name == "batch_output" {
 			continue
 		}
-		filtered = append(filtered, name)
+		stripped = append(stripped, name)
 	}
-	simulated := workerToolNamesBatch(filtered)
-	require.NotContains(t, simulated, tools.JobOutputToolName)
+	simulated := workerToolNamesBatch(stripped)
+	require.NotContains(t, simulated, "job_output")
 	require.Contains(t, simulated, "batch_status",
-		"native read grants must survive removal of the legacy job_output entry")
+		"native read grants must survive a grant list that lacks them")
 	require.Contains(t, simulated, "batch_output",
-		"native read grants must survive removal of the legacy job_output entry")
+		"native read grants must survive a grant list that lacks them")
 	// The rest of the layering is untouched by the cutover: await_tasks and
 	// bash are declared in coordinator_tools.go's workerToolNames
 	// independent of job_output.

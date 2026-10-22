@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +15,7 @@ import (
 // a3DebtRowIdentity is the chain identity of one seeded debt row: the root
 // tool_call_id (batch chains key on the launched root's call id, never on
 // claims).
-func a3DebtRowIdentity(row db.AsyncJob) string {
+func a3DebtRowIdentity(row fixtureAsyncJobRow) string {
 	return row.ToolCallID
 }
 

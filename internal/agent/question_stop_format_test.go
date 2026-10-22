@@ -56,12 +56,12 @@ func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	// dead-host question scenario).
 	const host = "question-format-dead-host"
 	root, _ := b1SeedBatchRootOnHost(t, conn, "question-parent", "question-format-job", host, "running")
-	_, err = session.NewBatchStore(conn).RecoverHostsOnce(ctx, func(string) (session.HostLockStatus, error) {
+	_, _, err = session.NewBatchStore(conn).RecoverHostsOnce(ctx, func(string) (session.HostLockStatus, error) {
 		return session.ProbeHostShared(dataDir, host)
 	}, []string{host}, 8)
 	require.NoError(t, err)
 	var state, outcome string
-	require.NoError(t, q.QueryRowContext(ctx, `SELECT state, coalesce(outcome_code,'') FROM batch_nodes WHERE node_id=?`, root).Scan(&state, &outcome))
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT state, coalesce(outcome_code,'') FROM batch_nodes WHERE node_id=?`, root).Scan(&state, &outcome))
 	require.Equal(t, "interrupted", state)
 	require.Equal(t, "host_lost", outcome)
 }

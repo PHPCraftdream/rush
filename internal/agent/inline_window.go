@@ -1,7 +1,7 @@
 // Package agent inline-window constant and test seam: the A14 inline-window
 // constant, kept here because the batch runtime and the app test harness
-// consume it (the per-ledger setter of the deleted work_ledger_inline.go
-// became a retained no-op seam).
+// consume it. The seam is REAL: a coordinator carries a disable flag the
+// batch tool arming (batch_install_tools.go) resolves through its binding.
 package agent
 
 import "time"
@@ -40,11 +40,17 @@ type inlineWindowSetter interface {
 	setInlineWindowForTest(on bool)
 }
 
-// setInlineWindowForTest is retained as a no-op seam: the batch delivery
-// window is the package constant (batch_install_tools.go reads
-// inlineWindow directly); there is no per-coordinator override to zero.
-// The seam stays so the app harness's disable/re-enable calls keep
-// compiling and reporting "handled".
+// setInlineWindowForTest zeroes (on=false) or restores (on=true) THIS
+// coordinator's inline window: the flag is consulted by the batch bash
+// arming (inlineWindowDisabledFor), which arms bash detached -- the pre-A14
+// "started" flow -- instead of with an escape window.
 func (c *coordinator) setInlineWindowForTest(on bool) {
-	_ = on
+	c.inlineWindowDisabled.Store(!on)
+}
+
+// inlineWindowDisabledFor reports whether the coordinator bound to bind has
+// its inline window disabled (the SetInlineWindowForTest seam). A build with
+// no coordinator in scope (bind nil or unbound fixture) keeps the window.
+func inlineWindowDisabledFor(bind *batchCoordinatorBinding) bool {
+	return bind != nil && bind.coord != nil && bind.coord.inlineWindowDisabled.Load()
 }

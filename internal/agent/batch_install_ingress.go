@@ -130,6 +130,11 @@ type batchCoordinatorBinding struct {
 	controls     BatchModelControl
 	live         *session.BatchLiveReader
 	diskBindings *DiskProviderRegistry
+	// coord is the coordinator this binding was created for; nil for a
+	// binding built without one (test fixtures). It carries ONLY the
+	// test-visible delivery window (inlineWindowDisabled) -- never runtime
+	// authority, which lives in ingress/controls.
+	coord *coordinator
 }
 
 func (b *batchCoordinatorBinding) pin(registry *policyLeafRegistry) (string, error) {
@@ -172,6 +177,7 @@ func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress
 	// process global.
 	if cc, ok := c.(*coordinator); ok {
 		cc.diskCaps = diskBindings
+		bind.coord = cc
 	}
 	// The root agent is built before the batch install binds the manager,
 	// so propagate the registry onto it here too.

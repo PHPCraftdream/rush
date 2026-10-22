@@ -75,12 +75,17 @@ func TestBatchFixturePortSelftest_RunningDelegation(t *testing.T) {
 	})
 
 	t.Run("DelegationChildScopeClosedWithoutOwnedWork", func(t *testing.T) {
-		// A SEPARATE child session: the open case above left a live link owned
-		// by `child`, and the scope predicate is per child session. An empty
-		// child id has no scope to keep open.
-		view := readFixtureDelegation(t, env.conn, owner.ID, "call-running")
-		require.False(t, view.ScopeOpen, "a child that owns no work and no debt has a closed scope")
+		// A SEPARATE delegation whose child carries NO session identity: an
+		// empty child id has no scope to keep open, even though the
+		// delegation row itself is live (state "running"). (The open case
+		// above seeded its own delegation; this subtest must not read that
+		// row -- its child is live and named, so its scope is open.)
+		seedFixtureDelegation(t, env.conn, owner.ID, "call-unnamed", "", "command", "running", false)
+
+		view := readFixtureDelegation(t, env.conn, owner.ID, "call-unnamed")
+		require.False(t, view.ScopeOpen, "an unnamed child has no scope to keep open")
 		require.Equal(t, "running", view.State, "the delegation row itself is still live")
+		require.Empty(t, view.ChildSessionID, "the unnamed child carries no identity")
 		require.EqualValues(t, 1, view.Announced, "the root announcement round-trips")
 	})
 }

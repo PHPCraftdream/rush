@@ -50,7 +50,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("running job only", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+		coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("plain job debt is owed", func(t *testing.T) {
-		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
+		coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("Stop-suspended debt is deferred", func(t *testing.T) {
-		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
+		coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("released delegation child debt is deferred", func(t *testing.T) {
-		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
+		coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		parent, err := env.sessions.Create(ctx, "parent")
 		require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("a delegation child driven by this process's own loop is owed", func(t *testing.T) {
-		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
+		coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		parent, err := env.sessions.Create(ctx, "parent")
 		require.NoError(t, err)
@@ -162,9 +162,9 @@ func TestCLIScope_ForeignLiveDriver_DebtDeferred(t *testing.T) {
 	f := newForeignDriverFx(t, "cli-scope-foreign")
 	// The shared foreignDriverFx fixture (owned elsewhere) does not bind the
 	// facts seam; the flag-ON CLIScope below needs real node facts.
-	bindBatchNodeFacts(t, f.coord, f.conn, f.dataDir)
+	bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
 	// Batch node debt seed.
-	seedFixtureJobDebt(t, f.conn, f.sessID, "call-1", false)
+	seedFixtureJobDebt(t, f.env.conn, f.sessID, "call-1", false)
 	require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 
 	st, err := f.coord.CLIScope(ctx, f.sessID)
@@ -188,7 +188,7 @@ func requireScope(t *testing.T, st CLIScopeState, workOpen bool, drain DrainStat
 // drainPermitted) in CLIScope leaves every case Owed and this test red.
 func TestCLIScope_LaunchGateStates(t *testing.T) {
 	ctx := context.Background()
-	coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(ctx)
 	sess, err := env.sessions.Create(ctx, "gate-states")
 	require.NoError(t, err)

@@ -38,8 +38,6 @@ var restrictedToolActions = map[string]string{
 	"grep":                       "read",
 	"inject_agent":               "write",
 	"inspect_agent":              "read",
-	"batch_stop":                 "delete",
-	"batch_output":               "read",
 	"list_mcp_resources":         "list",
 	"ls":                         "list",
 	"multiedit":                  "write",

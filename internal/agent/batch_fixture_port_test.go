@@ -10,11 +10,11 @@
 //	bindBatchCoordinatorControls(t *testing.T, c *coordinator, conn *sql.DB, dataDir string, ingress BatchWorkIngress)
 //	seedBatchJobDebt(t *testing.T, conn *sql.DB, owner, callID string, visible bool) (root, child string)
 //	seedBatchDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, kind, state string, withNotice bool) (root, child string)
-//	batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID string) db.AsyncJob
+//	batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID string) fixtureAsyncJobRow
 //	seedFixtureJobDebt(t *testing.T, conn *sql.DB, owner, callID string, pulled bool) (root, child string)
 //	seedFixtureJobDebtStoreOnly(t *testing.T, conn *sql.DB, owner, callID string, pulled bool)
 //	seedFixtureDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, kind, state string, withNotice bool) (root, child string)
-//	readFixtureJobDebt(t *testing.T, conn *sql.DB, owner, callID string) db.AsyncJob
+//	readFixtureJobDebt(t *testing.T, conn *sql.DB, owner, callID string) fixtureAsyncJobRow
 //	readFixtureDelegation(t *testing.T, conn *sql.DB, owner, callID string) batchDelegationView
 //	type batchDelegationView struct { Root, Node, ChildSessionID, Kind, State, Delivery string; NoticeSelected, Announced, Reacted, Wake int64; ScopeOpen bool }
 //	failFixtureReaction(t *testing.T, conn *sql.DB) / failFixtureSettle(...) / failFixturePull(...)
@@ -177,10 +177,43 @@ func seedBatchDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, kin
 	return root, child
 }
 
+// fixtureAsyncJobRow is the retained legacy async_jobs readback shape for the
+// tests that still speak the deleted db.AsyncJob vocabulary. Field-for-field
+// identical to the deleted type; in the batch world ClaimID is always empty
+// (batch chains key on the root's tool_call_id, never on claim ids).
+type fixtureAsyncJobRow struct {
+	OwnerSessionID    string
+	ToolCallID        string
+	Kind              string
+	ToolName          string
+	TimeoutSeconds    int64
+	InputHash         string
+	ChildSessionID    sql.NullString
+	OriginCli         int64
+	State             string
+	NoticeKind        string
+	HostID            string
+	Announced         int64
+	Delivery          string
+	NoticeMessageID   sql.NullString
+	Wake              int64
+	Reacted           int64
+	WakeAttempts      int64
+	ReactedFailed     int64
+	DeadlineAt        sql.NullInt64
+	TimeoutKind       sql.NullString
+	ResultSummary     sql.NullString
+	ResultIsError     sql.NullInt64
+	CreatedAt         int64
+	UpdatedAt         int64
+	ClaimID           string
+	AnnounceMessageID sql.NullString
+}
+
 // batchJobAsyncJobReadback is an explicit test-only compatibility mapping for
 // legacy-shaped callers. It reads the selected CHILD node and maps task_kind to
 // Kind/ToolName. The actual root call/announcement fields remain root facts.
-func batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID string) db.AsyncJob {
+func batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID string) fixtureAsyncJobRow {
 	t.Helper()
 	snap, err := session.NewBatchStore(conn).Read(context.Background(), owner, rootID)
 	require.NoError(t, err)
@@ -197,7 +230,7 @@ func batchJobAsyncJobReadback(t *testing.T, conn *sql.DB, owner, rootID, nodeID 
 	require.Equal(t, rootID, child.RootID)
 	require.EqualValues(t, 1, child.NoticeSelected)
 	kind := child.TaskKind.String
-	return db.AsyncJob{
+	return fixtureAsyncJobRow{
 		OwnerSessionID: owner, ToolCallID: root.ToolCallID.String, Kind: kind, ToolName: kind,
 		ChildSessionID: child.ChildSessionID, OriginCli: root.OriginCli, State: child.State,
 		HostID: root.HostID, Announced: root.Announced, Delivery: child.Delivery,
@@ -235,7 +268,7 @@ func seedFixtureDelegation(t *testing.T, conn *sql.DB, owner, callID, childID, k
 
 // readFixtureJobDebt loads the seeded job's selected CHILD node through the
 // batch store, mapped to the legacy db.AsyncJob shape for retained callers.
-func readFixtureJobDebt(t *testing.T, conn *sql.DB, owner, callID string) db.AsyncJob {
+func readFixtureJobDebt(t *testing.T, conn *sql.DB, owner, callID string) fixtureAsyncJobRow {
 	t.Helper()
 	var rootID string
 	err := conn.QueryRowContext(context.Background(), `SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id ORDER BY rowid DESC LIMIT 1`, owner, callID).Scan(&rootID)

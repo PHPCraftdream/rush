@@ -469,7 +469,7 @@ func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID str
 	text := fmt.Sprintf(
 		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
 		tickNum, interval.Minutes(), len(nodes), delegations, awaitingClause, body, guidance)
-	return text, nil
+	return text
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, or "".

@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -13,8 +11,8 @@ import (
 
 // TestFinishToolAssemblyFlagOffDoesNotInstallBatchTools was DELETEd as an
 // obsolete contract: there is no flag-off build left to pin -- batch-only
-// assembly is unconditional, and the retained wrapAsyncTools/stall seams are
-// identity/no-op in the batch world (covered by the inventory tests below).
+// assembly is unconditional, and the legacy async-job wrapper seams are gone
+// entirely (covered by the inventory tests below).
 
 // allowedBatchReadControls mirrors the flag-on allToolNames grants the
 // default coder toolset carries.

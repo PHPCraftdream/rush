@@ -125,8 +125,6 @@ func newControlCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 	}
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
-	controlTestConn = env.conn
-	t.Cleanup(func() { controlTestConn = nil })
 	return coord, env
 }
 
@@ -145,29 +143,25 @@ func controlChild(t *testing.T, env fakeEnv, suffix string) (parentID, childID s
 // batch store (a running agent task node naming childID) — the durable state
 // childDelegationState/ListDelegations/StopAgent read. Callers pass any
 // coordinator; the seed goes through the shared batch helper.
-func seedControlDelegation(t *testing.T, coord *coordinator, parentID, childID string) {
+func seedControlDelegation(t *testing.T, env fakeEnv, coord *coordinator, parentID, childID string) {
 	t.Helper()
 	_ = coord
-	seedBatchDelegation(t, controlTestConn, parentID, "call-"+childID, childID, "agent", "running", false)
+	seedBatchDelegation(t, env.conn, parentID, "call-"+childID, childID, "agent", "running", false)
 }
-
-// controlTestConn is set by newControlCoordinator for seedControlDelegation (the
-// batch seed needs the raw conn; the fixture's env owns it).
-var controlTestConn *sql.DB
 
 // releaseDelegation projects the delegation root AND child terminal — the
 // delivered shape the history fallback then answers from.
-func releaseDelegation(t *testing.T, owner, childID, state string) {
+func releaseDelegation(t *testing.T, conn *sql.DB, owner, childID, state string) {
 	t.Helper()
 	ctx := context.Background()
 	var rootID string
-	require.NoError(t, controlTestConn.QueryRowContext(ctx,
+	require.NoError(t, conn.QueryRowContext(ctx,
 		`SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id ORDER BY rowid DESC LIMIT 1`,
 		owner, "call-"+childID).Scan(&rootID))
 	var nodeID string
-	require.NoError(t, controlTestConn.QueryRowContext(ctx,
+	require.NoError(t, conn.QueryRowContext(ctx,
 		`SELECT node_id FROM batch_nodes WHERE root_id=? AND node_id<>root_id LIMIT 1`, rootID).Scan(&nodeID))
-	_, err := controlTestConn.ExecContext(ctx,
+	_, err := conn.ExecContext(ctx,
 		`UPDATE batch_nodes SET state=?, outcome_state=? WHERE node_id IN (?, ?)`, state, state, rootID, nodeID)
 	require.NoError(t, err)
 }
@@ -244,7 +238,7 @@ func TestInspectAgent_Statuses(t *testing.T) {
 	parent2, child2 := controlChild(t, env, "insp2")
 	stub2 := &controlStubAgent{}
 	coord.subAgentDrivers.register(child2, subAgentDriver{agent: stub2, parentSessionID: parent2})
-	seedControlDelegation(t, coord, parent2, child2)
+	seedControlDelegation(t, env, coord, parent2, child2)
 	insp, err = coord.InspectAgent(ctx, parent2, child2)
 	require.NoError(t, err)
 	require.Equal(t, "idle", insp.Status)
@@ -252,7 +246,7 @@ func TestInspectAgent_Statuses(t *testing.T) {
 	// Terminal: release the delegation, then let the child's own finished
 	// assistant message (a cancelled finish, what a stopped delegation's
 	// history records) answer through the history fallback.
-	releaseDelegation(t, parent2, child2, "cancelled")
+	releaseDelegation(t, env.conn, parent2, child2, "cancelled")
 	_, err = env.messages.Create(ctx, child2, message.CreateMessageParams{
 		Role:  message.Assistant,
 		Parts: []message.ContentPart{message.Finish{Reason: message.FinishReasonCanceled}},
@@ -276,8 +270,8 @@ func TestStopAgent_IdempotentRefusalWhenNothingToStop(t *testing.T) {
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
 	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
-	seedControlDelegation(t, coord, parent, child)
-	t.Cleanup(func() { releaseDelegation(t, parent, child, "cancelled") })
+	seedControlDelegation(t, env, coord, parent, child)
+	t.Cleanup(func() { releaseDelegation(t, env.conn, parent, child, "cancelled") })
 	text, err := coord.StopAgent(ctx, parent, child)
 	require.NoError(t, err)
 	require.Contains(t, text, "Sub-agent session "+child+" stopped")
@@ -302,11 +296,11 @@ func TestStopAgent_StopsOnlyThisChild_DeliversExactlyOneEvent(t *testing.T) {
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
 	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
-	seedControlDelegation(t, coord, parent, child)
+	seedControlDelegation(t, env, coord, parent, child)
 	sib := &controlStubAgent{}
 	sib.setBusy(true)
 	coord.subAgentDrivers.register(siblingChild, subAgentDriver{agent: sib, parentSessionID: siblingParent})
-	seedControlDelegation(t, coord, siblingParent, siblingChild)
+	seedControlDelegation(t, env, coord, siblingParent, siblingChild)
 
 	text, err := coord.StopAgent(ctx, parent, child)
 	require.NoError(t, err)
@@ -425,7 +419,7 @@ func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
 	// output or its count -- only childSession-carrying task nodes are
 	// delegations. Revert-check: dropping the ChildSessionID filter in
 	// ListDelegations makes the assertions below fail on this root.
-	seedBatchDelegation(t, controlTestConn, parent, "bash-call-list", "", "command", "running", false)
+	seedBatchDelegation(t, env.conn, parent, "bash-call-list", "", "command", "running", false)
 
 	got, err := coord.ListDelegations(ctx, parent)
 	require.NoError(t, err)
@@ -436,12 +430,12 @@ func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
 	for _, tc := range []struct{ owner, driver string }{{parent, child}, {parent, secondChild}, {otherParent, otherChild}} {
 		stub := &controlStubAgent{}
 		coord.subAgentDrivers.register(tc.driver, subAgentDriver{agent: stub, parentSessionID: tc.owner})
-		seedControlDelegation(t, coord, tc.owner, tc.driver)
+		seedControlDelegation(t, env, coord, tc.owner, tc.driver)
 	}
 	t.Cleanup(func() {
-		releaseDelegation(t, parent, child, "cancelled")
-		releaseDelegation(t, parent, secondChild, "cancelled")
-		releaseDelegation(t, otherParent, otherChild, "cancelled")
+		releaseDelegation(t, env.conn, parent, child, "cancelled")
+		releaseDelegation(t, env.conn, parent, secondChild, "cancelled")
+		releaseDelegation(t, env.conn, otherParent, otherChild, "cancelled")
 	})
 
 	// AgeSeconds is a whole-second truncation of time.Since(startedAt), so

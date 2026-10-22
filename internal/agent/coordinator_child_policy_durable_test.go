@@ -175,7 +175,7 @@ func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.Ag
 // fallback exactly as the finding describes). Restored the branch; re-ran,
 // passed (no panic, err == nil).
 func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 	coord.currentAgent = &panicIfCalledAgent{mockSessionAgent: &mockSessionAgent{}}
@@ -269,7 +269,7 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 // half of the scope predicate turns this test's debt assertion red -- the
 // pulled-but-unreacted notice stays open until the child reacts.
 func TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained(t *testing.T) {
-	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
+	_, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 

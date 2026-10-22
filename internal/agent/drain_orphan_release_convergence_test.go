@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 

@@ -303,8 +303,15 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint},
 			}
 			if name == tools.BashToolName {
-				inv.BackgroundEscape = batchEscapeAuto
-				inv.Delivery.Window = inlineWindow.String()
+				if inlineWindowDisabledFor(bind) {
+					// Window disabled (SetInlineWindowForTest(false)): the
+					// pre-A14 "started" flow -- the shell detaches from the
+					// start and the call returns the started text in-turn.
+					inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
+				} else {
+					inv.BackgroundEscape = batchEscapeAuto
+					inv.Delivery.Window = inlineWindow.String()
+				}
 			}
 			built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, bind: bind}
 		}
@@ -350,8 +357,15 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 		if name == tools.BashToolName {
 			// Auto-background keeps its window: escape switches DELIVERY of
 			// the existing root after the window, never its execution.
-			inv.BackgroundEscape = batchEscapeAuto
-			inv.Delivery.Window = inlineWindow.String()
+			// Window disabled (SetInlineWindowForTest(false)): the pre-A14
+			// "started" flow -- the shell detaches from the start and the
+			// call returns the started text in-turn.
+			if inlineWindowDisabledFor(bind) {
+				inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
+			} else {
+				inv.BackgroundEscape = batchEscapeAuto
+				inv.Delivery.Window = inlineWindow.String()
+			}
 		}
 		built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, pctChildScope: pctCapturedScopeFromTool(tool)}
 	}

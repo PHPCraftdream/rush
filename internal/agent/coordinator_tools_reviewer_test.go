@@ -39,7 +39,7 @@ var reviewerLeakedToolNames = []string{
 	tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName,
 	tools.DownloadToolName, tools.FetchToolName,
 	tools.TodosToolName, tools.AskQuestionToolName,
-	AgentToolName, tools.JobKillToolName,
+	AgentToolName, "job_output", "job_kill", // deleted legacy controls must stay absent
 	tools.FSWriteToolName, tools.FSReplaceToolName, tools.FSWriteLinesToolName, tools.FSDeleteToolName,
 	tools.InspectAgentToolName, tools.InjectAgentToolName, tools.StopAgentToolName,
 	tools.SourcegraphToolName, tools.RushLogsToolName, tools.RushInfoToolName,

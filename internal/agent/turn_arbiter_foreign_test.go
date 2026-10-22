@@ -34,7 +34,7 @@ func TestDecide_ForeignWorkspaceDefersWithoutRecheck(t *testing.T) {
 	require.Equal(t, foreignWorkspaceReason, v.Reason)
 	require.True(t, v.RecheckAt.IsZero(), "nothing to recheck: the debt is the owner's")
 	require.False(t, v.ReopenOnHint)
-	require.Empty(t, v.Rows.Jobs)
+	require.Empty(t, v.Rows.Nodes, "a defer settles no batch node rows")
 	require.Empty(t, v.Rows.Notices, "a defer settles nothing")
 
 	// Every launch site, not just siteFact.
@@ -104,7 +104,7 @@ func TestDecideAccount_ForeignWorkspaceDoesNotPaceOrSettle(t *testing.T) {
 	require.NotEqual(t, "launch refused", v.Reason,
 		"a foreign refusal is not a launch refusal worth pacing our own gate for")
 	require.True(t, v.RecheckAt.IsZero(), "no recheck: the debt is the owner's")
-	require.Empty(t, v.Rows.Jobs)
+	require.Empty(t, v.Rows.Nodes, "a defer settles no batch node rows")
 	require.Empty(t, v.Rows.Notices, "a defer settles nothing")
 }
 

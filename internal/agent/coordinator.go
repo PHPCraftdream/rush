@@ -265,6 +265,9 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	// inlineWindowDisabled is the SetInlineWindowForTest seam: when set, the
+	// bash delivery window is off (the pre-A14 "started" flow).
+	inlineWindowDisabled atomic.Bool
 	// notifyWG joins the async-completion wake goroutines, so a caller (a
 	// test, a shutdown) can wait for their last store access.
 	notifyWG sync.WaitGroup

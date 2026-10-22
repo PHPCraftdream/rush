@@ -342,17 +342,6 @@ var folderScopeEscapeHatchTools = map[string]struct{}{
 	tools.RushLogsToolName:        {},
 }
 
-// folderScopeCommandTools execute shell commands, which trivially
-// bypass any filesystem scope. They stay only when the scope says so
-// (FolderScope.KeepsCommandTools, set by the run plumbing from the
-// restricted-run bash allowlist): keeping them is a deliberate grant,
-// not a default. (flag on: plus the native batch controls,
-// folderScopeCommandToolsBatch)
-var folderScopeCommandTools = map[string]struct{}{
-	tools.BashToolName: {}, tools.RunCommandToolName: {},
-	tools.JobOutputToolName: {}, tools.JobKillToolName: {},
-}
-
 // folderScopeOpForTool maps each fs_* tool to the single operation that
 // gates its presence in a scoped toolset. fs_write is the one
 // exception: it appears when EITHER create or overwrite is granted,
@@ -958,7 +947,6 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 		}
 		return built, nil
 	}
-	filteredTools = c.wrapAsyncTools(filteredTools)
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
@@ -969,8 +957,5 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 	// without hook interception to avoid firing the user's hook N times
 	// per delegated turn. The top-level invocation of the sub-agent tool
 	// itself is still wrapped from the coder's side.
-	// Stall-detach wrapper (chunk 3): outermost, so a stall policy fire can
-	// turn any blocked synchronous Run into an immediate job-id result.
-	filteredTools = wrapToolsWithStallDetach(filteredTools)
 	return newPolicyToolBuild(filteredTools), nil
 }

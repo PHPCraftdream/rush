@@ -7,9 +7,9 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,19 +18,21 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 type attemptFixture struct {
-	t             *testing.T
-	env           fakeEnv
-	coord         *coordinator
-	sa            *sessionAgent
-	model         Model
-	sessID        string
+	t      *testing.T
+	env    fakeEnv
+	coord  *coordinator
+	sa     *sessionAgent
+	model  Model
+	sessID string
+	// store is the batch-world dual readback store: batch facts plus the
+	// session_notices store, over the fixture's own connection.
+	store         attemptStore
 	requests      atomic.Int32
 	requestEvents chan struct{}
 	clockOffset   atomic.Int64
@@ -105,6 +107,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f.coord.sessions, f.coord.messages = f.env.sessions, f.env.messages
 	f.coord.permissions = f.env.permissions
 	f.coord.noticeStore = session.NewSessionNoticeStore(f.env.conn)
+	f.store = newAttemptStore(f.env.conn)
 	bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
 	t.Cleanup(func() {
 		f.coord.waitRecheckWakes()
@@ -192,7 +195,47 @@ func (f *attemptFixture) seedDebtFor(ctx context.Context, sessionID, toolCallID 
 	seedFixtureJobDebt(f.t, f.env.conn, sessionID, toolCallID, pulled)
 }
 
-func (f *attemptFixture) row(ctx context.Context, toolCallID string) db.AsyncJob {
+// attemptStore is the batch-world readback store behind attemptFixture.store:
+// the batch store's debt snapshots plus the session_notices store, over one
+// connection. Its methods carry the legacy names the drain tests read.
+type attemptStore struct {
+	batch   *session.BatchStore
+	notices *session.SessionNoticeStore
+}
+
+func newAttemptStore(conn *sql.DB) attemptStore {
+	return attemptStore{batch: session.NewBatchStore(conn), notices: session.NewSessionNoticeStore(conn)}
+}
+
+func (s attemptStore) CaptureDebtSnapshot(ctx context.Context, owner string) (session.BatchDebtSnapshot, error) {
+	return s.batch.BatchReactionCaptureDebtSnapshot(ctx, owner)
+}
+
+func (s attemptStore) MaxWakeAttempts(ctx context.Context, owner string, snap session.BatchDebtSnapshot) (int, error) {
+	return s.batch.BatchReactionMaxWakeAttempts(ctx, owner, snap)
+}
+
+// PendingInclusiveDebtRows is the legacy 4-value readback over
+// BatchReactionPendingInclusiveDebtRows: hasJobDebt reports the selected-node
+// half, notices the retained-notice half.
+func (s attemptStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (bool, []session.BatchDebtNodeRef, []session.PendingNoticeDebt, error) {
+	out, err := s.batch.BatchReactionPendingInclusiveDebtRows(ctx, owner)
+	return len(out.Nodes) > 0, out.Nodes, out.Notices, err
+}
+
+func (s attemptStore) InsertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) error {
+	return s.notices.InsertSessionNotice(ctx, owner, kind, text, wake, jobToolCallID)
+}
+
+func (s attemptStore) InsertSessionNoticeReturningID(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) (int64, error) {
+	return s.notices.InsertSessionNoticeReturningID(ctx, owner, kind, text, wake, jobToolCallID)
+}
+
+func (s attemptStore) ListSessionNotices(ctx context.Context, owner string) ([]session.SessionNoticeRow, error) {
+	return s.notices.ListSessionNotices(ctx, owner)
+}
+
+func (f *attemptFixture) row(ctx context.Context, toolCallID string) fixtureAsyncJobRow {
 	f.t.Helper()
 	return readFixtureJobDebt(f.t, f.env.conn, f.sessID, toolCallID)
 }

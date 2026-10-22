@@ -6,8 +6,6 @@
 // not the shapes.
 package agent
 
-import "charm.land/fantasy"
-
 // asyncToolMetadata is the tool-response metadata of a delegated or
 // backgrounded call.
 type asyncToolMetadata struct {
@@ -35,25 +33,4 @@ type asyncCapMetadata struct {
 		Limit      int `json:"limit"`
 		WaitTimers int `json:"wait_timers"`
 	} `json:"async_cap"`
-}
-
-// wrapToolsWithStallDetach is retained as an identity seam: the stall-detach
-// REGISTRY and detacher ACTION were deleted with the work ledger
-// (turn_stall_tool_detach.go); the generic stall clock no longer detaches a
-// running tool. The retained composition site (coordinator_tools.go) keeps
-// calling through this seam so the toolset layering stays reviewable and the
-// call ordering does not change shape.
-func wrapToolsWithStallDetach(tools []fantasy.AgentTool) []fantasy.AgentTool {
-	return tools
-}
-
-// wrapAsyncTools is retained as an identity seam, the twin of
-// wrapToolsWithStallDetach above: the asyncTool WRAPPER and the workLedger
-// behind it were deleted with the ledger (batch_install_tools.go owns the
-// batch arming now). The retained composition site (coordinator_tools.go's
-// finishToolAssembly OFF branch, unreachable under the always-on batch
-// binding) keeps calling through this seam so the toolset layering stays
-// reviewable and the call ordering does not change shape.
-func (c *coordinator) wrapAsyncTools(tools []fantasy.AgentTool) []fantasy.AgentTool {
-	return tools
 }

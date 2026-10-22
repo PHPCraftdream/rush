@@ -55,13 +55,21 @@ func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []strin
 	return names
 }
 
-// workerToolNamesBatch is the worker layering: the worker's post-await read
-// controls are the NATIVE batch_status/batch_output. batch_stop stays out
-// exactly as the legacy stop control always was -- a worker layering never
-// granted a stop control.
+// workerToolNamesBatch is the worker layering: the worker ALWAYS receives the
+// native batch_status/batch_output read controls -- appended to the supplied
+// names, dedup-safe, independently of any legacy grant list -- so its
+// post-await read surface never depends on the caller's list carrying them.
+// batch_stop stays out exactly as the legacy stop control always was -- a
+// worker layering never granted a stop control.
 func workerToolNamesBatch(names []string) []string {
 	out := make([]string, 0, len(names)+2)
-	return append(out, names...)
+	out = append(out, names...)
+	for _, name := range []string{"batch_status", "batch_output"} {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // workerLayeredToolNames picks the worker layering: unconditional batch
