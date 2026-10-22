@@ -536,7 +536,7 @@ func pdaEquivCases() []pdaEquivCase {
 			name: "batchOutboxPullVoidAware",
 			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
 				st := pdaEquivSettleOne(t, ctx, s, conn)
-				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1 WHERE node_id=?", st.root)
+				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1, announce_message_id='m1' WHERE node_id=?", st.root)
 				require.NoError(t, err)
 				return st
 			},
@@ -572,7 +572,7 @@ func pdaEquivCases() []pdaEquivCase {
 			name: "batchOutboxReactNodesVoidAware",
 			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
 				st := pdaEquivSettleOne(t, ctx, s, conn)
-				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1, delivery='done', wake=1 WHERE node_id=?", st.root)
+				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1, announce_message_id='m1', delivery='done', wake=1 WHERE node_id=?", st.root)
 				require.NoError(t, err)
 				return st
 			},
