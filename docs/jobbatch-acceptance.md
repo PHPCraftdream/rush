@@ -1,4 +1,35 @@
-# Job-batch acceptance ledger
+# Current H4 acceptance requirements (not gates-passed evidence)
+
+This is the required evidence matrix for the composed H4 candidate. No row is
+claimed passed here. All execution is GitHub CI; this documentation worker ran
+no tests, builds, lint, benchmarks, or formatters. Every artifact must identify
+the exact candidate SHA and preserve raw output/artifacts.
+
+| Gate | Required evidence before rollout |
+|---|---|
+| Normal CI | Required normal workflow green on the exact composed SHA, including its schema/sqlc checks. |
+| Shadow build/agent | `shadow-build` and `shadow-agent` green on all three OSes. |
+| Shadow web | `shadow-web` green; web unit/type/lint is not browser acceptance. |
+| AW | Nonzero actual AW-a and AW-b execution; a green selector with “no tests to run” is insufficient. |
+| Import startup/reopen | `Connect` imports before destination open; re-open preserves subsequent destination writes; import once only. Verify existing (even malformed) destination wins, import errors have no fallback, old source and sidecars remain untouched, durable history/settings/queues/schedules are carried, and old/preparation execution/control state is absent. |
+| CT / Windows | CT Windows production-path acceptance green, not merely helper tests. |
+| #1427 recovery | Exact-SHA evidence for real startup/periodic/scope recovery, confirmed-dead-only and live/unknown negatives, one non-waking notice/no replay, bounded progress, and reset/attach recovery. Record issue scope/status rather than assuming closure. |
+| #1475 supervision/check-in/presentation | Verify wake-only ingress and one later delivery without termination/admission release; SV started-boundary arming, child exemption, per-call/config disable and pause/resume. Historical silence flagging, repeated-question summary, idle-child own-jobs text, and heartbeat tool/task detail must not be reduced without explicit signoff. |
+| D11 final store candidate | Re-measure on the exact final fresh-store candidate with pinned isolated baseline and raw artifacts, baseline/candidate SHAs and transition evidence. Current minimum eight-session throughput ratio vs the pinned baseline is 0.75 for the direct-view workload and 0.80 for legacy-bash (`tools/d11_report.py:17-21`); the added p95 latency budget is 15 ms (`tools/d11_report.py:239`). No errors or persistence bypass; the old unified 80%-only threshold must not be used. Both workloads independently pass; do not claim evidence without artifacts. |
+
+Operational acceptance also requires quiescence (stop old processes and automatic
+restarts throughout import; enumeration is not a registration fence), drain/stop
+all preparation hosts, acknowledgment that pre-SF bare-UUID owner-stop provenance
+cannot safely be inferred, and acknowledgment that requeued work may repeat
+external side effects. Rollback stops new hosts and runs the previous binary
+against untouched `rush.db`, restoring the old snapshot only; preserve
+`rush_store_v1.db` and sidecars, with no reverse importer or merge-back.
+
+## Historical 2026-10-12 autonomous-engine ledger (superseded for H4)
+
+The dated ledger below remains an immutable account of its historical scope,
+experiments and limits. It is not current H4 acceptance, does not establish
+current gates, and must not be read as a gates-passed claim.
 
 Evidence date: 2026-10-12. Scope: design
 `docs/plans/2026-10-07-job-batches-design.md`, section 6, native Windows.

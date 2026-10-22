@@ -104,6 +104,27 @@ That document is also the survival guide for merging upstream `main`
 into the fork — every divergence is annotated with a `// Fork patch:`
 comment in the code so conflicts surface at the right line.
 
+## Batch runtime rollout and data
+
+Batch execution is the current runtime regardless of whether `RUSH_BATCH_RUNTIME`
+is unset or set to any value, including `false` or garbage; that selector remains
+only temporarily. Active data uses `.rush/rush_store_v1.db` with one embedded
+initial migration. On first startup, durable history, settings, queues and
+schedules are imported once from the untouched `.rush/rush.db` before the new
+destination is opened. Old and preparation-era execution/control state is
+discarded, not resumed. An existing destination always wins—even if malformed—
+and import errors do not fall back to the old database.
+
+For import, stop old processes and automatic restarts for the full quiescence
+window; host enumeration is not a registration fence. Drain and stop every
+preparation host before upgrading. Pre-SF bare-UUID owner-stop fences cannot
+safely have their provenance inferred; there is no hot-continuity guarantee.
+Requeued imported work may repeat external side effects, so this is not an
+exactly-once execution promise. For rollback, stop new hosts and run the previous
+binary against untouched `.rush/rush.db`: this restores the old snapshot, not
+post-import activity. Preserve `rush_store_v1.db` and its sidecars; there is no
+reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md).
+
 ## Protecting settings
 
 Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts. Models can only be changed with the `rush models` commands; direct edits of the settings file are detected at start-up. `rush web --password <password>` authorizes settings changes from every web client connected to that server for the server's lifetime. A forgotten password cannot be reset by rush; the owner of the machine can only remove the protection by hand from the settings file whose path `rush lock` printed. That is an operator action: agents are told on every refusal to ask the user instead.
@@ -144,7 +165,7 @@ rush web                            # default port + open browser
 rush web --port 8080 --no-open      # for a remote workstation
 ```
 
-A long-lived process. Sessions live in `.rush/rush.db`, the UI loads
+A long-lived process. Sessions live in `.rush/rush_store_v1.db`; the UI loads
 the React bundle from inside the binary, the WebSocket is local-only +
 token-authed. This replaces upstream's TUI.
 
@@ -267,15 +288,15 @@ jq -r '.error' "$out"         # error.message if non-success
 
 #### Background shell ownership
 
-When `bash` runs a long-lived command in the background, it returns a shell
-ID for `job_output` and `job_kill`. The job belongs to the session that
-started it, and those tools can address only jobs owned by the current
-session. This is intentional per-App/session ownership: a sub-agent runs
-under a child session ID, so a job started by that child is not addressable
-by the parent session's `job_output` or `job_kill`, even if the child reports
-the shell ID in its result. There is no cross-session job handoff API; the
-child must inspect or terminate its own jobs before returning, or the host
-must arrange another explicit coordination path.
+The batch controls identify work directly. `batch_run` returns the batch
+`root_id`; `batch_status` reports the root and its task `node_id`s.
+`batch_output` takes a `root_id`, a task `node_id` of that root and a
+`cursor`, and serves best-effort output from the detached cache (10-minute
+TTL; pressure eviction or process exit may end it sooner). `batch_stop`
+takes a `root_id`, or a `root_id` plus a `node_id` to stop one descendant.
+An accepted `batch_stop` is a cancellation intent, not a termination
+confirmation. The legacy `job_output` / `job_kill` controls are removed in
+the batch-only runtime.
 
 #### Envelope fields worth knowing
 
