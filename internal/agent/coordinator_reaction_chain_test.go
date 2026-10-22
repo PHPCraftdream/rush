@@ -219,7 +219,7 @@ func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 	f.coord.noteWorkStarted(ctx, f.sessID)
 
 	claim := f.chainLink(ctx, "chain1", nil, true, false)
-	sr := l.supervision
+	sr := f.coord.supervision
 	sr.mu.Lock()
 	sr.byRoot[f.sessID].tickCount = 5
 	sr.mu.Unlock()

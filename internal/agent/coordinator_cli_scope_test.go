@@ -62,7 +62,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("bg-shell-only debt is deferred", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
 		sess, err := getEnv(ctx).sessions.Create(ctx, "s")
 		require.NoError(t, err)
 		seedBGShellNotice(t, store, sess.ID)
@@ -72,7 +72,7 @@ func TestCLIScope_SplitsDebtByPolicy(t *testing.T) {
 	})
 
 	t.Run("bg-shell debt beside running work is deferred and waiting", func(t *testing.T) {
-		coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+		coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
 		env := getEnv(ctx)
 		sess, err := env.sessions.Create(ctx, "s")
 		require.NoError(t, err)

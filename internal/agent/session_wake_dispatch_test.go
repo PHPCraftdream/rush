@@ -8,7 +8,7 @@ import (
 )
 
 func TestDispatchSessionWakeUsesCoordinatorPath(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	owner, err := env.sessions.Create(context.Background(), "wake-dispatch-owner")
 	require.NoError(t, err)

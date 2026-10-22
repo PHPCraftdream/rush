@@ -42,11 +42,11 @@ func newForeignDriverFx(t *testing.T, title string) *foreignDriverFx {
 	// The coordinator's store is bound exactly like SetBatchDriverClaimer
 	// does in the composition root, so ClaimExternalDriver's durable half
 	// and foreignLiveDriver read the same rows the cli store writes.
-	f.coordStore = session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "coord")
-	f.cli = session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+1, "cli")
-	t.Cleanup(func() { _ = f.cli.Close(context.Background()) })
-	f.coord.batchDriverClaimer = f.coordStore
-	return &foreignDriverFx{wakeDebtFixture: f, cli: f.cli, coordStore: f.coordStore}
+	coordStore := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "coord")
+	cli := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+1, "cli")
+	t.Cleanup(func() { _ = cli.Close(context.Background()) })
+	f.coord.batchDriverClaimer = coordStore
+	return &foreignDriverFx{wakeDebtFixture: f, cli: cli, coordStore: coordStore}
 }
 
 func (f *foreignDriverFx) inRecheckSet(id string) bool {

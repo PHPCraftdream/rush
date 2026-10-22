@@ -29,7 +29,7 @@ import (
 // bg-shell notice the operator's config says must wait for the next natural
 // turn). Restored the gate; re-ran, passed.
 func TestSessionDrainPolicy_BGShellOnlyDebt_AutoResumeOff_Refused(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
