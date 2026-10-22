@@ -499,5 +499,5 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 // rather than an already-built *db.Queries can pass it directly to
 // RegisterHost/Close.
 func AsyncHostStoreFromConn(dbtx db.DBTX) AsyncHostStore {
-	return db.New(dbtx)
+	return hostNodeStore{q: db.New(dbtx)}
 }

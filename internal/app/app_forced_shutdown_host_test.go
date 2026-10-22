@@ -47,7 +47,7 @@ func TestForcedShutdown_PinsHostLockAndRowsStayRunning(t *testing.T) {
 
 	// A new host identity in the same process cannot take the lock: the host
 	// is still alive as far as it can tell.
-	st, err := session.ProbeHost(h.dataDir, hostID)
+	st, _, err := session.ProbeHost(h.dataDir, hostID)
 	require.NoError(t, err)
 	require.Equal(t, session.HostStatusAlive, st, "the forced-shutdown host stays alive until the process exits")
 

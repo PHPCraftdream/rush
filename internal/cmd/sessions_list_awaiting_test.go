@@ -35,7 +35,6 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	child, err := s.CreateTaskSession(ctx, "awaiting-list-child", parent.ID, "worker")
 	require.NoError(t, err)
 
-	notices := session.NewSessionNoticeStore(conn)
 	childID := ""
 	{
 		batchStore := session.NewBatchStore(conn)

@@ -426,5 +426,5 @@ func (a *sessionAgentCoordinatorAdapter) RunSessionAgentCall(ctx context.Context
 
 func (a *sessionAgentCoordinatorAdapter) CancelTurn(sessionID string) {}
 
-func (a *sessionAgentCoordinatorAdapter) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+func (a *sessionAgentCoordinatorAdapter) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
 }
