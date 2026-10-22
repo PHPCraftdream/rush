@@ -65,7 +65,7 @@ func newChildBGFixture(t *testing.T, m childBGMode) *childBGFixture {
 	mgr := shell.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.Close(context.Background()) })
 	f.coord.background = mgr
-	held, err := mgr.StartOwned(t.Context(), childID, f.env.workingDir, nil, "sleep 30", "held")
+	held, err := mgr.StartOwned(t.Context(), childID, f.env.workingDir, nil, bgHoldCommand(bgGateName), "held")
 	require.NoError(t, err)
 	return &childBGFixture{
 		attemptFixture: f, parentID: parentID, childID: childID,
@@ -84,10 +84,13 @@ func (c *childBGFixture) park() {
 	require.Equal(c.t, c.childID, view.ChildSessionID)
 }
 
-// finishShell is the shell's completion as the bash tool reports it.
+// finishShell is the shell's completion as the bash tool reports it. The
+// shell ends NATURALLY (the gate file appears); a manager Kill would take the
+// shell out of the manager, and absence-means-cancelled (bgShellRowCancelled)
+// would then swallow the completion notice — cancelled shells never wake.
 func (c *childBGFixture) finishShell() {
 	c.t.Helper()
-	require.NoError(c.t, c.mgr.Kill(c.t.Context(), c.held.ID))
+	releaseBGShellGate(c.t, c.env.workingDir)
 	require.True(c.t, c.held.WaitContext(c.t.Context()))
 	c.coord.notifyBackgroundJobDone(c.childID, c.held)
 	c.coord.waitRecheckWakes()

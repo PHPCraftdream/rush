@@ -776,6 +776,14 @@ func mergeTurnOutcome(carried *fantasy.AgentResult, carriedErr error, result *fa
 // finalTurnOutcome is the loop's exit rule: a trailing (nil, nil) iteration
 // returns the carried outcome of the last real turn; anything else returns
 // its own outcome unchanged.
+//
+// Carry rule (documented observable): runOwned returns the LAST REAL TURN's
+// outcome — legacy dispatcher behavior. When a queued call (a Drain or a
+// mailbox message) legitimately runs after the owner's turn, its result IS
+// the documented observable for the owner's ExecuteRun (internal/app's
+// legacy-queueing test tolerates exactly that: the queued turn's result is
+// returned to the owner). Only a REFUSED (nil, nil) leg — a Drain that found
+// no turn to run — is ignored, letting the earlier real outcome carry.
 func finalTurnOutcome(result *fantasy.AgentResult, err error, carried *fantasy.AgentResult, carriedErr error) (*fantasy.AgentResult, error) {
 	if result == nil && err == nil && (carried != nil || carriedErr != nil) {
 		return carried, carriedErr

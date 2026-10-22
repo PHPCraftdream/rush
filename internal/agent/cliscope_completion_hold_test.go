@@ -35,7 +35,7 @@ func TestCLIScope_ParkedNotifierKeepsTheScopeOpen(t *testing.T) {
 	ctx := context.Background()
 	coord, conn, mgr, dir := b1BGShellFixture(t)
 	notices := session.NewSessionNoticeStore(conn)
-	sh, err := mgr.StartOwned(t.Context(), "session", dir, nil, "sleep 30", "window")
+	sh, err := mgr.StartOwned(t.Context(), "session", dir, nil, bgHoldCommand(bgGateName), "window")
 	require.NoError(t, err)
 
 	entered := make(chan struct{})
@@ -52,8 +52,14 @@ func TestCLIScope_ParkedNotifierKeepsTheScopeOpen(t *testing.T) {
 
 	sh.OnDone(func() { coord.notifyBackgroundJobDone("session", sh) })
 
-	require.NoError(t, mgr.Kill(ctx, sh.ID))
-	sh.Wait()
+	// The shell ends NATURALLY (the gate file appears): a manager Kill takes
+	// the shell out of the manager and absence-means-cancelled
+	// (bgShellRowCancelled) would swallow the wake notice — cancelled shells
+	// never wake. A naturally finished shell leaves ActiveOwned the moment
+	// its process exits while staying in the manager's table, so the window
+	// asserted below is unchanged.
+	releaseBGShellGate(t, dir)
+	require.True(t, sh.WaitContext(ctx))
 
 	// The shell is finished and the notifier parked at the seam, so the
 	// notice is not inserted yet.
