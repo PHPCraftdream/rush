@@ -201,7 +201,7 @@ func TestEncodeKtavExactCanonicalText(t *testing.T) {
 			"int64 max", obj("n", num("9223372036854775807")),
 			"n: 9223372036854775807\n",
 		},
-		{"scalar-looking string", obj("s", "true"), "s :: true\n"},
+		{"scalar-looking string", obj("s", "true"), "s:: true\n"},
 		{"empty string", obj("s", ""), "s:\n"},
 		{
 			"nested object",
