@@ -15,14 +15,13 @@ import (
 
 func TestBatchBindChildSessionReachesLiveWalk(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
 
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	host, err := store.EnsureHost(ctx)
-	require.NoError(t, err)
+	// The batch runtime is selected unconditionally now; the host id is
+	// deliberately unregistered (probed Dead — dead hosts stay live until
+	// recovery commits, so the reserved root keeps the walk visited).
+	host := "walk-host"
 
 	parent, err := a.Sessions.Create(ctx, "walk parent")
 	require.NoError(t, err)

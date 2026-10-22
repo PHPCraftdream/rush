@@ -84,9 +84,6 @@ func (f *fakeIsSessionBusyCoordinator) RunSessionAgentCall(ctx context.Context, 
 
 func (f *fakeIsSessionBusyCoordinator) CancelTurn(sessionID string) {}
 
-func (f *fakeIsSessionBusyCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-}
-
 func (f *fakeIsSessionBusyCoordinator) CancelQueuedSummarize(sessionID string) {
 }
 

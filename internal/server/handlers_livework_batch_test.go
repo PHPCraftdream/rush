@@ -1,15 +1,15 @@
 package server
 
-// R12-C: with RUSH_BATCH_RUNTIME ON, the flat live-work snapshot is built
-// ONLY from batch_nodes (live roots) — no async_jobs SQL executes on that
-// path, an incomplete read keeps the previously shown work (complete=false,
-// and the pusher does not broadcast a partial snapshot), and the OFF path
-// stays byte-identical.
+// R12-C: the flat live-work snapshot is built ONLY from batch_nodes (live
+// roots) — no async_jobs table exists in the final schema and none is
+// queried on that path; an incomplete read keeps
+// the previously shown work (complete=false, and the pusher does not
+// broadcast a partial snapshot).
 //
-// Revert-check: pointing the ON branch back at AsyncJobStore.JobsInTree
-// fails TestBuildSessionLiveWork_BatchOnPathWithoutAsyncJobsTable (the
-// dropped table makes the read error and no snapshot arrives); flipping the
-// flag condition fails TestBuildSessionLiveWork_OffPathUnchanged; an
+// Revert-check: pointing the batch branch back at AsyncJobStore.JobsInTree
+// fails TestBuildSessionLiveWork_BatchOnlySchemaHasNoAsyncJobsTable (the
+// fresh store has no async_jobs table at all, so the old-table read errors
+// and no snapshot arrives); an
 // incomplete read that still replaces (broadcasts) fails
 // TestLiveWorkPusher_SkipsIncompleteOnPathSnapshot; dropping the
 // complete=false downgrade fails
@@ -18,13 +18,11 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"testing"
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +43,7 @@ func insertBatchRootAndTask(t *testing.T, ctx context.Context, a *appPkg.App, ow
 	require.NoError(t, err)
 }
 
-func TestBuildSessionLiveWork_BatchOnPathWithoutAsyncJobsTable(t *testing.T) {
+func TestBuildSessionLiveWork_BatchOnlySchemaHasNoAsyncJobsTable(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "lw batch on")
@@ -54,13 +52,12 @@ func TestBuildSessionLiveWork_BatchOnPathWithoutAsyncJobsTable(t *testing.T) {
 	require.NoError(t, err)
 	insertBatchRootAndTask(t, ctx, a, sess.ID, child.ID)
 
-	// Prove the ON path needs NO async_jobs SQL: drop the table (test DB
-	// only, after migration). Any read of the old rows errors from here on.
-	_, err = a.DB().ExecContext(ctx, "DROP TABLE async_jobs")
-	require.NoError(t, err)
-
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
+	// Prove the final schema genuinely has NO async_jobs table: the fresh
+	// store must not contain it (any legacy read of it would error).
+	var n int
+	require.NoError(t, a.DB().QueryRowContext(ctx,
+		"SELECT count(*) FROM sqlite_master WHERE name='async_jobs'").Scan(&n))
+	require.Zero(t, n, "async_jobs must be absent from the final schema")
 
 	hub := newHub()
 	go hub.Run(ctx)
@@ -83,40 +80,6 @@ func TestBuildSessionLiveWork_BatchOnPathWithoutAsyncJobsTable(t *testing.T) {
 	require.Zero(t, agent.FinishedAt)
 }
 
-func TestBuildSessionLiveWork_OffPathUnchanged(t *testing.T) {
-	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	ctx := t.Context()
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.False(t, batchRuntimeEnabled())
-
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	sess, err := a.Sessions.Create(ctx, "lw off")
-	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-old", Kind: session.JobKindCommand, Input: "sleep", ToolName: "bash"})
-	require.NoError(t, err)
-	insertBatchRootAndTask(t, ctx, a, sess.ID, "")
-
-	hub := newHub()
-	go hub.Run(ctx)
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
-
-	// Flag OFF: the flat snapshot still comes from the old rows and never
-	// from batch nodes; the additive complete pointer stays nil (omitted on
-	// the wire, so the flag-off bytes are unchanged).
-	snap := requestSnapshot(t, a, client, sess.ID)
-	require.NotNil(t, snap)
-	require.Len(t, snap.Commands, 1)
-	require.Equal(t, "tc-old", snap.Commands[0].ToolCallID)
-	require.Empty(t, snap.Agents, "batch nodes must not appear on the OFF path")
-	require.Nil(t, snap.Complete)
-	raw, err := json.Marshal(snap)
-	require.NoError(t, err)
-	require.NotContains(t, string(raw), "complete")
-}
-
 func TestBuildSessionLiveWork_IncompleteBatchReadKeepsWork(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
@@ -135,7 +98,6 @@ func TestBuildSessionLiveWork_IncompleteBatchReadKeepsWork(t *testing.T) {
 	task.TaskKind = sql.NullString{String: "agent", Valid: true}
 	src := &fakeBatchSource{rows: []db.BatchNode{root, task}, failOn: map[string]bool{"child-gone": true}}
 	withBatchSeams(t, src, probeAlive, nil)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
 	snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 	require.NoError(t, err)
@@ -160,7 +122,6 @@ func TestBuildSessionLiveWork_BatchAwaitingBadgeOnPath(t *testing.T) {
 More preamble.', 0, 'pending', 'tc-b', 1700000002, 1700000002)`, sess.ID)
 	require.NoError(t, err)
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	snap, err := buildSessionLiveWork(ctx, a, newTitleCache(), sess.ID)
 	require.NoError(t, err)
 	require.NotNil(t, snap.Complete)
@@ -181,7 +142,6 @@ func TestLiveWorkPusher_SkipsIncompleteOnPathSnapshot(t *testing.T) {
 	// it already shows.
 	src := &fakeBatchSource{failOn: map[string]bool{sess.ID: true}}
 	withBatchSeams(t, src, probeAlive, nil)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
 	hub := newHub()
 	go hub.Run(ctx)

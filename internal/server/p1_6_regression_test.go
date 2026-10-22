@@ -98,9 +98,6 @@ func (f *fakeAlwaysBusyCoordinator) CancelTurn(sessionID string) {
 	f.cancelTurnCalled = true
 }
 
-func (f *fakeAlwaysBusyCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-}
-
 func (f *fakeAlwaysBusyCoordinator) CancelQueuedSummarize(sessionID string) {}
 
 func (f *fakeAlwaysBusyCoordinator) Model() agent.Model {
