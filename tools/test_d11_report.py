@@ -207,6 +207,22 @@ class D11ReportTests(unittest.TestCase):
         result = d11_report.evaluate(baselines, candidates)
         self.assertFalse(result["gates"]["legacy-bash.throughput"])  # median ratio 0.7999 < .8
 
+    # Trace: the operator budget of 2026-10-22 - direct-view gates at 0.75, legacy-bash stays at 0.80; both inclusive.
+    def test_direct_view_throughput_budget_is_075_and_legacy_bash_stays_080(self):
+        self.assertEqual(0.75, d11_report.THROUGHPUT_MIN_RATIO["direct-view"])
+        self.assertEqual(0.80, d11_report.THROUGHPUT_MIN_RATIO["legacy-bash"])
+        for rate, direct_ok, bash_ok in ((75.0, True, False), (74.99, False, False), (80.0, True, True)):
+            baselines, candidates = pair()
+            for workload in d11_report.WORKLOADS:
+                for r in ROUNDS:
+                    find_run(candidates[workload], "contention-%d" % r)["calls_per_sec"] = rate
+                refresh(candidates[workload])
+            result = d11_report.evaluate(baselines, candidates)
+            self.assertEqual(direct_ok, result["gates"]["direct-view.throughput"], rate)
+            self.assertEqual(bash_ok, result["gates"]["legacy-bash.throughput"], rate)
+            self.assertEqual(0.75, result["workloads"]["direct-view"]["throughput_min_ratio"])
+            self.assertEqual(0.80, result["workloads"]["legacy-bash"]["throughput_min_ratio"])
+
     # Trace: the throughput gate keys on the median round ratio, not the mean.
     def test_median_ratio_gate_uses_median(self):
         baselines, candidates = pair()
