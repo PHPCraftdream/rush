@@ -27,69 +27,18 @@ func (l *cliLoop) describeOpenWork() string {
 	if clause := l.describeOnceWake(); clause != "" {
 		schedule = append(schedule, clause)
 	}
-	if l.app != nil && batchCutoverOn() {
-		// R12-F: the flag-ON twin reads batch_nodes and the host lock probe
-		// only -- never async_jobs. It runs BEFORE the AsyncJobStore gate.
-		return l.describeOpenWorkBatch(schedule, generic)
-	}
-	if l.app == nil || l.app.asyncJobStore == nil {
+	if l.app == nil {
 		if len(schedule) > 0 {
 			return strings.Join(schedule, "; ")
 		}
 		return generic
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
-	defer cancel()
-	store := l.app.asyncJobStore
-	rows, err := store.ListRunningAsyncJobsForOwners(ctx, []string{l.sessionID})
-	if err != nil || len(rows) == 0 {
-		if len(schedule) > 0 {
-			return strings.Join(schedule, "; ")
-		}
-		return generic
-	}
-	parts := append(schedule, make([]string, 0, cliOpenWorkNamed)...)
-	for i, row := range rows {
-		if i == cliOpenWorkNamed {
-			parts = append(parts, fmt.Sprintf("%d more", len(rows)-cliOpenWorkNamed))
-			break
-		}
-		what := row.ToolName
-		if what == "" {
-			what = row.Kind
-		}
-		part := fmt.Sprintf("%s %q", what, row.ToolCallID)
-		if row.ChildSessionID.Valid && row.ChildSessionID.String != "" {
-			part += fmt.Sprintf(" (child session %s)", row.ChildSessionID.String)
-		}
-		part += " on " + l.describeHost(ctx, store, row.HostID)
-		parts = append(parts, part)
-	}
-	return strings.Join(parts, "; ")
+	return l.describeOpenWorkBatch(schedule, generic)
 }
 
-// describeHost renders a job's host: this process, or "host <id> (PID n,
-// alive|unknown|dead)" for another one.
-func (l *cliLoop) describeHost(ctx context.Context, store *session.AsyncJobStore, hostID string) string {
-	if session.IsOwnHostID(hostID) {
-		return "this process"
-	}
-	desc := "host " + hostID
-	pid := int64(0)
-	if h, err := store.GetAsyncHost(ctx, hostID); err == nil {
-		pid = h.Pid
-	}
-	status := store.HostLiveness(hostID).String()
-	if pid > 0 {
-		return fmt.Sprintf("%s (PID %d, %s)", desc, pid, status)
-	}
-	return fmt.Sprintf("%s (%s)", desc, status)
-}
-
-// describeOpenWorkBatch is the flag-ON twin of describeOpenWork: live work
-// is read from batch_nodes only (BatchLiveForOwner) and host liveness from
-// the shared, non-acquiring lock probe -- the async_jobs table is never
-// read (it may not exist under the R12-F flag). Display only, with the same
+// describeOpenWorkBatch renders the wait heartbeat's open-work answer: live
+// work is read from batch_nodes only (BatchLiveForOwner) and host liveness
+// from the shared, non-acquiring lock probe. Display only, with the same
 // generic-wording fallback.
 func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) string {
 	app := l.app

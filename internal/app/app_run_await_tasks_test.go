@@ -1,7 +1,7 @@
 // The await_tasks tool (#1270) end to end through the real `rush run` loop:
 // the seeded delegation rows are the same shape app_run_question_open_work_test.go
-// uses (claimed directly through the async job store, owner = the loop's
-// session), the provider is the httptest server, and the await_tasks call is
+// uses (reserved through the batch projection, owner = the loop's session),
+// the provider is the httptest server, and the await_tasks call is
 // scripted as an ordinary tool call in the first turn.
 package app
 
@@ -19,17 +19,16 @@ import (
 )
 
 // claimDelegation seeds one live `agent` delegation owned by owner, announced
-// so the loop treats it as open work from the first turn on. Dual-mode: the
-// f6 helper reserves a batch delegation when RUSH_BATCH_RUNTIME is ON and
-// claims the legacy async_jobs row when OFF.
+// so the loop treats it as open work from the first turn on. Batch-only:
+// the f6 helper reserves a constraint-valid batch root + task node
+// (Reserve-based, internal/db/migrations/20261012000001_batch_projection.sql).
 func claimDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, childID string) {
 	t.Helper()
 	f6ClaimDelegation(t, ctx, application, owner, toolCallID, childID)
 }
 
-// completeDelegation completes one delegation through the selected authority
-// (batch projection when the flag is ON, legacy row transition when OFF);
-// wake turns the completion into reaction debt in both modes.
+// completeDelegation completes one delegation through the batch projection;
+// wake turns the completion into reaction debt.
 func completeDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, summary string, wake bool) {
 	t.Helper()
 	f6CompleteDelegation(t, ctx, application, owner, toolCallID, summary, wake)
@@ -329,7 +328,7 @@ func TestRunLoop_AwaitTasksAll_ChildQuestionBreaksSleep(t *testing.T) {
 				time.Sleep(300 * time.Millisecond)
 				completeDelegation(h.t, ctx, h.app, h.sessionID, "deleg-1", "done-one", true)
 				time.Sleep(300 * time.Millisecond)
-				require.NoError(h.t, h.app.asyncJobStore.InsertSessionNotice(ctx, h.sessionID,
+				require.NoError(h.t, h.app.BatchNoticeStore().InsertSessionNotice(ctx, h.sessionID,
 					session.NoticeKindChildQuestion, "child asks: which port?", true, "deleg-2"))
 			}()
 		case 2:

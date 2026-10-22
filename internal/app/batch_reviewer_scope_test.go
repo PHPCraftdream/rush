@@ -53,7 +53,7 @@ const (
 )
 
 // TestReviewerPassCustomProviderBuildsAndReleasesConstruction drives a REAL
-// flagged New() App through ExecuteRun with a custom DiskProvider + scoped
+// New() App through ExecuteRun with a custom DiskProvider + scoped
 // FolderScopes; the primary turn runs plain-text, then the reviewer pass
 // runs over the SAME session through the borrowed binding under its OWN
 // build scope. Oracles: ExecuteRun succeeds, result.Review carries the
@@ -62,9 +62,8 @@ const (
 // defer; the review turn's own scope closed by RunWithOverrides' entry
 // defer).
 func TestReviewerPassCustomProviderBuildsAndReleasesConstruction(t *testing.T) {
-	// The batch runtime flag must be on BEFORE New (the flagged install
-	// happens inside New), mirroring newShutdownAcceptanceApp.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	// The batch runtime install happens inside New (unconditionally for a
+	// persisted, agent-setup App), mirroring newShutdownAcceptanceApp.
 
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
@@ -135,10 +134,10 @@ func TestReviewerPassCustomProviderBuildsAndReleasesConstruction(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
 
-	require.NotNil(t, application.batchInstall, "flag on: the batch runtime is installed through the app install path")
-	require.NotNil(t, application.batchInstall.DiskBindings, "flag on: the App owns a capability manager")
+	require.NotNil(t, application.batchInstall, "batch-only: the batch runtime is installed through the app install path")
+	require.NotNil(t, application.batchInstall.DiskBindings, "batch-only: the App owns a capability manager")
 
-	// Flag-on fact wiring (fixture-level, mirroring the R12-H wiring shape
+	// Fact wiring (fixture-level, mirroring the R12-H wiring shape
 	// documented on BindCoordinatorBatchCutoverFacts): bind the App's own
 	// coordinator to the node-backed fact source so the review turn's
 	// drain/launch decisions read real batch state instead of the

@@ -116,7 +116,6 @@ func (d *leakFakeDisk) Search(context.Context, tools.SearchRequest) (tools.DiskS
 }
 
 func TestSDKRunConstructionOwnersReturnToEmpty(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	var target string
 	application, _ := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

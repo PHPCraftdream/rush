@@ -3,10 +3,10 @@ package app
 // Cancel propagation: the root's own external safety valve (--timeout,
 // Ctrl-C — internal/cmd/run.go cancels exactly the ctx passed to
 // RunNonInteractiveWithResult) must end the run, but a delegated child
-// sub-agent's turn is deliberately NOT tied to that ctx — asyncTool.Run
-// detaches the delegated job's context via context.WithoutCancel
-// (internal/agent/async_tool.go:55) so an in-flight delegation survives a
-// turn-level cancellation. What actually closes the scope down to nothing
+// sub-agent's turn is deliberately NOT tied to that ctx — the batch runtime
+// detaches the delegated job's execution (the durable batch_nodes work
+// survives the turn-level cancellation) so an in-flight delegation survives
+// a turn-level cancellation. What actually closes the scope down to nothing
 // outstanding is what a real `rush run` process does NEXT: cmd/run.go's
 // `defer a.Shutdown()` unconditionally calls CancelAgents ->
 // AgentCoordinator.CancelAll (internal/app/app_lifecycle.go), which sweeps
@@ -88,7 +88,10 @@ func routeCancelPropagationRequest(body []byte) string {
 	switch {
 	case strings.Contains(system, "short title"):
 		return "title"
-	case strings.Contains(lastTool, "Async agent job "+cancelDelegCallID+" started"):
+	case strings.Contains(lastTool, "completions arrive as selected notices"):
+		// The batch detached-start tool result ("batch root <id> started;
+		// completions arrive as selected notices.", batch_delivery.go) is
+		// the delegated job's started carrier; it does not carry the call id.
 		return "root:yield"
 	case strings.Contains(lastUser, cancelChildMarker):
 		return "child:hang"
@@ -178,11 +181,11 @@ func TestRunNonInteractiveCtxCancelThenCancelAllStopsLiveChildTurn(t *testing.T)
 
 	// THE LAW UNDER TEST, first half: a plain ctx cancellation of the root
 	// run does NOT, by itself, stop the child's live turn — the delegated
-	// tool's job context is deliberately detached (context.WithoutCancel,
-	// internal/agent/async_tool.go:55), so an in-flight delegation survives
-	// a turn-level cancellation. This is what makes "wait for live
-	// descendant work" (ASYNC-02) correct rather than a leak; it also means
-	// the scope is not yet torn down here.
+	// job's execution is deliberately detached (durable batch_nodes work,
+	// owned by the batch runtime, not by the cancelling turn), so an
+	// in-flight delegation survives a turn-level cancellation. This is what
+	// makes "wait for live descendant work" (ASYNC-02) correct rather than a
+	// leak; it also means the scope is not yet torn down here.
 	require.False(t, childHandlerUnblocked.Load(),
 		"ctx cancellation alone must not have stopped the still-detached child turn")
 

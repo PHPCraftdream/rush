@@ -60,7 +60,6 @@ func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
 }
 
 func TestBatchTimeoutCheckinFutureAndMalformedPayloadsDoNotFire(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(2000000000, 0)
 	var scanner *session.BatchTimeoutCheckin
@@ -101,7 +100,6 @@ func TestBatchTimeoutCheckinFutureAndMalformedPayloadsDoNotFire(t *testing.T) {
 }
 
 func TestBatchTimeoutCheckinShutdownStopsDueScanner(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var spy *timeoutCheckinSpy

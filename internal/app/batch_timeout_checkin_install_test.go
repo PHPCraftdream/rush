@@ -23,7 +23,6 @@ func (s *timeoutCheckinSpy) Start() { s.starts.Add(1); s.scanner.Start() }
 func (s *timeoutCheckinSpy) Stop()  { s.stops.Add(1); s.scanner.Stop() }
 
 func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var spy *timeoutCheckinSpy
@@ -122,7 +121,6 @@ func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
 }
 
 func TestBatchTimeoutCheckinAttachedToRealCoordinator(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a := newFullNewApp(t)
 	require.NotNil(t, a.batchTimeoutWake)
 	require.NotNil(t, a.AgentCoordinator)
@@ -136,7 +134,6 @@ func TestBatchTimeoutCheckinAttachedToRealCoordinator(t *testing.T) {
 }
 
 func TestBatchTimeoutCheckinShutdownLeavesDebtWithoutCoordinator(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var scanner *session.BatchTimeoutCheckin
@@ -180,9 +177,12 @@ func TestBatchTimeoutCheckinShutdownLeavesDebtWithoutCoordinator(t *testing.T) {
 	require.Equal(t, 1, receipts)
 }
 
-func TestBatchTimeoutCheckinFlagOffConstructsNothing(t *testing.T) {
-	unsetBatchRuntimeEnv(t)
-	a := newFullNewApp(t)
+// TestBatchTimeoutCheckinLibraryModeConstructsNothing: library-mode New
+// (SkipAgentSetup) constructs no batch runtime, no wake dispatcher and no
+// check-in scanner. Obsolete flag-OFF contract translated to the
+// library-mode shape.
+func TestBatchTimeoutCheckinLibraryModeConstructsNothing(t *testing.T) {
+	a := newFullNewAppSkipAgentSetup(t)
 	require.Nil(t, a.batchRuntime)
 	require.Nil(t, a.batchTimeoutWake)
 }

@@ -40,9 +40,9 @@
 //	  held, so a marker here would mean a held job completed unaided, a
 //	  fixture violation. Served => release TIMER 1.
 //	leg1-open:  last user message carries CG-TICK-1 => emit the refused poll.
-//	leg1-close: last tool result is the executed "tick-1" (batch mode: the
-//	  guard's own-work half is ledger-blind, finding 4 in
-//	  .rush/stdin/jb-f6a3.findings.md) or the guard's refusal text (legacy)
+//	leg1-close: last tool result is the executed "tick-1" (the poll may be
+//	  elected inline: the guard's own-work half reads batch rows -- finding 4
+//	  in .rush/stdin/jb-f6a3.findings.md) or the guard's refusal text
 //	  => "waiting 1"; release TIMER 2.
 //	leg2-open:  last user message carries CG-TICK-2 => emit the refused poll.
 //	leg2-close: last tool result is "tick-2" or the refusal => "waiting 2";
@@ -56,7 +56,7 @@
 // with t.Errorf and a 400 -- never a silent wait.
 //
 // Revert-check: dropping ownWork from refuseWait (turn_progress_guard.go)
-// lets the echo legs through in legacy mode -- each starts an async job
+// lets the echo legs through -- each starts a detached job
 // whose completion arrives as a USER notice carrying "tick-1"/"tick-2",
 // which no closing phase accepts (a closing step only reads a TOOL result
 // or a refusal), so the provider answers 400 and the test goes red. The
@@ -135,8 +135,8 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 			// No W: every sleep launches for real (ownWork is false and a
 			// leg's streak never reaches S), so each leg's completion feeds the
 			// next one and #1113 counts the chain.
-			// The ticks must detach in BOTH modes (legacy honors the explicit
-			// flag; batch escapes after the 3s window): a sync batch job would
+			// The ticks must detach (batch escapes after the 3s inline window): a
+			// sync batch job would
 			// complete inside the window and never become reaction debt. The 4s
 			// commands are forced by the fixed 3s window
 			// (inlineWindowSeconds, batch_install_tools.go:271).
@@ -210,8 +210,8 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 				// the LAST user message of this request.
 				accept = strings.Contains(lastUser, cgTick1)
 			case cgPhaseLeg1Close:
-				// Leg 1's poll outcome: executed inline (batch, finding 4) or
-				// refused (legacy) -- read from the LAST tool result only.
+				// Leg 1's poll outcome: executed inline (the poll may be elected
+				// inline) or refused -- read from the LAST tool result only.
 				accept = strings.Contains(lastTool, "tick-1") || strings.Contains(lastTool, cgRefused)
 			case cgPhaseLeg2Open:
 				accept = strings.Contains(lastUser, cgTick2)
@@ -276,16 +276,11 @@ func TestRunNonInteractive_ChainGuardStopsAfterThreeDrainsWaitsForWork(t *testin
 	require.NotContains(t, stderr.String(), "reaction chain stopped",
 		"the refused waits start no jobs, so #1113 never sees a chain")
 	require.Empty(t, chainWarnings(res), "no chain stopped warning in the envelope either")
-	// The in-turn guard refuses each poll: no job is ever created -- flag
-	// OFF: no async_jobs row; flag ON: no batch row in ANY state (terminal
-	// included). Under RUSH_BATCH_RUNTIME=1 this currently FAILS BY
-	// DESIGN OF THE ORACLE: the guard's own-work half reads only the
-	// legacy in-memory ledger (agent_turn_step.go:320, work_ledger.go
-	// running), which batch execution never populates, so the echo legs
-	// execute and leave terminal roots. That gap is recorded as finding 4
-	// in .rush/stdin/jb-f6a3.findings.md; the oracle stays strict (package
-	// O, PR #151, makes ownWork read batch rows under ON -- what this
-	// oracle needs).
+	// The in-turn guard refuses each poll: no job is ever created -- no batch
+	// row in ANY state (terminal included). The guard's own-work half reads
+	// batch rows (package O, PR #151), which is exactly what this strict
+	// no-root oracle needs; the historical gap is recorded as finding 4
+	// in .rush/stdin/jb-f6a3.findings.md.
 	for _, callID := range []string{"call-tick1", "call-tick2"} {
 		f6a3NoWorkForCall(t, app, sessionID, callID)
 	}

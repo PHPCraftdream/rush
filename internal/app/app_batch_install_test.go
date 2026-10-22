@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -71,73 +70,91 @@ func newFullNewAppAt(t *testing.T, dataDir string) *App {
 	return application
 }
 
-// TestBatchRuntimeFlagOffGolden (R11F round-2 P1-7 item 2): with
-// RUSH_BATCH_RUNTIME unset, "false" or unparseable, an App built through the
-// REAL New entry point (NO SkipAgentSetup) has no batch runtime object, no
-// ingress seam, and the database carries NO batch rows at all — counted over
-// every owner, never through an owner=” query. This is the flag-off
-// equivalence pin for the M2 wiring.
-// unsetBatchRuntimeEnv clears RUSH_BATCH_RUNTIME for the test body:
-// t.Setenv registers the cleanup that restores the original value, and the
-// explicit os.Unsetenv removes it entirely — with the variable genuinely
-// gone, the subtest observes the unset path even when the parent CI process
-// exports RUSH_BATCH_RUNTIME=1.
-func unsetBatchRuntimeEnv(t *testing.T) {
+// newFullNewAppSkipAgentSetup is newFullNewApp with SkipAgentSetup: the
+// library-mode New shape (no agent setup, no persisted batch install).
+func newFullNewAppSkipAgentSetup(t *testing.T) *App {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.NoError(t, os.Unsetenv("RUSH_BATCH_RUNTIME"))
-}
+	isolateAppNewTestEnv(t)
+	dataDir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
 
-func TestBatchRuntimeFlagOffGolden(t *testing.T) {
-	for _, tc := range []struct {
-		name, value string
-		set         bool
-	}{
-		{name: "unset", set: false},
-		{name: "explicit false", set: true, value: "false"},
-		{name: "zero", set: true, value: "0"},
-		{name: "garbage means off", set: true, value: "sometimes"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv("RUSH_BATCH_RUNTIME", tc.value)
-			} else {
-				// Explicitly clear before any assertion or New call: inheriting
-				// the parent process's value would make the unset case a
-				// duplicate of whatever the CI environment exports.
-				unsetBatchRuntimeEnv(t)
-			}
-			require.False(t, config.BatchRuntimeEnabled())
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+	store.Config().Providers.Set("openaicompat", config.ProviderConfig{
+		ID: "openaicompat", Type: openaicompat.Name, BaseURL: srv.URL, APIKey: "probe",
+		Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}},
+	})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetupAgents()
 
-			app := newFullNewApp(t)
-			require.Nil(t, app.batchRuntime, "flag off: no batch runtime object is built")
-			require.Nil(t, app.batchWorkIngress, "flag off: no ingress seam is built")
-
-			// No batch surface wrote anything: zero rows over ALL owners.
-			var count int
-			require.NoError(t, app.DB().QueryRowContext(context.Background(),
-				`SELECT COUNT(*) FROM batch_nodes`).Scan(&count))
-			require.Zero(t, count, "flag off: no batch_nodes row is written for any owner")
-		})
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	application, err := New(context.Background(), conn, store, SkipAgentSetup())
+	if err != nil {
+		err = fmt.Errorf("New: %w", err)
+		_ = db.ReleaseConn(conn)
 	}
+	require.NoError(t, err)
+	t.Cleanup(application.Shutdown)
+	return application
 }
 
-// TestBatchRuntimeFlagOnInstall: with the flag on, the app-level install
+// TestBatchRuntimeLibraryModeNoInstall (R11F round-2 P1-7 item 2, H4
+// final-world shape): "no install" now means LIBRARY MODE -- an App built
+// through the REAL New entry point with SkipAgentSetup (or without a data
+// dir) builds no batch runtime object and no ingress seam, and the database
+// carries no batch rows. Persisted agent-setup Apps install unconditionally
+// (pinned by TestBatchRuntimeInstall below); there is no flag to read.
+func TestBatchRuntimeLibraryModeNoInstall(t *testing.T) {
+	isolateAppNewTestEnv(t)
+	dataDir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	store, err := config.Init(dataDir, dataDir, false)
+	require.NoError(t, err)
+	store.Config().Providers.Set("openaicompat", config.ProviderConfig{
+		ID: "openaicompat", Type: openaicompat.Name, BaseURL: srv.URL, APIKey: "probe",
+		Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}},
+	})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	store.SetupAgents()
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	app, err := New(context.Background(), conn, store, SkipAgentSetup())
+	require.NoError(t, err)
+	t.Cleanup(app.Shutdown)
+	require.Nil(t, app.batchRuntime, "library mode: no batch runtime object is built")
+	require.Nil(t, app.batchWorkIngress, "library mode: no ingress seam is built")
+	require.Empty(t, app.BatchHostStore().HostID(), "library mode: no host identity is registered")
+
+	// No batch surface wrote anything: zero rows over ALL owners.
+	var count int
+	require.NoError(t, app.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM batch_nodes`).Scan(&count))
+	require.Zero(t, count, "library mode: no batch_nodes row is written for any owner")
+}
+
+// TestBatchRuntimeInstall: the app-level install
 // wires the full runtime — Runner attached, release seams bound to the
 // App's R12-F HostStore/DB release path, fault watcher armed — and the
 // commit-hook identity uses the HostStore identity (one install, one
-// authority), NOT the AsyncJobStore's: async_jobs stays untouched.
-func TestBatchRuntimeFlagOnInstall(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+// authority).
+func TestBatchRuntimeInstall(t *testing.T) {
 	a := batchFactoryApp(t)
-	// The host identity registers during the flagged install (R11F M3:
+	// The host identity registers during the install (R11F M3:
 	// EnsureHost precedes the commit-hook identity), so read it after.
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	hostID := a.BatchHostStore().HostID()
 	require.NotEmpty(t, hostID)
-	// R12-F independence pin: the AsyncJobStore identity was never ensured,
-	// so the async_jobs-backed registration never ran under the flag.
-	require.Empty(t, a.asyncJobStore.HostID())
 
 	release := func() {
 		if a.batchRuntime != nil {
@@ -158,7 +175,7 @@ func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 
 	rt := a.batchRuntime
 	require.NotNil(t, rt)
-	require.NotNil(t, rt.Runner(), "flag on: Runner attached at install")
+	require.NotNil(t, rt.Runner(), "Runner attached at install")
 	require.NotNil(t, rt.cfg.ReleaseHostIdentity, "gate release seams wired")
 	require.NotNil(t, rt.cfg.ReleaseWriter)
 	require.NotNil(t, rt.cfg.RetainHostIdentity)
@@ -171,16 +188,14 @@ func TestBatchRuntimeFlagOnInstall(t *testing.T) {
 	require.NotEmpty(t, a.BatchHostStore().HostID())
 }
 
-// TestBatchRuntimeFlagOnInstallFailsClosed: a hand-assembled App without a
+// TestBatchRuntimeInstallFailsClosed: a hand-assembled App without a
 // message service must abort New-style installation with an error — never
 // continue with a half-installed runtime and never leave a runtime on the
 // App.
-func TestBatchRuntimeFlagOnInstallFailsClosed(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+func TestBatchRuntimeInstallFailsClosed(t *testing.T) {
 	a := batchFactoryApp(t)
 	a.Messages = nil
 	t.Cleanup(func() {
-		_ = a.asyncJobStore.Close(context.Background())
 		if hs := a.BatchHostStore(); hs != nil {
 			_ = hs.Close(context.Background())
 		}

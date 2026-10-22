@@ -90,7 +90,7 @@ func TestReviewerPass_WireOffersOnlyReadTools(t *testing.T) {
 
 	sets := h.requestedToolSets()
 	require.Len(t, sets, 2, "the primary turn and exactly one review turn")
-	for _, name := range []string{"bash", "write", "edit", "multiedit", "run_command", "todos", "ask_question", "download", "fetch", "agent", "agentic_fetch", "job_kill"} {
+	for _, name := range []string{"bash", "write", "edit", "multiedit", "run_command", "todos", "ask_question", "download", "fetch", "agent", "agentic_fetch", "batch_stop"} {
 		assert.NotContains(t, sets[1], name, "the reviewer turn must not be offered %q on the wire", name)
 	}
 	assert.Contains(t, sets[1], "git_read")

@@ -66,8 +66,12 @@ package app
 //     installBatchRuntime), and H4 W2 added the App-owned dead-host
 //     maintenance pass (app_batch_maintenance.go) started at install and
 //     joined in releaseResources.
-//   - No Runner construction, no commit-hook installation, no
-//     RUSH_BATCH_RUNTIME flag (R11F; flag listed as non-goal here).
+//   - No Runner construction, no commit-hook installation (RESOLVED by
+//     R11F; listed as non-goals here). The store schema ships as ONE
+//     embedded migration in the store file rush_store_v1.db
+//     (storepath.DataDirPath(dir, storepath.ActiveFilename)); opening the
+//     data dir applies it automatically — no separate migration step, and
+//     no async_jobs table.
 //   - No per-host-kind wiring: CLI/server/SDK all share the same handler;
 //     only the CLI subprocess is exercised end-to-end in tests because
 //     server/SDK hosts only exist after installation (R11F).

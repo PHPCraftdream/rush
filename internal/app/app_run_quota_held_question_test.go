@@ -17,7 +17,6 @@ import (
 )
 
 func TestCLIQuotaBusyHeldChildQuestion(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	const question = "Which port should the build use?\nPlease preserve this complete multiline question beyond the display limit: " +
 		"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
 	var application *App

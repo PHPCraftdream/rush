@@ -1,7 +1,7 @@
 package app
 
 // TestBatchChildReactionScope_ParentSettlesOnlyAfterChildReaction proves
-// (package S, jb/psc) that the flagged batch delegation stays settled-OPEN
+// (package S, jb/psc) that the batch delegation stays settled-OPEN
 // through the child's owed, in-flight and PACED completion reaction: an
 // injected 403 paces the child's first reaction attempt, the parent must not
 // be resumed by that failed attempt, and the parent finally receives the
@@ -28,10 +28,6 @@ import (
 )
 
 func TestBatchChildReactionScope_ParentSettlesOnlyAfterChildReaction(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-	if !f6BatchOn() {
-		t.Skip("flag-ON batch runtime fixture")
-	}
 	// The paced retry of the failed child reaction is driven by the
 	// coordinator's recheck pass (60s production ticker, 60s production
 	// pace after an unreacted attempt — coordinator_recheck.go /

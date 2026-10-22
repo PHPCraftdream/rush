@@ -14,10 +14,9 @@
 // against the same data directory. Each App gets its own probe HTTP
 // provider so request counts are independent and easy to assert on.
 //
-// Dual mode: flag OFF keeps every legacy read and literal byte-for-byte;
-// flag ON (RUSH_BATCH_RUNTIME) reads batch_nodes and the real HostStore
-// through the pp4 helpers, matches the real started/completion texts, uses
-// unique call ids per turn, and asserts the design-authorized graceful
+// Batch-only: the scripts read batch_nodes and the real HostStore
+// through the pp4 helpers, match the real started/completion texts, use
+// unique call ids per turn, and assert the design-authorized graceful
 // lifecycle (confirmed interruption committed during HostClosing) separately
 // from the hard-crash lifecycle. Handler goroutines never call require:
 // they report through t.Errorf + an HTTP error and return.
@@ -44,7 +43,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,9 +88,7 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
-		if f6BatchOn() {
-			require.NoError(t, os.RemoveAll(dataDir))
-		}
+		require.NoError(t, os.RemoveAll(dataDir))
 	})
 
 	srvA := httptest.NewServer(handlerA)
@@ -208,140 +204,31 @@ func countBackgroundNotices(t *testing.T, app *App, sessionID, noticeKind string
 // command is sentinel-blocked and only released in cleanup, so a rerun
 // would leave the root running, never interrupted.
 func TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted(t *testing.T) {
-	if f6BatchOn() {
-		pcrRunCrashScenario(t)
-		return
-	}
-	var requestsA, requestsB atomic.Int32
-	jobCommand, jobRelease := recoveryJobCommand(t)
-	handlerA := func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		_, _, lastTool := lastTurnParts(body)
-		switch requestsA.Add(1) {
-		case 1:
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("start", "call-1", "bash",
-					`{"command":`+jsonString(jobCommand)+`,"description":"long job"}`),
-				admissionSSEStop("start", "tool_calls"),
-			})
-		case 2:
-			if !pp4StartedSeen(lastTool, "call-1") {
-				t.Errorf("A request 2: no started tool result for call-1: %q", lastTool)
-				http.Error(w, "no started tool result", http.StatusBadRequest)
-				return
-			}
-			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
-		default:
-			t.Errorf("unexpected model call on A (request %d)", requestsA.Load())
-			http.Error(w, "unexpected model call on A", http.StatusBadRequest)
-		}
-	}
-	var sawInterrupted atomic.Bool
-	handlerB := func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		switch requestsB.Add(1) {
-		case 1:
-			// The interrupted notice is a user-role message inserted BEFORE
-			// this turn's own new "continue please" user prompt -- search
-			// the whole body, not just the LAST user message.
-			if strings.Contains(string(body), "was interrupted") {
-				sawInterrupted.Store(true)
-			}
-			admissionWriteSSE(w, []string{admissionSSEText("continue", "continuing"), admissionSSEStop("continue", "stop")})
-		default:
-			t.Errorf("unexpected model call on B (request %d)", requestsB.Load())
-			http.Error(w, "unexpected model call on B", http.StatusBadRequest)
-		}
-	}
-
-	appA, appB, sessionID := newRecoveryTwoAppHarness(t, handlerA, handlerB)
-	// Registered AFTER the harness's own cleanups, so it runs BEFORE them
-	// (and before the TempDir removals): the release lets the blocked loop
-	// exit on its own, and the idempotent Shutdown kills it outright if the
-	// release somehow does not take effect -- either way the interpreter and
-	// its poll child are gone before their working directory is removed.
-	t.Cleanup(func() {
-		releaseRecoveryJob(t, jobRelease)
-		appA.Shutdown()
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	resA, err := appA.ExecuteRun(ctx, RunRequest{
-		Prompt: "start a long job", Origin: message.OriginCLI, Overrides: RunOverrides{Origin: message.OriginCLI},
-		Mode: RunModeJSON, ContinueSessionID: sessionID, Stdout: io.Discard, Stderr: io.Discard, HideSpinner: true,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, resA)
-	require.EqualValues(t, 2, requestsA.Load())
-
-	fact := pp4JobFactByCall(t, appA, sessionID, "call-1")
-	require.Equal(t, "running", fact.State, "the job must still be running when A crashes")
-	require.Equal(t, pp4DriverHostID(t, appA), fact.HostID)
-
-	// "падает" (crashes): the OS lock is released, nothing transitioned, no
-	// clean Close ever ran -- through the selected authority's crash seam.
-	pp4CrashSimulate(t, appA)
-
-	ctxB, cancelB := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelB()
-	resB, err := appB.RunNonInteractiveWithResult(ctxB, io.Discard, "continue please", RunOverrides{
-		Origin: message.OriginCLI,
-	}, true, RunModeJSON, sessionID, false)
-	require.NoError(t, err)
-	require.NotNil(t, resB)
-	require.Equal(t, "end_turn", resB.ExitReason, "warnings=%v", resB.Warnings)
-	require.EqualValues(t, 1, requestsB.Load(), "the interrupted notice must be visible in B's FIRST turn -- no extra turn needed")
-	require.True(t, sawInterrupted.Load(), "B's first prompt must contain the interrupted notice")
-
-	// Exactly one recovered notice. The interruption is the notice's
-	// STATE/outcome/text under batch authority (the selected kind is the
-	// root's, not a legacy per-state message kind), so ON counts the SELECTED
-	// notices only: every root also carries its persisted STARTED
-	// announcement (a background-job message with an empty notice kind) that
-	// must not be counted as a second recovered notice. OFF keeps the legacy
-	// "interrupted" kind count.
-	if f6BatchOn() {
-		require.Equal(t, 1, pp4SelectedNoticeCount(t, appB, sessionID), "exactly one recovered root notice")
-	} else {
-		require.Equal(t, 1, countBackgroundNotices(t, appB, sessionID, "interrupted"), "exactly one interrupted notice")
-	}
-	factAfter := pp4JobFactByCall(t, appB, sessionID, "call-1")
-	require.Equal(t, "interrupted", factAfter.State)
-	require.EqualValues(t, 0, factAfter.Wake)
-	if f6BatchOn() {
-		require.Equal(t, "host_lost", factAfter.OutcomeCode, "a dead-host recovery commits the host_lost outcome")
-	}
+	// The batch-only crash scenario (reserve + announce + crash + recover to
+	// 'interrupted'/host_lost, delivered in B's FIRST turn, exactly one
+	// selected notice, no rerun side effect) lives in
+	// async_phase4_crash_process_test.go: the legacy body this
+	// test used to keep byte-for-byte was deleted with the authority.
+	pcrRunCrashScenario(t)
 }
 
-// TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB is doc sec.6 scenario
-// (б): a job finishes and is fully delivered (pulled + reacted) inside A's
-// own run -- B's continuation must not add any extra notice. The quick echo
-// job is a REAL detached job (the inline window is disabled by the harness);
-// under batch authority the quick command may instead be elected INLINE,
-// which consumes the completion delivery -- that shape is asserted
-// explicitly (no selected notice, root completed, still nothing for B).
 func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 	var requestsA, requestsB atomic.Int32
 	handlerA := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, lastUser, lastTool := lastTurnParts(body)
 		completionSeen := strings.Contains(lastUser, "call-1 (bash)") || pp4CompletionSeen(lastUser, "call-1")
-		startedSeen := strings.Contains(lastTool, "Async bash job call-1 started") || pp4StartedSeen(lastTool, "call-1")
+		startedSeen := pp4StartedSeen(lastTool)
 		// The started tool result stays the LAST tool-role message forever,
-		// so once a completion exists it must win the match. OFF keeps the
-		// legacy branch order byte-for-byte; ON checks the completion first.
+		// so once a completion exists it must win the match: the completion
+		// is checked first.
 		switch {
-		case completionSeen && (f6BatchOn() || !startedSeen):
-			admissionWriteSSE(w, []string{admissionSSEText("reacted", "job finished, all good"), admissionSSEStop("reacted", "stop")})
-		case startedSeen && !f6BatchOn():
-			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
-		case startedSeen:
-			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		case completionSeen:
 			admissionWriteSSE(w, []string{admissionSSEText("reacted", "job finished, all good"), admissionSSEStop("reacted", "stop")})
-		case f6BatchOn() && strings.TrimSpace(lastTool) != "":
-			// ON: the quick echo can be elected INLINE, so the last tool
+		case startedSeen:
+			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
+		case strings.TrimSpace(lastTool) != "":
+			// The quick echo can be elected INLINE, so the last tool
 			// result is the command's plain output, not the started text and
 			// not a completion notice. Any tool result for the delegated call
 			// ends the turn with the answer; falling through to the default
@@ -379,15 +266,10 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 
 	fact := pp4JobFactByCall(t, appA, sessionID, "call-1")
 	require.Equal(t, "completed", fact.State, "A's own run must have finished the quick job")
-	before := countBackgroundNotices(t, appA, sessionID, "")
-	if f6BatchOn() {
-		// Count SELECTED notices only: a detached root also persists its
-		// STARTED announcement (empty notice kind), which is not a delivery.
-		before = pp4SelectedNoticeCount(t, appA, sessionID)
-	}
-	if !f6BatchOn() {
-		require.Equal(t, 1, before, "A's own run must have delivered exactly one notice")
-	} else if before == 0 {
+	// Count SELECTED notices only: a detached root also persists its
+	// STARTED announcement (empty notice kind), which is not a delivery.
+	before := pp4SelectedNoticeCount(t, appA, sessionID)
+	if before == 0 {
 		// The inline-elected shape: the completion was the tool result
 		// itself; a later selected notice must never exist.
 		require.Zero(t, fact.Wake, "an inline-elected completion must not select a later notice")
@@ -407,10 +289,7 @@ func TestTwoAppScenarioB_DeliveredInADoesNotResurfaceInB(t *testing.T) {
 	require.Equal(t, "end_turn", resB.ExitReason)
 	require.EqualValues(t, 1, requestsB.Load(), "B must need only its own plain continuation turn")
 
-	after := countBackgroundNotices(t, appB, sessionID, "")
-	if f6BatchOn() {
-		after = pp4SelectedNoticeCount(t, appB, sessionID)
-	}
+	after := pp4SelectedNoticeCount(t, appB, sessionID)
 	require.Equal(t, before, after, "B must add NO extra notice over an already-delivered job")
 }
 
@@ -451,7 +330,7 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 				admissionSSEStop("start1", "tool_calls"),
 			})
 		case 2:
-			if !pp4StartedSeen(lastTool, "call-1") {
+			if !pp4StartedSeen(lastTool) {
 				t.Errorf("A request 2: no started tool result for call-1: %q", lastTool)
 				http.Error(w, "no started tool result", http.StatusBadRequest)
 				return
@@ -461,7 +340,7 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 				admissionSSEStop("start2", "tool_calls"),
 			})
 		case 3:
-			if !pp4StartedSeen(lastTool, "call-2") {
+			if !pp4StartedSeen(lastTool) {
 				t.Errorf("A request 3: no started tool result for call-2: %q", lastTool)
 				http.Error(w, "no started tool result", http.StatusBadRequest)
 				return
@@ -531,24 +410,15 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	// exactly what a real `rush run` process does on exit. Under batch
 	// authority this HostClosing COMMITS the confirmed interruption of the
 	// live roots (interrupted, wake=0) -- the deliberate lifecycle
-	// replacement; the legacy store leaves the rows "running" for B's
-	// recovery to interrupt.
+	// replacement; B's restart then delivers exactly one
+	// "interrupted" per task and never duplicates one.
 	appA.Shutdown()
-	if f6BatchOn() {
-		for _, id := range []string{"call-1", "call-2"} {
-			fact, ok := pp4JobFactRead(appA, sessionID, id)
-			require.True(t, ok)
-			require.True(t, fact.Found, "job %s row must survive the graceful close", id)
-			require.Equal(t, "interrupted", fact.State, "graceful HostClosing must commit the confirmed interruption of %s", id)
-			require.EqualValues(t, 0, fact.Wake, "host-closing notices never wake (%s)", id)
-		}
-	} else {
-		row1, err := appA.asyncJobStore.Get(context.Background(), sessionID, "call-1")
-		require.NoError(t, err)
-		require.Equal(t, "running", row1.State, "a graceful exit must never transition a live row")
-		row2, err := appA.asyncJobStore.Get(context.Background(), sessionID, "call-2")
-		require.NoError(t, err)
-		require.Equal(t, "running", row2.State)
+	for _, id := range []string{"call-1", "call-2"} {
+		fact, ok := pp4JobFactRead(appA, sessionID, id)
+		require.True(t, ok)
+		require.True(t, fact.Found, "job %s row must survive the graceful close", id)
+		require.Equal(t, "interrupted", fact.State, "graceful HostClosing must commit the confirmed interruption of %s", id)
+		require.EqualValues(t, 0, fact.Wake, "host-closing notices never wake (%s)", id)
 	}
 
 	// The sentinel-blocked jobs would keep the rows "running" forever if
@@ -568,11 +438,7 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	require.NotNil(t, resB)
 	require.Equal(t, "end_turn", resB.ExitReason, "warnings=%v", resB.Warnings)
 	require.EqualValues(t, 1, requestsB.Load(), "both interrupted notices must be visible in B's FIRST turn")
-	if f6BatchOn() {
-		require.Equal(t, 2, pp4SelectedNoticeCount(t, appB, sessionID), "one recovered notice PER task (the started announcements carry no notice kind and are not counted), and the restart must not duplicate one")
-	} else {
-		require.Equal(t, 2, countBackgroundNotices(t, appB, sessionID, "interrupted"), "one interrupted notice PER task")
-	}
+	require.Equal(t, 2, pp4SelectedNoticeCount(t, appB, sessionID), "one recovered notice PER task (the started announcements carry no notice kind and are not counted), and the restart must not duplicate one")
 
 	for _, id := range []string{"call-1", "call-2"} {
 		fact, ok := pp4JobFactRead(appB, sessionID, id)
@@ -582,19 +448,6 @@ func TestTwoAppScenarioC_CtrlCThenRestartInterruptsEveryLiveTask(t *testing.T) {
 	}
 }
 
-// TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts is
-// the multi-process-shaped version of internal/agent's
-// TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts (W-DRAIN B5):
-// that test is flagged "single-process" -- it proves the SQL-level fact (a
-// pull only ever touches `delivery`, never `reacted`) within ONE process/
-// connection. This proves the SAME property survives a GENUINELY SEPARATE
-// process: App B, its own *sql.DB connection (refcounted onto the same file)
-// and its own message.Service, independently pulls the session's selected
-// notice into history -- matching doc sec.3.4's policy-table row "web-tab
-// that opened the session: only pull, no turn" -- while App A (the CLI root,
-// a DIFFERENT process/connection driving the SAME session) still reacts to
-// it on its own next turn, and that reaction is visible in THAT turn's own
-// JSON result ("gets it in the result").
 func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *testing.T) {
 	var requestsA, requestsB atomic.Int32
 	jobCommand, jobRelease := recoveryJobCommand(t)
@@ -618,7 +471,7 @@ func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *te
 			// matching the first branch on every later request too.
 			requestsA.Add(1)
 			admissionWriteSSE(w, []string{admissionSSEText("reacted", "root reacted to the job"), admissionSSEStop("reacted", "stop")})
-		case pp4StartedSeen(lastTool, "call-1"):
+		case pp4StartedSeen(lastTool):
 			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 			toolStartedOnce.Do(func() { close(toolStarted) })
 		default:
@@ -708,18 +561,4 @@ func TestTwoAppScenarioE_AnotherAppPullingDoesNotEraseDebt_RootStillReacts(t *te
 	require.Contains(t, resA2.FinalText, "root reacted to the job", "the root's reaction must be visible in ITS OWN JSON result")
 
 	require.False(t, f6a3ReactionDebtExists(t, appA, sessionID), "the root's own turn must clear the debt")
-}
-
-// recoveryScenarioEBuildJobNoticeParams is a minimal, App-package-local
-// stand-in for internal/agent's unexported buildJobNoticeMessageParams:
-// enough to prove "the row moved into history" on the legacy OFF path
-// (pp4PullNotices routes ON through BatchPullNotices with the
-// production-shaped builder instead).
-func recoveryScenarioEBuildJobNoticeParams(row session.JobNoticeRow) message.CreateMessageParams {
-	return message.CreateMessageParams{
-		Role:                message.User,
-		Parts:               []message.ContentPart{message.TextContent{Text: "Async job call-1 (bash) finished: " + row.ResultContent}},
-		AutoResumed:         true,
-		BackgroundJobNotice: true,
-	}
 }

@@ -9,10 +9,14 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
+// batchFactoryApp is the explicit batch-construction fixture: a
+// hand-assembled App over a real data dir and writer connection, with the
+// batch side built through the production seams only (batchHostStore() memoizes
+// the session.HostStore over the App's writer on first use; batchHostEnsure
+// registers the host identity). No legacy store exists in the final world.
 func batchFactoryApp(t *testing.T) *App {
 	t.Helper()
 	ctx := context.Background()
@@ -21,7 +25,6 @@ func batchFactoryApp(t *testing.T) *App {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 	a := &App{dataDir: dataDir}
-	a.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, 1, "test")
 	a.Messages = message.NewService(db.New(conn))
 	a.DB = func() *sql.DB { return conn }
 	return a

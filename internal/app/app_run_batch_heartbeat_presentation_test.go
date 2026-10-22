@@ -1,4 +1,4 @@
-// The flag-ON wait heartbeat's presentation contract (package T2): a
+// The batch wait heartbeat's presentation contract (package T2): a
 // one-task batch root is named by its sole task child's task kind, a
 // multi-task root keeps the structural "batch" label, a foreign host shows
 // its retained PID next to the probe verdict, an own host stays "this
@@ -18,8 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pt2PresentationLoop describes the open work of one fresh session on an
-// ON harness.
+// pt2PresentationLoop describes the open work of one fresh session on the
+// harness.
 func pt2PresentationLoop(t *testing.T, h *loopHarness, name string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -31,7 +31,6 @@ func pt2PresentationLoop(t *testing.T, h *loopHarness, name string) (string, str
 
 func pt2PresentationHarness(t *testing.T) *loopHarness {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	return newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -69,7 +68,7 @@ func TestBatchHeartbeatPresentation_ForeignHostShowsRetainedPID(t *testing.T) {
 	foreign, err := filelock.TryAcquireFileLock(session.HostLockPath(h.dataDir, "pt2-peer"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreign.Release() })
-	_, err = db.New(h.app.DB()).RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{ID: "pt2-peer", Pid: 4242, Label: "peer", StartedAt: 1700000000})
+	_, err = db.New(h.app.DB()).RegisterAsyncHostRow(ctx, db.RegisterAsyncHostRowParams{ID: "pt2-peer", Pid: 4242, Label: "peer", StartedAt: 1700000000})
 	require.NoError(t, err)
 	sessID, _ := pt2PresentationLoop(t, h, "pt2-hb-pid")
 	pt2ReserveLiveRoot(t, h.app, sessID, "pt2-peer", "call-pt2-pid", "argv")

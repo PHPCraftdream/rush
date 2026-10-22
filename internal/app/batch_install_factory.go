@@ -22,7 +22,7 @@ import (
 // seams from App-owned resources: the host identity, the DB writer, the
 // history service. Host, store and messages come from the App; the remaining
 // install deps (profile, pinned registries, runner budgets, agent family
-// seams) are supplied by the flagged-install wiring (M2/M3).
+// seams) are supplied by the install wiring (M2/M3).
 type batchRuntimeFactory struct {
 	deps   agent.BatchInstallDeps
 	live   *session.BatchLiveReader
@@ -31,14 +31,14 @@ type batchRuntimeFactory struct {
 }
 
 // newBatchRuntimeFactory resolves the App-owned resources. It fails closed
-// when the App has no agent store or message service (SkipAgentSetup, empty
+// when the App has no host store or message service (SkipAgentSetup, empty
 // data directory): the runtime never installs half-wired.
 func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeFactory, error) {
 	if a == nil {
 		return nil, errors.New("batch runtime factory: nil app")
 	}
-	if a.asyncJobStore == nil && !(batchCutoverOn() && a.batchHostStore() != nil) {
-		return nil, errors.New("batch runtime factory: no agent store (agent setup skipped)")
+	if a.batchHostStore() == nil {
+		return nil, errors.New("batch runtime factory: no host store (agent setup skipped)")
 	}
 	if a.Messages == nil {
 		return nil, errors.New("batch runtime factory: no message service")
@@ -48,13 +48,8 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		return nil, errors.New("batch runtime factory: no db writer")
 	}
 	if deps.Host == "" {
-		if batchCutoverOn() {
-			// R12-F: the flag-ON identity is the HostStore's.
-			if hs := a.batchHostStore(); hs != nil {
-				deps.Host = hs.HostID()
-			}
-		} else {
-			deps.Host = a.asyncJobStore.HostID()
+		if hs := a.batchHostStore(); hs != nil {
+			deps.Host = hs.HostID()
 		}
 	}
 	deps.Store = session.NewBatchStoreWithReader(writer, a.batchCutoverReader(writer))
@@ -65,8 +60,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	// getter re-reads it per call; a not-yet-bound coordinator is a no-op.
 	deps.ArmSupervision = agent.PsvBatchSupervisionArmingLate(func() agent.Coordinator { return a.AgentCoordinator })
 	// R11F (M3): closed defaults so a bare install never builds half-wired.
-	// Flag-off Apps never reach the factory; the flag-on install keeps its
-	// own idempotent guards on top.
+	// The install keeps its own idempotent guards on top.
 	if deps.Profile == nil {
 		profile, err := agent.NewBatchProfileDefault()
 		if err != nil {
@@ -78,7 +72,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		deps.Registries = agent.NewBatchLeafRegistryStore()
 	}
 	if deps.AgentDeps.Runs == nil {
-		// R11F round-2 (P1-5b): the flagged install wires the R10a
+		// R11F round-2 (P1-5b): the install wires the R10a
 		// store-backed live-descendant reader over the same writer pool the
 		// batch store uses; a nil reader would report an incomplete read
 		// forever (scope never closes).
@@ -131,15 +125,11 @@ func (f *batchRuntimeFactory) build(ctx context.Context) (rt *BatchRuntime, inst
 	if err != nil {
 		return nil, nil, fmt.Errorf("batch runtime factory: %w", err)
 	}
-	if batchCutoverOn() {
-		checkin := session.NewBatchTimeoutCheckin(f.writer)
-		if f.wake != nil {
-			checkin.SetWakeFunc(f.wake)
-		}
-		rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook, TimeoutCheckin: checkin})
-	} else {
-		rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook})
+	checkin := session.NewBatchTimeoutCheckin(f.writer)
+	if f.wake != nil {
+		checkin.SetWakeFunc(f.wake)
 	}
+	rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook, TimeoutCheckin: checkin})
 	// R11F P1-6: Start constructs the Runner from the install's deps before
 	// any Invoke can run (Start happens at New-time install; Invoke only
 	// after the App is built).
