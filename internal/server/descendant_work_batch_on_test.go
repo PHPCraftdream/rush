@@ -1,12 +1,11 @@
-// R12-C instrumentation, flag ON: the live-work panel's batch snapshot must
+// R12-C instrumentation: the live-work panel's batch snapshot must
 // keep reading the delegation forest through the FLAT SNAPSHOT reader (the
 // batchSourceFor seam — a different surface from the list-annotation handler,
 // which descendant_work_annotation_reads_on_test.go instruments) in a
 // BFS-chunked way (about one BatchLiveNodesForOwners chunk per tree depth,
 // never one query per session), and the snapshot payload must actually carry
-// the reserved batch roots with their delegation child links. The legacy
-// test (descendant_work_batch_test.go) keeps its flag-OFF assertions
-// untouched; this file adds the flag-ON half.
+// the reserved batch roots with their delegation child links. The batch
+// runtime is the only runtime; this is the whole story.
 //
 // Mutations this test catches:
 //   - a per-session query loop in the batch live walk → 31+ reads for 31
@@ -16,7 +15,7 @@
 //   - losing the delegation child links (ChildSessionID) → the list
 //     annotation assertions and the payload's ChildSessionID fail.
 //
-// Seam disclosure: the LIST annotation handler's flag-ON batch facts come
+// Seam disclosure: the LIST annotation handler's batch facts come
 // from App.SessionActivityBatch (handlers_sessions.go →
 // internal/app/app_session_activity.go → batchCutoverLiveWork), which has NO
 // injectable seam in this package — the annotation assertions below are
@@ -65,10 +64,8 @@ func (c countingBatchSource) BatchLevelNodes(ctx context.Context, p db.BatchLeve
 
 // reserveLiveDelegationRoot reserves one live batch root owned by owner with
 // one running agent task child whose ChildSessionID names the delegation
-// child session — the same production BatchStore.Reserve shape
-// sessions_why_descendant_test.go's claimDelegation uses in its flag-ON
-// branch, with the root held nonterminal ("running") so the live walk keeps
-// it.
+// child session — the production session.BatchStore.Reserve shape, with the
+// root held nonterminal ("running") so the live walk keeps it.
 func reserveLiveDelegationRoot(t *testing.T, ctx context.Context, a *app.App, host, owner, toolCallID, childID string) {
 	t.Helper()
 	_, err := session.NewBatchStore(a.DB()).Reserve(ctx, session.BatchReservation{
@@ -90,17 +87,14 @@ func reserveLiveDelegationRoot(t *testing.T, ctx context.Context, a *app.App, ho
 
 func TestHandleGetSessionLiveWork_BatchOnSnapshotReaderChunkedReads(t *testing.T) {
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
 
-	// The own host: reserved roots on it are alive to the reader without any
-	// probing gymnastics (the own-host registry is alive by definition).
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	host, err := store.EnsureHost(ctx)
-	require.NoError(t, err)
+	// The batch runtime is selected unconditionally now. The host id is
+	// deliberately unregistered: the reader probes it Dead, and dead hosts
+	// stay live until recovery commits — reserved roots on it keep the
+	// walk visited with no probing gymnastics.
+	host := "on-snapshot-host"
 
 	parent, err := a.Sessions.Create(ctx, "on parent")
 	require.NoError(t, err)

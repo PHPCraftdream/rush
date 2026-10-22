@@ -24,14 +24,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// rerunTruncate is the Rerun truncation transaction (session.TruncateForRerun);
-// a package var so tests can inject a failing one. Production never reassigns.
-var rerunTruncate = session.TruncateForRerun
-
-// rerunPostTruncateSeam is a test-only hook: fires right after the truncation
-// transaction committed (the commit point) and before the voided jobs are
-// stopped, so a test can cancel the hold or the request there and prove the
-// handler still proceeds to the replacement turn. nil in every production path.
+// rerunPostTruncateSeam fires after the batch truncation commits and before
+// voided incarnations are stopped. nil in production.
 var rerunPostTruncateSeam func()
 
 // rerunPostIdlePollSeam is a test-only hook (task #614): see its call site in

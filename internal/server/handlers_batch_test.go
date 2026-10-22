@@ -1,16 +1,17 @@
 package server
 
 // Batch-work snapshot handler + push (R15a): structured batch_nodes trees
-// delivered as session_batch_work, INERT unless RUSH_BATCH_RUNTIME is on.
+// delivered as session_batch_work. Batch selection is UNCONDITIONAL: the
+// handler is always registered and the snapshot is always built from
+// batch_nodes (batchRuntimeEnabled remains as an always-true symbol until
+// lane I removes it).
 //
 // Revert-check: forcing Complete=true in buildBatchWorkSnapshot fails
 // TestBatchWorkSnapshot_IncompleteKeepsRoots and the unknown-host test;
 // deriving completions from a parsed summary string fails
 // TestBatchWorkSnapshot_StructuredCompletions; sorting nodes by NodeID
-// fails TestBatchWorkSnapshot_NodesOrderedByOrdinal; dropping the flag
-// guard in handleIncoming's dispatch fails
-// TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand; treating an
-// unknown host as dead fails TestBatchWorkSnapshot_UnknownHostIsConservative.
+// fails TestBatchWorkSnapshot_NodesOrderedByOrdinal; treating an unknown
+// host as dead fails TestBatchWorkSnapshot_UnknownHostIsConservative.
 
 import (
 	"context"
@@ -206,38 +207,6 @@ func TestBatchWorkSnapshot_StructuredCompletions(t *testing.T) {
 	require.NotContains(t, string(raw), "summary")
 }
 
-func TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.False(t, batchRuntimeEnabled())
-	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	hub := newHub()
-	go hub.Run(t.Context())
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
-
-	payload, _ := json.Marshal(GetSessionBatchWorkPayload{SessionID: "whatever"})
-	require.NoError(t, handleIncomingSync(t, a, client, payload))
-
-	var gotErr bool
-	var text string
-	deadline := time.Now().Add(2 * time.Second)
-	for !gotErr && time.Now().Before(deadline) {
-		select {
-		case raw := <-client.send:
-			var env WSMessage
-			require.NoError(t, json.Unmarshal(raw, &env))
-			if env.Type == EventError {
-				gotErr = true
-				text = env.Error
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	require.True(t, gotErr, "flag off must answer the plain unknown-command error")
-	require.Contains(t, text, "unknown command: get_session_batch_work")
-}
-
 // handleIncomingSync runs the dispatcher inline (dispatch runs handlers on
 // the calling goroutine through the semaphore, so a single reply arrives
 // synchronously enough for the channel drain above).
@@ -252,9 +221,7 @@ func handleIncomingSync(t *testing.T, a *app.App, client *Client, payload []byte
 	return nil
 }
 
-func TestHandleGetSessionBatchWork_FlagOnRepliesSnapshot(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
+func TestHandleGetSessionBatchWork_RepliesSnapshot(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
 	go hub.Run(t.Context())
@@ -291,7 +258,6 @@ func TestHandleGetSessionBatchWork_FlagOnRepliesSnapshot(t *testing.T) {
 }
 
 func TestHandleGetSessionBatchWork_UnknownSessionRefused(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
 	go hub.Run(t.Context())

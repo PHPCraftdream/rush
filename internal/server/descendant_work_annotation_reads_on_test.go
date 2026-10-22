@@ -1,5 +1,5 @@
-// R12-C instrumentation, flag ON, round 4 (P2-1/P2-2): the LIST annotation
-// handler's flag-ON facts must keep their honest derived cost over N listed
+// R12-C instrumentation, batch runtime (unconditional), round 4 (P2-1/P2-2): the LIST annotation
+// handler's facts must keep their honest derived cost over N listed
 // sessions — handleListSessions → annotateSessionActivity →
 // App.SessionActivityBatch (internal/server/handlers_sessions.go) reads, per
 // poll:
@@ -259,7 +259,7 @@ func reserveAnnotationRoot(t *testing.T, ctx context.Context, pool *sql.DB, owne
 // fact read is skipped (app_session_activity.go:141-144); every OTHER
 // annotation-path statement crosses the counting pool.
 //
-// Derived constant C (flag ON, all counts = 1 statement each):
+// Derived constant C (all counts = 1 statement each):
 //
 //	C = 1 ListSessions (db/sql/sessions.sql:94-98)
 //	  + 1 ListSessionDrivers (db/sql/session_drivers.sql:34)
@@ -286,7 +286,7 @@ func reserveAnnotationRoot(t *testing.T, ctx context.Context, pool *sql.DB, owne
 // HostStatusUnknown, batch_read_live.go:126-131), so the roots stay live and
 // the walk stays Complete.
 //
-// Static trace: entry → t.Setenv flag ON → migrate via the real db.Connect
+// Static trace: entry → migrate via the real db.Connect
 // → counting pool over the same file → hand-built App literal (activityConn
 // and batchCutoverWriter/Reader all fall back to app.DB() = the counting
 // pool) → two rounds, counters reset right before each handleListSessions →
@@ -295,9 +295,7 @@ func reserveAnnotationRoot(t *testing.T, ctx context.Context, pool *sql.DB, owne
 // annotation, per-owner tx, or a duplicated live walk fail there) → the parent
 // annotations pinned on one delegation session.
 func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
-	// Non-parallel: t.Setenv pins the flag (Go 1.26 Setenv rule).
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
+	// The counting pool is per-test; batch selection is unconditional.
 	ctx := t.Context()
 
 	// Migrations must come from the real path; the counting pool then opens
@@ -361,7 +359,7 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 
 	// Parent annotations on one delegation session: the exact single-child
 	// slice (cf. handlers_sessions_batch_cutover_test.go:113), and the
-	// by-design flag-ON divergence that a depth-0 live batch root is the
+	// by-design divergence that a depth-0 live batch root is the
 	// session's OWN work (batch_read_live.go:133-138 →
 	// app_batch_cutover_facts.go:86-90 → handlers_sessions.go:276).
 	row := findSessionRow(t, rows, firstDelegator)

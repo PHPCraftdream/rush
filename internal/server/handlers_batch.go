@@ -2,14 +2,8 @@ package server
 
 // Structured batch-node wire (R15a): the web half of the durable batch tree
 // (db.batch_nodes) — nodes, counts, delivery state, and structured
-// completions, replacing the flat async_jobs rows and TEXT-parsed
-// completions of the live-work panel. See handlers_batch_doc.go for the
-// browser-surface mapping and what stays with the old path.
-//
-// INERT by default: every entry point below no-ops unless env flag
-// RUSH_BATCH_RUNTIME parses true (batchRuntimeEnabled). Flag off, the
-// route is absent, nothing is pushed, and the old session_live_work wire
-// behaves exactly as before.
+// completions. The flat session_live_work projection is also batch-derived
+// until H5 retires that wire shape.
 
 import (
 	"context"
@@ -17,17 +11,13 @@ import (
 	"sort"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// batchRuntimeEnabled reports whether the inert batch runtime is switched
-// on. Same idiom as the keepalive cache flag (internal/agent/
-// agent_cache_keepalive.go): unset or unparseable means OFF.
-func batchRuntimeEnabled() bool {
-	return config.BatchRuntimeEnabled()
-}
+// batchRuntimeEnabled stays as an always-true batch selector until lane I
+// erases the switch symbol (H4: batch is unconditional).
+func batchRuntimeEnabled() bool { return true }
 
 // ── Wire (v: 1) ──────────────────────────────────────────────────────────────
 
@@ -516,10 +506,8 @@ func (c *BatchCountsWire) add(n db.BatchNode) {
 	}
 }
 
-// handleGetSessionBatchWork replies to CmdGetSessionBatchWork with one
-// EventSessionBatchWork snapshot for the requested session's delegation
-// tree. An unknown session is an explicit error, mirroring
-// handleGetSessionLiveWork. Registered only when batchRuntimeEnabled().
+// handleGetSessionBatchWork replies with one EventSessionBatchWork snapshot
+// for the requested session's delegation tree.
 func handleGetSessionBatchWork(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetSessionBatchWorkPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
