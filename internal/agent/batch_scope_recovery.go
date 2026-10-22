@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -12,10 +13,14 @@ import (
 // On budget exhaustion or any failure the caller's answer stays
 // conservatively live; the App-owned background maintenance pass
 // (internal/app/app_batch_maintenance.go) completes the rest later.
-// batchScopeRecoveryBudget: Var only so tests can zero it for a
-// deterministic budget-exhaustion run; production never writes it.
+// batchScopeRecoveryBudget: a 500ms best-effort watchdog around at most ONE
+// candidate root attempt per scope call (raised from 10ms in the store-v1
+// composition, where CI showed the recovery write not completing inside the
+// old bound; a failure is now logged, see recoverDeadCandidates). Var only so
+// tests can zero it for a deterministic budget-exhaustion run; production
+// never writes it.
 var (
-	batchScopeRecoveryBudget   = 10 * time.Millisecond
+	batchScopeRecoveryBudget   = 500 * time.Millisecond
 	batchScopeRecoveryMaxRoots = 1
 )
 
@@ -80,7 +85,11 @@ func (s batchScopeRecoverySource) recoverDeadCandidates(ctx context.Context, own
 	}
 	recCtx, cancel := context.WithTimeout(ctx, batchScopeRecoveryBudget)
 	defer cancel()
-	_, _, _ = s.store.RecoverHostsOnce(recCtx, s.probe, hosts, batchScopeRecoveryMaxRoots)
+	if _, _, err := s.store.RecoverHostsOnce(recCtx, s.probe, hosts, batchScopeRecoveryMaxRoots); err != nil {
+		// Best-effort: the caller's answer is unchanged and the background
+		// maintenance pass retries; the failure is only made visible.
+		slog.Warn("scope-time batch recovery failed", "owner", owner, "hosts", hosts, "err", err)
+	}
 }
 
 // recoverBatchScopeDeadCandidates is the ONE scope-time recovery hook for

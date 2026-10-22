@@ -55,7 +55,7 @@ func TestSessionsAuditHelp_DeclaresTheRulesAndTheirThresholds(t *testing.T) {
 	require.Contains(t, long, "wait-only commands")
 	require.Contains(t, long, "tool errors, counted per error class")
 	require.Contains(t, long, "supervision / wake_failed notices")
-	require.Contains(t, long, "unfinished async jobs")
+	require.Contains(t, long, "unfinished batch work")
 
 	thresholds := map[string]int{
 		"file views":      auditThresholdFileViews,

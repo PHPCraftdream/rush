@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -49,7 +51,7 @@ var _ CLIActiveWorkSource = (*coordinator)(nil)
 // failed read fails closed with the error.
 func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
 	// Scope-budgeted recovery (one
-	// 10ms budget, one candidate root attempt): recover the dead hosts this
+	// 500ms budget, one candidate root attempt): recover the dead hosts this
 	// read is about to count as live, then answer from fresh reads below.
 	// Best-effort; exhaustion keeps the conservative active answer.
 	recoverBatchScopeDeadCandidates(ctx, c, root)
@@ -251,5 +253,61 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 			}
 		}
 	}
+
+	// Legacy-frame fallback: a marker-less child_question notice under the
+	// child's immediate owner commits the pause (the OFF branch's rule,
+	// mirrored over the retained session_notices table). A batch-marker
+	// notice commits only through the fenced LiveHeldQuestions rows above;
+	// its body may quote the legacy frame (the raw question), so it is
+	// never matched textually. A fact source without a node writer has no
+	// notice table to read: those children stay active (conservative).
+	nbf, ok := facts.(nodeBatchCutoverFacts)
+	if !ok || nbf.writer == nil {
+		return committed, nil
+	}
+	for child, p := range paused {
+		if p.busy || committed[child] {
+			continue
+		}
+		texts, err := legacyChildQuestionNoticeTexts(ctx, nbf.writer, p.owner)
+		if err != nil {
+			// Unknown notice debt for this owner: the child stays active.
+			continue
+		}
+		for _, text := range texts {
+			if _, isMarker := session.ParseBatchChildQuestionNotice(text); isMarker {
+				continue
+			}
+			if !strings.Contains(text, "SUB-AGENT QUESTION (session "+child+")") {
+				continue
+			}
+			if p.toolCallID != "" && !strings.Contains(text, "job "+p.toolCallID+" stays open") {
+				continue
+			}
+			committed[child] = true
+			break
+		}
+	}
 	return committed, nil
+}
+
+// legacyChildQuestionNoticeTexts lists the raw texts of owner's retained
+// child_question notices (every delivery state, the OFF branch's read).
+func legacyChildQuestionNoticeTexts(ctx context.Context, writer *sql.DB, owner string) ([]string, error) {
+	rows, err := writer.QueryContext(ctx,
+		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2`,
+		owner, session.NoticeKindChildQuestion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		out = append(out, text)
+	}
+	return out, rows.Err()
 }

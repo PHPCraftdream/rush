@@ -52,7 +52,9 @@ CREATE TABLE messages (
 // auditBatchProjectionDDL carries the batch projection tables the audit
 // reads: batch_nodes verbatim from the production migration
 // (internal/db/migrations/20261012000001_batch_projection.sql, the CREATE
-// TABLE and its five indexes) and session_notices verbatim from
+// TABLE and its five indexes, plus the runner_id and response_envelope columns
+// the store-v1 migration added and BatchLiveNodesForOwners selects) and
+// session_notices verbatim from
 // internal/db/migrations/20260928000002_add_async_phase4_core.sql. The audit
 // refuses a store without batch_nodes (sessions_audit_db.go) and reads batch
 // facts through reduceBatchSessionFacts, whose bound-notice and debt queries
@@ -117,6 +119,8 @@ CREATE TABLE batch_nodes (
     reacted INTEGER NOT NULL DEFAULT 0 CHECK (reacted IN (0, 1)),
     wake_attempts INTEGER NOT NULL DEFAULT 0 CHECK (wake_attempts >= 0),
     reacted_failed INTEGER NOT NULL DEFAULT 0 CHECK (reacted_failed IN (0, 1)),
+    runner_id TEXT NOT NULL DEFAULT '',
+    response_envelope TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (root_id, node_id, owner_session_id, host_id),
