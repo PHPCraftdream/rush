@@ -10,6 +10,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -17,6 +18,29 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
+
+// sessionMessageIDsTx lists the owner's message ids inside the caller's
+// transaction (re-declared here after the legacy async_job_reset.go was
+// removed; the batch reset and owner-delete cascades share it).
+func sessionMessageIDsTx(ctx context.Context, tx *sql.Tx, owner string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM messages WHERE session_id = ?`, owner)
+	if err != nil {
+		return nil, fmt.Errorf("session reset: list messages: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("session reset: scan message id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session reset: list messages: %w", err)
+	}
+	return ids, nil
+}
 
 // BatchResetOutcome is what one committed batch reset removed.
 type BatchResetOutcome struct {

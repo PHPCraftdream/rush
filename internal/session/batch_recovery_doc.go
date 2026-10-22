@@ -1,5 +1,6 @@
 // Package session's R9 additions are inert. There are no production calls;
-// legacy async_jobs remains the sole live authority until the later cutover.
+// the batch stores are the live execution authority since the H4 cutover (the
+// legacy async_jobs store was deleted).
 // Recovery never executes, resumes, cancels, writes history, or wakes work.
 // A dead UUID cannot revive. Root writer election precedes all snapshot reads;
 // node outcomes, one root notice and pending-control closure commit together.
@@ -25,8 +26,8 @@
 // | purgeEmptyDeadHostFiles | Retained unchanged, not called: unsafe job-only gate. |
 // | purgeOrphanHostLockFiles | Retained unchanged; no new R9 file cleanup. |
 // | reapOrphanHostLock | Retained unchanged; no new R9 orphan cleanup. |
-// | CountJobsOlderThan | BatchCountExpired; same explicit cutoff/query as purge. |
-// | PurgeJobsOlderThan | BatchPurgeExpired; whole roots, controls cascade. |
+// | CountJobsOlderThan | BatchCountExpired; same explicit cutoff/query as purge. (The old AsyncJobStore receiver was deleted at H4; sessions gc routes through the BatchStore wrappers.) |
+// | PurgeJobsOlderThan | BatchPurgeExpired; whole roots, controls cascade. (Old receiver deleted at H4.) |
 // | HostLockStatus.String | Retained shared three-way verdict display. |
 // | HostsDir | Retained shared host infrastructure. |
 // | HostLockPath | Retained shared host infrastructure. |

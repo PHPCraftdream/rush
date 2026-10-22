@@ -17,7 +17,7 @@ import (
 
 func wakeNoticeTexts(t *testing.T, f *wakeFx) []string {
 	t.Helper()
-	rows, err := f.fx.q.ListSessionNoticesForOwner(context.Background(), rerunOwner)
+	rows, err := f.q.ListSessionNoticesForOwner(context.Background(), wakeTestOwner)
 	require.NoError(t, err)
 	texts := make([]string, 0, len(rows))
 	for _, r := range rows {

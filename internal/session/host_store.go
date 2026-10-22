@@ -1,15 +1,12 @@
-// RETAINED host lifecycle, job-independent (package R12-D chunk 1): the
-// register/ensure/Close trio the host lock module describes (doc sec.3.6),
-// implemented WITHOUT any async_jobs query so it survives R12-H dropping the
-// async_jobs table. This file ADDS a new implementation next to
-// AsyncJobStore's existing one; the OFF path (RUSH_BATCH_RUNTIME off) keeps
-// using AsyncJobStore untouched.
+// RETAINED host lifecycle (package R12-D chunk 1): the register/ensure/Close
+// trio the host lock module describes (doc sec.3.6), implemented WITHOUT any
+// async_jobs query (H4 final world: the legacy AsyncJobStore was deleted and
+// HostStore is the only host lifecycle).
 //
-// Two async_jobs couplings are deliberately NOT carried over:
-//   - ensureHost's first-registration dead-host sweep (SweepDeadHosts) reads
-//     async_jobs and stays a job-table concern -- HostStore.EnsureHost does
-//     not sweep.
-//   - "delete host if no jobs" becomes "delete host if no LIVE batch_nodes
+// Two legacy async_jobs couplings were deliberately NOT carried over:
+//   - the first-registration dead-host sweep (SweepDeadHosts) was a
+//     job-table concern -- HostStore.EnsureHost does not sweep.
+//   - "delete host if no jobs" became "delete host if no LIVE batch_nodes
 //     rows" (state in the live set) via db.Queries.DeleteAsyncHostIfNoNodes.
 package session
 
@@ -25,10 +22,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 )
 
-// hostNodeStore adapts *db.Queries' NEW host methods (async_hosts.sql) onto
-// the AsyncHostStore interface host_lock.go already defines, so RegisterHost
-// and HostIdentity.Close can be REUSED verbatim (read-only reuse: host_lock.go
-// is not edited) without ever touching an async_jobs query.
+// hostNodeStore adapts *db.Queries' host methods (async_hosts.sql) onto the
+// AsyncHostStore interface host_lock.go defines, so RegisterHost and
+// HostIdentity.Close are REUSED verbatim without ever touching an async_jobs
+// query.
 type hostNodeStore struct {
 	q *db.Queries
 }
@@ -36,8 +33,8 @@ type hostNodeStore struct {
 // hostNodeStore implements AsyncHostStore.
 var _ AsyncHostStore = hostNodeStore{}
 
-func (a hostNodeStore) RegisterAsyncHost(ctx context.Context, arg db.RegisterAsyncHostParams) (db.AsyncHost, error) {
-	return a.q.RegisterAsyncHostRow(ctx, db.RegisterAsyncHostRowParams(arg))
+func (a hostNodeStore) RegisterAsyncHost(ctx context.Context, arg db.RegisterAsyncHostRowParams) (db.AsyncHost, error) {
+	return a.q.RegisterAsyncHostRow(ctx, arg)
 }
 
 // DeleteAsyncHostIfNoJobs is the AsyncHostStore method name host_lock.go's
@@ -48,8 +45,8 @@ func (a hostNodeStore) DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (
 }
 
 // HostStore is the retained, job-independent host lifecycle: one lazily
-// registered HostIdentity per store (memoized exactly like
-// AsyncJobStore.ensureHost), plus the clean/forced teardown paths.
+// registered HostIdentity per store (memoized), plus the clean/forced
+// teardown paths.
 type HostStore struct {
 	sqlDB   *sql.DB
 	q       *db.Queries
@@ -58,7 +55,7 @@ type HostStore struct {
 	label   string
 
 	// regMu serialises host registration and teardown (EnsureHost, Close,
-	// CloseKeepLock, SimulateCrashForTest) exactly like AsyncJobStore's.
+	// CloseKeepLock, SimulateCrashForTest).
 	// It IS held across the registration I/O, so nothing that can run inside
 	// a writer transaction ever takes it.
 	regMu sync.Mutex
@@ -81,10 +78,9 @@ func (s *HostStore) hostQueries() AsyncHostStore {
 }
 
 // EnsureHost lazily registers this store's host identity exactly once (doc
-// sec.3.6), returning its id. Safe for concurrent callers. Same memoization
-// pattern as AsyncJobStore.ensureHost, MINUS the first-registration
-// dead-host sweep: that sweep is an async_jobs concern and is deliberately
-// not performed here (see the file's doc).
+// sec.3.6), returning its id. Safe for concurrent callers. No
+// first-registration dead-host sweep: that sweep was an async_jobs concern
+// and is deliberately not performed here (see the file's doc).
 func (s *HostStore) EnsureHost(ctx context.Context) (string, error) {
 	if h := s.host.Load(); h != nil {
 		return h.ID, nil
@@ -117,7 +113,7 @@ func (s *HostStore) HostID() string {
 // if one was ever registered. Safe to call on a store that never ensured a
 // host (no-op). The host row survives iff the host still owns batch_nodes
 // rows (DeleteAsyncHostIfNoNodes, live-set rule); a clean exit also takes this host's
-// session-driver markers with it, exactly like AsyncJobStore.Close.
+// session-driver markers with it.
 func (s *HostStore) Close(ctx context.Context) error {
 	h := s.takeHost()
 	if h == nil {
@@ -131,8 +127,8 @@ func (s *HostStore) Close(ctx context.Context) error {
 
 // CloseKeepLock is Close's forced-shutdown counterpart (A12): it forgets the
 // in-memory host handle WITHOUT releasing the OS lock, deleting the
-// async_hosts row, or touching the lock file -- identical semantics to
-// AsyncJobStore.CloseKeepLock (the lock is pinned until process exit).
+// async_hosts row, or touching the lock file (the lock is pinned until
+// process exit).
 // Safe to call on a store that never ensured a host (no-op).
 func (s *HostStore) CloseKeepLock() {
 	h := s.takeHost()
@@ -144,9 +140,8 @@ func (s *HostStore) CloseKeepLock() {
 
 // SimulateCrashForTest releases this store's own OS host lock and forgets
 // its "own id" marking, WITHOUT deleting the async_hosts/batch_nodes rows or
-// the lock file itself -- the same crash model as
-// AsyncJobStore.SimulateCrashForTest, so a later ProbeHost call in the same
-// test process sees this host as dead. Test-only.
+// the lock file itself -- the standard crash model, so a later ProbeHost call
+// in the same test process sees this host as dead. Test-only.
 func (s *HostStore) SimulateCrashForTest() error {
 	h := s.takeHost()
 	if h == nil {
@@ -166,14 +161,11 @@ func (s *HostStore) takeHost() *HostIdentity {
 	return s.host.Swap(nil)
 }
 
-// ClaimSessionDriver records this store's host as sessionID's driver: the
-// job-independent twin of AsyncJobStore.ClaimSessionDriver. Same contract:
-// idempotent for the same host; refuses (*ErrSessionDrivenElsewhere) while
+// ClaimSessionDriver records this store's host as sessionID's driver.
+// Idempotent for the same host; refuses (*ErrSessionDrivenElsewhere) while
 // another host that is alive or unknown holds the marker; takes a dead
-// host's marker over. NO async_jobs work happens on this path -- unlike the
-// AsyncJobStore version, EnsureHost here never runs the recovery sweep
-// (SweepDeadHosts), which is the whole point of this duplicate surface.
-// The ErrDriverMarkerUnavailable mapping is identical (session_driver.go).
+// host's marker over. EnsureHost here never runs a recovery sweep. The
+// ErrDriverMarkerUnavailable mapping is identical (session_driver.go).
 func (s *HostStore) ClaimSessionDriver(ctx context.Context, sessionID string) error {
 	hostID, err := s.EnsureHost(ctx)
 	if err != nil {
@@ -193,9 +185,8 @@ func (s *HostStore) ReleaseSessionDriver(ctx context.Context, sessionID string) 
 
 // ForeignLiveDriver reports whether ANOTHER host that is alive or unknown
 // drives sessionID: no marker, or a marker naming this store's own host, is
-// not foreign; a dead host's marker is not foreign either. Same semantics as
-// AsyncJobStore.ForeignLiveDriver; this store has a single connection, so
-// the PK read goes through s.q.
+// not foreign; a dead host's marker is not foreign either. This store has a
+// single connection, so the PK read goes through s.q.
 func (s *HostStore) ForeignLiveDriver(ctx context.Context, sessionID string) (SessionDriver, bool, error) {
 	return foreignLiveDriverFor(ctx, s.HostID(), s.q, s.dataDir, sessionID)
 }

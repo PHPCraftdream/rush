@@ -333,11 +333,3 @@ func batchTerminalCompletion(root db.BatchNode, children []db.BatchNode) (BatchD
 	}
 	return batchTerminalEnvelope(root, root), true, nil
 }
-
-// EnsureHost registers this store's host identity exactly once (the
-// ensureHost lazy registration) and returns its id. R11F (M3): the flagged
-// batch-runtime install needs the commit-hook identity BEFORE the first
-// Claim, so the app boundary registers the host up front.
-func (s *AsyncJobStore) EnsureHost(ctx context.Context) (string, error) {
-	return s.ensureHost(ctx)
-}
