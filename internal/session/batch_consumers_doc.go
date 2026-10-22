@@ -2,8 +2,9 @@ package session
 
 // R10c chunk 1 — history and activity consumers: inventory, mapping table and
 // the chunk 2/3 store-function skeleton. INERT: nothing here is called by
-// production code; legacy async_jobs remains the sole live authority until
-// the R12 cutover. This file contains only documentation comments, typed
+// production code; the batch stores are the live execution authority since
+// the H4 cutover (the legacy async_jobs store was deleted). This file contains
+// only documentation comments, typed
 // error declarations and small shared types; chunk 2/3 implement the named
 // functions in batch_reset.go / batch_rerun.go / batch_owner_delete.go /
 // batch_history.go using internal/db/sql/batch_history.sql plus the existing

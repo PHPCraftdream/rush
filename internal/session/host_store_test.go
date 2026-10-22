@@ -1,9 +1,10 @@
 // HostStore coverage (package R12-D chunk 1): the retained host lifecycle
-// exercised against a database where async_jobs DOES NOT EXIST -- dropped
-// right after db.Connect's migrations. Any accidental async_jobs query in
-// the new path errors ("no such table: async_jobs"), which is what makes
-// these tests real: they prove the lifecycle is job-table-independent.
-// batch_nodes (migration 20261012000001) exists and is used to drive the
+// exercised against a database without async_jobs (H4 final world: the table
+// no longer exists; the helper's conditional drop keeps the dropped-table
+// hardening meaningful on any base that still creates it). Any accidental
+// async_jobs query in the retained paths errors ("no such table:
+// async_jobs"), which is what makes these tests real: they prove the
+// lifecycle is job-table-independent. batch_nodes is used to drive the
 // DeleteAsyncHostIfNoNodes guard.
 package session
 
@@ -20,10 +21,10 @@ import (
 )
 
 // newHostTestDB opens a real, migrated SQLite DB via db.Connect in a fresh
-// temp dir, then DROPS async_jobs. Connect itself only runs migrations
-// (goose Up) and opens the pool -- nothing after Connect in these tests
-// reads async_jobs, so the drop is safe immediately after it returns and
-// turns any hidden dependency into a loud "no such table" error.
+// temp dir, then drops async_jobs when it still exists. Connect itself only
+// runs migrations (goose Up) and opens the pool -- nothing after Connect in
+// these tests reads async_jobs, so the drop is safe immediately after it
+// returns and turns any hidden dependency into a loud "no such table" error.
 func newHostTestDB(t *testing.T) (*sql.DB, *db.Queries, string, context.Context) {
 	t.Helper()
 	dataDir := t.TempDir()
@@ -31,8 +32,8 @@ func newHostTestDB(t *testing.T) (*sql.DB, *db.Queries, string, context.Context)
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
-	_, err = conn.ExecContext(ctx, "DROP TABLE async_jobs")
-	require.NoError(t, err, "async_jobs must exist after migrations, before the drop")
+	_, err = conn.ExecContext(ctx, "DROP TABLE IF EXISTS async_jobs")
+	require.NoError(t, err, "the async_jobs drop must always succeed")
 	return conn, db.New(conn), dataDir, ctx
 }
 

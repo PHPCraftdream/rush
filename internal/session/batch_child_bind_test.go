@@ -8,10 +8,10 @@ package session
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,7 +49,7 @@ func batchBindFixture(t *testing.T) (*BatchStore, *sql.DB, string, string, strin
 // just visible through the writer's in-memory page cache.
 func batchBindReadLink(t *testing.T, dir, taskNode string) sql.NullString {
 	t.Helper()
-	raw, err := sql.Open("sqlite", filepath.Join(dir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	raw, err := sql.Open("sqlite", storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	defer raw.Close()
 	var linked sql.NullString

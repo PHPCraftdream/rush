@@ -1,15 +1,14 @@
 // The ON-runtime session-notice machinery (package R12-D chunk 2): the
 // session-notice half of notice_pull.go (pull, void condition, insert,
 // list, pending-inclusive debt) re-implemented WITHOUT any async_jobs
-// query, so it survives R12-H dropping the table. Selection happens by
+// query. Since the H4 cutover the legacy AsyncJobStore is deleted and this
+// store is the only session-notice machinery. Selection happens by
 // CONSTRUCTION, never by reading RUSH_BATCH_RUNTIME: the store takes its
 // bound-notice check, live-roots read, host id and host-liveness predicate
 // as injected function fields; NewSessionNoticeStore wires the batch
 // implementations (batch_nodes root rows, live-state set
 // pending/starting/running/cancelling -- the same set GetLiveBatchRoot and
-// ListLiveBatchRootsForOwner encode). The OFF path keeps using
-// AsyncJobStore's existing methods (notice_pull.go, notice_row_ids.go,
-// session_child_question.go) untouched.
+// ListLiveBatchRootsForOwner encode).
 //
 // Behavior mirrors the legacy session half exactly: same per-row
 // transaction, same CAS, same void/keep decisions, same error propagation
@@ -46,9 +45,8 @@ import (
 //   - liveRootsForOwner: the supervision arm's read. Batch implementation
 //     (default): ListLiveBatchRootsForOwner (same live-state set).
 //   - hostID / hostNotDead: the caller's own host id and liveness
-//     predicate, captured before any transaction opens exactly like
-//     AsyncJobStore's ownHostID (R2A-2). Defaults: empty id and
-//     "equal ids are alive" (fail-open keeps the notice only for the own
+//     predicate, captured before any transaction opens. Defaults: empty id
+//     and "equal ids are alive" (fail-open keeps the notice only for the own
 //     host); production wiring passes HostStore-backed implementations via
 //     SetHostIDFunc/SetHostNotDeadFunc.
 type SessionNoticeStore struct {
@@ -64,8 +62,7 @@ type SessionNoticeStore struct {
 
 // NewSessionNoticeStore builds the store over sqlDB with the batch
 // implementations of boundNoticeGone and liveRootsForOwner. SetReadConn
-// and the host setters refine it after construction (same shape as
-// AsyncJobStore's SetReadConn/SetMessages).
+// and the host setters refine it after construction.
 func NewSessionNoticeStore(sqlDB *sql.DB) *SessionNoticeStore {
 	s := &SessionNoticeStore{
 		sqlDB:   sqlDB,
@@ -107,11 +104,11 @@ func batchBoundNoticeGone(ctx context.Context, q *db.Queries, ownerSessionID, to
 }
 
 // SetReadConn wires the read pool for read-only readers (PendingChildQuestions),
-// exactly like AsyncJobStore.readQuerier: without it, the writer is used.
+// without it, the writer is used.
 func (s *SessionNoticeStore) SetReadConn(q *db.Queries) { s.readQ.Store(q) }
 
 // SetHostIDFunc wires the own-host-id accessor (captured before any
-// transaction opens, like AsyncJobStore's ownHostID).
+// transaction opens).
 func (s *SessionNoticeStore) SetHostIDFunc(f func() string) {
 	if f != nil {
 		s.hostIDF = f
@@ -136,10 +133,9 @@ func (s *SessionNoticeStore) readQuerier() *db.Queries {
 	return s.q
 }
 
-// PullSessionNotices is the job-independent mirror of AsyncJobStore's
-// (notice_pull.go): every pending session_notices row for owner, oldest
-// first, one transaction per row; a row whose void condition fails is
-// marked void in the same transaction and produces no message. A per-row
+// PullSessionNotices pulls every pending session_notices row for owner
+// (oldest first), one transaction per row; a row whose void condition fails
+// is marked void in the same transaction and produces no message. A per-row
 // error is logged and skipped -- the row stays pending, never failing the
 // whole pull.
 func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(SessionNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
@@ -257,8 +253,7 @@ func (s *SessionNoticeStore) sessionNoticeVoidCondition(ctx context.Context, q *
 }
 
 // InsertSessionNotice persists a session_notices row with delivery='pending'
-// -- the job-independent twin of AsyncJobStore's (notice_pull.go), same
-// parameters and semantics.
+// with the given parameters and semantics.
 func (s *SessionNoticeStore) InsertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) error {
 	_, err := s.insertSessionNotice(ctx, owner, kind, text, wake, jobToolCallID)
 	return err
@@ -339,13 +334,12 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 	return out, nil
 }
 
-// PendingChildQuestions is the SessionNoticeStore twin of
-// AsyncJobStore.PendingChildQuestions (session_child_question.go, which
-// stays untouched for the OFF path): same drop rules, same fail-open on a
-// void-check error -- only the void condition's fact source is the injected
-// batch one. Batch-published questions (job_tool_call_id NULL, exactly how
-// BatchPublishQuestion inserts them) are parsed with the batch frame
-// parser and never run the void rule, mirroring the pull path's
+// PendingChildQuestions reads the owner's still-pending child_question
+// notices and parses each into a ChildQuestion: same drop rules, same
+// fail-open on a void-check error -- only the void condition's fact source
+// is the injected batch one. Batch-published questions (job_tool_call_id
+// NULL, exactly how BatchPublishQuestion inserts them) are parsed with the
+// batch frame parser and never run the void rule, mirroring the pull path's
 // !row.JobToolCallID short-circuit; bound rows keep the legacy parser and
 // the bound-notice void check.
 func (s *SessionNoticeStore) PendingChildQuestions(ctx context.Context, owner string) ([]ChildQuestion, error) {

@@ -19,9 +19,12 @@ left are legacy functions, not wrappers used by this implementation.
 notice_pull.go:
   PullJobNotices -> BatchPullNotices.
   pullOneJobNotice -> batchPullOneNotice (root/node identity and ordered CAS).
-  PullSessionNotices -> retained unchanged; binding delivery deferred to cutover.
+  PullSessionNotices -> retained unchanged (SessionNoticeStore carries it
+    since H4); binding delivery deferred to cutover.
   pullOneSessionNotice -> retained unchanged; not duplicated in this package.
-  sessionNoticeVoidCondition -> retained unchanged. No Batch lookup is hidden
+  sessionNoticeVoidCondition -> retained unchanged (SessionNoticeStore's
+    injected batch facts replace the async_jobs reads at H4). No Batch lookup
+    is hidden
     behind job_tool_call_id. Child-question binding delivery is later-cutover
     work; no node question metadata or binding schema is invented here.
   InsertSessionNotice -> retained unchanged (existing notice infrastructure).
@@ -72,6 +75,7 @@ rows. Failed ack leaves the controllable reserved identity untouched and cannot
 repeat execution. Envelope persistence and Engine-to-projection wiring belong
 to other owners; snapshots expose the existing response-envelope reference.
 Recovery, retention, rerun/reset, host probes, await, bound-notice delivery and
-production activation are later packages. async_jobs and all old callers remain
-untouched and authoritative until cutover. No migration is required for R8.
+production activation are later packages. At the H4 cutover the legacy
+async_jobs store and its callers were deleted; the batch stores are the sole
+execution authority. No migration is required for R8.
 */

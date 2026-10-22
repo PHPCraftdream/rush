@@ -1,11 +1,12 @@
 // SessionNoticeStore coverage (package R12-D chunk 2): the ON-runtime
-// session-notice machinery exercised against a database where async_jobs
-// DOES NOT EXIST -- dropped right after db.Connect's migrations. Any
-// accidental async_jobs query in the new path errors ("no such table:
-// async_jobs"), which is what makes these tests real: they prove the
-// notice pull, its void condition, the child-question reader, and the
-// batch-facts debt read are all job-table-independent. batch_nodes rows
-// (migration 20261012000001) drive the injected batch fact sources.
+// session-notice machinery exercised against a database without async_jobs
+// (H4 final world: the table no longer exists; the helper's conditional drop
+// keeps the dropped-table hardening meaningful on any base that still
+// creates it). Any accidental async_jobs query in the retained paths errors
+// ("no such table: async_jobs"), which is what makes these tests real: they
+// prove the notice pull, its void condition, the child-question reader, and
+// the batch-facts debt read are all job-table-independent. batch_nodes rows
+// drive the injected batch fact sources.
 package session
 
 import (
@@ -21,10 +22,10 @@ import (
 )
 
 // newNoticeTestDB opens a real, migrated SQLite DB via db.Connect in a
-// fresh temp dir, then DROPS async_jobs. Connect itself only runs
-// migrations (goose Up) and opens the pool; nothing after Connect in these
-// tests reads async_jobs, so the immediate drop is safe and turns any
-// hidden dependency into a loud "no such table" error.
+// fresh temp dir, then drops async_jobs when it still exists. Connect itself
+// only runs migrations (goose Up) and opens the pool; nothing after Connect
+// in these tests reads async_jobs, so the immediate drop is safe and turns
+// any hidden dependency into a loud "no such table" error.
 func newNoticeTestDB(t *testing.T) (*sql.DB, *db.Queries, context.Context) {
 	t.Helper()
 	dataDir := t.TempDir()
@@ -32,8 +33,8 @@ func newNoticeTestDB(t *testing.T) (*sql.DB, *db.Queries, context.Context) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
-	_, err = conn.ExecContext(ctx, "DROP TABLE async_jobs")
-	require.NoError(t, err, "async_jobs must exist after migrations, before the drop")
+	_, err = conn.ExecContext(ctx, "DROP TABLE IF EXISTS async_jobs")
+	require.NoError(t, err, "the async_jobs drop must always succeed")
 	return conn, db.New(conn), ctx
 }
 

@@ -37,8 +37,12 @@ type wsFx struct {
 
 func newWsFx(t *testing.T) *wsFx {
 	t.Helper()
-	store, q, ctx := newTestStore(t)
-	return &wsFx{t: t, conn: store.sqlDB, q: q, ctx: ctx}
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+	return &wsFx{t: t, conn: conn, q: db.New(conn), ctx: ctx}
 }
 
 // service builds the session service bound to workspaceRoot/workDir with

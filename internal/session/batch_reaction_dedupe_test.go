@@ -8,10 +8,10 @@
 package session
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +19,7 @@ import (
 func TestBatchPendingInclusiveDebtRowsReadsNoticesOnce(t *testing.T) {
 	t.Parallel()
 	_, conn, _, ctx, dataDir := batchServedTestEnv(t)
-	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	logDB, log := newBatchSQLLogDB(t, storepath.DataDirPath(dataDir, storepath.ActiveFilename))
 	q := db.New(conn)
 	// Seed node debt with the exact batch_reaction_test.go recipe: a root
 	// reserved, settled with a notice (notice_selected=1, wake=1, delivery

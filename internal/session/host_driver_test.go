@@ -1,7 +1,8 @@
 // Retained driver + wake coverage (package R12-D chunk W-B findings 4 and 6):
 // the job-INDEPENDENT driver registration surface on HostStore and the wake
-// schedule lifecycle, both exercised against a database where async_jobs DOES
-// NOT EXIST (newHostTestDB drops it right after migrations). Any accidental
+// schedule lifecycle, exercised against a database without async_jobs (H4
+// final world; newHostTestDB's conditional drop keeps the hardening
+// meaningful on any base that still creates the table). Any accidental
 // async_jobs query in these paths errors ("no such table: async_jobs"), which
 // is what makes these tests real.
 package session

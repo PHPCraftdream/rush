@@ -53,8 +53,8 @@ func (s *service) CreateWithID(ctx context.Context, id, title string) (Session, 
 }
 
 // CreateTaskSession creates the durable per-delegation session row keyed by
-// toolCallID (deterministic: async_jobs.child_session_id is claimed with the
-// SAME id before this row exists, doc sec.3.8). Idempotent for a repeated
+// toolCallID (deterministic: the batch delegation binds the child session
+// under the SAME id, doc sec.3.8). Idempotent for a repeated
 // call naming the SAME (toolCallID, parentSessionID) pair -- closes task
 // #1038: a delegation whose claim already committed the row (e.g. a retried
 // tool call, or an ASYNC-01 dead-host recovery that reused the id) must get

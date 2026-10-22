@@ -55,7 +55,7 @@ func TestWakeScheduleStore_NextDueAimsAtClaimableMoment(t *testing.T) {
 	// Phase 3: B cancelled and A's lease expired (the recovery sweep
 	// clears it): NextDue is back to next_run_at semantics -- A's (past)
 	// next_run_at, i.e. the row is due and claimable again.
-	require.NoError(t, f.wake.CancelSchedule(f.ctx, rerunOwner, rowB.ID, f.base))
+	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, rowB.ID, f.base))
 	_, err = f.wake.RecoverExpiredLeases(f.ctx, expiry.Add(time.Second))
 	require.NoError(t, err)
 	next, err = f.wake.NextDue(f.ctx)
