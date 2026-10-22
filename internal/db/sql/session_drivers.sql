@@ -22,7 +22,7 @@ WHERE session_id = @session_id AND host_id = @expected_host_id;
 DELETE FROM session_drivers WHERE session_id = ? AND host_id = ?;
 
 -- name: DeleteSessionDriversForHost :execrows
--- Host exit (AsyncJobStore.Close) or dead-host purge: every marker naming
+-- Host exit (batch runner shutdown) or dead-host purge: every marker naming
 -- the host goes with it.
 DELETE FROM session_drivers WHERE host_id = ?;
 

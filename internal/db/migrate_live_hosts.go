@@ -16,9 +16,9 @@ func hostLockPath(dataDir, hostID string) string {
 	return filepath.Join(dataDir, "hosts", hostID+".lock")
 }
 
-// CheckLiveHosts refuses the destructive async_jobs migration while any
-// enumerated host looks alive. The future destructive migration step (R12-H)
-// calls it as a PreMigrationCheck while the migration decision lock
+// CheckLiveHosts refuses migration/import cutover operations while any
+// enumerated host looks alive. The cutover step calls it as a
+// PreMigrationCheck while the migration decision lock
 // (<dataDir>/migrate.lock) is still held. The gate blocks migration/cutover
 // operations while hosts are alive, but the migrate.lock it runs under does
 // NOT by itself prevent host registration: registering takes only an
@@ -26,11 +26,11 @@ func hostLockPath(dataDir, hostID string) string {
 // migrate.lock (see session host registration), so operators must still
 // quiesce hosts for the whole migration window.
 //
-// Every async_hosts row is probed, including hosts with zero jobs (a live
-// host with no jobs may still be mid-write). Dead-only hosts proceed. Alive
-// hosts, unknown probes, probe errors, and own-process hosts all refuse.
-// Every blocking host is collected into ONE error so the operator sees the
-// full set at once.
+// Every async_hosts row is probed, including hosts with zero live work (a
+// live host with no work may still be mid-write). Dead-only hosts proceed.
+// Alive hosts, unknown probes, probe errors, and own-process hosts all
+// refuse. Every blocking host is collected into ONE error so the operator
+// sees the full set at once.
 func CheckLiveHosts(ctx context.Context, conn *sql.DB, dataDir string, isOwnHost func(hostID string) bool) error {
 	rows, err := conn.QueryContext(ctx, "SELECT id FROM async_hosts")
 	if err != nil {

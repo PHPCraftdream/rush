@@ -31,7 +31,7 @@ const deleteSessionDriversForHost = `-- name: DeleteSessionDriversForHost :execr
 DELETE FROM session_drivers WHERE host_id = ?
 `
 
-// Host exit (AsyncJobStore.Close) or dead-host purge: every marker naming
+// Host exit (batch runner shutdown) or dead-host purge: every marker naming
 // the host goes with it.
 func (q *Queries) DeleteSessionDriversForHost(ctx context.Context, hostID string) (int64, error) {
 	result, err := q.exec(ctx, q.deleteSessionDriversForHostStmt, deleteSessionDriversForHost, hostID)
