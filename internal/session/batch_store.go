@@ -22,6 +22,21 @@ var (
 	ErrBatchRunnerMismatch = errors.New("batch store: live root held by another runner incarnation")
 )
 
+// pdcBatchRootFenceSQL is the root stop-fence probe executed inside the
+// projection transactions (batchProjectRoot). Package-level so the PD11C
+// registration below and the equivalence test pin the exact production text.
+var pdcBatchRootFenceSQL = `SELECT EXISTS(SELECT 1 FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = ? AND runner_id = ? AND ` + psfOwnerStopSQLPredicate("") + `)`
+
+// PD11C (e): register the fixed-text statements the batch transactions
+// execute outside the generated layer so PdaBatchEnsure prepares them with
+// the rest. Dynamic chunked IN (...) statements stay raw by design.
+func init() {
+	db.PdbBatchRegisterSQL(pdcBatchRootFenceSQL)
+	db.PdbBatchRegisterSQL(batchOutboxPullVoidAware)
+	db.PdbBatchRegisterSQL(pdcBatchDirectChildOutcomesSQL)
+	db.PdbBatchRegisterSQL(batchOutboxReactNodesVoidAware)
+}
+
 // BatchStore is inert persistence. It neither executes work nor chooses outcomes.
 // The supplied DB is the single-connection writer; no store locks span I/O.
 type BatchStore struct {
@@ -147,7 +162,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	}
 	// Reservation inserts write root_sequence/projection_sequence themselves;
 	// no root advance here, matching the legacy Reserve behavior exactly.
-	if err = batchProjectRoot(ctx, q, tx, p.Host, p.RunnerID, BatchRootProjection{Owner: p.Owner, Root: root, Updates: p.Updates, Notices: p.Notices}, p.Sequence, false); err != nil {
+	if err = batchProjectRoot(ctx, q, p.Host, p.RunnerID, BatchRootProjection{Owner: p.Owner, Root: root, Updates: p.Updates, Notices: p.Notices}, p.Sequence, false); err != nil {
 		return BatchReservationResult{}, err
 	}
 	if p.Checkpoint != nil {
@@ -240,14 +255,14 @@ func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
 		}
 	}
 	for _, root := range p.Roots {
-		if err = batchProjectRoot(ctx, q, tx, p.Host, p.RunnerID, root, p.Sequence, true); err != nil {
+		if err = batchProjectRoot(ctx, q, p.Host, p.RunnerID, root, p.Sequence, true); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-func batchProjectRoot(ctx context.Context, q *db.Queries, tx *sql.Tx, host, runner string, p BatchRootProjection, sequence int64, advance bool) error {
+func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p BatchRootProjection, sequence int64, advance bool) error {
 	// Reservation inserts carry their sequence already; every other
 	// projection fences the root sequence before touching rows.
 	if advance {
@@ -293,7 +308,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, tx *sql.Tx, host, runn
 			continue
 		}
 		var fenced int
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = ? AND runner_id = ? AND `+psfOwnerStopSQLPredicate("")+`)`, p.Owner, host, p.Root, p.Root, root.RunnerID).Scan(&fenced); err != nil {
+		if err := q.PdbBatchRawQueryRow(ctx, pdcBatchRootFenceSQL, p.Owner, host, p.Root, p.Root, root.RunnerID).Scan(&fenced); err != nil {
 			return err
 		}
 		if fenced != 0 {

@@ -292,7 +292,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 	// Take the writer before UpdateTx so accounting cannot race another writer.
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	now := time.Now().Unix()
-	if _, err = tx.ExecContext(ctx, batchOutboxReactNodesVoidAware, now, owner); err != nil {
+	if _, err = q.PdbBatchRawExec(ctx, batchOutboxReactNodesVoidAware, now, owner); err != nil {
 		return err
 	}
 	persisted, err := q.GetMessage(ctx, msg.ID)
@@ -305,7 +305,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 	if persisted.SessionID != owner {
 		return ErrBatchProjectionConflict
 	}
-	publish, err := messages.UpdateTx(ctx, tx, msg)
+	publish, err := pdcUpdateTx(ctx, q, tx, messages, msg)
 	if err != nil {
 		return err
 	}

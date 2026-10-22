@@ -460,6 +460,130 @@ func pdaEquivCases() []pdaEquivCase {
 			},
 			dumps: []string{pdaEquivSessionNoticesDump},
 		},
+		{
+			// PD11C: fixed-params INSERT through the cached createMessage
+			// statement. Timestamps use strftime('now') — scrubbed by
+			// pdaEquivTSRe.
+			name: "createMessage",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				return pdaEquivState{}
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				got, err := q.CreateMessage(ctx, db.CreateMessageParams{ID: "m1", SessionID: "owner", Role: "assistant", Parts: "[]", Model: batchStoreTestString("model"), NoticeKind: "", Origin: ""})
+				require.NoError(t, err)
+				*out = append(*out, fmt.Sprintf("id=%s session=%s role=%s", got.ID, got.SessionID, got.Role))
+			},
+			dumps: []string{pdaEquivMessagesDump},
+		},
+		{
+			// PD11C: cached updateMessage; the row is created with a FIXED id
+			// inside the same act transaction (it commits at the end of
+			// pdaEquivRun), so both paths stay deterministic.
+			name: "updateMessage",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				return pdaEquivState{}
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				_, err := q.CreateMessage(ctx, db.CreateMessageParams{ID: "mu", SessionID: "owner", Role: "assistant", Parts: "[]", Model: batchStoreTestString("model")})
+				require.NoError(t, err)
+				rows, err := q.UpdateMessage(ctx, db.UpdateMessageParams{ID: "mu", Parts: `["x"]`, FinishedAt: sql.NullInt64{Int64: 7, Valid: true}})
+				require.NoError(t, err)
+				*out = append(*out, fmt.Sprintf("rows=%d", rows))
+			},
+			dumps: []string{pdaEquivMessagesDump},
+		},
+		{
+			// PD11C: cached updateMessageIfNotTerminal (partial-checkpoint CAS).
+			name: "updateMessageIfNotTerminal",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				return pdaEquivState{}
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				_, err := q.CreateMessage(ctx, db.CreateMessageParams{ID: "mu", SessionID: "owner", Role: "assistant", Parts: "[]", Model: batchStoreTestString("model")})
+				require.NoError(t, err)
+				rows, err := q.UpdateMessageIfNotTerminal(ctx, db.UpdateMessageIfNotTerminalParams{ID: "mu", Parts: `["y"]`, FinishedAt: sql.NullInt64{Int64: 8, Valid: true}, CheckpointGeneration: 0, CheckpointGeneration_2: 0})
+				require.NoError(t, err)
+				*out = append(*out, fmt.Sprintf("rows=%d", rows))
+			},
+			dumps: []string{pdaEquivMessagesDump},
+		},
+		{
+			// PD11C (e): the registered root stop-fence probe. The control
+			// request is seeded constraint-safely via the store, then renamed
+			// into an owner-stop request; a foreign runner id must NOT fence.
+			name: "pdcBatchRootFenceSQL",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				st := pdaEquivSettleOne(t, ctx, s, conn)
+				_, err := s.CreateControl(ctx, "owner", "host", st.root, st.root)
+				require.NoError(t, err)
+				_, err = conn.ExecContext(ctx, "UPDATE batch_control_requests SET request_id='owner_stop:probe' WHERE owner_session_id='owner'")
+				require.NoError(t, err)
+				return st
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				var fenced int
+				require.NoError(t, q.PdbBatchRawQueryRow(ctx, pdcBatchRootFenceSQL, "owner", "host", st.root, st.root, "").Scan(&fenced))
+				*out = append(*out, fmt.Sprintf("fenced=%d", fenced))
+				require.NoError(t, q.PdbBatchRawQueryRow(ctx, pdcBatchRootFenceSQL, "owner", "host", st.root, st.root, "other-runner").Scan(&fenced))
+				*out = append(*out, fmt.Sprintf("foreignRunner=%d", fenced))
+			},
+			dumps: []string{pdaEquivBatchNodesDump},
+		},
+		{
+			// PD11C (e): the registered pull CAS. The root is announced with
+			// a constraint-safe UPDATE; the act delivers the root's own
+			// pending selected notice.
+			name: "batchOutboxPullVoidAware",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				st := pdaEquivSettleOne(t, ctx, s, conn)
+				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1 WHERE node_id=?", st.root)
+				require.NoError(t, err)
+				return st
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				n, err := scanBatchNodeRow(q.PdbBatchRawQueryRow(ctx, batchOutboxPullVoidAware, int64(7), "owner", st.root, st.root))
+				require.NoError(t, err)
+				*out = append(*out, fmt.Sprintf("node=%s delivery=%s state=%s", n.NodeID, n.Delivery, n.State))
+			},
+			dumps: []string{pdaEquivBatchNodesDump},
+		},
+		{
+			// PD11C (e): the registered direct-child outcome read.
+			name: "pdcBatchDirectChildOutcomesSQL",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				return pdaEquivReserve(t, ctx, s)
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				rows, err := q.PdbBatchRawQuery(ctx, pdcBatchDirectChildOutcomesSQL, "owner", st.root, st.root)
+				require.NoError(t, err)
+				defer rows.Close()
+				for rows.Next() {
+					var kind, summary string
+					require.NoError(t, rows.Scan(&kind, &summary))
+					*out = append(*out, kind+"="+summary)
+				}
+				require.NoError(t, rows.Err())
+			},
+			dumps: []string{pdaEquivBatchNodesDump},
+		},
+		{
+			// PD11C (e): the registered react-nodes update; the seed makes
+			// the root a wakeable selected terminal row.
+			name: "batchOutboxReactNodesVoidAware",
+			seed: func(t *testing.T, ctx context.Context, s *BatchStore, conn *sql.DB) pdaEquivState {
+				st := pdaEquivSettleOne(t, ctx, s, conn)
+				_, err := conn.ExecContext(ctx, "UPDATE batch_nodes SET announced=1, delivery='done', wake=1 WHERE node_id=?", st.root)
+				require.NoError(t, err)
+				return st
+			},
+			act: func(t *testing.T, ctx context.Context, q *db.Queries, st pdaEquivState, out *[]string) {
+				res, err := q.PdbBatchRawExec(ctx, batchOutboxReactNodesVoidAware, int64(7), "owner")
+				require.NoError(t, err)
+				n, _ := res.RowsAffected()
+				*out = append(*out, fmt.Sprintf("reacted=%d", n))
+			},
+			dumps: []string{pdaEquivBatchNodesDump},
+		},
 	}
 }
 

@@ -39,7 +39,7 @@ func (s *BatchStore) BatchAnnounceInlineResult(ctx context.Context, messages mes
 	if err != nil {
 		return BatchInlineAnnouncement{}, err
 	}
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, params)
 	if err != nil {
 		return BatchInlineAnnouncement{}, err
 	}

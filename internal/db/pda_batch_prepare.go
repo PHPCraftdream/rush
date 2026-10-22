@@ -46,7 +46,47 @@ type pdaBatchStmts struct {
 	getMessage                               *sql.Stmt
 	markSessionNoticesReactedForOwner        *sql.Stmt
 	clearSessionNoticesReactedFailedForOwner *sql.Stmt
+	createMessage                            *sql.Stmt
+	updateMessage                            *sql.Stmt
+	updateMessageIfNotTerminal               *sql.Stmt
 	all                                      []*sql.Stmt
+}
+
+// pdcRegisteredBatchSQL holds fixed-text statements that the batch write
+// paths execute OUTSIDE the generated layer (raw tx calls), registered once
+// at package init by internal/session so pdaBatchPrepareLocked prepares them
+// together with the generated set. Registration is idempotent and only
+// affects caches built AFTER it: a cache that already exists (Ensure already
+// ran) keeps executing an unlisted query through the raw-SQL fallback, which
+// is byte-identical behavior, just uncached.
+var pdcRegisteredBatchSQL []string
+
+// PdbBatchRegisterSQL registers a fixed-text batch statement for preparation
+// by PdaBatchEnsure/PdaBatchWriterQueries on every writer pool whose cache is
+// built after this call. Idempotent: registering the same text twice is a
+// no-op. Safe to call before or after Ensure; see pdcRegisteredBatchSQL.
+func PdbBatchRegisterSQL(query string) {
+	pdaBatchStmtsMu.Lock()
+	defer pdaBatchStmtsMu.Unlock()
+	for _, q := range pdcRegisteredBatchSQL {
+		if q == query {
+			return
+		}
+	}
+	pdcRegisteredBatchSQL = append(pdcRegisteredBatchSQL, query)
+}
+
+// PdbBatchCacheHasSQL reports whether the cached set for writer contains
+// query. Test/introspection seam; false for a missing or closed cache.
+func PdbBatchCacheHasSQL(writer *sql.DB, query string) bool {
+	pdaBatchStmtsMu.Lock()
+	defer pdaBatchStmtsMu.Unlock()
+	c, ok := pdaBatchStmtsByDB[writer]
+	if !ok || c.closed {
+		return false
+	}
+	_, ok = c.byQuery[query]
+	return ok
 }
 
 var (
@@ -58,7 +98,7 @@ var (
 // given writer. The caller must hold pdaBatchStmtsMu. On any error, every
 // statement opened so far is closed and the partial registry entry removed.
 func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts, error) {
-	c := &pdaBatchStmts{owner: writer, byQuery: make(map[string]*sql.Stmt, 19)}
+	c := &pdaBatchStmts{owner: writer, byQuery: make(map[string]*sql.Stmt, 22)}
 	type pending struct {
 		field **sql.Stmt
 		name  string
@@ -84,6 +124,9 @@ func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts,
 		{&c.getMessage, "getMessage", getMessage},
 		{&c.markSessionNoticesReactedForOwner, "markSessionNoticesReactedForOwner", markSessionNoticesReactedForOwner},
 		{&c.clearSessionNoticesReactedFailedForOwner, "clearSessionNoticesReactedFailedForOwner", clearSessionNoticesReactedFailedForOwner},
+		{&c.createMessage, "createMessage", createMessage},
+		{&c.updateMessage, "updateMessage", updateMessage},
+		{&c.updateMessageIfNotTerminal, "updateMessageIfNotTerminal", updateMessageIfNotTerminal},
 	}
 	for _, p := range order {
 		stmt, err := writer.PrepareContext(ctx, p.query) //nolint:sqlclosecheck // owned by the cache; closed in pdaDropBatchStmts
@@ -100,6 +143,18 @@ func pdaBatchPrepareLocked(ctx context.Context, writer *sql.DB) (*pdaBatchStmts,
 		}
 		*p.field = stmt
 		c.byQuery[p.query] = stmt
+		c.all = append(c.all, stmt)
+	}
+	for i, query := range pdcRegisteredBatchSQL {
+		stmt, err := writer.PrepareContext(ctx, query) //nolint:sqlclosecheck // owned by the cache; closed in pdaDropBatchStmts
+		if err != nil {
+			c.closed = true
+			for _, stmt := range c.all {
+				_ = stmt.Close() //nolint:errcheck
+			}
+			return nil, fmt.Errorf("error preparing registered batch query %d: %w", i, err)
+		}
+		c.byQuery[query] = stmt
 		c.all = append(c.all, stmt)
 	}
 	return c, nil
@@ -155,9 +210,10 @@ func PdaBatchEnsure(ctx context.Context, writer *sql.DB) error {
 // (identical to the pre-PD11A path); the binder NEVER prepares on its own.
 // Used only by the single goroutine that owns the transaction.
 type pdbBatchTxBinder struct {
-	tx    *sql.Tx
-	stmts map[string]*sql.Stmt
-	bound map[string]*sql.Stmt
+	tx        *sql.Tx
+	stmts     map[string]*sql.Stmt
+	bound     map[string]*sql.Stmt
+	bindCalls int
 }
 
 // bind returns the tx-bound statement for query, binding the cached DB-level
@@ -173,6 +229,7 @@ func (b *pdbBatchTxBinder) bind(ctx context.Context, query string) (*sql.Stmt, b
 		return nil, false
 	}
 	stmt := b.tx.StmtContext(ctx, dbStmt)
+	b.bindCalls++
 	b.bound[query] = stmt
 	return stmt, true
 }
@@ -212,6 +269,18 @@ func PdbBatchTxBoundCount(q *Queries) int {
 		return -1
 	}
 	return len(b.bound)
+}
+
+// PdbBatchTxBindCallCount reports how many tx.StmtContext bindings the lazy
+// binder behind q has performed in total (monotonic), unlike
+// PdbBatchTxBoundCount which counts distinct queries. -1 when q is not
+// binder-backed.
+func PdbBatchTxBindCallCount(q *Queries) int {
+	b, ok := q.db.(*pdbBatchTxBinder)
+	if !ok {
+		return -1
+	}
+	return b.bindCalls
 }
 
 // PdaBatchTxQueries returns a Queries bound to tx whose statements are
@@ -271,7 +340,29 @@ func PdaBatchWriterQueries(ctx context.Context, writer *sql.DB) (*Queries, error
 		getMessageStmt:                               c.getMessage,
 		markSessionNoticesReactedForOwnerStmt:        c.markSessionNoticesReactedForOwner,
 		clearSessionNoticesReactedFailedForOwnerStmt: c.clearSessionNoticesReactedFailedForOwner,
+		createMessageStmt:                            c.createMessage,
+		updateMessageStmt:                            c.updateMessage,
+		updateMessageIfNotTerminalStmt:               c.updateMessageIfNotTerminal,
 	}, nil
+}
+
+// PdbBatchRawQueryRow / PdbBatchRawQuery / PdbBatchRawExec run a fixed-text
+// raw statement through the same path the generated methods use: when q is
+// backed by the lazy tx binder the statement binds to the tx once and is
+// memoised by query text; otherwise it falls through to the underlying DBTX
+// (plain tx or pool) unchanged. Statement text must be registered via
+// PdbBatchRegisterSQL to hit the cache; unregistered text still executes
+// correctly through the fallback.
+func (q *Queries) PdbBatchRawQueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return q.queryRow(ctx, nil, query, args...)
+}
+
+func (q *Queries) PdbBatchRawQuery(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return q.query(ctx, nil, query, args...)
+}
+
+func (q *Queries) PdbBatchRawExec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return q.exec(ctx, nil, query, args...)
 }
 
 // pdaDropBatchStmts removes and closes the cached statement set for writer.

@@ -196,7 +196,7 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	// Go-side CAS: BatchOutboxPull + the root-void NOT EXISTS (see
 	// batchOutboxPullVoidAware; fold back into batch_outbox.sql when sqlc
 	// regeneration is available). Same statement, same RETURNING * scan.
-	n, err := scanBatchNodeRow(tx.QueryRowContext(ctx, batchOutboxPullVoidAware, time.Now().Unix(), owner, root, node))
+	n, err := scanBatchNodeRow(q.PdbBatchRawQueryRow(ctx, batchOutboxPullVoidAware, time.Now().Unix(), owner, root, node))
 	if errors.Is(err, sql.ErrNoRows) {
 		return BatchPulledNotice{}, false, nil
 	}
@@ -215,12 +215,12 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	// the same way (batch_adapters.go BatchDeliveryOneItemCompletion).
 	// Multi-task roots, nested structural children, and non-root selected
 	// notices are never borrowed from: they keep the row's own summary.
-	projected, err := batchProjectSelectedNoticeSummary(ctx, tx, owner, n)
+	projected, err := batchProjectSelectedNoticeSummary(ctx, q, owner, n)
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	n.OutcomeSummary = projected
-	msg, err := messages.CreateTx(ctx, tx, owner, build(batchNoticeRow(n, r)))
+	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, build(batchNoticeRow(n, r)))
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
@@ -248,11 +248,11 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 // -> coordinator_background.go FormatAsyncCompletion), and today's
 // detached/escaped paths carry text-only results, so a media-only detached
 // result is not reachable.
-func batchProjectSelectedNoticeSummary(ctx context.Context, dbtx db.DBTX, owner string, n db.BatchNode) (string, error) {
+func batchProjectSelectedNoticeSummary(ctx context.Context, q *db.Queries, owner string, n db.BatchNode) (string, error) {
 	if n.NodeID != n.RootID || n.OutcomeSummary != "" {
 		return n.OutcomeSummary, nil
 	}
-	children, err := batchDirectChildOutcomes(ctx, dbtx, owner, n.RootID, n.NodeID)
+	children, err := batchDirectChildOutcomes(ctx, q, owner, n.RootID, n.NodeID)
 	if err != nil {
 		return "", err
 	}
@@ -268,14 +268,19 @@ func batchProjectSelectedNoticeSummary(ctx context.Context, dbtx db.DBTX, owner 
 // batchChildOutcome is one direct child's kind and outcome summary.
 type batchChildOutcome struct{ Kind, Summary string }
 
+// pdcBatchDirectChildOutcomesSQL is the direct-child outcome read executed
+// inside the pull transaction; package-level for the PD11C registration and
+// the equivalence test.
+const pdcBatchDirectChildOutcomesSQL = `SELECT kind, outcome_summary FROM batch_nodes
+WHERE owner_session_id = ? AND root_id = ? AND parent_id = ?`
+
 // batchDirectChildOutcomes reads every direct child of one node in a single
 // pass. The writer pool has exactly one connection
 // (internal/db/connect.go SetMaxOpenConns(1)), so the rows MUST be fully
 // read and closed before the caller runs its next statement; the deferred
 // Close inside this helper guarantees that.
-func batchDirectChildOutcomes(ctx context.Context, dbtx db.DBTX, owner, root, node string) ([]batchChildOutcome, error) {
-	rows, err := dbtx.QueryContext(ctx, `SELECT kind, outcome_summary FROM batch_nodes
-WHERE owner_session_id = ? AND root_id = ? AND parent_id = ?`, owner, root, node)
+func batchDirectChildOutcomes(ctx context.Context, q *db.Queries, owner, root, node string) ([]batchChildOutcome, error) {
+	rows, err := q.PdbBatchRawQuery(ctx, pdcBatchDirectChildOutcomesSQL, owner, root, node)
 	if err != nil {
 		return nil, err
 	}
