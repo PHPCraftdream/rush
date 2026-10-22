@@ -1,11 +1,10 @@
 // BatchCutoverFacts is the R12-E single fact-source seam for the job-batches
 // cutover: the terminal/debt/scope/reaction/wake questions the pre-cutover
-// consumers direct at the async_jobs ledger. Flag OFF (RUSH_BATCH_RUNTIME
-// unset/false) keeps every caller on its byte-identical ledger path; flag ON
-// routes the FACT reads through the node-backed implementation, which reads
-// batch_nodes/batch outbox/session_notices only and never touches async_jobs.
-// Wake schedules and session driver markers are retained host infrastructure
-// and stay on their existing readers on both paths.
+// consumers direct at the async_jobs ledger. The node-backed implementation
+// is the only source: it reads batch_nodes/batch outbox/session_notices only
+// and never touches async_jobs (the legacy adapter is gone). Wake schedules
+// and session driver markers are retained host infrastructure and stay on
+// their existing readers.
 package agent
 
 import (
@@ -214,14 +213,11 @@ func BindCoordinatorBatchCutoverFacts(c Coordinator, facts BatchCutoverFacts) {
 	coordinatorBatchCutoverFactsBindings.Store(c, facts)
 }
 
-// coordinatorBatchCutoverFacts returns the flag-selected fact source for c:
-// the bound node source when the batch runtime is on, else the conservative
-// unknown source (flag on without wiring: never idle, never "no debt"), else
-// nil -- the caller keeps its pre-cutover inline ledger path, byte-identical.
+// coordinatorBatchCutoverFacts returns the fact source for c: the bound node
+// source, else the conservative unknown source (unwired coordinator: never
+// idle, never "no debt"). There is no flag selector and no ledger adapter:
+// batch node facts are the ONLY fact source.
 func coordinatorBatchCutoverFacts(c *coordinator) BatchCutoverFacts {
-	if !batchFlagEnabled() {
-		return nil
-	}
 	if c != nil {
 		if v, ok := coordinatorBatchCutoverFactsBindings.Load(c); ok {
 			return v.(BatchCutoverFacts)
@@ -230,261 +226,16 @@ func coordinatorBatchCutoverFacts(c *coordinator) BatchCutoverFacts {
 	return unknownBatchCutoverFacts{}
 }
 
-// ledgerBatchCutoverFacts adapts the pre-cutover workLedger/store reads onto
-// the seam so future call sites can branch by a single field read. Flag-OFF
-// consumers keep their inline code; this adapter documents the mapping and
-// is the OFF twin of the node source.
-type ledgerBatchCutoverFacts struct{ c *coordinator }
-
-// NewLedgerBatchCutoverFacts returns the ledger-backed seam over c's async
-// work ledger (the pre-cutover fact source).
-func NewLedgerBatchCutoverFacts(c Coordinator) BatchCutoverFacts {
-	if cc, ok := c.(*coordinator); ok {
-		return ledgerBatchCutoverFacts{c: cc}
-	}
-	return unknownBatchCutoverFacts{}
-}
-
-func (f ledgerBatchCutoverFacts) ledger() *workLedger {
-	if f.c == nil {
-		return nil
-	}
-	return f.c.asyncJobs
-}
-
-func (f ledgerBatchCutoverFacts) SelectedDebtExists(ctx context.Context, owner string) (bool, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return false, nil
-	}
-	return l.store.ReactionDebtExists(ctx, owner)
-}
-
-func (f ledgerBatchCutoverFacts) CaptureVisibleDebt(ctx context.Context, owner string) (session.BatchDebtSnapshot, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return session.BatchDebtSnapshot{}, nil
-	}
-	snap, err := l.store.CaptureDebtSnapshot(ctx, owner)
-	if err != nil {
-		return session.BatchDebtSnapshot{}, err
-	}
-	// async_jobs claim rows have no node identity: only the notice half maps.
-	out := session.BatchDebtSnapshot{Owner: owner}
-	out.Notices = append(out.Notices, snap.Notices...)
-	return out, nil
-}
-
-func (f ledgerBatchCutoverFacts) PendingInclusiveDebt(ctx context.Context, owner string) (session.BatchPendingDebt, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return session.BatchPendingDebt{}, nil
-	}
-	hasJobDebt, notices, _, err := l.store.PendingInclusiveDebtRows(ctx, owner)
-	if err != nil {
-		return session.BatchPendingDebt{}, err
-	}
-	out := session.BatchPendingDebt{}
-	for _, n := range notices {
-		out.Notices = append(out.Notices, session.PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
-	}
-	if hasJobDebt {
-		// Job-debt presence has no node ref; the summary form keeps it.
-		out.Notices = append(out.Notices, session.PendingNoticeDebt{Kind: session.NoticeKindWakeFailed})
-	}
-	return out, nil
-}
-
-func (f ledgerBatchCutoverFacts) PendingInclusiveDebtSummary(ctx context.Context, owner string) (bool, []string, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return false, nil, nil
-	}
-	return l.store.PendingInclusiveDebtSummary(ctx, owner)
-}
-
-func (f ledgerBatchCutoverFacts) ReactedFailedTexts(ctx context.Context, owner string) ([]session.BatchReactedFailedText, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return nil, nil
-	}
-	rows, err := l.store.ListReactedFailedText(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]session.BatchReactedFailedText, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, session.BatchReactedFailedText{Text: r.Text})
-	}
-	return out, nil
-}
-
-func (f ledgerBatchCutoverFacts) LiveWorkSummary(ctx context.Context, owner string) (int, int, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return 0, 0, nil
-	}
-	work := l.store.LiveWorkForRoots(ctx, []string{owner})[owner]
-	if work.OwnIncomplete || work.DescendantsIncomplete {
-		return 1, 1, fmt.Errorf("batch facts: live work read incomplete for %s", owner)
-	}
-	return len(work.Own), len(work.Descendants), nil
-}
-
-func (f ledgerBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []string) ([]BatchLiveScopeEntry, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return nil, nil
-	}
-	rows, err := l.store.ListRunningForOwners(ctx, owners)
-	if err != nil {
-		return nil, err
-	}
-	live := make(map[string]bool, len(owners))
-	for _, o := range owners {
-		live[o] = false
-	}
-	for _, row := range rows {
-		if l.store.HostNotDead(row.HostID) {
-			live[row.Owner] = true
-		}
-	}
-	out := make([]BatchLiveScopeEntry, 0, len(owners))
-	for _, o := range owners {
-		out = append(out, BatchLiveScopeEntry{Owner: o, Live: live[o]})
-	}
-	return out, nil
-}
-
-func (f ledgerBatchCutoverFacts) DelegationChildEver(ctx context.Context, parent, child string) (bool, error) {
-	return f.LiveDelegationChildOf(ctx, parent, child)
-}
-
-func (f ledgerBatchCutoverFacts) LiveNodes(context.Context, string) ([]session.BatchLiveNode, error) {
-	// The ledger adapter is OFF-path-unused and the summary is a batch read.
-	return nil, nil
-}
-
-func (f ledgerBatchCutoverFacts) LiveDelegationNodes(context.Context, string) ([]session.BatchLiveNode, error) {
-	// The ledger adapter is OFF-path-unused and the summary is a batch read.
-	return nil, nil
-}
-
-func (f ledgerBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (BatchAttemptRows, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return BatchAttemptRows{}, nil
-	}
-	var out BatchAttemptRows
-	// Node refs have no legacy job twin: while the visible legacy snapshot
-	// still holds job debt, every snapshot node ref is unmappable at K.
-	visible, err := l.store.CaptureDebtSnapshot(ctx, owner)
-	if err != nil {
-		return out, err
-	}
-	if len(visible.Jobs) > 0 {
-		out.UnmappedAtK += len(snap.Nodes)
-	}
-	for _, ref := range snap.Notices {
-		n, err := l.store.MaxWakeAttempts(ctx, owner, session.DebtSnapshot{Notices: []session.DebtNoticeRef{ref}})
-		if err != nil {
-			return out, err
-		}
-		if n == 0 {
-			continue
-		}
-		out.Open++
-		out.Max = max(out.Max, n)
-		if n >= atK {
-			out.AtK.Notices = append(out.AtK.Notices, ref)
-		}
-	}
-	return out, nil
-}
-
-func (f ledgerBatchCutoverFacts) IncrementWakeAttempts(ctx context.Context, owner string, snap session.BatchDebtSnapshot) error {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return nil
-	}
-	// Node refs have no legacy twin: only the notice half maps.
-	return l.store.IncrementWakeAttempts(ctx, owner, session.DebtSnapshot{Notices: snap.Notices})
-}
-
-func (f ledgerBatchCutoverFacts) SettleReactedFailedWithMarker(ctx context.Context, owner string, snap session.BatchDebtSnapshot, text string) (int64, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return 0, nil
-	}
-	// Node refs have no legacy twin: only the notice half maps.
-	return l.store.SettleReactedFailedWithMarker(ctx, owner, session.DebtSnapshot{Notices: snap.Notices}, text)
-}
-
-func (f ledgerBatchCutoverFacts) DebtToolCallIDs(context.Context, session.BatchDebtSnapshot) []string {
-	// Legacy job refs carry their own ToolCallID; the adapter is unused on
-	// the ON path and returns nothing here.
-	return nil
-}
-
-func (f ledgerBatchCutoverFacts) PullBatchNotices(context.Context, message.Service, string) ([]session.PulledNotice, error) {
-	return nil, nil
-}
-
-func (f ledgerBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return nil, nil
-	}
-	return l.store.PullSessionNotices(ctx, messages, owner, build)
-}
-
-func (f ledgerBatchCutoverFacts) LiveDelegationChildOf(ctx context.Context, parent, child string) (bool, error) {
-	l := f.ledger()
-	if l == nil || l.store == nil {
-		return false, nil
-	}
-	jobs, err := l.store.ListAsyncJobsForOwner(ctx, parent)
-	if err != nil {
-		return false, err
-	}
-	for _, job := range jobs {
-		if job.ChildSessionID.Valid && job.ChildSessionID.String == child {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (f ledgerBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error) {
-	rows, err := f.PendingInclusiveDebt(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	var out []session.PendingNoticeDebt
-	for _, n := range rows.Notices {
-		if n.Kind == session.NoticeKindChildQuestion {
-			out = append(out, n)
-		}
-	}
-	return out, nil
-}
-
-// LiveHeldQuestions has no ledger twin (the incarnation fence is a
-// batch_nodes read): the OFF adapter answers nothing and never fails.
-func (f ledgerBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
-	return nil, nil
-}
-
-// readTurnFactsBatch is readTurnFacts' flag-on twin: the same TurnFacts
-// shape, with the DB half sourced from batch node reads instead of the
-// async_jobs ledger. The in-process half (arbiter state, hint counter,
-// external driver, gate) is identical state on both paths. Order is law, as
-// in readTurnFacts: the debt rows first, then the memory half.
-func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts, l *workLedger) (TurnFacts, error) {
-	// Gate order mirrors readTurnFacts (ASYNC-02/09): the seam fires right
+// readTurnFactsBatch is readTurnFacts' only implementation: the same
+// TurnFacts shape, with the DB half sourced from batch node reads and the
+// in-process half (arbiter state, hint counter, external driver, gate) on
+// the rehomed coordinator runtime state. Order is law: the debt rows
+// first, then the memory half.
+func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts) (TurnFacts, error) {
+	// Gate order (ASYNC-02/09): the seam fires right
 	// before the arrival gate and the rows read under bgArrival, so the debt
-	// rows and the over-cap set are ONE consistent pair on the flag-on path
-	// too (persistBGShellCompletion holds the same gate around insert + slot
+	// rows and the over-cap set are ONE consistent pair
+	// (persistBGShellCompletion holds the same gate around insert + slot
 	// decision).
 	if seam := readTurnFactsGateSeam.Load(); seam != nil {
 		(*seam)()
@@ -517,9 +268,9 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 		}
 	}
 	f.Debt.PendingIncl = len(rows.Nodes) > 0 || len(rows.Notices) > 0
-	// The session driver marker is retained host infrastructure: read on
-	// both paths (session_drivers, not async_jobs).
-	f.Session.ForeignDriverLive, err = l.foreignLiveDriver(ctx, sessionID)
+	// The session driver marker is retained host infrastructure
+	// (session_drivers, not batch rows).
+	f.Session.ForeignDriverLive, err = c.foreignLiveDriver(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: driver marker: %w", err)
 	}
@@ -546,7 +297,7 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 	if c.cfg != nil {
 		f.Session.AutonomyEnabled = c.autonomyEnabled()
 	}
-	// ---- in-process half (identical state to the ledger path) ----
+	// ---- in-process half ----
 	s := c.arb.snapshot(sessionID)
 	owed := make(map[int64]struct{}, len(rows.Notices))
 	for _, n := range rows.Notices {
@@ -576,11 +327,10 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 		if liveErr != nil {
 			return f, fmt.Errorf("turn facts: batch live work: %w", liveErr)
 		}
-		// Own roots plus live delegation descendants count, exactly like
-		// LiveWorkForRoots on the ledger path (#1270).
+		// Own roots plus live delegation descendants count (#1270).
 		f.Session.RunningOwnJobs = own + descendants
 	}
-	// Rule 5 on the flag-on path: the chain guard owns the debt by IDENTITY,
+	// Rule 5: the chain guard owns the debt by IDENTITY,
 	// not by shape. Batch launches carry their launched root's tool_call_id
 	// (the started tool response's own identity, recorded per leg by
 	// recordChainEvidence into chainBatchRoots), and every node debt row is
@@ -615,7 +365,7 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 		}
 	}
 	f.Gate = s.Gate
-	f.Gate.HintNow = l.hintSeqOf(sessionID)
-	f.Session.ExternallyDrivenSelf = l.isExternalDriver(sessionID)
+	f.Gate.HintNow = c.driverHints.hintSeqOf(sessionID)
+	f.Session.ExternallyDrivenSelf = c.driverHints.isExternalDriver(sessionID)
 	return f, nil
 }

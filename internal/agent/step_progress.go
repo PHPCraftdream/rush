@@ -22,8 +22,8 @@ type stepCallClass int
 
 const (
 	// stepCallAct may change the world: edit/write/fs_*, bash/run_command with
-	// a real command, agent/fetch, job_kill, wake*, unknown MCP tools. An
-	// error in the result does not downgrade it.
+	// a real command, agent/fetch, a stop control, wake*, unknown MCP tools.
+	// An error in the result does not downgrade it.
 	stepCallAct stepCallClass = iota
 	// stepCallRead reads at least one line not covered yet in this turn.
 	stepCallRead
@@ -275,7 +275,7 @@ func guardRefused(result fantasy.ToolResultContent) bool {
 }
 
 // asyncCapRefused reports whether result carries the async-cap tag of
-// async_tool.go's cap branch: workLedger.Start refused the job, so the tool
+// the deleted async-tool cap branch: admission refused the launch, so the tool
 // never ran and took no claim -- the tool's own refusal, not the guard's.
 func asyncCapRefused(result fantasy.ToolResultContent) bool {
 	var meta asyncCapMetadata

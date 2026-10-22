@@ -13,7 +13,7 @@ import (
 func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "reaction-chain-repeat-accept", attemptFixtureOpts{noIdle: true, noDriver: true})
-	ts := &turnStream{a: &sessionAgent{asyncJobs: f.coord.asyncJobs}, call: SessionAgentCall{SessionID: f.sessID}}
+	ts := &turnStream{a: &sessionAgent{coord: f.coord}, call: SessionAgentCall{SessionID: f.sessID}}
 	const command = `cd /x && git log --oneline -1 >/dev/null; echo q`
 	launch := func(id, cmd string) *drainAttempt {
 		f.seedDebt(ctx, id, true)
@@ -34,7 +34,7 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	require.True(t, first.chainProgress)
 	require.Empty(t, first.chainIdleClaims)
 	require.Empty(t, first.chainBatchRoots)
-	f.coord.arb.chainLink(f.sessID, first, session.DebtSnapshot{})
+	f.coord.arb.chainLink(f.sessID, first, session.BatchDebtSnapshot{})
 	require.Zero(t, f.chainCount())
 	previous := "accept1"
 	for _, id := range []string{"accept2", "accept3", "accept4"} {
@@ -46,10 +46,10 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 			// The leg acted on the PREVIOUS launch's completion: the batch
 			// twin of the legacy claim snapshot.
 			att.batchDebtCallIDs = []string{previous}
-			f.coord.arb.chainLink(f.sessID, att, session.DebtSnapshot{})
+			f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{})
 		} else {
 			require.Equal(t, []string{f.row(ctx, id).ClaimID}, att.chainIdleClaims)
-			f.coord.arb.chainLink(f.sessID, att, session.DebtSnapshot{Jobs: []session.DebtJobRef{{ClaimID: f.row(ctx, previous).ClaimID}}})
+			f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{Owner: f.sessID, Nodes: []session.BatchDebtNodeRef{{RootID: previous}}})
 		}
 		a3MarkRowsReacted(t, ctx, f.env.conn, f.sessID, previous)
 		previous = current
@@ -60,7 +60,7 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 
 func TestReactionChain_CommandIdentityAndProgressReset(t *testing.T) {
 	f := newAttemptFixture(t, "reaction-chain-command-identity", attemptFixtureOpts{noIdle: true, noDriver: true})
-	ts := &turnStream{a: &sessionAgent{asyncJobs: f.coord.asyncJobs}, call: SessionAgentCall{SessionID: f.sessID}}
+	ts := &turnStream{a: &sessionAgent{coord: f.coord}, call: SessionAgentCall{SessionID: f.sessID}}
 	step := func(id, name, input string) {
 		call := fantasy.ToolCallContent{ToolCallID: id, ToolName: name, Input: input}
 		result := fantasy.ToolResultContent{ToolCallID: id, ClientMetadata: `{"async":true,"claim_id":"claim-` + id + `"}`}

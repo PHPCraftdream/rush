@@ -85,10 +85,11 @@ func TestBatchSupervisionSummaryBatch_NoFalseSilenceFlagging(t *testing.T) {
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
-	ledger := newWorkLedger(nil)
+	coord := newBatchRuntimeCoordinator()
+	BindCoordinatorBatchCutoverFacts(coord, facts)
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 
-	text, flagged := ledger.buildSupervisionSummaryBatch(facts, time.Now(), owner.ID, 1, time.Minute, false)
-	require.Nil(t, flagged, "batch supervision never flags unknown activity as silent")
+	text := coord.buildSupervisionSummaryAt(time.Now(), owner.ID, 1, time.Minute, false)
 	require.NotContains(t, text, "silent")
 	require.NotContains(t, text, "job_kill")
 	require.Contains(t, text, "batch_output", "ordinary inspection guidance survives")
@@ -121,7 +122,9 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
-	ledger := newWorkLedger(nil)
+	coord := newBatchRuntimeCoordinator()
+	BindCoordinatorBatchCutoverFacts(coord, facts)
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 
 	publisher := batchCoordinatorQuestionPublisher{store: session.NewBatchStore(env.conn)}
 	require.NoError(t, publisher.PublishChildQuestion(ctx, batchChildQuestionNotice{
@@ -147,7 +150,7 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 	held2, err := facts.LiveHeldQuestions(ctx, owner.ID)
 	require.NoError(t, err)
 	require.Len(t, held2, 1, "delivered-but-unreacted debt still holds")
-	text2, _ := ledger.buildSupervisionSummaryBatch(facts, time.Now(), owner.ID, 1, time.Minute, false)
+	text2 := coord.buildSupervisionSummaryAt(time.Now(), owner.ID, 1, time.Minute, false)
 	require.Contains(t, text2, "(1 awaiting your answer)")
 	require.NotContains(t, text2, "continue with plan B?",
 		"supervision does NOT repeat the question prose (accepted removal) -- the notice already carried it")
@@ -184,9 +187,11 @@ func TestBatchIdleChildSeparateRootKeepsScopeLiveThenCloses(t *testing.T) {
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
-	ledger := newWorkLedger(nil)
+	coord := newBatchRuntimeCoordinator()
+	BindCoordinatorBatchCutoverFacts(coord, facts)
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 
-	text, _ := ledger.buildSupervisionSummaryBatch(facts, time.Now(), childOwner.ID, 1, time.Minute, false)
+	text := coord.buildSupervisionSummaryAt(time.Now(), childOwner.ID, 1, time.Minute, false)
 	require.NotContains(t, text, "(sub-agent, child session",
 		"no legacy idle-child own-jobs line is rebuilt (accepted removal)")
 	require.Contains(t, text, "call-w5-idle", "the live node line describes the real batch work")

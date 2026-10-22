@@ -130,7 +130,7 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	// A refusal note (a queued Drain the lock refused) sets hintOpens; the
 	// dormant paid gate must not be reopened by the next fact through it.
 	f.coord.noteDrainRefused(f.sessID, errors.New("lock busy"))
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	require.NoError(t, f.wake(ctx, true))
 	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a refusal note does not make a paid-dormant gate hint-openable")
@@ -165,7 +165,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	for i := int64(1); i <= 2; i++ {
 		_, _ = f.drainRun(ctx)
 		require.Equal(t, i, f.row(ctx, "call-A").WakeAttempts)
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 	}
 	f.seedDebt(ctx, "call-B", false) // arrives while A is failing
 
@@ -184,7 +184,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "rows remain: the gate stays paced")
 
 	for want := int64(2); want <= 3; want++ {
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 		_, _ = f.drainRun(ctx)
 		require.Equal(t, want, f.row(ctx, "call-B").WakeAttempts)
 	}

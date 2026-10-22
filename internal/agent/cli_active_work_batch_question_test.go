@@ -11,21 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fixture: RUSH_BATCH_RUNTIME=1, node facts bound, a real ledger with a real
-// store, and a real message service. No t.Parallel in this file (t.Setenv).
-func batchQuestionFixture(t *testing.T) (*coordinator, *session.AsyncJobStore, *sql.DB, string, context.Context) {
+// Fixture: RUSH_BATCH_RUNTIME=1, node facts bound, the batch store, and a
+// real message service. No t.Parallel in this file (t.Setenv).
+func batchQuestionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *sql.DB, string, context.Context) {
 	t.Helper()
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn, dataDir := batchFixtureConn(t)
 	q := db.New(conn)
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), messages: message.NewService(q)}
-	l := newWorkLedger(coord.notifyAsyncCompletion)
-	l.store = store
-	l.coord = coord
-	coord.asyncJobs = l
+	coord := newBatchRuntimeCoordinator()
+	coord.messages = message.NewService(q)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
-	return coord, store, conn, dataDir, ctx
+	return coord, session.NewSessionNoticeStore(conn), conn, dataDir, ctx
 }
 
 // seedDelegation reserves and announces a live delegation with a NON-ZERO
@@ -78,8 +75,9 @@ func commitMarkerNotice(t *testing.T, conn *sql.DB, owner, nodeID, childID strin
 	}))
 }
 
-// commitLegacyNotice inserts the legacy frame child_question notice.
-func commitLegacyNotice(t *testing.T, store *session.AsyncJobStore, ctx context.Context, owner, childID, callID string) {
+// commitLegacyNotice inserts the marker-less (legacy-frame) child_question
+// notice through the retained notice store.
+func commitLegacyNotice(t *testing.T, store *session.SessionNoticeStore, ctx context.Context, owner, childID, callID string) {
 	t.Helper()
 	require.NoError(t, store.InsertSessionNotice(ctx, owner, session.NoticeKindChildQuestion, childQuestionNoticeText("", "which one?", childID, callID, 0), true, callID))
 }

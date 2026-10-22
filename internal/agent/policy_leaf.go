@@ -64,10 +64,6 @@ func policyLeafExecution(tool fantasy.AgentTool) (fantasy.AgentTool, []string) {
 	var inner fantasy.AgentTool
 	var layer string
 	switch t := tool.(type) {
-	case *asyncTool:
-		inner, layer = t.inner, "async"
-	case *stallDetacherTool:
-		inner, layer = t.inner, "stall"
 	case *hookedTool:
 		leaf, layers := policyLeafExecution(t.inner)
 		copy := *t

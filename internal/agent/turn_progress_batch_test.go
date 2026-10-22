@@ -35,18 +35,17 @@ func newGuardBatchLedger(t *testing.T, conn *sql.DB, owner string) *guardBatchLe
 	return &guardBatchLedger{t: t, conn: conn, owner: owner, roots: map[string]string{}}
 }
 
-// guardBatchTool wraps one asyncTool and, ONLY under RUSH_BATCH_RUNTIME and
-// only after the inner call succeeded, records the call as a LIVE batch
-// command row for the fixture's owner. Under OFF the embedded tool answers
-// every seam untouched, so the wiring is byte-for-byte the bare asyncTool.
+// guardBatchTool wraps one inner tool and, only after the inner call
+// succeeded, records the call as a LIVE batch command row for the fixture's
+// owner.
 type guardBatchTool struct {
-	fantasy.AgentTool // the real asyncTool value; never nil
-	batch             *guardBatchLedger
+	fantasy.AgentTool
+	batch *guardBatchLedger
 }
 
 func (t *guardBatchTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	resp, err := t.AgentTool.Run(ctx, call)
-	if err == nil && !resp.IsError && batchFlagEnabled() && t.batch != nil {
+	if err == nil && !resp.IsError && t.batch != nil {
 		t.batch.recordRunning(call.ID)
 	}
 	return resp, err

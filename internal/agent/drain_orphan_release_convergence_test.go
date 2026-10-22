@@ -50,18 +50,10 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	ctx := t.Context()
 	f := newA2WakeDebtFixture(t, "orphaned-drain-converges", true)
 
-	// A running job, claimed and announced but NOT yet terminal -- the
-	// memory-side bookkeeping claimAndFinish also does, minus the terminal
-	// transition itself (that happens inside raceRelease below, "during the
-	// release window").
-	_, existing, err := f.ledger.Start(f.sessID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, f.store.MarkAnnounced(ctx, f.sessID, "call-1"))
-	if batchFlagEnabled() {
-		// The flag-ON live root the release-window completion below projects.
-		a2ClaimJob(t, f.conn, f.store, f.sessID, "call-1", true)
-	}
+	// A running root, reserved and announced but NOT yet terminal -- the
+	// terminal projection itself happens inside raceRelease below, "during
+	// the release window".
+	seedBatchDelegation(t, f.env.conn, f.sessID, "call-1", "", "command", "running", false)
 
 	// Hand-craft the mailbox into "mid-turn" (mbOwned, epoch 1) exactly like
 	// run_orphaned_release_race_test.go's own full-path test, so
@@ -80,16 +72,8 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	// 'pending') at the exact moment a Drain call races into the
 	// now-being-vacated mailbox.
 	raceRelease := func() error {
-		if batchFlagEnabled() {
-			if err := a2CompleteJobErr(ctx, f.conn, f.store, f.sessID, "call-1", "output"); err != nil {
-				return err
-			}
-		} else {
-			_, err := f.store.Transition(ctx, session.TransitionParams{
-				Owner: f.sessID, ToolCallID: "call-1", State: "completed",
-				ResultSummary: "output", Wake: true,
-			})
-			require.NoError(t, err)
+		if err := a2CompleteJobErr(ctx, f.conn, f.sessID, "call-1", "output"); err != nil {
+			return err
 		}
 		mb.mu.Lock()
 		mb.submitted = append(mb.submitted, newDrainCall(SessionAgentCall{SessionID: f.sessID}))

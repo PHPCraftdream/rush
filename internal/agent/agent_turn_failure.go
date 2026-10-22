@@ -314,15 +314,14 @@ func (ts *turnStream) handleStreamFailure(
 // write as a normal step and marks the owner's delivered debt reacted; a
 // failed mark falls back to the plain update so the finish still lands.
 func (ts *turnStream) persistFailureFinish(ctx context.Context, snap message.Message, awaiting bool) error {
-	if awaiting && hasReactionContent(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
+	if awaiting && hasReactionContent(snap) {
 		var err error
-		// R12-EF fix F1: the flag-ON twin marks the batch debt (and clears
-		// its reacted_failed) instead of the legacy async_jobs marker; a
-		// failed mark still falls back to the plain update either way.
-		if store := batchCutoverReactionStore(ts.a.asyncJobs.coord); store != nil {
+		// The batch twin marks the batch debt (and clears its reacted_failed);
+		// a failed mark still falls back to the plain update.
+		if store := batchCutoverReactionStore(ts.a.coord); store != nil {
 			err = store.BatchReactionMarkReactedWithMessageUpdate(ctx, ts.a.messages, ts.call.SessionID, snap)
 		} else {
-			err = ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ctx, ts.a.messages, ts.call.SessionID, snap)
+			err = ts.a.messages.Update(ctx, snap)
 		}
 		if err == nil {
 			return nil

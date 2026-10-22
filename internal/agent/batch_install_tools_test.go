@@ -173,11 +173,8 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		if armed.registry != fake.reg {
 			t.Fatalf("%s: armed against a foreign registry", name)
 		}
-		if _, ok := seen[name].(*asyncTool); ok {
-			t.Fatalf("%s: old async wrapper installed on the flag-on path", name)
-		}
-		if _, ok := seen[name].(*stallDetacherTool); ok {
-			t.Fatalf("%s: old stall wrapper installed on the flag-on path", name)
+		if _, ok := seen[name].(*batchIngressTool); !ok {
+			t.Fatalf("%s: the batch ingress must be the ONLY arming wrapper (%T)", name, seen[name])
 		}
 	}
 	for _, name := range controls {
@@ -216,13 +213,12 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	}
 }
 
-// TestUnboundCoordinatorKeepsLegacyAssembly is acceptance item (a): with no
-// binding the assembly takes the historical branch — async wrapper inside
-// hooks/restrictions, stall-detach outermost, registry leaves stripped of
-// every execution wrapper.
-func TestUnboundCoordinatorKeepsLegacyAssembly(t *testing.T) {
-	c := &coordinator{asyncJobs: newWorkLedger(nil)}
-	c.asyncJobs.inlineWindow = inlineWindow
+// TestUnboundCoordinatorArmsNoBatchTools is acceptance item (a), batch
+// edition: with no binding the assembly arms NOTHING through the batch
+// ingress; the policy layers are hooks/restricted only (the deleted async
+// and stall-detach wrapper layers are gone with their authorities).
+func TestUnboundCoordinatorArmsNoBatchTools(t *testing.T) {
+	c := newBatchRuntimeCoordinator()
 	list := batchTestTools("bash", "run_command", "view", "ask_question")
 
 	built, err := c.finishToolAssembly(context.Background(), list, nil, false, nil)
@@ -233,19 +229,9 @@ func TestUnboundCoordinatorKeepsLegacyAssembly(t *testing.T) {
 	for _, tool := range built.tools {
 		byName[tool.Info().Name] = tool
 	}
-	for _, name := range []string{"bash", "run_command", "view", "ask_question"} {
-		if _, ok := byName[name].(*stallDetacherTool); !ok {
-			t.Fatalf("%s: outermost wrapper is not the stall detacher (%T)", name, byName[name])
-		}
-	}
 	if entry, ok := built.leaves.entries["bash"]; ok {
-		if !batchLayersContain(entry.layers, "async") {
-			t.Fatalf("bash leaf layers %v missing async", entry.layers)
-		}
-	}
-	for name, entry := range built.leaves.entries {
-		if !batchLayersContain(entry.layers, "stall") {
-			t.Fatalf("%s: leaf layers %v missing stall", name, entry.layers)
+		if batchLayersContain(entry.layers, "async") || batchLayersContain(entry.layers, "stall") {
+			t.Fatalf("bash leaf layers %v carry a deleted wrapper layer", entry.layers)
 		}
 	}
 	for _, tool := range built.tools {

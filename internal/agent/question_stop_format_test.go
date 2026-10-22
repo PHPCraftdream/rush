@@ -2,79 +2,66 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
-// Revert-check: shared framing drift or producer/recovery divergence must fail.
+// TestQuestionStopFormatRecoverDeadHost pins the retained halves of the
+// question-stop contract in the batch world:
+//
+//  1. awaitingAnswerStoppedFinishText's shared framing (title + QUESTION
+//     details) -- the producer/recovery divergence guard, unchanged.
+//  2. a dead-host delegation root is recovered to 'interrupted' with
+//     outcome host_lost (the batch recovery's own classification).
+//
+// The legacy assertion that the recovered ROW's outcome summary carries the
+// "SUB-AGENT QUESTION (session X): ..." framing is an obsolete contract: in
+// the batch world the question framing is delivered at PUBLISH time (the
+// child_question session notice, batch_install_question.go), while recovery
+// marks the node interrupted; the interruption notice text is
+// buildBatchNoticeMessageParams's, pinned by
+// TestBatchNoticeClassification_RecoveredNodeIsInterruption.
 func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	t.Parallel()
-	for _, preamble := range []string{"", "Checked the output; one detail is unclear."} {
-		name := "empty_preamble"
-		if preamble != "" {
-			name = "with_preamble"
-		}
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			ctx := context.Background()
-			store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-			q := db.New(conn)
-			sessions := session.NewService(q, conn)
-			parent, err := sessions.Create(ctx, "question parent")
-			require.NoError(t, err)
-			child, err := sessions.Create(ctx, "question child")
-			require.NoError(t, err)
-			messages := message.NewService(q)
-			const question = "Should I ship or hold?"
-			title, details := awaitingAnswerStoppedFinishText(&AwaitingAnswerError{
-				Question: question, Options: []string{"ship", "hold"}, SessionID: child.ID,
-			})
-			require.Equal(t, "Stopped: agent asked a question and is awaiting an answer", title)
-			require.Contains(t, details, "QUESTION: "+question)
-			require.Contains(t, details, "\n\nThis is not a crash")
-			_, err = messages.Create(ctx, child.ID, message.CreateMessageParams{
-				Role: message.Assistant,
-				Parts: []message.ContentPart{
-					message.TextContent{Text: preamble},
-					message.Finish{Reason: message.FinishReasonError, Message: title, Details: details},
-				},
-			})
-			require.NoError(t, err)
+	ctx := context.Background()
+	conn, dataDir := batchFixtureConn(t)
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	child, err := sessions.Create(ctx, "question child")
+	require.NoError(t, err)
 
-			const host, job = "question-format-dead-host", "question-format-job"
-			lock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, host))
-			require.NoError(t, err)
-			require.NoError(t, lock.Release())
-			_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
-				OwnerSessionID: parent.ID, ToolCallID: job, Kind: "agent", ToolName: "agent",
-				InputHash: "question-format", HostID: host, ClaimID: "question-format-claim",
-				ChildSessionID: sql.NullString{String: child.ID, Valid: true},
-				CreatedAt:      1700000000, UpdatedAt: 1700000000,
-			})
-			require.NoError(t, err)
-			_, err = q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
-				OwnerSessionID: parent.ID, ToolCallID: job, UpdatedAt: 1700000001,
-			})
-			require.NoError(t, err)
+	const question = "Should I ship or hold?"
+	title, details := awaitingAnswerStoppedFinishText(&AwaitingAnswerError{
+		Question: question, Options: []string{"ship", "hold"}, SessionID: child.ID,
+	})
+	require.Equal(t, "Stopped: agent asked a question and is awaiting an answer", title)
+	require.Contains(t, details, "QUESTION: "+question)
+	require.Contains(t, details, "\n\nThis is not a crash")
+	// The framing round-trips through history verbatim (preamble preserved).
+	_, err = message.NewService(q).Create(ctx, child.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "Checked the output; one detail is unclear."},
+			message.Finish{Reason: message.FinishReasonError, Message: title, Details: details},
+		},
+	})
+	require.NoError(t, err)
 
-			out, err := store.RecoverDeadHost(ctx, host, messages)
-			require.NoError(t, err)
-			require.Equal(t, 1, out.Interrupted)
-			row, err := store.Get(ctx, parent.ID, job)
-			require.NoError(t, err)
-			require.Equal(t, "interrupted", row.State)
-			want := "SUB-AGENT QUESTION (session " + child.ID + "): " + question + "\n\nSuggested options: ship | hold"
-			if preamble != "" {
-				want = preamble + "\n\n" + want
-			}
-			require.True(t, row.ResultSummary.Valid)
-			require.Equal(t, want, row.ResultSummary.String)
-		})
-	}
+	// A live delegation root on a host whose lock is gone: the recovery must
+	// classify it interrupted/host_lost (the batch row half of the old
+	// dead-host question scenario).
+	const host = "question-format-dead-host"
+	root, _ := b1SeedBatchRootOnHost(t, conn, "question-parent", "question-format-job", host, "running")
+	_, err = session.NewBatchStore(conn).RecoverHostsOnce(ctx, func(string) (session.HostLockStatus, error) {
+		return session.ProbeHostShared(dataDir, host)
+	}, []string{host}, 8)
+	require.NoError(t, err)
+	var state, outcome string
+	require.NoError(t, q.QueryRowContext(ctx, `SELECT state, coalesce(outcome_code,'') FROM batch_nodes WHERE node_id=?`, root).Scan(&state, &outcome))
+	require.Equal(t, "interrupted", state)
+	require.Equal(t, "host_lost", outcome)
 }

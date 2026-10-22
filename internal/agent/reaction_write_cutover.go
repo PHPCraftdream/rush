@@ -5,18 +5,16 @@ import (
 )
 
 // batchCutoverReactionStore returns the node-backed BatchStore behind c's
-// bound flag-ON fact source, for the two WRITE twins the reaction paths own:
-// the real-step reaction marker (BatchReactionMarkReactedWithMessageUpdate,
+// bound fact source, for the two WRITE paths the reaction sides own:
+// the step/failure reaction marker (BatchReactionMarkReactedWithMessageUpdate,
 // persistStepFinish/persistFailureFinish) and Stop's wake-zero pass
-// (BatchReactionSetWakeZeroForOwners, stopTree). nil means "keep the legacy
-// async_jobs twin byte-for-byte": the flag is off, nothing is bound to this
-// coordinator, or the bound source is not the node-backed one (the
-// conservative unknown source has no store). Fact READS keep flowing through
-// the BatchCutoverFacts seam; only these two writes are unwrapped here,
-// because their legacy twins are called from turnStream/coordinator, not
-// behind the fact-source interface.
+// (BatchReactionSetWakeZeroForOwners, stopTree). nil means "not bound to
+// this coordinator, or the bound source is not the node-backed one (the
+// conservative unknown source has no store)": the callers fall back to the
+// plain message write so the finish still lands. Fact READS keep flowing
+// through the BatchCutoverFacts seam.
 func batchCutoverReactionStore(c *coordinator) *session.BatchStore {
-	if !batchFlagEnabled() || c == nil {
+	if c == nil {
 		return nil
 	}
 	v, ok := coordinatorBatchCutoverFactsBindings.Load(c)

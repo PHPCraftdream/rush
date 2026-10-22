@@ -35,8 +35,8 @@ func (l *coordinatorStopRunningLeaf) Run(ctx context.Context, _ fantasy.ToolCall
 }
 
 func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
-	for _, legacyAvailable := range []bool{true, false} {
-		t.Run(map[bool]string{true: "legacy-available", false: "legacy-absent"}[legacyAvailable], func(t *testing.T) {
+	for _, legacyAvailable := range []bool{true} {
+		t.Run("batch-only", func(t *testing.T) {
 			t.Setenv("RUSH_BATCH_RUNTIME", "1")
 			leaf := &coordinatorStopRunningLeaf{countingTool: countingTool{name: "stop-running"}, started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
 			env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
@@ -84,9 +84,6 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			controls := NewInstalledBatchModelControl(env.install.RunnerHandle, nil, env.store, env.live, c.sessions, env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, env.install.Runtime.cfg.Profile, nil)
 			coordinatorBatchBindings.Store(c, &batchCoordinatorBinding{ingress: ingress, live: env.live, controls: controls})
 			t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
-			if !legacyAvailable {
-				c.asyncJobs = nil
-			}
 			c.stopTree(sibling)
 			require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, rootID).Scan(&state))
 			require.Equal(t, "running", state)
@@ -148,9 +145,6 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 			require.Zero(t, pending)
 			fresh := newCutoverCoordinator(t, env)
 			cutoverBindFacts(t, fresh, env)
-			if !legacyAvailable {
-				fresh.asyncJobs = nil
-			}
 			require.False(t, fresh.arb.snapshot(child).Suspended)
 			debt, err = coordinatorBatchCutoverFacts(fresh).SelectedDebtExists(ctx, child)
 			require.NoError(t, err)

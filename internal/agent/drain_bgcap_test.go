@@ -79,13 +79,7 @@ func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
 
 func (f *attemptFixture) hasDebt(ctx context.Context) bool {
 	f.t.Helper()
-	if batchFlagEnabled() {
-		store := session.NewBatchStore(f.env.conn)
-		debt, err := store.BatchReactionDebtExists(ctx, f.sessID)
-		require.NoError(f.t, err)
-		return debt
-	}
-	debt, err := f.ledger.reactionDebtExists(ctx, f.sessID)
+	debt, err := session.NewBatchStore(f.env.conn).BatchReactionDebtExists(ctx, f.sessID)
 	require.NoError(f.t, err)
 	return debt
 }

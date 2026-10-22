@@ -150,15 +150,8 @@ func (c *coordinator) drainPermitted(ctx context.Context, sessionID string, spen
 // the launch verdict. No debt means nothing to launch for. spent: see
 // drainPolicy.
 func (c *coordinator) drainDecision(ctx context.Context, sessionID string, spent bool) (debt bool, v drainVerdict, err error) {
-	if c.asyncJobs == nil {
-		return false, drainVerdict{}, nil
-	}
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: the debt fact comes from batch node reads.
-		debt, err = facts.SelectedDebtExists(ctx, sessionID)
-	} else {
-		debt, err = c.asyncJobs.reactionDebtExists(ctx, sessionID)
-	}
+	// The debt fact comes from batch node reads.
+	debt, err = coordinatorBatchCutoverFacts(c).SelectedDebtExists(ctx, sessionID)
 	if err != nil || !debt {
 		return false, drainVerdict{}, err
 	}
@@ -205,32 +198,12 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 	if sess.ParentSessionID == "" {
 		return false, nil
 	}
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: delegation identity composes the parent's live tree scan
-		// with the ALL-roots history read -- a node under the parent naming
-		// this child, live or historical. The historical half preserves the
-		// released-child rule 7: the identity outlives the delegation's
-		// completion. An unreadable read fails closed as delegated.
-		return facts.DelegationChildEver(ctx, sess.ParentSessionID, sessionID)
-	}
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		// No durable store to confirm identity against (bare test fixture)
-		// -- fall back to the coarser pre-fix signal rather than silently
-		// treating every ParentSessionID session as a non-child.
-		return true, nil
-	}
-	jobs, listErr := c.asyncJobs.store.ListAsyncJobsForOwner(ctx, sess.ParentSessionID)
-	if listErr != nil {
-		return false, listErr
-	}
-	for _, job := range jobs {
-		if job.ChildSessionID.Valid && job.ChildSessionID.String == sessionID {
-			return true, nil
-		}
-	}
-	// ParentSessionID is set but no delegation job ever named sessionID as
-	// its child -- a fork with a parent set, not a delegation target.
-	return false, nil
+	// Delegation identity composes the parent's live tree scan with the
+	// ALL-roots history read -- a node under the parent naming this child,
+	// live or historical. The historical half preserves the released-child
+	// rule 7: the identity outlives the delegation's completion. An
+	// unreadable read fails closed as delegated.
+	return coordinatorBatchCutoverFacts(c).DelegationChildEver(ctx, sess.ParentSessionID, sessionID)
 }
 
 // sessionDebtIsBGShellOnly reports whether sessionID's ENTIRE current
@@ -256,18 +229,9 @@ func (c *coordinator) isDurableDelegationChild(ctx context.Context, sessionID st
 // sessions get a Drain turn anyway. Reads the two tables directly instead,
 // at the SAME pending-inclusive scope ReactionDebtExists uses.
 func (c *coordinator) sessionDebtIsBGShellOnly(ctx context.Context, sessionID string) (bgOnly bool, err error) {
-	if c.asyncJobs.store == nil {
-		return false, nil
-	}
-	var hasJobDebt bool
-	var noticeKinds []string
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: the debt summary comes from batch node reads; the kind
-		// constants are the same session_notices vocabulary.
-		hasJobDebt, noticeKinds, err = facts.PendingInclusiveDebtSummary(ctx, sessionID)
-	} else {
-		hasJobDebt, noticeKinds, err = c.asyncJobs.store.PendingInclusiveDebtSummary(ctx, sessionID)
-	}
+	// The debt summary comes from batch node reads; the kind constants are
+	// the same session_notices vocabulary.
+	hasJobDebt, noticeKinds, err := coordinatorBatchCutoverFacts(c).PendingInclusiveDebtSummary(ctx, sessionID)
 	if err != nil {
 		return false, err
 	}

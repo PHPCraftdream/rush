@@ -1,8 +1,9 @@
 // The arbiter's mutable state (docs/plans/2026-10-01-turn-arbiter.md
 // sec.2.3, R-ARB-2): ONE struct per session under ONE mutex, aggregating what
 // used to be the coordinator maps (auto-resume counter, over-cap set,
-// suspension set, rerun holds, the reaction-chain trio) plus the workLedger
-// launch gate. Writers: accountDrainAttempt, noteDrainRefused, the
+// suspension set, rerun holds, the reaction-chain trio) plus the launch gate
+// (originally the workLedger's; rehomed with the arbiter). Writers:
+// accountDrainAttempt, noteDrainRefused, the
 // human-message reset, HoldAutomaticTurns, suspendAutoResume, the reaction
 // chain accounting and the bg-shell arrival. Readers go through
 // arbiter.snapshot -- one capture, copied to a value (never two owner locks
@@ -325,7 +326,7 @@ func (a *arbiter) resetForHumanMessage(sid string) {
 // answering another fact start a fresh chain at 1; anything else leaves the
 // count as it is. A successful reaction deliberately does NOT reset the count
 // -- closing the chain's own completions is the event that masks the chain.
-func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnapshot) {
+func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.BatchDebtSnapshot) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.stateLocked(sid)
@@ -338,51 +339,24 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 	if len(att.chainIdleClaims) == 0 && len(att.chainBatchRoots) == 0 {
 		return // a text-only or neutral-tool leg breaks nothing and adds nothing
 	}
-	if len(att.chainBatchRoots) > 0 && len(att.chainIdleClaims) == 0 {
-		// Batch twin (R12-E round 4): the same self-sustaining/fresh-chain
-		// logic keyed by the batch roots instead of claim ids. The debt
-		// rows compared are the leg's OWN acted-on rows resolved to their
-		// ROOT tool_call_ids (att.batchDebtCallIDs, computed by the
-		// accounting): every row must be a completion of a root the chain
-		// launched.
-		roots := s.chainBatchRoots
-		if roots == nil {
-			roots = make(map[string]struct{}, len(att.chainBatchRoots))
-			s.chainBatchRoots = roots
-		}
-		selfSustaining := true
-		for _, call := range att.batchDebtCallIDs {
-			if _, ok := roots[call]; !ok {
-				selfSustaining = false
-				break
-			}
-		}
-		if len(att.batchSnapshot.Notices) > 0 {
-			selfSustaining = false // another fact (bg-shell done, supervision, ...)
-		}
-		if selfSustaining {
-			s.chainLinks++
-		} else {
-			s.chainLinks = 1
-		}
-		for _, root := range att.chainBatchRoots {
-			roots[root] = struct{}{}
-		}
-		return
-	}
-	claims := s.chainClaims
-	if claims == nil {
-		claims = make(map[string]struct{}, len(att.chainIdleClaims))
-		s.chainClaims = claims
+	// Batch: the chain's own completions are keyed by the launched ROOT
+	// tool_call_ids. The debt rows compared are the leg's OWN acted-on rows
+	// resolved to their ROOT tool_call_ids (att.batchDebtCallIDs, computed
+	// by the accounting): every row must be a completion of a root the
+	// chain launched.
+	roots := s.chainBatchRoots
+	if roots == nil {
+		roots = make(map[string]struct{}, len(att.chainBatchRoots))
+		s.chainBatchRoots = roots
 	}
 	selfSustaining := true
-	for _, ref := range snap.Jobs {
-		if _, ok := claims[ref.ClaimID]; !ok {
+	for _, call := range att.batchDebtCallIDs {
+		if _, ok := roots[call]; !ok {
 			selfSustaining = false
 			break
 		}
 	}
-	if len(snap.Notices) > 0 {
+	if len(att.batchSnapshot.Notices) > 0 {
 		selfSustaining = false // another fact (bg-shell done, supervision, ...)
 	}
 	if selfSustaining {
@@ -392,8 +366,8 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 	}
 	// A recorded launch must survive this launch-only leg so the next leg can
 	// compare its command. A launch mixed with real action is not a chain link.
-	for _, claim := range att.chainIdleClaims {
-		claims[claim] = struct{}{}
+	for _, root := range att.chainBatchRoots {
+		roots[root] = struct{}{}
 	}
 }
 
@@ -515,7 +489,7 @@ func (a *arbiter) overCapCount(sid string) int {
 
 // gateHoldsHint reports whether sid's arbiter entry carries a launch gate
 // with recorded hint state (HintSeen set or HintOpens): while it does,
-// dropping the ledger's hint counter would desynchronize gateShut's
+// dropping the coordinator's hint counter would desynchronize gateShut's
 // newer-hint comparison -- a counter that restarts at zero reads as "any
 // inequality = a newer fact" and reopens a dormant gate with no fact at all.
 func (a *arbiter) gateHoldsHint(sid string) bool {

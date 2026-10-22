@@ -180,7 +180,6 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// child's mailbox and OS lock are already released by this point (see
 	// runOwned's deferred abandonOwnershipWithHandoff).
 	defer c.noteSubAgentChildRunEnded(sessionID)
-	defer stallDetachCleanupSession(sessionID)
 
 	// R8-3: capture the DIRECT caller's call-result recorder, then detach
 	// it for everything downstream -- a nested runInternal reached through

@@ -79,7 +79,7 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		// The legacy snapshot half is empty: the batch branch keys on
 		// att.chainBatchRoots/att.batchDebtCallIDs, not on legacy claims.
-		coord.arb.chainLink(env.sessionID, att, session.DebtSnapshot{})
+		coord.arb.chainLink(env.sessionID, att, session.BatchDebtSnapshot{})
 	}
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 3)
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)

@@ -105,7 +105,7 @@ func TestDrainAttempt_SwallowedReactionWrite_SettlesAtK(t *testing.T) {
 
 	for i := 1; i <= 2; i++ {
 		_, _ = f.drainRun(ctx)
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 		row := f.row(ctx, "call-1")
 		require.EqualValues(t, i, row.WakeAttempts, "attempt %d is counted", i)
 		require.EqualValues(t, 0, row.Reacted, "attempt %d must not close the debt yet", i)
@@ -257,16 +257,12 @@ func TestSettleDrainDebt_MarkerNamesSnapshotToolCallIDs(t *testing.T) {
 	f.seedDebt(ctx, "call-1", true)
 	f.seedDebt(ctx, "call-2", true)
 	boom := &fantasy.ProviderError{Title: "request too large", Message: "boom", StatusCode: http.StatusRequestEntityTooLarge}
-	snap, batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
-	if batchCaptured {
-		require.Len(t, batchSnap.Nodes, 2)
-		f.coord.accountDrainAttempt(ctx, &drainAttempt{
-			sessionID: f.sessID, batchSnapshot: batchSnap, batchCaptured: true, outcome: drainAttempted,
-		}, boom)
-	} else {
-		require.Len(t, snap.Jobs, 2)
-		require.NoError(t, f.coord.settleDrainDebt(ctx, f.sessID, snap, "boom"))
-	}
+	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	require.Len(t, batchSnap.Nodes, 2)
+	f.coord.accountDrainAttempt(ctx, &drainAttempt{
+		sessionID: f.sessID, snapshot: batchSnap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured, outcome: drainAttempted,
+	}, boom)
 
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
 	require.NoError(t, err)
@@ -295,17 +291,13 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "attempt-commit-refused", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", true) // visible debt: the commit was refused over it
-	snap, batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
-	if batchCaptured {
-		require.False(t, batchSnap.Empty())
-	} else {
-		require.False(t, snap.Empty())
-	}
+	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	require.False(t, batchSnap.Empty())
 
-	require.False(t, f.ledger.paceDrainGate(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
+	require.False(t, f.coord.arb.pace(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
 
 	att := &drainAttempt{
-		sessionID: f.sessID, snapshot: snap,
+		sessionID: f.sessID, snapshot: batchSnap,
 		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
 		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
@@ -323,7 +315,7 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	delete(f.coord.recheckSet, f.sessID)
 	f.coord.recheckMu.Unlock()
 	att = &drainAttempt{
-		sessionID: f.sessID, snapshot: snap,
+		sessionID: f.sessID, snapshot: batchSnap,
 		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
 		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainDeferred, reason: "automatic turns suspended"},

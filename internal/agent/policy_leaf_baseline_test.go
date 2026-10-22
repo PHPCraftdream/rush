@@ -17,8 +17,7 @@ import (
 func TestPolicyLeafConstructionBaseline(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	// A non-nil ledger enables async decoration; no execution is launched.
-	coord.asyncJobs = &workLedger{}
+
 	cfg := coord.cfg.Config()
 	cfg.Hooks = map[string][]config.HookConfig{
 		hooks.EventPreToolUse: {{Command: "exit 0"}},
@@ -42,14 +41,15 @@ func TestPolicyLeafConstructionBaseline(t *testing.T) {
 			var names []string
 			for _, tool := range built {
 				names = append(names, tool.Info().Name)
-				wantStack := []string{"stall"}
+				// The batch world installs no stall-detach or async wrapper:
+				// both seams are identity rehomes (batch_rehome_tool_
+				// metadata.go), so the retained baseline stack is
+				// hooks (top-level only) -> restricted -> tool.
+				var wantStack []string
 				if !child {
 					wantStack = append(wantStack, "hooks")
 				}
 				wantStack = append(wantStack, "restricted")
-				if tool.Info().Name == "bash" || tool.Info().Name == "run_command" {
-					wantStack = append(wantStack, "async")
-				}
 				wantStack = append(wantStack, "tool")
 				require.Equal(t, wantStack, policyLeafBaselineStack(tool), "wrapper stack: %s", tool.Info().Name)
 
@@ -79,14 +79,10 @@ func policyLeafBaselineStack(tool fantasy.AgentTool) []string {
 	switch tool := tool.(type) {
 	case *loggedTool:
 		return append([]string{"logging"}, policyLeafBaselineStack(tool.inner)...)
-	case *stallDetacherTool:
-		return append([]string{"stall"}, policyLeafBaselineStack(tool.inner)...)
 	case *hookedTool:
 		return append([]string{"hooks"}, policyLeafBaselineStack(tool.inner)...)
 	case restrictedTool:
 		return append([]string{"restricted"}, policyLeafBaselineStack(tool.AgentTool)...)
-	case *asyncTool:
-		return append([]string{"async"}, policyLeafBaselineStack(tool.inner)...)
 	default:
 		return []string{"tool"}
 	}

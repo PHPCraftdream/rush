@@ -10,50 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSubAgentWorkTerminal_DriverBusyIsNotTerminal pins task #1049 fix item
-// 3: subAgentWorkTerminal must consult the child's REGISTERED DRIVER, not
-// c.currentAgent, for its busy gate. Before the fix, a delegated child's
-// driver being mid-turn was invisible to this check -- c.currentAgent (the
-// root/interactive coder agent) is always a DIFFERENT SessionAgent than the
-// one actually running a delegated child's turns, so it reported "idle" for
-// a child it never touched, and a release could fire while the real driver
-// was still mid-stream, delivering the child's pre-result text.
-func TestSubAgentWorkTerminal_DriverBusyIsNotTerminal(t *testing.T) {
-	t.Parallel()
-	coord := &coordinator{}
-	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
-	// childScopeDrained reads (childScopeOpenAcrossProcesses -> CLIScope ->
-	// node facts) need both to bind a real (here: empty) node source. An
-	// empty bound store reads drained once the driver is idle.
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
-	bindBatchNodeFacts(t, coord, conn, dataDir)
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
-
-	// c.currentAgent, if wrongly consulted for a driven child, would report
-	// idle: mockSessionAgent's IsSessionBusy is always false, and it is never
-	// the SessionAgent a delegated child actually runs on.
-	coord.currentAgent = &mockSessionAgent{}
-
-	driverStub := newBusyStubAgent()
-	driverStub.setBusy(true)
-	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: driverStub})
-
-	require.False(t, coord.asyncJobs.childScopeDrained("child-1"),
-		"a busy driver must hold the child non-terminal even when c.currentAgent reports idle")
-
-	driverStub.setBusy(false)
-	require.True(t, coord.asyncJobs.childScopeDrained("child-1"),
-		"once the driver is idle (and no async/background work is pending) the child is terminal")
-
-	// A session with no registered driver falls back to c.currentAgent,
-	// preserving behavior for non-delegated sessions and bare test fixtures.
-	require.True(t, coord.asyncJobs.childScopeDrained("no-driver-session"),
-		"a session with no registered driver must fall back to c.currentAgent's busy state")
-}
-
+// TestSubAgentWorkTerminal_DriverBusyIsNotTerminal (task #1049 fix item 3)
+// was DELETED as an obsolete contract: its mechanism -- subAgentWorkTerminal
+// and the ledger's childScopeDrained busy gate it consulted -- is gone. In
+// the batch world a busy driver cannot be raced by a release: releases ride
+// the recheck wake's own Run (a busy session's turn queues in the mailbox and
+// the release lands only after the work drains), and the launch-side busy
+// gate is drainPermitted/CLIScope, pinned by batch_scope_recovery_test.go.
+// The registry/generation and allowlist contracts below are retained.
 // TestSubAgentDriverRegistry_ReleaseIfCurrentIsGenerationGuarded pins §6.2's
 // compare-and-delete: a stale generation observed before a resume_session_id
 // re-registered the same child id must never delete the newer record.

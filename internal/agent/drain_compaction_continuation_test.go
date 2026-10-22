@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,7 +22,6 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,17 +86,13 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 	model := Model{Model: lm, CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000}}
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	ledger := newWorkLedger(nil)
-	ledger.store = store
-	a2AttachBatchFacts(t, env, ledger)
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		DataDirectory: env.workingDir,
 		SmartModel:    model, FastModel: model, SystemPrompt: "you are a probe",
 		Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, Coord: coord,
 		// DisableAutoSummarize intentionally left false: the whole point is
 		// to exercise the real shouldSummarize gate.
 	})
@@ -109,7 +103,7 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 
 	// Seed real VISIBLE debt: claim+finish a job, pull its notice into
 	// history -- the shape decideDrainTurn's first (main) evaluation needs.
-	seedFixtureJobDebt(t, env.conn, store, ledger, env.messages, sess.ID, "call-async-1", true)
+	seedFixtureJobDebt(t, env.conn, sess.ID, "call-async-1", true)
 
 	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sa.Run(ctx, drainCall)

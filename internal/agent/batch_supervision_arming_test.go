@@ -61,10 +61,10 @@ func psvArmingOverLedger(coord Coordinator) func(context.Context, string) {
 	return PsvBatchSupervisionArmingLate(func() Coordinator { return coord })
 }
 
-func psvAssertArmed(l *workLedger, owner string) (*supervisionState, bool) {
-	l.supervision.mu.Lock()
-	defer l.supervision.mu.Unlock()
-	st, ok := l.supervision.byRoot[owner]
+func psvAssertArmed(c *coordinator, owner string) (*supervisionState, bool) {
+	c.supervision.mu.Lock()
+	defer c.supervision.mu.Unlock()
+	st, ok := c.supervision.byRoot[owner]
 	return st, ok
 }
 
@@ -232,33 +232,33 @@ func TestBatchSupervisionArming_FailedStartedElectionDoesNotArm(t *testing.T) {
 
 func TestBatchSupervisionArming_PausedSessionResumedByStartedResponse(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger(t)
+	coord := newSupervisionTestCoordinator(t)
 	firstInv := deliveryTestInvocation(batchDeliveryDetached)
 	firstInv.SessionID = "paused-owner"
 	first := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err := first.DeliverBatch(context.Background(), "paused-root-1", firstInv)
 	require.NoError(t, err)
-	l.supervision.mu.Lock()
-	st, exists := l.supervision.byRoot["paused-owner"]
-	l.supervision.mu.Unlock()
+	coord.supervision.mu.Lock()
+	st, exists := coord.supervision.byRoot["paused-owner"]
+	coord.supervision.mu.Unlock()
 	require.True(t, exists, "first delivery must create the invoking owner's state")
-	l.supervision.mu.Lock()
+	coord.supervision.mu.Lock()
 	st.paused = true
 	st.tickCount = 1 << 20
 	oldGeneration := st.generation
 	baseInterval := st.cfg.Interval
 	st.interval = 2 * baseInterval
-	l.supervision.mu.Unlock()
+	coord.supervision.mu.Unlock()
 
 	secondInv := deliveryTestInvocation(batchDeliveryDetached)
 	secondInv.SessionID = "paused-owner"
 	second := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err = second.DeliverBatch(context.Background(), "paused-root-2", secondInv)
 	require.NoError(t, err)
-	l.supervision.mu.Lock()
-	st = l.supervision.byRoot["paused-owner"]
+	coord.supervision.mu.Lock()
+	st = coord.supervision.byRoot["paused-owner"]
 	paused, ticks, interval, generation := st.paused, st.tickCount, st.interval, st.generation
-	l.supervision.mu.Unlock()
+	coord.supervision.mu.Unlock()
 	require.False(t, paused)
 	require.Zero(t, ticks)
 	require.Equal(t, baseInterval, interval)
@@ -267,14 +267,14 @@ func TestBatchSupervisionArming_PausedSessionResumedByStartedResponse(t *testing
 
 func TestBatchSupervisionArming_DelegatedChildDoesNotArm(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger(t)
+	coord := newSupervisionTestCoordinator(t)
 	coord.subAgentDrivers.register("child-owner", subAgentDriver{agent: &mockSessionAgent{}})
 	childInv := deliveryTestInvocation(batchDeliveryDetached)
 	childInv.SessionID = "child-owner"
 	child := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err := child.DeliverBatch(context.Background(), "child-root", childInv)
 	require.NoError(t, err)
-	_, childArmed := psvAssertArmed(l, "child-owner")
+	_, childArmed := psvAssertArmed(coord, "child-owner")
 	require.False(t, childArmed)
 
 	rootInv := deliveryTestInvocation(batchDeliveryDetached)
@@ -282,20 +282,20 @@ func TestBatchSupervisionArming_DelegatedChildDoesNotArm(t *testing.T) {
 	root := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err = root.DeliverBatch(context.Background(), "root-root", rootInv)
 	require.NoError(t, err)
-	_, rootArmed := psvAssertArmed(l, "root-owner")
+	_, rootArmed := psvAssertArmed(coord, "root-owner")
 	require.True(t, rootArmed, "a non-child delivery must arm its invoking owner")
 }
 
 func TestBatchSupervisionArming_DisabledByCallOptionsDoesNotArm(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger(t)
+	coord := newSupervisionTestCoordinator(t)
 	disabledInv := deliveryTestInvocation(batchDeliveryDetached)
 	disabledInv.SessionID = "disabled-owner"
 	disabled := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	ctx := WithCallOptions(context.Background(), &CallOptions{SupervisionDisabled: true})
 	_, err := disabled.DeliverBatch(ctx, "disabled-root", disabledInv)
 	require.NoError(t, err)
-	_, disabledArmed := psvAssertArmed(l, "disabled-owner")
+	_, disabledArmed := psvAssertArmed(coord, "disabled-owner")
 	require.False(t, disabledArmed)
 
 	enabledInv := deliveryTestInvocation(batchDeliveryDetached)
@@ -303,7 +303,7 @@ func TestBatchSupervisionArming_DisabledByCallOptionsDoesNotArm(t *testing.T) {
 	enabled := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err = enabled.DeliverBatch(context.Background(), "enabled-root", enabledInv)
 	require.NoError(t, err)
-	_, enabledArmed := psvAssertArmed(l, "enabled-owner")
+	_, enabledArmed := psvAssertArmed(coord, "enabled-owner")
 	require.True(t, enabledArmed)
 
 	intervalInv := deliveryTestInvocation(batchDeliveryDetached)
@@ -312,21 +312,21 @@ func TestBatchSupervisionArming_DisabledByCallOptionsDoesNotArm(t *testing.T) {
 	intervalCtx := WithCallOptions(context.Background(), &CallOptions{SupervisionInterval: 7 * time.Second})
 	_, err = interval.DeliverBatch(intervalCtx, "interval-root", intervalInv)
 	require.NoError(t, err)
-	intervalState, intervalArmed := psvAssertArmed(l, "interval-owner")
+	intervalState, intervalArmed := psvAssertArmed(coord, "interval-owner")
 	require.True(t, intervalArmed)
 	require.Equal(t, 7*time.Second, intervalState.cfg.Interval)
 }
 
 func TestBatchSupervisionArming_DisabledByConfigDoesNotArm(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger(t)
+	coord := newSupervisionTestCoordinator(t)
 	coord.cfg = config.NewLibraryStore(&config.Config{Options: &config.Options{SupervisionEnabled: boolPtr(false)}}, t.TempDir())
 	disabledInv := deliveryTestInvocation(batchDeliveryDetached)
 	disabledInv.SessionID = "cfg-disabled-owner"
 	disabled := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err := disabled.DeliverBatch(context.Background(), "cfg-root", disabledInv)
 	require.NoError(t, err)
-	_, armed := psvAssertArmed(l, "cfg-disabled-owner")
+	_, armed := psvAssertArmed(coord, "cfg-disabled-owner")
 	require.False(t, armed)
 
 	coord.cfg = config.NewLibraryStore(&config.Config{Options: &config.Options{SupervisionEnabled: boolPtr(true)}}, t.TempDir())
@@ -335,13 +335,13 @@ func TestBatchSupervisionArming_DisabledByConfigDoesNotArm(t *testing.T) {
 	enabled := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))
 	_, err = enabled.DeliverBatch(context.Background(), "cfg-root-on", enabledInv)
 	require.NoError(t, err)
-	_, enabledArmed := psvAssertArmed(l, "cfg-enabled-owner")
+	_, enabledArmed := psvAssertArmed(coord, "cfg-enabled-owner")
 	require.True(t, enabledArmed)
 }
 
 func TestBatchSupervisionArming_LateUnboundCoordinatorIsNoOp(t *testing.T) {
 	t.Parallel()
-	l, coord := newSupervisionTestLedger(t)
+	coord := newSupervisionTestCoordinator(t)
 	var typedNil *coordinator
 	arms := []func(context.Context, string){
 		PsvBatchSupervisionArmingLate(nil),
@@ -355,8 +355,8 @@ func TestBatchSupervisionArming_LateUnboundCoordinatorIsNoOp(t *testing.T) {
 		}
 		PsvBatchSupervisionArmingLate(func() Coordinator { return coord })(context.Background(), "")
 	})
-	l.supervision.mu.Lock()
-	remaining := len(l.supervision.byRoot)
-	l.supervision.mu.Unlock()
+	coord.supervision.mu.Lock()
+	remaining := len(coord.supervision.byRoot)
+	coord.supervision.mu.Unlock()
 	require.Zero(t, remaining)
 }

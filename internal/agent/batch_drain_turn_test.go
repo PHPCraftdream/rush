@@ -39,10 +39,9 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 	releaseAllAt(t, leaf)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
-	// Headless legacy store on the SAME conn, then drop async_jobs: any
-	// legacy read anywhere in this path fails with "no such table".
-	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-dt")
-	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	// The legacy async_jobs table no longer exists in the batch-only schema;
+	// the DROP proves the reads below never need it.
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
 
 	// A real settled batch completion: visible batch debt only.
@@ -76,7 +75,7 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 
 	// The production decision with that input: the turn is TAKEN (the
 	// provider stream would be reached), zero error.
-	sa := &sessionAgent{asyncJobs: coord.asyncJobs}
+	sa := &sessionAgent{coord: coord}
 	commit, verdict := sa.decideDrainTurn(env.ctx, env.sessionID, hasVisibleDebt)
 	require.True(t, commit, "visible batch debt commits the Drain turn (ON path)")
 	t.Logf("DrainTurnON commit=%v verdict=%+v", commit, verdict)
@@ -92,7 +91,7 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 	// legacy snapshot is inert (chainIdleClaims empty, batch roots own the
 	// accounting) -- the ON leg passes att.snapshot zero.
 	att := &drainAttempt{chainBatchRoots: []string{"call-dt"}}
-	coord.arb.chainLink(env.sessionID, att, session.DebtSnapshot{})
+	coord.arb.chainLink(env.sessionID, att, session.BatchDebtSnapshot{})
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 1,
 		"the batch-only leg accounts through chainBatchRoots with a zero legacy snapshot")
 	env.logDebtRows(t)
@@ -113,7 +112,7 @@ func TestBatchChainEvidenceRepeatedCommand(t *testing.T) {
 
 	// The collector's arbiter seam is the REAL coordinator's.
 	ts := &turnStream{
-		a:    &sessionAgent{asyncJobs: coord.asyncJobs},
+		a:    &sessionAgent{coord: coord},
 		call: SessionAgentCall{SessionID: env.sessionID},
 		att:  &drainAttempt{},
 	}

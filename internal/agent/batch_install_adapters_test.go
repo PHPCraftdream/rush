@@ -70,7 +70,7 @@ func (e *gatingInstallExecutor) Start(ctx context.Context, _ jobbatch.Launch, re
 func (e *gatingInstallExecutor) letGo() { e.once.Do(func() { close(e.release) }) }
 
 // newTestBatchStore builds a BatchStore on a fresh temp SQLite database with
-// foreign keys off, matching the isolated ledger test convention.
+// foreign keys off, matching the isolated fixture convention.
 func newTestBatchStore(t *testing.T) (*session.BatchStore, *sql.DB, context.Context) {
 	t.Helper()
 	dataDir := t.TempDir()

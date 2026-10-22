@@ -28,15 +28,11 @@ func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
-	// No table references async_jobs (no FK in any migration), so a single
-	// DROP removes the legacy ledger wholesale.
-	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	// The legacy async_jobs table no longer exists in the batch-only schema;
+	// the DROP is a harmless no-op kept to prove the reads below never need
+	// it.
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
-	// ALSO point the coordinator's legacy store at the SAME (now headless)
-	// conn: any accidental legacy read hits the dropped table. No Close
-	// cleanup: the conn is shared with the env.
-	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-nolegacy")
-
 	// Before any debt: the ON debt answer never touches the old table.
 	debt, err := coord.ReactionDebtExists(env.ctx, env.sessionID)
 	require.NoError(t, err)
@@ -171,7 +167,7 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	require.Len(t, debtRows.Nodes, 1, "the settled root is the one node debt row")
 	att := &drainAttempt{chainBatchRoots: []string{"call-chain"}, batchSnapshot: session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes}}
 	for i := 0; i < 3; i++ {
-		coord.arb.chainLink(env.sessionID, att, session.DebtSnapshot{})
+		coord.arb.chainLink(env.sessionID, att, session.BatchDebtSnapshot{})
 	}
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 3)
 
@@ -225,21 +221,19 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 	releaseAllAt(t, leaf)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
-	l := coord.asyncJobs
 
 	env.invokeDetached("call-super", "view", leaf)
 	leaf.waitStarted(t, "call-super")
 	rootID := env.rootID("call-super")
 
-	require.True(t, l.supervisionWorkOpen(env.sessionID), "the live gated root keeps the scope open")
-	text, flagged := l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 1, time.Minute, false)
+	require.True(t, coord.supervisionWorkOpen(env.sessionID), "the live gated root keeps the scope open")
+	text := coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 1, time.Minute, false)
 	require.Contains(t, text, "call-super", "the summary names the live node's tool call id")
-	require.Nil(t, flagged, "silence escalation awaits the R12-F batch output-buffer seam; check-ins, pause wording, scope and held-question policy are preserved")
 	t.Logf("SupervisionON text=%q", text)
 
 	leaf.letGo("call-super")
 	require.Equal(t, "completed", env.rootTerminal(rootID))
-	require.Eventually(t, func() bool { return !l.supervisionWorkOpen(env.sessionID) },
+	require.Eventually(t, func() bool { return !coord.supervisionWorkOpen(env.sessionID) },
 		5*time.Second, 5*time.Millisecond, "the scope closed after the settle")
 
 	// Synthetic delegation descendant (the DelegationFactsON reservation
@@ -265,12 +259,11 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "running", ControlState: "none"}},
 		}},
 	}))
-	require.True(t, l.supervisionWorkOpen(env.sessionID), "the delegation keeps the scope open")
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 2, time.Minute, false)
+	require.True(t, coord.supervisionWorkOpen(env.sessionID), "the delegation keeps the scope open")
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 2, time.Minute, false)
 	require.Contains(t, text, "1 sub-agent delegation(s) in progress",
 		"the Descendants fact increments the delegation count")
 	require.Contains(t, text, "call-super-del", "the summary names the delegation's tool call id")
-	require.Nil(t, flagged)
 
 	// A pending child_question notice adds the awaiting clause and the
 	// guidance prefix; settling (reacting) the question removes both.
@@ -295,11 +288,10 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		Wake: 1, CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
 	require.NotContains(t, text, "awaiting your answer",
 		"an unparseable or stale-bound question is NOT counted (LiveHeldQuestions)")
 	require.NotContains(t, text, "blocked on your answer")
-	require.Nil(t, flagged)
 
 	// (a) POSITIVE, live-bound: publish through the PRODUCTION publisher
 	// against the reserved LIVE delegation child (its row exists, state
@@ -315,12 +307,11 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 			Owner: env.sessionID, ChildSessionID: child, NodeID: childNode,
 			Token: uint64(liveToken), Depth: 1, Sequence: 1, Question: "continue?",
 		}))
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
 	require.Contains(t, text, "(1 awaiting your answer)",
 		"the LIVE-bound question is counted (exactly one: both synthetic rows are skipped)")
 	require.Contains(t, text, "A sub-agent is blocked on your answer; waiting will not progress it.",
 		"the awaiting guidance prefix appears")
-	require.Nil(t, flagged)
 
 	// (c) Round-6 predicate: a DELIVERED but still-unreacted question is
 	// STILL HELD (delivery IN ('pending','done') AND wake=1 AND reacted=0,
@@ -329,10 +320,9 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		`UPDATE session_notices SET delivery = 'done' WHERE owner = ?1 AND kind = ?2 AND reacted = 0`,
 		env.sessionID, session.NoticeKindChildQuestion)
 	require.NoError(t, err)
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, false)
 	require.Contains(t, text, "(1 awaiting your answer)",
 		"the delivered-but-unreacted question is STILL counted (the retained-debt predicate)")
-	require.Nil(t, flagged)
 
 	// Settling (reacting) removes the clause: unreacted is part of the
 	// predicate (checked against the now-delivered row).
@@ -340,10 +330,9 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		`UPDATE session_notices SET reacted = 1 WHERE owner = ?1 AND kind = ?2`,
 		env.sessionID, session.NoticeKindChildQuestion)
 	require.NoError(t, err)
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
 	require.NotContains(t, text, "awaiting your answer", "the awaiting clause disappears once settled")
 	require.NotContains(t, text, "blocked on your answer")
-	require.Nil(t, flagged)
 
 	// (d) Round-6 predicate: with the notice back to pending/unreacted but
 	// the bound node TERMINALIZED, the clause disappears -- liveness of the
@@ -363,11 +352,10 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 			Updates: []db.ProjectBatchNodeParams{{NodeID: childNode, State: "completed", ControlState: "none", Token: liveToken}},
 		}},
 	}))
-	text, flagged = l.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
+	text = coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 4, time.Minute, false)
 	require.NotContains(t, text, "awaiting your answer",
 		"the awaiting clause disappears once the bound node is terminal")
 	require.NotContains(t, text, "blocked on your answer")
-	require.Nil(t, flagged, "silence escalation awaits the R12-F batch output-buffer seam; check-ins, pause wording, scope and held-question policy are preserved")
 }
 
 // ---- Fix 5 proof: the ON notice pull delivers batch notices and session
@@ -382,7 +370,7 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
-	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
 
 	// Batch notices: a settled detached root delivers exactly once.

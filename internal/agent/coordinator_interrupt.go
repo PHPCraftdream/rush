@@ -58,66 +58,34 @@ func (c *coordinator) CancelTurn(sessionID string) {
 // auto-resume suspension and wake zeroing. Rerun also uses it for the child
 // tree of a voided delegation.
 func (c *coordinator) stopTree(sessionID string) {
-	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- cancelTree walks
-	// sessionID's current delegation tree (via still-RUNNING delegation
-	// rows) and, for EACH id, runs the same "jobs it owns AND delegations
-	// armed on it as a child" cancellation cancelSession always did
-	// (sessionID is usually the PARENT whose tool call started a
+	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- the batch
+	// delegation-tree walk collects sessionID's live delegation child ids
+	// from the batch facts and, for EACH id, cancels the owner scope the
+	// same way (sessionID is usually the PARENT whose tool call started a
 	// delegation, but Cancel is also called on a child session id
 	// directly). A session with no running delegation children degenerates
-	// to the pre-existing single-id behavior.
-	var ids []string
-	// Snapshot batch delegation owners before legacy cancellation mutates the
-	// ledger. Keep the root even if the fact read is incomplete.
-	batchOn := batchFlagEnabled()
-	if batchOn {
-		ids = append(ids, sessionID)
-		if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-			readCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			nodes, err := facts.LiveDelegationNodes(readCtx, sessionID)
-			cancel()
-			seen := map[string]struct{}{sessionID: {}}
-			for _, node := range nodes {
-				if node.ChildSessionID != "" {
-					if _, exists := seen[node.ChildSessionID]; !exists {
-						seen[node.ChildSessionID] = struct{}{}
-						ids = append(ids, node.ChildSessionID)
-					}
+	// to the single-id behavior. The root stays in the set even if the fact
+	// read is incomplete.
+	ids := []string{sessionID}
+	{
+		facts := coordinatorBatchCutoverFacts(c)
+		readCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		nodes, err := facts.LiveDelegationNodes(readCtx, sessionID)
+		cancel()
+		seen := map[string]struct{}{sessionID: {}}
+		for _, node := range nodes {
+			if node.ChildSessionID != "" {
+				if _, exists := seen[node.ChildSessionID]; !exists {
+					seen[node.ChildSessionID] = struct{}{}
+					ids = append(ids, node.ChildSessionID)
 				}
 			}
-			if err != nil {
-				slog.Error("coordinator.Cancel: failed to read batch delegation owners", "session_id", sessionID, "err", err)
-			}
+		}
+		if err != nil {
+			slog.Error("coordinator.Cancel: failed to read batch delegation owners", "session_id", sessionID, "err", err)
 		}
 	}
-	if c.asyncJobs != nil {
-		seen := make(map[string]struct{}, len(ids))
-		for _, id := range ids {
-			seen[id] = struct{}{}
-		}
-		var legacyIDs []string
-		if batchOn {
-			legacyIDs = c.asyncJobs.treeSessionIDs(sessionID)
-		} else {
-			legacyIDs = c.asyncJobs.cancelTree(sessionID)
-		}
-		for _, id := range legacyIDs {
-			if _, exists := seen[id]; !exists {
-				seen[id] = struct{}{}
-				ids = append(ids, id)
-			}
-		}
-	} else if len(ids) == 0 {
-		ids = []string{sessionID}
-	}
-	if batchOn {
-		c.stopBatchOwners(ids)
-	}
-	if batchOn && c.asyncJobs != nil {
-		for _, id := range ids {
-			c.asyncJobs.cancelSession(id)
-		}
-	}
+	c.stopBatchOwners(ids)
 	for _, id := range ids {
 		// Task #1054: a delegated child session's live generation runs on
 		// its registered driver, never c.currentAgent (task #1049) --
@@ -142,37 +110,22 @@ func (c *coordinator) stopTree(sessionID string) {
 	}
 	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
 	// (pending/done) debt row across the whole stopped tree, closing the
-	// race where a job finished with wake=1 a moment before Stop but its
+	// race where work finished with wake=1 a moment before Stop but its
 	// notice was not yet reacted to -- a stopped delegation's child must
-	// never get a turn out of that race.
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+	// never get a turn out of that race. Batch-only: every owner captured
+	// from the union above.
+	if store := batchCutoverReactionStore(c); store != nil {
 		zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
-			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
+		if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
+			slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
 		}
+		cancel()
 	}
-	// Batch debt is independent of legacy-store availability: zero every
-	// owner captured from the union above even when the async store is absent.
-	if batchOn {
-		if store := batchCutoverReactionStore(c); store != nil {
-			zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
-				slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
-			}
-			cancel()
-		}
-	}
-	// R7B-2: a stopped child parked on its own job is not re-checked by any
-	// other trigger (the job is dropped silently, the idle mailbox fires no
-	// release hook), so its driver record and allowlist entry would outlive
-	// the Stop. After the wake zeroing, so debt a racing completion left is
-	// no longer owed; a child still running a turn is released by that turn's
-	// own end.
-	if c.asyncJobs != nil {
-		for _, id := range ids {
-			c.asyncJobs.recheckChild(id)
-		}
+	// A stopped child is registered for the recheck pass (the retained
+	// release-shaped retry): its own work is cancelled silently and the idle
+	// mailbox may fire no release hook.
+	for _, id := range ids {
+		c.addToRecheckSet(id)
 	}
 }
 
@@ -181,23 +134,15 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopWakeScheduler()
 	// Stop timer admission before closing callback admission. Detached timer
 	// deliveries and recheck wakes remain separate lifecycle backlog.
-	if c.asyncJobs != nil {
-		c.asyncJobs.timeouts.close()
-	}
+	c.timeouts.close()
 	// Close admission before cancelling agent work: releases during unwind
 	// must not create new DB readers. Ownership cleanup already happened in
-	// agent_ownership.go; recheckChild intentionally does nothing on a closed
-	// ledger, so refused callbacks need no replacement bookkeeping.
+	// agent_ownership.go.
 	c.callbackMu.Lock()
 	c.callbackClosing = true
 	c.callbackContextLocked()
 	cancelCallbacks := c.callbackCancel
 	c.callbackMu.Unlock()
-	// close() leaves rows running for recovery and suppresses shutdown-caused
-	// delegation completion before cancelled agents start releasing ownership.
-	if c.asyncJobs != nil {
-		c.asyncJobs.close()
-	}
 	cancelCallbacks()
 	stillBusy = c.currentAgent.CancelAll()
 	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from

@@ -50,26 +50,11 @@ import (
 // settle-closed (reacted_failed=1) notices instead of that stale message --
 // checked FIRST, before the normal last-message read.
 func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completion AsyncCompletion) AsyncCompletion {
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: reaction-failure markers come from batch node reads.
+	// Reaction-failure markers come from batch node reads.
+	{
+		facts := coordinatorBatchCutoverFacts(c)
 		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		failedTexts, err := facts.ReactedFailedTexts(failCtx, childSessionID)
-		failCancel()
-		if err != nil {
-			slog.Debug("sub-agent outcome refresh: reacted-failed check failed, continuing with normal read",
-				"child_session", childSessionID, "err", err)
-		} else if len(failedTexts) > 0 {
-			lines := make([]string, 0, len(failedTexts))
-			for _, ft := range failedTexts {
-				lines = append(lines, ft.Text)
-			}
-			completion.Content = tools.TruncateOutput(strings.Join(lines, "\n\n"))
-			completion.IsError = true
-			return completion
-		}
-	} else if c.asyncJobs != nil && c.asyncJobs.store != nil {
-		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		failedTexts, err := c.asyncJobs.store.ListReactedFailedText(failCtx, childSessionID)
 		failCancel()
 		if err != nil {
 			slog.Debug("sub-agent outcome refresh: reacted-failed check failed, continuing with normal read",
@@ -163,24 +148,44 @@ func (c *coordinator) childQuestionPreamble(childSessionID string) string {
 const subAgentNoFinalTextText = "завершено без итогового ответа"
 
 // noteSubAgentChildRunEnded is re-check trigger (iv): a run on sessionID has
-// just returned, so a release that was deferred by childScopeDrained's busy
-// check can now be re-evaluated. Thin wrapper kept under its existing name
-// for a minimal diff at its three call sites (coordinator_run.go,
-// coordinator_background.go).
+// just returned. The parked-delegation release it used to drive directly is
+// batch delivery now (the executor delivers the delegation outcome); the
+// retained half is the release-shaped retry -- the session joins the recheck
+// set, so the next 60s pass re-derives its wake/scope from the DB.
 func (c *coordinator) noteSubAgentChildRunEnded(sessionID string) {
-	if c.asyncJobs == nil {
+	if c == nil || sessionID == "" {
 		return
 	}
-	c.asyncJobs.recheckChild(sessionID)
+	c.addToRecheckSet(sessionID)
 }
 
 // parkedParentSessions returns the distinct parent session ids that still
-// have at least one delegation armed. See ParkedSubAgentWorkReporter.
+// have at least one delegation armed in THIS process (a delegated child's
+// live driver registration; a delivered delegation is unregistered by
+// design). See ParkedSubAgentWorkReporter.
 func (c *coordinator) parkedParentSessions() []string {
-	if c.asyncJobs == nil {
+	if c == nil || c.subAgentDrivers == nil {
 		return nil
 	}
-	return c.asyncJobs.parkedParentSessions()
+	parents := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	for _, child := range c.subAgentDrivers.childSessions() {
+		parent := ""
+		if c.sessions != nil {
+			if sess, err := c.sessions.Get(context.Background(), child); err == nil {
+				parent = sess.ParentSessionID
+			}
+		}
+		if parent == "" {
+			continue
+		}
+		if _, dup := seen[parent]; dup {
+			continue
+		}
+		seen[parent] = struct{}{}
+		parents = append(parents, parent)
+	}
+	return parents
 }
 
 // ParkedSubAgentWorkReporter is the OPTIONAL interface *coordinator exposes

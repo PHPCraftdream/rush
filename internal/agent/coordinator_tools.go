@@ -116,7 +116,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		ToolMaxDuration:   toolMaxDuration,
 		DataDirectory:     dataDirectory,
 		RunAllowlists:     runAllowlists,
-		AsyncJobs:         c.asyncJobs,
+		Coord:             c,
 		// Phase 3's by-construction release trigger (sessionAgent.
 		// onSessionIdle's doc, docs/plans/2026-09-28-async-phase3-spec.md
 		// orchestrator decision item 1) PLUS supervision's turn-end deadline
@@ -195,12 +195,12 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 // docs/plans/2026-07-26-orchestrator-worker-e2e.md, phase 3, for the full
 // round-trip design and why a synchronous blocking version is impossible.
 //
-// Includes "await_tasks" and "job_output": the worker's await_tasks BLOCKS
+// Includes "await_tasks" (and its post-await batch_output read): the worker's await_tasks BLOCKS
 // inside the turn (no StopTurn) and after its wake the worker must read the
 // finished jobs' outputs; and a worker that started a background shell had
 // no way to read it at all before. await_tasks.md already forbids looping
 // on job_output.
-var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "download", "fetch", tools.AskQuestionToolName, tools.AwaitTasksToolName, tools.JobOutputToolName}
+var workerToolNames = []string{"edit", "multiedit", "write", "bash", "todos", "download", "fetch", tools.AskQuestionToolName, tools.AwaitTasksToolName}
 
 // orchestratorStrippedToolNames are REMOVED from the top-level coder's
 // AllowedTools when workerSubAgentActive(cfg) is true (worker configured AND
@@ -719,8 +719,6 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		tools.NewAskQuestionTool(),
 		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone, backgroundManager),
 		tools.NewRushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
-		tools.NewJobOutputTool(c.asyncJobs, c.asyncJobs, backgroundManager),
-		tools.NewJobKillTool(c.asyncJobs, c.asyncJobs, backgroundManager),
 		tools.NewInspectAgentTool(c),
 		tools.NewInjectAgentTool(c),
 		tools.NewStopAgentTool(c),
@@ -792,7 +790,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	}
 
 	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
-	if batchFlagEnabled() {
+	{
 		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
 			for _, name := range allowedControls {
 				if name == tools.AwaitTasksToolName {
@@ -906,7 +904,7 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 		// A deferred (shared default toolset) build has no published
 		// registry identity until first dispatch, so the model controls
 		// install per-call, never in the shared build.
-		if batchFlagEnabled() && bind.controls != nil && !deferred {
+		if bind.controls != nil && !deferred {
 			allowed := allowedControls
 			if len(allowed) > 0 {
 				registry, err := bind.ingress.Registry(built.registryID)

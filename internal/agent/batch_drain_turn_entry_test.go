@@ -84,12 +84,12 @@ func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 	// Delivered shape (round 7): the ledger keeps the fixture's OWN store
 	// (built over f.env.conn at drain_attempt_fixture_test.go), and
 	// async_jobs is DROPPED on that same conn BEFORE the turn. Store/conn
-	// identity: f.store == f.ledger.store wraps f.env.conn; the drop
+	// identity: the facts wrap f.env.conn; the drop
 	// provably precedes drainRun and every legacy read of the turn fails
 	// with "no such table". Store.Close after the drop is safe: its only
 	// async_jobs touch is DeleteAsyncHostIfNoJobs (host_lock.go HostIdentity
 	// .Close), whose error is swallowed while the lock still releases.
-	_, err := f.env.conn.ExecContext(context.Background(), `DROP TABLE async_jobs`)
+	_, err := f.env.conn.ExecContext(context.Background(), `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
 
 	// The batch DB: one real settled, DELIVERED batch completion owned by

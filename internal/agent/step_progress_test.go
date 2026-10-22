@@ -13,7 +13,7 @@ import (
 // maxIntEnd is the "to the end of the file" end of a readSpan.
 const maxInt = math.MaxInt
 
-// asyncCapTag is the ClientMetadata async_tool.go stamps on a workLedger.Start
+// asyncCapTag is the ClientMetadata the batch delivery stamps on a reserved
 // the session's cap refused: the job never started, so nothing ran and no
 // claim was taken (work_ledger_cap.go).
 const asyncCapTag = `{"async_cap":{"running":50,"limit":50,"wait_timers":30}}`

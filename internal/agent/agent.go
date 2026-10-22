@@ -72,9 +72,9 @@ const (
 	// toolExecutionMaxDefault is the never-freeze backstop: the maximum
 	// wall-clock a single tool may run while the stream watchdog is paused
 	// (between OnToolCall and OnToolResult) before the watchdog force-
-	// cancels the turn. Bash auto-backgrounds at 60s and Phase 1b bounds
-	// job_output, so this only catches truly stuck tools (hung MCP tools,
-	// blocking job_output --wait on a deadlocked process, or a sub-agent
+	// cancels the turn. Bash auto-backgrounds at 60s and batch output
+	// polling is bounded, so this only catches truly stuck tools (hung MCP
+	// tools, a blocked polling wait on a deadlocked process, or a sub-agent
 	// delegation via the "agent" tool that never returns).
 	// Configurable via Options.StreamToolTimeoutSeconds.
 	//
@@ -601,8 +601,12 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
-	asyncJobs          *workLedger
-	config             *config.ConfigStore
+	// coord is the owning coordinator (nil on bare fixtures): the batch
+	// facts, reaction store and notice pull all route through it. The
+	// deleted workLedger's remaining retained state (hint counter, external
+	// driver mirror, supervision) lives on the coordinator too.
+	coord  *coordinator
+	config *config.ConfigStore
 
 	// wsHomeOverride is the WS-1 test seam (#1142 step C): when non-nil it
 	// replaces config.WorkspaceHome() in processWorkspace, so a test can
@@ -887,7 +891,7 @@ func NewSessionAgent(
 		messages:                   opts.Messages,
 		disableAutoSummarize:       opts.DisableAutoSummarize,
 		tools:                      csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
-		asyncJobs:                  opts.AsyncJobs,
+		coord:                      opts.Coord,
 		onSessionIdle:              opts.OnSessionIdle,
 		isYolo:                     opts.IsYolo,
 		notify:                     opts.Notify,

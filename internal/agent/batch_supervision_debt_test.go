@@ -22,7 +22,6 @@ package agent
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -231,14 +230,9 @@ func TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := testEnv(t)
 	ctx := context.Background()
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	// Deliberately NO bindBatchNodeFacts: the unbound flag-ON shape.
-	coord := &coordinator{sessions: env.sessions, messages: env.messages, subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	// Deliberately NO bindBatchNodeFacts: the unbound shape.
+	coord := newBatchRuntimeCoordinator()
+	coord.sessions, coord.messages = env.sessions, env.messages
 	t.Cleanup(func() {
 		coord.waitRecheckWakes()
 		coord.releaseWG.Wait()

@@ -317,20 +317,14 @@ func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fan
 		origin := CallOriginFrom(callContext)
 		return origin == message.OriginCLI || origin == message.OriginWeb
 	}()
-	// ownWork's source follows the runtime: under RUSH_BATCH_RUNTIME the ON
-	// turn never touches async_jobs, so the ledger map is empty by
-	// construction and the answer comes from the bound cutover facts
-	// (ownWorkBatch), the same seam CLIActiveWork reads. The helper is used
-	// only when the facts are INSTALLED (the same predicate CLIActiveWork's
-	// ON branch applies, so a flag-ON run without an installed runtime keeps
-	// the legacy ledger and never hides live legacy work); everything else
-	// stays byte-identical: the legacy ledger, read synchronously.
+	// ownWork's source is the bound batch cutover facts (ownWorkBatch), the
+	// same seam CLIActiveWork reads. The helper is used only when the facts
+	// are INSTALLED (the same predicate CLIActiveWork applies, so a run
+	// without an installed runtime answers idle instead of hiding live work).
 	var ownWork bool
 	if async {
-		if batchFlagEnabled() && ts.a.asyncJobs != nil && batchOwnWorkFactsInstalled(ts.a.asyncJobs.coord) {
+		if ts.a.coord != nil && batchOwnWorkFactsInstalled(ts.a.coord) {
 			ownWork = ts.a.ownWorkBatch(callContext, ts.call.SessionID)
-		} else {
-			ownWork = ts.a.asyncJobs != nil && ts.a.asyncJobs.running(ts.call.SessionID)
 		}
 	}
 
@@ -408,14 +402,14 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 // chainNeutralTools are tool calls that neither advance the session's work
 // nor launch anything: reading a background job's buffered output and
 // managing the todo list. Every other tool (edit/write/view/grep and
-// friends, a bash/run_command call with substance, a delegation, job_kill)
-// is progress for the reaction chain guard (#1113). batch_status/batch_output
-// (flag on) are job_output's polling twins -- neutral the same way.
+// friends, a bash/run_command call with substance, a delegation, a stop
+// control) is progress for the reaction chain guard (#1113).
+// batch_status/batch_output are the detached-output polling reads -- neutral
+// the same way the deleted job_output polling tool was.
 var chainNeutralTools = map[string]struct{}{
-	tools.JobOutputToolName: {},
-	tools.TodosToolName:     {},
-	"batch_status":          {},
-	"batch_output":          {},
+	tools.TodosToolName: {},
+	"batch_status":      {},
+	"batch_output":      {},
 }
 
 // recordChainEvidence feeds the reaction chain guard (#1113) from this
@@ -439,14 +433,13 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		if !ok {
 			continue
 		}
-		// Batch branch (R12-E round 4): a batch started tool response names
-		// its launched root in its own text ("batch root <id> started; ...")
-		// and carries no ClientMetadata, so the launched root's identity IS
-		// the call id. Classify exactly like legacy waits via
-		// classifyStepCall: a pure-wait batch launch records the root as
-		// chain identity, a real batch action is progress; a refusal or a
-		// neutral result started nothing this leg may claim.
-		if batchFlagEnabled() && isBatchStartedToolResult(result) {
+		// Batch started tool responses name their launched root in their own
+		// text ("batch root <id> started; ...") and carry no ClientMetadata,
+		// so the launched root's identity IS the call id. Classify exactly
+		// like waits via classifyStepCall: a pure-wait batch launch records
+		// the root as chain identity, a real batch action is progress; a
+		// refusal or a neutral result started nothing this leg may claim.
+		if isBatchStartedToolResult(result) {
 			// A batch launch is async by construction (the started response
 			// IS the detached boundary and carries no ClientMetadata), so
 			// stamp the async half of the legacy started tag and classify
@@ -467,8 +460,8 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			class := classifyStepCall(call, asyncResult, stepClassifyCtx{})
 			command, isCommand := asyncLaunchCommand(call)
 			repeated := false
-			if isCommand && class != stepCallRefused && ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
-				repeated = ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+			if isCommand && class != stepCallRefused && ts.a != nil && ts.a.coord != nil {
+				repeated = ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, command)
 			}
 			switch class {
 			case stepCallWait:
@@ -491,8 +484,8 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
 		command, isCommand := asyncLaunchCommand(call)
 		repeated := false
-		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
-			repeated = ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && ts.a != nil && ts.a.coord != nil {
+			repeated = ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, command)
 		}
 		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && !repeated {
 			if class != stepCallWait {
@@ -506,16 +499,14 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		}
 		switch class {
 		case stepCallWait:
-			var meta asyncToolMetadata
-			_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
 			if meta.Async && meta.ClaimID != "" {
 				ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
 			}
 		case stepCallRefused, stepCallNeutral:
 			// a guard refusal is neither progress nor a claim: it started nothing
 		default: // act, read, reread: progress, as #1113 counts reread as progress
-			if ts.a != nil && ts.a.asyncJobs != nil && ts.a.asyncJobs.coord != nil {
-				ts.a.asyncJobs.coord.arb.chainLastLaunch(ts.call.SessionID, "")
+			if ts.a != nil && ts.a.coord != nil {
+				ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, "")
 			}
 			ts.att.chainProgress = true
 		}
@@ -738,7 +729,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		// Honoured: the request is spent, unless the `rush run` loop of this process
 		// drives the session -- it reads the flag after the turn, ends the run
 		// canceled and clears it itself (R8A-2).
-		if l := ts.a.asyncJobs; l == nil || !l.isExternalDriver(ts.call.SessionID) {
+		if ts.a.coord == nil || !ts.a.coord.driverHints.isExternalDriver(ts.call.SessionID) {
 			clearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
 		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
@@ -846,17 +837,13 @@ func (ts *turnStream) persistStepFinish() error {
 	ts.mu.Lock()
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
-	if stepIsReaction(snap) && ts.a.asyncJobs != nil && ts.a.asyncJobs.store != nil {
-		// R12-EF fix F1: with the batch runtime on and the node-backed fact
-		// source bound, the same one-transaction write marks the BATCH debt
-		// reacted (batch_nodes + session_notices, reacted_failed cleared on
-		// both) instead of the legacy async_jobs twin -- the ON turn never
-		// touches async_jobs. Flag OFF, or nothing bound, keeps the legacy
-		// marker byte-for-byte.
-		if store := batchCutoverReactionStore(ts.a.asyncJobs.coord); store != nil {
+	if stepIsReaction(snap) {
+		// The batch one-transaction write marks the BATCH debt reacted
+		// (batch_nodes + session_notices, reacted_failed cleared on both).
+		// Nothing bound falls back to the plain update so the finish lands.
+		if store := batchCutoverReactionStore(ts.a.coord); store != nil {
 			return store.BatchReactionMarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
 		}
-		return ts.a.asyncJobs.store.MarkReactedWithMessageUpdate(ts.genCtx, ts.a.messages, ts.call.SessionID, snap)
 	}
 	return ts.a.messages.Update(ts.genCtx, snap)
 }
