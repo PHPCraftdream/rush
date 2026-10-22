@@ -136,7 +136,7 @@ func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []liveWorkT
 	out := make(map[liveWorkTitleKey]string, len(jobs))
 	missing := make(map[liveWorkTitleKey]struct{})
 	for _, j := range jobs {
-		key := liveWorkTitleKey{j.owner, j.toolCallID, j.inputHash}
+		key := liveWorkTitleKey(j)
 		if t, ok := c.get(key); ok {
 			out[key] = t
 		} else {

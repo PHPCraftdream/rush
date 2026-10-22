@@ -130,6 +130,10 @@ func TestBatchRuntimeLibraryModeNoInstall(t *testing.T) {
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	app, err := New(context.Background(), conn, store, SkipAgentSetup())
+	if err != nil {
+		err = fmt.Errorf("New: %w", err)
+		_ = db.ReleaseConn(conn)
+	}
 	require.NoError(t, err)
 	t.Cleanup(app.Shutdown)
 	require.Nil(t, app.batchRuntime, "library mode: no batch runtime object is built")

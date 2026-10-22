@@ -106,7 +106,7 @@ func pdcRunBatchAnnounceScenario(t *testing.T, cachedMessageWrite bool) ([]strin
 	}
 	var dump []string
 	for _, line := range pdaEquivDump(t, ctx, conn, pdaEquivMessagesDump, nil) {
-		dump = append(dump, pdcUUIDRe.ReplaceAllString(pdaEquivScrub(line, nil), "MSGID"))
+		dump = append(dump, pdaEquivScrub(pdcUUIDRe.ReplaceAllString(line, "MSGID"), nil))
 	}
 	return dump, probe.created.Load(), qCalls
 }

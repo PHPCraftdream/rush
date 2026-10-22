@@ -36,9 +36,6 @@ type batchScopeRecoverySource struct {
 // recovery probe is exactly the predicate the scope read used.
 func batchScopeRecoverySourceOf(c *coordinator) batchScopeRecoverySource {
 	facts := coordinatorBatchCutoverFacts(c)
-	if facts == nil {
-		return batchScopeRecoverySource{}
-	}
 	nf, ok := facts.(nodeBatchCutoverFacts)
 	if !ok || nf.store == nil || nf.live == nil || nf.live.DataDir == "" || nf.live.ProbeHost == nil {
 		return batchScopeRecoverySource{}

@@ -86,7 +86,6 @@ func TestBGShellCompletion_KeepsTheHoldWhileTheNotifierIsPending(t *testing.T) {
 			t.Cleanup(func() { bgArrivalEnteredSeam.Store(nil) })
 			sh.OnDone(func() { coord.notifyBackgroundJobDone("session", sh) })
 
-			mgr.Kill(t.Context(), sh.ID)
 			sh.Wait()
 
 			require.Eventually(t, func() bool {

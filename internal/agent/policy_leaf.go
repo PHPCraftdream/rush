@@ -61,8 +61,6 @@ func (r *policyLeafRegistry) resolve(name string) (fantasy.AgentTool, error) {
 // policyLeafExecution removes only execution-lifetime wrappers. Policy
 // wrappers are copied, retaining their runner/authorizer and underlying tool.
 func policyLeafExecution(tool fantasy.AgentTool) (fantasy.AgentTool, []string) {
-	var inner fantasy.AgentTool
-	var layer string
 	switch t := tool.(type) {
 	case *hookedTool:
 		leaf, layers := policyLeafExecution(t.inner)
@@ -86,8 +84,6 @@ func policyLeafExecution(tool fantasy.AgentTool) (fantasy.AgentTool, []string) {
 	default:
 		return tool, []string{"tool"}
 	}
-	leaf, layers := policyLeafExecution(inner)
-	return leaf, append([]string{layer}, layers...)
 }
 
 // decoratePolicyTools preserves hook-before-restriction execution and child
