@@ -12,11 +12,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,24 +41,6 @@ CREATE TABLE messages (
 );
 `
 
-// auditSchemaFixtureNoJobs is a database with no async_jobs table at all: one
-// that never ran the async migrations, or one too old for them.
-const auditSchemaFixtureNoJobs = auditSchemaCore
-
-// auditSchemaFixtureJobsNoKind drops async_jobs.kind, the one column the
-// unfinished-jobs rule is allowed to work without.
-const auditSchemaFixtureJobsNoKind = auditSchemaCore + `
-CREATE TABLE async_jobs (
-	owner_session_id TEXT,
-	tool_call_id TEXT,
-	state TEXT,
-	child_session_id TEXT,
-	created_at INTEGER,
-	updated_at INTEGER,
-	PRIMARY KEY (owner_session_id, tool_call_id)
-);
-`
-
 // auditMessageFixture is one messages row a rules test seeds.
 type auditMessageFixture struct {
 	SessionID string
@@ -71,7 +52,8 @@ type auditMessageFixture struct {
 	CreatedAt int64
 }
 
-// auditJobFixture is one async_jobs row a rules test seeds.
+// auditJobFixture is one batch root a rules fixture can seed (kept for the
+// migrated-DB seeder in sessions_fixture_db_test.go).
 type auditJobFixture struct {
 	OwnerSessionID string
 	ToolCallID     string
@@ -80,8 +62,8 @@ type auditJobFixture struct {
 }
 
 // auditRulesFixture is the whole database one rules test asserts against: the
-// schema variant to create, the messages to insert and the jobs to insert. A
-// field left empty is the test asserting a rule is silent about it.
+// schema variant to create, the messages to insert and the batch roots to
+// seed. A field left empty is the test asserting a rule is silent about it.
 type auditRulesFixture struct {
 	Schema   string
 	Messages []auditMessageFixture
@@ -98,12 +80,7 @@ type auditRulesFixture struct {
 func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) string {
 	t.Helper()
 
-	if config.BatchRuntimeEnabled() && fixture.Schema == "" {
-		seedAuditRulesMigratedDB(t, dataDir, fixture)
-		return filepath.Join(dataDir, "rush.db")
-	}
-
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -118,9 +95,7 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 	if schema == "" {
 		schema = auditSchemaFixture
 	}
-	if config.BatchRuntimeEnabled() {
-		schema += auditBatchProjectionDDL
-	}
+	schema += auditBatchProjectionDDL
 	_, err = db.ExecContext(context.Background(), schema)
 	require.NoError(t, err)
 
@@ -128,8 +103,6 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 	messageColumns, err := auditTableColumns(ctx, db, "messages")
 	require.NoError(t, err)
 	hasNoticeKind := messageColumns["notice_kind"]
-	jobColumns, err := auditTableColumns(ctx, db, "async_jobs")
-	require.NoError(t, err)
 
 	// A session row per distinct session id in the messages: auditFindings is
 	// handed only the ids the selection produced, so a row belongs to a
@@ -157,20 +130,6 @@ func seedAuditRulesDB(t *testing.T, dataDir string, fixture auditRulesFixture) s
 			_, err = db.ExecContext(context.Background(), `INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)
 				VALUES (?, ?, 'assistant', ?, ?, ?)`,
 				id, message.SessionID, message.Parts, createdAt, createdAt)
-		}
-		require.NoError(t, err)
-	}
-
-	for i, job := range fixture.Jobs {
-		callID := fmt.Sprintf("call-%d", i)
-		if jobColumns["kind"] {
-			_, err = db.ExecContext(context.Background(), `INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, state, child_session_id, created_at, updated_at)
-				VALUES (?, ?, ?, ?, NULL, ?, ?)`,
-				job.OwnerSessionID, callID, job.Kind, job.State, now, now)
-		} else {
-			_, err = db.ExecContext(context.Background(), `INSERT INTO async_jobs (owner_session_id, tool_call_id, state, child_session_id, created_at, updated_at)
-				VALUES (?, ?, ?, NULL, ?, ?)`,
-				job.OwnerSessionID, callID, job.State, now, now)
 		}
 		require.NoError(t, err)
 	}
@@ -419,7 +378,7 @@ func TestAuditRules_WaitOnly_Boundary(t *testing.T) {
 	// one per shape.
 	shapes := auditRulesFixture{Messages: []auditMessageFixture{
 		wait("wait"), wait("wait 1234"), wait("sleep 0.5"),
-		wait("timeout 60"), wait("job_output 12 --wait"), wait("poll.sh --interval=5"),
+		wait("timeout 60"), wait("wait-for-ci 12 --wait"), wait("poll.sh --interval=5"),
 	}}
 	stdout, reports := auditRunRulesAll(t, shapes)
 	require.Len(t, auditFindingsForRule(reports, "wait_only"), 1)
@@ -530,126 +489,11 @@ func TestAuditRules_Notices_Boundary(t *testing.T) {
 	require.NotContains(t, stdout, "timeout_wake_only", "a kind the rule does not count is silent")
 }
 
-// TestAuditRules_UnfinishedJobs_Boundary: one still-running delegation is a
-// suspicion (a session that left a job hanging), and only running/interrupted
-// states count — a finished job is evidence the delegation came back.
-func TestAuditRules_UnfinishedJobs_Boundary(t *testing.T) {
-	const session = "audit-job-1"
-	ordinary := auditMessageFixture{
-		SessionID: session,
-		Parts:     auditToolCall(t, "view", map[string]any{"file_path": "a.go"}),
-	}
-
-	atThreshold := auditRulesFixture{
-		Messages: []auditMessageFixture{ordinary},
-		Jobs:     []auditJobFixture{{OwnerSessionID: session, ToolCallID: "call-1", Kind: "command", State: "running"}},
-	}
-	stdout, reports := auditRunRulesAll(t, atThreshold)
-	if config.BatchRuntimeEnabled() {
-		require.Contains(t, stdout, auditFindingLine("unfinished_jobs", session, "call-0:running", 1))
-	} else {
-		require.Contains(t, stdout, auditFindingLine("unfinished_jobs", session, "call-0:command", 1),
-			"one running job is already a suspicion")
-	}
-	require.Len(t, auditFindingsForRule(reports, "unfinished_jobs"), 1)
-
-	// Terminal states are not unfinished, however many there are.
-	finished := auditRulesFixture{
-		Messages: []auditMessageFixture{ordinary},
-		Jobs: []auditJobFixture{
-			{OwnerSessionID: session, ToolCallID: "call-1", Kind: "command", State: "completed"},
-			{OwnerSessionID: session, ToolCallID: "call-2", Kind: "agent", State: "failed"},
-			{OwnerSessionID: session, ToolCallID: "call-3", Kind: "fetch", State: "timed_out"},
-		},
-	}
-	stdout, reports = auditRunRulesAll(t, finished)
-	require.Empty(t, auditFindingsForRule(reports, "unfinished_jobs"), "terminal jobs are not unfinished")
-	if config.BatchRuntimeEnabled() {
-		require.Contains(t, stdout, "unfinished_jobs counted from batch_nodes (batch runtime on)", "ON states the rule source")
-		require.Contains(t, stdout, "held 0", "ON reports zero held roots in the summary")
-	}
-
-	// interrupted counts too, and both jobs are named in the detail.
-	interrupted := auditRulesFixture{
-		Messages: []auditMessageFixture{ordinary},
-		Jobs: []auditJobFixture{
-			{OwnerSessionID: session, ToolCallID: "call-1", Kind: "command", State: "running"},
-			{OwnerSessionID: session, ToolCallID: "call-2", Kind: "agent", State: "interrupted"},
-		},
-	}
-	stdout, reports = auditRunRulesAll(t, interrupted)
-	if config.BatchRuntimeEnabled() {
-		require.Contains(t, stdout, auditFindingLine("unfinished_jobs", session, "call-0:running", 1))
-		require.Len(t, auditFindingsForRule(reports, "unfinished_jobs"), 1)
-	} else {
-		require.Contains(t, stdout, auditFindingLine("unfinished_jobs", session, "call-0:command, call-1:agent", 2),
-			"an interrupted delegation is just as unfinished")
-		require.Len(t, auditFindingsForRule(reports, "unfinished_jobs"), 1)
-	}
-
-	// A job owned by a session that was not selected is never scanned.
-	elsewhere := auditRulesFixture{
-		Messages: []auditMessageFixture{ordinary},
-		Jobs:     []auditJobFixture{{OwnerSessionID: "audit-job-other", ToolCallID: "call-1", Kind: "command", State: "running"}},
-	}
-	stdout, reports = auditRunRulesSession(t, elsewhere, session)
-	require.Contains(t, stdout, session, "the selected session was audited")
-	require.Empty(t, auditFindingsForRule(reports, "unfinished_jobs"), "another session's job is not this session's")
-}
-
-// TestAuditRules_SchemaDegradation_IsSilent: an older database is audited with
-// the reduced set, never failed on. Without async_jobs the rule is simply
-// absent; without the kind column the detail drops it and keeps working.
-func TestAuditRules_SchemaDegradation_IsSilent(t *testing.T) {
-	const session = "audit-schema-1"
-
-	// No async_jobs table at all: the messages are still audited, the
-	// unfinished-jobs rule is silently absent.
-	noJobs := auditRulesFixture{
-		Schema: auditSchemaFixtureNoJobs,
-		Messages: []auditMessageFixture{
-			auditNoticeMsg(session, "supervision"),
-			{SessionID: session, Parts: auditToolCall(t, "view", map[string]any{"file_path": "a.go"})},
-			{SessionID: session, Parts: auditToolCall(t, "view", map[string]any{"file_path": "a.go"})},
-		},
-	}
-	stdout, reports := auditRunRulesAll(t, noJobs)
-	if config.BatchRuntimeEnabled() {
-		require.Contains(t, stdout, "unfinished_jobs: session "+short(session)+" — batch:unknown (x1)")
-	} else {
-		require.NotContains(t, stdout, "unfinished_jobs", "no table, no rule")
-	}
-	require.Contains(t, stdout, auditFindingLine("notices", session, "supervision", 1),
-		"the rest of the audit still runs")
-	require.Empty(t, reports[0].SchemaIssues, "a missing optional table is not a schema issue")
-
-	// async_jobs without the kind column: the rule still fires, naming the
-	// tool call alone.
-	noKind := auditRulesFixture{
-		Schema: auditSchemaFixtureJobsNoKind,
-		Messages: []auditMessageFixture{{
-			SessionID: session,
-			Parts:     auditToolCall(t, "view", map[string]any{"file_path": "a.go"}),
-		}},
-		Jobs: []auditJobFixture{{OwnerSessionID: session, ToolCallID: "call-1", State: "running"}},
-	}
-	stdout, reports = auditRunRulesAll(t, noKind)
-	if config.BatchRuntimeEnabled() {
-		require.Contains(t, stdout, "unfinished_jobs: session "+short(session)+" — batch:unknown (x1)")
-		require.Len(t, auditFindingsForRule(reports, "unfinished_jobs"), 1)
-	} else {
-		require.Contains(t, stdout, auditFindingLine("unfinished_jobs", session, "call-0", 1),
-			"without the kind column the detail is the tool call alone")
-		require.Len(t, auditFindingsForRule(reports, "unfinished_jobs"), 1)
-	}
-	require.Empty(t, reports[0].SchemaIssues)
-}
-
 // TestAuditRules_Integration: every rule at once, in one fixture, in text and
 // in JSON. This is the case an operator would actually run into — a session
 // that re-read the same files, re-ran the same command, polled in a sleep loop,
-// hit the same provider error three times, needed supervising and left a
-// delegation running — plus a quiet session that must produce nothing.
+// hit the same provider error three times and needed supervising — plus a
+// quiet session that must produce nothing.
 func TestAuditRules_Integration(t *testing.T) {
 	const busy = "audit-busy-1"
 	const quiet = "audit-idle-1"
@@ -693,17 +537,10 @@ func TestAuditRules_Integration(t *testing.T) {
 			{SessionID: quiet, Parts: auditToolCall(t, "view", map[string]any{"file_path": "README.md"})},
 			auditNoticeMsg(quiet, ""),
 		},
-		Jobs: []auditJobFixture{
-			{OwnerSessionID: busy, ToolCallID: "call-1", Kind: "command", State: "running"},
-		},
 	}
 
 	stdout, reports := auditRunRulesAll(t, fixture)
 
-	batchCall := "call-0:command"
-	if config.BatchRuntimeEnabled() {
-		batchCall = "call-0:running"
-	}
 	for _, line := range []string{
 		auditFindingLine("repeated-view", busy, "internal/cmd/sessions_audit.go", 3),
 		auditFindingLine("repeated-view", busy, "internal/cmd/sessions_audit_report.go", 3),
@@ -711,12 +548,11 @@ func TestAuditRules_Integration(t *testing.T) {
 		auditFindingLine("wait_only", busy, "sleep N", 3),
 		auditFindingLine("tool_errors", busy, "cannot unmarshal number N into Go value of type X", 3),
 		auditFindingLine("notices", busy, "supervision", 2),
-		"unfinished_jobs: session " + short(busy) + " — " + batchCall + " (x1)",
 	} {
 		require.Contains(t, stdout, line, "the report must show this finding")
 	}
 
-	require.Len(t, reports[0].Findings, 7, "seven findings across the six rules")
+	require.Len(t, reports[0].Findings, 6, "six findings across the five message rules")
 	for _, finding := range reports[0].Findings {
 		require.Equal(t, busy, finding.SessionID, "the quiet session produced no findings")
 	}
@@ -728,12 +564,8 @@ func TestAuditRules_Integration(t *testing.T) {
 	require.Equal(t, "internal/cmd/sessions_audit.go", views[0].Detail)
 	require.Equal(t, 3, views[1].Count)
 	require.Equal(t, "internal/cmd/sessions_audit_report.go", views[1].Detail)
-	require.Equal(t, 1, auditFindingsForRule(reports, "unfinished_jobs")[0].Count)
-	if config.BatchRuntimeEnabled() {
-		require.Equal(t, "call-0:running", auditFindingsForRule(reports, "unfinished_jobs")[0].Detail)
-	} else {
-		require.Equal(t, "call-0:command", auditFindingsForRule(reports, "unfinished_jobs")[0].Detail)
-	}
+	require.Empty(t, auditFindingsForRule(reports, "unfinished_jobs"),
+		"no batch rows: the unfinished_jobs rule is silent")
 }
 
 // TestAuditRules_SinceWindow: --since is a window over the message's own

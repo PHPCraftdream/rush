@@ -82,7 +82,7 @@ func runLevel2Helper() {
 // bgShell.done — never unblocks on its own; against the old code this test
 // would hang for the grandchild's full sleep (60s) instead of returning
 // promptly. This is exactly the failure mode observed in production: a
-// job_kill call against a proxy process that had forked a worker blocked
+// batch_stop call against a proxy process that had forked a worker blocked
 // for the full 15-minute tool watchdog instead of returning immediately.
 func TestBackgroundShellManager_Kill_TreeKillsOrphanedGrandchild_Windows(t *testing.T) {
 	t.Parallel()

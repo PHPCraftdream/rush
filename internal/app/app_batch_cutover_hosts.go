@@ -1,10 +1,8 @@
-// Flag-ON (RUSH_BATCH_RUNTIME) host-identity and session-notice plumbing
-// (package R12-F chunk C): the App's host lifecycle moves from the
-// async_jobs-backed AsyncJobStore to R12-D's session.HostStore, and the
-// job-independent session-notice machinery from R12-D's
+// Host-identity and session-notice plumbing
+// (package R12-F chunk C): the App's host lifecycle lives in
+// session.HostStore, and the job-independent session-notice machinery in
 // session.SessionNoticeStore, so registration, teardown and the notice
-// surfaces never query the async_jobs table (they survive the R12-H drop).
-// Flag OFF: nothing here is built or called.
+// surfaces never query the async_jobs table.
 
 package app
 
@@ -18,16 +16,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// batchHostStores memoizes each App's flag-ON HostStore. The App struct
-// (app.go) is outside this chunk's ownership, so the store lives in this
+// batchHostStores memoizes each App's HostStore. The App struct
+// (app.go) does not hold the field, so the store lives in this
 // package-level map keyed by the App pointer; the entry is created once at
-// the flagged install and lives as long as the App.
+// the install and lives as long as the App.
 var batchHostStores sync.Map // *App -> *session.HostStore
 
-// batchNoticeStores memoizes each App's flag-ON SessionNoticeStore.
+// batchNoticeStores memoizes each App's SessionNoticeStore.
 var batchNoticeStores sync.Map // *App -> *session.SessionNoticeStore
 
-// batchHostStore returns this App's flag-ON HostStore, building it on first
+// batchHostStore returns this App's HostStore, building it on first
 // use over the writer pool (same pool choice as BatchCLIStore). Nil without
 // a database or data dir (the configless-App rule): callers treat nil as
 // "no host identity", never panic.
@@ -51,7 +49,7 @@ func (app *App) batchHostStore() *session.HostStore {
 	return s
 }
 
-// batchHostEnsure registers this App's flag-ON host identity exactly once
+// batchHostEnsure registers this App's host identity exactly once
 // (lazy, memoized inside the HostStore). Fail closed: the caller aborts the
 // install on error.
 func (app *App) batchHostEnsure(ctx context.Context) (string, error) {
@@ -62,7 +60,7 @@ func (app *App) batchHostEnsure(ctx context.Context) (string, error) {
 	return s.EnsureHost(ctx)
 }
 
-// batchHostRelease is the flag-ON graceful host release (HostStore.Close:
+// batchHostRelease is the graceful host release (HostStore.Close:
 // OS lock release plus row cleanup via DeleteAsyncHostIfNoNodes).
 func (app *App) batchHostRelease(ctx context.Context) error {
 	s := app.batchHostStore()
@@ -78,7 +76,7 @@ func (app *App) batchHostRelease(ctx context.Context) error {
 	return nil
 }
 
-// batchCutoverStoresForget drops this App's memoized flag-ON stores from the
+// batchCutoverStoresForget drops this App's memoized stores from the
 // package-level maps (batchHostStores, batchNoticeStores), which are keyed by
 // *App with no other deletion: without this, closed Apps and their
 // coordinators leak for the life of the process. Nil-safe.
@@ -90,7 +88,7 @@ func (app *App) batchCutoverStoresForget() {
 	batchNoticeStores.Delete(app)
 }
 
-// batchHostReleaseKeepLock is the flag-ON forced counterpart
+// batchHostReleaseKeepLock is the forced counterpart
 // (HostStore.CloseKeepLock: forget the handle, pin the OS lock).
 func (app *App) batchHostReleaseKeepLock() {
 	if s := app.batchHostStore(); s != nil {
@@ -98,8 +96,8 @@ func (app *App) batchHostReleaseKeepLock() {
 	}
 }
 
-// batchNoticeStore returns this App's flag-ON SessionNoticeStore, built
-// with the R12-D batch implementations and wired to the HostStore-backed
+// batchNoticeStore returns this App's SessionNoticeStore, built
+// with the batch implementations and wired to the HostStore-backed
 // host identity and liveness. Nil without a database (configless App).
 func (app *App) batchNoticeStore() *session.SessionNoticeStore {
 	if app == nil {
@@ -124,7 +122,7 @@ func (app *App) batchNoticeStore() *session.SessionNoticeStore {
 				return true
 			}
 			// Fail-open on an unreadable probe (alive-or-unknown keeps the
-			// notice), exactly like AsyncJobStore.HostNotDead.
+			// notice), exactly like the legacy store's HostNotDead.
 			st, err := session.ProbeHostShared(app.dataDir, host)
 			return err != nil || st != session.HostStatusDead
 		})

@@ -1,13 +1,9 @@
 -- RETAINED host queries (package R12-D chunk 1): host-only bookkeeping,
--- job-independent. async_jobs lives in async_jobs.sql and is dropped by a
--- later package (R12-H); these are the NEW-name equivalents of that file's
--- host section (RegisterAsyncHost/GetAsyncHost/ListAsyncHosts/
--- DeleteAsyncHostIfNoJobs/ListAsyncHostsWithNoJobs), re-pointed at
+-- job-independent. These are the batch-world host queries, re-pointed at
 -- batch_nodes so the retained host lifecycle outlives the job table.
 --
 -- Naming: the *Row/*s suffixes mark "host row readers/writers" and keep the
--- generated method names distinct from the async_jobs.sql originals -- both
--- sets are generated onto the same db.Queries struct.
+-- generated method names distinct.
 
 -- name: RegisterAsyncHostRow :one
 -- Same lazy-registration shape as async_jobs.sql's RegisterAsyncHost (doc
@@ -26,8 +22,8 @@ SELECT * FROM async_hosts WHERE id = ?;
 SELECT * FROM async_hosts ORDER BY started_at ASC;
 
 -- name: DeleteAsyncHostIfNoNodes :execrows
--- Host-row deletion guard, re-pointed from jobs to nodes. OLD semantics
--- (DeleteAsyncHostIfNoJobs in async_jobs.sql) deleted the host row only when
+-- Host-row deletion guard, re-pointed from jobs to nodes. LEGACY semantics
+-- (the deleted async_jobs host queries) deleted the host row only when
 -- ZERO async_jobs rows of ANY state referenced it -- terminal/delivered rows
 -- still counted, exactly like running ones, until a separate retention pass
 -- purged them.

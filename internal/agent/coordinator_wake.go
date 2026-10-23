@@ -1,7 +1,7 @@
 // wakeSession: the single wake primitive (docs/plans/2026-09-28-async-
 // phase4-durable-core.md sec.3.4, attempts design 1.6). It persists nothing
-// itself: by the time a caller reaches it the fact is durably committed (an
-// async_jobs row with delivery='pending', or a session_notices row). Its job
+// itself: by the time a caller reaches it the fact is durably committed (a
+// batch completion row or a session_notices row). Its job
 // is to decide -- through the ONE launch predicate drainDecision -- whether a
 // Drain call is submitted to the session's owning driver: idle becomes owner
 // like any call, busy queues (mailbox_queue.go's mergeQueuedCall). The
@@ -25,9 +25,6 @@ import (
 // reopen the launch gate on its own). A session driven by a live `rush run`
 // loop in this process gets the hint only.
 func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bool) (err error) {
-	if c.asyncJobs == nil {
-		return errors.New("wakeSession: async job ledger unavailable")
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("wakeSession panic", "session_id", sessionID, "panic", r, "stack", string(debug.Stack()))
@@ -35,9 +32,9 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 		}
 	}()
 	if fact {
-		c.asyncJobs.bumpHint(sessionID)
+		c.driverHints.bumpHint(sessionID)
 	}
-	if c.asyncJobs.isExternalDriver(sessionID) {
+	if c.driverHints.isExternalDriver(sessionID) {
 		return nil // the loop re-evaluates its own scope from the DB
 	}
 

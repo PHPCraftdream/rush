@@ -36,17 +36,12 @@ func TestWaitRateLimitConsumesBudget(t *testing.T) {
 
 func TestWaitRateLimitPausesBudgetWhileTreeWorkIsLive(t *testing.T) {
 	setRateLimitBudgetTick(t, 0, 5*time.Millisecond)
-	ledger := newWorkLedger(nil)
-	ledger.bySession["root"] = &sessionJobs{jobs: map[string]*asyncJob{"job-1": {}}}
-	c := &coordinator{asyncJobs: ledger}
-	if batchFlagEnabled() {
-		// Flag on: hasLiveTreeWork answers from the bound batch facts, so
-		// the pause needs a RUNNING batch root for "root", not a ledger
-		// entry (the OFF ledger seed above stays for the OFF path).
-		_, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-		bindBatchNodeFacts(t, c, conn, dataDir)
-		seedBatchDelegation(t, conn, "root", "call-live", "", "command", "running", false)
-	}
+	c := newBatchRuntimeCoordinator()
+	// hasLiveTreeWork answers from the bound batch facts, so the pause needs
+	// a RUNNING batch root for "root".
+	conn, dataDir := batchFixtureConn(t)
+	bindBatchNodeFacts(t, c, conn, dataDir)
+	seedBatchDelegation(t, conn, "root", "call-live", "", "command", "running", false)
 	var spent time.Duration
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

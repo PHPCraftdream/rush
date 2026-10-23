@@ -11,13 +11,11 @@
 //	(ж2) same, but the CLI dies BEFORE the job finishes: W reacts on the
 //	    completion hint itself, without waiting for the 60s pass.
 //
-// The scripts are dual-mode: flag OFF keeps the legacy async_jobs reads and
-// the legacy "Async bash job call-N started" literals byte-for-byte; flag ON
-// (RUSH_BATCH_RUNTIME) reads batch_nodes and the App's real HostStore through
-// the pp4 helpers (async_phase4_batch_helpers_test.go), matches the real
-// started/completion texts, and never re-uses a tool call id across turns
-// (the invocation hash includes the enclosing assistant message identity, so
-// a repeated id is correctly refused by the live-input fence).
+// The scripts are batch-only: they read batch_nodes and the App's real
+// HostStore through the pp4 helpers (async_phase4_batch_helpers_test.go),
+// match the real started/completion texts, and never re-use a tool call id
+// across turns (the invocation hash includes the enclosing assistant message
+// identity, so a repeated id is correctly refused by the live-input fence).
 package app
 
 import (
@@ -53,22 +51,17 @@ func driverScenarioHandlers(t *testing.T, requestsW, requestsC *atomic.Int32) (w
 		_, lastUser, lastTool := lastTurnParts(body)
 		requestsW.Add(1)
 		completionSeen := strings.Contains(lastUser, "call-1 (bash)") || pp4CompletionSeen(string(body), "call-1")
-		startedSeen := pp4StartedSeen(lastTool, "call-1")
+		startedSeen := pp4StartedSeen(lastTool)
 		// The started tool result stays the LAST tool-role message forever,
-		// so once a completion exists it must win the match. OFF keeps the
-		// legacy branch order (started first) byte-for-byte; ON checks the
-		// completion first.
+		// so once a completion exists it must win the match: the completion
+		// is checked first.
 		switch {
-		case completionSeen && (f6BatchOn() || !startedSeen):
-			admissionWriteSSE(rw, []string{admissionSSEText("wreact", "web reacted to the job"), admissionSSEStop("wreact", "stop")})
-		case startedSeen && !f6BatchOn():
-			admissionWriteSSE(rw, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
-		case startedSeen:
-			admissionWriteSSE(rw, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		case completionSeen:
 			admissionWriteSSE(rw, []string{admissionSSEText("wreact", "web reacted to the job"), admissionSSEStop("wreact", "stop")})
+		case startedSeen:
+			admissionWriteSSE(rw, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		default:
-			// A unique call id per turn ON: the invocation hash includes the
+			// A unique call id per turn: the invocation hash includes the
 			// enclosing assistant message identity, so a repeated call id
 			// with a fresh message is correctly refused by the attach fence.
 			id := pp4NextCallID("call-1", requestsW.Load())
@@ -285,8 +278,7 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 
 	var elsewhere *session.ErrSessionDrivenElsewhere
 	require.ErrorAs(t, err, &elsewhere, "the second loop must be refused with the typed error")
-	// The host id the refusal names is the DRIVER's registered host id in the
-	// selected authority: the App's real HostStore ON, the legacy store OFF.
+	// The host id the refusal names is the DRIVER's registered host id.
 	require.Equal(t, pp4DriverHostID(t, appDriver), elsewhere.HostID)
 	require.Nil(t, res, "no turn ran, so there is no result")
 	require.Zero(t, requestsC.Load(), "the provider must not be called")

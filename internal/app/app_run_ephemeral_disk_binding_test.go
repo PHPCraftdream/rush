@@ -1,11 +1,11 @@
 package app
 
-// P1 (2026-10-19): with RUSH_BATCH_RUNTIME ON, an ephemeral SDK library-mode
+// P1 (2026-10-19): an ephemeral SDK library-mode
 // App (dataDir == "") rejected every supported custom-DiskProvider run with
 // agent.ErrDiskProviderUnavailable, because app_run_setup.go gated the per-call
 // BindCallDiskProvider on app.batchInstall.DiskBindings and an ephemeral App
-// never installs the batch runtime (it has no asyncJobStore to install it
-// from). The fix gives such an App its own purely in-memory
+// never installs the batch runtime (it has no persisted install). The fix
+// gives such an App its own purely in-memory
 // agent.DiskProviderRegistry (app_ephemeral_disk_binding.go), consulted via
 // App.resolveDiskBindings; persisted Apps keep binding through the batch
 // runtime install, and a persisted App with NO install still fails closed.
@@ -58,13 +58,12 @@ func openEphemeralTestDB(t *testing.T, ctx context.Context) *sql.DB {
 // library-mode path does: an in-memory database, a library ConfigStore whose
 // Options.DataDirectory is "" (no data dir at all) and NoRealWorkspace is
 // true, and SkipMCP (library mode deliberately takes no process-wide MCP
-// owner). RUSH_BATCH_RUNTIME is set to "1" BEFORE New, exactly like the SDK
-// process env would carry it — the ephemeral branch under test fires inside
-// New itself.
+// owner). Batch-only H4: the install decision is a property of the App shape
+// (no data dir => library mode => no install), not of the environment — the
+// ephemeral branch under test fires inside New itself.
 func newEphemeralDiskBindingApp(t *testing.T) *App {
 	t.Helper()
 	isolateAppNewTestEnv(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
 	ctx := context.Background()
 	conn := openEphemeralTestDB(t, ctx)
@@ -88,25 +87,25 @@ func newEphemeralDiskBindingApp(t *testing.T) *App {
 	return application
 }
 
-// TestEphemeralAppFlagOnCustomDiskProviderBindsInMemory (P1): an ephemeral
-// App (dataDir == "") built with the flag ON must admit a supported
+// TestEphemeralAppCustomDiskProviderBindsInMemory (P1): an ephemeral
+// App (dataDir == "") must admit a supported
 // custom-DiskProvider call setup through prepareExecuteRun — the exact seam
 // that returned agent.ErrDiskProviderUnavailable before the fix — binding
 // the Call owner against the App's OWN in-memory registry, and the owner
 // must be released exactly once via the setup's callBindingRelease (the
 // release ExecuteRun defers at internal/app/app_run.go:81).
-func TestEphemeralAppFlagOnCustomDiskProviderBindsInMemory(t *testing.T) {
+func TestEphemeralAppCustomDiskProviderBindsInMemory(t *testing.T) {
 	application := newEphemeralDiskBindingApp(t)
 
 	// Before the fix: application.batchInstall is nil (no data dir, no
-	// asyncJobStore, no batch runtime install) and there was NO fallback, so
+	// batch runtime install) and there was NO fallback, so
 	// prepareExecuteRun failed closed with agent.ErrDiskProviderUnavailable
 	// before any binding could exist. The mutation this test catches is
 	// resolveDiskBindings dropping its ephemeralDiskBindings fallback (or
 	// app.New's else-branch not constructing it): the call setup below then
 	// returns the sentinel and every require after it fails.
 	require.Nil(t, application.batchInstall, "ephemeral App never installs the batch runtime")
-	require.NotNil(t, application.ephemeralDiskBindings, "flag-ON ephemeral App must own an in-memory binding registry")
+	require.NotNil(t, application.ephemeralDiskBindings, "ephemeral App must own an in-memory binding registry")
 
 	// A supported custom-DiskProvider call needs at least one folder scope
 	// that keeps no command tools (app_run_setup.go's hard errors (1)/(2)).
@@ -128,7 +127,7 @@ func TestEphemeralAppFlagOnCustomDiskProviderBindsInMemory(t *testing.T) {
 			DiskProvider: fake,
 		},
 	})
-	require.NoError(t, err, "flag-ON ephemeral App must admit a supported custom-DiskProvider call setup")
+	require.NoError(t, err, "ephemeral App must admit a supported custom-DiskProvider call setup")
 	require.NotNil(t, cancel)
 	defer cancel()
 	require.NotNil(t, setup)
@@ -152,27 +151,21 @@ func TestEphemeralAppFlagOnCustomDiskProviderBindsInMemory(t *testing.T) {
 }
 
 // TestPersistedAppWithoutBatchInstallStillFailsClosed (P1, sentinel
-// contract): a persisted App (data dir set) whose batch runtime install did
-// NOT happen — here: built with the flag OFF so New never installed it —
-// must still return agent.ErrDiskProviderUnavailable from the call setup
-// once the flag is observed ON at run time. The mutation this test catches
-// is resolveDiskBindings (or its call site) failing OPEN for a persisted App
-// with no install — e.g. synthesizing an ad-hoc registry at run time instead
-// of failing closed: then prepareExecuteRun below would succeed and both
-// requires after it fail.
+// contract): an App whose batch runtime install did NOT happen — here:
+// library-mode New (SkipAgentSetup) over a persisted data dir, so New never
+// installed it — must still return agent.ErrDiskProviderUnavailable from the
+// call setup. The mutation this test catches is resolveDiskBindings (or its
+// call site) failing OPEN for an install-less App — e.g. synthesizing an
+// ad-hoc registry at run time instead of failing closed: then
+// prepareExecuteRun below would succeed and both requires after it fail.
 func TestPersistedAppWithoutBatchInstallStillFailsClosed(t *testing.T) {
-	// Built through the real New with the flag genuinely off: no
-	// asyncJobStore-driven batch runtime install, so batchInstall is nil
-	// exactly like a persisted App whose install did not happen.
-	unsetBatchRuntimeEnv(t)
-	application := newFullNewApp(t)
-	require.Nil(t, application.batchInstall, "precondition: flag-off persisted App has no batch runtime install")
+	// Built through the real New with SkipAgentSetup: no batch runtime
+	// install, so batchInstall is nil exactly like an App whose install did
+	// not happen; the persisted data dir also means NO ephemeral registry.
+	application := newFullNewAppSkipAgentSetup(t)
+	require.Nil(t, application.batchInstall, "precondition: install-less App has no batch runtime install")
 	require.Nil(t, application.ephemeralDiskBindings, "persisted Apps never get an ephemeral registry")
-
-	// The flag is read at RUN time (batchRuntimeFlagEnabled inside
-	// prepareExecuteRun), so a flag-ON run against this install-less App
-	// takes the exact same gate the ephemeral fix touched.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	require.Nil(t, application.resolveDiskBindings(), "an install-less App exposes no binding registry")
 
 	fake := newLeakFakeDisk()
 	workDir := application.config.WorkingDir()
@@ -189,6 +182,6 @@ func TestPersistedAppWithoutBatchInstallStillFailsClosed(t *testing.T) {
 			DiskProvider: fake,
 		},
 	})
-	require.ErrorIs(t, err, agent.ErrDiskProviderUnavailable, "persisted App with no batch install must still fail closed")
+	require.ErrorIs(t, err, agent.ErrDiskProviderUnavailable, "App with no batch install must still fail closed")
 	require.Nil(t, setup, "no setup may be returned on the fail-closed path")
 }

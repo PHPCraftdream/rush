@@ -1,6 +1,5 @@
-// Package R12-F acceptance tests: with RUSH_BATCH_RUNTIME ON the app layer
-// reads activity/debt and quota finished-work facts ONLY from batch node
-// state; flag OFF stays byte-for-byte on the AsyncJobStore readers.
+// Package R12-F acceptance tests: the app layer reads activity/debt and
+// quota finished-work facts ONLY from batch node state.
 //
 // Fixtures insert real batch_nodes rows through real SQLite so every
 // schema CHECK fires (roots: kind='batch', node_id=root_id, parent NULL,
@@ -109,17 +108,15 @@ func testBatchDebtTask(owner, rootID string) batchNodeFixture {
 func requireBatchNodesEmpty(t *testing.T, application *App) {
 	t.Helper()
 	var count int
-	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM async_jobs`).Scan(&count))
-	require.Zero(t, count, "fixture premise: no async_jobs rows exist")
+	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM batch_nodes`).Scan(&count))
+	require.Zero(t, count, "fixture premise: no batch_nodes rows exist")
 }
 
-// Flag ON: activity/debt facts come from batch_nodes only -- a live root
-// reads as own running work and a selected unreacted notice reads as debt,
-// with ZERO async_jobs rows in the database. Also runs with no batch
-// runtime installed (the App is built flag-off, so no provider/runtime is
-// configured): the flag-ON readers must not depend on one.
-func TestSessionActivityBatch_BatchRuntimeOnReadsBatchNodesOnly(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false") // build without the runtime install
+// The batch readers answer from batch_nodes only -- a live root reads as
+// own running work and a selected unreacted notice reads as debt. Also runs
+// with no batch runtime installed beyond the App's own install (the readers
+// must not depend on a live Runner): the hand-seeded rows answer directly.
+func TestSessionActivityBatch_ReadsBatchNodesOnly(t *testing.T) {
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -129,27 +126,26 @@ func TestSessionActivityBatch_BatchRuntimeOnReadsBatchNodesOnly(t *testing.T) {
 		_, err := h.app.Sessions.CreateWithID(ctx, id, id)
 		require.NoError(t, err)
 	}
+	// Fixture premise first: no batch_nodes rows anywhere before the seed.
+	requireBatchNodesEmpty(t, h.app)
 	// live: a RUNNING root plus an already-completed task child.
 	insertBatchNode(t, h.app, testBatchRoot(live, "root-live", "call-live", "running", 0))
 	insertBatchNode(t, h.app, testBatchTask(live, "root-live", "root-live-task", "completed", sql.NullString{}))
 	// debtor: an ANNOUNCED, COMPLETED root whose task child owes a reaction.
 	insertBatchNode(t, h.app, testBatchRoot(debtor, "root-debt", "call-debt", "completed", 1))
 	insertBatchNode(t, h.app, testBatchDebtTask(debtor, "root-debt"))
-	requireBatchNodesEmpty(t, h.app)
-
-	t.Setenv("RUSH_BATCH_RUNTIME", "true") // read under the flag, no runtime installed
 	batch, err := h.app.SessionActivityBatch(ctx, []string{live, debtor, clean})
 	require.NoError(t, err)
 	require.Len(t, batch.ByID, 3)
 
 	liveFacts := batch.ByID[live].Facts
-	require.Equal(t, 1, liveFacts.OwnRunningJobs, "flag ON: the live batch root is own running work")
+	require.Equal(t, 1, liveFacts.OwnRunningJobs, "the live batch root is own running work")
 	require.Zero(t, liveFacts.LiveDelegations)
 	require.Empty(t, liveFacts.Unreadable, "no fact read may fail in this fixture")
 	require.False(t, batch.ByID[live].Verdict.Kind == session.ActivityEnded,
-		"flag ON: live batch work keeps the session open")
+		"live batch work keeps the session open")
 
-	require.True(t, batch.ByID[debtor].Facts.DriverOwes, "flag ON: batch notice debt is the debt fact")
+	require.True(t, batch.ByID[debtor].Facts.DriverOwes, "batch notice debt is the debt fact")
 	require.Zero(t, batch.ByID[debtor].Facts.OwnRunningJobs, "the debt root is terminal, not live work")
 	require.Empty(t, batch.ByID[debtor].Facts.Unreadable)
 
@@ -165,44 +161,19 @@ func TestSessionActivityBatch_BatchRuntimeOnReadsBatchNodesOnly(t *testing.T) {
 	require.Equal(t, batch.ByID[live], single)
 }
 
-// Flag OFF: the reader answers from the legacy rows and IGNORES batch node
-// state entirely (a live batch root on the third session changes nothing).
-func TestSessionActivityBatch_BatchRuntimeOffUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
-		loopText(w, "a", "x", 1, 1)
-	})
-	ctx := context.Background()
-	oldLive, oldDebt, batchOnly := "batch-off-live", "batch-off-debt", "batch-off-batch"
-	for _, id := range []string{oldLive, oldDebt, batchOnly} {
-		_, err := h.app.Sessions.CreateWithID(ctx, id, id)
-		require.NoError(t, err)
-	}
-	_, err := h.app.asyncJobStore.Claim(ctx, session.ClaimParams{Owner: oldLive, ToolCallID: "own-bash", Kind: session.JobKindCommand, ToolName: "bash", Input: "x"})
-	require.NoError(t, err)
-	require.NoError(t, h.app.asyncJobStore.InsertSessionNotice(ctx, oldDebt, "wake", "x", true, ""))
-	insertBatchNode(t, h.app, testBatchRoot(batchOnly, "root-off", "call-off", "running", 0))
+// DELETED with H4: TestSessionActivityBatch_BatchRuntimeOffUnchanged -- the
+// flag-OFF legacy-row reader is gone (batch_nodes is the only fact source);
+// the batch reader contract is pinned by
+// TestSessionActivityBatch_ReadsBatchNodesOnly.
 
-	batch, err := h.app.SessionActivityBatch(ctx, []string{oldLive, oldDebt, batchOnly})
-	require.NoError(t, err)
-	require.Equal(t, 1, batch.ByID[oldLive].Facts.OwnRunningJobs, "flag OFF: the legacy running row is the live-work fact")
-	require.True(t, batch.ByID[oldDebt].Facts.DriverOwes, "flag OFF: the legacy notice is the debt fact")
-	require.Zero(t, batch.ByID[batchOnly].Facts.OwnRunningJobs, "flag OFF: batch nodes are ignored")
-	require.False(t, batch.ByID[batchOnly].Facts.DriverOwes)
-	for _, id := range []string{oldLive, oldDebt, batchOnly} {
-		require.Empty(t, batch.ByID[id].Facts.Unreadable)
-	}
-}
-
-// Flag ON: the quota finished-work export enumerates only TASK batch nodes
+// The quota finished-work export enumerates only TASK batch nodes
 // across the owner tree -- roots and structural batch children are structure
 // and never export; a one-task root keeps the ROOT's original tool-call id
 // as the exported identity (Key = RootID/NodeID). The live root's task is
 // still enumerated and filtered by the terminal predicate, and the quota
 // terminal snapshot dedupes on the root/node Key so a settled node is
 // exported at most once.
-func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
+func TestQuotaFinishedWork_BatchNodes(t *testing.T) {
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
 		loopText(w, "a", "x", 1, 1)
 	})
@@ -227,7 +198,6 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	insertBatchNode(t, h.app, testBatchRoot(child, "root-child", "call-child", "completed", 1))
 	insertBatchNode(t, h.app, testBatchTask(child, "root-child", "root-child-t1", "completed", sql.NullString{}))
 
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	l := &cliLoop{app: h.app, ctx: ctx, sessionID: parent}
 	rows, incomplete, err := l.quotaJobsInTree(ctx)
 	require.NoError(t, err)
@@ -254,7 +224,7 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	// The live root is not finished work; pending/starting are not either.
 	require.True(t, l.quotaTerminalState("completed"))
 	require.False(t, l.quotaTerminalState("running"))
-	require.False(t, l.quotaTerminalState("pending"), "flag ON: non-terminal batch states are not finished")
+	require.False(t, l.quotaTerminalState("pending"), "non-terminal batch states are not finished")
 
 	// Full export predicate (quotaPhase's), before the terminal snapshot:
 	// exactly the announced terminal task rows, the running task excluded.
@@ -271,36 +241,19 @@ func TestQuotaFinishedWork_BatchRuntimeOn(t *testing.T) {
 	require.ElementsMatch(t, []string{"root-one/root-one-t1", "root-child/root-child-t1"}, export())
 
 	// The terminal snapshot marks every already-terminal node, so a later
+	l.snapshotQuotaTerminal()
+	l.quota = &cliQuotaStop{cause: nil, terminal: map[string]bool{}}
+	require.ElementsMatch(t, []string{"root-one/root-one-t1", "root-child/root-child-t1"}, export())
+
+	// The terminal snapshot marks every already-terminal node, so a later
 	// pass exports nothing twice (the legacy latch semantics).
 	l.snapshotQuotaTerminal()
 	require.False(t, l.quota.snapshotIncomplete)
 	require.Empty(t, export())
 }
 
-// Flag OFF: the export still reads the legacy rows (Claim/Transition seeded)
-// and never the batch nodes; the terminal predicate stays "any non-running
-// state".
-func TestQuotaFinishedWork_BatchRuntimeOffUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
-		loopText(w, "a", "x", 1, 1)
-	})
-	ctx := context.Background()
-	_, err := h.app.asyncJobStore.Claim(ctx, session.ClaimParams{Owner: h.sessionID, ToolCallID: "own-bash", Kind: session.JobKindCommand, ToolName: "bash", Input: "x"})
-	require.NoError(t, err)
-	require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, h.sessionID, "own-bash"))
-	_, err = h.app.asyncJobStore.Transition(ctx, session.TransitionParams{Owner: h.sessionID, ToolCallID: "own-bash", State: "completed", ResultSummary: "own-output", Wake: true})
-	require.NoError(t, err)
-	insertBatchNode(t, h.app, testBatchRoot(h.sessionID, "root-off", "call-off", "completed", 1))
-
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: h.sessionID}
-	rows, incomplete, err := l.quotaJobsInTree(ctx)
-	require.NoError(t, err)
-	require.False(t, incomplete)
-	require.Len(t, rows, 1, "flag OFF: only the legacy row is read")
-	require.Equal(t, "own-bash", rows[0].ToolCallID)
-	require.Equal(t, "own-output", rows[0].Result)
-	require.True(t, rows[0].Announced)
-	require.True(t, l.quotaTerminalState("completed"))
-	require.True(t, l.quotaTerminalState("pending"), "flag OFF: the legacy predicate is any non-running state")
-}
+// DELETED with H4: TestQuotaFinishedWork_BatchRuntimeOffUnchanged -- the
+// flag-OFF legacy-row export (Claim/Transition seeded, "any non-running
+// state" predicate) is gone with the authority; the batch export contract
+// is pinned by TestQuotaFinishedWork_BatchNodes above and
+// app_batch_finished_work_export_test.go.

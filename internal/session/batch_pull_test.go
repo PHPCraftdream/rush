@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -10,9 +11,22 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
+
+// failingCreateTxMessages wraps a real message.Service and makes CreateTx
+// always fail, so a notice insert error can be injected.
+type failingCreateTxMessages struct {
+	message.Service
+}
+
+var errSimulatedCreateTxFailure = errors.New("simulated message insert failure")
+
+func (f *failingCreateTxMessages) CreateTx(context.Context, *sql.Tx, string, message.CreateMessageParams) (message.Message, error) {
+	return message.Message{}, errSimulatedCreateTxFailure
+}
 
 func batchOutboxReserve(t *testing.T, s *BatchStore, ctx context.Context, children int) BatchSnapshot {
 	t.Helper()
@@ -72,7 +86,7 @@ func batchOutboxTwoStores(t *testing.T) (*BatchStore, *BatchStore, context.Conte
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
 	require.NoError(t, db.ReleaseConn(conn))
 	open := func() *BatchStore {
-		c, e := sql.Open("sqlite", dir+"/rush.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+		c, e := sql.Open("sqlite", storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 		require.NoError(t, e)
 		c.SetMaxOpenConns(1)
 		t.Cleanup(func() { require.NoError(t, c.Close()) })

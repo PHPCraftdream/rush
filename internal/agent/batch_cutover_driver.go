@@ -1,9 +1,7 @@
-// R12-F P1: with RUSH_BATCH_RUNTIME ON, the CLI loop's durable driver
-// marker moves from the legacy AsyncJobStore (which registers a host lock
-// the flag-ON drain gate never releases -- the CI Windows unlinkat leak) to
-// the job-independent session.HostStore, which the flag-ON shutdown DOES
-// release. Flag OFF nothing changes: the legacy store remains the marker
-// store and claims/unclaims exactly as before.
+// R12-F P1: the CLI loop's durable driver marker is the job-independent
+// session.HostStore, which shutdown releases (the legacy AsyncJobStore
+// marker -- whose host lock the drain gate never released, the CI Windows
+// unlinkat leak -- is gone).
 package agent
 
 import (
@@ -11,12 +9,11 @@ import (
 	"errors"
 )
 
-// BatchDriverClaimer is the durable session-driver-marker surface both
-// *session.AsyncJobStore (legacy, flag-OFF) and *session.HostStore
-// (flag-ON) satisfy: ClaimSessionDriver records this store's host as
-// sessionID's driver, ReleaseSessionDriver deletes it. Both return
-// session.ErrDriverMarkerUnavailable for the same "no OS-lock-capable data
-// dir" case, so the coordinator's handling is identical for either store.
+// BatchDriverClaimer is the durable session-driver-marker surface
+// *session.HostStore satisfies: ClaimSessionDriver records this store's host
+// as sessionID's driver, ReleaseSessionDriver deletes it. It returns
+// session.ErrDriverMarkerUnavailable for the "no OS-lock-capable data dir"
+// case, so the coordinator's handling is uniform.
 type BatchDriverClaimer interface {
 	ClaimSessionDriver(ctx context.Context, sessionID string) error
 	ReleaseSessionDriver(ctx context.Context, sessionID string) error
@@ -40,17 +37,12 @@ func SetBatchDriverClaimer(c Coordinator, s BatchDriverClaimer) error {
 }
 
 // driverMarkerStore is the durable driver-marker store the claim/release
-// path consults: the injected HostStore when flag-ON wiring set one, else
-// the legacy AsyncJobStore (flag-OFF behaviour, byte-identical), else nil.
-// It returns a TRUE nil interface when no store exists -- never a typed nil
-// pointer -- so the caller's nil guard behaves like the former concrete-
-// pointer guard.
+// path consults: the injected HostStore. It returns a TRUE nil interface
+// when no store is bound -- never a typed nil pointer -- so the caller's
+// nil guard behaves like a concrete-pointer guard.
 func (c *coordinator) driverMarkerStore() BatchDriverClaimer {
-	if c.batchDriverClaimer != nil {
-		return c.batchDriverClaimer
+	if c == nil || c.batchDriverClaimer == nil {
+		return nil
 	}
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
-		return c.asyncJobs.store
-	}
-	return nil
+	return c.batchDriverClaimer
 }

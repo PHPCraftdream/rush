@@ -16,7 +16,6 @@ import (
 // Revert-check: removing the session.IsOwnHostID shortcut makes the probe
 // return Unknown for own hosts, failing the Status==Alive assertion first.
 func TestBatchDriverStatus_OwnHostAlive(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	app := newFullNewApp(t)
 	ctx := context.Background()
 	sess, err := app.Sessions.Create(ctx, "ph2-own-alive")
@@ -38,7 +37,6 @@ func TestBatchDriverStatus_OwnHostAlive(t *testing.T) {
 // Revert-check: collapsing foreign-alive to Unknown or Dead fails the
 // Status assertion.
 func TestBatchDriverStatus_ForeignLockedHostAlive(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	app := newFullNewApp(t)
 	ctx := context.Background()
 	dataDir := app.dataDir
@@ -68,7 +66,6 @@ func TestBatchDriverStatus_ForeignLockedHostAlive(t *testing.T) {
 // Revert-check: stopping the Dead filter keeps the dead host's marker,
 // failing the NotContains assertion.
 func TestBatchDriverStatus_ForeignDeadHostDropped(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	app := newFullNewApp(t)
 	ctx := context.Background()
 	dataDir := app.dataDir
@@ -96,7 +93,6 @@ func TestBatchDriverStatus_ForeignDeadHostDropped(t *testing.T) {
 // Revert-check: mapping probe errors to Dead drops the marker, failing the
 // Contains assertion.
 func TestBatchDriverStatus_ProbeErrorStaysUnknown(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	app := newFullNewApp(t)
 	ctx := context.Background()
 	dataDir := app.dataDir

@@ -9,11 +9,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +37,7 @@ func batchServedTestEnv(t *testing.T) (*BatchStore, *sql.DB, *sql.DB, context.Co
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner2"))
 	// An independent handle: it can commit between the served read's
 	// statements even while the writer connection holds the read transaction.
-	raw, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	raw, err := sql.Open("sqlite", storepath.DataDirPath(dataDir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	return NewBatchStore(conn), conn, raw, ctx, dataDir
@@ -191,7 +191,7 @@ func TestBatchLiveServedReadIsSnapshotConsistent(t *testing.T) {
 func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	t.Parallel()
 	s, conn, _, ctx, dataDir := batchServedTestEnv(t)
-	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	logDB, log := newBatchSQLLogDB(t, storepath.DataDirPath(dataDir, storepath.ActiveFilename))
 	// Live-read capture FIRST: a production reader over the logging DB,
 	// dispatched through the transactional path (TxStarter set), over a
 	// SEEDED live root — so both ListLiveBatchRootsForOwner and the per-root
@@ -303,8 +303,8 @@ const batchRootListNeedle = "state IN ('pending', 'starting', 'running', 'cancel
 func TestBatchLiveRootVanishRetriesOnFreshSnapshot(t *testing.T) {
 	s, _, _, ctx, dataDir := batchServedTestEnv(t)
 	root := batchReserveForOwner(t, s, ctx, "owner", "vanish-retry")
-	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
-	raw, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	logDB, log := newBatchSQLLogDB(t, storepath.DataDirPath(dataDir, storepath.ActiveFilename))
+	raw, err := sql.Open("sqlite", storepath.DataDirPath(dataDir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	reader := batchReadTestReader(t, logDB)
@@ -356,7 +356,7 @@ func TestBatchLiveRootVanishNeverCompletesEmpty(t *testing.T) {
 	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 	batchReserveForOwner(t, s, ctx, "owner", "vanish-empty")
-	logDB, log := newBatchSQLLogDB(t, filepath.Join(dataDir, "rush.db"))
+	logDB, log := newBatchSQLLogDB(t, storepath.DataDirPath(dataDir, storepath.ActiveFilename))
 	reader := batchReadTestReader(t, logDB)
 	reader.TxStarter = logDB
 	reads := 0

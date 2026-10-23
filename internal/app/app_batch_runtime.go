@@ -1,6 +1,6 @@
-// Dormant app-owned batch runtime owner (R11E). Construction has no side
-// effects: no goroutine, no registration, no Runner. R11F will install the
-// Runner and wire the gate into app_lifecycle.go.
+// App-owned batch runtime owner. Construction has no side
+// effects: no goroutine, no registration, no Runner. The install wires the
+// Runner and the gate into app_lifecycle.go.
 
 package app
 
@@ -58,7 +58,7 @@ type BatchRuntimeConfig struct {
 	// shutdown path in app_lifecycle.go). Nil means no host identity.
 	RetainHostIdentity func()
 
-	// ReleaseHostIdentity releases the host identity (AsyncJobStore.Close
+	// ReleaseHostIdentity releases the host identity (HostStore.Close
 	// convention: OS lock release plus best-effort row cleanup). Nil means
 	// no host identity.
 	ReleaseHostIdentity func(context.Context) error
@@ -94,16 +94,12 @@ const DefaultBatchFaultContainment = 10 * time.Second
 // BatchRuntime is the dormant app-owned owner of the batch Runner, the
 // commit hook, the fault watcher and the drain gate.
 //
-// After R11F it will own the lifecycle responsibilities that today live in
-// app_lifecycle.go's releaseResources: the host identity release
-// (asyncJobStore.CloseKeepLock/Close) and the DB writer release
-// (db.ReleaseConn/Release on agent-idle), replacing them with the drain
-// gate DrainAndRelease. The App fields it will own: asyncJobStore,
-// dbConns/dbReleasesNeeded/dataDir release calls, and the fault-exit
-// responsibility for the CLI/server/SDK host kinds.
-//
-// Construction has NO side effects: no goroutine, no signal handler, no
-// Runner registration. Start arms the fault watcher; Stop disarms it.
+// It owns the lifecycle responsibilities of the host identity release
+// (HostStore.CloseKeepLock/Close through the wired release seams) and the
+// DB writer release (db.ReleaseConn/Release on agent-idle) via the drain
+// gate DrainAndRelease. Construction has NO side effects: no goroutine, no
+// signal handler, no Runner registration. Start arms the fault watcher;
+// Stop disarms it.
 type BatchRuntime struct {
 	cfg BatchRuntimeConfig
 

@@ -226,11 +226,11 @@ func TestPdcDeliveryWindowCompletionRegistersReceipt(t *testing.T) {
 // turnStream construction reuses the thinnest existing harness shape
 // (newToolSuggestFixture, agent_turn_stream_tool_suggest_test.go): a
 // sessionAgent with a real message service over one migrated SQLite conn, no
-// asyncJobs (plain persistence), nil stall (stallClock methods are nil-safe).
+// coordinator (plain persistence), nil stall (stallClock methods are nil-safe).
 // The batch store rides the SAME conn; foreign keys are disabled by the
 // shared helper so no session row is required.
 func TestPdcTurnStreamOnToolResultConsumesRoot(t *testing.T) {
-	_, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn := batchFixtureConnNoFK(t)
 	ctx := context.Background()
 	svc := message.NewService(db.New(conn))
 	store := session.NewBatchStore(conn)

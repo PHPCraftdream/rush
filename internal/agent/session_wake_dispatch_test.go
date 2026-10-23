@@ -8,14 +8,14 @@ import (
 )
 
 func TestDispatchSessionWakeUsesCoordinatorPath(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, store, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	owner, err := env.sessions.Create(context.Background(), "wake-dispatch-owner")
 	require.NoError(t, err)
 	require.NoError(t, store.InsertSessionNotice(context.Background(), owner.ID, "manual_test_notice", "owed", true, ""))
-	coord.asyncJobs.claimExternalDriver(owner.ID)
-	defer coord.asyncJobs.releaseExternalDriver(owner.ID)
-	before := coord.asyncJobs.hintSeqOf(owner.ID)
+	coord.driverHints.claimExternalDriver(owner.ID)
+	defer coord.driverHints.releaseExternalDriver(owner.ID)
+	before := coord.driverHints.hintSeqOf(owner.ID)
 	require.NoError(t, DispatchSessionWake(context.Background(), coord, owner.ID))
-	require.Equal(t, before+1, coord.asyncJobs.hintSeqOf(owner.ID))
+	require.Equal(t, before+1, coord.driverHints.hintSeqOf(owner.ID))
 }

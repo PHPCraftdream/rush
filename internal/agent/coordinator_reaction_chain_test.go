@@ -56,9 +56,9 @@ func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapC
 	}
 	f.seedDebt(ctx, toolCallID, true)
 	row := f.row(ctx, toolCallID)
-	snap := session.DebtSnapshot{}
+	snap := session.BatchDebtSnapshot{}
 	for _, c := range snapCalls {
-		snap.Jobs = append(snap.Jobs, session.DebtJobRef{ClaimID: c})
+		snap.Nodes = append(snap.Nodes, session.BatchDebtNodeRef{RootID: c})
 	}
 	att.snapshot = snap
 	if idle {
@@ -173,7 +173,6 @@ func TestReactionChain_SurvivesIdleSweep(t *testing.T) {
 	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
 		s.gate.RetryAt = time.Now().Add(-time.Second)
 	})
-	f.ledger.sweepIdleSessions()
 	f.coord.sweepArbiterEntries()
 	require.Equal(t, 3, f.coord.reactionChainCount(f.sessID), "the sweep must not free the guard's state")
 	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
@@ -216,12 +215,11 @@ func TestReactionChain_WebWakeStopsAfterThree(t *testing.T) {
 func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "reaction-chain-supervision", attemptFixtureOpts{noIdle: true, noDriver: true})
-	l := f.ledger
-	l.supervision = newSupervisionRegistry()
-	l.noteWorkStarted(ctx, f.sessID)
+	f.coord.supervision = newSupervisionRegistry()
+	f.coord.noteWorkStarted(ctx, f.sessID)
 
 	claim := f.chainLink(ctx, "chain1", nil, true, false)
-	sr := l.supervision
+	sr := f.coord.supervision
 	sr.mu.Lock()
 	sr.byRoot[f.sessID].tickCount = 5
 	sr.mu.Unlock()
@@ -241,7 +239,7 @@ func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 }
 
 // Step classification: a bash sleep/echo launch is an idle claim, a real
-// command is progress, run_command sleep is idle, job_output/todos are
+// command is progress, run_command sleep is idle, batch_output/todos are
 // neutral, text-only is nothing. Revert-check: counting a redirect-bearing or
 // substituted command as idle turns the `echo x > f` case red; counting the
 // leg's text as progress turns the text-only case red.
@@ -282,11 +280,11 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 	require.Empty(t, ts.att.chainIdleClaims)
 	require.True(t, ts.att.chainProgress)
 
-	// sleep 5 && echo done IS idle; run_command sleep is; job_output and
+	// sleep 5 && echo done IS idle; run_command sleep is; batch_output and
 	// todos are neutral; a text-only step is nothing.
 	ts.att = &drainAttempt{}
 	ts.recordChainEvidence(mk(
-		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "job_output", `{}`), call("c4", "todos", `{}`)},
+		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "batch_output", `{}`), call("c4", "todos", `{}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag), res("c2", startedTag)},
 	))
 	require.Equal(t, []string{"claim-A", "claim-A"}, ts.att.chainIdleClaims)

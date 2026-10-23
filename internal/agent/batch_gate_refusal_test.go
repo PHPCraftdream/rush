@@ -10,7 +10,6 @@ package agent
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -79,31 +78,32 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 	require.Equal(t, "retry pause after an unreacted attempt", dv.reason)
 }
 
-// TestBatchGateLegacyTwinsOFF keeps the OFF behavior byte-identical: a
-// nonempty LEGACY snapshot refuses (gate untouched); an empty one resets the
-// gate ("no debt: gate reset").
+// TestBatchGateLegacyTwinsOFF (renamed semantics: the twins are now
+// flag-neutral batch policy) pins the refusal/reset accounting: a nonempty
+// snapshot refuses (gate untouched); an empty one resets the gate ("no debt:
+// gate reset").
 func TestBatchGateLegacyTwinsOFF(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
-	require.Nil(t, coordinatorBatchCutoverFacts(coord), "flag off: no batch facts (the inline ledger path)")
 
-	// OFF refusal twin: visible legacy debt + a paced gate -> the gate must
-	// stay paced (the pre-fix predicate already covered this).
+	// Refusal twin: visible debt + a paced gate -> the gate must stay paced
+	// (the pre-fix predicate already covered this).
 	coord.arb.pace(env.sessionID, 0, time.Minute, false, pacePaidUnreacted)
 	attRefused := &drainAttempt{
-		sessionID: env.sessionID,
-		outcome:   drainNoTurn,
-		commitNo:  drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
-		snapshot:  session.DebtSnapshot{Jobs: []session.DebtJobRef{{ToolCallID: "legacy-1"}}},
+		sessionID:     env.sessionID,
+		outcome:       drainNoTurn,
+		commitNo:      drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
+		batchCaptured: true,
+		batchSnapshot: session.BatchDebtSnapshot{Nodes: []session.BatchDebtNodeRef{{RootID: "root-1", NodeID: "node-1"}}},
 	}
 	coord.accountDrainAttempt(env.ctx, attRefused, nil)
 	gate := coord.arb.snapshot(env.sessionID).Gate
-	require.True(t, gate.Paced, "OFF refusal: the paced gate stays")
+	require.True(t, gate.Paced, "refusal: the paced gate stays")
 	require.True(t, gate.RetryAt.After(time.Now()))
 
-	// OFF reset twin: no debt at all -> "no debt: gate reset" opens the
+	// Reset twin: no debt at all -> "no debt: gate reset" opens the
 	// gate (executeAccountVerdict's reset branch).
 	attReset := &drainAttempt{
 		sessionID: env.sessionID,
@@ -112,9 +112,9 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 	}
 	coord.accountDrainAttempt(env.ctx, attReset, nil)
 	gate = coord.arb.snapshot(env.sessionID).Gate
-	require.False(t, gate.Paced, "OFF no-debt: the gate is reset")
+	require.False(t, gate.Paced, "no-debt: the gate is reset")
 	require.True(t, gate.RetryAt.IsZero())
-	require.Zero(t, gate.PaidStreak, "OFF no-debt: the streaks are cleared")
+	require.Zero(t, gate.PaidStreak, "no-debt: the streaks are cleared")
 }
 
 // TestBatchPendingLeftONNoDebtResetsGate (R12-E round 7 fix 4a): the ON
@@ -127,11 +127,9 @@ func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
-	// Headless legacy store on the SAME conn, then DROP async_jobs (the
-	// batch_drain_turn_test.go shape): any legacy read anywhere in this
-	// accounting fails with "no such table".
-	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-g1")
-	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	// The legacy async_jobs table no longer exists in the batch-only schema;
+	// the DROP proves the accounting below never reads it.
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
 
 	// A paced gate the reset must clear.
@@ -183,8 +181,7 @@ func TestBatchPendingLeftONPendingDebtPacesGate(t *testing.T) {
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
-	coord.asyncJobs.store = session.NewAsyncJobStore(env.conn, env.dataDir, os.Getpid(), "host-g2")
-	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE async_jobs`)
+	_, err := env.conn.ExecContext(env.ctx, `DROP TABLE IF EXISTS async_jobs`)
 	require.NoError(t, err)
 
 	// A settled, UNPULLED batch completion (countingTool: instant settle).

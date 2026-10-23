@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -101,51 +100,44 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
-	// asyncJobStore is the phase-4 durable job store (docs/plans/2026-09-28-
-	// async-phase4-durable-core.md sec.5 step 2), built once in
-	// InitCoderAgent and handed to agent.NewCoordinator. Its host identity
-	// is released in releaseResources, after agent work is cancelled. Read
-	// externally via AsyncJobStore(); nil under SkipAgentSetup or when
-	// dataDir=="".
-	asyncJobStore *session.AsyncJobStore
-
 	// wakeScheduleStore is the stage-4b durable wake-schedule store
-	// (internal/agent/wake_scheduler.go is the worker over it), built next
-	// to asyncJobStore below and handed to the coordinator in
-	// InitCoderAgent. Nil under SkipAgentSetup or when dataDir=="".
+	// (internal/agent/wake_scheduler.go is the worker over it), built below
+	// and handed to the coordinator in InitCoderAgent. Nil under
+	// SkipAgentSetup or when dataDir=="".
 	wakeScheduleStore *session.WakeScheduleStore
 
-	// batchRuntime is the R11F app-owned batch runtime owner (R11E gate).
-	// Nil unless RUSH_BATCH_RUNTIME parsed true at New AND the App built its
-	// agent job store; flag-off Apps never touch it (M2 golden test pins
-	// this).
+	// batchRuntime is the R11F app-owned batch runtime owner. Nil unless
+	// the App installed the batch runtime at New (SkipAgentSetup and
+	// dataDir=="" Apps never install).
 	batchRuntime *BatchRuntime
 	batchInstall *agent.BatchInstall
 
-	// ephemeralDiskBindings is the flag-ON capability registry for an
-	// ephemeral library-mode App (dataDir == ""): such an App never builds
-	// asyncJobStore (block below) and therefore never installs the batch
-	// runtime whose DiskBindings normally serve custom-DiskProvider runs
-	// (app_run_setup.go's BindCallDiskProvider). The registry is purely
-	// process-local in-memory state (internal/agent/disk_provider_capability.go:
-	// no hosts/ dir, no lock files, no database tables), so nothing touches
-	// the filesystem and there is no Close to call — it has none (GC-managed)
-	// and is closed implicitly with the App itself. Nil on flag-off Apps and
-	// on persisted (dataDir != "") Apps, so both behaviors stay unchanged;
-	// read only via resolveDiskBindings.
+	// ephemeralDiskBindings is the capability registry for an ephemeral
+	// library-mode App (dataDir == ""): such an App never installs the
+	// batch runtime whose DiskBindings normally serve custom-DiskProvider
+	// runs (app_run_setup.go's BindCallDiskProvider). The registry is
+	// purely process-local in-memory state (internal/agent/
+	// disk_provider_capability.go: no hosts/ dir, no lock files, no
+	// database tables), so nothing touches the filesystem and there is no
+	// Close to call — it has none (GC-managed) and is closed implicitly
+	// with the App itself. Nil on persisted (dataDir != "") Apps, which bind
+	// through the batch runtime install's registry; read only via
+	// resolveDiskBindings.
 	ephemeralDiskBindings *agent.DiskProviderRegistry
 
 	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
-	// installed batch runtime. Nil on flag-off Apps; set together with
-	// batchRuntime and bound to the coordinator in InitCoderAgent.
+	// installed batch runtime. Nil when no runtime was installed; set
+	// together with batchRuntime and bound to the coordinator in
+	// InitCoderAgent.
 	batchWorkIngress  agent.BatchWorkIngress
 	batchModelControl agent.BatchModelControl
 	batchLiveReader   *session.BatchLiveReader
 	batchTimeoutWake  *batchTimeoutWakeDispatcher
 	// batchHeldAnswerSink is the inject_agent held-question bridge over the
-	// installed batch Runner (agent.NewBatchHeldAnswerSink). Nil on flag-off
-	// Apps or a runnerless install; bound to the coordinator in agent setup
-	// and cleared on shutdown with the rest of the batch wiring.
+	// installed batch Runner (agent.NewBatchHeldAnswerSink). Nil on an App
+	// without an installed runtime or a runnerless install; bound to the
+	// coordinator in agent setup and cleared on shutdown with the rest of
+	// the batch wiring.
 	batchHeldAnswerSink agent.BatchHeldAnswerSink
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
@@ -399,59 +391,33 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		events:             pubsub.NewBroker[any](),
 	}
 
-	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
-	// core.md sec.5 step 7): constructed here, unconditionally (whenever
-	// this App has a data dir and isn't a config-only SkipAgentSetup
-	// command), NOT deferred to InitCoderAgent -- read-only status surfaces
-	// (`sessions jobs/why/list/gc`) must be able to read async_jobs/
-	// async_hosts/session_notices even when no provider is configured yet
-	// and InitCoderAgent therefore never runs (cfg.IsConfigured()==false
-	// below). Constructing the struct does no I/O and registers no host
-	// lock -- RegisterHost only happens lazily, on this store's first Claim or
-	// ClaimSessionDriver (see AsyncJobStore's own doc), so building it
-	// unconditionally here is free for every caller that never starts an
-	// async job or a driver. InitCoderAgent reuses this same instance (its own nil-guard already handles that).
+	// Stage 4b: the durable wake-schedule store over the writer pool,
+	// built whenever this App has a data dir and isn't a config-only
+	// SkipAgentSetup command. Construction does no I/O; the worker is
+	// started by InitCoderAgent's SetWakeScheduleStore (a config-only App
+	// never needs the timer).
 	if !o.skipAgentSetup && dataDir != "" {
-		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
-		app.asyncJobStore.SetMessages(messages)
-		// Stage 4b: the durable wake-schedule store over the same writer
-		// pool. Construction does no I/O; the worker is started by
-		// InitCoderAgent's SetWakeScheduleStore (a config-only App never
-		// needs the timer).
 		app.wakeScheduleStore = session.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
-		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
-		// SAME read-only pool session/message already share above, so
-		// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/
-		// ListAsyncJobsForOwner (the `sessions jobs`/`sessions why`/web
-		// session-list readers) run concurrently with the single writer
-		// connection instead of stalling behind a write transaction.
-		// readConn is nil if the pool failed to open (logged above) --
-		// SetReadConn no-ops and readers keep using the writer, exactly like
-		// before this fix.
-		app.asyncJobStore.SetReadConn(readConn)
-	} else if !o.skipAgentSetup && dataDir == "" && config.BatchRuntimeEnabled() {
+	} else if !o.skipAgentSetup && dataDir == "" {
 		// Ephemeral library-mode App (sdk.ModeLibrary with no WorkingDir):
-		// dataDir == "" means no asyncJobStore above, hence no batch runtime
-		// install below, hence — with RUSH_BATCH_RUNTIME ON — no
+		// no persisted batch install runs here, hence no
 		// batchInstall.DiskBindings for app_run_setup.go's per-call
-		// BindCallDiskProvider. A flag-ON custom-DiskProvider run still
-		// needs an App-owned binding registry, so build one here: purely
-		// in-memory (no hosts/ dir, no lock files, no database),
-		// process-local, dying with the App. Flag-off Apps never construct
-		// it (the flag-off path stays byte-identical), and persisted Apps
-		// are untouched: their runs keep binding through the batch runtime
-		// install's registry via resolveDiskBindings.
+		// BindCallDiskProvider. A custom-DiskProvider run still needs an
+		// App-owned binding registry, so build one here: purely in-memory
+		// (no hosts/ dir, no lock files, no database), process-local,
+		// dying with the App. Persisted Apps are untouched: their runs keep
+		// binding through the batch runtime install's registry via
+		// resolveDiskBindings.
 		app.ephemeralDiskBindings = newEphemeralDiskBindings()
 	}
 
-	// R11F (M2): flagged install of the batch runtime. Flag off (unset or
-	// unparseable): this block is skipped entirely — no runtime object, no
-	// watcher goroutine, no store write; every line below is inert. Flag on:
-	// the M1 factory fails closed, so a missing App resource aborts New
-	// instead of silently continuing with a half-installed runtime (mirror
-	// of the InitCoderAgent failure path: release the reader reference New
-	// owns, close the MCP owner, return no App).
-	if app.asyncJobStore != nil && config.BatchRuntimeEnabled() {
+	// R11F (M2): install of the batch runtime. The install is
+	// unconditional for every persisted, agent-setup App. The M1 factory
+	// fails closed, so a missing App resource aborts New instead of
+	// silently continuing with a half-installed runtime (mirror of the
+	// InitCoderAgent failure path: release the reader reference New owns,
+	// close the MCP owner, return no App).
+	if !o.skipAgentSetup && dataDir != "" {
 		if err := app.installBatchRuntime(ctx); err != nil {
 			// PE: the install may have failed AFTER the host identity was
 			// ensured (half-installed runtime). Release what New owns --
@@ -486,7 +452,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 			var err error
 			mcpOwner, err = mcp.Acquire()
 			if err != nil {
-				// PE: the flagged install already ran above; tear its
+				// PE: the install already ran above; tear its
 				// runtime and host identity down before returning nil.
 				app.peReleaseBatchRuntimeOnNewError(context.Background())
 				if readConn != nil {

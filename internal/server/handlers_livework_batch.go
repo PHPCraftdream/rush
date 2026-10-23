@@ -1,11 +1,10 @@
 package server
 
-// R12-C: the batch-runtime ON read path for the live-work panel. Active work
-// comes from batch_nodes (live roots, delegation tree walked exactly like
-// the structured snapshot); TERMINAL roots additionally come from the
-// bounded BatchHistoryRootsForOwner history read. NO async_jobs SQL
-// executes on this path. The OFF path (buildSessionLiveWork below the flag
-// branch) is unchanged.
+// R12-C: the batch-runtime read path for the live-work panel — the ONLY
+// path. Active work comes from batch_nodes (live roots, delegation tree
+// walked exactly like the structured snapshot); TERMINAL roots additionally
+// come from the bounded BatchHistoryRootsForOwner history read. NO
+// async_jobs SQL exists anywhere on this path.
 //
 // Incomplete-read rule: a partial or failed read carries complete=false
 // (and the pusher skips broadcasting it), so the client KEEPS the work it
@@ -76,12 +75,12 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 	}
 	snap.Complete = &complete
 
-	jobs := make([]db.AsyncJob, 0, len(roots))
+	jobs := make([]liveWorkTitleJob, 0, len(roots))
 	for _, m := range roots {
-		jobs = append(jobs, db.AsyncJob{
-			OwnerSessionID: m.root.OwnerSessionID,
-			ToolCallID:     m.root.ToolCallID.String,
-			InputHash:      m.root.InputHash.String,
+		jobs = append(jobs, liveWorkTitleJob{
+			owner:      m.root.OwnerSessionID,
+			toolCallID: m.root.ToolCallID.String,
+			inputHash:  m.root.InputHash.String,
 		})
 	}
 	titles := cache.titles(ctx, a, jobs)
@@ -247,9 +246,9 @@ func collectBatchHistoryTerminalRoots(ctx context.Context, src batchNodeSource, 
 	return metas, ok
 }
 
-// capBatchRoots mirrors capLiveWorkRows: every running root plus the
-// liveWorkTerminalLimit most recently updated finished roots, newest first
-// (deterministic tie-break on tool_call_id).
+// capBatchRoots is the flat panel's terminal cap: every running root plus
+// the liveWorkTerminalLimit most recently updated finished roots, newest
+// first (deterministic tie-break on tool_call_id).
 func capBatchRoots(metas []batchRootMeta) []batchRootMeta {
 	sort.Slice(metas, func(i, j int) bool {
 		if metas[i].root.UpdatedAt != metas[j].root.UpdatedAt {

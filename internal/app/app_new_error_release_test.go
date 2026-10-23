@@ -1,14 +1,14 @@
 package app
 
-// Package-PE regression tests: App.New installs the batch runtime (flag ON,
-// RUSH_BATCH_RUNTIME) -- and with it the host identity, held as the OS lock
+// Package-PE regression tests: App.New installs the batch runtime
+// unconditionally for every persisted agent-setup App -- and with it the host
+// identity, held as the OS lock
 // file hosts/<uuid>.lock -- BEFORE InitCoderAgent runs. When New then fails,
 // the error path must tear the runtime and host identity back down (via
 // peReleaseBatchRuntimeOnNewError) or a long-lived caller (tests, the web
 // server) is left holding the lock file forever: a Windows TempDir cleanup
-// fails with "being used by another process" exactly like the flag-ON
-// shadow run that found this (internal/app/p778_new_release_leak_test.go's
-// setup, flag ON).
+// fails with "being used by another process" exactly like the shadow run
+// that found this (internal/app/p778_new_release_leak_test.go's setup).
 //
 // The host-lock assertion is file removability (os.Remove of the .lock
 // file, then os.RemoveAll of the data dir): on Windows a held lock file
@@ -87,14 +87,13 @@ func peNewBatchHostLockPath(t *testing.T, dataDir string) string {
 	return ""
 }
 
-// (1) Flag ON, InitCoderAgent fails: after New returns, the batch host lock
+// (1) InitCoderAgent fails: after New returns, the batch host lock
 // file must be RELEASED (removable on Windows) and the whole data dir
 // removable. Catches the mutation "New's InitCoderAgent error path does not
 // call peReleaseBatchRuntimeOnNewError": the HostStore OS lock stays held
 // and the os.Remove/os.RemoveAll assertions fail on Windows with
 // "being used by another process" -- the shadow-run failure.
 func TestAppNewErrorRelease_BatchHostLockNotHeldOnInitCoderAgentFailure(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	store, dataDir := peNewFastModelFailureFixture(t)
 
 	conn, err := db.Connect(context.Background(), dataDir)
@@ -114,20 +113,19 @@ func TestAppNewErrorRelease_BatchHostLockNotHeldOnInitCoderAgentFailure(t *testi
 	lockPath := peNewBatchHostLockPath(t, dataDir)
 	if lockPath != "" {
 		require.NoError(t, os.Remove(lockPath),
-			"the batch host lock file must be released after New fails on the flag-ON path")
+			"the batch host lock file must be released after New fails")
 	}
 	require.NoError(t, os.RemoveAll(dataDir),
 		"the data dir must be removable once New's error path released the host identity")
 }
 
-// (2) The task #778 assertion still holds on the flag-ON path: New released
+// (2) The task #778 assertion still holds: New released
 // exactly its own ConnectRead reference, so the caller's single Release
 // drops the pool entry to zero and the writer connection closes. Catches
 // the mutation "the new teardown helper released the caller's conn
 // reference too (double-release)" -- the caller's Release would then error
 // (or the Ping would still succeed if the helper UNDER-released).
 func TestAppNewErrorRelease_ConnectReadStillReleasedFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	store, dataDir := peNewFastModelFailureFixture(t)
 
 	conn, err := db.Connect(context.Background(), dataDir)
@@ -143,30 +141,8 @@ func TestAppNewErrorRelease_ConnectReadStillReleasedFlagOn(t *testing.T) {
 		"the writer connection must be fully closed after the caller's single Release")
 }
 
-// (3) Flag OFF: New's error path is unchanged -- the lazy legacy store never
-// registered a host during New (no hosts lock file exists), and the task
-// #778 reference accounting holds exactly as before the fix. Catches the
-// mutation "the helper runs (or releases anything) on the flag-OFF path":
-// the flag-OFF branch of peReleaseNewErrorHostIdentity is a documented
-// no-op here because Close on a never-ensured store does nothing, and the
-// hosts dir must still be absent.
-func TestAppNewErrorRelease_FlagOffPathUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	store, dataDir := peNewFastModelFailureFixture(t)
-
-	conn, err := db.Connect(context.Background(), dataDir)
-	require.NoError(t, err)
-
-	application, err := New(context.Background(), conn, store)
-	require.Error(t, err)
-	require.Nil(t, application)
-
-	_, statErr := os.Stat(filepath.Join(dataDir, "hosts"))
-	require.True(t, os.IsNotExist(statErr),
-		"flag OFF: New must not create the hosts dir (no host registration before the first Claim)")
-
-	require.NoError(t, db.Release(dataDir))
-	require.Error(t, conn.PingContext(context.Background()),
-		"flag OFF: the reference accounting is unchanged")
-	require.NoError(t, os.RemoveAll(dataDir))
-}
+// DELETED with H4: TestAppNewErrorRelease_FlagOffPathUnchanged -- the
+// flag-OFF no-install path no longer exists (the batch runtime installs
+// unconditionally), so both its premises ("no hosts dir during New" and
+// "no-op helper branch") are obsolete; tests (1) and (2) above carry the
+// surviving assertions.

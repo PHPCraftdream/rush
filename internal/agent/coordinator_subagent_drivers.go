@@ -84,8 +84,10 @@ func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 // SAME child session arbitrarily far in the future and dropping the entry
 // early would silently fall back to c.currentAgent for that later resume --
 // reproducing task #1049 for old sessions. Phase 3 (§6.2) removes an entry
-// once its child's scope is CONFIRMED closed (releaseDriverIfScopeClosed,
-// called from recheckChild), which does not reopen that risk: a later
+// once its child's scope is CONFIRMED closed (releaseDriverIfScopeClosed;
+// in the batch world called from afterReleaseContext's
+// releaseChildDriverIfScopeClosed tail, supervision.go, since the ledger's
+// recheckChild tail is deleted), which does not reopen that risk: a later
 // resume_session_id always goes through runSubAgent's own register() call
 // again BEFORE the child's next turn runs (proven by
 // TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist), so a resumed
@@ -139,6 +141,20 @@ func (r *subAgentDriverRegistry) get(childSessionID string) (subAgentDriver, boo
 	defer r.mu.Unlock()
 	d, ok := r.byChild[childSessionID]
 	return d, ok
+}
+
+// childSessions lists the child session ids with a live driver registration.
+func (r *subAgentDriverRegistry) childSessions() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.byChild))
+	for id := range r.byChild {
+		out = append(out, id)
+	}
+	return out
 }
 
 // releaseIfCurrent removes childSessionID's driver record ONLY if it is
@@ -217,15 +233,14 @@ func (c *coordinator) agentFor(sessionID string) SessionAgent {
 }
 
 // releaseDriverIfScopeClosed removes childSessionID's driver record and its
-// restricted-run allowlist entry once the child's scope is confirmed closed
+// generation-bound allowlist entry once the child's scope is confirmed closed
 // (§6.1's diagnosis: neither was ever cleared before phase 3, growing
 // without bound for the coordinator's whole lifetime -- phase 2 explicitly
-// deferred this cleanup here). Called from recheckChild's tail (work_ledger_
-// delegation.go, §5) at the exact moment it confirms nothing more is armed
-// for childSessionID -- including every session that was NEVER a delegated
-// child at all (trigger (iv)/the by-construction onSessionIdle hook call
-// this for every session's run-end, not just delegated ones): get() returns
-// ok=false for those and this returns immediately, no side effects.
+// deferred this cleanup here). In the batch world the ledger's recheckChild
+// tail is deleted; the production caller is afterReleaseContext's
+// releaseChildDriverIfScopeClosed tail (supervision.go), at the moment the
+// child's run ended with its scope closed (a stopped tree, or a delegation
+// whose batch row no longer runs)
 //
 // Safe against the resume_session_id race (§6.3): releaseIfCurrent compares
 // against the CURRENT map entry under its own lock, not a snapshot taken
@@ -239,10 +254,19 @@ func (c *coordinator) releaseDriverIfScopeClosed(childSessionID string) {
 	if !ok {
 		return
 	}
-	if !c.subAgentDrivers.releaseIfCurrent(childSessionID, driver.generation) {
+	c.releaseDriverGeneration(childSessionID, driver.generation)
+}
+
+// releaseDriverGeneration removes the record only while it is still the given
+// registration generation. A caller that made its decision from a read taken
+// earlier (releaseChildDriverIfScopeClosed) passes the generation it
+// observed, so a registration made after that observation is never removed on
+// the strength of a stale decision.
+func (c *coordinator) releaseDriverGeneration(childSessionID string, generation uint64) {
+	if !c.subAgentDrivers.releaseIfCurrent(childSessionID, generation) {
 		return // a concurrent resume_session_id already re-registered -- not ours to release
 	}
 	if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
-		mgr.ClearSessionRunAllowlistForGeneration(childSessionID, driver.generation)
+		mgr.ClearSessionRunAllowlistForGeneration(childSessionID, generation)
 	}
 }

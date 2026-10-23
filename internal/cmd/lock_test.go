@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -183,8 +184,12 @@ func TestDirectConfigCommandsHonorLocalLock(t *testing.T) {
 			require.NoError(t, readErr)
 			require.Equal(t, before, after)
 			if command == "stats" {
-				_, statErr := os.Stat(filepath.Join(dataDir, "rush.db"))
-				require.True(t, os.IsNotExist(statErr))
+				// Neither the active store nor the legacy file may be
+				// created by a run that is refused before opening one.
+				for _, name := range []string{storepath.ActiveFilename, storepath.LegacyFilename} {
+					_, statErr := os.Stat(filepath.Join(dataDir, name))
+					require.Truef(t, os.IsNotExist(statErr), "refused stats run must not create %s", name)
+				}
 			}
 		})
 	}

@@ -1,21 +1,20 @@
 package server
 
 // Live-work snapshot handler + change-event push (task #1058): the server
-// half of the web panel's Commands/Agents tabs reads ONLY the durable
-// async_jobs table through session.AsyncJobStore's readers, so work hosted
-// by another process is visible the same as local work, and a snapshot for
-// one session never exposes another session's rows.
+// half of the web panel's Commands/Agents tabs reads ONLY batch_nodes (live
+// roots plus the bounded BatchHistoryRootsForOwner terminal-history read),
+// so work hosted by another process is visible the same as local work, and
+// a snapshot for one session never exposes another session's rows.
 //
 // Revert-check: dropping the buildSessionLiveWork body to a hardcoded empty
-// payload (or pointing handleGetSessionLiveWork back at handleIncoming's
-// default case) fails every test here that asserts a non-empty
-// Commands/Agents list; dropping the a.Sessions.Get existence check fails
+// payload fails every test here that asserts a non-empty Commands/Agents
+// list; dropping the a.Sessions.Get existence check fails
 // TestHandleGetSessionLiveWork_UnknownSessionIsRefused; removing the
 // liveWorkPusher wiring from subscribeAndBroadcast (events.go) fails
 // TestLiveWorkPusher_*; removing the title cache's missing-only history
 // read fails TestLiveWorkTitles_CacheAvoidsHistoryReread; reverting
 // truncateTitle to byte slicing fails TestTruncateTitle_ValidUTF8; dropping
-// capLiveWorkRows' terminal limit fails TestBuildSessionLiveWork_TerminalCap.
+// capBatchRoots' terminal limit fails TestBuildSessionLiveWork_TerminalCap.
 
 import (
 	"context"
@@ -146,10 +145,10 @@ func TestHandleGetSessionLiveWork_RunningAndTerminalCommands(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolCall{ID: "tc-run", Name: "bash", Input: `{"command":"echo hello\nworld"}`}},
 	})
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-run", taskKind: "bash", input: "echo", toolName: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-run", taskKind: "bash", state: "running"})
 
 	// A finished command with its cause: natural completion.
-	seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-done", taskKind: "bash", input: "true", toolName: "bash"}, session.TransitionParams{State: "completed", ResultSummary: "ok", Wake: true})
+	seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-done", taskKind: "bash"}, "completed")
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -189,13 +188,17 @@ func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 	sess, err := a.Sessions.Create(ctx, "lw causes")
 	require.NoError(t, err)
 
-	seed := func(id string, params session.TransitionParams) {
-		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash"}, params)
+	// The batch cause vocabulary is why a row left "running": one cause per
+	// terminal state family (timeout / stop / stop_on_fail). The legacy
+	// per-notice-kind reason mapping (session_cancel, job_kill) is an
+	// obsolete contract: batch nodes carry a single stop cause for every
+	// cancellation.
+	seed := func(id, state string) {
+		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash"}, state)
 	}
-	seed("tc-timeout", session.TransitionParams{State: "timed_out", NoticeKind: "timeout_terminated", Wake: true})
-	seed("tc-cancel", session.TransitionParams{State: "cancelled", NoticeKind: "session_cancel"})
-	seed("tc-kill", session.TransitionParams{State: "cancelled", NoticeKind: "job_kill", Delivery: "done", Reacted: true})
-	seed("tc-fail", session.TransitionParams{State: "failed", ResultSummary: "boom", Wake: true})
+	seed("tc-timeout", "timed_out")
+	seed("tc-cancel", "cancelled")
+	seed("tc-fail", "failed")
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -203,17 +206,9 @@ func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 	for _, c := range snap.Commands {
 		statuses[c.ToolCallID] = c.Status + "|" + c.Reason
 	}
-	if batchRuntimeEnabled() {
-		require.Equal(t, "timed_out|timeout", statuses["tc-timeout"])
-		require.Equal(t, "cancelled|stop", statuses["tc-cancel"])
-		require.Equal(t, "cancelled|stop", statuses["tc-kill"])
-		require.Equal(t, "failed|stop_on_fail", statuses["tc-fail"])
-	} else {
-		require.Equal(t, "timed_out|timeout_terminated", statuses["tc-timeout"])
-		require.Equal(t, "cancelled|session_cancel", statuses["tc-cancel"])
-		require.Equal(t, "cancelled|job_kill", statuses["tc-kill"])
-		require.Equal(t, "failed|", statuses["tc-fail"])
-	}
+	require.Equal(t, "timed_out|timeout", statuses["tc-timeout"])
+	require.Equal(t, "cancelled|stop", statuses["tc-cancel"])
+	require.Equal(t, "failed|stop_on_fail", statuses["tc-fail"])
 }
 
 func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
@@ -229,7 +224,7 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 	require.NoError(t, err)
 	child, err := a.Sessions.CreateTaskSession(ctx, "lw-child", root.ID, "lw child")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-ag", taskKind: "agent", input: "investigate", toolName: "agent", childSessionID: child.ID, state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-ag", taskKind: "agent", childSessionID: child.ID, state: "running"})
 
 	snap := requestSnapshot(t, a, client, root.ID)
 	require.NotNil(t, snap)
@@ -250,12 +245,11 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 }
 
 // TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB proves the
-// snapshot reads the durable table, not this process's memory: the row is
-// written through db.Connect for the same data directory — the same pooled
-// writer the reader uses — so a snapshot served from anything but the
-// durable-table state would be exposed. Flag OFF the writer additionally
-// uses a distinct host identity (its lock held); flag ON the rows are
-// batch_nodes written before the snapshot is requested.
+// snapshot reads the durable table, not this process's memory: the batch
+// root is written through db.Connect for the same data directory — the same
+// pooled writer the reader uses — under a DIFFERENT host id, so a snapshot
+// served from anything but the durable batch_nodes state would be exposed
+// (a root reserved under another host is still live work for the owner).
 func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
@@ -269,31 +263,21 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	require.NoError(t, err)
 
 	dataDir := a.Config().Options.DataDirectory
-	if batchRuntimeEnabled() {
-		// The rows are written through db.Connect's pooled handle for the same
-		// data directory: the snapshot must come from the durable batch_nodes
-		// table, not from this process's memory.
-		other, err := db.Connect(ctx, dataDir)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = db.ReleaseConn(other) })
-		_, err = session.NewBatchStore(other).Reserve(ctx, session.BatchReservation{
-			Owner: sess.ID, Host: "lw-foreign-host", RunnerID: "lw-foreign-runner",
-			ToolCallID: "tc-remote", InputHash: "hash-tc-remote", Sequence: 1,
-			Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
-				Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
-				State: "running", ControlState: "none",
-			}},
-		})
-		require.NoError(t, err)
-	} else {
-		other, err := db.Connect(ctx, dataDir)
-		require.NoError(t, err)
-		foreignStore := session.NewAsyncJobStore(other, dataDir, 0, "lw-test-other-process")
-		t.Cleanup(func() { _ = foreignStore.Close(ctx); _ = db.Release(dataDir) })
-
-		_, err = foreignStore.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "tc-remote", Kind: session.JobKindCommand, Input: "sleep 100", ToolName: "bash"})
-		require.NoError(t, err)
-	}
+	// The root is written through db.Connect's pooled handle for the same
+	// data directory under a foreign host id: the snapshot must come from
+	// the durable batch_nodes table, not from this process's memory.
+	other, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.ReleaseConn(other) })
+	_, err = session.NewBatchStore(other).Reserve(ctx, session.BatchReservation{
+		Owner: sess.ID, Host: "lw-foreign-host", RunnerID: "lw-foreign-runner",
+		ToolCallID: "tc-remote", InputHash: "hash-tc-remote", Sequence: 1,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "running", ControlState: "none",
+		}},
+	})
+	require.NoError(t, err)
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -318,7 +302,7 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 
 	sess, err := a.Sessions.Create(ctx, "lw coalesce")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-co", taskKind: "bash", input: "sleep", toolName: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-co", taskKind: "bash", state: "running"})
 
 	p := startLiveWorkPusher(ctx, a, hub)
 	t.Cleanup(func() { <-p.stopped })
@@ -411,7 +395,7 @@ func TestLiveWorkTitles_IsolatedPerSession(t *testing.T) {
 			Parts: []message.ContentPart{message.ToolCall{ID: "call_0", Name: "bash", Input: fmt.Sprintf(`{"command":"echo from-%c"}`, 'a'+i)}},
 		})
 		require.NoError(t, err)
-		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "call_0", taskKind: "bash", input: "echo", toolName: "bash", state: "running"})
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "call_0", taskKind: "bash", state: "running"})
 	}
 
 	snapA := requestSnapshot(t, a, client, mustSessionID(t, a, "lw iso a"))
@@ -449,19 +433,15 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-reuse", taskKind: "bash", input: "echo first", toolName: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-reuse", taskKind: "bash", state: "running"})
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
 	require.Equal(t, "echo first", snap.Commands[0].Title)
 
-	// Simulate id reuse with different input: the row's input_hash changes,
+	// Simulate id reuse with different input: the root's input_hash changes,
 	// and the history now carries the new call's text instead of the old.
-	if batchRuntimeEnabled() {
-		_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
-	} else {
-		_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
-	}
+	_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET input_hash = 'reused-hash' WHERE tool_call_id = 'tc-reuse'")
 	require.NoError(t, err)
 	require.NoError(t, a.Messages.ForceDelete(ctx, msg.ID))
 	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
@@ -509,7 +489,7 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 		Parts: []message.ContentPart{message.ToolCall{ID: "tc-cache-1", Name: "bash", Input: `{"command":"echo once"}`}},
 	})
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-cache-1", taskKind: "bash", input: "echo once", toolName: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-cache-1", taskKind: "bash", state: "running"})
 
 	counting := &countingMessageService{Service: a.Messages}
 	a.Messages = counting
@@ -530,9 +510,14 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 // ── Bounded snapshot: running + last N terminal ─────────────────────────────
 
 // TestBuildSessionLiveWork_TerminalCap: a snapshot carries every running
-// row plus only the liveWorkTerminalLimit newest finished rows, newest
-// first. Revert-check: removing capLiveWorkRows' limit makes the finished
-// list unbounded and this test fails on the length assertion.
+// root plus only the liveWorkTerminalLimit newest finished roots, newest
+// first. The cap is the composite contract: the per-owner terminal-history
+// bound (collectBatchHistoryTerminalRoots bounding an owner to
+// batchHistoryTerminalLimit) and the wire cap (capBatchRoots) agree, and a
+// mutant removing BOTH bounds fails this test on the length assertion.
+// Removing only capBatchRoots' terminal limit is NOT isolated by this
+// fixture — the history bound already caps the single owner's 55 terminal
+// roots before capBatchRoots runs (accepted as a P3 coverage note).
 func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx, cancel := context.WithCancel(t.Context())
@@ -545,16 +530,12 @@ func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	const totalTerminal = 55
 	for i := 0; i < totalTerminal; i++ {
 		id := fmt.Sprintf("tc-cap-%02d", i)
-		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash"}, session.TransitionParams{State: "completed", Wake: true})
-		if batchRuntimeEnabled() {
-			_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
-		} else {
-			_, err = a.DB().ExecContext(ctx, "UPDATE async_jobs SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
-		}
+		seedLiveWorkTerminal(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash"}, "completed")
+		_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_000+int64(i), id)
 		require.NoError(t, err)
 	}
 	for _, id := range []string{"tc-cap-run-a", "tc-cap-run-b"} {
-		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", input: id, toolName: "bash", state: "running"})
+		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", state: "running"})
 	}
 
 	hub := newHub()
@@ -616,7 +597,7 @@ func TestMaybeBroadcastSessionLiveWork(t *testing.T) {
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "lw push")
 	require.NoError(t, err)
-	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-push", taskKind: "bash", input: "sleep", toolName: "bash", state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: "tc-push", taskKind: "bash", state: "running"})
 
 	hub := newHub()
 	go hub.Run(ctx)

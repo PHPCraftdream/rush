@@ -2,9 +2,9 @@
 // node-backed BatchCutoverFacts bound to a coordinator (the wiring R12-H must
 // add in production: BindCoordinatorBatchCutoverFacts(c,
 // NewBatchCutoverNodeFacts(store, live))), every ported consumer reads its
-// facts from batch_nodes/session_notices and NEVER from async_jobs. The OFF
-// regression guard pins the ledger path staying byte-identical. COMPILE-ONLY
-// IN THIS WORKTREE (regime: no executed mutation runs; CI runs it).
+// facts from batch_nodes/session_notices and NEVER from the removed legacy
+// authority. COMPILE-ONLY IN THIS WORKTREE (regime: no executed mutation
+// runs; CI runs it).
 //
 // Flag note: every ON test sets the env explicitly via t.Setenv, which
 // forbids t.Parallel(); no test in this file runs in parallel.
@@ -24,18 +24,12 @@ import (
 // cutoverBindFacts is defined in batch_cutover_await_test.go beside the
 // coordinator fixture (identical body); the facts tests reuse it.
 
-// cutoverLedgerCoordinator builds the cheap coordinator fixture: a bare
-// coordinator with a real workLedger over a real async_jobs store (the same
-// shape coordinator_wake_reaction_debt_test.go uses) and NO sessions
-// service.
-func newCutoverLedgerCoordinator(t *testing.T) (*coordinator, *workLedger) {
+// newCutoverFactsCoordinator builds the cheap coordinator fixture: a bare
+// coordinator with the rehomed runtime state and NO sessions service. Facts
+// come from the binding (cutoverBindFacts), never from a store.
+func newCutoverFactsCoordinator(t *testing.T) *coordinator {
 	t.Helper()
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	l := newWorkLedger(coord.notifyAsyncCompletion)
-	l.store = newTestAsyncJobStore(t)
-	l.coord = coord
-	coord.asyncJobs = l
-	return coord, l
+	return newBatchRuntimeCoordinator()
 }
 
 // ---- TestBatchCutoverSelectedDebtON: a settled root's selected debt is
@@ -45,7 +39,7 @@ func TestBatchCutoverSelectedDebtON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	require.NotNil(t, coordinatorBatchCutoverFacts(coord), "flag on: the seam returns a fact source")
 
@@ -70,8 +64,8 @@ func TestBatchCutoverSelectedDebtON(t *testing.T) {
 	selected, err := facts.SelectedDebtExists(env.ctx, env.sessionID)
 	require.NoError(t, err)
 	require.True(t, selected)
-	// ... and the old ledger recorded NOTHING.
-	require.Zero(t, env.asyncJobsCount(), "async_jobs stays empty on the ON path")
+	// ... and the removed legacy authority recorded NOTHING (its table is gone).
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 	env.logNodeRows(t, rootID)
 }
 
@@ -81,7 +75,7 @@ func TestBatchCutoverSelectedDebtON(t *testing.T) {
 func TestBatchCutoverHeldQuestionsON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
@@ -104,7 +98,7 @@ func TestBatchCutoverHeldQuestionsON(t *testing.T) {
 	// still name the child question.
 	require.False(t, hasDebt, "the summary bool is NODE debt; notice-only debt is false")
 	require.Contains(t, kinds, session.NoticeKindChildQuestion)
-	require.Zero(t, env.asyncJobsCount())
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 }
 
 // ---- TestBatchCutoverReactionFailureON: a failed node yields reacted-failed
@@ -114,7 +108,7 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	failing := &errLeaf{countingTool: countingTool{name: "view"}}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, failing)
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 	inv := env.invocation("call-fact-fail")
@@ -156,7 +150,7 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 		`SELECT count(*) FROM session_notices WHERE owner = ?1 AND kind = 'wake_failed' AND text = 'wake failed: probe'`,
 		env.sessionID).Scan(&markers))
 	require.EqualValues(t, 1, markers, "the wake_failed marker landed in session_notices")
-	require.Zero(t, env.asyncJobsCount(), "async_jobs stays empty on the ON path")
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 	env.logNodeRows(t, rootID)
 }
 
@@ -167,7 +161,7 @@ func TestBatchCutoverWakeBreakersON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
@@ -214,7 +208,7 @@ func TestBatchCutoverScopeON(t *testing.T) {
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 	facts := coordinatorBatchCutoverFacts(coord)
 
@@ -240,17 +234,17 @@ func TestBatchCutoverScopeON(t *testing.T) {
 		return err == nil && own == 0 && descendants == 0
 	}, 5*time.Second, 5*time.Millisecond, "the scope is empty after the settle")
 	require.False(t, coord.hasLiveTreeWork(env.sessionID), "no live work after the settle")
-	require.Zero(t, env.asyncJobsCount())
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 	env.logNodeRows(t, rootID)
 }
 
 // ---- TestBatchCutoverUnknownFailSafeON: flag ON without a binding returns
-// the conservative unknown source: debt true, live true, no ledger reads. ----
+// the conservative unknown source: debt true, live true, no legacy reads. ---
 
 func TestBatchCutoverUnknownFailSafeON(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	// Deliberately NO binding registered.
 	facts := coordinatorBatchCutoverFacts(coord)
 	require.NotNil(t, facts)
@@ -269,8 +263,8 @@ func TestBatchCutoverUnknownFailSafeON(t *testing.T) {
 	// own reads.
 	require.False(t, coord.hasLiveTreeWork(env.sessionID),
 		"a failed liveness read must not pause the rate-limit budget forever")
-	// The unknown source never touches the ledger: async_jobs stays empty.
-	require.Zero(t, env.asyncJobsCount())
+	// The unknown source never touches any legacy authority.
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 }
 
 // ---- TestBatchCutoverAdmissionHeldTerminationON: under the flag, a held
@@ -282,7 +276,7 @@ func TestBatchCutoverAdmissionHeldTerminationON(t *testing.T) {
 	argvLeaf := newGatedLeaf("run_command")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)
 	releaseAllAt(t, viewLeaf, argvLeaf)
-	coord, _ := newCutoverLedgerCoordinator(t)
+	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
 
 	env.invokeDetached("call-fact-adm-r", "view", viewLeaf)
@@ -307,41 +301,6 @@ func TestBatchCutoverAdmissionHeldTerminationON(t *testing.T) {
 	argvLeaf.letGo("call-fact-adm-b")
 	require.Eventually(t, func() bool { return env.nodeState(rootB) == "completed" },
 		5*time.Second, 5*time.Millisecond, "a new batch admitted only after the settle")
-	require.Zero(t, env.asyncJobsCount())
+	require.Zero(t, env.asyncJobsCount(), "the legacy async_jobs authority is gone")
 	env.logNodeRows(t, rootR, rootB)
-}
-
-// ---- TestBatchCutoverOFFUnchanged: with the flag unset the seam returns
-// nil and the ledger path runs byte-identically (the representative
-// coordinator_wake_reaction_debt assertion). ----
-
-func TestBatchCutoverOFFUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "0")
-	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
-	coord, ledger := newCutoverLedgerCoordinator(t)
-	require.Nil(t, coordinatorBatchCutoverFacts(coord), "flag off: no fact source, the ledger path runs")
-
-	ctx := env.ctx
-	// Before any debt: the ledger path reports no debt.
-	debt, err := coord.ReactionDebtExists(ctx, env.sessionID)
-	require.NoError(t, err)
-	require.False(t, debt)
-
-	// Seed one real async_jobs row through the LEDGER APIs (the exact
-	// claimAndFinish shape of coordinator_wake_reaction_debt_test.go).
-	_, existing, err := ledger.Start(env.sessionID, "call-off", "call-off", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, ledger.store.MarkAnnounced(ctx, env.sessionID, "call-off"))
-	_, err = ledger.store.Transition(ctx, session.TransitionParams{
-		Owner: env.sessionID, ToolCallID: "call-off", State: "completed",
-		ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-
-	// The representative OFF assertion: pending-inclusive debt now exists
-	// and the ON seam was never consulted (it returned nil).
-	debt, err = coord.ReactionDebtExists(ctx, env.sessionID)
-	require.NoError(t, err)
-	require.True(t, debt, "the ledger path sees the seeded async_jobs debt")
 }

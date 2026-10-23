@@ -34,14 +34,10 @@ func (f *attemptFixture) wakeFailedMarkerText(ctx context.Context) string {
 func (f *attemptFixture) accountFailedDrain(ctx context.Context, turnErr error) {
 	f.t.Helper()
 	f.seedDebt(ctx, "call-1", true)
-	snap, batchSnap, batchCaptured := a1CaptureDebtSnapshot(f.t, f, ctx)
-	if batchCaptured {
-		require.False(f.t, batchSnap.Empty())
-	} else {
-		require.Len(f.t, snap.Jobs, 1)
-	}
+	batchSnap, batchCaptured := a1CaptureDebtSnapshot(f.t, f, ctx)
+	require.False(f.t, batchSnap.Empty())
 	f.coord.accountDrainAttempt(ctx, &drainAttempt{
-		sessionID: f.sessID, snapshot: snap,
+		sessionID: f.sessID, snapshot: batchSnap,
 		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
 		outcome: drainAttempted,
 	}, turnErr)

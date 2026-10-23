@@ -18,13 +18,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,104 +35,17 @@ func guardCLICtx(ctx context.Context) context.Context {
 	return WithCallOrigin(ctx, message.OriginCLI)
 }
 
-// guardIsolateCompletions detaches the ledger's web-done callback. The fixture
-// wires it to coordinator.notifyAsyncCompletion, whose wakeSession would submit
-// ANOTHER Drain for this session the moment the held job finishes -- an extra
-// leg these tests neither model nor count. Every leg is driven explicitly, so
-// only the notification seam is silenced; the job's row and its notice are
-// untouched.
-func guardIsolateCompletions(f *attemptFixture) {
-	f.ledger.onWebDone = func(AsyncCompletion) {}
-}
-
-// guardSeedNotice gives the session one DELIVERED job notice, so the Drain leg
-// has visible debt to react to (a Drain whose debt snapshot is empty never
-// reaches the provider -- decideDrainTurn). It is seedDebt plus the two calls
-// seedDebt leaves out, and those two calls are the point of this helper:
-//
-// seedDebt stops after the store transition, so the job it started stays
-// registered in the ledger's in-memory map forever -- nothing ever announces
-// it, and deliverLocked only removes an entry once it is terminal AND
-// announced. workLedger.running() reports exactly that map, so the shared
-// helper leaves the session looking like it owns undelivered work for the rest
-// of the process. That signal is what the in-turn guard reads as ownWork, so a
-// leg seeded with seedDebt alone starts with ownWork already true and can never
-// observe a job launch of its own.
-//
-// finish + acknowledged are the production path a finished job takes (the
-// executor's finish, then the ack of its "started" result); they empty the map
-// again, which is the state the leg must start from.
+// guardSeedNotice gives the session one delivered job notice (visible batch
+// debt), so the Drain leg has debt to react to (a Drain whose debt snapshot
+// is empty never reaches the provider -- decideDrainTurn).
 func guardSeedNotice(t *testing.T, f *attemptFixture, ctx context.Context, toolCallID string) {
 	t.Helper()
 	f.seedDebt(ctx, toolCallID, false)
-	if batchFlagEnabled() {
-		// The batch seed leaves no in-memory ledger job (the batch store is
-		// the only debt authority), so ownWork already starts false.
-		require.Nil(t, jobOf(f.ledger, f.sessID, toolCallID),
-			"the batch seed must not register a ledger job for %s", toolCallID)
-		return
-	}
-	job := jobOf(f.ledger, f.sessID, toolCallID)
-	require.NotNil(t, job, "seedDebt registered a job for %s", toolCallID)
-	f.ledger.finish(job, jobResult{content: "notice output"})
-	f.ledger.acknowledged(job)
-	require.False(t, f.ledger.running(f.sessID),
-		"a delivered notice leaves no open work: the leg starts with ownWork false")
 }
 
-// guardHeldTool is the tool set for T5: the REAL bash tool (for the pure wait
-// commands the guard must refuse) plus the REAL run_command tool (for W, the
-// session's own held job). Both are wrapped in the real asyncTool the
-// coordinator installs in production (coordinator.wrapAsyncTools): the fixture
-// assembles its tool set by hand, so the wrapper is applied here explicitly,
-// and without it a bash call would run synchronously inside the turn and never
-// reach the ledger, which is where the guard's ownWork verdict comes from.
-//
-// W is a run_command `sleep`, not a bash command, on purpose: bash is the one
-// tool asyncTool.awaitShell watches, so a held bash job would block its
-// executor goroutine on a shell that only ends when the done-file appears.
-// run_command has no such watcher, so the same "job is running, undelivered"
-// state the guard reads is reached with an ordinary blocked process.
-func guardHeldTools(f *attemptFixture) []fantasy.AgentTool {
-	manager := shell.NewBackgroundShellManager()
-	f.coord.background = manager
-	bash := tools.NewBashTool(f.env.permissions, f.env.workingDir, &config.Attribution{}, "", nil, manager)
-	runCommand := tools.NewRunCommandTool(f.env.permissions, f.env.workingDir)
-	bashAsync := &asyncTool{inner: bash, coordinator: f.coord, name: tools.BashToolName}
-	wAsync := &asyncTool{inner: runCommand, coordinator: f.coord, name: tools.RunCommandToolName}
-	if batchFlagEnabled() {
-		// ON: asyncTool keeps its ledger wiring (the ON-branch assertions on
-		// jobOf still hold), but W is additionally wrapped so its launch also
-		// seeds the LIVE batch row ownWorkBatch reads (turn_progress_batch_
-		// test.go). Bash is NOT wrapped: its waits are supposed to be refused
-		// and start nothing.
-		f.guardBatch = newGuardBatchLedger(f.t, f.env.conn, f.sessID)
-		return []fantasy.AgentTool{
-			bashAsync,
-			&guardBatchTool{AgentTool: wAsync, batch: f.guardBatch},
-		}
-	}
-	return []fantasy.AgentTool{bashAsync, wAsync}
-}
+// guardHeldTools and killHeldJob were DELETEd with the T5 echo-wait test
+// (obsolete contract: asyncTool/ledger held-job machinery).
 
-// killHeldJob ends W for real, through the very path the model's own job_kill
-// takes: the run_command controller's StopRunCommandJob. A held job whose
-// process is never stopped would leak past the test (and, on Windows, block
-// TempDir cleanup), so t.Cleanup calls this whatever happens.
-func killHeldJob(f *attemptFixture) error {
-	_, _, err := f.ledger.StopRunCommandJob(f.sessID, "guard-w")
-	if err == nil && batchFlagEnabled() && f.guardBatch != nil {
-		// ON: W's live batch row (guardBatchTool's seed) must also go
-		// terminal, or ownWorkBatch keeps the session owning work forever.
-		// Idempotent (turn_progress_batch_test.go): a mid-test call followed
-		// by the t.Cleanup call is a no-op the second time, and a cleanup
-		// before W ever launched writes nothing.
-		err = f.guardBatch.terminalize("guard-w")
-	}
-	return err
-}
-
-// guardViewTool is the real view tool over the fixture's file tracker.
 func guardViewTool(f *attemptFixture) fantasy.AgentTool {
 	return tools.NewViewTool(f.env.permissions, *f.env.filetracker, nil, f.env.workingDir)
 }
@@ -239,95 +149,10 @@ func guardFinishOf(t *testing.T, f *attemptFixture, ctx context.Context, title s
 // guard.go) lets the first echo wait through -- it starts a ledger job and an
 // async_jobs row, so this test goes red on the row it expects to be absent (and
 // on the wait count, which then holds two launches).
-func TestInTurnGuard_StopsEchoWaitSpamWhileOwnJobRuns(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	var (
-		served   atomic.Int32
-		released atomic.Bool
-	)
-	f := newAttemptFixture(t, "guard-echo-wait", attemptFixtureOpts{
-		noIdle: true,
-		tools:  nil,
-	})
-	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
-		if released.Load() {
-			// W is gone, so this Drain is not polling anything: the model
-			// answers with text and no tool call, which ends the turn.
-			guardTextStep(w, "the held job finished; nothing left to wait for")
-			return
-		}
-		switch n := int(served.Add(1)); n {
-		case 1:
-			// A REAL wait command (run_command sleep): it starts as a
-			// background job and stays undelivered, which is what makes
-			// ownWork true from the very next step.
-			guardToolCallsStep(w, "guard-w", tools.RunCommandToolName,
-				`{"program":"sleep","args":["120"],"description":"held job"}`)
-		default:
-			// Every bash call carries the tool's required `description`:
-			// fantasy validates a call against the tool's schema BEFORE any
-			// wrapper sees it (agent.go's validateToolCall -- "missing
-			// required parameter"), and a call it marks Invalid never reaches
-			// the guard or asyncTool at all. Its plain error result then
-			// classifies as act, so every step would look like progress and
-			// the guard would never arm.
-			waitN := strconv.Itoa(n - 1)
-			guardToolCallsStep(w, "guard-echo-"+waitN, tools.BashToolName,
-				`{"command":"echo wait-`+waitN+`","description":"wait for the held job"}`)
-		}
-	})
-	f.sa.SetTools(guardHeldTools(f))
-	guardIsolateCompletions(f)
-	guardSeedNotice(t, f, ctx, "guard-notice")
-	t.Cleanup(func() { _ = killHeldJob(f) })
-
-	_, err := f.drainRun(guardCLICtx(ctx))
-	require.NoError(t, err)
-
-	// W's own launch plus four refusals: the fifth no-progress step ends the
-	// turn, so no fifth echo is ever served.
-	require.EqualValues(t, 5, f.requests.Load(),
-		"the held job plus four refused waits: the guard ends the turn on the fifth")
-	if batchFlagEnabled() {
-		// Flag ON the held job keeps its in-memory ledger job (asyncTool is
-		// retained wiring) AND carries a live batch row, seeded by the
-		// guardBatchTool wrapper — that row is what ownWorkBatch reads.
-		require.NotNil(t, jobOf(f.ledger, f.sessID, "guard-w"), "W outlives the stopped turn")
-	} else {
-		wRow := f.row(ctx, "guard-w")
-		require.Equal(t, "running", wRow.State, "W outlives the stopped turn")
-	}
-	require.True(t, f.ledger.running(f.sessID), "W keeps the session's scope open")
-	for i := 1; i <= 4; i++ {
-		_, getErr := f.store.Get(ctx, f.sessID, "guard-echo-"+strconv.Itoa(i))
-		require.Error(t, getErr, "a refused wait starts no job: no ledger row for echo wait-%d", i)
-	}
-
-	msg, details := guardFinishOf(t, f, ctx, InTurnGuardStopTitle)
-	require.Equal(t, InTurnGuardStopTitle, msg)
-	require.NotEmpty(t, details)
-	require.Contains(t, details, "5 consecutive steps with no progress")
-	// A refusal is classified as "refused", never as a wait launch: the wait
-	// counter holds W's OWN launch alone, and the text names the own work
-	// instead of a wait.
-	require.Contains(t, details, "1 wait call(s)")
-	require.Contains(t, details, "0 already-read window(s)")
-	require.Contains(t, details, "Your own job/delegation was running")
-
-	// Release W, then let one more Drain react to it.
-	require.NoError(t, killHeldJob(f), "stopping W")
-	released.Store(true)
-	require.Eventually(t, func() bool { return !f.ledger.running(f.sessID) },
-		30*time.Second, 20*time.Millisecond, "W must finish once released")
-	guardSeedNotice(t, f, ctx, "guard-release")
-
-	_, err = f.drainRun(guardCLICtx(ctx))
-	require.NoError(t, err)
-	require.EqualValues(t, 6, f.requests.Load(), "one more leg, answering normally")
-	require.False(t, f.ledger.running(f.sessID), "the released leg owns no work")
-}
+// TestInTurnGuard_StopsEchoWaitSpamWhileOwnJobRuns was DELETEd as an
+// obsolete contract (see the guardHeldTools note above): its held-job signal,
+// job_kill path and running() assertions were all workLedger/asyncTool
+// machinery.
 
 // TestInTurnGuard_StopsRereadLoopOrchestratorMode is T6 (A22): one full read of
 // a 200-line file, then windows of three lines sliding forward by one -- fresh

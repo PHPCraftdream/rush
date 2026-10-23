@@ -8,16 +8,16 @@
 //     delegation row claims the session -- the in-memory subAgentDrivers
 //     registry is torn down the instant scope closes and cannot be used for
 //     this decision.
-//  2. childScopeDrained also considers cross-process state (a running async
-//     job row on a live OTHER host, or outstanding DB reaction debt) that
-//     this process's own in-memory workLedger/IsSessionBusy checks cannot
-//     see, so a delegation is never released while the child's scope is
-//     genuinely still open somewhere.
+//  2. the child-scope read also considers cross-process state (a running
+//     batch root on a live OTHER host, or outstanding DB reaction debt) that
+//     this process's own in-memory checks cannot see, so a delegation is
+//     never released while the child's scope is genuinely still open
+//     somewhere.
 package agent
 
 import (
 	"context"
-	"os"
+	"database/sql"
 	"testing"
 
 	"charm.land/fantasy"
@@ -25,23 +25,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *session.AsyncJobStore, func(context.Context) fakeEnv) {
+// newChildPolicyTestCoordinator builds the batch-only policy fixture: the
+// rehomed runtime state over the test env, node facts bound, and the notice
+// store exposed for callers that seed session_notices rows. Returns
+// (coord, notices, rawConn, envGetter).
+func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *session.SessionNoticeStore, *sql.DB, func(context.Context) fakeEnv) {
 	t.Helper()
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	coord := &coordinator{sessions: env.sessions, messages: env.messages, subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := newBatchRuntimeCoordinator()
+	coord.sessions, coord.messages = env.sessions, env.messages
+	coord.noticeStore = session.NewSessionNoticeStore(env.conn)
 	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 	t.Cleanup(func() {
 		coord.waitRecheckWakes()
 		coord.releaseWG.Wait()
 		coord.waitRecheckWakes()
 	})
-	return coord, ledger, store, func(context.Context) fakeEnv { return env }
+	return coord, coord.noticeStore, env.conn, func(context.Context) fakeEnv { return env }
 }
 
 // TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refused
@@ -59,7 +59,7 @@ func newChildPolicyTestCoordinator(t *testing.T) (*coordinator, *workLedger, *se
 // true: the child was granted the SAME auto-turn headroom as a plain web
 // session). Restored the branch; re-ran, passed.
 func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refused(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
@@ -68,7 +68,7 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 	require.NoError(t, err)
 
-	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
+	seedFixtureDelegation(t, env.conn, parent.ID, "agent-call-1", child.ID, "agent", "completed", false)
 
 	allowed, err := policyAllowed(coord, ctx, child.ID)
 	require.NoError(t, err)
@@ -82,13 +82,13 @@ func TestSessionDrainPolicy_DurableDelegationChildWithNoRunningDelegation_Refuse
 // turn just like a released agent child. A fork of the same parent, with no
 // row naming it, stays on the ordinary policy.
 //
-// Revert-check: restored the `&& job.Kind == string(session.JobKindAgent)`
+// Revert-check: restored the `&& job.Kind == "agent"`
 // clause in isDurableDelegationChild -- the fetch and command subtests FAILED
 // (allowed was true); the agent subtest and the fork check stayed green.
 func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.T) {
-	for _, kind := range []session.JobKind{session.JobKindAgent, session.JobKindFetch, session.JobKindCommand} {
-		t.Run(string(kind), func(t *testing.T) {
-			coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	for _, kind := range []string{"agent", "fetch", "command"} {
+		t.Run(kind, func(t *testing.T) {
+			coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 			env := getEnv(context.Background())
 			ctx := context.Background()
 
@@ -101,7 +101,7 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 			})
 			require.NoError(t, err)
 
-			seedFixtureDelegation(t, env.conn, store, parent.ID, "call-1", child.ID, kind, string(kind), "completed", false)
+			seedFixtureDelegation(t, env.conn, parent.ID, "call-1", child.ID, kind, "completed", false)
 
 			allowed, err := policyAllowed(coord, ctx, child.ID)
 			require.NoError(t, err)
@@ -175,7 +175,7 @@ func (a *panicIfCalledAgent) Run(context.Context, SessionAgentCall) (*fantasy.Ag
 // fallback exactly as the finding describes). Restored the branch; re-ran,
 // passed (no panic, err == nil).
 func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *testing.T) {
-	coord, _, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 	coord.currentAgent = &panicIfCalledAgent{mockSessionAgent: &mockSessionAgent{}}
@@ -185,13 +185,11 @@ func TestWakeSession_ReleasedDelegationChild_EndToEnd_NeverReachesRootAgent(t *t
 	child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child-e2e")
 	require.NoError(t, err)
 
-	seedFixtureDelegation(t, env.conn, store, parent.ID, "agent-call-1", child.ID, session.JobKindAgent, "agent", "completed", false)
-	// Store-only seed: the pre-round-1 state was a direct-store claim with
-	// NOTHING in this process's in-memory workLedger. drainPolicy refuses
-	// before any in-memory use, and drainDecision reads store debt, so the
-	// child's own debt stays visible either way -- the store-only variant is
-	// the exact original state.
-	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-x", true)
+	seedFixtureDelegation(t, env.conn, parent.ID, "agent-call-1", child.ID, "agent", "completed", false)
+	// Direct-store seed (no in-process arm anymore -- the ledger is gone):
+	// drainPolicy refuses before any debt read, and drainDecision reads
+	// batch debt, so the child's own debt stays visible either way.
+	seedFixtureJobDebtStoreOnly(t, env.conn, child.ID, "call-x", true)
 
 	err = coord.wakeSession(ctx, child.ID, true)
 	require.NoError(t, err, "a policy-refused Drain is a silent no-op, never an error")
@@ -220,32 +218,30 @@ func TestSessionDrainPolicy_PlainSessionWithNoDelegationHistory_UsesWebPolicy(t 
 
 // TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained pins
 // childScopeOpenAcrossProcesses: a running async_jobs row for the child,
-// with nothing at all in THIS process's own in-memory workLedger map (it was
-// claimed directly through the store, bypassing ledger.Start, simulating a
-// row claimed by a different process), must still keep the scope open.
+// with nothing at all in THIS process's own memory (batch state is the only
+// authority; the row reads as claimed by a different process), must still
+// keep the scope open.
 //
-// Revert-check performed: made childScopeDrained return true unconditionally
-// once the in-memory/IsSessionBusy checks pass (removed the
-// childScopeOpenAcrossProcesses call) -- this test's
-// `require.False(t, ledger.childScopeDrained(...))` FAILED (childScopeDrained
-// returned true despite the running row). Restored the call; re-ran, passed.
+// Revert-check (batch translation): making runningWorkOpen ignore the live
+// batch read turns this test's `require.True(t, live)` red for the running
+// root.
 func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
-	_, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
 	child, err := env.sessions.Create(ctx, "child-cross-process")
 	require.NoError(t, err)
 
-	if batchFlagEnabled() {
-		seedBatchDelegation(t, env.conn, child.ID, "call-1", "", "command", "running", false)
-	} else {
-		_, err = store.Claim(ctx, session.ClaimParams{Owner: child.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
-		require.NoError(t, err)
-	}
+	// The running row belongs to NO process's memory (batch state is the
+	// only authority): a running batch root for the child must keep the
+	// child's scope open.
+	seedBatchDelegation(t, env.conn, child.ID, "call-1", "", "command", "running", false)
 
-	require.False(t, ledger.childScopeDrained(child.ID),
-		"a running row on a live host must keep the child's scope open even with nothing in this process's own memory")
+	live, err := coord.runningWorkOpen(ctx, child.ID)
+	require.NoError(t, err)
+	require.True(t, live,
+		"a running root on a live host must keep the child's scope open even with nothing in this process's own memory")
 }
 
 // TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained pins the
@@ -269,31 +265,37 @@ func TestChildScopeDrained_RunningRowOnLiveOtherHost_NotDrained(t *testing.T) {
 // the child's reaction explicitly (work_ledger_delegation_test.go's
 // simulateChildReaction helper) before asserting a release.
 //
-// Revert-check performed: reverted childScopeOpenAcrossProcesses
-// (work_ledger_delegation.go) to the running-rows-only check -- this test's
-// `require.False(t, ledger.childScopeDrained(...))` FAILED (returned true).
-// Restored the full ScopeOpen call; re-ran, passed.
+// Revert-check (batch translation): dropping the outstanding-reaction-debt
+// half of the scope predicate turns this test's debt assertion red -- the
+// pulled-but-unreacted notice stays open until the child reacts.
 func TestChildScopeDrained_TerminalRowWithUnreactedDebt_NotDrained(t *testing.T) {
-	_, ledger, store, getEnv := newChildPolicyTestCoordinator(t)
+	_, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 
 	child, err := env.sessions.Create(ctx, "child-debt")
 	require.NoError(t, err)
 
-	seedFixtureJobDebtStoreOnly(t, env.conn, store, env.messages, child.ID, "call-1", true)
+	seedFixtureJobDebtStoreOnly(t, env.conn, child.ID, "call-1", true)
 
-	require.False(t, ledger.childScopeDrained(child.ID),
-		"a pulled-but-unreacted notice is still outstanding reaction debt -- ScopeOpen must report the child's scope as still open")
+	open, err := session.NewBatchStore(env.conn).BatchReactionDebtExists(ctx, child.ID)
+	require.NoError(t, err)
+	require.True(t, open,
+		"a pulled-but-unreacted notice is still outstanding reaction debt -- the child's scope must report still open")
 }
 
 // TestChildScopeDrained_NothingPending_Drained is the baseline: a child with
 // no jobs, no debt, and no busy driver reports drained.
 func TestChildScopeDrained_NothingPending_Drained(t *testing.T) {
-	_, ledger, _, getEnv := newChildPolicyTestCoordinator(t)
+	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
 	child, err := env.sessions.Create(ctx, "child-empty")
 	require.NoError(t, err)
-	require.True(t, ledger.childScopeDrained(child.ID))
+	live, err := coord.runningWorkOpen(ctx, child.ID)
+	require.NoError(t, err)
+	require.False(t, live)
+	open, err := session.NewBatchStore(env.conn).BatchReactionDebtExists(ctx, child.ID)
+	require.NoError(t, err)
+	require.False(t, open, "no jobs, no debt, no busy driver: the child's scope is drained")
 }

@@ -154,8 +154,8 @@ func (m *mockCoordinatorForShutdown) CancelTurn(sessionID string) {
 	panic("unexpected: Shutdown does not call CancelTurn")
 }
 
-func (m *mockCoordinatorForShutdown) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-	panic("unexpected: Shutdown does not call StopRerunJobs")
+func (m *mockCoordinatorForShutdown) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
+	panic("unexpected: Shutdown does not call BatchRerunStopVoided")
 }
 
 // TestP1_5_ShutdownBoundedTimeout_ReturnsEvenWithBlockingCleanup proves the

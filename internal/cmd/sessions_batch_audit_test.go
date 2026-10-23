@@ -1,13 +1,12 @@
 package cmd
 
-// R12-B part 3 coverage: with RUSH_BATCH_RUNTIME on, `rush sessions audit`
-// counts batch facts through the R10a live reader and the R10c
-// BatchHistoryStateCounts query over its own read-only handle, and a missing
-// legacy async_jobs table is a REPORTED normal state — never a silently
-// disabled rule. Flag off, today's behavior is byte-for-byte unchanged,
-// including the missing-table disable path. Fixtures are real migrated
-// databases (db.Connect on a temp dir, never :memory:) seeded through
-// session.BatchStore.Reserve with a kind=batch root and task children.
+// R12-B part 3 coverage: `rush sessions audit` counts batch facts through
+// the R10a live reader and the R10c BatchHistoryStateCounts query over its
+// own read-only handle, and the ABSENT legacy async_jobs table (the only
+// state a store-v1 database can be in) is a REPORTED normal state — never a
+// silently disabled rule. Fixtures are real migrated databases (db.Connect
+// on a temp dir, never :memory:) seeded through session.BatchStore.Reserve
+// with a kind=batch root and task children.
 
 import (
 	"context"
@@ -35,37 +34,22 @@ func seedBatchAuditDB(t *testing.T, id string) (dataDir, sessionID string, f bat
 	return dir, sess.ID, f
 }
 
-// dropLegacyAsyncJobs drops the migrated async_jobs table through a fresh
-// writable connection (TEST DB ONLY): the exact state a pre-batch database
-// is in, reached the literal way an operator would.
-func dropLegacyAsyncJobs(t *testing.T, dataDir string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := db.Connect(ctx, dataDir)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, "DROP TABLE async_jobs")
-	require.NoError(t, err)
-	require.NoError(t, db.ReleaseConn(conn))
-}
-
-// TestSessionsAudit_BatchFlagOn_MissingLegacyTableReported is the flagship
-// case: flag on, async_jobs dropped after migration. The audit must still
+// TestSessionsAudit_MissingLegacyTableReported is the flagship
+// case: a store-v1 database has no async_jobs table at all. The audit must still
 // run, must NOT silently disable unfinished_jobs, must report the legacy
 // table's absence with the stable wording, and must count the seeded batch
 // nodes (state distribution, held root, task counts).
 //
 // Static-trace: db.Connect ran the real migrations (batch_nodes present, so
-// the flag-on schema guard passes); the audit opens mode=ro lazily, so the
-// DROP before the run is visible to its PRAGMA table_info probe; the seed
-// satisfies the batch_nodes FKs (root kind='batch' with tool_call_id and
+// the schema guard passes); the audit's PRAGMA table_info probe sees no
+// async_jobs table, so the absence flag is on; the seed satisfies the
+// batch_nodes FKs (root kind='batch' with tool_call_id and
 // input_hash) and registered its own host via EnsureHost.
-func TestSessionsAudit_BatchFlagOn_MissingLegacyTableReported(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionsAudit_MissingLegacyTableReported(t *testing.T) {
 	dataDir, sessionID, f := seedBatchAuditDB(t, "audit-batch-nolegacy")
-	dropLegacyAsyncJobs(t, dataDir)
 
 	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	t.Logf("flag-on audit with dropped async_jobs:\n%s", stdout)
+	t.Logf("audit of a legacy-free store:\n%s", stdout)
 
 	// The rule is reported, not silently disabled and not an error.
 	require.Contains(t, stdout, auditLegacyAbsentRuleStatus,
@@ -80,7 +64,7 @@ func TestSessionsAudit_BatchFlagOn_MissingLegacyTableReported(t *testing.T) {
 		"the held root must feed the unfinished_jobs rule")
 
 	require.Len(t, reports, 1)
-	require.NotNil(t, reports[0].Batch, "the flag-on JSON must carry the batch block")
+	require.NotNil(t, reports[0].Batch, "the JSON must carry the batch block")
 	batch := reports[0].Batch
 	require.True(t, batch.LegacyAsyncJobsAbsent)
 	require.Equal(t, auditLegacyAbsentRuleStatus, batch.UnfinishedJobsRule)
@@ -111,18 +95,16 @@ func projectBatchAuditRoot(t *testing.T, f batchReadFixture, state string, seque
 	}))
 }
 
-// TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot: flag on with the
-// legacy table present, the rule counts from batch_nodes (the rule status
-// says so), and a root projected to a terminal state produces no
-// unfinished_jobs finding while the state counts still show it.
-func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+// TestSessionsAudit_CountsAndTerminalRoot: the rule counts from batch_nodes
+// (the rule status says so), and a root projected to a terminal state
+// produces no unfinished_jobs finding while the state counts still show it.
+func TestSessionsAudit_CountsAndTerminalRoot(t *testing.T) {
 	dataDir, sessionID, seed := seedBatchAuditDB(t, "audit-batch-terminal")
 	// The seed app is shut down inside seedBatchAuditDB (its pool teardown
 	// closes handles at refcount zero), so projection needs a FRESH store on
-	// the same data dir via the Connect path dropLegacyAsyncJobs uses:
-	// Connect re-runs only pending migrations (no-op here) and bumps the
-	// pool refcount, keeping the handle open through both projections.
+	// the same data dir via the Connect path: Connect re-runs only pending
+	// migrations (no-op here) and bumps the pool refcount, keeping the
+	// handle open through both projections.
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	f := seed
@@ -132,12 +114,10 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 
 	// Held (cancelling) root: one finding, named with the tool call and state.
 	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	require.Contains(t, stdout, auditBatchRuleBatchStatus)
+	require.Contains(t, stdout, auditLegacyAbsentRuleStatus)
 	require.Contains(t, stdout,
 		auditFindingLine("unfinished_jobs", sessionID, f.toolCallID+":cancelling", 1))
 	require.NotNil(t, reports[0].Batch)
-	require.False(t, reports[0].Batch.LegacyAsyncJobsAbsent,
-		"the legacy table is present; the absence flag must stay off")
 
 	// Terminal root: no unfinished_jobs FINDING (the rule status line still
 	// says where it counts from), but the counts still show the work.
@@ -148,7 +128,7 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	// forbidden, never the status line.
 	require.NotContains(t, stdout, "unfinished_jobs: ",
 		"a completed root produces no unfinished_jobs finding")
-	require.Contains(t, stdout, auditBatchRuleBatchStatus,
+	require.Contains(t, stdout, auditLegacyAbsentRuleStatus,
 		"the batch status line (counted from batch_nodes) stays")
 	require.NotNil(t, reports[0].Batch)
 	facts := reports[0].Batch.Sessions[sessionID]
@@ -158,40 +138,4 @@ func TestSessionsAudit_BatchFlagOn_CountsAndTerminalRoot(t *testing.T) {
 	// to nonterminal roots), so Tasks totals come only from live roots: the
 	// completed tasks are asserted via the per-state counts instead.
 	require.Equal(t, int64(2), facts.StateCounts["completed"])
-}
-
-// TestSessionsAudit_BatchFlagOff_MissingLegacyTableUnchanged covers (3): the
-// same dropped-table database with the flag unset must behave exactly as
-// today — the unfinished_jobs rule silently absent, no batch block in the
-// JSON, no batch lines in the text output.
-//
-// Static-trace: the flag-off path never calls auditScanBatchFacts, so
-// report.Batch stays nil and printText adds nothing.
-func TestSessionsAudit_BatchFlagOff_MissingLegacyTableUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
-	dataDir, _, f := seedBatchAuditDB(t, "audit-batch-flagoff-drop")
-	dropLegacyAsyncJobs(t, dataDir)
-
-	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	t.Logf("flag-off audit with dropped async_jobs:\n%s", stdout)
-
-	require.NotContains(t, stdout, "unfinished_jobs", "flag off: no table, no rule (today's behavior)")
-	require.NotContains(t, stdout, auditLegacyAbsentRuleStatus)
-	require.NotContains(t, stdout, "batch runtime on")
-	require.Nil(t, reports[0].Batch, "flag-off JSON must stay byte-identical: no batch block")
-	require.Contains(t, stdout, "sessions (1)", "the session itself is still reported")
-	_ = f
-}
-
-// TestSessionsAudit_BatchFlagOff_NormalDBUnchanged covers (4): on an
-// untouched migrated database with the flag off, the report carries no batch
-// block and the seeded async-free audit output is what today produces.
-func TestSessionsAudit_BatchFlagOff_NormalDBUnchanged(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "off")
-	dataDir, sessionID, _ := seedBatchAuditDB(t, "audit-batch-flagoff-normal")
-
-	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	require.Contains(t, stdout, sessionID)
-	require.Nil(t, reports[0].Batch, "flag off: no batch block on a normal database either")
-	require.Empty(t, reports[0].Findings, "no async rows and no flag: no findings")
 }

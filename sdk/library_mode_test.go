@@ -8,7 +8,7 @@ package sdk_test
 //     on disk, sessions round-trip while the client lives, Close tears
 //     it down;
 //   - a WorkingDir    => the dir is auto-created and the DB persisted at
-//     <WorkingDir>/.rush/rush.db, surviving Close and reopen;
+//     <WorkingDir>/.rush/rush_store_v1.db, surviving Close and reopen;
 //   - rush.json in the WorkingDir is IGNORED in library mode (config
 //     discovery is fully skipped) — the LibraryConfig wins;
 //   - Open validates the LibraryConfig: it is required in library mode,
@@ -141,9 +141,9 @@ func TestOpenLibraryMode_PersistedWorkDirSessionSurvivesReopen(t *testing.T) {
 	require.Empty(t, client.Close().CleanupErrors)
 
 	// The DB really is on disk, under the auto-created working dir.
-	dbPath := filepath.Join(workDir, ".rush", "rush.db")
+	dbPath := filepath.Join(workDir, ".rush", "rush_store_v1.db")
 	_, statErr := os.Stat(dbPath)
-	require.NoError(t, statErr, "library mode with WorkingDir must persist .rush/rush.db")
+	require.NoError(t, statErr, "library mode with WorkingDir must persist .rush/rush_store_v1.db")
 
 	// The session must be readable from the persisted DB entirely
 	// independently of any client.

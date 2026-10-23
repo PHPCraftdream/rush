@@ -6,10 +6,10 @@ package agent
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -62,7 +62,7 @@ func TestBatchDescendantsLiveInterleavesPurge(t *testing.T) {
 	counting := &batchPullCountingTxStarter{DB: env.conn}
 	env.live.TxStarter = counting
 	root := batchPullReserveLiveRoot(t, env)
-	raw, err := sql.Open("sqlite", filepath.Join(env.dataDir, "rush.db")+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	raw, err := sql.Open("sqlite", storepath.StoreV1Path(env.dataDir)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	restore := session.SetBatchLiveServedSeamForTest(func() {

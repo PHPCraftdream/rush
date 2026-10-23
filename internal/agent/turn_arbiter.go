@@ -7,7 +7,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -24,8 +23,8 @@ const (
 	siteTick
 	siteCommit
 	siteCLI
-	// siteChild is a parked delegation child's re-check launch
-	// (workLedger.recheckChild): a release-shaped retry that spends no slot.
+	// siteChild is a parked delegation child's re-check launch: a
+	// release-shaped retry that spends no slot.
 	siteChild
 	// siteAccount is the accounting side (accountDrainAttempt's rules A1-A7).
 	// Close verdicts are only ever issued here, never on a launch site.
@@ -56,8 +55,8 @@ func turnRetryAfterFailure() time.Duration { return drainRetryAfterFailure() }
 // checkout -- drainVerdictOf must therefore leave it deferred without one.
 const foreignWorkspaceReason = "session belongs to another workspace"
 
-// SessionFacts is the in-process (coordinator + workLedger) half of the
-// snapshot.
+// SessionFacts is the in-process (coordinator + its rehomed runtime state)
+// half of the snapshot.
 type SessionFacts struct {
 	ExternallyDrivenSelf bool
 	// ForeignWorkspace is the WS-1 refusal (#1142 step C): the session this
@@ -97,7 +96,7 @@ type SessionFacts struct {
 // covers the whole bg-shell debt" is BGShellOnly && OverCapRows ==
 // BGShellNotices (the same predicate the arbiter cap rule answers).
 type DebtFacts struct {
-	Visible     session.DebtSnapshot
+	Visible     session.BatchDebtSnapshot
 	PendingIncl bool
 	BGShellOnly bool
 	// CompletionOnly reports whether every pending row is a COMPLETION of
@@ -154,7 +153,7 @@ type AttemptFacts struct {
 	// on the flag-on path; UnmappedAtK counts threshold rows with no node
 	// identity.
 	OpenRows    int
-	AtK         session.DebtSnapshot
+	AtK         session.BatchDebtSnapshot
 	AtKBatch    session.BatchDebtSnapshot
 	UnmappedAtK int
 }
@@ -168,7 +167,7 @@ type TurnFacts struct {
 	Debt     DebtFacts
 	Gate     GateFacts
 	Attempt  AttemptFacts
-	Snapshot session.DebtSnapshot
+	Snapshot session.BatchDebtSnapshot
 	// BatchSnapshot is the flag-on path's visible batch-node debt (the
 	// accounting side's VClose rows); empty on the ledger path.
 	BatchSnapshot session.BatchDebtSnapshot
@@ -204,7 +203,7 @@ type Verdict struct {
 	// ReopenOnHint: a newer fact hint may open the gate before RecheckAt.
 	ReopenOnHint bool
 	// Rows names what VClose settles; Marker is the wake_failed text.
-	Rows   session.DebtSnapshot
+	Rows   session.BatchDebtSnapshot
 	Marker string
 	// BatchRows is the batch-node twin of Rows on the flag-on path.
 	BatchRows session.BatchDebtSnapshot
@@ -388,7 +387,7 @@ func decideAccount(f TurnFacts) Verdict {
 	if f.Attempt.Terminal {
 		return Verdict{Kind: VClose, Rows: f.Snapshot, BatchRows: f.BatchSnapshot, Reason: "terminal provider failure"}
 	}
-	if len(f.Attempt.AtK.Jobs)+len(f.Attempt.AtK.Notices) > 0 {
+	if len(f.Attempt.AtK.Nodes)+len(f.Attempt.AtK.Notices) > 0 {
 		return Verdict{Kind: VClose, Rows: f.Attempt.AtK, Reason: "row reached its attempt limit"}
 	}
 	if len(f.Attempt.AtKBatch.Nodes)+len(f.Attempt.AtKBatch.Notices) > 0 || f.Attempt.UnmappedAtK > 0 {
@@ -421,135 +420,24 @@ func decideAccount(f TurnFacts) Verdict {
 // ForeignWorkspace fact is stamped into the snapshot. Callers with no leg
 // error in hand (every launch site, every existing test) pass none and get
 // exactly the pre-#1142 snapshot.
+// ForeignWorkspace fact is stamped into the snapshot. Callers with no leg
+// error in hand (every launch site, every existing test) pass none and get
+// exactly the pre-#1142 snapshot.
+//
+// The DB half is the batch node read (readTurnFactsBatch over the bound
+// BatchCutoverFacts); the in-process half reads the rehomed coordinator
+// runtime state (hint counter, external-driver mirror). The bgArrival mutex
+// is taken BEFORE the debt-rows read and spans the in-process half -- the
+// completion arrival's own span -- so the debt rows and the over-cap set are
+// ONE consistent pair. The read never writes the set; pruning happens only
+// at a completion's arrival (pruneBGShellOverCap, under bgArrival). An
+// unreadable input is an error: the caller fails closed.
 func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
-	f := TurnFacts{Now: c.arb.now(), Site: site, Snapshot: session.DebtSnapshot{}}
+	f := TurnFacts{Now: c.arb.now(), Site: site, Snapshot: session.BatchDebtSnapshot{}}
 	for _, err := range runErrs {
 		if errors.Is(err, session.ErrForeignWorkspace) {
 			f.Session.ForeignWorkspace = true
 		}
 	}
-	l := c.asyncJobs
-	if l == nil || l.store == nil {
-		return f, nil
-	}
-	if facts := coordinatorBatchCutoverFacts(c); facts != nil {
-		// Flag on: every terminal/debt/liveness fact comes from batch node
-		// reads; async_jobs is never read (see batch_cutover_facts.go).
-		return c.readTurnFactsBatch(ctx, facts, sessionID, f, l)
-	}
-	// ---- DB half (the debt picture itself is the ONE rows read under
-	// bgArrival, below; only the visible snapshot and the session-side
-	// markers are read outside the gate) ----
-	// NOTE: no short-circuit on no-debt. The facts are ONE snapshot (the
-	// ASYNC-02/09 anchor): a caller that re-asks the arbiter without rule
-	// 1's short-circuit (drainPolicy preserves the old policy's debt-free
-	// refusal) still needs the complete session half -- a foreign driver or
-	// a suspension refuses a debt-free session too.
-	snap, err := l.store.CaptureDebtSnapshot(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: debt snapshot: %w", err)
-	}
-	f.Debt.Visible = snap
-	if seam := readTurnFactsGateSeam.Load(); seam != nil {
-		(*seam)()
-	}
-	if err := c.bgArrival.lock(ctx); err != nil {
-		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
-	}
-	defer c.bgArrival.unlock()
-	hasJobDebt, notices, jobClaims, err := l.store.PendingInclusiveDebtRows(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: debt rows: %w", err)
-	}
-	f.Debt.BGShellOnly = !hasJobDebt && len(notices) > 0
-	for _, n := range notices {
-		if n.Kind != session.NoticeKindBGShellDone {
-			f.Debt.BGShellOnly = false
-		}
-	}
-	f.Debt.BGShellNotices = len(notices)
-	// CompletionOnly (#1270 rule 4b): every pending row is a completion.
-	// Job-debt rows (hasJobDebt) are completion-class unconditionally: the
-	// rows read here do not classify them by kind, and a finished job's
-	// pending delivery IS a completion (see DebtFacts.CompletionOnly).
-	f.Debt.CompletionOnly = true
-	for _, n := range notices {
-		switch n.Kind {
-		case session.NoticeKindBGShellDone, session.NoticeKindSupervision:
-		default:
-			f.Debt.CompletionOnly = false
-		}
-	}
-	// Pending-inclusive debt, from the SAME rows read (same predicate as
-	// ReactionDebtExists): a debt that appeared after the earlier reads is
-	// still this decision's debt.
-	f.Debt.PendingIncl = hasJobDebt || len(notices) > 0
-	f.Session.ForeignDriverLive, err = l.foreignLiveDriver(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: driver marker: %w", err)
-	}
-	f.Session.RunningDelegation, err = l.hasRunningDelegationFor(ctx, sessionID)
-	if err != nil {
-		return f, fmt.Errorf("turn facts: delegation state: %w", err)
-	}
-	if !f.Session.ExternallyDrivenSelf {
-		f.Session.DurableChild, err = c.isDurableDelegationChild(ctx, sessionID)
-		if err != nil {
-			return f, fmt.Errorf("turn facts: delegation identity: %w", err)
-		}
-	}
-	if c.cfg != nil {
-		f.Session.AutonomyEnabled = c.autonomyEnabled()
-	}
-	// ---- in-process half (bgArrival already spans the rows read above) ----
-	s := c.arb.snapshot(sessionID)
-	owed := make(map[int64]struct{}, len(notices))
-	for _, n := range notices {
-		owed[n.ID] = struct{}{}
-	}
-	if s.AutoResumes >= turnAutoResumeCap { // over-cap rows only count with every slot spent
-		for id := range s.OverCap {
-			if _, ok := owed[id]; ok {
-				f.Debt.OverCapRows++
-			}
-		}
-	}
-	f.Session.AutoResumes = s.AutoResumes
-	f.Session.Held = s.Held
-	f.Session.Suspended = s.Suspended
-	f.Session.SleepAll = s.SleepAll
-	f.Session.ChainLinks = s.ChainLinks
-	f.Session.ChainNoticed = s.ChainNoticed
-	// Rule 4b's running-rows fact is read ONLY while the sleep is armed, so
-	// the hot path pays nothing; the read reuses the same source as the
-	// session-activity facts (AsyncJobStore.LiveWorkForRoots). An unreadable
-	// read fails closed by leaving the count at zero -- the sleep then does
-	// not defer, and the launch proceeds exactly as it would without it.
-	if s.SleepAll {
-		work := l.store.LiveWorkForRoots(ctx, []string{sessionID})[sessionID]
-		// Descendant delegation rows count too (#1270): await_tasks arms the
-		// sleep for them exactly like for own jobs (Own excludes them), and
-		// RunningDelegation is the CHILD-side fact, never the root's own
-		// live delegations.
-		f.Session.RunningOwnJobs = len(work.Own) + len(work.Descendants)
-	}
-	// The chain guard's second half: the ENTIRE pending-inclusive debt must
-	// be completions of the chain's own idle launches -- no notice row at
-	// all and every job claim inside the chain's set.
-	if f.Session.ChainLinks >= turnReactionChainLimit && len(notices) == 0 && len(jobClaims) > 0 {
-		owns := true
-		for _, claim := range jobClaims {
-			if _, ok := s.ChainClaims[claim]; !ok {
-				owns = false
-				break
-			}
-		}
-		f.Session.ChainOwnsAllDebt = owns
-	}
-	// ---- ledger half (l.mu): hint counter + external driver; the gate
-	// itself lives in the arbiter state ----
-	f.Gate = s.Gate
-	f.Gate.HintNow = l.hintSeqOf(sessionID)
-	f.Session.ExternallyDrivenSelf = l.isExternalDriver(sessionID)
-	return f, nil
+	return c.readTurnFactsBatch(ctx, coordinatorBatchCutoverFacts(c), sessionID, f)
 }

@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 
 	"charm.land/fantasy"
@@ -11,45 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFinishToolAssemblyFlagOffDoesNotInstallBatchTools(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	require.False(t, batchFlagEnabled(), "flag-off baseline must stay disabled")
-	c := &coordinator{asyncJobs: newWorkLedger(nil)}
-	c.asyncJobs.inlineWindow = inlineWindow
-	filtered := batchTestTools("bash", "view", "job_output")
-	off, err := c.finishToolAssembly(context.Background(), filtered, nil, false, nil)
-	require.NoError(t, err)
-	// wrapAsyncTools replaces entries in its input slice. Build a fresh
-	// baseline so it does not wrap the actual path's already-wrapped entries
-	// again.
-	legacy := batchTestTools("bash", "view", "job_output")
-	legacy = c.wrapAsyncTools(legacy)
-	legacy = decoratePolicyTools(legacy, restrictedRunAuthorizer(c.permissions), nil, false)
-	legacy = wrapToolsWithStallDetach(legacy)
-	for _, list := range [][]fantasy.AgentTool{legacy, off.tools} {
-		for _, tool := range list {
-			if tool.Info().Name == "bash" {
-				require.Equal(t, 1, strings.Count(tool.Info().Description, "In web and CLI sessions this tool starts asynchronously."), "bash async description must appear exactly once")
-			}
-		}
-	}
-	require.Equal(t, flagOffToolGolden(t, legacy), flagOffToolGolden(t, off.tools), "flag-off tool inventory/schema/description must be unchanged")
-	for _, tool := range off.tools {
-		require.NotContains(t, []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}, tool.Info().Name)
-	}
-}
-
-func flagOffToolGolden(t *testing.T, ts []fantasy.AgentTool) []string {
-	t.Helper()
-	var lines []string
-	for _, tool := range ts {
-		info := tool.Info()
-		data, err := json.Marshal(info)
-		require.NoError(t, err)
-		lines = append(lines, info.Name+"\x00"+info.Description+"\x00"+string(data))
-	}
-	return lines
-}
+// TestFinishToolAssemblyFlagOffDoesNotInstallBatchTools was DELETEd as an
+// obsolete contract: there is no flag-off build left to pin -- batch-only
+// assembly is unconditional, and the legacy async-job wrapper seams are gone
+// entirely (covered by the inventory tests below).
 
 // allowedBatchReadControls mirrors the flag-on allToolNames grants the
 // default coder toolset carries.
@@ -95,7 +58,7 @@ func (m modelControlInventory) InstallBatchModelControls(*BatchLeafRegistry, Bat
 
 func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-	c := &coordinator{asyncJobs: newWorkLedger(nil)}
+	c := newBatchRuntimeCoordinator()
 	controls := make([]fantasy.AgentTool, 0, 5)
 	for _, name := range []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"} {
 		controls = append(controls, fantasy.NewAgentTool(name, "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {

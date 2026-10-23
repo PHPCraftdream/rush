@@ -24,7 +24,9 @@ type SessionAgentOptions struct {
 	Sessions             session.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
-	AsyncJobs            *workLedger
+	// Coord is the owning coordinator (batch facts, reaction store, notice
+	// pull route through it). Nil on bare fixtures.
+	Coord *coordinator
 	// OnSessionIdle -- see sessionAgent.onSessionIdle's doc. Nil in every
 	// test that builds a bare sessionAgent directly (no coordinator to
 	// notify).

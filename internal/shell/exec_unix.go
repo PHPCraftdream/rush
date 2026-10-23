@@ -112,7 +112,7 @@ func isolateProcess(cmd *exec.Cmd) {
 // context.Background() (as internal/agent/tools/bash.go's foreground path
 // does) has no independent timeout of its own here; in practice it's
 // bounded by whatever OUTER mechanism eventually cancels that context
-// (turn cancellation, the stream watchdog, `job_kill` for a backgrounded
+// (turn cancellation, the stream watchdog, batch_stop for a backgrounded
 // tool run), not by anything in this file.
 func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {

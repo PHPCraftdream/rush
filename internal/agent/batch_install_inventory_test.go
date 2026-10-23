@@ -234,14 +234,12 @@ func (e *batchInventoryEnv) assertDelivered(callID, toolName, wantKind string, r
 	if !kind.Valid || kind.String != wantKind {
 		e.t.Fatalf("%s: task child kind %q, want %q", toolName, kind.String, wantKind)
 	}
-	// (2) the OLD async ledger recorded NOTHING for this invocation.
+	// (2) the removed legacy authority is gone from the schema: ANY read of
+	// its table fails.
 	var jobs int
 	if err := e.conn.QueryRowContext(e.ctx,
-		`SELECT COUNT(*) FROM async_jobs WHERE owner_session_id = ?1`, e.sessionID).Scan(&jobs); err != nil {
-		e.t.Fatalf("%s: count async_jobs: %v", toolName, err)
-	}
-	if jobs != 0 {
-		e.t.Fatalf("%s: %d async_jobs rows for the owner session, want 0 (ONE authority, no legacy ledger)", toolName, jobs)
+		`SELECT COUNT(*) FROM async_jobs`).Scan(&jobs); err == nil {
+		e.t.Fatalf("%s: the legacy async_jobs table is still readable", toolName)
 	}
 	// (3) hook EXACTLY once, permission gate asked EXACTLY once.
 	if got := e.counters.hooks.Load(); got != 1 {

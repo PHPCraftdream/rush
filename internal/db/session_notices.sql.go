@@ -386,30 +386,45 @@ func (q *Queries) RependSessionNoticesByMessageIDs(ctx context.Context, arg Repe
 	return result.RowsAffected()
 }
 
-const repointSessionNoticesJobToolCallID = `-- name: RepointSessionNoticesJobToolCallID :execrows
-UPDATE session_notices SET job_tool_call_id = ?1
-WHERE owner = ?2 AND job_tool_call_id = ?3
+const sessionNoticeDebtOwners = `-- name: SessionNoticeDebtOwners :many
+SELECT DISTINCT owner FROM session_notices
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void'
+  AND owner IN (/*SLICE:owner_ids*/?)
 `
 
-type RepointSessionNoticesJobToolCallIDParams struct {
-	NewJobToolCallID sql.NullString `json:"new_job_tool_call_id"`
-	Owner            string         `json:"owner"`
-	OldJobToolCallID sql.NullString `json:"old_job_tool_call_id"`
-}
-
-// R2A-4: session_notices.job_tool_call_id names its async_jobs row by
-// tool_call_id text (the wake_only pull-time void reads that row). When the
-// archive rename above moves the row, its notices follow it: otherwise the
-// text would resolve to the NEW row a later claim put under the reused id
-// and a check-in about the old job would be delivered as if about the new
-// one. Runs in the archive's own transaction, before the fresh claim
-// inserts, so every notice matching the old text belongs to the old row.
-func (q *Queries) RepointSessionNoticesJobToolCallID(ctx context.Context, arg RepointSessionNoticesJobToolCallIDParams) (int64, error) {
-	result, err := q.exec(ctx, q.repointSessionNoticesJobToolCallIDStmt, repointSessionNoticesJobToolCallID, arg.NewJobToolCallID, arg.Owner, arg.OldJobToolCallID)
-	if err != nil {
-		return 0, err
+// The session_notices half of the reaction-debt check (the table has no
+// announced concept): owners with unconsumed wake notices.
+func (q *Queries) SessionNoticeDebtOwners(ctx context.Context, ownerIds []string) ([]string, error) {
+	query := sessionNoticeDebtOwners
+	var queryParams []interface{}
+	if len(ownerIds) > 0 {
+		for _, v := range ownerIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", strings.Repeat(",?", len(ownerIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:owner_ids*/?", "NULL", 1)
 	}
-	return result.RowsAffected()
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var owner string
+		if err := rows.Scan(&owner); err != nil {
+			return nil, err
+		}
+		items = append(items, owner)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setSessionNoticeMessageID = `-- name: SetSessionNoticeMessageID :execrows

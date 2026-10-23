@@ -8,7 +8,7 @@ package sdk_test
 // (httptest SSE): round 1 fs_write, round 2 fs_read of the SAME path in the
 // SAME turn (the first root completed and disposed; the read reuses the
 // SAME pinned toolset — the construction-scope survival oracle), round 3
-// stop. RUSH_BATCH_RUNTIME=1 selects the batch runtime.
+// stop. The default batch runtime is selected.
 //
 // Oracles:
 //   - provider contents read back correctly: the fake (map-backed and
@@ -138,7 +138,7 @@ func (d shapesDisk) Search(_ context.Context, _ sdk.DiskSearchRequest) (sdk.Disk
 
 func TestSdkProviderRunShapesIsolation(t *testing.T) {
 	isolateGlobalConfig(t)
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	unsetBatchRuntimeEnvForTest(t)
 
 	const (
 		relPath     = "scoped/shapes.txt"

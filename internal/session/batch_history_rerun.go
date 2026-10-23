@@ -48,6 +48,40 @@ type BatchRerunVoidedNode struct {
 	ChildSessionID, HostID     string
 }
 
+// ErrRerunTargetGone means the target message was already deleted (e.g. by a
+// concurrent rerun): the reconcile changed nothing.
+var ErrRerunTargetGone = errors.New("rerun: target message no longer exists")
+
+// RerunTruncateParams names what a reconcile deletes: the target user message
+// plus the tail of messages after it, all owned by Owner.
+type RerunTruncateParams struct {
+	Owner    string
+	TargetID string
+	TailIDs  []string
+}
+
+// rerunChunk is the IN (...) chunk size for the post-delete reconciliation
+// passes (re-declared here after the legacy async_job_rerun.go was removed).
+const rerunChunk = 500
+
+// chunkStrings splits ids into consecutive chunks of at most n entries.
+func chunkStrings(ids []string, n int) [][]string {
+	var out [][]string
+	for start := 0; start < len(ids); start += n {
+		out = append(out, ids[start:min(start+n, len(ids))])
+	}
+	return out
+}
+
+// nullStrings lifts ids into valid sql.NullStrings for IN (...) queries.
+func nullStrings(ids []string) []sql.NullString {
+	out := make([]sql.NullString, len(ids))
+	for i, id := range ids {
+		out[i] = sql.NullString{String: id, Valid: true}
+	}
+	return out
+}
+
 // BatchRerunTruncation is the committed outcome: the message rows actually
 // deleted (target included) and the voided root incarnations.
 type BatchRerunTruncation struct {

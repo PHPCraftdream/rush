@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -16,10 +15,11 @@ import (
 // TestListStatusesWithAwaiting_AnnotatesAndWires: the list helper must (a)
 // re-classify a live verdict from the root's pending child_question notices
 // into the "(awaiting answer)" STATUS annotation and (b) expose the child +
-// question for the --json wire fields (#1158). Revert-check: removing the
-// notice read or the enrichment in listStatusesWithAwaiting leaves the
-// plain "delegating" status and an empty awaiting map, failing both
-// assertions.
+// question for the --json wire fields (#1158). The question is published as
+// a batch marker question on the delegation's task node.
+// Revert-check: removing the notice read or the enrichment in
+// listStatusesWithAwaiting leaves the plain "delegating" status and an
+// empty awaiting map, failing both assertions.
 func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	t.Parallel()
 
@@ -35,10 +35,8 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	child, err := s.CreateTaskSession(ctx, "awaiting-list-child", parent.ID, "worker")
 	require.NoError(t, err)
 
-	store := session.NewAsyncJobStore(conn, dataDir, 1, "list-test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	childID := ""
-	if config.BatchRuntimeEnabled() {
+	{
 		batchStore := session.NewBatchStore(conn)
 		rootResult, err := batchStore.Reserve(ctx, session.BatchReservation{
 			Owner: parent.ID, Host: "list-fixture-host", RunnerID: "list-fixture-runner",
@@ -63,18 +61,9 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 		marker := fmt.Sprintf("[batch-question node=%s token=%d sequence=%d depth=%d child=%s]\n", childID, 7, 3, 1, child.ID)
 		text := marker + "SUB-AGENT QUESTION: ship or hold?\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
 		require.NoError(t, batchStore.BatchPublishQuestion(ctx, parent.ID, childID, 7, marker, text))
-	} else {
-		childID = "delegate-3"
-		_, err = store.Claim(ctx, session.ClaimParams{
-			Owner: parent.ID, ToolCallID: "delegate-3", Kind: session.JobKindAgent,
-			Input: "delegate to " + child.ID, ChildSessionID: child.ID,
-		})
-		require.NoError(t, err)
-		insertChildQuestionNotice(t, store, parent.ID, child.ID, "delegate-3", "ship or hold?")
 	}
 
 	a := &app.App{Sessions: s, DB: func() *sql.DB { return conn }}
-	a.SetAsyncJobStoreForTest(store)
 	a.SetDataDirForTest(dataDir)
 	acts, err := a.SessionActivityBatch(ctx, []string{parent.ID})
 	require.NoError(t, err)
@@ -84,16 +73,11 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 		"a held delegation with a pending child question must be annotated")
 	require.Contains(t, statusByID[parent.ID], "delegating")
 	got := awaitingByID[parent.ID]
-	if config.BatchRuntimeEnabled() {
-		require.Equal(t, childID, got.NodeID)
-		require.EqualValues(t, 7, got.Token)
-		require.EqualValues(t, 3, got.Sequence)
-		require.Empty(t, got.DelegationToolCallID)
-	}
+	require.Equal(t, childID, got.NodeID)
+	require.EqualValues(t, 7, got.Token)
+	require.EqualValues(t, 3, got.Sequence)
+	require.Empty(t, got.DelegationToolCallID)
 	require.Equal(t, child.ID, got.ChildSessionID)
-	if !config.BatchRuntimeEnabled() {
-		require.Equal(t, "delegate-3", got.DelegationToolCallID)
-	}
 	require.Contains(t, got.Question, "ship or hold?")
 }
 

@@ -1,10 +1,7 @@
-// R11F (M2) flagged batch-runtime installation: App.New builds the batch
-// runtime via the M1 factory only when RUSH_BATCH_RUNTIME parses true, and
-// the shutdown path replaces the "release host identity and writer on
+// R11F (M2) batch-runtime installation: App.New builds the batch runtime
+// via the M1 factory unconditionally for every persisted agent-setup App,
+// and the shutdown path replaces the "release host identity and writer on
 // agent-idle" sites with the R11E drain gate (BatchRuntime.DrainAndRelease).
-//
-// Flag OFF: none of this runs — no runtime object, no watcher goroutine, no
-// store write, and app_lifecycle.go keeps its original blocks verbatim.
 package app
 
 import (
@@ -38,25 +35,18 @@ var batchInstallDepsHook func(*agent.BatchInstallDeps)
 
 // arms its fault watcher. It fails closed: any missing resource surfaces as
 // a New error — the process never silently continues with a half-installed
-// runtime. Caller must have checked the flag and non-nil asyncJobStore.
+// runtime. Caller must have ensured agent setup and a non-empty data dir.
 func (app *App) installBatchRuntime(ctx context.Context) error {
 	if app.batchRuntime != nil {
-		// First wins: one install, one authority per App. A second flag-on
-		// call (only possible from tests/re-entry) never swaps the Runner.
+		// First wins: one install, one authority per App. A second call
+		// (only possible from tests/re-entry) never swaps the Runner.
 		return nil
 	}
 	// R11F (M3): the commit-hook identity must exist BEFORE the first Claim,
-	// so the flagged install registers the host up front (HostID() is empty
-	// until the lazy ensureHost registration).
-	// R12-F: with the flag ON the identity is R12-D's job-independent
-	// HostStore -- async_jobs is never read (the table may not even exist).
-	var host string
-	var err error
-	if batchCutoverOn() {
-		host, err = app.batchHostEnsure(ctx)
-	} else {
-		host, err = app.asyncJobStore.EnsureHost(ctx)
-	}
+	// so the install registers the host up front (HostID() is empty until
+	// the lazy ensureHost registration). The identity is the job-independent
+	// HostStore's.
+	host, err := app.batchHostEnsure(ctx)
 	if err != nil {
 		return err
 	}
@@ -79,18 +69,16 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if batchCutoverOn() {
-		app.batchTimeoutWake = newBatchTimeoutWakeDispatcher()
-		// Ordinary completions ride the same bounded dispatcher: the commit
-		// hook enqueues the touched root (nonblocking, off the Runner commit
-		// stack); the dispatcher resolves the owner from the durable row and
-		// hands it to the coordinator's existing wake gates. The dispatcher
-		// is NOT a delivery authority — the durable selected notice stays
-		// the only fact; the wake only schedules the reaction turn.
-		app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
-		factory.wake = app.batchTimeoutWake.Wake
-		factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
-	}
+	app.batchTimeoutWake = newBatchTimeoutWakeDispatcher()
+	// Ordinary completions ride the same bounded dispatcher: the commit
+	// hook enqueues the touched root (nonblocking, off the Runner commit
+	// stack); the dispatcher resolves the owner from the durable row and
+	// hands it to the coordinator's existing wake gates. The dispatcher
+	// is NOT a delivery authority — the durable selected notice stays
+	// the only fact; the wake only schedules the reaction turn.
+	app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
+	factory.wake = app.batchTimeoutWake.Wake
+	factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
 	if factory.deps.Profile == nil {
 		profile, perr := agent.NewBatchProfileDefault()
 		if perr != nil {
@@ -129,29 +117,20 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver, install.RootLeases)
 	app.batchLiveReader = factory.live
 	// Wire the R11E release seams onto the gate BEFORE the watcher starts:
-	// RetainHostIdentity mirrors the flag-off forced path's CloseKeepLock,
+	// RetainHostIdentity mirrors the forced path's CloseKeepLock,
 	// ReleaseHostIdentity the graceful Close, and ReleaseWriter the
 	// generation-safe per-reference DB release of releaseResources.
-	if batchCutoverOn() {
-		// R12-F: host release goes through the HostStore -- CloseKeepLock
-		// pins the OS lock, Close deletes via DeleteAsyncHostIfNoNodes,
-		// never async_jobs.
-		rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
-		rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
-			// R12-H2 §1.3: residual construction scopes close AFTER the
-			// disposal drain and BEFORE host/writer release (the gate's
-			// release order is host, then writer). Forced shutdown and the
-			// fault fence never reach this seam, so the manager's remaining
-			// owners are retained until process exit.
-			app.drainResidualConstructions()
-			return app.batchHostRelease(ctx)
-		}
-	} else {
-		rt.cfg.RetainHostIdentity = app.asyncJobStore.CloseKeepLock
-		rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
-			app.drainResidualConstructions()
-			return app.asyncJobStore.Close(ctx)
-		}
+	// Host release goes through the HostStore -- CloseKeepLock pins the OS
+	// lock, Close deletes via DeleteAsyncHostIfNoNodes, never async_jobs.
+	rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
+	rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
+		// R12-H2 §1.3: residual construction scopes close AFTER the
+		// disposal drain and BEFORE host/writer release (the gate's
+		// release order is host, then writer). Forced shutdown and the
+		// fault fence never reach this seam, so the manager's remaining
+		// owners are retained until process exit.
+		app.drainResidualConstructions()
+		return app.batchHostRelease(ctx)
 	}
 	rt.cfg.ReleaseWriter = func(ctx context.Context) error {
 		return app.releaseBatchWriter()
@@ -159,9 +138,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	if batchRuntimeConfigHook != nil {
 		batchRuntimeConfigHook(&rt.cfg)
 	}
-	if batchCutoverOn() {
-		rt.cfg.TimeoutCheckin = batchTimeoutWakeRuntime{checkin: rt.cfg.TimeoutCheckin, dispatch: app.batchTimeoutWake}
-	}
+	rt.cfg.TimeoutCheckin = batchTimeoutWakeRuntime{checkin: rt.cfg.TimeoutCheckin, dispatch: app.batchTimeoutWake}
 	app.batchRuntime = rt
 	app.batchInstall = install
 	// Start arms the fault watcher (idempotent; SetRunner already ran inside
@@ -169,8 +146,8 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	rt.Start()
 	// Held-question inject bridge (D1): with a live Runner and writer,
 	// install the sink inject_agent uses to release a child's
-	// CURRENT-incarnation held question through Runner.Inject. Flag OFF or
-	// a runnerless install (Start logged the RunnerFactory failure) leaves
+	// CURRENT-incarnation held question through Runner.Inject. A
+	// runnerless install (Start logged the RunnerFactory failure) leaves
 	// the sink nil and inject_agent keeps its legacy behaviour
 	// byte-identically.
 	if runner := install.Runner; runner != nil {
@@ -221,7 +198,7 @@ func (app *App) releaseBatchWriter() error {
 	return firstErr
 }
 
-// releaseBatchRuntimeGate is the flag-on replacement for the "release host
+// releaseBatchRuntimeGate is the replacement for the "release host
 // identity and writer on agent-idle" block of releaseResources: the Runner
 // drains first, then host identity, then writer — all inside
 // DrainAndRelease. It returns the (possibly promoted) stillBusy verdict.
@@ -229,9 +206,9 @@ func (app *App) releaseBatchWriter() error {
 //   - Graceful (stillBusy=false): drain bounded by appBatchDrainTimeout;
 //     a Close timeout or fault fence retains the draining resources and
 //     promotes the shutdown to Forced — the DB block below then skips the
-//     release exactly like the flag-off forced path.
-//   - Forced (stillBusy=true): same retention policy as flag-off — disarm
-//     the watcher, keep the host lock (CloseKeepLock), never touch the DB.
+//     release exactly like the forced path.
+//   - Forced (stillBusy=true): the watcher is disarmed, the host lock is
+//     kept (CloseKeepLock) and the DB is never touched.
 func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, record func(error)) bool {
 	// Disarm the held-question inject bridge first: once the drain begins no
 	// answer may be routed into a draining Runner (the sink lookup is gone,
@@ -251,23 +228,14 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 			app.batchTimeoutWake.Stop()
 			app.batchTimeoutWake = nil
 		}
-		// Defensive: a flag-off App must never take this path; keep the
-		// flag-off retention semantics if it somehow does. Flag ON: the
-		// HostStore twin.
-		if batchCutoverOn() {
-			app.batchHostReleaseKeepLock()
-		} else if app.asyncJobStore != nil {
-			app.asyncJobStore.CloseKeepLock()
-		}
+		// Defensive: an App without an installed runtime must never take
+		// this path; retain the host identity if it somehow does.
+		app.batchHostReleaseKeepLock()
 		return stillBusy
 	}
 	if stillBusy {
 		rt.Stop()
-		if batchCutoverOn() {
-			app.batchHostReleaseKeepLock()
-		} else if app.asyncJobStore != nil {
-			app.asyncJobStore.CloseKeepLock()
-		}
+		app.batchHostReleaseKeepLock()
 		return true
 	}
 	rt.Stop()
@@ -283,7 +251,9 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 }
 
 // batchRuntimeFlagEnabled re-exports the shared parser for the app package
-// (single flag definition in internal/config).
+// (single flag definition in internal/config). The batch runtime installs
+// unconditionally; retained callers (app_run_setup.go's DiskProvider gate)
+// still read the shared parser until its own lane rewrites it.
 func batchRuntimeFlagEnabled() bool {
 	return config.BatchRuntimeEnabled()
 }

@@ -1,10 +1,8 @@
-// B1 slot helpers (slot B1 of the fixture-porting split, see
-// D:/system_artefact/Temp/shadow-1019/res-split.md sec.4): B1-prefixed
-// dual-mode fixtures shared by the B1-owned test files
+// B1 slot helpers (slot B1 of the fixture-porting split): B1-prefixed
+// batch-only fixtures shared by the B1-owned test files
 // (coordinator_bgshell_policy_test.go, coordinator_cli_scope_test.go,
 // coordinator_scope_recovery_test.go, cliscope_completion_hold_test.go).
-// Everything here selects its authority through the foundation dual-mode
-// helpers (batch_fixture_port_test.go) and never touches RUSH_BATCH_RUNTIME.
+// Everything here seeds and reads through the batch store only.
 package agent
 
 import (
@@ -19,71 +17,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// b1BGShellFixture mirrors newBGShellFixture (bgshell_claim_test.go, owned
-// by another slot and deliberately binding-free) with one addition: an
-// explicit bindBatchNodeFacts, so a flag-ON CLIScope against the returned
-// coordinator answers from batch node facts instead of the
-// unknownBatchCutoverFacts sentinel ("batch facts: node source unavailable").
-// Shape is otherwise identical: legacy workLedger + AsyncJobStore rows are
-// the retained bg-shell row infrastructure on BOTH paths; the binding only
-// feeds the facts seam.
-func b1BGShellFixture(t *testing.T) (*coordinator, *session.AsyncJobStore, *shell.BackgroundShellManager, string) {
+// b1BGShellFixture builds a batch-only bg-shell fixture: a coordinator with a
+// background manager and node facts bound over a fresh one-migration store.
+// The bg-shell row store of the deleted legacy fixture is gone; callers that
+// need notice rows use the coordinator's notice store
+// (session.NewSessionNoticeStore(conn) over the returned conn).
+func b1BGShellFixture(t *testing.T) (*coordinator, *sql.DB, *shell.BackgroundShellManager, string) {
 	t.Helper()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	registry := newWorkLedger(nil)
-	registry.store = store
+	conn, dataDir := batchFixtureConn(t)
+	// Callers start shells owned by the literal id "session"; its bg_shell_done
+	// notices FK-anchor on sessions (id).
+	ensureFixtureSession(t, conn, "session")
 	mgr := shell.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(context.Background()) })
-	coord := &coordinator{asyncJobs: registry, background: mgr}
+	coord := newBatchRuntimeCoordinator()
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	coord.background = mgr
 	bindBatchNodeFacts(t, coord, conn, dataDir)
-	return coord, store, mgr, t.TempDir()
+	return coord, conn, mgr, t.TempDir()
 }
 
-// b1SeedCompletedJob is the dual-mode seedCompletedJob: flag ON projects the
-// job as batch nodes (a command task's completion debt for childID=="", a
-// terminal delegation child link otherwise), OFF keeps the legacy
-// claim/announce/transition async_jobs row. Either way the owner ends with
-// pending-inclusive wake=1 reaction debt.
-func b1SeedCompletedJob(t *testing.T, conn *sql.DB, store *session.AsyncJobStore, ledger *workLedger, owner, callID string, kind session.JobKind, childID string) {
+// b1SeedCompletedJob seeds the owner's pending-inclusive wake=1 reaction
+// debt: a command task's completion debt for childID=="", a terminal
+// delegation child link otherwise.
+func b1SeedCompletedJob(t *testing.T, conn *sql.DB, owner, callID string, kind string, childID string) {
 	t.Helper()
 	if childID != "" {
-		seedFixtureDelegation(t, conn, store, owner, callID, childID, kind, string(kind), "completed", false)
+		seedFixtureDelegation(t, conn, owner, callID, childID, kind, "completed", false)
 		return
 	}
-	seedFixtureJobDebt(t, conn, store, ledger, nil, owner, callID, false)
+	seedFixtureJobDebt(t, conn, owner, callID, false)
 }
 
-// b1SeedRunningJob is the dual-mode RUNNING-row seed: flag ON reserves a live
-// batch root (state running, announced) for owner, OFF claims a running
-// async_jobs row. Either way the owner has running work but no debt.
-func b1SeedRunningJob(t *testing.T, conn *sql.DB, store *session.AsyncJobStore, owner, callID string) {
+// b1SeedRunningJob seeds a live RUNNING batch root (state running, announced)
+// for owner: the owner has running work but no debt.
+func b1SeedRunningJob(t *testing.T, conn *sql.DB, owner, callID string) {
 	t.Helper()
-	if batchFlagEnabled() {
-		seedBatchDelegation(t, conn, owner, callID, "", "command", "running", false)
-		return
-	}
-	_, err := store.Claim(context.Background(), session.ClaimParams{
-		Owner: owner, ToolCallID: callID, Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	seedBatchDelegation(t, conn, owner, callID, "", "command", "running", false)
 }
 
-// b1SeedDelegationChildLink is the durable half of childDelegationBase's
-// delegation seed. The in-memory half (workLedger.Start + acknowledged) is
-// process-local park/deliver machinery and stays in the fixture on BOTH
-// paths; it also claims the legacy async_jobs row, which is the durable
-// delegation record under flag OFF. Under flag ON the ON readers
-// (drainPermitted -> isDurableDelegationChild -> facts.DelegationChildEver,
-// delegatedChildDriven, CLIScope's live reads) never see async_jobs, so the
-// delegation must also exist as a live batch node child-link naming the
-// child: seedBatchDelegation(owner, callID, child, "agent", "running")
-// reserves and announces exactly that. Never touches RUSH_BATCH_RUNTIME.
-func b1SeedDelegationChildLink(t *testing.T, conn *sql.DB, store *session.AsyncJobStore, owner, callID, childID string) {
+// b1SeedDelegationChildLink seeds the durable delegation child-link naming
+// the child: the live batch readers (drainPermitted -> isDurableDelegationChild
+// -> facts.DelegationChildEver, delegatedChildDriven, CLIScope's live reads)
+// answer from batch nodes only. The former in-process park/deliver half of
+// the deleted workLedger seed is gone with the ledger.
+func b1SeedDelegationChildLink(t *testing.T, conn *sql.DB, owner, callID, childID string) {
 	t.Helper()
-	if !batchFlagEnabled() {
-		return // OFF: workLedger.Start already claimed the async_jobs row
-	}
-	seedFixtureDelegation(t, conn, store, owner, callID, childID, session.JobKindAgent, AgentToolName, "running", false)
+	seedFixtureDelegation(t, conn, owner, callID, childID, "agent", "running", false)
 }
 
 // b1SeedBatchRootOnHost reserves and announces a live (state-parameterised)
@@ -93,6 +73,7 @@ func b1SeedDelegationChildLink(t *testing.T, conn *sql.DB, store *session.AsyncJ
 func b1SeedBatchRootOnHost(t *testing.T, conn *sql.DB, owner, callID, host, state string) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: host, RunnerID: "fixture-runner", ToolCallID: callID,
@@ -111,20 +92,13 @@ func b1SeedBatchRootOnHost(t *testing.T, conn *sql.DB, owner, callID, host, stat
 	return root, child
 }
 
-// b1VisibleReactionDebtExists is the dual-mode read of the VISIBLE
-// (delivery='done') reaction-debt predicate -- what a Drain's turn-start
-// decision uses and what TransferOnly-style oracles assert stays behind for
-// the driving loop. Flag ON reads BatchReactionVisibleDebtExists over the
-// batch nodes on conn (async_jobs is never consulted); OFF keeps the legacy
-// async_jobs predicate on store.
-func b1VisibleReactionDebtExists(ctx context.Context, t *testing.T, conn *sql.DB, store *session.AsyncJobStore, owner string) bool {
+// b1VisibleReactionDebtExists reads the VISIBLE (delivery='done')
+// reaction-debt predicate -- what a Drain's turn-start decision uses and what
+// TransferOnly-style oracles assert stays behind for the driving loop -- over
+// the batch nodes on conn.
+func b1VisibleReactionDebtExists(ctx context.Context, t *testing.T, conn *sql.DB, owner string) bool {
 	t.Helper()
-	if batchFlagEnabled() {
-		visible, err := session.NewBatchStore(conn).BatchReactionVisibleDebtExists(ctx, owner)
-		require.NoError(t, err)
-		return visible
-	}
-	visible, err := store.VisibleReactionDebtExists(ctx, owner)
+	visible, err := session.NewBatchStore(conn).BatchReactionVisibleDebtExists(ctx, owner)
 	require.NoError(t, err)
 	return visible
 }

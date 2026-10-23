@@ -93,7 +93,7 @@ func TestCLIToolBridgeHooksRewriteDenyOnce(t *testing.T) {
 				command = `echo '{"decision":"deny","reason":"blocked"}'`
 			}
 			probe := &dispatchProbeTool{name: "bash"}
-			built := newPolicyToolBuild(decoratePolicyTools([]fantasy.AgentTool{&asyncTool{inner: probe, name: "bash"}}, nil, newRunner(t, fmt.Sprintf("printf x >> '%s'; %s", counter, command)), false))
+			built := newPolicyToolBuild(decoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, fmt.Sprintf("printf x >> '%s'; %s", counter, command)), false))
 			bridge, err := newCLIToolBridge(built.leaves, testPinnedInvoke, nil)
 			require.NoError(t, err)
 			resp, err := bridge.Call(t.Context(), fantasy.ToolCall{ID: "unchanged", Name: "bash", Input: `{"command":"echo denied"}`})

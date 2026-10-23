@@ -47,7 +47,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -68,7 +67,6 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 		queuedBranch atomic.Int64
 	)
 
-	batchFlagOn := config.BatchRuntimeEnabled()
 	trace := &legacyPolicyTrace{}
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -86,14 +84,14 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 			switch n {
 			case 1:
 				trace.recordCall("queued", "call_t2r1")
-				trace.recordf("req branch=queued n=1 emit=call_t2r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=queued n=1 emit=call_t2r1 deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cy1", "call_t2r1", "bash", `{"command":"probe_cmd_two r1","description":"t2r1"}`),
 					admissionSSEStop("cy1", "tool_calls"),
 				})
 			case 2:
 				trace.recordCall("queued", "call_t2r2")
-				trace.recordf("req branch=queued n=2 emit=call_t2r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=queued n=2 emit=call_t2r2 deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cy2", "call_t2r2", "bash", `{"command":"probe_cmd_one r2","description":"t2r2"}`),
 					admissionSSEStop("cy2", "tool_calls"),
@@ -112,14 +110,14 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 				startOnce.Do(func() { close(started) })
 				<-gate1
 				trace.recordCall("owner", "call_t1r1")
-				trace.recordf("req branch=owner n=1 emit=call_t1r1 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=owner n=1 emit=call_t1r1 deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cx1", "call_t1r1", "bash", `{"command":"probe_cmd_one r1","description":"t1r1"}`),
 					admissionSSEStop("cx1", "tool_calls"),
 				})
 			case 2:
 				trace.recordCall("owner", "call_t1r2")
-				trace.recordf("req branch=owner n=2 emit=call_t1r2 deniedSeen=%t bodyBytes=%d flagOn=%t", deniedSeen, len(body), batchFlagOn)
+				trace.recordf("req branch=owner n=2 emit=call_t1r2 deniedSeen=%t bodyBytes=%d", deniedSeen, len(body))
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("cx2", "call_t1r2", "bash", `{"command":"probe_cmd_two r2","description":"t1r2"}`),
 					admissionSSEStop("cx2", "tool_calls"),
@@ -189,8 +187,8 @@ func TestExecuteRunLegacyQueueingTurnsRunUnderTheirOwnPolicies(t *testing.T) {
 			trace.recordf("recorder goroutine did not exit within 2s; dump may be incomplete")
 		}
 		trace.dump(t)
-		t.Logf("TRACE flagOn=%t ownerRounds=%d queuedRounds=%d queuedPrompts=%d",
-			batchFlagOn, ownerBranch.Load(), queuedBranch.Load(),
+		t.Logf("TRACE ownerRounds=%d queuedRounds=%d queuedPrompts=%d",
+			ownerBranch.Load(), queuedBranch.Load(),
 			application.AgentCoordinator.QueuedPrompts(sessionID))
 		dumpToolResults(t, application, sessionID)
 		dumpBatchNodes(t, application, sessionID)
@@ -474,9 +472,8 @@ func dumpToolResults(t *testing.T, application *App, sessionID string) {
 // batch_nodes rows, including the persisted response envelope (column
 // added by migration 20261012000002) decoded into its is_error and
 // stop_turn booleans ONLY — the fantasy.ToolResponse JSON tags; the
-// envelope content is never logged. With RUSH_BATCH_RUNTIME off there
-// are no rows — that empty baseline is itself recorded, so the flag
-// modes are comparable.
+// envelope content is never logged; the batch runtime is unconditional,
+// so a healthy run always has terminal rows to dump.
 func dumpBatchNodes(t *testing.T, application *App, owner string) {
 	t.Helper()
 	const q = `SELECT node_id, root_id, kind, state, delivery, control_state, tool_call_id, response_envelope FROM batch_nodes WHERE owner_session_id = ? ORDER BY created_at, node_id`

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,7 +178,7 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 		}
 		if n == 1 {
 			// The shell finished while the turn ran, after its last pull.
-			if err := h.app.asyncJobStore.InsertSessionNotice(context.Background(), h.sessionID,
+			if err := h.app.BatchNoticeStore().InsertSessionNotice(context.Background(), h.sessionID,
 				session.NoticeKindBGShellDone, "background shell finished: exit 0", true, ""); err != nil {
 				h.t.Errorf("seed the bg-shell-done notice: %v", err)
 			}
@@ -206,90 +205,11 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 // failed child Drain in a recheck set nothing drains and the run hits its
 // deadline.
 func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
-	if f6BatchOn() {
-		testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t)
-		return
-	}
-	defer agent.SetDrainPacingForTest(100*time.Millisecond, 0, 200*time.Millisecond)()
-	childJobKilled := make(chan struct{})
-	// closeGate closes childJobKilled exactly once from either post-kill
-	// child branch: which of them serves the child's last turn is a
-	// scheduling race (the completion Drain can merge into the post-job_kill
-	// continuation, or that merged turn can be restarted detached after an
-	// ownership handoff), so neither branch alone may hold the gate.
-	var closeGate sync.Once
-	var failedOnce atomic.Bool
-	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		switch routeModelRequest(body) {
-		case "title":
-			admissionWriteSSE(w, []string{admissionSSEText("title", "Retry Child"), admissionSSEStop("title", "stop")})
-		case "root:final":
-			select {
-			case <-childJobKilled:
-			case <-time.After(30 * time.Second):
-				http.Error(w, "root resumed before the child's reaction", http.StatusServiceUnavailable)
-				return
-			}
-			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
-		case "child:final":
-			closeGate.Do(func() { close(childJobKilled) })
-			if failedOnce.CompareAndSwap(false, true) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				_, _ = w.Write([]byte(`{"error":{"message":"forbidden by the fronting balancer","type":"x"}}`))
-				return
-			}
-			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child final: gate job reported"), admissionSSEStop("child-result", "stop")})
-		case "child:yield":
-			closeGate.Do(func() { close(childJobKilled) })
-			admissionWriteSSE(w, []string{admissionSSEText("child-yield", "child yielded: gate still running"), admissionSSEStop("child-yield", "stop")})
-		case "child:kill":
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-kill", "call-kill", "job_kill", `{"shell_id":"001"}`),
-				admissionSSEStop("child-kill", "tool_calls"),
-			})
-		case "child:bash":
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-bash", "call-bash", "bash",
-					`{"command":`+jsonString(longRunningCommand())+`,"description":"hold the gate open","run_in_background":true}`),
-				admissionSSEStop("child-bash", "tool_calls"),
-			})
-		case "root:yield":
-			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "root yielded: delegation parked"), admissionSSEStop("root-yield", "stop")})
-		default:
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`),
-				admissionSSEStop("delegate", "tool_calls"),
-			})
-		}
-	})
-	grantChildBackgroundShellTools(t, application)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	var out syncBuffer
-	res, err := application.RunNonInteractiveWithResult(ctx, &out, "start a worker", RunOverrides{Origin: message.OriginCLI},
-		true, RunModeJSON, sessionID, false)
-
-	require.NoError(t, err, "the run completes; it must not hang until the deadline")
-	require.NoError(t, ctx.Err())
-	require.NotNil(t, res)
-	require.True(t, failedOnce.Load(), "the child's first reaction turn failed")
-	require.Equal(t, "root final answer", res.FinalText)
-	msgs, listErr := application.Messages.List(t.Context(), sessionID)
-	require.NoError(t, listErr)
-	found := false
-	for _, m := range msgs {
-		if m.BackgroundJobNotice && strings.Contains(m.FullText(), "child final") {
-			found = true
-		}
-	}
-	require.True(t, found, "the parent's delegation notice carries the child's retried reaction")
+	testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t)
 }
 
-// testRunNonInteractiveChildFailedDrainRetriedByTickBatch is the flag-ON twin
-// of the B5 test above: the 403 lands on the CHILD's own reaction turn (the
+// testRunNonInteractiveChildFailedDrainRetriedByTickBatch is the B5 body:
+// the 403 lands on the CHILD's own reaction turn (the
 // turn carrying the selected command notice), and the recheck tick must retry
 // the SAME child session until the reaction succeeds. The child's identity is
 // proven through the delegation's child_session_id link and the persisted

@@ -1,173 +1,63 @@
 package agent
 
-// The claim-time observer in claimBackgroundShellRow (bgshell_claim.go) is the
-// ONLY completion callback a sync-bash background shell has when
-// NotifyOnBackgroundJobDone is false. When such a shell is owned by a
-// delegated child and exits AFTER the child's turn ended, only the observer
-// can end the shell's completion hold (MarkCompletionRecorded) and drive the
-// delegation re-check (noteSubAgentChildRunEnded); without them the parent's
-// parked delegation waits for the 60s RecheckPass. This file proves the
-// release without any RecheckPass or manual trigger, mirroring
-// session_idle_trigger_test.go's real-driver fixture.
+// Batch translation (H4 lane P5) of the deleted claim-time bg-shell observer
+// tests (bgshell_claim.go's async_jobs row machinery is gone: the batch
+// escape is claimed and settled by the batch ingress, and the ONLY completion
+// callback is the OnDone notifier coordinator_tools.go wires to
+// notifyBackgroundJobDone). What survives is the completion-hold contract:
+// persistBGShellCompletion takes the hold (BackgroundShellManager) only for
+// its own duration, and while the notifier is parked at the
+// bgArrivalEnteredSeam the hold must stay with it -- a callback that released
+// the hold before the notice insert commits would let CLIScope close the
+// scope in the row-committed, notice-not-yet window (R7B-1).
+//
+// The former TestAsyncTool_BGShellObserverReleasesParkedDelegationWithoutNotifier
+// is an obsolete contract: with the claim-time observer deleted,
+// NotifyOnBackgroundJobDone no longer selects between two callbacks -- the
+// notifier is always installed, so a "no completion callback" scenario cannot
+// exist. The notifier-driven release of a parked delegation is covered by the
+// recheck/delegation release tests (recheckChild's batch successor and
+// coordinator_recheck_child_test.go).
 
 import (
-	"context"
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
-func TestAsyncTool_BGShellObserverReleasesParkedDelegationWithoutNotifier(t *testing.T) {
-	t.Parallel()
-	env := testEnv(t)
-
-	const parentSession = "bgshell-observer-parent"
-	const parentCall = "call-bgshell-observer"
-
-	child, err := env.sessions.Create(t.Context(), "bgshell-observer-child")
-	require.NoError(t, err)
-	childSession := child.ID
-
-	delivered := make(chan AsyncCompletion, 4)
-	coord := &coordinator{}
-	coord.cfg = config.NewLibraryStore(&config.Config{Options: &config.Options{NotifyOnBackgroundJobDone: boolPtr(false)}}, t.TempDir())
-	coord.asyncJobs = newWorkLedger(func(c AsyncCompletion) { delivered <- c })
-	// newTestAsyncJobStore does not expose its conn/dataDir; the flag-ON
-	// recheckChild scope read (childScopeOpenAcrossProcesses -> CLIScope ->
-	// node facts) needs both to bind a real (here: empty) node source, or the
-	// unknown-facts fail-open keeps the delegation parked forever. The shell
-	// and delegation rows themselves stay on async_jobs (retained
-	// infrastructure) on both paths, so the trailing store reads are
-	// mode-independent.
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
-	bindBatchNodeFacts(t, coord, conn, dataDir)
-	mgr := shell.NewBackgroundShellManager()
-	t.Cleanup(func() { mgr.KillAll(context.Background()) })
-	coord.background = mgr
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
-
-	// A real driver holds the child's mailbox busy while the shell starts and
-	// the delegation arms (the session_idle_trigger_test.go fixture shape).
-	model := newBlockUntilReleasedModel()
-	driver := NewSessionAgent(SessionAgentOptions{
-		SmartModel: Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
-		FastModel:  Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
-		IsYolo:     true,
-		Sessions:   env.sessions,
-		Messages:   env.messages,
-		AsyncJobs:  coord.asyncJobs,
-		// The exact wiring buildAgent does for every driver it builds.
-		OnSessionIdle: coord.noteSubAgentChildRunEnded,
-	})
-	coord.subAgentDrivers.register(childSession, subAgentDriver{agent: driver, parentSessionID: parentSession})
-
-	runDone := make(chan struct{})
-	var runErr error
-	go func() {
-		defer close(runDone)
-		_, runErr = driver.Run(context.Background(), SessionAgentCall{
-			SessionID:           childSession,
-			Prompt:              "resume",
-			AutoResumed:         true,
-			BackgroundJobNotice: true,
-		})
-	}()
-	require.Eventually(t, func() bool {
-		select {
-		case <-runDone:
-			t.Fatalf("driver.Run returned early, err=%v", runErr)
-		default:
-		}
-		return driver.IsSessionBusy(childSession)
-	}, 2*time.Second, 5*time.Millisecond, "the child's real turn must be mid-flight before the shell starts")
-
-	// The child owns a still-running background shell, claimed through the
-	// sync bash escape so the claim-time observer is registered. No notifier
-	// callback exists: NotifyOnBackgroundJobDone is false.
-	sh, err := mgr.StartOwned(t.Context(), childSession, t.TempDir(), nil, "sleep 30", "child-owned shell")
-	require.NoError(t, err)
-	bgShellEscapeFor(t, coord, childSession, sh.ID)
-
-	// Park the delegation while the child is busy: trigger (i) must not
-	// release it.
-	_, _, err = coord.asyncJobs.Start(parentSession, parentCall, "", AgentToolName, childSession, false, false, nil, func() {})
-	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, parentSession, parentCall))
-	coord.asyncJobs.armDelegation(jobOf(coord.asyncJobs, parentSession, parentCall), jobResult{content: "child yielded: shell still running"})
-	require.Empty(t, drainCompletions(delivered), "the delegation must not be delivered while the real driver is busy")
-
-	// End the child's turn. Its turn-end recheck (onSessionIdle) must NOT
-	// release the delegation: the shell is still running.
-	model.unblock()
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the driver's real turn did not finish")
-	}
-	require.Empty(t, drainCompletions(delivered), "the delegation must stay parked while the child's shell runs")
-
-	// The shell exits only now, after the child's turn ended. The observer is
-	// the ONLY completion callback, so the release must come from it: no
-	// RecheckPass is driven anywhere in this test after this point.
-	require.NoError(t, mgr.KillOwned(context.Background(), childSession, sh.ID))
-	sh.Wait()
-
-	// REVERT CHECK: removing MarkCompletionRecorded + noteSubAgentChildRunEnded
-	// from claimBackgroundShellRow's OnDone observer leaves the delegation
-	// parked here (row committed, but no recheck fires) -- observed failure:
-	// this select hits its timeout with "the delegation stayed parked".
-	select {
-	case got := <-delivered:
-		require.Equal(t, parentCall, got.ToolCallID)
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delegation stayed parked after the shell exited; the claim-time observer must release it (hold + recheck) without any RecheckPass")
-	}
-	require.False(t, coord.asyncJobs.hasParked())
-	row, err := coord.asyncJobs.store.Get(context.Background(), parentSession, parentCall)
-	require.NoError(t, err)
-	require.NotEqual(t, "running", row.State, "the delegation row must have left running")
-	shellRow, err := coord.asyncJobs.store.Get(context.Background(), childSession, sh.ID)
-	require.NoError(t, err)
-	// KillOwned ends the process non-zero, so the observer records failed.
-	require.Equal(t, "failed", shellRow.State, "the observer must have committed the shell's row")
-	require.Zero(t, mgr.PendingCompletionsOwned(childSession), "the observer must have ended the shell's completion hold")
-}
-
-// bgShellEscapeFor runs a SYNC-branch bash call for sessionID whose inner tool
-// answers with the background-escape metadata of an already started shell
-// (bgShellEscape's parameterized twin: the escape must be claimable for a
-// delegated child session, not only the fixed "session" fixture id).
-func bgShellEscapeFor(t *testing.T, coord *coordinator, sessionID, shellID string) {
+// newBGShellCompletionFixture builds a coordinator whose bg-shell completion
+// plumbing is fully wired: background manager, notice store, and node facts
+// on a fresh one-migration store.
+func newBGShellCompletionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *shell.BackgroundShellManager, string) {
 	t.Helper()
-	wrapped := &asyncTool{inner: bgShellInnerTool(shellID), coordinator: coord, name: tools.BashToolName}
-	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, sessionID)
-	ctx = WithCallOrigin(ctx, message.OriginSDK)
-	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call-" + shellID, Name: tools.BashToolName, Input: `{"command":"x","run_in_background":true}`})
-	require.NoError(t, err)
-	require.False(t, resp.IsError)
+	conn, dataDir := batchFixtureConn(t)
+	// The shells are owned by the literal id "session"; its bg_shell_done
+	// notices FK-anchor on sessions (id).
+	ensureFixtureSession(t, conn, "session")
+	mgr := shell.NewBackgroundShellManager()
+	t.Cleanup(func() { mgr.KillAll(t.Context()) })
+	coord := newBatchRuntimeCoordinator()
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	coord.background = mgr
+	bindBatchNodeFacts(t, coord, conn, dataDir)
+	return coord, coord.noticeStore, mgr, t.TempDir()
 }
 
-// With notifications ON the observer must NOT end the hold: the notifier owns
-// the notice, and a recheck that ran before it is saved would release the
-// delegation too early (R7B-1). The notifier is parked at the arrival seam
-// while the observer finishes the row; the hold has to stay until the
-// notifier returns. "On" is the default (no config, no options, an unset
-// pointer) as well as an explicit true.
+// With notifications ON the notifier owns the notice, and a recheck that ran
+// before it is saved would release the delegation too early (R7B-1): the
+// completion hold has to stay until the notifier returns. "On" is the default
+// (no config, no options, an unset pointer) as well as an explicit true --
+// notifyOnBackgroundJobDone gates only the immediate Drain, never the hold.
 //
-// REVERT CHECK: releasing the hold in the observer regardless of the
-// notification setting makes PendingCompletionsOwned drop to 0 while the
+// REVERT CHECK: releasing the hold in persistBGShellCompletion regardless of
+// the notification setting makes PendingCompletionsOwned drop to 0 while the
 // notifier is still parked; a helper that read the default as "off" does the
 // same for the config cases.
-func TestAsyncTool_BGShellObserverKeepsTheHoldWhileTheNotifierIsPending(t *testing.T) {
+func TestBGShellCompletion_KeepsTheHoldWhileTheNotifierIsPending(t *testing.T) {
 	// bgArrivalEnteredSeam is a package-level pointer: no t.Parallel.
 	cases := []struct {
 		name string
@@ -179,7 +69,7 @@ func TestAsyncTool_BGShellObserverKeepsTheHoldWhileTheNotifierIsPending(t *testi
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			coord, store, mgr, dir := newBGShellFixture(t)
+			coord, notices, mgr, dir := newBGShellCompletionFixture(t)
 			if tc.opts != nil {
 				coord.cfg = config.NewLibraryStore(&config.Config{Options: tc.opts}, t.TempDir())
 			}
@@ -197,9 +87,8 @@ func TestAsyncTool_BGShellObserverKeepsTheHoldWhileTheNotifierIsPending(t *testi
 			}
 			bgArrivalEnteredSeam.Store(&seam)
 			t.Cleanup(func() { bgArrivalEnteredSeam.Store(nil) })
-			sh.OnDone(func() { coord.persistBGShellCompletion("session", sh.ID, "notifier summary") })
+			sh.OnDone(func() { coord.notifyBackgroundJobDone("session", sh) })
 
-			bgShellEscape(t, coord, sh.ID)
 			sh.Wait()
 
 			require.Eventually(t, func() bool {
@@ -208,11 +97,11 @@ func TestAsyncTool_BGShellObserverKeepsTheHoldWhileTheNotifierIsPending(t *testi
 				default:
 					return false
 				}
-				row, err := store.Get(context.Background(), "session", sh.ID)
-				return err == nil && row.State == "completed"
-			}, 10*time.Second, 10*time.Millisecond, "the notifier is parked and the observer closed the row")
+				rows, err := notices.ListSessionNotices(t.Context(), "session")
+				return err == nil && len(rows) == 0
+			}, 10*time.Second, 10*time.Millisecond, "the notifier is parked before the wake notice is inserted")
 			require.Positive(t, mgr.PendingCompletionsOwned("session"),
-				"the observer must leave the hold to the pending notifier")
+				"the hold must stay with the pending notifier")
 
 			close(release)
 			require.Eventually(t, func() bool { return mgr.PendingCompletionsOwned("session") == 0 },

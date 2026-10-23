@@ -1,11 +1,11 @@
-// R12-H fix regression guard: a flag-ON App that ran InitCoderAgent must
-// have the node-backed cutover facts bound, so its coordinator answers
+// R12-H fix regression guard: an App that ran InitCoderAgent must have the
+// node-backed cutover facts bound, so its coordinator answers
 // CLIScope from batch_nodes (zero state for a session with no debt and no
 // nodes) instead of the conservative unknown fail-safe, whose permanent
 // "node source unavailable" error made the CLI loop retry a wiring defect.
 // Revert-check: removing the binding block in app_agent_setup.go turns this
 // red (the unbound coordinator answers through unknownBatchCutoverFacts).
-// No t.Parallel(): t.Setenv and shared package binding state.
+// No t.Parallel(): shared package binding state.
 package app
 
 import (
@@ -23,8 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInitCoderAgent_FlagOn_BindsNodeBackedCutoverFacts(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
+func TestInitCoderAgent_BindsNodeBackedCutoverFacts(t *testing.T) {
 	isolateAppNewTestEnv(t)
 
 	dataDir := t.TempDir()
@@ -75,8 +74,9 @@ func TestInitCoderAgent_FlagOn_BindsNodeBackedCutoverFacts(t *testing.T) {
 	require.NoError(t, application.InitCoderAgent(context.Background()))
 	require.NotNil(t, application.AgentCoordinator)
 
-	// No batch runtime installed, no debt, no batch nodes: the bound
-	// node-backed facts answer the zero CLIScopeState with no error.
+	// Library-mode App (SkipAgentSetup): no batch runtime install, no debt,
+	// no batch nodes: the bound node-backed facts answer the zero
+	// CLIScopeState with no error.
 	// CLIScope lives on the ReactionDebtSource seam, not the Coordinator
 	// interface (existing test fakes keep compiling).
 	src, ok := application.AgentCoordinator.(agent.ReactionDebtSource)

@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -260,21 +261,24 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 			panic("boom: simulated panic inside a woken Run")
 		},
 	}
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := newBatchRuntimeCoordinator()
 	// Registering a driver (rather than routing through c.currentAgent)
 	// keeps drainCallFor on its driver.callFor branch, which needs no
 	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
-	coord.asyncJobs = newWorkLedger(nil)
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
+	conn, dataDir := batchFixtureConn(t)
+	ensureFixtureSession(t, conn, "sess-1")
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	// Without a bound fact source the coordinator resolves unknownBatchCutoverFacts:
+	// SelectedDebtExists=true but PendingInclusiveDebt errors, so drainPolicy fails
+	// closed as drainDeferred and Run is never reached. Bind the real node facts so
+	// the inserted notice is genuine pending debt.
 	bindBatchNodeFacts(t, coord, conn, dataDir)
 
 	var err error
 	require.NotPanics(t, func() {
-		require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "sess-1", "manual_test_notice", "owed", true, ""))
+		require.NoError(t, coord.noticeStore.InsertSessionNotice(t.Context(), "sess-1", "manual_test_notice", "owed", true, ""))
 		err = coord.wakeSession(t.Context(), "sess-1", true)
 	})
 	require.Error(t, err, "a recovered panic must still be reported as a real error, not silently swallowed")
@@ -308,15 +312,16 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 		}
 		return nil, nil
 	}
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := newBatchRuntimeCoordinator()
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
-	coord.asyncJobs = newWorkLedger(nil)
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
+	conn, dataDir := batchFixtureConn(t)
+	ensureFixtureSession(t, conn, "child-1")
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	// Same unbound-facts fix as TestWakeSession_RunPanicIsRecovered: without node
+	// facts the launch decision fails closed before Run.
 	bindBatchNodeFacts(t, coord, conn, dataDir)
 
-	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	require.NoError(t, coord.noticeStore.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
 	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, calls.Load(), "wakeSession must still call Run even when the session looks busy")

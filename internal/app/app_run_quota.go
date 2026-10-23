@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -131,61 +130,40 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	}
 	slices.Sort(childIDs)
 	questions := make(map[string]session.ChildQuestion)
-	if batchCutoverOn() {
-		writer := l.app.batchCutoverWriter()
-		facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.app.batchCutoverReader(writer)), nil, writer)
-		owners := make(map[string]bool)
-		for _, row := range rows {
-			if row.OwnerSessionID != "" {
-				owners[row.OwnerSessionID] = true
-			}
+	writer := l.app.batchCutoverWriter()
+	facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.app.batchCutoverReader(writer)), nil, writer)
+	owners := make(map[string]bool)
+	for _, row := range rows {
+		if row.OwnerSessionID != "" {
+			owners[row.OwnerSessionID] = true
 		}
-		for owner := range owners {
-			held, heldErr := facts.LiveHeldQuestions(l.ctx, owner)
-			if heldErr != nil {
-				final, exitErr := l.exitWait(heldErr)
+	}
+	for owner := range owners {
+		held, heldErr := facts.LiveHeldQuestions(l.ctx, owner)
+		if heldErr != nil {
+			final, exitErr := l.exitWait(heldErr)
+			return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
+		}
+		for _, heldRow := range held {
+			var noticeText string
+			err := l.app.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				final, exitErr := l.exitWait(err)
 				return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
 			}
-			for _, heldRow := range held {
-				var noticeText string
-				err := l.app.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
-				if err != nil {
-					if errors.Is(err, sql.ErrNoRows) {
-						continue
-					}
-					final, exitErr := l.exitWait(err)
-					return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
-				}
-				question, ok := session.ParseBatchChildQuestionNotice(noticeText)
-				if ok && question.NodeID == heldRow.NodeID && question.ChildSessionID == heldRow.ChildSessionID {
-					question.Question = quotaQuestionText(noticeText)
-					questions[question.ChildSessionID] = question
-				}
+			question, ok := session.ParseBatchChildQuestionNotice(noticeText)
+			if ok && question.NodeID == heldRow.NodeID && question.ChildSessionID == heldRow.ChildSessionID {
+				question.Question = quotaQuestionText(noticeText)
+				questions[question.ChildSessionID] = question
 			}
 		}
 	}
 	for _, child := range childIDs {
 		if question, ok := questions[child]; ok {
 			l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: question.Question, Details: question.Question})
-			continue
-		}
-		if batchCutoverOn() {
-			continue
-		}
-		msgs, err := l.app.Messages.List(l.ctx, child)
-		if err != nil {
-			final, exitErr := l.exitWait(err)
-			return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
-		}
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
-				continue
-			}
-			fp := msgs[i].FinishPart()
-			if fp != nil && agent.IsAwaitingAnswerFinish(fp) {
-				l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: fp.Message, Details: fp.Details})
-			}
-			break
 		}
 	}
 	l.tot.subAgentOutputs = l.app.collectSubAgentOutputs(l.ctx, l.sessionID)
@@ -235,40 +213,19 @@ func (l *cliLoop) snapshotQuotaTerminal() {
 }
 
 // quotaJobsInTree reads the finished-work rows of the session's tree: the
-// legacy async_jobs walk flag-OFF, the batch root/node walk flag-ON
-// (batchFinishedWork in app_batch_cutover_facts.go).
+// batch root/node walk (batchFinishedWork in app_batch_cutover_facts.go).
 func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]quotaWorkRow, bool, error) {
-	if batchCutoverOn() {
-		return l.app.batchFinishedWork(ctx, l.sessionID)
-	}
-	rows, incomplete := l.app.asyncJobStore.JobsInTree(ctx, l.sessionID)
-	out := make([]quotaWorkRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, quotaWorkRow{
-			OwnerSessionID: row.OwnerSessionID,
-			Key:            row.ClaimID,
-			ToolCallID:     row.ToolCallID,
-			State:          row.State,
-			Announced:      row.Announced != 0,
-			Result:         row.ResultSummary.String,
-			ChildSessionID: row.ChildSessionID.String,
-		})
-	}
-	return out, incomplete, nil
+	return l.app.batchFinishedWork(ctx, l.sessionID)
 }
 
-// quotaTerminalState is the terminal predicate: legacy "any non-running
-// state"; batch the terminal node state set (a pending/starting/cancelling
-// node is not finished).
+// quotaTerminalState is the terminal predicate: the terminal node state set
+// (a pending/starting/cancelling node is not finished).
 func (l *cliLoop) quotaTerminalState(state string) bool {
-	if batchCutoverOn() {
-		switch state {
-		case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
-			return true
-		}
-		return false
+	switch state {
+	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
+		return true
 	}
-	return state != "running"
+	return false
 }
 
 func (l *cliLoop) resumeRole() string {

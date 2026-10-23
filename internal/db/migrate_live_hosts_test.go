@@ -24,14 +24,12 @@ import (
 )
 
 // This file tests the R12-A pre-migration live-host gate and the additive
-// PreMigrationChecks hook against the synthetic (TEST DATA ONLY) destructive
-// migration in testdata/r12a_drop_async_jobs_testonly. That migration is
-// never embedded and never applied outside these tests; the real embedded
-// set is untouched.
+// PreMigrationChecks hook against a synthetic (TEST DATA ONLY) pending
+// migration built inline below. That migration is never embedded and never
+// applied outside these tests; the real embedded set is untouched.
 
 const (
-	r12aSyntheticDir      = "testdata/r12a_drop_async_jobs_testonly" // fs paths use forward slashes on every OS
-	r12aSyntheticFile     = "20991231000001_r12a_drop_async_jobs_testonly.sql"
+	r12aGateProbeFile     = "20991231000001_store_v1_gate_probe.sql"
 	r12aSyntheticVersion  = int64(20991231000001)
 	r12aHelperEnv         = "RUSH_DB_HOSTLOCK_HELPER"
 	r12aHelperLockPathEnv = "RUSH_DB_HOSTLOCK_PATH"
@@ -55,15 +53,14 @@ func r12aEmbeddedFS(t *testing.T) fstest.MapFS {
 }
 
 // r12aSyntheticFS returns the full embedded set PLUS the synthetic test-only
-// migration, so a fully-migrated test DB sees pending={synthetic}, unknown=∅.
-// The synthetic content is read from testdata so the FS cannot drift from the
-// DDL fixture.
+// gate-probe migration, so a fully-migrated test DB sees pending={synthetic},
+// unknown=∅. The synthetic content is built inline so the FS cannot depend on
+// any testdata fixture.
 func r12aSyntheticFS(t *testing.T) fs.FS {
 	t.Helper()
 	files := r12aEmbeddedFS(t)
-	data, err := os.ReadFile(filepath.Join(r12aSyntheticDir, r12aSyntheticFile))
-	require.NoError(t, err)
-	files[r12aSyntheticFile] = &fstest.MapFile{Data: data}
+	files[r12aGateProbeFile] = &fstest.MapFile{Data: []byte(
+		"-- +goose Up\n-- +goose StatementBegin\nCREATE TABLE r12a_gate_probe (id INTEGER);\n-- +goose StatementEnd\n")}
 	return files
 }
 
@@ -77,7 +74,7 @@ func r12aNewEmbeddedDB(t *testing.T) (string, *sql.DB) {
 	return dbPath, conn
 }
 
-// r12aApplySynthetic applies the synthetic destructive migration via the real
+// r12aApplySynthetic applies the synthetic gate-probe migration via the real
 // goose runner and reports how many versions it applied.
 func r12aApplySynthetic(t *testing.T, conn *sql.DB) int {
 	t.Helper()
@@ -89,51 +86,18 @@ func r12aApplySynthetic(t *testing.T, conn *sql.DB) int {
 	return len(applied)
 }
 
-// r12aSeedRichDB populates conn with rows across every table family the
-// cutover could plausibly touch: async_hosts (one with jobs, one idle),
-// async_jobs, job-bound and unrelated session_notices, batch tables, control
-// requests, messages, session_drivers, and wake_schedules.
-func r12aSeedRichDB(t *testing.T, ctx context.Context, conn *sql.DB) {
+// r12aSeedStoreV1DB populates conn with store-v1-valid rows: one session, two
+// async_hosts rows (host-a, host-b), one session_notice, and one message.
+func r12aSeedStoreV1DB(t *testing.T, ctx context.Context, conn *sql.DB) {
 	t.Helper()
-	const ts = int64(1700000000)
 	seed := []string{
 		`INSERT INTO sessions (id, title, updated_at, created_at) VALUES ('sess-1', 'sess-1', 1700000000, 1700000000)`,
 		`INSERT INTO async_hosts (id, pid, label, started_at) VALUES ('host-a', 1, 'cli', 1700000000)`,
 		`INSERT INTO async_hosts (id, pid, label, started_at) VALUES ('host-b', 2, 'cli', 1700000000)`,
-		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
-			VALUES ('sess-1', 'call-1', 'command', 'h1', 'host-a', 'running', 1700000000, 1700000000)`, // state NOT NULL, 20261005000001
-		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
-			VALUES ('sess-1', 'call-2', 'agent', 'h2', 'host-a', 'running', 1700000000, 1700000000)`,
+		`INSERT INTO session_notices (owner, kind, text, wake, delivery, created_at, updated_at)
+			VALUES ('sess-1', 'supervision', 'unrelated', 1, 'pending', 1700000000, 1700000000)`,
 		`INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)
 			VALUES ('msg-1', 'sess-1', 'user', '[]', 1700000000, 1700000000)`,
-		// Job-bound notice: pairs with ('sess-1', 'call-1').
-		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
-			VALUES ('sess-1', 'supervision', 'job-bound', 1, 'pending', 'call-1', 1700000000, 1700000000)`,
-		// Second job-bound notice: pairs with ('sess-1', 'call-2').
-		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
-			VALUES ('sess-1', 'supervision', 'job-bound-2', 1, 'pending', 'call-2', 1700000000, 1700000000)`,
-		// Third job pair, for the reacted historical notice below.
-		`INSERT INTO async_jobs (owner_session_id, tool_call_id, kind, input_hash, host_id, state, created_at, updated_at)
-			VALUES ('sess-1', 'call-3', 'command', 'h3', 'host-a', 'completed', 1700000000, 1700000000)`,
-		// Job-bound REACTED historical notice: already consumed by a turn
-		// (reacted = 1, delivery 'done', wake already drained). The rehearsal
-		// voids unreacted notices only, so this row must stay byte-identical.
-		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, reacted, created_at, updated_at)
-			VALUES ('sess-1', 'supervision', 'job-bound-reacted', 0, 'done', 'call-3', 1, 1700000000, 1700000000)`,
-		// Unrelated notice: no async_jobs row references it.
-		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
-			VALUES ('sess-1', 'wake_failed', 'unrelated', 1, 'pending', NULL, 1700000000, 1700000000)`,
-		// batch_nodes root node (the schema's CHECKs force this exact shape).
-		`INSERT INTO batch_nodes (node_id, root_id, owner_session_id, host_id, parent_id, ordinal, kind,
-			tool_call_id, input_hash, mode, state, created_at, updated_at)
-			VALUES ('root-1', 'root-1', 'sess-1', 'host-a', NULL, 0, 'batch', 'call-r', 'hash-r',
-			'parallel', 'pending', 1700000000, 1700000000)`, // state NOT NULL, no default, 20261012000001
-		`INSERT INTO batch_control_requests (request_id, owner_session_id, root_id, node_id, host_id, created_at)
-			VALUES ('req-1', 'sess-1', 'root-1', 'root-1', 'host-a', 1700000000)`,
-		`INSERT INTO session_drivers (session_id, host_id, pid, claimed_at)
-			VALUES ('sess-1', 'host-a', 1, 1700000000)`,
-		`INSERT INTO wake_schedules (id, owner_session_id, kind, message, next_run_at, state, created_at, updated_at)
-			VALUES ('wake-1', 'sess-1', 'once', 'hi', 1700000001, 'active', 1700000000, 1700000000)`,
 	}
 	for _, stmt := range seed {
 		_, err := conn.ExecContext(ctx, stmt)
@@ -147,17 +111,6 @@ func r12aCount(t *testing.T, ctx context.Context, conn *sql.DB, query string, ar
 	err := conn.QueryRowContext(ctx, query, args...).Scan(&n)
 	require.NoError(t, err)
 	return n
-}
-
-// r12aNotice returns a notice's delivery, wake flag, reacted flag, and
-// updated_at.
-func r12aNotice(t *testing.T, ctx context.Context, conn *sql.DB, text string) (delivery string, wake int, reacted int, updatedAt int64) {
-	t.Helper()
-	err := conn.QueryRowContext(ctx,
-		`SELECT delivery, wake, reacted, updated_at FROM session_notices WHERE text = ?`, text,
-	).Scan(&delivery, &wake, &reacted, &updatedAt)
-	require.NoError(t, err)
-	return delivery, wake, reacted, updatedAt
 }
 
 // TestHelperHostLockHold is the re-exec child entry point (same idiom as
@@ -232,52 +185,9 @@ func (h *r12aLockHolder) stop(t *testing.T) {
 	_ = h.cmd.Wait()
 }
 
-// Case 1: the synthetic upgrade applies with ZERO row conversion.
-func TestR12ASyntheticUpgrade_NoConversion(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	_, conn := r12aNewEmbeddedDB(t)
-	r12aSeedRichDB(t, ctx, conn)
-
-	require.Equal(t, 1, r12aApplySynthetic(t, conn))
-
-	requireTableExists(t, ctx, conn, "async_jobs", false)
-	requireTableExists(t, ctx, conn, "async_hosts", true)
-	assert.Equal(t, 2, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM async_hosts`))
-	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM batch_nodes`))
-	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM batch_control_requests`))
-	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM messages`))
-	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_drivers`))
-	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM wake_schedules`))
-	assert.Equal(t, 4, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM session_notices`))
-
-	delivery, wake, reacted, updated := r12aNotice(t, ctx, conn, "job-bound")
-	assert.Equal(t, "void", delivery)
-	assert.Equal(t, 0, wake)
-	assert.Equal(t, 0, reacted)
-	assert.Greater(t, updated, int64(1700000000), "voided notice's updated_at must be rewritten")
-	delivery2, wake2, reacted2, updated2 := r12aNotice(t, ctx, conn, "job-bound-2")
-	assert.Equal(t, "void", delivery2)
-	assert.Equal(t, 0, wake2)
-	assert.Equal(t, 0, reacted2)
-	assert.Greater(t, updated2, int64(1700000000))
-	// Reacted historical notice: byte-unchanged by the rehearsal.
-	deliveryR, wakeR, reactedR, updatedR := r12aNotice(t, ctx, conn, "job-bound-reacted")
-	assert.Equal(t, "done", deliveryR, "reacted notice's delivery must not be voided")
-	assert.Equal(t, 0, wakeR, "reacted notice was seeded with wake=0")
-	assert.Equal(t, 1, reactedR, "reacted notice's reacted flag must not be rewritten")
-	assert.Equal(t, int64(1700000000), updatedR, "reacted notice's updated_at must not change")
-	delivery, wake, _, unrelatedUpdated := r12aNotice(t, ctx, conn, "unrelated")
-	assert.Equal(t, "pending", delivery)
-	assert.Equal(t, 1, wake)
-	assert.Equal(t, int64(1700000000), unrelatedUpdated, "untouched notice's updated_at must not change")
-
-	assert.True(t, dbVersionSet(t, conn)[r12aSyntheticVersion])
-}
-
 // Case 2 + negative half of case 4: an alive host (real child OS process
-// holding the exclusive lock, even with zero async_jobs rows) refuses the
-// gate; schema and goose version table are unchanged.
+// holding the exclusive lock) refuses the gate; the host registry and the
+// goose version table are unchanged.
 func TestR12AAliveHostRefuses(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -296,8 +206,8 @@ func TestR12AAliveHostRefuses(t *testing.T) {
 	err = CheckLiveHosts(ctx, conn, dataDir, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "host-live")
-	// Gate refused BEFORE any migration: schema and versions untouched.
-	requireTableExists(t, ctx, conn, "async_jobs", true)
+	// Gate refused BEFORE any migration: host registry and versions untouched.
+	assert.Equal(t, 1, r12aCount(t, ctx, conn, `SELECT COUNT(*) FROM async_hosts`))
 	assert.Equal(t, before, dbVersionSet(t, conn))
 }
 
@@ -343,8 +253,8 @@ func TestR12AUnknownHostRefuses(t *testing.T) {
 	assert.Equal(t, before, dbVersionSet(t, conn))
 }
 
-// Case 4, proceed half: a zero-job host whose lock file is missing is still
-// probed (enumerate-all) and reads Dead, so the gate proceeds.
+// Case 4, proceed half: a host with no live work whose lock file is missing
+// is still probed (enumerate-all) and reads Dead, so the gate proceeds.
 func TestR12AZeroJobHostDeadProceeds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -357,8 +267,8 @@ func TestR12AZeroJobHostDeadProceeds(t *testing.T) {
 	assert.NoError(t, CheckLiveHosts(ctx, conn, dataDir, nil))
 }
 
-// Case 4, refuse half: the SAME zero-job host refuses when a live child holds
-// its lock -- jobs are irrelevant to the gate.
+// Case 4, refuse half: the SAME host refuses when a live child holds its
+// lock -- live work is irrelevant to the gate.
 func TestR12AZeroJobHostAliveRefuses(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -440,14 +350,14 @@ func TestR12AHostsAsFileProbeErrorRefuses(t *testing.T) {
 }
 
 // Case 7: a fresh (embedded-migrated, zero-host) DB lets the gate proceed and
-// takes the synthetic Up cleanly.
+// takes the synthetic probe Up cleanly.
 func TestR12AFreshDBGateProceedsAndUpplies(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	_, conn := r12aNewEmbeddedDB(t)
 	assert.NoError(t, CheckLiveHosts(ctx, conn, t.TempDir(), nil))
 	require.Equal(t, 1, r12aApplySynthetic(t, conn))
-	requireTableExists(t, ctx, conn, "async_jobs", false)
+	requireTableExists(t, ctx, conn, "r12a_gate_probe", true)
 }
 
 // Case 8: running the synthetic migration twice is a no-op the second time.
@@ -457,7 +367,7 @@ func TestR12ASyntheticIdempotent(t *testing.T) {
 	_, conn := r12aNewEmbeddedDB(t)
 	require.Equal(t, 1, r12aApplySynthetic(t, conn))
 	require.Equal(t, 0, r12aApplySynthetic(t, conn), "second pass must apply nothing")
-	requireTableExists(t, ctx, conn, "async_jobs", false)
+	requireTableExists(t, ctx, conn, "r12a_gate_probe", true)
 }
 
 // Case 9: pending synthetic migration with MayMigrate=false yields
@@ -473,7 +383,7 @@ func TestR12AMayMigrateFalseRefuses(t *testing.T) {
 	var notAllowed *SchemaMigrationNotAllowedError
 	require.True(t, errors.As(err, &notAllowed))
 	assert.Equal(t, []int64{r12aSyntheticVersion}, notAllowed.Pending)
-	requireTableExists(t, ctx, conn, "async_jobs", true)
+	requireTableExists(t, ctx, conn, "r12a_gate_probe", false)
 	assert.False(t, dbVersionSet(t, conn)[r12aSyntheticVersion])
 }
 
@@ -497,8 +407,9 @@ func TestR12AUnknownOnlyPolicyUnchanged(t *testing.T) {
 }
 
 // Case 12: the gate registered as a PreMigrationCheck runs while the decision
-// lock would be held: benign (all-dead) hosts let the cutover apply; an alive
-// host makes the hook fire BEFORE the Up, so async_jobs survives.
+// lock would be held: benign (all-dead) hosts let the pending migration
+// apply; an alive host makes the hook fire BEFORE the Up, so the pending
+// version is never applied.
 func TestR12AGateHookIntegration(t *testing.T) {
 	ctx := context.Background()
 
@@ -508,7 +419,7 @@ func TestR12AGateHookIntegration(t *testing.T) {
 		dbPath := filepath.Join(dataDir, "rush.db")
 		conn := openTestDB(t, dbPath)
 		require.NoError(t, Migrate(ctx, conn))
-		r12aSeedRichDB(t, ctx, conn)
+		r12aSeedStoreV1DB(t, ctx, conn)
 		require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "hosts"), 0o755))
 		return dataDir, conn
 	}
@@ -522,7 +433,7 @@ func TestR12AGateHookIntegration(t *testing.T) {
 				}),
 			}, dataDir))
 		require.NoError(t, err)
-		requireTableExists(t, ctx, conn, "async_jobs", false)
+		requireTableExists(t, ctx, conn, "r12a_gate_probe", true)
 	})
 
 	t.Run("alive host blocks before Up", func(t *testing.T) {
@@ -539,8 +450,8 @@ func TestR12AGateHookIntegration(t *testing.T) {
 			}, dataDir))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "host-a")
-		// The hook fired BEFORE the Up: async_jobs still present.
-		requireTableExists(t, ctx, conn, "async_jobs", true)
+		// The hook fired BEFORE the Up: the probe table was never created.
+		requireTableExists(t, ctx, conn, "r12a_gate_probe", false)
 		assert.Equal(t, before, dbVersionSet(t, conn))
 	})
 }

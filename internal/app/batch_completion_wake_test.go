@@ -192,13 +192,12 @@ func TestBatchCompletionWake_UnknownRootNeverWakes(t *testing.T) {
 	}
 }
 
-// pwInstallWakeApp installs the flagged batch runtime (RUSH_BATCH_RUNTIME=1)
-// over a bare maintenance App, captures the install deps (for the Runner
+// pwInstallWakeApp installs the batch runtime over a bare maintenance App,
+// captures the install deps (for the Runner
 // identity) and attaches a wake-recording coordinator. It returns the app,
 // the raw conn and the recorded wakes channel.
 func pwInstallWakeApp(t *testing.T) (*App, *sql.DB, agent.BatchInstallDeps, chan pwWakeRecord) {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, conn, _ := newBatchMaintenanceApp(t)
 	var deps agent.BatchInstallDeps
 	batchInstallDepsHook = func(d *agent.BatchInstallDeps) { deps = *d }
@@ -221,7 +220,7 @@ func pwInstallWakeApp(t *testing.T) (*App, *sql.DB, agent.BatchInstallDeps, chan
 	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
-	require.NotNil(t, a.batchTimeoutWake, "the flagged install must arm the wake dispatcher")
+	require.NotNil(t, a.batchTimeoutWake, "the install must arm the wake dispatcher")
 	require.Nil(t, a.batchRuntime.Runner(), "the pw install must stay runnerless")
 	wakes := pwAttachWakeRecorder(a.batchTimeoutWake)
 	return a, conn, deps, wakes

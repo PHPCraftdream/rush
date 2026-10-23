@@ -9,6 +9,8 @@ package agent
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,13 +81,7 @@ func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
 
 func (f *attemptFixture) hasDebt(ctx context.Context) bool {
 	f.t.Helper()
-	if batchFlagEnabled() {
-		store := session.NewBatchStore(f.env.conn)
-		debt, err := store.BatchReactionDebtExists(ctx, f.sessID)
-		require.NoError(f.t, err)
-		return debt
-	}
-	debt, err := f.ledger.reactionDebtExists(ctx, f.sessID)
+	debt, err := session.NewBatchStore(f.env.conn).BatchReactionDebtExists(ctx, f.sessID)
 	require.NoError(f.t, err)
 	return debt
 }
@@ -375,11 +371,22 @@ func TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair(t *testing.T) {
 	nodeFacts := bindRealNodeFacts(t, f)
 	observedCount := 0
 	readDone := make(chan struct{})
+	// The arrival's own prune (pruneBGShellOverCap) also reads the pending
+	// debt through the bound facts, before the check exists; only the
+	// CHECK's rows read is the observation under test, so the hook stays
+	// disarmed until the check goroutine starts.
+	var armed atomic.Bool
+	var readOnce sync.Once
 	BindCoordinatorBatchCutoverFacts(f.coord, readObservingFacts{
 		BatchCutoverFacts: nodeFacts,
 		afterRead: func() {
-			observedCount = f.coord.bgShellOverCapCount(f.sessID)
-			close(readDone)
+			if !armed.Load() {
+				return
+			}
+			readOnce.Do(func() {
+				observedCount = f.coord.bgShellOverCapCount(f.sessID)
+				close(readDone)
+			})
 		},
 	})
 	ctx := context.Background()
@@ -410,6 +417,7 @@ func TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair(t *testing.T) {
 		err      error
 	}
 	checkDone := make(chan answer, 1)
+	armed.Store(true)
 	go func() {
 		d, err := capDeferred(ctx, f.coord, f.sessID)
 		checkDone <- answer{d, err}

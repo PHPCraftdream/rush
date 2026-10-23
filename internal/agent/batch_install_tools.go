@@ -22,7 +22,7 @@ import (
 // batchWorkTarget reports whether a constructed tool is a batch-admissible
 // work leaf: the D1 complement (never a control-plane tool) restricted to
 // the families the R11A admission validator can classify. Tools outside
-// every family (todos, job_output, rush_info, ...) keep their direct pinned
+// every family (todos, rush_info, ...) keep their direct pinned
 // leaf — forcing them through the ingress would only convert every call
 // into errBatchUnknownTool.
 // Completeness inventory (R11F round-2), per non-wrapped tool of the D1
@@ -33,11 +33,9 @@ import (
 //     is batch-admissible (batchIOTools), so its invocation enters the ONE
 //     authority like any other state-changing leaf. The admission validator
 //     classifies it in the io group.
-//   - job_output, job_kill: (i) D1-ADJACENT LEGACY CONTROLS — the legacy
-//     async-ledger read/kill surfaces slated for removal in R12/D6; they
-//     are control-plane (batchControlTarget/BatchNonWorkTarget) and are
-//     never batch-wrapped. Anchor: the legacy workLedger
-//     (async_job_bgshell.go / coordinator recheck loop) they operate on.
+//   - batch_status/batch_output/batch_stop: (i) D1 CONTROLS —
+//     control-plane (batchControlTarget/BatchNonWorkTarget), never
+//     batch-wrapped.
 //   - rush_info, rush_logs: (ii) NOT WORK — pure read-only host/process
 //     introspection with no external effect and no session-state mutation;
 //     direct pinned leaf.
@@ -305,8 +303,15 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint},
 			}
 			if name == tools.BashToolName {
-				inv.BackgroundEscape = batchEscapeAuto
-				inv.Delivery.Window = inlineWindow.String()
+				if inlineWindowDisabledFor(bind) {
+					// Window disabled (SetInlineWindowForTest(false)): the
+					// pre-A14 "started" flow -- the shell detaches from the
+					// start and the call returns the started text in-turn.
+					inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
+				} else {
+					inv.BackgroundEscape = batchEscapeAuto
+					inv.Delivery.Window = inlineWindow.String()
+				}
 			}
 			built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, bind: bind}
 		}
@@ -352,8 +357,15 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 		if name == tools.BashToolName {
 			// Auto-background keeps its window: escape switches DELIVERY of
 			// the existing root after the window, never its execution.
-			inv.BackgroundEscape = batchEscapeAuto
-			inv.Delivery.Window = inlineWindow.String()
+			// Window disabled (SetInlineWindowForTest(false)): the pre-A14
+			// "started" flow -- the shell detaches from the start and the
+			// call returns the started text in-turn.
+			if inlineWindowDisabledFor(bind) {
+				inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
+			} else {
+				inv.BackgroundEscape = batchEscapeAuto
+				inv.Delivery.Window = inlineWindow.String()
+			}
 		}
 		built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, pctChildScope: pctCapturedScopeFromTool(tool)}
 	}

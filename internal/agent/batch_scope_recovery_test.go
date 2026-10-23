@@ -21,17 +21,15 @@ import (
 // batchScopeRecoveryFixture is the shared standalone-coordinator fixture: a
 // temp data dir + raw conn, a bound node facts source, and a dead host whose
 // lock file has been created and released.
-func batchScopeRecoveryFixture(t *testing.T, deadHost string) (*coordinator, *session.AsyncJobStore, *sql.DB, string) {
+func batchScopeRecoveryFixture(t *testing.T, deadHost string) (*coordinator, *sql.DB, string) {
 	t.Helper()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn, dataDir := batchFixtureConn(t)
 	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, deadHost))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(nil)
-	c.asyncJobs.store = store
+	c := newBatchRuntimeCoordinator()
 	bindBatchNodeFacts(t, c, conn, dataDir)
-	return c, store, conn, dataDir
+	return c, conn, dataDir
 }
 
 // batchScopeRootState reads the ROOT node's (state, outcome_code) for rootID.
@@ -71,14 +69,11 @@ func batchScopeInterruptedRoots(t *testing.T, conn *sql.DB, rootIDs ...string) i
 // TestBatchScopeRecovery_CLIScopeRecoversDeadCandidate pins runningWorkOpen's
 // H4 W2 hook: CLIScope recovers the dead-host root BEFORE the fresh live
 // read, so a recovered root (wake=0) with nothing else outstanding closes
-// the scope. OFF twin: TestCLIScope_RecoversDeadHostRowBeforeAnswering.
+// the scope.
 func TestBatchScopeRecovery_CLIScopeRecoversDeadCandidate(t *testing.T) {
 	t.Parallel()
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF never arms the batch scope hook; the OFF twin is TestCLIScope_RecoversDeadHostRowBeforeAnswering")
-	}
 	ctx := context.Background()
-	c, _, conn, _ := batchScopeRecoveryFixture(t, "scope-dead-host")
+	c, conn, _ := batchScopeRecoveryFixture(t, "scope-dead-host")
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-scope", "call-scope", "scope-dead-host", "running")
 
 	st, err := c.CLIScope(ctx, "sess-scope")
@@ -99,11 +94,8 @@ func TestBatchScopeRecovery_CLIScopeRecoversDeadCandidate(t *testing.T) {
 // active.
 func TestBatchScopeRecovery_CLIActiveWorkRecoversDeadCandidate(t *testing.T) {
 	t.Parallel()
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF keeps CLIActiveWork on the legacy ledger path; no batch hook runs there")
-	}
 	ctx := context.Background()
-	c, _, conn, _ := batchScopeRecoveryFixture(t, "scope-cli-dead")
+	c, conn, _ := batchScopeRecoveryFixture(t, "scope-cli-dead")
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-cli", "call-cli", "scope-cli-dead", "running")
 
 	active, err := c.CLIActiveWork(ctx, "sess-cli")
@@ -121,11 +113,8 @@ func TestBatchScopeRecovery_CLIActiveWorkRecoversDeadCandidate(t *testing.T) {
 // rest, and a second scope call then reports inactive.
 func TestBatchScopeRecovery_BudgetExhaustionStaysLiveThenBackgroundCompletes(t *testing.T) {
 	t.Parallel()
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF never arms the batch scope hook")
-	}
 	ctx := context.Background()
-	c, _, conn, dataDir := batchScopeRecoveryFixture(t, "scope-budget-dead")
+	c, conn, dataDir := batchScopeRecoveryFixture(t, "scope-budget-dead")
 	root1, _ := b1SeedBatchRootOnHost(t, conn, "sess-budget", "call-b1", "scope-budget-dead", "running")
 	root2, _ := b1SeedBatchRootOnHost(t, conn, "sess-budget", "call-b2", "scope-budget-dead", "running")
 
@@ -153,11 +142,8 @@ func TestBatchScopeRecovery_ZeroBudgetWritesNothing(t *testing.T) {
 	old := batchScopeRecoveryBudget
 	batchScopeRecoveryBudget = 0
 	t.Cleanup(func() { batchScopeRecoveryBudget = old })
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF never arms the batch scope hook")
-	}
 	ctx := context.Background()
-	c, _, conn, _ := batchScopeRecoveryFixture(t, "scope-zero-dead")
+	c, conn, _ := batchScopeRecoveryFixture(t, "scope-zero-dead")
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-zero", "call-zero", "scope-zero-dead", "running")
 
 	st, err := c.CLIScope(ctx, "sess-zero")
@@ -176,17 +162,12 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 	t.Parallel()
 	t.Run("alive", func(t *testing.T) {
 		t.Parallel()
-		if !batchFlagEnabled() {
-			t.Skip("flag OFF never arms the batch scope hook")
-		}
 		ctx := context.Background()
-		store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+		conn, dataDir := batchFixtureConn(t)
 		holder, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-alive-host"))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = holder.Release() })
-		c := &coordinator{}
-		c.asyncJobs = newWorkLedger(nil)
-		c.asyncJobs.store = store
+		c := newBatchRuntimeCoordinator()
 		bindBatchNodeFacts(t, c, conn, dataDir)
 		root, _ := b1SeedBatchRootOnHost(t, conn, "sess-alive", "call-alive", "scope-alive-host", "running")
 
@@ -199,18 +180,13 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 
 	t.Run("unknown", func(t *testing.T) {
 		t.Parallel()
-		if !batchFlagEnabled() {
-			t.Skip("flag OFF never arms the batch scope hook")
-		}
 		ctx := context.Background()
-		store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+		conn, dataDir := batchFixtureConn(t)
 		require.NoError(t, os.MkdirAll(session.HostLockPath(dataDir, "scope-unknown-host"), 0o755))
 		probeStatus, probeErr := session.ProbeHostShared(dataDir, "scope-unknown-host")
 		require.Equal(t, session.HostStatusUnknown, probeStatus)
 		require.Error(t, probeErr)
-		c := &coordinator{}
-		c.asyncJobs = newWorkLedger(nil)
-		c.asyncJobs.store = store
+		c := newBatchRuntimeCoordinator()
 		bindBatchNodeFacts(t, c, conn, dataDir)
 		root, _ := b1SeedBatchRootOnHost(t, conn, "sess-unknown", "call-unknown", "scope-unknown-host", "running")
 		beforeNodes, err := db.New(conn).ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: root, OwnerSessionID: "sess-unknown"})
@@ -239,7 +215,7 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		// drops this error (best-effort), which is why the helper-level
 		// guarantee is asserted on the store primitive here.
 		ctx := context.Background()
-		_, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+		_, conn, dataDir := batchScopeRecoveryFixture(t, "scope-err-host")
 		lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-err-host"))
 		require.NoError(t, err)
 		require.NoError(t, lk.Release())
@@ -262,14 +238,9 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 
 func TestBatchScopeRecovery_DeadHostMissingLock(t *testing.T) {
 	t.Parallel()
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF never arms the batch scope hook")
-	}
 	ctx := context.Background()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(nil)
-	c.asyncJobs.store = store
+	conn, dataDir := batchFixtureConn(t)
+	c := newBatchRuntimeCoordinator()
 	bindBatchNodeFacts(t, c, conn, dataDir)
 	_, err := os.Stat(session.HostLockPath(dataDir, "scope-missing-lock"))
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -304,17 +275,11 @@ func TestBatchScopeRecovery_DeadHostMissingLock(t *testing.T) {
 // adjacent placement of the hook and the pull in agent_turn.go.
 func TestBatchScopeRecovery_PreambleHookRecoversBeforePull(t *testing.T) {
 	t.Parallel()
-	if !batchFlagEnabled() {
-		t.Skip("flag OFF never arms the batch scope hook")
-	}
 	ctx := context.Background()
-	c, store, conn, _ := batchScopeRecoveryFixture(t, "scope-preamble-dead")
+	c, conn, _ := batchScopeRecoveryFixture(t, "scope-preamble-dead")
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-preamble", "call-preamble", "scope-preamble-dead", "running")
 
-	led := newWorkLedger(nil)
-	led.coord = c
-	led.store = store
-	a := &sessionAgent{asyncJobs: led, messages: message.NewService(db.New(conn))}
+	a := &sessionAgent{coord: c, messages: message.NewService(db.New(conn))}
 
 	recoverBatchScopeDeadCandidates(ctx, c, "sess-preamble")
 	pulled := a.pullPendingNotices(ctx, "sess-preamble")
@@ -329,19 +294,14 @@ func TestBatchScopeRecovery_PreambleHookRecoversBeforePull(t *testing.T) {
 // an unbound (OFF) coordinator's hook is a no-op — the node state must stay
 // "running" and no notice may be selected.
 func TestBatchScopeRecovery_OffModeInert(t *testing.T) {
-	if batchFlagEnabled() {
-		t.Skip("OFF-only: the ON coordinator's hook does recover (see the siblings above)")
-	}
 	ctx := context.Background()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn, dataDir := batchFixtureConn(t)
 	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-off-dead"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
-	// NO facts binding: the flag-OFF App never binds the node source, so the
-	// hook's zero source must recover nothing.
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(nil)
-	c.asyncJobs.store = store
+	// NO facts binding: an unbound coordinator has no node source, so the
+	// hook's unknown source must recover nothing.
+	c := newBatchRuntimeCoordinator()
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-off", "call-off", "scope-off-dead", "running")
 
 	recoverBatchScopeDeadCandidates(ctx, c, "sess-off")

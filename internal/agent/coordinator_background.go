@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -59,9 +61,9 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 		completion.ToolCallID, completion.ToolName, status, content)
 }
 
-// notifyAsyncCompletion is the workLedger.onWebDone callback: the job's
-// terminal transition already committed its
-// async_jobs row with delivery='pending' (work_ledger_transition.go) --
+// notifyAsyncCompletion is the completion wake callback the batch delivery
+// invokes: the delivery already committed its durable pending notice
+// (a batch row or a session_notices row) --
 // there is no text/NoticeKind left to build here (doc sec.3.3: the driver's
 // pull reconstructs both from the row at pull time, agent_notice_pull.go).
 // This is now just the non-blocking wake HINT (doc sec.3.4): submit a Drain
@@ -123,7 +125,7 @@ func backgroundJobSummary(id, command string, stdout, stderr string, exitCode in
 }
 
 // notifyBackgroundJobDone handles an SDK background shell's completion
-// (doc sec.2: a notice with no async_jobs row). Step 3: the fact is
+// (doc sec.2: a completion with no batch root of its own). Step 3: the fact is
 // persisted FIRST, durably, as a session_notices row (kind
 // NoticeKindBGShellDone, wake=1 per the wake-policy table -- the row's own
 // wake bit does not depend on session policy, only whether a TURN is forced
@@ -224,13 +226,29 @@ func (c *coordinator) IsSessionBusy(sessionID string) bool {
 // exists for a child, and reports the error: the launch decision that follows
 // (wakeSession) is drainPermitted's, which refuses whatever the policy refuses.
 func (c *coordinator) delegatedChildDriven(ctx context.Context, sessionID string) (bool, error) {
-	if c.asyncJobs == nil {
-		return false, nil
+	parent := ""
+	if c.sessions != nil {
+		sess, err := c.sessions.Get(ctx, sessionID)
+		switch {
+		case err == nil:
+			parent = sess.ParentSessionID
+		case !errors.Is(err, sql.ErrNoRows):
+			// The session row is unreadable (not merely absent): the parent
+			// cannot be resolved, so fall back to the driver registration
+			// and surface the read error, exactly like an unreadable
+			// delegation read.
+			_, registered := c.subAgentDrivers.get(sessionID)
+			return registered, err
+		}
 	}
-	running, err := c.asyncJobs.hasRunningDelegationFor(ctx, sessionID)
-	if err == nil {
-		return running, nil
+	if parent != "" {
+		running, err := coordinatorBatchCutoverFacts(c).LiveDelegationChildOf(ctx, parent, sessionID)
+		if err == nil {
+			return running, nil
+		}
+		_, registered := c.subAgentDrivers.get(sessionID)
+		return registered, err
 	}
 	_, registered := c.subAgentDrivers.get(sessionID)
-	return registered, err
+	return registered, nil
 }

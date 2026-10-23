@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +24,7 @@ func batchTimeoutCheckinStores(t *testing.T) (*BatchStore, *sql.DB, context.Cont
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(a)) })
 	require.NoError(t, seedSession(ctx, db.New(a), "owner"))
-	b, err := sql.Open("sqlite", filepath.ToSlash(filepath.Join(dir, "rush.db"))+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	b, err := sql.Open("sqlite", filepath.ToSlash(storepath.DataDirPath(dir, storepath.ActiveFilename))+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	b.SetMaxOpenConns(1)
 	t.Cleanup(func() { require.NoError(t, b.Close()) })

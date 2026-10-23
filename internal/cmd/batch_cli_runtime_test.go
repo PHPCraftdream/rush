@@ -235,7 +235,7 @@ func seedLiveBatchCLIProcessFixture(t *testing.T) batchCLIAcceptanceFixture {
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
+	store := session.NewHostStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
 	t.Cleanup(func() {
 		if err := store.Close(context.Background()); err != nil {
 			t.Errorf("close subprocess fixture store: %v", err)

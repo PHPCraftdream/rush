@@ -22,7 +22,6 @@ package agent
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -38,6 +37,7 @@ import (
 func w5SeedRunningRoot(t *testing.T, conn *sql.DB, messages message.Service, owner, callID string) (root, child string) {
 	t.Helper()
 	ctx := context.Background()
+	ensureFixtureSession(t, conn, owner)
 	store := session.NewBatchStore(conn)
 	res, err := store.Reserve(ctx, session.BatchReservation{
 		Owner: owner, Host: "fixture-host", RunnerID: "fixture-runner", ToolCallID: callID,
@@ -61,6 +61,7 @@ func w5SeedRunningRoot(t *testing.T, conn *sql.DB, messages message.Service, own
 // InsertSessionNotice(..., session.NoticeKindSupervision, text, true, "")).
 func w5InsertSupervisionNotice(t *testing.T, conn *sql.DB, owner, text string) {
 	t.Helper()
+	ensureFixtureSession(t, conn, owner)
 	require.NoError(t, session.NewSessionNoticeStore(conn).InsertSessionNotice(
 		context.Background(), owner, session.NoticeKindSupervision, text, true, ""))
 }
@@ -231,14 +232,9 @@ func TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle(t *testing.T) {
 	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := testEnv(t)
 	ctx := context.Background()
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	// Deliberately NO bindBatchNodeFacts: the unbound flag-ON shape.
-	coord := &coordinator{sessions: env.sessions, messages: env.messages, subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	// Deliberately NO bindBatchNodeFacts: the unbound shape.
+	coord := newBatchRuntimeCoordinator()
+	coord.sessions, coord.messages = env.sessions, env.messages
 	t.Cleanup(func() {
 		coord.waitRecheckWakes()
 		coord.releaseWG.Wait()

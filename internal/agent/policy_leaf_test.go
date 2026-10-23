@@ -44,12 +44,12 @@ func TestPolicyLeafRewriteDenyRestrictionOnce(t *testing.T) {
 			}
 			cmd = fmt.Sprintf("printf x >> '%s'; %s", counter, cmd)
 			authorizer := &policyLeafCountingAuthorizer{RestrictedRunAuthorizer: svc.(permission.RestrictedRunAuthorizer)}
-			wrapped := decoratePolicyTools([]fantasy.AgentTool{&asyncTool{inner: probe, name: "bash"}}, authorizer, newRunner(t, cmd), false)
-			built := newPolicyToolBuild(wrapToolsWithStallDetach(wrapped))
+			wrapped := decoratePolicyTools([]fantasy.AgentTool{probe}, authorizer, newRunner(t, cmd), false)
+			built := newPolicyToolBuild(wrapped)
 			leaf, err := built.leaves.resolve("bash")
 			require.NoError(t, err)
 			require.Equal(t, []string{"hooks", "restricted", "tool"}, policyLeafBaselineStack(leaf))
-			require.Equal(t, []string{"stall", "hooks", "restricted", "async", "tool"}, built.leaves.entries["bash"].layers)
+			require.Equal(t, []string{"hooks", "restricted", "tool"}, built.leaves.entries["bash"].layers)
 			ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 			resp, err := leaf.Run(ctx, fantasy.ToolCall{ID: "call", Name: "bash", Input: `{"command":"echo denied"}`})
 			require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestPolicyLeafRewriteDenyRestrictionOnce(t *testing.T) {
 			if mode == "rewrite" {
 				require.JSONEq(t, `{"command":"echo allowed"}`, probe.call.Input)
 			}
-			require.Equal(t, []string{"stall", "hooks", "restricted", "async", "tool"}, policyLeafBaselineStack(built.tools[0]), "original model stack unchanged")
+			require.Equal(t, []string{"hooks", "restricted", "tool"}, policyLeafBaselineStack(built.tools[0]), "original model stack unchanged")
 		})
 	}
 }
@@ -74,7 +74,7 @@ func TestPolicyLeafRewriteDenyRestrictionOnce(t *testing.T) {
 func TestPolicyLeafChildHooksOmittedAndUnknownClosed(t *testing.T) {
 	probe := &dispatchProbeTool{name: "view"}
 	wrapped := decoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, `echo '{"decision":"deny"}'`), true)
-	built := newPolicyToolBuild(wrapToolsWithStallDetach(wrapped))
+	built := newPolicyToolBuild(wrapped)
 	leaf, err := built.leaves.resolve("view")
 	require.NoError(t, err)
 	resp, err := leaf.Run(t.Context(), fantasy.ToolCall{Name: "view"})
@@ -101,7 +101,7 @@ func TestPolicyLeafDynamicActionPreserved(t *testing.T) {
 			allowlist, err := permission.BuildRunAllowlist(spec)
 			require.NoError(t, err)
 			svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-			built := newPolicyToolBuild(wrapToolsWithStallDetach(decoratePolicyTools([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer), newRunner(t, "exit 0"), false)))
+			built := newPolicyToolBuild(decoratePolicyTools([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer), newRunner(t, "exit 0"), false))
 			leaf, err := built.leaves.resolve(probe.name)
 			require.NoError(t, err)
 			resp, err := leaf.Run(context.WithValue(t.Context(), tools.SessionIDContextKey, "session"), fantasy.ToolCall{ID: "call", Name: probe.name})

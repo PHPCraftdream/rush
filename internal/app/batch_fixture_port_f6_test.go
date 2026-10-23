@@ -1,10 +1,11 @@
 // F6 stage-2 test-only batch fixture helpers (app CLI-loop port). The
 // agent-package helpers (batch_fixture_port_test.go) are _test files of
 // package agent and cannot be imported here, so these f6-prefixed helpers
-// reimplement the same dual-mode shape over the app harness's real App:
-// RUSH_BATCH_RUNTIME ON seeds batch_nodes through the production BatchStore
-// API over application.DB(), OFF keeps the legacy AsyncJobStore claims and
-// transitions. No helper mutates the flag: CI selects the mode.
+// reimplement the same shape over the app harness's real App: they seed
+// batch_nodes ONLY through the production BatchStore API (Reserve /
+// BatchAnnounceStarted / Project) over application.DB(), so every schema
+// CHECK and FK fires. Batch-only (H4 atomic activation): no environment
+// variable is read and no legacy async_jobs row is ever written.
 package app
 
 import (
@@ -12,7 +13,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -24,12 +24,16 @@ import (
 // host id so the production live reader's host probe answers alive.
 const f6BatchRunner = "f6-fixture-runner"
 
-func f6BatchOn() bool { return config.BatchRuntimeEnabled() }
+// f6BatchOn is the H4 final-world stub retained ONLY as a cross-chunk seam:
+// other P7 test files (not this lane's chunk) still branch on it while their
+// own rewrites land. Batch-only: it always answers true and never reads an
+// environment variable. Remove together with the last caller.
+func f6BatchOn() bool { return true }
 
 func f6HostID(t *testing.T, application *App) string {
 	t.Helper()
 	id := application.BatchHostStore().HostID()
-	require.NotEmpty(t, id, "the flag-ON app must have a registered host identity")
+	require.NotEmpty(t, id, "the app must have a registered host identity")
 	return id
 }
 
@@ -105,67 +109,37 @@ func f6CompleteDelegationTerminal(t *testing.T, application *App, owner, root, n
 	require.NoError(t, session.NewBatchStore(application.DB()).Project(context.Background(), proj))
 }
 
-// f6ClaimDelegation is the dual-mode running-delegation seed: ON reserves and
-// announces a live batch delegation; OFF claims and announces the legacy
-// async_jobs row (exactly the pre-port shape).
+// f6ClaimDelegation is the running-delegation seed: it reserves and announces
+// a live batch delegation (an "agent" task child, optionally linked to its
+// child session). The ctx parameter is retained for caller signature
+// stability; the batch seed drives its own context.
 func f6ClaimDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, childID string) {
 	t.Helper()
-	if f6BatchOn() {
-		f6ReserveDelegation(t, application, owner, toolCallID, childID, "agent", "running")
-		return
-	}
-	_, err := application.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: owner, ToolCallID: toolCallID, Kind: session.JobKindAgent, Input: "x",
-		ChildSessionID: childID, ToolName: "agent",
-	})
-	require.NoError(t, err)
-	require.NoError(t, application.asyncJobStore.MarkAnnounced(ctx, owner, toolCallID))
+	_ = ctx
+	f6ReserveDelegation(t, application, owner, toolCallID, childID, "agent", "running")
 }
 
-// f6CompleteDelegation is the dual-mode completion: ON projects the batch
-// nodes terminal (wake selects the completion notice as debt); OFF transitions
-// the legacy row (the pre-port write, unchanged).
+// f6CompleteDelegation is the completion: it projects the batch nodes
+// terminal (wake selects the completion notice as reaction debt).
 func f6CompleteDelegation(t *testing.T, ctx context.Context, application *App, owner, toolCallID, summary string, wake bool) {
 	t.Helper()
-	if f6BatchOn() {
-		root, node := f6FindDelegationNodes(t, application, owner, toolCallID)
-		f6CompleteDelegationTerminal(t, application, owner, root, node, "completed", summary, wake)
-		return
-	}
-	_, err := application.asyncJobStore.Transition(ctx, session.TransitionParams{
-		Owner: owner, ToolCallID: toolCallID, State: "completed", ResultSummary: summary, Wake: wake,
-	})
-	require.NoError(t, err)
+	_ = ctx
+	root, node := f6FindDelegationNodes(t, application, owner, toolCallID)
+	f6CompleteDelegationTerminal(t, application, owner, root, node, "completed", summary, wake)
 }
 
-// f6ClaimOwnJob is the dual-mode own-background-job seed (an own bash/command
-// job with no child session and no announcement, the shape A15 seeds).
+// f6ClaimOwnJob is the own-background-job seed (an own command job with no
+// child session, the shape A15 seeds).
 func f6ClaimOwnJob(t *testing.T, ctx context.Context, application *App, owner, toolCallID string) {
 	t.Helper()
-	if f6BatchOn() {
-		f6ReserveDelegation(t, application, owner, toolCallID, "", "command", "running")
-		return
-	}
-	_, err := application.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: owner, ToolCallID: toolCallID, Kind: session.JobKindCommand, Input: "heavy", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	_ = ctx
+	f6ReserveDelegation(t, application, owner, toolCallID, "", "command", "running")
 }
 
 // f6DelegationRunning reports whether toolCallID's delegation is still
-// running through the selected authority.
+// running: the live batch task child's state.
 func f6DelegationRunning(t *testing.T, application *App, owner, toolCallID string) bool {
 	t.Helper()
-	if !f6BatchOn() {
-		rows, err := application.asyncJobStore.ListRunningForOwners(context.Background(), []string{owner})
-		require.NoError(t, err)
-		for _, row := range rows {
-			if row.ToolCallID == toolCallID {
-				return true
-			}
-		}
-		return false
-	}
 	_, node := f6FindDelegationNodes(t, application, owner, toolCallID)
 	var state string
 	require.NoError(t, application.DB().QueryRowContext(context.Background(),

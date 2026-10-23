@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,13 +45,17 @@ func TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork(t *testing.T) {
 	require.NoError(t, err)
 	writeLockFileAt(t, dataDir, locked, os.Getpid())
 
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	require.NoError(t, store.ClaimSessionDriver(ctx, driven))
+	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "cancel-driver-fixture")
+	driverHostID, err := driverHost.EnsureHost(ctx)
+	require.NoError(t, err)
+	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven))
+	// A12 pattern: pin the host lock and keep the driver marker. The pinned
+	// lock file stays open for the process lifetime; release it at test end
+	// so the data dir can be removed on Windows.
+	driverHost.CloseKeepLock()
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	claimOwnJob(t, a, owner, "bash-1")
 	claimDelegation(t, a, parent, "delegate-1", child.ID)
-	a.SetAsyncJobStoreForTest(nil)
-	defer func() { _ = store.Close(context.Background()) }()
 	a.Shutdown()
 
 	stderr, err := runCancel(t, dataDir, true)

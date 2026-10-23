@@ -1,12 +1,13 @@
 // Shared harness for the Drain-attempt tests (docs/reviews/2026-09-30-async-
-// phase4-round2-attempts-design.md sec.5): a real coordinator + workLedger on
-// a real SQLite store, a real *sessionAgent talking to an httptest provider,
-// OnSessionIdle wired like production. Faults are injected with SQLite
-// triggers on the shared connection, never with code seams.
+// phase4-round2-attempts-design.md sec.5), batch edition: a real coordinator
+// with node facts bound, a real *sessionAgent talking to an httptest
+// provider, OnSessionIdle wired like production. Faults are injected with
+// SQLite triggers on the shared connection, never with code seams.
 package agent
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,21 +19,21 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 type attemptFixture struct {
-	t             *testing.T
-	env           fakeEnv
-	store         *session.AsyncJobStore
-	coord         *coordinator
-	ledger        *workLedger
-	sa            *sessionAgent
-	model         Model
-	sessID        string
+	t      *testing.T
+	env    fakeEnv
+	coord  *coordinator
+	sa     *sessionAgent
+	model  Model
+	sessID string
+	// store is the batch-world dual readback store: batch facts plus the
+	// session_notices store, over the fixture's own connection.
+	store         attemptStore
 	requests      atomic.Int32
 	requestEvents chan struct{}
 	clockOffset   atomic.Int64
@@ -98,24 +99,26 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	}
 
 	f.env = testEnv(t)
-	f.store = session.NewAsyncJobStore(f.env.conn, f.env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() {
-		f.waitReleases()
-		_ = f.store.Close(context.Background())
-	})
-	f.coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
+	f.coord = newBatchRuntimeCoordinator()
 	if f.manualClock {
 		f.coord.arb.clock = func() time.Time {
 			return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f.clockOffset.Load()))
 		}
 	}
-	f.ledger = newWorkLedger(f.coord.notifyAsyncCompletion)
-	f.ledger.store = f.store
-	f.ledger.coord = f.coord
-	f.coord.asyncJobs = f.ledger
 	f.coord.sessions, f.coord.messages = f.env.sessions, f.env.messages
 	f.coord.permissions = f.env.permissions
+	f.coord.noticeStore = session.NewSessionNoticeStore(f.env.conn)
+	f.store = newAttemptStore(f.env.conn)
 	bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
+	// The durable driver-marker store, bound exactly like the composition
+	// root (internal/app wires SetBatchDriverClaimer with the session
+	// HostStore). The claim/release and the foreign read are the same store
+	// in production; a bare fixture answers (false, nil) from
+	// foreignLiveDriver and the ForeignLiveDriver fact can never fail nor
+	// fire. An unclaimed store over an empty session_drivers table answers
+	// not-foreign, so only tests that seed a foreign marker see it.
+	require.NoError(t, SetBatchDriverClaimer(f.coord,
+		session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "fixture-host")))
 	t.Cleanup(func() {
 		f.coord.waitRecheckWakes()
 		f.waitReleases()
@@ -132,7 +135,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	opts := SessionAgentOptions{
 		SmartModel: f.model, FastModel: f.model, SystemPrompt: "you are a probe",
 		DataDirectory: f.env.workingDir, Sessions: f.env.sessions, Messages: f.env.messages,
-		Tools: tools, DisableAutoSummarize: true, AsyncJobs: f.ledger,
+		Tools: tools, DisableAutoSummarize: true, Coord: f.coord,
 		StreamIdleTimeout: o.streamIdle, StreamWatchdogTick: o.streamTick,
 		// The probe handler answers title requests with the same scripted
 		// turn, so the title never resolves: do not hold each turn 10 s on it.
@@ -199,18 +202,58 @@ func (f *attemptFixture) seedDebt(ctx context.Context, toolCallID string, pulled
 // seedDebtFor is seedDebt for an arbitrary session id (a delegated child).
 func (f *attemptFixture) seedDebtFor(ctx context.Context, sessionID, toolCallID string, pulled bool) {
 	f.t.Helper()
-	seedFixtureJobDebt(f.t, f.env.conn, f.store, f.ledger, f.env.messages, sessionID, toolCallID, pulled)
+	seedFixtureJobDebt(f.t, f.env.conn, sessionID, toolCallID, pulled)
 }
 
-func (f *attemptFixture) row(ctx context.Context, toolCallID string) db.AsyncJob {
+// attemptStore is the batch-world readback store behind attemptFixture.store:
+// the batch store's debt snapshots plus the session_notices store, over one
+// connection. Its methods carry the legacy names the drain tests read.
+type attemptStore struct {
+	batch   *session.BatchStore
+	notices *session.SessionNoticeStore
+}
+
+func newAttemptStore(conn *sql.DB) attemptStore {
+	return attemptStore{batch: session.NewBatchStore(conn), notices: session.NewSessionNoticeStore(conn)}
+}
+
+func (s attemptStore) CaptureDebtSnapshot(ctx context.Context, owner string) (session.BatchDebtSnapshot, error) {
+	return s.batch.BatchReactionCaptureDebtSnapshot(ctx, owner)
+}
+
+func (s attemptStore) MaxWakeAttempts(ctx context.Context, owner string, snap session.BatchDebtSnapshot) (int, error) {
+	return s.batch.BatchReactionMaxWakeAttempts(ctx, owner, snap)
+}
+
+// PendingInclusiveDebtRows is the legacy 4-value readback over
+// BatchReactionPendingInclusiveDebtRows: hasJobDebt reports the selected-node
+// half, notices the retained-notice half.
+func (s attemptStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (bool, []session.BatchDebtNodeRef, []session.PendingNoticeDebt, error) {
+	out, err := s.batch.BatchReactionPendingInclusiveDebtRows(ctx, owner)
+	return len(out.Nodes) > 0, out.Nodes, out.Notices, err
+}
+
+func (s attemptStore) InsertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) error {
+	return s.notices.InsertSessionNotice(ctx, owner, kind, text, wake, jobToolCallID)
+}
+
+func (s attemptStore) InsertSessionNoticeReturningID(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) (int64, error) {
+	return s.notices.InsertSessionNoticeReturningID(ctx, owner, kind, text, wake, jobToolCallID)
+}
+
+func (s attemptStore) ListSessionNotices(ctx context.Context, owner string) ([]session.SessionNoticeRow, error) {
+	return s.notices.ListSessionNotices(ctx, owner)
+}
+
+func (f *attemptFixture) row(ctx context.Context, toolCallID string) fixtureAsyncJobRow {
 	f.t.Helper()
-	return readFixtureJobDebt(f.t, f.env.conn, f.store, f.sessID, toolCallID)
+	return readFixtureJobDebt(f.t, f.env.conn, f.sessID, toolCallID)
 }
 
 // markers counts the wake_failed markers written for the session.
 func (f *attemptFixture) markers(ctx context.Context) int {
 	f.t.Helper()
-	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
+	notices, err := f.coord.noticeStore.ListSessionNotices(ctx, f.sessID)
 	require.NoError(f.t, err)
 	n := 0
 	for _, no := range notices {
@@ -230,24 +273,14 @@ func (f *attemptFixture) exec(ctx context.Context, stmt string) {
 // blockReactions makes every real reaction write (reacted=1, reacted_failed=0)
 // abort; a settle-by-failure (reacted_failed=1) still goes through.
 func (f *attemptFixture) blockReactions(ctx context.Context) {
-	if batchFlagEnabled() {
-		failFixtureReaction(f.t, f.env.conn)
-		return
-	}
-	f.exec(ctx, `CREATE TRIGGER fx_block_reaction BEFORE UPDATE OF reacted ON async_jobs
-		WHEN NEW.reacted = 1 AND NEW.reacted_failed = 0
-		BEGIN SELECT RAISE(ABORT, 'fx: reaction blocked'); END`)
+	_ = ctx
+	failFixtureReaction(f.t, f.env.conn)
 }
 
 // blockSettles additionally makes the settle-by-failure write abort.
 func (f *attemptFixture) blockReactionsAndSettles(ctx context.Context) {
-	if batchFlagEnabled() {
-		failFixtureSettle(f.t, f.env.conn)
-		return
-	}
-	f.exec(ctx, `CREATE TRIGGER fx_block_reaction BEFORE UPDATE OF reacted ON async_jobs
-		WHEN NEW.reacted = 1
-		BEGIN SELECT RAISE(ABORT, 'fx: reaction and settle blocked'); END`)
+	_ = ctx
+	failFixtureSettle(f.t, f.env.conn)
 }
 
 // drainRun runs one Drain call directly on the agent (one leg).

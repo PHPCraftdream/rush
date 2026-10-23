@@ -23,8 +23,9 @@ import (
 )
 
 // newRunDriverTestApp is newWhyDescendantTestApp with the App's DB handle
-// wired (the driver-marker reader reads through it).
-func newRunDriverTestApp(t *testing.T) (a *app.App, s session.Service, m message.Service, store *session.AsyncJobStore, dataDir string) {
+// wired (the driver-marker reader reads through it) and a HostStore the
+// driver marker is claimed through.
+func newRunDriverTestApp(t *testing.T) (a *app.App, s session.Service, m message.Service, store *session.HostStore, dataDir string) {
 	t.Helper()
 	dataDir = t.TempDir()
 	ctx := context.Background()
@@ -34,10 +35,9 @@ func newRunDriverTestApp(t *testing.T) (a *app.App, s session.Service, m message
 	q := db.New(conn)
 	s = session.NewService(q, conn)
 	m = message.NewService(q)
-	store = session.NewAsyncJobStore(conn, dataDir, 4321, "rush-run")
+	store = session.NewHostStore(conn, dataDir, 4321, "rush-run")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	a = &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
-	a.SetAsyncJobStoreForTest(store)
 	a.SetDataDirForTest(dataDir)
 	return a, s, m, store, dataDir
 }
@@ -52,16 +52,12 @@ func verdictLine(s string) string { return strings.SplitN(s, "\n", 2)[0] }
 // Revert-check: dropping the driver consultation from explainSessionStatus
 // makes the first assertion read "status: at rest".
 func TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning(t *testing.T) {
-	// F11 env pin: pins the LEGACY why-render ("status: running" + the
-	// reaction-owed reason); under the flag explainSessionStatus routes to
-	// explainWhyBatch, whose batch-fact vocabulary differs.
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	sess, err := s.Create(ctx, "driven between turns")
 	require.NoError(t, err)
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonEndTurn)
-	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, "job_result", "a job finished", true, ""))
+	require.NoError(t, session.NewSessionNoticeStore(a.DB()).InsertSessionNotice(ctx, sess.ID, "job_result", "a job finished", true, ""))
 	require.NoError(t, store.ClaimSessionDriver(ctx, sess.ID))
 
 	var buf bytes.Buffer
@@ -89,9 +85,6 @@ func TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning(t *testing.T) {
 //
 // Revert-check: as above; the first line reads "status: done (stale lock)".
 func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
-	// F11 env pin: legacy-render first lines; see
-	// TestExplainSessionStatus_LiveRunDriverBetweenTurnsIsRunning.
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 
@@ -132,9 +125,6 @@ func TestExplainSessionStatus_LiveRunDriverStaleLockAndCrashed(t *testing.T) {
 //
 // Revert-check: treating every marker as live makes the verdict "running".
 func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
-	// F11 env pin: the dead-host crash fact has no batch-authority equivalent
-	// (dead hosts stay live until recovery); legacy-render first line.
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
 	a, s, m, _, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
 	conn, err := db.Connect(ctx, dataDir)
@@ -143,7 +133,7 @@ func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
 	sess, err := s.Create(ctx, "driver crashed")
 	require.NoError(t, err)
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonEndTurn)
-	dead := session.NewAsyncJobStore(conn, dataDir, 4242, "dead-loop")
+	dead := session.NewHostStore(conn, dataDir, 4242, "dead-loop")
 	require.NoError(t, dead.ClaimSessionDriver(ctx, sess.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
@@ -182,7 +172,7 @@ func TestListStatus_DriverShapes(t *testing.T) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	dead := session.NewAsyncJobStore(conn, dataDir, 4242, "dead")
+	dead := session.NewHostStore(conn, dataDir, 4242, "dead")
 	require.NoError(t, dead.ClaimSessionDriver(ctx, deadHost.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
@@ -227,11 +217,14 @@ func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	require.NoError(t, store.ClaimSessionDriver(ctx, parent.ID))
-	a.SetAsyncJobStoreForTest(nil)
-	defer func() { _ = store.Close(context.Background()) }()
+	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "list-run-driver-fixture")
+	driverHostID, err := driverHost.EnsureHost(ctx)
+	require.NoError(t, err)
+	require.NoError(t, driverHost.ClaimSessionDriver(ctx, parent.ID))
+	// A12 pattern: pin the host lock and keep the driver marker across the
+	// seed App's Shutdown.
+	driverHost.CloseKeepLock()
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	runList := func() string {

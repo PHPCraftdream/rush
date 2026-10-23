@@ -58,10 +58,10 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	// between + slug: a live loop with pending debt; the slug's lock file
 	// is the sanitised stem, empty (clean release) -- released, not in
 	// turn (D10).
-	require.NoError(t, h.app.asyncJobStore.ClaimSessionDriver(ctx, between))
-	require.NoError(t, h.app.asyncJobStore.ClaimSessionDriver(ctx, slug))
-	require.NoError(t, h.app.asyncJobStore.InsertSessionNotice(ctx, between, "wake", "x", true, ""))
-	require.NoError(t, h.app.asyncJobStore.InsertSessionNotice(ctx, slug, "wake", "x", true, ""))
+	require.NoError(t, h.app.BatchHostStore().ClaimSessionDriver(ctx, between))
+	require.NoError(t, h.app.BatchHostStore().ClaimSessionDriver(ctx, slug))
+	require.NoError(t, h.app.BatchNoticeStore().InsertSessionNotice(ctx, between, "wake", "x", true, ""))
+	require.NoError(t, h.app.BatchNoticeStore().InsertSessionNotice(ctx, slug, "wake", "x", true, ""))
 	for _, id := range []string{between, slug} {
 		require.NoError(t, writeLockRecord(t, h.dataDir, id, "", 0))
 	}
@@ -70,9 +70,12 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	require.NoError(t, writeLockRecord(t, h.dataDir, live, strconv.Itoa(os.Getpid()), 0))
 
 	// deadhost: a marker whose host is provably dead (D5).
-	deadStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 4242, "dead")
+	deadStore := session.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
 	require.NoError(t, deadStore.ClaimSessionDriver(ctx, deadHost))
 	require.NoError(t, deadStore.SimulateCrashForTest())
+	// The crashed store keeps no host handle, so Close is a no-op; it is
+	// still the only explicit release of the handle the CLAIM took.
+	t.Cleanup(func() { _ = deadStore.Close(context.Background()) })
 
 	// ended: a recorded reason.
 	require.NoError(t, h.app.Sessions.SetEndedReason(ctx, ended, "end_turn"))
@@ -150,14 +153,14 @@ func TestSessionActivityBatch_BindingTests(t *testing.T) {
 		_, err := h.app.Sessions.CreateWithID(ctx, id, id)
 		require.NoError(t, err)
 	}
-	require.NoError(t, h.app.asyncJobStore.InsertSessionNotice(ctx, withDebt, "wake", "x", true, ""))
+	require.NoError(t, h.app.BatchNoticeStore().InsertSessionNotice(ctx, withDebt, "wake", "x", true, ""))
 
 	// Debt: batched vs single-owner EXISTS on the same rows.
-	debts, err := h.app.asyncJobStore.ReactionDebtOwners(ctx, []string{withDebt, without})
+	debts, err := h.app.batchCutoverDebtOwners(ctx, []string{withDebt, without})
 	require.NoError(t, err)
-	singleDebt, err := h.app.asyncJobStore.ReactionDebtExists(ctx, withDebt)
+	singleDebt, err := session.NewBatchStore(h.app.DB()).BatchReactionDebtExists(ctx, withDebt)
 	require.NoError(t, err)
-	singleClean, err := h.app.asyncJobStore.ReactionDebtExists(ctx, without)
+	singleClean, err := session.NewBatchStore(h.app.DB()).BatchReactionDebtExists(ctx, without)
 	require.NoError(t, err)
 	require.Equal(t, singleDebt, debts[withDebt])
 	require.Equal(t, singleClean, debts[without])

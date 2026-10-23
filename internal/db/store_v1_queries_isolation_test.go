@@ -181,17 +181,21 @@ func TestStoreV1CreationLeavesLegacyDatabaseAndSidecarsUntouched(t *testing.T) {
 	}
 }
 
-func TestStorePathLifecycleUsesLegacyFilename(t *testing.T) {
+// Pins the store-path lifecycle for the ACTIVE store filename: Connect
+// creates rush_store_v1.db (storepath.ActiveFilename since H4), ReleaseAll
+// closes it, and the legacy rush.db import source is never created as a
+// side effect.
+func TestStorePathLifecycleCreatesActiveStoreV1File(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() { require.NoError(t, ReleaseAll(dataDir)) })
 	conn, err := Connect(context.Background(), dataDir)
 	require.NoError(t, err)
-	_, err = os.Stat(storepath.DataDirPath(dataDir, storepath.LegacyFilename))
+	_, err = os.Stat(storepath.ActivePath(dataDir))
 	require.NoError(t, err)
 	require.NoError(t, ReleaseAll(dataDir))
 	_, err = conn.ExecContext(t.Context(), `SELECT 1`)
 	require.Error(t, err)
-	if _, err := os.Stat(storepath.DataDirPath(dataDir, storepath.StoreV1Filename)); !os.IsNotExist(err) {
+	if _, err := os.Stat(storepath.DataDirPath(dataDir, storepath.LegacyFilename)); !os.IsNotExist(err) {
 		t.Fatalf("inactive store unexpectedly created: %v", err)
 	}
 }

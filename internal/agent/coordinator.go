@@ -243,16 +243,16 @@ type Coordinator interface {
 	// survive the rerun (docs/reviews/2026-09-29-async-phase4-round1-rerun-
 	// design.md).
 	CancelTurn(sessionID string)
-	// StopRerunJobs stops the jobs a committed Rerun truncation voided
-	// (session.TruncateForRerun's Voided set): each still-running row this
-	// process executes is stopped with Stop semantics (a session cancel:
-	// `cancelled`, notice kind session_cancel, wake=0, delivery stays `void` --
-	// not job_kill's stopped notice), and every voided delegation's child tree
-	// is stopped like Stop (stopTree). Best effort,
-	// called strictly AFTER the truncation transaction committed -- a stop
-	// that fails or cannot reach a foreign host's executor is safe: the row
-	// is already void, so its completion commits void (no debt, never pulled).
-	StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob)
+	// BatchRerunStopVoided stops the executors a committed batch rerun
+	// truncation voided (session.BatchStore.BatchRerunReconcile's Voided
+	// node set): each still-running local root incarnation is stopped with
+	// Stop semantics, and every voided delegation's child tree is stopped
+	// like Stop (stopTree). Best effort, called strictly AFTER the
+	// truncation transaction committed -- a stop that fails or cannot reach
+	// a foreign host's executor is safe: the rows are already void, so the
+	// completion commits void (no debt, never pulled). See
+	// batch_cutover_rerun.go (the BatchRerunStopper surface).
+	BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode)
 }
 
 type coordinator struct {
@@ -265,6 +265,9 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	// inlineWindowDisabled is the SetInlineWindowForTest seam: when set, the
+	// bash delivery window is off (the pre-A14 "started" flow).
+	inlineWindowDisabled atomic.Bool
 	// notifyWG joins the async-completion wake goroutines, so a caller (a
 	// test, a shutdown) can wait for their last store access.
 	notifyWG sync.WaitGroup
@@ -280,19 +283,28 @@ type coordinator struct {
 	notifyCallbackHook    func(context.Context)
 	callbackAfterWaitHook func()
 	callbackJoinTimeout   func() <-chan time.Time
-	// asyncJobs is the single in-memory work ledger: plain async jobs
-	// (bash/run_command) and delegation jobs (agent/agentic_fetch) share one
-	// state machine and one mutex. See work_ledger.go/work_ledger_delegation.go.
-	asyncJobs *workLedger
+	// driverHints is the rehomed in-process coordination memory the deleted
+	// workLedger carried (batch_rehome_coord_runtime.go): the per-session
+	// fact-hint counter and this process's external-driver mirror.
+	driverHints *batchDriverHints
+	// supervision is the per-root supervision countdown registry; timeouts
+	// is the single per-process deadline timer supervision arms through.
+	// See supervision.go / timeout_service.go.
+	supervision *supervisionRegistry
+	timeouts    *timeoutService
+	// noticeStore is the retained session_notices writer the completion
+	// notice paths use (supervision tick, reaction-chain marker, bg-shell
+	// done, held child question); bound via SetCoordinatorSessionNoticeStore.
+	noticeStore *session.SessionNoticeStore
 	// subAgentDrivers maps a delegated child session id to the SessionAgent
 	// driving it, so a wake for that child's own async work never races a
 	// second SessionAgent for its OS session lock. See
 	// coordinator_subagent_drivers.go.
 	subAgentDrivers *subAgentDriverRegistry
 
-	// batchDriverClaimer overrides asyncJobs.store as the durable
-	// session-driver-marker store (flag-ON: session.HostStore); nil keeps
-	// the legacy path. See batch_cutover_driver.go.
+	// batchDriverClaimer is the durable session-driver-marker store
+	// (session.HostStore): claim/release AND the foreign-driver read go
+	// through it. See batch_cutover_driver.go / batch_rehome_coord_runtime.go.
 	batchDriverClaimer BatchDriverClaimer
 
 	// diskCaps is the App-owned capability manager bound at batch install
@@ -442,14 +454,11 @@ type modelPairCache interface {
 // generations and arbitrary per-session overrides cannot grow without bound.
 const modelCacheMaxEntries = 16
 
-// NewCoordinator wires the agent coordinator. asyncStore is the phase-4
-// durable job store (docs/plans/2026-09-28-async-phase4-durable-core.md
-// sec.5 step 2): the DB row, not memory, now decides a non-sync async job's
-// outcome (DUR-1/DUR-8). nil disables async bash/run_command/agent/
-// agentic_fetch tool calls entirely (Start fails closed) -- callers that
-// never exercise those tools (a handful of narrow regression fixtures) may
-// pass nil; every real caller (internal/app) must build one via
-// session.NewAsyncJobStore over its own writer *sql.DB and data dir.
+// NewCoordinator wires the agent coordinator. Async work is batch-only: the
+// jobbatch engine (batch_nodes + the batch outbox) decides every outcome; the
+// coordinator's own runtime state (hint counter, supervision registry,
+// timeout service) is in-process coordination memory rehomed from the deleted
+// workLedger (batch_rehome_coord_runtime.go).
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -460,7 +469,6 @@ func NewCoordinator(
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
 	mcpOwner *mcp.Owner,
-	asyncStore *session.AsyncJobStore,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -494,17 +502,12 @@ func NewCoordinator(
 		skillTracker: skillTracker,
 		modelCache:   newBoundedModelPairCache(modelCacheMaxEntries),
 	}
-	// The web-done callback is notifyAsyncCompletion verbatim, exactly as
-	// before.
-	c.asyncJobs = newWorkLedger(c.notifyAsyncCompletion)
-	c.asyncJobs.store = asyncStore
-	c.asyncJobs.coord = c
-	c.asyncJobs.timeouts = newTimeoutService(c.asyncJobs)
-	c.asyncJobs.supervision = newSupervisionRegistry()
-	// A14: production runs the inline window (a fixed constant, not a
-	// setting); tests may zero it on their own ledger to keep the old
-	// "started" flow byte-for-byte.
-	c.asyncJobs.inlineWindow = inlineWindow
+	// The hint counter, supervision registry and the shared timeout service
+	// are in-process coordination memory rehomed from the deleted workLedger
+	// (batch_rehome_coord_runtime.go / supervision.go).
+	c.driverHints = newBatchDriverHints()
+	c.supervision = newSupervisionRegistry()
+	c.timeouts = newTimeoutService()
 	c.subAgentDrivers = newSubAgentDriverRegistry()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]

@@ -15,7 +15,6 @@ import (
 )
 
 func TestExplainWhyBatchPreservesClassifierWithoutBatchWork(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a, wake, sessID, _ := wakeWhyFixture(t, time.Hour)
 	dataDir := t.TempDir()
 	a.SetDataDirForTest(dataDir)
@@ -34,7 +33,6 @@ func TestExplainWhyBatchPreservesClassifierWithoutBatchWork(t *testing.T) {
 }
 
 func TestExplainWhyBatchUnknownDominatesOnceSchedule(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	a, _, sessID, _ := wakeWhyFixture(t, time.Hour)
 	dataDir := writeLockFile(t, sessID, 99999999)
@@ -48,7 +46,6 @@ func TestExplainWhyBatchUnknownDominatesOnceSchedule(t *testing.T) {
 }
 
 func TestExplainWhyBatchDriver(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	a, s, _, store, dataDir := newRunDriverTestApp(t)
 	sess, err := s.Create(ctx, "batch driver")
@@ -64,8 +61,7 @@ func TestExplainWhyBatchDriver(t *testing.T) {
 	require.Contains(t, out.String(), "status: at rest")
 }
 
-func TestSessionQuestionReaderForAppSelectsBatchReader(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+func TestSessionQuestionReaderForAppSelectsNoticeStore(t *testing.T) {
 	testApp, _, _, _, _ := newRunDriverTestApp(t)
 	reader := sessionQuestionReaderForApp(testApp)
 	require.NotNil(t, reader)
@@ -74,19 +70,6 @@ func TestSessionQuestionReaderForAppSelectsBatchReader(t *testing.T) {
 	requireNilReader(t, sessionQuestionReaderForApp(nil))
 	noDB := &app.App{DB: func() *sql.DB { return nil }}
 	requireNilReader(t, sessionQuestionReaderForApp(noDB))
-}
-
-func TestSessionQuestionReaderForAppOffNilStore(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "false")
-	a := &app.App{}
-	requireNilReader(t, sessionQuestionReaderForApp(a))
-	store := session.NewAsyncJobStore(nil, "", 1, "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	a.SetAsyncJobStoreForTest(store)
-	reader := sessionQuestionReaderForApp(a)
-	got, ok := reader.(*session.AsyncJobStore)
-	require.True(t, ok)
-	require.Same(t, store, got)
 }
 
 // requireNilReader asserts the interface value itself is nil. testify's Nil

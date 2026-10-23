@@ -311,8 +311,7 @@ res, err := client.Run(ctx, sdk.RunRequest{
 })
 ```
 
-`sdk.OSDiskProvider()` returns the real-filesystem implementation `nil`
-falls back to — wrap it (e.g. to log every write) instead of
+`sdk.OSDiskProvider()` returns the real-filesystem implementation. `nil` falls back to it; wrap it (e.g. to log every write) instead of
 reimplementing ripgrep dispatch and gitignore-aware directory walking
 from scratch.
 
@@ -353,8 +352,7 @@ Boundaries to know:
   drain/wake continuation ALSO restores the persisted folder-scope/command-tool
   and restricted-run baseline from the fence, so the continued turn is judged
   by the same policy the fenced run was admitted under.
-- **Supported by the batch runtime as a process-bound capability.** Rush
-  borrows the provider and does not close it. Keep it usable until
+- By default, SDK runs use the batch execution runtime. Rush borrows the provider and does not close it. Provider-backed runs retain a process-bound provider binding until associated work terminates; a process restart cannot restore that in-memory capability, so provider-dependent continuations fail closed with `sdk.ErrDiskProviderUnavailable` rather than falling back to the OS filesystem. Keep it usable until
   associated executions—including detached work and held delegations—
   have actually terminated and disposed. Cancellation requests are not
   proof that provider operations stopped; SDK Run/wait returning does

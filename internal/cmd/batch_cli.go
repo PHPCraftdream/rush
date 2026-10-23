@@ -36,17 +36,7 @@ func init() {
 	rootCmd.AddCommand(batchCmd)
 }
 
-func batchFlag(cmd *cobra.Command) error {
-	if !config.BatchRuntimeEnabled() {
-		return errors.New("batch runtime is disabled; set RUSH_BATCH_RUNTIME=1")
-	}
-	return nil
-}
-
 func batchApp(cmd *cobra.Command, owner bool) (*app.App, error) {
-	if err := batchFlag(cmd); err != nil {
-		return nil, err
-	}
 	a, err := setupApp(cmd)
 	if err != nil {
 		return nil, err
@@ -59,9 +49,6 @@ func batchApp(cmd *cobra.Command, owner bool) (*app.App, error) {
 }
 
 func batchRun(cmd *cobra.Command, _ []string) error {
-	if err := batchFlag(cmd); err != nil {
-		return err
-	}
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
 		return errors.New("--detach is unsupported: no durable external host is available")

@@ -81,9 +81,11 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 	application, err := New(context.Background(), conn, store)
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
-	// A14 seam: these e2e scripts match the literal "Async ... started" text
-	// and count pulled notices -- the flow the inline window replaces.
-	agent.SetInlineWindowForTest(application.AgentCoordinator, false)
+	// The inline window stays ON: a restricted bash probe is denied at the
+	// permission gate well inside the window, so the denial (StopTurn)
+	// returns inline and the turn stops there. Detaching bash (the window
+	// off) would return "started" and let the turn continue to a second
+	// provider round.
 
 	sess, err := application.Sessions.Create(context.Background(), "admission-race-title")
 	require.NoError(t, err)

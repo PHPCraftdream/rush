@@ -160,13 +160,3 @@ func TestStopAgentTool_ModelSafeErrorNotGoError(t *testing.T) {
 	require.Contains(t, resp.Content, "no active turn or pending delegation")
 	require.Equal(t, "parent-1", ctrl.caller)
 }
-
-func TestDelegationJobErrorPointsAtControlTools(t *testing.T) {
-	// Stage 3 (task #1024): job_kill/job_output's refusal for a delegation
-	// job_id must name the tools that CAN stop/inspect it.
-	// Revert-check: restore the pre-stage-3 DelegationJobError text (without
-	// stop_agent/inspect_agent) and this test fails.
-	err := (&DelegationJobError{JobID: "call-1", ChildSessionID: "child-1"}).Error()
-	require.Contains(t, err, "stop_agent")
-	require.Contains(t, err, "inspect_agent")
-}

@@ -3,7 +3,7 @@ package agent
 // §6.2/§6.4: restricted-run allowlist lifetime for a delegated child session
 // must match the DRIVER's lifetime, not the first turn's -- a woken turn
 // re-inherits the baseline from subAgentDriver.parentSessionID on every
-// wake, and neither runSubAgent nor asyncTool.run clear the child's entry on
+// wake, and neither runSubAgent nor the batch delivery clear the child's entry on
 // return anymore.
 
 import (
@@ -13,8 +13,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,18 +105,17 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 		},
 	}
 	coord := &coordinator{permissions: spy, subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(nil)
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
+	conn, dataDir := batchFixtureConn(t)
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
+	ensureFixtureSession(t, conn, "child-1")
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent, parentSessionID: "parent-1"})
 
 	// Simulate the child's allowlist entry having been cleared already
 	// (what the removed `defer Clear` used to do at the end of the first turn).
 	spy.ClearSessionRunAllowlist("child-1")
 
-	require.NoError(t, coord.asyncJobs.store.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
+	require.NoError(t, coord.noticeStore.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
 	err := coord.wakeSession(t.Context(), "child-1", true)
 	require.NoError(t, err)
 
@@ -156,38 +155,4 @@ func TestRunSubAgent_DoesNotClearChildAllowlistOnReturn(t *testing.T) {
 	spy.mu.Lock()
 	defer spy.mu.Unlock()
 	require.Empty(t, spy.clears, "runSubAgent must not clear the child's allowlist entry on return")
-}
-
-// TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn pins §6.2 for
-// the async_tool.go path (agent/agentic_fetch dispatched under asyncTool):
-// t.run must not clear the delegated child's allowlist entry once its
-// goroutine returns. Revert-check performed: restored the old
-// `defer mgr.ClearSessionRunAllowlist(childSessionID)` inside t.run --
-// this test FAILED (spy.clears contained the child session id). Removed it
-// again; re-ran, passed.
-func TestAsyncTool_DoesNotClearChildAllowlistOnDelegationReturn(t *testing.T) {
-	spy := newAllowlistSpy(t)
-	coord := &coordinator{permissions: spy}
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.store = newTestAsyncJobStore(t)
-	coord.asyncJobs.coord = coord
-
-	const owner, childSession, callID = "owner-session", "child-session", "call-1"
-	_, _, err := coord.asyncJobs.Start(owner, callID, "", AgentToolName, childSession, false, false, nil, func() {})
-	require.NoError(t, err)
-	coord.asyncJobs.acknowledged(jobOf(coord.asyncJobs, owner, callID))
-
-	wrapped := &asyncTool{
-		inner:       newYieldedInnerTool(AgentToolName, "delegation result"),
-		coordinator: coord,
-		name:        AgentToolName,
-	}
-	ctx := WithCallOrigin(t.Context(), message.OriginWeb)
-	wrapped.run(ctx, func() {}, jobOf(coord.asyncJobs, owner, callID), owner, childSession, fantasy.ToolCall{
-		ID: callID, Name: AgentToolName, Input: `{}`,
-	}, false)
-
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	require.Empty(t, spy.clears, "asyncTool.run must not clear the delegated child's allowlist entry on return")
 }

@@ -362,26 +362,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	// Phase-4 step 5 (DUR-5/DUR-6, doc sec.3.5/3.7): recover this session's
-	// OWN scope's dead-host rows to 'interrupted' BEFORE the pull below, so
-	// an interruption discovered right now is already delivery='pending' and
+	// Recovery BEFORE the pull below (DUR-5/DUR-6, doc sec.3.5/3.7): an
+	// interruption discovered right now is already delivery='pending' and
 	// gets pulled into history in THIS turn, not a later one. Recovery never
-	// writes history or wakes anyone itself -- see RecoverOwnerScope's doc.
-	// Batch runtime ON (R12-E): batch recovery is R9's sweep; the ON turn
-	// never touches async_jobs, so a dropped async_jobs store must not even
-	// be read here.
-	if a.asyncJobs != nil && a.asyncJobs.store != nil && !batchFlagEnabled() {
-		a.asyncJobs.store.RecoverOwnerScope(preambleCtx, call.SessionID, a.messages)
-	}
-	// H4 W2: batch runtime ON recovery at the same BEFORE-the-pull position:
-	// the interruption discovered right now is already delivery='pending'
-	// and gets pulled into history in THIS turn, not a later one. Bounded
-	// and best-effort (one 10ms budget, one candidate root attempt); the
-	// background maintenance pass covers the rest. OFF stays byte-identical
-	// above.
-	if batchFlagEnabled() && a.asyncJobs != nil {
-		recoverBatchScopeDeadCandidates(preambleCtx, a.asyncJobs.coord, call.SessionID)
-	}
+	// writes history or wakes anyone itself. Batch-only: this is R9's sweep
+	// over the batch facts (batch_scope_recovery.go), bounded and
+	// best-effort (one 10ms budget, one candidate root attempt); the
+	// background maintenance pass covers the rest.
+	recoverBatchScopeDeadCandidates(preambleCtx, a.coord, call.SessionID)
 
 	// Phase-4 step 3 (DUR-3, doc sec.3.3): the driver pulls pending
 	// async_jobs/session_notices rows into history BEFORE history loads for
@@ -396,47 +384,27 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// this Drain's own pull (a row pulled by an earlier failed attempt
 		// counts too), then the commit decision runs on it. A failing read
 		// leaves the leg "not attempted": a refusal, never a count.
-		// Batch twin (R12-E): with the flag ON and the cutover facts bound,
-		// async_jobs is NEVER read here -- the decision input is the batch
-		// debt (batch nodes + session notices) captured ONCE, and that same
-		// capture is the leg's accounting snapshot (att.batchSnapshot).
-		// att.snapshot stays zero on this path: the ON accounting reads only
-		// att.batchSnapshot, and chainLink's legacy half is inert for a
-		// batch-only leg (chainIdleClaims empty).
+		// Batch-only: the decision input is the batch debt (batch nodes +
+		// session notices) captured ONCE, and that same capture is the leg's
+		// accounting snapshot (att.batchSnapshot). att.snapshot stays zero:
+		// the accounting reads only att.batchSnapshot, and chainLink's
+		// legacy half is inert for a batch-only leg (chainIdleClaims empty).
 		var hasVisibleDebt bool
-		var bfacts BatchCutoverFacts
-		if a.asyncJobs != nil {
-			bfacts = coordinatorBatchCutoverFacts(a.asyncJobs.coord)
-		}
-		if batchFlagEnabled() && bfacts != nil {
-			bctx, bcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
-			bsnap, berr := bfacts.CaptureVisibleDebt(bctx, call.SessionID)
-			bcancel()
-			switch {
-			case berr == nil:
-				att.batchSnapshot, att.batchCaptured = bsnap, true
-				hasVisibleDebt = len(bsnap.Nodes)+len(bsnap.Notices) > 0
-			case call.drainTurnCommitted:
-				// A committed continuation runs uncounted, never fails.
-				slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
-					"session_id", call.SessionID, "err", berr)
-			default:
-				preambleCancel()
-				return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", berr)
-			}
-		} else {
-			snap, snapErr := a.visibleDebtSnapshot(preambleCtx, call.SessionID)
-			switch {
-			case snapErr == nil:
-				att.snapshot = snap
-				hasVisibleDebt = !snap.Empty()
-			case call.drainTurnCommitted:
-				slog.Warn("drain turn: debt snapshot failed on a committed continuation; it runs uncounted",
-					"session_id", call.SessionID, "err", snapErr)
-			default:
-				preambleCancel()
-				return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", snapErr)
-			}
+		bfacts := coordinatorBatchCutoverFacts(a.coord)
+		bctx, bcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
+		bsnap, berr := bfacts.CaptureVisibleDebt(bctx, call.SessionID)
+		bcancel()
+		switch {
+		case berr == nil:
+			att.batchSnapshot, att.batchCaptured = bsnap, true
+			hasVisibleDebt = len(bsnap.Nodes)+len(bsnap.Notices) > 0
+		case call.drainTurnCommitted:
+			// A committed continuation runs uncounted, never fails.
+			slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
+				"session_id", call.SessionID, "err", berr)
+		default:
+			preambleCancel()
+			return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", berr)
 		}
 		if !call.drainTurnCommitted {
 			commit, verdict := a.decideDrainTurn(preambleCtx, call.SessionID, hasVisibleDebt)
@@ -451,27 +419,18 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				att.outcome = drainNoTurn
 				att.commitNo = verdict
 				if !hasVisibleDebt {
-					// Pending-inclusive debt source (R12-E round 7): ON with
-					// bound facts the pending read comes from the BATCH rows
-					// too -- the legacy AsyncReactionDebtExists over
-					// async_jobs never runs with the flag on, so a dropped
-					// legacy table cannot fail the accounting. OFF keeps the
-					// legacy predicate byte-identical.
-					if bfacts != nil {
-						pctx, pcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
-						pending, perr := bfacts.PendingInclusiveDebt(pctx, call.SessionID)
-						pcancel()
-						if perr != nil {
-							// Same fail-safe as pendingDebtLeft: an
-							// unreadable answer counts as "remains".
-							slog.Warn("drain turn: pending batch debt check failed; treating the debt as remaining",
-								"session_id", call.SessionID, "err", perr)
-							att.pendingLeft = true
-						} else {
-							att.pendingLeft = len(pending.Nodes)+len(pending.Notices) > 0
-						}
+					// Pending-inclusive debt source: the BATCH rows. An
+					// unreadable answer counts as "remains" (the same
+					// fail-safe as pendingDebtLeft).
+					pctx, pcancel := context.WithTimeout(preambleCtx, drainAccountBudget())
+					pending, perr := bfacts.PendingInclusiveDebt(pctx, call.SessionID)
+					pcancel()
+					if perr != nil {
+						slog.Warn("drain turn: pending batch debt check failed; treating the debt as remaining",
+							"session_id", call.SessionID, "err", perr)
+						att.pendingLeft = true
 					} else {
-						att.pendingLeft = a.pendingDebtLeft(preambleCtx, call.SessionID)
+						att.pendingLeft = len(pending.Nodes)+len(pending.Notices) > 0
 					}
 				}
 				preambleCancel()
@@ -964,6 +923,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if !ok {
 		return result, SessionAgentCall{}, false, err
 	}
-	// There are queued messages — the caller's loop runs another turn.
-	return nil, firstQueuedMessage, true, nil
+	// There are queued messages — the caller's loop runs another turn. The
+	// finished turn's own outcome is NOT dropped: returning it here lets the
+	// loop's per-iteration onQueueResolved hook deliver the real result/err
+	// for the call that just completed, instead of a spurious (nil, nil).
+	return result, firstQueuedMessage, true, nil
 }

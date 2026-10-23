@@ -1,12 +1,10 @@
 package server
 
-// Flag-on (RUSH_BATCH_RUNTIME) seeding + rerun-stop fake for the rerun
-// cancel-window and hold tests (task #630 / R2C-4 dual-mode ports): the
-// handler's committed truncation is session.BatchRerunReconcile over batch_nodes
-// rows, and its post-commit stop goes to the OPTIONAL agent.BatchRerunStopper
-// surface on a detached goroutine, so the legacy mailboxLikeCoordinator fake
-// stays untouched and tests that need the flag-on path wrap it in
-// batchStopCoordinator.
+// Batch seeding fake for the rerun cancel-window/hold tests (task #630 /
+// R2C-4): the handler's committed truncation is session.BatchRerunReconcile
+// over batch_nodes rows, and its post-commit stop goes to the optional
+// agent.BatchRerunStopper on a detached goroutine; batchStopCoordinator
+// records the stop.
 
 import (
 	"context"
@@ -24,13 +22,11 @@ import (
 const rerunBatchFxHost = "rerun-handler-fx-host"
 
 // seedRerunBatchRoot reserves one live batch root incarnation for the
-// fixture's owner/tool call (the SAME shape livework_seed_test.go's flag-on
-// branch uses: root kind=batch, mode parallel, state running, ControlState
-// none, never acked) and records its id on the fixture so jobDelivery reads
-// that row's delivery column. Seeding is per-test rather than fixture-level
-// because handlers_agent_rerun_cutover_test.go shares this fixture and its
-// own seedBatchIncarnation expects to be the only voidable root for
-// rerunCallID in its DB.
+// fixture's owner/tool call (root kind=batch, mode parallel, state running,
+// ControlState none, never acked) and records its id on the fixture so
+// jobDelivery reads that row's delivery column. The fixture seeds exactly
+// one live batch root incarnation, standing in for the rerunCallID job;
+// tests that assert exact voided sets read it from f.batchSnap.
 func seedRerunBatchRoot(t *testing.T, f *rerunHandlerFx) session.BatchSnapshot {
 	t.Helper()
 	res, err := session.NewBatchStore(f.a.DB()).Reserve(context.Background(), session.BatchReservation{

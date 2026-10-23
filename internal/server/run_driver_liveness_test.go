@@ -41,15 +41,14 @@ func TestHandleListSessions_LiveRunDriverAnnotation(t *testing.T) {
 	rows := list()
 	require.False(t, findSessionRow(t, rows, driven.ID).HasLiveOwnWork, "no marker: idle")
 
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	require.NoError(t, store.ClaimSessionDriver(ctx, driven.ID))
+	hostStore := a.BatchHostStore()
+	require.NoError(t, hostStore.ClaimSessionDriver(ctx, driven.ID))
 
 	rows = list()
 	require.True(t, findSessionRow(t, rows, driven.ID).HasLiveOwnWork,
 		"a live rush run driver between turns keeps the session from reading as idle")
 	require.False(t, findSessionRow(t, rows, idle.ID).HasLiveOwnWork, "another session is unaffected")
 
-	require.NoError(t, store.ReleaseSessionDriver(ctx, driven.ID))
+	require.NoError(t, hostStore.ReleaseSessionDriver(ctx, driven.ID))
 	require.False(t, findSessionRow(t, list(), driven.ID).HasLiveOwnWork, "the loop exited: idle again")
 }

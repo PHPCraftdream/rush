@@ -200,17 +200,13 @@ func TestBatchStopWakeZeroAndRestartNoReactionTurn(t *testing.T) {
 
 	// The restart: a fresh coordinator (fresh arbiter state) and a fresh
 	// agent over the same DB -- exactly what a restarted process re-derives.
-	coord2 := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger2 := newWorkLedger(coord2.notifyAsyncCompletion)
-	ledger2.store = f.store
-	ledger2.coord = coord2
-	coord2.asyncJobs = ledger2
+	coord2 := newBatchRuntimeCoordinator()
 	BindCoordinatorBatchCutoverFacts(coord2, NewBatchCutoverNodeFacts(store, nil, f.env.conn))
 	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord2) })
 	sa2 := NewSessionAgent(SessionAgentOptions{
 		SmartModel: f.model, FastModel: f.model, SystemPrompt: "you are a probe",
 		DataDirectory: f.env.workingDir, Sessions: f.env.sessions, Messages: f.env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger2,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord2,
 		TitleJoinGrace: 100 * time.Millisecond,
 	}).(*sessionAgent)
 

@@ -55,52 +55,39 @@ func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []strin
 	return names
 }
 
-// workerToolNamesBatch is the flag-ON variant of coordinator_tools.go's
-// workerToolNames: the worker's post-await read controls are the NATIVE
-// batch_status/batch_output, layered in place of job_output (the native
-// surface must not depend on the old name). batch_stop stays out exactly as
-// job_kill always was -- a worker layering never granted a stop control.
-//
-// The native grants are declared INDEPENDENTLY of the legacy entry: the
-// legacy job_output name is FILTERED (never translated), so removing it
-// from the input at H4 cutover cannot silently remove the native grants.
+// workerToolNamesBatch is the worker layering: the worker ALWAYS receives the
+// native batch_status/batch_output read controls -- appended to the supplied
+// names, dedup-safe, independently of any legacy grant list -- so its
+// post-await read surface never depends on the caller's list carrying them.
+// batch_stop stays out exactly as the legacy stop control always was -- a
+// worker layering never granted a stop control.
 func workerToolNamesBatch(names []string) []string {
 	out := make([]string, 0, len(names)+2)
-	for _, name := range names {
-		if name == tools.JobOutputToolName {
-			continue
+	out = append(out, names...)
+	for _, name := range []string{"batch_status", "batch_output"} {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
 		}
-		out = append(out, name)
 	}
-	return append(out, "batch_status", "batch_output")
+	return out
 }
 
-// workerLayeredToolNames picks the worker layering for the build's flag
-// state: flag OFF keeps the historical list byte-identical.
+// workerLayeredToolNames picks the worker layering: unconditional batch
+// acceptance (the batch selection IS the surface).
 func workerLayeredToolNames() []string {
-	if batchFlagEnabled() {
-		return workerToolNamesBatch(workerToolNames)
-	}
-	return workerToolNames
+	return workerToolNamesBatch(workerToolNames)
 }
 
-// folderScopeCommandToolsBatch extends coordinator_tools.go's
-// folderScopeCommandTools with the native controls: batch_status,
+// folderScopeCommandToolsBatch is the scoped command-tool set: batch_status,
 // batch_output and batch_stop are kept or stripped exactly like the command
-// tools they replace, so a scope that strips job_output/job_kill also strips
-// their native twins. The legacy entries stay: the old runtime remains
-// functional until H4.
+// tools they replace.
 var folderScopeCommandToolsBatch = map[string]struct{}{
 	tools.BashToolName: {}, tools.RunCommandToolName: {},
-	tools.JobOutputToolName: {}, tools.JobKillToolName: {},
 	"batch_status": {}, "batch_output": {}, "batch_stop": {},
 }
 
-// folderScopeCommandToolSet picks the command-tool set for the build's flag
-// state.
+// folderScopeCommandToolSet is the scoped command-tool set: unconditional
+// batch acceptance.
 func folderScopeCommandToolSet() map[string]struct{} {
-	if batchFlagEnabled() {
-		return folderScopeCommandToolsBatch
-	}
-	return folderScopeCommandTools
+	return folderScopeCommandToolsBatch
 }

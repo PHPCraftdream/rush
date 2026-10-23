@@ -29,7 +29,7 @@ type retryFixture struct {
 
 func newRetryFixture(t *testing.T, sessionID string) *retryFixture {
 	t.Helper()
-	_, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn := batchFixtureConnNoFK(t)
 	svc := message.NewService(db.New(conn))
 	return &retryFixture{
 		svc: svc,

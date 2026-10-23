@@ -2,250 +2,39 @@
 // bash/run_command jobs that pass no explicit timeout, its precedence and
 // its blast radius.
 //
-// Revert-check map — each test catches exactly one production line; revert
-// it and the test must fail:
-//   - TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut:
-//     async_tool.go Run's `if timeoutSpec == nil && (bash || run_command)`
-//     block that builds the default terminate_and_wake TimeoutSpec.
-//   - TestDefaultJobTimeout_ExplicitTimeoutBeatsDefault: the same block's
-//     `timeoutSpec == nil` gate (an explicit per-call timeout must win).
-//   - TestDefaultJobTimeout_NoDefaultArmsNoDeadline:
-//     default_job_timeout.go resolveBackgroundJobDefaultTimeout's zero
-//     return when neither CallOptions nor config set a default.
-//   - TestDefaultJobTimeout_DelegationUntouchedByDefault: async_tool.go's
-//     guard restricting the default to bash/run_command tool names.
+// Revert-check — the one surviving test catches exactly one production
+// line; revert it and the test must fail:
 //   - TestDefaultJobTimeout_CallOptionsWinOverConfig:
 //     default_job_timeout.go's CallOptions-first precedence over config
-//     Options.
+//     Options (the arming half of the old map was deleted with the wrapper
+//     and the ledger deadline machinery).
 package agent
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
 
-// defaultTimeoutLedger wires an isolated ledger with a durable store and the
-// real timeout service, the minimal fixture every async default-timeout test
-// starts from (mirrors work_ledger_timeout_test.go).
-func defaultTimeoutLedger(t *testing.T, onDone func(AsyncCompletion)) (*workLedger, *coordinator) {
-	t.Helper()
-	l := newWorkLedger(onDone)
-	l.store = newTestAsyncJobStore(t)
-	l.timeouts = newTimeoutService(l)
-	t.Cleanup(l.timeouts.close)
-	return l, &coordinator{asyncJobs: l, subAgentDrivers: newSubAgentDriverRegistry(), sessions: stubChildSessions{}}
-}
+// The deleted helpers defaultTimeoutLedger/barrier/terminalOf belonged to the
+// deleted ledger timeout tests (see below): the workLedger fixture, the
+// durable async_jobs store and the jobOf/terminal-state readbacks are gone.
+// The batch world arms per-job timeouts in the jobbatch launch spec (the tool
+// layer); only the resolution precedence below survives here.
 
-// barrier is the async-teardown synchronisation every test that arms a
-// real executor needs: it registers (LIFO, so it runs BEFORE the store/pool
-// cleanups newTestAsyncJobStore registered) a cleanup that first opens the
-// release gate, then bounded-polls the caller-supplied `terminal` predicate.
-// The predicate watches the DURABLE TERMINAL STATE itself -- not delivery:
-// job.state flips to terminal in commitTransition's in-memory adoption AFTER
-// the durable store.Transition write has landed (work_ledger_transition.go),
-// and the job is dropped from the ledger map once delivered (work_ledger.go
-// deliverLocked's delete) -- so either condition proves the transition
-// committed before teardown dismantles persistence under an in-flight
-// write. `terminal` must NOT hold l.mu across its own jobOf call (jobOf
-// locks l.mu internally); it reads state in a separate locked section.
-// The bounded wait uses require.Eventually (require.go:408), whose failure
-// path calls t.FailNow -- valid inside a Cleanup callback (Go explicitly
-// allows failing the test from cleanup) -- so a missing durable terminal
-// transition now FAILS the test instead of silently escaping teardown.
-func barrier(t *testing.T, release func(), terminal func() bool) {
-	t.Helper()
-	t.Cleanup(func() {
-		release()
-		require.Eventually(t, terminal, 5*time.Second, 10*time.Millisecond,
-			"the job never reached a durable terminal state after release")
-	})
-}
-
-// terminalOf builds barrier's predicate for (owner, toolCallID): true once
-// the job is gone from the ledger (delivered, work_ledger.go:428) or its
-// in-memory state is terminal (adopted post-store.Transition by
-// commitTransition, work_ledger_transition.go). jobOf takes l.mu itself,
-// so the state read happens in a second, separate locked section.
-func terminalOf(l *workLedger, owner, toolCallID string) func() bool {
-	return func() bool {
-		j := jobOf(l, owner, toolCallID)
-		if j == nil {
-			return true
-		}
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		return j.state.terminal()
-	}
-}
-
-// blockingInner is a stand-in bash/run_command process that blocks until its
-// ctx is cancelled (the timeout kill path) or release closes.
-func blockingInner(release <-chan struct{}) fantasy.AgentTool {
-	return fantasy.NewAgentTool("bash", "Run a command", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		select {
-		case <-ctx.Done():
-			return fantasy.ToolResponse{}, ctx.Err()
-		case <-release:
-			return fantasy.NewTextResponse("released output"), nil
-		}
-	})
-}
-
-// TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut: a bash job with
-// no timeout{} under a 2s CallOptions default reaches phaseTimedOut with a
-// partial-output timed-out notice and a stopped executor (the kill path).
-func TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut(t *testing.T) {
-	t.Parallel()
-	delivered := make(chan AsyncCompletion, 1)
-	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) {
-		delivered <- c
-	})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	inner := fantasy.NewAgentTool(tools.BashToolName, "Run a command", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		<-ctx.Done()
-		return fantasy.ToolResponse{}, ctx.Err()
-	})
-	wrapped := &asyncTool{inner: inner, coordinator: coord, name: tools.BashToolName}
-	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
-	ctx = WithCallOrigin(ctx, message.OriginCLI)
-	ctx = WithCallOptions(ctx, &CallOptions{BackgroundJobDefaultTimeout: 2 * time.Second})
-
-	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.BashToolName, Input: `{}`})
-	require.NoError(t, err)
-	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, terminalOf(l, "session", "call"))
-	require.Contains(t, resp.Content, "started")
-	l.acknowledged(jobOf(l, "session", "call"))
-
-	require.Eventually(t, func() bool {
-		// deliverLocked deletes the job once it is terminal AND acknowledged,
-		// so nil means the timed-out outcome was already delivered.
-		job := jobOf(l, "session", "call")
-		if job == nil {
-			return true
-		}
-		// job.state is written under l.mu by the timeout service.
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		return job.state == phaseTimedOut
-	}, 5*time.Second, 10*time.Millisecond, "the default deadline must terminate the job")
-	select {
-	case got := <-delivered:
-		require.True(t, got.TimedOut)
-		require.Equal(t, 2, got.TimeoutSeconds)
-		require.NotEmpty(t, got.Content, "the timed-out notice must carry captured partial output")
-	case <-time.After(2 * time.Second):
-		t.Fatal("the timed-out completion was never delivered")
-	}
-	require.Eventually(t, func() bool { return !l.running("session") },
-		2*time.Second, 10*time.Millisecond, "the executor must be cancelled (kill path) after termination")
-}
-
-// TestDefaultJobTimeout_ExplicitTimeoutBeatsDefault: a call carrying its own
-// timeout{} wins over a (much shorter) operator default -- the wake_only
-// deadline never terminates a sync job, so the caller sees the tool's real
-// result, never a timed-out notice.
-func TestDefaultJobTimeout_ExplicitTimeoutBeatsDefault(t *testing.T) {
-	t.Parallel()
-	_, coord := defaultTimeoutLedger(t, nil)
-	// Inner finishes on its own after 400ms: past the 300ms default (if it
-	// were wrongly applied) but never hitting the explicit 5s wake_only.
-	inner := fantasy.NewAgentTool(tools.RunCommandToolName, "Run a program", func(_ context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		time.Sleep(400 * time.Millisecond)
-		return fantasy.NewTextResponse("done"), nil
-	})
-	wrapped := &asyncTool{inner: inner, coordinator: coord, name: tools.RunCommandToolName}
-	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
-	ctx = WithCallOrigin(ctx, message.OriginSDK)
-	ctx = WithCallOptions(ctx, &CallOptions{BackgroundJobDefaultTimeout: 300 * time.Millisecond})
-
-	resp, err := wrapped.Run(ctx, fantasy.ToolCall{
-		ID: "call", Name: tools.RunCommandToolName,
-		Input: `{"timeout":{"seconds":5,"kind":"wake_only"}}`,
-	})
-	require.NoError(t, err)
-	require.Contains(t, resp.Content, "done")
-	require.NotContains(t, resp.Content, "timed out",
-		"an explicit per-call timeout must win -- the 300ms default must never terminate this job")
-}
-
-// TestDefaultJobTimeout_NoDefaultArmsNoDeadline: with no default configured
-// (CallOptions and config both silent), a bash job is started with NO
-// deadline at all.
-func TestDefaultJobTimeout_NoDefaultArmsNoDeadline(t *testing.T) {
-	t.Parallel()
-	completed := make(chan AsyncCompletion, 1)
-	l, coord := defaultTimeoutLedger(t, func(c AsyncCompletion) {
-		completed <- c
-	})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	wrapped := &asyncTool{inner: blockingInner(release), coordinator: coord, name: tools.BashToolName}
-	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
-	ctx = WithCallOrigin(ctx, message.OriginCLI)
-
-	_, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.BashToolName, Input: `{}`})
-	require.NoError(t, err)
-	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, terminalOf(l, "session", "call"))
-	job := jobOf(l, "session", "call")
-	require.NotNil(t, job)
-	require.True(t, job.deadline.IsZero(), "no default configured: the job must have no deadline")
-	require.Equal(t, timeoutKind(0), job.timeoutKind)
-
-	releaseOnce.Do(func() { close(release) })
-	l.acknowledged(job)
-	select {
-	case got := <-completed:
-		require.False(t, got.TimedOut)
-		require.Contains(t, got.Content, "released output")
-	case <-time.After(2 * time.Second):
-		t.Fatal("completion not delivered")
-	}
-}
-
-// TestDefaultJobTimeout_DelegationUntouchedByDefault: an agentic_fetch
-// (delegation) job is never armed with the default, even with a 2s default
-// on the call.
-func TestDefaultJobTimeout_DelegationUntouchedByDefault(t *testing.T) {
-	t.Parallel()
-	l, coord := defaultTimeoutLedger(t, nil)
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	inner := fantasy.NewAgentTool(tools.AgenticFetchToolName, "Fetch", func(_ context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		<-release
-		return fantasy.NewTextResponse("fetched"), nil
-	})
-	wrapped := &asyncTool{inner: inner, coordinator: coord, name: tools.AgenticFetchToolName}
-	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
-	ctx = context.WithValue(ctx, tools.MessageIDContextKey, "msg-1")
-	ctx = WithCallOrigin(ctx, message.OriginCLI)
-	ctx = WithCallOptions(ctx, &CallOptions{BackgroundJobDefaultTimeout: 2 * time.Second})
-
-	resp, err := wrapped.Run(ctx, fantasy.ToolCall{ID: "call", Name: tools.AgenticFetchToolName, Input: `{}`})
-	require.NoError(t, err)
-	barrier(t, func() { releaseOnce.Do(func() { close(release) }) }, terminalOf(l, "session", "call"))
-	require.Contains(t, resp.Content, "started")
-	job := jobOf(l, "session", "call")
-	require.NotNil(t, job)
-	require.True(t, job.deadline.IsZero(), "a delegation must never inherit the bash/run_command default")
-	releaseOnce.Do(func() { close(release) })
-	// Production acknowledges the delegation where its "started" tool result
-	// is persisted; in this fixture that is after Run returns and the
-	// assertions run. Without it a non-sync job stays announced=false and
-	// deliverLocked withholds delivery forever (work_ledger.go:378), so the
-	// finished job would linger in the map unannounced; with the ack, the
-	// recheckChild->commitAndDeliver path delivers AND commits, and the
-	// barrier's terminal-state predicate fires from the commit itself.
-	l.acknowledged(job)
-}
+// TestDefaultJobTimeout_BashNoExplicitTimeoutEndsTimedOut,
+// TestDefaultJobTimeout_ExplicitTimeoutBeatsDefault,
+// TestDefaultJobTimeout_NoDefaultArmsNoDeadline and
+// TestDefaultJobTimeout_DelegationUntouchedByDefault were DELETEd as
+// obsolete contracts: their premise was the deleted asyncTool wrapper arming
+// per-job terminate_and_wake deadlines on the workLedger (job.deadline /
+// job.timeoutKind / phaseTimedOut + the timeout service's kill path). In the
+// batch world the per-job timeout is carried in the jobbatch launch spec by
+// the tool layer (agent/tools), and only the RESOLUTION precedence survives
+// here (the test below).
 
 // TestDefaultJobTimeout_CallOptionsWinOverConfig: the run's CallOptions
 // (`--job-timeout`) wins over config's

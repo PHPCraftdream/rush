@@ -38,8 +38,6 @@ var restrictedToolActions = map[string]string{
 	"grep":                       "read",
 	"inject_agent":               "write",
 	"inspect_agent":              "read",
-	"job_kill":                   "delete",
-	"job_output":                 "read",
 	"list_mcp_resources":         "list",
 	"ls":                         "list",
 	"multiedit":                  "write",
@@ -97,9 +95,6 @@ type restrictedRunMarker interface{ restrictedRunWrapped() }
 func restrictedRunWrapped(tool fantasy.AgentTool) bool {
 	if hooked, ok := tool.(*hookedTool); ok {
 		return restrictedRunWrapped(hooked.inner)
-	}
-	if detacher, ok := tool.(*stallDetacherTool); ok {
-		return restrictedRunWrapped(detacher.inner)
 	}
 	_, ok := tool.(restrictedRunMarker)
 	return ok

@@ -293,7 +293,7 @@ type Options struct {
 	// tool executes (between OnToolCall and OnToolResult) so a long
 	// `cargo build`/test isn't a false provider stall — but that pause was
 	// previously unbounded, freezing the turn on a stuck tool (hung MCP
-	// tool, blocking job_output --wait). Past this cap the watchdog fires
+	// tool, blocking batch_output). Past this cap the watchdog fires
 	// with a distinct "tool timeout" reason so the turn ends. 0 (default)
 	// keeps the built-in 2700s (45m) backstop; raise it for very long
 	// synchronous tools.

@@ -431,8 +431,6 @@ func allToolNames() []string {
 		"run_command",
 		"rush_info",
 		"rush_logs",
-		"job_output",
-		"job_kill",
 		"inspect_agent",
 		"inject_agent",
 		"stop_agent",
@@ -465,12 +463,10 @@ func allToolNames() []string {
 		"fs_write_lines",
 		"fs_delete",
 	}
-	// R12-H1: with the batch runtime on, the native batch controls join the
-	// inventory under their own names, never derived from job_kill/job_output
-	// (H4 deletes those). Flag OFF keeps this list byte-identical.
-	if BatchRuntimeEnabled() {
-		names = append(names, "batch_run", "batch_add", "batch_status", "batch_output", "batch_stop")
-	}
+	// R12-H4: the batch runtime is unconditional, so the native batch
+	// controls are always part of the inventory; the deleted job_kill and
+	// job_output tools are gone from the list.
+	names = append(names, "batch_run", "batch_add", "batch_status", "batch_output", "batch_stop")
 	return names
 }
 

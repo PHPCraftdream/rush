@@ -44,11 +44,8 @@ func TestCompaction_DoesNotClearUnreactedDebt(t *testing.T) {
 		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "earlier work"}},
 	})
 	require.NoError(t, err)
-	// Dual-mode seed+pull: ON projects the terminal wake=1 completion onto
-	// batch nodes and pulls through the selected authority (the legacy store
-	// has no row under the flag, so the direct store calls above would leave
-	// the delivery pending and the debt invisible); OFF keeps the exact
-	// claim+finish+pull shape.
+	// Seed+pull: the terminal wake=1 completion is projected onto batch
+	// nodes and pulled through the batch facts.
 	f.finishAndPullVisible(t, ctx, "call-1")
 	require.True(t, f.debtVisible(t, ctx))
 
@@ -56,7 +53,7 @@ func TestCompaction_DoesNotClearUnreactedDebt(t *testing.T) {
 
 	require.True(t, f.debtVisible(t, ctx), "a compaction summary must never clear a notice's own debt")
 	// Dual-mode readback of the row the compaction must not have reacted.
-	job := readFixtureJobDebt(t, f.env.conn, f.store, f.sessID, "call-1")
+	job := readFixtureJobDebt(t, f.env.conn, f.sessID, "call-1")
 	require.EqualValues(t, 0, job.Reacted)
 }
 
@@ -174,7 +171,7 @@ func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) 
 
 	// The retry pause elapses (the gate reopens); exactly one more Drain, now
 	// that the write succeeds, resolves it.
-	f.ledger.resetDrainGate(f.sessID)
+	f.coord.arb.resetGate(f.sessID)
 	err = f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.False(t, f.a2DebtVisible(t, ctx), "the very next attempt must clear the debt -- no further chain needed")

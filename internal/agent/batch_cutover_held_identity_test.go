@@ -14,11 +14,13 @@ import (
 )
 
 func TestBatchLiveHeldQuestionsCarryNodeAndChildIdentity(t *testing.T) {
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn, dataDir := batchFixtureConn(t)
+	store := session.NewSessionNoticeStore(conn)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(conn), batchFixtureLiveReader(conn, dataDir), conn)
 	ctx := context.Background()
 	const owner = "sess-bq-held-owner"
 	const child = "sess-bq-held-child"
+	ensureFixtureSession(t, conn, owner)
 	_, nodeID := seedDelegation(t, conn, owner, "call-bq-id", child, 21)
 	commitMarkerNotice(t, conn, owner, nodeID, child, 21)
 

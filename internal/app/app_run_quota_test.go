@@ -12,7 +12,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,24 +67,14 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 	history, err := h.app.Sessions.Create(ctx, "historical child")
 	require.NoError(t, err)
 	claimDelegation(t, ctx, h.app, h.sessionID, "historical-child", history.ID)
-	if f6BatchOn() {
-		// ON: the dual-mode own-command seed reserves a live "command" batch
-		// root (the announced live shape production bash leaves). The OFF
-		// branch below stays byte-for-byte (f6a2ClaimOwnCommandJob's OFF path
-		// uses a different Input string, so it is NOT byte-equivalent).
-		f6a2ClaimOwnCommandJob(t, ctx, h.app, h.sessionID, "own-bash")
-	} else {
-		_, err = h.app.asyncJobStore.Claim(ctx, session.ClaimParams{Owner: h.sessionID, ToolCallID: "own-bash", Kind: session.JobKindCommand, ToolName: "bash", Input: "x"})
-		require.NoError(t, err)
-		require.NoError(t, h.app.asyncJobStore.MarkAnnounced(ctx, h.sessionID, "own-bash"))
-	}
+	f6a2ClaimOwnCommandJob(t, ctx, h.app, h.sessionID, "own-bash")
 	completeDelegation(t, ctx, h.app, h.sessionID, "historical-child", "historical-output", false)
 	h.afterFirstTurn(func() {
 		go func() {
 			time.Sleep(150 * time.Millisecond)
-			// Own command completion: ON the f6a2 root+task-child projection
-			// with the wake notice on the task node; OFF the legacy row
-			// transition (Wake: true). Error-returning for this goroutine.
+			// Own command completion: the f6a2 root+task-child projection
+			// with the wake notice on the task node. Error-returning for
+			// this goroutine.
 			e := e3CompleteOwnJobErr(ctx, h.app, h.sessionID, "own-bash", "own-output")
 			require.NoError(t, e)
 			time.Sleep(150 * time.Millisecond)
@@ -96,77 +85,52 @@ func TestCLIQuotaFirstWaitsPersistsAndResumes(t *testing.T) {
 	require.Error(t, runErr)
 	require.Equal(t, "provider_limit", res.ExitReason)
 	require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load())
-	// Identity-based ON: the raw key set is {own-bash, <ownRoot>.1, child-job,
+	// Identity-based: the raw key set is {own-bash, <ownRoot>.1, child-job,
 	// <childRoot>.1} -- the root exports under its tool-call id AND each task
 	// under its node id (app_batch_cutover_facts.go:151-202), so the alias
 	// keys are validated then NORMALISED away before the exact-key check.
-	if f6BatchOn() {
-		_, ownAlias := f6FindDelegationNodes(t, h.app, h.sessionID, "own-bash")
-		_, childAlias := f6FindDelegationNodes(t, h.app, h.sessionID, "child-job")
-		results := map[string][]string{}
-		for _, work := range res.FinishedWork {
-			require.NotEqual(t, "historical-child", work.JobID)
-			results[work.JobID] = append(results[work.JobID], work.Result)
-		}
-		for alias, want := range map[string]string{ownAlias: "own-output", childAlias: "child-output"} {
-			entries, ok := results[alias]
-			if !ok {
-				continue
-			}
-			for _, aliasResult := range entries {
-				require.Equal(t, want, aliasResult,
-					"the task alias of %s must export the same result as its root", alias)
-			}
-			delete(results, alias)
-		}
-		require.Len(t, results, 2, "exactly the two logical jobs may be exported")
-		require.Contains(t, results, "own-bash")
-		require.Equal(t, []string{"own-output"}, results["own-bash"])
-		require.Contains(t, results, "child-job")
-		require.Equal(t, []string{"child-output"}, results["child-job"])
-	} else {
-		require.Len(t, res.FinishedWork, 2)
-		for _, work := range res.FinishedWork {
-			require.NotEqual(t, "historical-child", work.JobID)
-		}
+	_, ownAlias := f6FindDelegationNodes(t, h.app, h.sessionID, "own-bash")
+	_, childAlias := f6FindDelegationNodes(t, h.app, h.sessionID, "child-job")
+	results := map[string][]string{}
+	for _, work := range res.FinishedWork {
+		require.NotEqual(t, "historical-child", work.JobID)
+		results[work.JobID] = append(results[work.JobID], work.Result)
 	}
+	for alias, want := range map[string]string{ownAlias: "own-output", childAlias: "child-output"} {
+		entries, ok := results[alias]
+		if !ok {
+			continue
+		}
+		for _, aliasResult := range entries {
+			require.Equal(t, want, aliasResult,
+				"the task alias of %s must export the same result as its root", alias)
+		}
+		delete(results, alias)
+	}
+	require.Len(t, results, 2, "exactly the two logical jobs may be exported")
+	require.Contains(t, results, "own-bash")
+	require.Equal(t, []string{"own-output"}, results["own-bash"])
+	require.Contains(t, results, "child-job")
+	require.Equal(t, []string{"child-output"}, results["child-job"])
 	require.Contains(t, wire, "own-output")
 	require.Contains(t, wire, "child-output")
 	require.Contains(t, res.ResumeCommand, "--role smart --session "+h.sessionID)
 	reset, err := time.Parse(time.RFC3339, res.QuotaResetAt)
 	require.NoError(t, err)
 	require.WithinDuration(t, time.Unix(0, lastQuotaAt.Load()).Add(time.Hour), reset, 10*time.Second)
-	if f6BatchOn() {
-		deliveries := e3BatchNoticeDeliveries(t, h.app, h.sessionID)
-		require.NotEmpty(t, deliveries)
-		for _, delivery := range deliveries {
-			require.Equal(t, "pending", delivery)
-		}
-	} else {
-		jobs, err := h.app.asyncJobStore.ListAsyncJobsForOwner(ctx, h.sessionID)
-		require.NoError(t, err)
-		for _, job := range jobs {
-			if job.ToolCallID != "historical-child" {
-				require.Equal(t, "pending", job.Delivery)
-			}
-		}
+	deliveries := e3BatchNoticeDeliveries(t, h.app, h.sessionID)
+	require.NotEmpty(t, deliveries)
+	for _, delivery := range deliveries {
+		require.Equal(t, "pending", delivery)
 	}
 	resume = true
 	res, _, runErr = h.run(ctx, RunOverrides{})
 	require.NoError(t, runErr)
 	require.Equal(t, "resumed persisted results", res.FinalText)
-	if f6BatchOn() {
-		deliveries := e3BatchNoticeDeliveries(t, h.app, h.sessionID)
-		require.NotEmpty(t, deliveries)
-		for _, delivery := range deliveries {
-			require.Equal(t, "done", delivery)
-		}
-	} else {
-		jobs, err := h.app.asyncJobStore.ListAsyncJobsForOwner(ctx, h.sessionID)
-		require.NoError(t, err)
-		for _, job := range jobs {
-			require.Equal(t, "done", job.Delivery)
-		}
+	deliveries = e3BatchNoticeDeliveries(t, h.app, h.sessionID)
+	require.NotEmpty(t, deliveries)
+	for _, delivery := range deliveries {
+		require.Equal(t, "done", delivery)
 	}
 }
 
@@ -205,18 +169,13 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 	ctx := loopCtx(t)
 	child, err := h.app.Sessions.Create(ctx, "question child")
 	require.NoError(t, err)
-	if f6BatchOn() {
-		// ON: the finish metadata alone never clears live work (cli_active_work.go
-		// cliActiveWorkBatch); only the CURRENT committed held-question identity
-		// makes the delegation dormant. Seed a token-carrying live delegation
-		// (f6ReserveDelegation's nodes carry token 0, which BatchPublishQuestion
-		// refuses) and publish through the real committed path. The legacy
-		// claimDelegation seed stays OFF-only.
-		e3ReserveDelegationWithToken(t, h.app, h.sessionID, "held-child", child.ID)
-		e3PublishHeldQuestion(t, ctx, h.app, h.sessionID, "held-child", child.ID, "which port?")
-	} else {
-		claimDelegation(t, ctx, h.app, h.sessionID, "held-child", child.ID)
-	}
+	// The finish metadata alone never clears live work (cli_active_work.go
+	// cliActiveWorkBatch); only the CURRENT committed held-question identity
+	// makes the delegation dormant. Seed a token-carrying live delegation
+	// (f6ReserveDelegation's nodes carry token 0, which BatchPublishQuestion
+	// refuses) and publish through the real committed path.
+	e3ReserveDelegationWithToken(t, h.app, h.sessionID, "held-child", child.ID)
+	e3PublishHeldQuestion(t, ctx, h.app, h.sessionID, "held-child", child.ID, "which port?")
 	_, err = h.app.Messages.Create(ctx, child.ID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{
 		message.Finish{Reason: message.FinishReasonError, Message: "Stopped: agent asked a question and is awaiting an answer", Details: agent.AwaitingAnswerGuidance("which port?", []string{"8080"}, child.ID)},
 	}})
@@ -232,7 +191,7 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 	require.Contains(t, strings.Join([]string{decoded.Error, decoded.ResumeCommand}, " "), "--role smart")
 }
 
-// Revert-check (ON only): treating the legacy finish metadata alone as a
+// Revert-check: treating the finish metadata alone as a
 // committed question (dropping batchCommittedQuestionChildren's marker/token
 // fence) would classify the live delegation dormant and let the run exit with
 // a PendingChildQuestions entry -- losing the live work the delegation still
@@ -240,9 +199,6 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 // the live delegation ("still has active work") until the run deadline and
 // never report a pending question.
 func TestCLIQuotaFinishMetadataAloneDoesNotClearLiveWork(t *testing.T) {
-	if !f6BatchOn() {
-		t.Skip("legacy finish-metadata path covered by TestCLIQuotaPreservesPendingChildQuestion OFF")
-	}
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) { quotaResponse(w) })
 	ctx := loopCtx(t)
 	child, err := h.app.Sessions.Create(ctx, "twin child")

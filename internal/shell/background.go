@@ -58,7 +58,7 @@ const (
 	// the expensive part (up to 2*maxStreamBufferBytes per job) and are only
 	// realistically useful for a short window right after completion, while
 	// job metadata is cheap to keep for the full retention window so status
-	// queries (job_output on a long-finished job) still resolve, just
+	// queries (batch_status on a long-finished job) still resolve, just
 	// without the original bytes.
 	BufferRetentionMinutes = 15
 
@@ -75,7 +75,7 @@ const (
 	// unbounded multiplier on process memory. 3 MiB per stream (6 MiB per job
 	// including both stdout+stderr, ~300 MiB worst case across 50 jobs) is
 	// generous enough to hold many thousands of lines of real command output
-	// (job_output/bash still only ever surface the last MaxOutputLength=30000
+	// (bash and the batch output cache still only ever surface the last MaxOutputLength=30000
 	// characters to the model via TruncateOutput) while capping the pathological
 	// case at a small, predictable ceiling.
 	maxStreamBufferBytes = 3 * 1024 * 1024
@@ -451,7 +451,7 @@ func (m *BackgroundShellManager) startWithRetention(ctx context.Context, session
 	}
 	active := m.activeJobs.Load()
 	if active >= int64(limit) {
-		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: job_kill the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: batch_stop the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
 	}
 	// Warn on the approach, not only at the wall. Hitting the cap kills the
 	// run with one line and no warning; this gives the operator the count

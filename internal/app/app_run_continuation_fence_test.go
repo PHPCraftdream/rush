@@ -175,7 +175,6 @@ func fenceLoader(t *testing.T, application *App) session.SessionExecutionRequire
 // identify result rounds (call_cont is matched first for the same reason).
 func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string, holdRowID string) (*App, string, *session.SessionExecutionRequirement, *countedLeakDisk) {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 
 	// Assigned below, once the app (and its working dir) exists; the handler
 	// only reads it after ExecuteRun has issued the first request.

@@ -32,7 +32,7 @@ func bgShellNoticeProvider(appRef *atomic.Pointer[App], sessionID *atomic.Value,
 		n := requests.Add(1)
 		if n == 1 {
 			if a := appRef.Load(); a != nil {
-				_ = a.asyncJobStore.InsertSessionNotice(context.Background(), sessionID.Load().(string),
+				_ = a.BatchNoticeStore().InsertSessionNotice(context.Background(), sessionID.Load().(string),
 					session.NoticeKindBGShellDone, "background shell finished: exit 0", true, "")
 			}
 		}

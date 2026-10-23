@@ -30,7 +30,7 @@ Orchestrate: cancel <id> (graceful DB-flag stop), fork <id> [--at N],
              tree (parent-child hierarchy), gc (garbage-collect stale)
 Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
              reap (remove all orphan locks),
-             compact (rebuild rush.db: VACUUM the freelist #1161)`,
+             compact (rebuild the session store: VACUUM the freelist #1161)`,
 }
 
 func init() {

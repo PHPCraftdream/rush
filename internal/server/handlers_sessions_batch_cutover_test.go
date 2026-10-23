@@ -1,7 +1,6 @@
 package server
 
-// R12-F item 6: with RUSH_BATCH_RUNTIME ON the session list's descendant
-// flags and the flat panel's awaiting-answer badges are computed ONLY from
+// R12-F item 6: the session list's descendant flags and the flat panel's awaiting-answer badges are computed ONLY from
 // batch facts -- annotateSessionActivity (handlers_sessions.go) maps
 // App.SessionActivityBatch's flag-ON facts (app_batch_cutover_facts.go:
 // BatchLiveReader over batch_nodes), and the ON-path panel badges only an
@@ -21,7 +20,7 @@ package server
 //
 // Revert-checks: pointing annotateSessionActivity's flag mapping back at
 // the legacy AsyncJobStore readers fails the facts-equality loop below
-// (flag ON, the legacy readers see nothing for batch-only fixtures);
+// (the legacy readers see nothing for batch-only fixtures);
 // widening the badge to delivered/voided notices fails the void and
 // reacted cases of the badge test.
 
@@ -78,8 +77,6 @@ func insertBatchCutoverDebt(t *testing.T, ctx context.Context, a *appPkg.App, ro
 func TestHandleListSessions_BatchRuntimeOnDescendantFlagsFromBatchNodes(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
 
 	live, err := a.Sessions.Create(ctx, "batch live delegator")
 	require.NoError(t, err)
@@ -145,8 +142,6 @@ func TestHandleListSessions_BatchRuntimeOnDescendantFlagsFromBatchNodes(t *testi
 // must NOT badge; a completion-debt session with no live root has no items
 // at all to badge.
 func TestBuildSessionLiveWork_BatchAwaitingBadgeRequiresUnreactedPendingNotice(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-
 	newBadgeSession := func(t *testing.T, name string) (*appPkg.App, context.Context, string, string) {
 		t.Helper()
 		a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())

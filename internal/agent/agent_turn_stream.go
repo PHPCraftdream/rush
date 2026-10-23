@@ -596,15 +596,10 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 		}
 		return nil
 	}
-	// Ack gate (DUR-7, doc sec.3.8) and job_kill result fusion (A3): the
-	// ledger decides which results are a tracked job's own -- by claim tag,
-	// never by tool_call_id alone -- and writes them in one transaction with
-	// the job's row. Every other result is a plain Create. The outer ctx is
-	// used so the message is created even if the request is canceled
-	// mid-stream.
-	if ts.a.asyncJobs != nil {
-		return ts.a.asyncJobs.persistToolResult(ts.ctx, sessionID, toolResult, ts.a.messages, params)
-	}
+	// Batch-only: a batch delivery's result was persisted above through its
+	// fused receipt (the tool message IS the consumed delivery); every other
+	// result is a plain Create. The outer ctx is used so the message is
+	// created even if the request is canceled mid-stream.
 	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, params)
 	return createMsgErr
 }

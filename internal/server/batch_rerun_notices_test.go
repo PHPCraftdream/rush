@@ -1,6 +1,6 @@
 package server
 
-// R12-EF fix F2: the flag-ON rerun (BatchRerunReconcile) must run the
+// R12-EF fix F2: the batch rerun (BatchRerunReconcile) must run the
 // session_notices half of the legacy truncation too -- a delivered notice
 // whose message landed in the deleted tail is re-pended for the new branch,
 // and a wake_failed marker of the deleted branch is voided instead of
@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestHandleRerunMessage_FlagONRependsSessionNotices reruns from the target
+// TestHandleRerunMessage_BatchRependsSessionNotices reruns from the target
 // user message while a delivered bg_shell_done completion and a delivered
 // wake_failed marker both name the tail message the rerun deletes.
 //
@@ -26,7 +26,7 @@ import (
 // the bg_shell_done delivery check: the notice stays delivery='done' with a
 // dead message reference, so the new branch never re-delivers the completion
 // -- exactly review finding F2.
-func TestHandleRerunMessage_FlagONRependsSessionNotices(t *testing.T) {
+func TestHandleRerunMessage_BatchRependsSessionNotices(t *testing.T) {
 	f := newRerunHandlerFx(t, "batch-rerun-notices")
 	ctx := t.Context()
 
@@ -56,14 +56,14 @@ VALUES (?, ?, ?, 1, 'done', ?, ?, NULL, ?, ?, ?) RETURNING id`,
 	require.EqualValues(t, 2, baselineAttempts)
 	require.EqualValues(t, 1, baselineReacted)
 
-	// The flag is read live at handler time; the app itself was built
-	// flag-off so this test stays independent of the runtime install.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	// The batch reconcile path is unconditional; the app itself was built
+	// with the plain install so this test stays independent of the runtime
+	// install.
 	mockCoord := &cancellableHoldCoordinator{}
 	f.a.AgentCoordinator = mockCoord
 
 	env := f.run(t)
-	require.Equal(t, EventResponse, env.Type, "the flag-on rerun commits and replies ok")
+	require.Equal(t, EventResponse, env.Type, "the batch rerun commits and replies ok")
 
 	var delivery string
 	var wakeAttempts, reacted int64

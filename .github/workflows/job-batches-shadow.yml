@@ -1,15 +1,18 @@
 # Job-batches shadow workflow — R12 cutover evidence.
 #
-# Purpose: run the FULL test suite with RUSH_BATCH_RUNTIME=1 (the batch
-# runtime flag for the R12 job-batch cutover) to produce test evidence that
-# the whole suite passes with the flag ON. This is intentionally NOT a gate
-# on normal development: it is trigger-limited to pushes on ci-shadow/**
-# branches plus manual workflow_dispatch, and it MUST NEVER gain a
-# pull_request or schedule/cron trigger (hard repository rule — same rule
-# agent-leak-smoke.yml documents). Scope note: the shadow workflow is
-# scoped to test evidence, not release/lint gates — build.yml's
-# sqlc/fork-guard steps and the npm wrapper cache tests are deliberately
-# omitted; the web checks are kept (shadow-web job below).
+# Purpose: run the FULL test suite with the batch runtime selected (the
+# workflow env sets RUSH_BATCH_RUNTIME=1; since the H4 atomic activation
+# ANY value of that variable — unset, empty, false-like or true-like —
+# selects batch, and the shadow-aw-acceptance job additionally executes a
+# default-environment run and an explicit RUSH_BATCH_RUNTIME=false run to
+# prove it). This is intentionally NOT a gate on normal development: it is
+# trigger-limited to pushes on ci-shadow/** branches plus manual
+# workflow_dispatch, and it MUST NEVER gain a pull_request or schedule/cron
+# trigger (hard repository rule — same rule agent-leak-smoke.yml documents).
+# Scope note: the shadow workflow is scoped to test evidence, not
+# release/lint gates — build.yml's sqlc/fork-guard steps and the npm
+# wrapper cache tests are deliberately omitted; the web checks are kept
+# (shadow-web job below).
 
 name: job-batches-shadow
 on:
@@ -370,14 +373,17 @@ jobs:
           path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore
 
-  # PLACEHOLDER — selects the AW-a/AW-b acceptance tests once R12-E adds
-  # them; today it intentionally selects zero tests and the step tolerates
-  # that (`go test -run` with no matches prints "testing: warning: no tests
-  # to run" and exits 0). It starts failing the moment any matching test
-  # exists, which is the point: the acceptance must then pass under the
-  # batch runtime flag ON. Ubuntu-only because these placeholder-selected
-  # tests are hermetic and platform-agnostic until R12-E lands; widen the
-  # matrix when real acceptance tests arrive if any turn out OS-specific.
+  # AW selector + batch activation proof (H4): the product has no flag-OFF
+  # mode — every RUSH_BATCH_RUNTIME value selects the batch runtime. The
+  # selector below REQUIREs its selected tests to exist and run: zero
+  # matches ("no tests to run"), a SKIP, or any failure all turn the job
+  # red with an explicit error. TestBatchRuntimeSelectionAllValuesSelectBatch
+  # (internal/app/app_batch_activation_check_test.go) is the guaranteed
+  # anchor; the AWa/AWb acceptance names are selected too and must pass the
+  # moment they exist. Two runs execute: a default-environment run (the
+  # workflow-level RUSH_BATCH_RUNTIME is stripped with `env -u`) and an
+  # explicit RUSH_BATCH_RUNTIME=false run (step env overrides the workflow
+  # env), proving batch is active in both.
   shadow-aw-acceptance:
     runs-on: ubuntu-latest
     steps:
@@ -394,23 +400,98 @@ jobs:
           echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
-      - name: AW acceptance selection (placeholder until R12-E)
+      - name: AW selection + activation proof (default environment, no RUSH_BATCH_RUNTIME)
         shell: bash
         run: |
           set -o pipefail
-          go test -p 1 -parallel 1 -run 'AWa|AWb|TestAW' ./internal/agent/ ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance.log"
-          rc=$?
-          if grep -q -e '^ok ' -e 'no tests to run' "$RUNNER_TEMP/aw-acceptance.log"; then
-            exit "$rc"
+          # Every required test must have run and passed BY NAME: a renamed or
+          # deleted test cannot hide behind another passing test, and an empty
+          # selection ("no tests to run") or a SKIP is a failure.
+          require_passed() {
+            logfile="$1"
+            shift
+            if grep -q 'no tests to run' "$logfile"; then
+              echo "::error::selector matched zero tests in $logfile"
+              exit 1
+            fi
+            if grep -q -- '--- SKIP' "$logfile"; then
+              echo "::error::a selected test reported SKIP in $logfile - the acceptance must actually run"
+              exit 1
+            fi
+            for name in "$@"; do
+              if ! grep -q -- "--- PASS: $name " "$logfile"; then
+                echo "::error::required test $name did not run and pass (renamed, deleted or failing) - see $logfile"
+                exit 1
+              fi
+            done
+          }
+          AW_TESTS="TestAWa1ChildSettlementNoWakeNoDebt TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld TestAWa3TopLevelAnyWakesOnlyOnRootDebt TestAWa4AllStaysAsleepWhileOtherRootLive TestAWa5ChildQuestionBreaksSleepQuestionStillPending TestAWa5AgentChildAnswerViaRunnerInject TestAWbStopAdmissionFourBAndDelivery TestAWbDebtFreeVariant"
+          # Activation anchor (internal/app) and the actual-work acceptance
+          # tests (internal/agent) run under the SAME environment.
+          env -u RUSH_BATCH_RUNTIME go test -p 1 -parallel 1 -count=1 -v \
+            -run '^TestBatchRuntimeSelectionAllValuesSelectBatch$' \
+            ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-default-activation.log"
+          rc1=${PIPESTATUS[0]}
+          env -u RUSH_BATCH_RUNTIME go test -p 1 -parallel 1 -count=1 -v \
+            -run '^(TestAWa|TestAWb)' \
+            ./internal/agent/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-default-aw.log"
+          rc2=${PIPESTATUS[0]}
+          require_passed "$RUNNER_TEMP/aw-acceptance-default-activation.log" TestBatchRuntimeSelectionAllValuesSelectBatch
+          require_passed "$RUNNER_TEMP/aw-acceptance-default-aw.log" $AW_TESTS
+          if [ "$rc1" -ne 0 ] || [ "$rc2" -ne 0 ]; then
+            echo "::error::acceptance run failed (activation rc=$rc1, aw rc=$rc2)"
+            exit 1
           fi
-          echo "::error::AW acceptance run neither passed nor reported 'no tests to run'"
-          exit 1
+      - name: AW selection + activation proof (RUSH_BATCH_RUNTIME=false)
+        env:
+          RUSH_BATCH_RUNTIME: 'false'
+        shell: bash
+        run: |
+          set -o pipefail
+          # Every required test must have run and passed BY NAME: a renamed or
+          # deleted test cannot hide behind another passing test, and an empty
+          # selection ("no tests to run") or a SKIP is a failure.
+          require_passed() {
+            logfile="$1"
+            shift
+            if grep -q 'no tests to run' "$logfile"; then
+              echo "::error::selector matched zero tests in $logfile"
+              exit 1
+            fi
+            if grep -q -- '--- SKIP' "$logfile"; then
+              echo "::error::a selected test reported SKIP in $logfile - the acceptance must actually run"
+              exit 1
+            fi
+            for name in "$@"; do
+              if ! grep -q -- "--- PASS: $name " "$logfile"; then
+                echo "::error::required test $name did not run and pass (renamed, deleted or failing) - see $logfile"
+                exit 1
+              fi
+            done
+          }
+          AW_TESTS="TestAWa1ChildSettlementNoWakeNoDebt TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld TestAWa3TopLevelAnyWakesOnlyOnRootDebt TestAWa4AllStaysAsleepWhileOtherRootLive TestAWa5ChildQuestionBreaksSleepQuestionStillPending TestAWa5AgentChildAnswerViaRunnerInject TestAWbStopAdmissionFourBAndDelivery TestAWbDebtFreeVariant"
+          # Activation anchor (internal/app) and the actual-work acceptance
+          # tests (internal/agent) run under the SAME environment.
+          go test -p 1 -parallel 1 -count=1 -v \
+            -run '^TestBatchRuntimeSelectionAllValuesSelectBatch$' \
+            ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-false-activation.log"
+          rc1=${PIPESTATUS[0]}
+          go test -p 1 -parallel 1 -count=1 -v \
+            -run '^(TestAWa|TestAWb)' \
+            ./internal/agent/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-false-aw.log"
+          rc2=${PIPESTATUS[0]}
+          require_passed "$RUNNER_TEMP/aw-acceptance-false-activation.log" TestBatchRuntimeSelectionAllValuesSelectBatch
+          require_passed "$RUNNER_TEMP/aw-acceptance-false-aw.log" $AW_TESTS
+          if [ "$rc1" -ne 0 ] || [ "$rc2" -ne 0 ]; then
+            echo "::error::acceptance run failed (activation rc=$rc1, aw rc=$rc2)"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (mutation-check.yml)
         with:
           name: shadow-aw-acceptance-logs
-          path: ${{ runner.temp }}/*.log
+          path: ${{ runner.temp }}/aw-acceptance-*.log
           if-no-files-found: ignore
 
   # Mirrors lint.yml's lint-web job (lint.yml lines 86-110), plus the same
@@ -483,6 +564,14 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: candidate/go.mod
+      # The pinned baseline (d5c3b0d9) is measured from ITS OWN tree: its own
+      # flag semantics, its own copies of the bench harness files (this
+      # overlay overwrites them with the candidate's versions so both sides
+      # measure the identical workload). The candidate harness therefore uses
+      # only symbols that exist in BOTH trees (batchCutoverOn,
+      # batchCutoverWriter, config.Init, db.Connect/Release); all three bench
+      # files, the observer included, are copied into the baseline and compiled
+      # in BOTH trees, so none of them may use a symbol missing from either.
       - name: Overlay candidate D11 test source on baseline
         shell: bash
         run: |
