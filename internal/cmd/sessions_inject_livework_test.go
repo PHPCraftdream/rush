@@ -46,7 +46,7 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	ageLock(t, releasedLock(t, dataDir, driven.ID), 2*time.Minute)
 	ageLock(t, releasedLock(t, dataDir, lone.ID), 2*time.Minute)
 	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "inject-driver-fixture")
-	_, err = driverHost.EnsureHost(ctx)
+	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven.ID))
 	// A12 pattern: CloseKeepLock forgets the in-memory handle WITHOUT
@@ -56,6 +56,9 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	// process would contend with the held lock, so holdSeedHost is not
 	// used).
 	driverHost.CloseKeepLock()
+	// The pinned lock file stays open for the process lifetime; release it at
+	// test end so the data dir can be removed on Windows.
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	decode := func(out string) injectResult {

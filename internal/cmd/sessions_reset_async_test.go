@@ -112,11 +112,12 @@ func TestSessionsReset_LiveLoopRefusesEvenWithForce(t *testing.T) {
 			require.NoError(t, err)
 			seedResetDebris(t, a, a.Messages, sess.ID)
 			driverHost := session.NewHostStore(a.DB(), dataDir, 4321, "reset-live-loop")
-			_, err = driverHost.EnsureHost(ctx)
+			driverHostID, err := driverHost.EnsureHost(ctx)
 			require.NoError(t, err)
 			require.NoError(t, driverHost.ClaimSessionDriver(ctx, sess.ID))
 			// A12 pattern: pin the host lock and keep the driver marker.
 			driverHost.CloseKeepLock()
+			t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 			a.Shutdown()
 
 			require.NoError(t, resetSessionCmdFlags().Flags().Set("force", force))

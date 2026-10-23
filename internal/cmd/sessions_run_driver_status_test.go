@@ -218,12 +218,13 @@ func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
 	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "list-run-driver-fixture")
-	_, err = driverHost.EnsureHost(ctx)
+	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, parent.ID))
 	// A12 pattern: pin the host lock and keep the driver marker across the
 	// seed App's Shutdown.
 	driverHost.CloseKeepLock()
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	runList := func() string {
