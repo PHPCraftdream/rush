@@ -76,6 +76,15 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := runKtavMigrationStep("after-backup-rename"); err != nil {
 		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, err)
 	}
+	archived, archivedFP, err := readStableConfigHandle(source, owner, enforceOwner)
+	if err != nil {
+		return fmt.Errorf("%w: %s or %s cannot be verified after archival: %v", errKtavMigrationConflict, filepath.Base(sourcePath), backupBase, err)
+	}
+	if archivedFP.digest != expected.digest || !sameBytesFingerprint(archived, expected.digest) ||
+		!archivedFP.identity.valid || archivedFP.identity != expected.identity || archivedFP.nlink != 1 ||
+		(enforceOwner && archivedFP.owner != owner) {
+		return fmt.Errorf("%w: %s or %s changed during archival", errKtavMigrationConflict, filepath.Base(sourcePath), backupBase)
+	}
 	if err := syncConfigParentFile(parent); err != nil {
 		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)
 	}

@@ -348,6 +348,9 @@ func finishKtavArchival(ctx context.Context, legacy, backup, recordPath string, 
 		return fmt.Errorf("%w: %s changed after Ktav publication; the JSON stays active", errKtavMigrationConflict, filepath.Base(legacy))
 	}
 	if err := archiveKtavBackup(ctx, legacy, backup, currentFP, owner, enforce); err != nil {
+		if errors.Is(err, errKtavMigrationConflict) {
+			return err
+		}
 		return fmt.Errorf("ktav migration: failed to archive %s: %w", legacy, err)
 	}
 	if err := runKtavMigrationStep("after-archive"); err != nil {

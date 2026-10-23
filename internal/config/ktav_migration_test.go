@@ -24,7 +24,7 @@ import (
 func ktavSeedLegacy(t *testing.T, dir string) string {
 	t.Helper()
 	legacy := filepath.Join(dir, "rush.json")
-	writeTestFile(t, legacy, `{"providers":{"p":{"api_key":"`+ktavTestSecret+`"}}}`)
+	writeTestFile(t, legacy, `{"providers":{"p":{"api_key":"`+ktavTestSecret+`"}},"numeric_fixture":{"decimal":0.50,"large":9007199254740993}}`)
 	return legacy
 }
 
@@ -33,15 +33,6 @@ func ktavSeedLoadLegacy(t *testing.T, dir string) string {
 	legacy := filepath.Join(dir, "rush.json")
 	writeTestFile(t, legacy, `{"options":{"debug":true},"migration_test_secret":"`+ktavTestSecret+`"}`)
 	return legacy
-}
-
-func ktavJSONOf(t *testing.T, raw []byte) []byte {
-	t.Helper()
-	tree, err := ktavcodec.DecodeKtav(raw)
-	require.NoError(t, err)
-	jsonBytes, err := ktavcodec.ToJSON(tree)
-	require.NoError(t, err)
-	return jsonBytes
 }
 
 // ktavAssertMigrated proves K + B exist, the record is gone, the backup
@@ -61,7 +52,11 @@ func ktavAssertMigrated(t *testing.T, dir string) {
 
 	raw, err := os.ReadFile(filepath.Join(dir, "rush.ktav"))
 	require.NoError(t, err)
-	require.JSONEq(t, string(backup), string(ktavJSONOf(t, raw)), "active Ktav must preserve the original JSON document")
+	backupTree, err := ktavcodec.ParseJSONLossless(backup)
+	require.NoError(t, err)
+	ktavTree, err := ktavcodec.DecodeKtav(raw)
+	require.NoError(t, err)
+	require.NoError(t, ktavcodec.Equivalent(backupTree, ktavTree), "active Ktav must preserve the original JSON document")
 }
 
 // ktavIsolateGlobals keeps every migration test away from the operator's
@@ -105,6 +100,8 @@ func TestMigrateLegacyConfigFile_ExistingBackupNeverOverwritten(t *testing.T) {
 	ktavIsolateGlobals(t)
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
+	originalJSON, readOriginalErr := os.ReadFile(legacy)
+	require.NoError(t, readOriginalErr)
 	backup := filepath.Join(dir, "rush.json.bak")
 	preciousBackup := `{"providers":{"p":{"api_key":"PRECIOUS-BACKUP"}}}`
 	writeTestFile(t, backup, preciousBackup)
@@ -118,7 +115,7 @@ func TestMigrateLegacyConfigFile_ExistingBackupNeverOverwritten(t *testing.T) {
 	require.Equal(t, preciousBackup, string(onDisk), "a pre-existing backup must never be rewritten")
 	jsonOnDisk, readErr := os.ReadFile(legacy)
 	require.NoError(t, readErr)
-	require.Contains(t, string(jsonOnDisk), ktavTestSecret)
+	require.Equal(t, originalJSON, jsonOnDisk)
 	require.NoFileExists(t, filepath.Join(dir, "rush.ktav"))
 }
 
@@ -360,6 +357,41 @@ func TestMigrateLegacyConfigFile_SourceChangedBeforeArchival(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dir, "rush.json.bak"))
 }
 
+func TestMigrateLegacyConfigFile_SourceChangedDuringArchival(t *testing.T) {
+	ktavIsolateGlobals(t)
+	dir := t.TempDir()
+	legacy := ktavSeedLegacy(t, dir)
+	original, err := os.ReadFile(legacy)
+	require.NoError(t, err)
+	changed := []byte(`{"providers":{"p":{"api_key":"CHANGED-DURING-ARCHIVAL"}}}`)
+	previousHook := ktavMigrationStepHook
+	ktavMigrationStepHook = func(step string) error {
+		if step == "during-backup-rename" {
+			return os.WriteFile(legacy, changed, 0o600)
+		}
+		return nil
+	}
+	err = migrateLegacyConfigFile(context.Background(), legacy, dir)
+	ktavMigrationStepHook = previousHook
+	require.ErrorIs(t, err, errKtavMigrationConflict)
+	require.Contains(t, err.Error(), "rush.json")
+	require.Contains(t, err.Error(), "rush.json.bak")
+	require.NotContains(t, err.Error(), ktavTestSecret)
+
+	ktavBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.ktav"))
+	require.NoError(t, readErr)
+	originalTree, parseErr := ktavcodec.ParseJSONLossless(original)
+	require.NoError(t, parseErr)
+	convertedTree, decodeErr := ktavcodec.DecodeKtav(ktavBytes)
+	require.NoError(t, decodeErr)
+	require.NoError(t, ktavcodec.Equivalent(originalTree, convertedTree))
+	backupBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.json.bak"))
+	require.NoError(t, readErr)
+	require.Equal(t, changed, backupBytes)
+	require.NoFileExists(t, legacy)
+	require.FileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
+}
+
 func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 	ktavIsolateGlobals(t)
 
@@ -452,7 +484,7 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 				require.NoError(t, err)
 				return
 			}
-			_, openedErr := readStableConfigFileOwned(recordPath, foreignOwner, true)
+			_, _, openedErr := readStableConfigFileOwned(recordPath, foreignOwner, true)
 			require.ErrorIs(t, openedErr, errConfigOwnerMismatch)
 			_, err = loadKtavMigrationRecord(recordPath, legacy, dir)
 			require.NoError(t, err)

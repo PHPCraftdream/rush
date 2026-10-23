@@ -6,10 +6,10 @@ package config
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -136,11 +137,20 @@ func TestKtavSlotSelectionMatrix(t *testing.T) {
 	t.Run("backup-only hidden ancestor blocks visible ancestor fallback", func(t *testing.T) {
 		root := t.TempDir()
 		working := filepath.Join(root, "child", "project")
-		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+		_, err := exec.LookPath("git")
+		require.NoError(t, err)
+		gitHome := t.TempDir()
+		t.Setenv("HOME", gitHome)
+		t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(gitHome, ".gitconfig"))
+		gitInit := platform.Command(t.Context(), "git", "init", "-q")
+		gitInit.Dir = root
+		require.NoError(t, gitInit.Run())
 		require.NoError(t, os.MkdirAll(working, 0o755))
+		boundary := projectBoundary(working)
+		require.Equal(t, normalizeDiscoveryPath(root), normalizeDiscoveryPath(boundary))
 		backup := filepath.Join(root, ".rush.json.bak")
 		writeTestFile(t, backup, `{"options":{"debug":true}}`)
-		err := checkAuthoritativeBackupOnly(working)
+		err = checkAuthoritativeBackupOnly(working)
 		require.ErrorIs(t, err, errKtavBackupOnly)
 		require.NoError(t, os.Remove(backup))
 		visible := filepath.Join(root, "rush.json")
@@ -307,8 +317,15 @@ func TestKtavWriteGuardErrorNamesTheFile(t *testing.T) {
 func TestKtavOwnershipRejectionWithoutJSONFallback(t *testing.T) {
 	ktavIsolateGlobals(t)
 	if runtime.GOOS == "windows" {
-		_, _, _, _, err := loadConfigCandidateStable([]string{filepath.Join(t.TempDir(), "missing.ktav")})
+		root := t.TempDir()
+		ktav := filepath.Join(root, "rush.ktav")
+		require.NoError(t, os.WriteFile(ktav, testKtavBytes(t, `{"providers":{"p":{"api_key":"windows-owned"}}}`), 0o600))
+		cfg, loaded, _, _, err := loadConfigCandidateStable([]string{ktav})
 		require.NoError(t, err)
+		require.Contains(t, loaded, normalizeDiscoveryPath(ktav))
+		provider, ok := cfg.Providers.Get("p")
+		require.True(t, ok)
+		require.Equal(t, "windows-owned", provider.APIKey)
 		return
 	}
 	root := t.TempDir()
