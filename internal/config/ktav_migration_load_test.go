@@ -43,7 +43,7 @@ func ktavLoadMigrationTestConfig(t *testing.T, dir string, migrateJSON bool) *Co
 func TestKtavLoadDeferredMigration(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "rush.json")
-	original := []byte(`{"options":{"debug":true}}`)
+	original := []byte(`{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`)
 	require.NoError(t, os.WriteFile(legacy, original, 0o600))
 	ktavSetupLoadMigrationTest(t, true)
 

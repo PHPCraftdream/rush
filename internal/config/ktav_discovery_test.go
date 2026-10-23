@@ -181,7 +181,7 @@ func TestKtavMergeOrderUnchangedMixedFormats(t *testing.T) {
 	configDir, dataDir := isolateAllGlobalConfigPaths(t)
 	require.NoError(t, os.MkdirAll(configDir, 0o700))
 	require.NoError(t, os.MkdirAll(dataDir, 0o700))
-	project := t.TempDir()
+	project := canonTempDir(t)
 
 	// GlobalConfig() resolves <RUSH_GLOBAL_CONFIG>/rush.json — write the
 	// Ktav sibling at exactly the location discovery selects.
@@ -235,7 +235,7 @@ func TestKtavVisibleBeatsHiddenAcrossFormats(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := canonTempDir(t)
 			if strings.HasSuffix(tc.visibleFile, ".json") {
 				writeTestFile(t, filepath.Join(dir, tc.visibleFile), tc.visibleBody)
 			} else {
@@ -319,7 +319,7 @@ func TestKtavWriteGuardErrorNamesTheFile(t *testing.T) {
 func TestKtavOwnershipRejectionWithoutJSONFallback(t *testing.T) {
 	ktavIsolateGlobals(t)
 	if runtime.GOOS == "windows" {
-		root := t.TempDir()
+		root := canonTempDir(t)
 		ktav := filepath.Join(root, "rush.ktav")
 		require.NoError(t, os.WriteFile(ktav, testKtavBytes(t, `{"providers":{"p":{"api_key":"windows-owned"}}}`), 0o600))
 		cfg, loaded, _, _, err := loadConfigCandidateStable([]string{ktav})
@@ -330,7 +330,7 @@ func TestKtavOwnershipRejectionWithoutJSONFallback(t *testing.T) {
 		require.Equal(t, "windows-owned", provider.APIKey)
 		return
 	}
-	root := t.TempDir()
+	root := canonTempDir(t)
 	ktav := filepath.Join(root, "rush.ktav")
 	writeTestFile(t, filepath.Join(root, "rush.json"), `{"providers":{"p":{"api_key":"json"}}}`)
 	require.NoError(t, os.WriteFile(ktav, testKtavBytes(t, `{"providers":{"p":{"api_key":"foreign"}}}`), 0o600))
@@ -368,4 +368,13 @@ func TestKtavOwnershipRejectionWithoutJSONFallback(t *testing.T) {
 		_, _, _, _, loadErr := loadConfigCandidateStableForWorkingDir([]string{ktav}, root)
 		require.Error(t, loadErr)
 	}
+}
+
+// canonTempDir returns a symlink-resolved temp dir: project discovery
+// canonicalizes (macOS /var -> /private/var), so fixtures must too.
+func canonTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return dir
 }

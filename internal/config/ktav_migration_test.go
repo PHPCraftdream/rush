@@ -31,7 +31,7 @@ func ktavSeedLegacy(t *testing.T, dir string) string {
 func ktavSeedLoadLegacy(t *testing.T, dir string) string {
 	t.Helper()
 	legacy := filepath.Join(dir, "rush.json")
-	writeTestFile(t, legacy, `{"options":{"debug":true},"migration_test_secret":"`+ktavTestSecret+`"}`)
+	writeTestFile(t, legacy, `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}},"migration_test_secret":"`+ktavTestSecret+`"}`)
 	return legacy
 }
 
@@ -613,7 +613,7 @@ func TestKtavMigrationBudgetIsSharedAndBounded(t *testing.T) {
 	ktavSetupLoadMigrationTest(t, true)
 	globalJSON := GlobalConfigData()
 	projectJSON := filepath.Join(dir, "rush.json")
-	writeTestFile(t, projectJSON, `{"options":{"debug":true}}`)
+	writeTestFile(t, projectJSON, `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`)
 	projectDataDir := filepath.Join(dir, "workspace-data")
 	require.NoError(t, os.MkdirAll(projectDataDir, 0o700))
 	writeTestFile(t, filepath.Join(projectDataDir, "rush.json"), `{"options":{"debug":true}}`)
@@ -708,7 +708,7 @@ func TestProjectMigrationEnforcesOwnership(t *testing.T) {
 func TestReloadBackupOnlyFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "rush.json")
-	writeTestFile(t, legacy, `{"options":{"debug":true}}`)
+	writeTestFile(t, legacy, `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`)
 	store := ktavLoadMigrationTestConfig(t, dir, false)
 	before := store.Config()
 	backup := filepath.Join(dir, "rush.json.bak")
