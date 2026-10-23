@@ -44,6 +44,20 @@ func (s *ConfigStore) HasWorkspaceConfig() bool {
 	return err == nil
 }
 
+// errKtavWriteNotSupported guards the (D) write boundary: until the Ktav
+// writer lands (KTAV-3), a selected .ktav target must never be edited by
+// the sjson/JSON read-modify-write path.
+var errKtavWriteNotSupported = errors.New("writing rush.ktav is not supported yet in this build")
+
+// ensureKtavWriteSupported rejects config mutations whose selected target
+// file is a Ktav document.
+func ensureKtavWriteSupported(path string) error {
+	if isKtavConfigPath(filepath.Clean(path)) {
+		return fmt.Errorf("%w: %s", errKtavWriteNotSupported, path)
+	}
+	return nil
+}
+
 // HasConfigField checks whether a key exists in the config file for the given
 // scope.
 func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
@@ -326,6 +340,9 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
 	}
+	if err := ensureKtavWriteSupported(path); err != nil {
+		return err
+	}
 
 	// Apply keys in sorted order so the on-disk output is deterministic
 	// regardless of map iteration order (keeps rush.json diffs stable).
@@ -486,6 +503,9 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // both the full-timeout public API and the short-timeout internal caller
 // (configureProviders) go through one write implementation.
 func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool) error {
+	if err := ensureKtavWriteSupported(path); err != nil {
+		return err
+	}
 	if touchesReservedKey(key) {
 		if userInitiated {
 			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}}

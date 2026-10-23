@@ -60,7 +60,9 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 		{GlobalConfig(), homeConfigOwner()},
 		{GlobalConfigData(), homeConfigOwner()},
 	} {
-		if eligible := eligibleConfigCandidate(candidate.path, candidate.owner); eligible != "" {
+		// Each logical slot resolves to exactly one file: rush.ktav when it
+		// exists, otherwise the legacy rush.json spelling.
+		if eligible := eligibleConfigCandidate(selectConfigSlot(candidate.path), candidate.owner); eligible != "" {
 			candidates.global = append(candidates.global, eligible)
 		}
 	}
@@ -79,8 +81,11 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 		if err != nil || !configOwnersMatch(owner, dirOwner) {
 			break
 		}
-		for _, name := range []string{appName + ".json", "." + appName + ".json"} {
-			if candidate := eligibleConfigCandidate(filepath.Join(dir, name), owner); candidate != "" {
+		for _, base := range []string{appName, "." + appName} {
+			// Visible rush.ktav/rush.json keeps its historical priority over
+			// the hidden pair; only one format per slot is ever selected.
+			selected := selectConfigSlot(filepath.Join(dir, base+".json"))
+			if candidate := eligibleConfigCandidate(selected, owner); candidate != "" {
 				projectPaths = append(projectPaths, candidate)
 			}
 		}
@@ -115,10 +120,10 @@ func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
 		return 0, false, nil
 	}
 	canonical := normalizeReloadPath(path)
-	if systemConfigPath != "" && canonical == normalizeReloadPath(systemConfigPath) {
+	if systemConfigPath != "" && matchesLogicalSlot(canonical, systemConfigPath) {
 		return systemConfigOwner(), true, nil
 	}
-	if canonical == normalizeReloadPath(GlobalConfig()) || canonical == normalizeReloadPath(GlobalConfigData()) {
+	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {
 		return homeConfigOwner(), true, nil
 	}
 	return configOwnerForWorkingDir(workingDir)
@@ -187,15 +192,25 @@ func eligibleConfigCandidate(path string, owner int) string {
 	if path == "" {
 		return ""
 	}
+	isKtav := isKtavConfigPath(path)
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return path
 	}
 	if err != nil || info.IsDir() {
+		if isKtav {
+			return path
+		}
 		return ""
 	}
 	candidateOwner, err := fsext.Owner(path)
-	if err != nil || !configOwnersMatch(owner, candidateOwner) {
+	if err != nil {
+		if isKtav {
+			return path
+		}
+		return ""
+	}
+	if !configOwnersMatch(owner, candidateOwner) {
 		return ""
 	}
 	return path
@@ -316,6 +331,14 @@ func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int,
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("failed to open config file %s: %w", discoveryPath, readErr)
 		}
+		decoded := data
+		if readErr == nil {
+			var decodeErr error
+			decoded, decodeErr = decodeConfigDocument(discoveryPath, data)
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
+		}
 		alias := stableConfigAlias{path: discoveryPath, fingerprint: fingerprint}
 		if readErr != nil {
 			if fingerprint.discovery != ([sha256.Size]byte{}) {
@@ -336,7 +359,7 @@ func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int,
 			seenPresent[fingerprint.identity] = len(documents)
 		}
 		documents = append(documents, stableConfigDocument{
-			path: discoveryPath, data: data, fingerprint: fingerprint, present: fingerprint.exists,
+			path: discoveryPath, data: decoded, fingerprint: fingerprint, present: fingerprint.exists,
 			aliases: []stableConfigAlias{alias},
 		})
 	}

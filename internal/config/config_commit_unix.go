@@ -18,7 +18,7 @@ import (
 // physical transaction target, and commits through a descriptor for its
 // parent. An external symlink retarget after that boundary is not serialized
 // with rename; readback reports it as an uncertain outcome.
-func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool) (reloadFileFingerprint, error) {
+func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, migrationHooks ...func(string) error) (reloadFileFingerprint, error) {
 	if selectedPath == "" || commitPath == "" {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
@@ -69,6 +69,11 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if expected.exists && (expected.nlink == 0 || expected.nlink > 1) {
 		return reloadFileFingerprint{}, ErrConfigHardLink
 	}
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("before-staging"); err != nil {
+			return reloadFileFingerprint{}, err
+		}
+	}
 	tmpFD, tmpName, err := openUniqueConfigTemp(parentFD, base, perm)
 	if err != nil {
 		return reloadFileFingerprint{}, err
@@ -88,7 +93,18 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			_ = cleanupConfigTempAlias(parentFD, tmpName, tmpIdentity)
 		}
 	}()
-	if _, err := tmp.Write(data); err != nil {
+	half := len(data) / 2
+	if _, err := tmp.Write(data[:half]); err != nil {
+		return reloadFileFingerprint{}, err
+	}
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("during-staging"); err != nil {
+			removeTemp = false
+			_ = tmp.Close()
+			return reloadFileFingerprint{}, err
+		}
+	}
+	if _, err := tmp.Write(data[half:]); err != nil {
 		return reloadFileFingerprint{}, err
 	}
 	if err := tmp.Chmod(perm); err != nil {
@@ -96,6 +112,12 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	}
 	if err := tmp.Sync(); err != nil {
 		return reloadFileFingerprint{}, err
+	}
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("after-staging"); err != nil {
+			removeTemp = false
+			return reloadFileFingerprint{}, err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return reloadFileFingerprint{}, err
@@ -118,6 +140,11 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		return reloadFileFingerprint{}, err
 	}
 	runConfigBeforeCommitRenameHook()
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("before-rename"); err != nil {
+			return reloadFileFingerprint{}, err
+		}
+	}
 	published, renameErr := renameConfigTempAt(parentFD, tmpName, parentFD, base, expected.exists)
 	if renameErr != nil && !published {
 		if !expected.exists {
@@ -144,7 +171,15 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	// From this point onward the logical mutation has happened. Keep the
 	// result distinct from a pre-rename verification failure so callers do not
 	// retry a mutation that may already be visible on disk.
-	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("after-rename"); err != nil {
+			return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, errAtomicWriteCommitted, err)
+		}
+	}
+	hookErr := error(nil)
+	if err := runConfigAfterCommitRenameHookForPath(commitPath); err != nil {
+		hookErr = err
+	}
 	parentSyncErr := syncConfigParentFile(parent)
 	committed, committedFingerprint, selectedReadbackErr := readStableConfigFileOwned(selectedPath, expectedOwner, enforceOwner)
 	targetData, _, targetReadbackErr := readStableConfigFileOwned(commitPath, expectedOwner, enforceOwner)
