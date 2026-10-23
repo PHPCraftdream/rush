@@ -115,6 +115,11 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 	default:
 		state, ok := c.childDelegationState(ctx, childSessionID)
 		if ok {
+			// §4.1: "running" means the child executes a turn (the busy case
+			// above). A live delegation whose child is between turns is idle.
+			if state == "running" {
+				state = "idle"
+			}
 			insp.Status = state
 		} else if last != nil {
 			// Delivered (gc'd) delegation: derive the terminal state from

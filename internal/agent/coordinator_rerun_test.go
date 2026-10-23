@@ -63,17 +63,23 @@ func TestCancelTurn_LeavesJobsWakeAndAutonomy(t *testing.T) {
 	f := newRerunCoordFx(t)
 	f.start(t, "root", "call-run", "command", "")
 	f.start(t, "root", "call-debt", "command", "")
-	seedBatchJobDebt(t, f.conn, "root", "call-debt-done", false)
-	_, debtWake := f.rootState(t, "root", "call-debt-done")
-	require.EqualValues(t, 1, debtWake, "precondition: unreacted wake debt")
+	// The selected completion notice (the debt) sits on the CHILD node; the
+	// root carries no notice.
+	_, debtChild := seedBatchJobDebt(t, f.conn, "root", "call-debt-done", false)
+	nodeWake := func() int64 {
+		var wake int64
+		require.NoError(t, f.conn.QueryRowContext(context.Background(),
+			`SELECT wake FROM batch_nodes WHERE node_id = ?`, debtChild).Scan(&wake))
+		return wake
+	}
+	require.EqualValues(t, 1, nodeWake(), "precondition: unreacted wake debt")
 
 	f.coord.CancelTurn("root")
 
 	require.Equal(t, []string{"root"}, f.agent.cancelled, "the live generation must be cancelled")
 	runState, _ := f.rootState(t, "root", "call-run")
 	require.Equal(t, "running", runState, "a kept running root must not be stopped by a rerun's CancelTurn")
-	_, debtWakeAfter := f.rootState(t, "root", "call-debt-done")
-	require.EqualValues(t, 1, debtWakeAfter, "CancelTurn must not zero wake")
+	require.EqualValues(t, 1, nodeWake(), "CancelTurn must not zero wake")
 	require.False(t, f.coord.autoResumeSuspended("root"), "CancelTurn must not suspend autonomy")
 }
 
