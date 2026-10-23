@@ -36,8 +36,8 @@ const (
 	stepCallWait
 	// stepCallRefused is the in-turn guard's own refusal: the tool never ran.
 	stepCallRefused
-	// stepCallNeutral neither advances nor launches: job_output/todos, or an
-	// unknown tool name (nothing was in the set to run).
+	// stepCallNeutral neither advances nor launches: batch_output/todos, or
+	// an unknown tool name (nothing was in the set to run).
 	stepCallNeutral
 )
 

@@ -4,8 +4,10 @@
 // through ledger.Start/acknowledge/armDelegation + hasParked and stopped it
 // three ways including StopRerunJobs over session.VoidedAsyncJob (deleted);
 // TestStop_StaleExecutorReleasesTheChildDriverItsShellHeld asserted a driver
-// release fired from the ledger's finish stale-job branch (recheckChild /
-// releaseDriverIfScopeClosed have no production caller in the batch world).
+// release fired from the ledger's finish stale-job branch (recheckChild is
+// deleted; releaseDriverIfScopeClosed's production caller moved to the
+// release path -- afterReleaseContext's releaseChildDriverIfScopeClosed
+// tail, supervision.go).
 //
 // The retained halves are pinned where they live now:
 //   - the transitive Stop (tree walk, suspension, wake zeroing, recheck-set

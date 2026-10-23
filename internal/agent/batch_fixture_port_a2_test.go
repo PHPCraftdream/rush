@@ -119,6 +119,7 @@ func newA2WakeDebtFixture(t *testing.T, title string, wireOnSessionIdle bool) *a
 	f.sessID = sess.ID
 
 	f.conn = env.conn
+	f.env = env
 	f.coord = newBatchRuntimeCoordinator()
 	f.coord.sessions, f.coord.messages, f.coord.permissions = env.sessions, env.messages, env.permissions
 	f.coord.noticeStore = session.NewSessionNoticeStore(env.conn)

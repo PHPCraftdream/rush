@@ -550,6 +550,70 @@ func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string)
 	if err := c.wakeSession(ctx, sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
+	// The wake above routes through agentFor, so it must run BEFORE the
+	// driver record can be torn down. After it, close the record's lifecycle:
+	// in the batch world nothing else ever unregisters a child's
+	// subAgentDriver (the ledger's recheckChild tail that used to call
+	// releaseDriverIfScopeClosed is deleted), so agentFor would route every
+	// later wake/cancel to a stale task-agent forever, contradicting
+	// coordinator_work_scope.go's "a delivered delegation is unregistered by
+	// design".
+	//
+	// REVERT CHECK (batch port, repair round 11 item 3): making this call a
+	// no-op leaves TestChildRunEnd_ReleaseChargesNothing red at "and its
+	// driver is released" (coordinator_child_cost_test.go) -- the driver
+	// record survives Kill + afterRelease forever.
+	c.releaseChildDriverIfScopeClosed(ctx, sessionID)
+}
+
+// releaseChildDriverIfScopeClosed is afterReleaseContext's driver-lifecycle
+// tail: it removes sessionID's subAgentDriver record (and its allowlist
+// entry) once the child's scope is closed. Conservative by construction:
+//
+//   - only a delegated child (a resolvable ParentSessionID) is considered;
+//   - a session mid-turn (its driver's mailbox busy) keeps its record -- a
+//     live turn means the scope is not closing (the BGShell wake contract:
+//     TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays);
+//   - a delegation whose batch row still runs AND whose tree was not stopped
+//     keeps its record: the delegation still drives the child;
+//   - any unreadable read (session row, delegation row) keeps the record.
+//
+// A stopped tree is autoResumeSuspended (stopTree suspends every member),
+// which is the in-process fact that the operator closed the scope even while
+// the durable stop request still pends on the executor (in fixtures there is
+// no runner at all, so the row can never go terminal on its own). Releasing
+// cannot strand debt: the debt stays in the DB, and decide()/drainPolicy
+// re-derives every later launch through the policy (a released child's Drain
+// is refused there, and a resume_session_id re-registers the driver via
+// runSubAgent before its next turn).
+func (c *coordinator) releaseChildDriverIfScopeClosed(ctx context.Context, sessionID string) {
+	if c == nil || c.sessions == nil || sessionID == "" {
+		return
+	}
+	observed, registered := c.subAgentDrivers.get(sessionID)
+	if !registered {
+		return
+	}
+	if ag := c.agentFor(sessionID); ag != nil && ag.IsSessionBusy(sessionID) {
+		return
+	}
+	sess, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	if sess.ParentSessionID == "" {
+		return
+	}
+	live, err := coordinatorBatchCutoverFacts(c).LiveDelegationChildOf(ctx, sess.ParentSessionID, sessionID)
+	if err != nil {
+		return
+	}
+	if live && !c.autoResumeSuspended(sessionID) {
+		return
+	}
+	// Release exactly the registration the reads above were made about: a
+	// resume that registered a newer driver meanwhile keeps its record.
+	c.releaseDriverGeneration(sessionID, observed.generation)
 }
 
 // supervisionIntervalNS shrinks the built-in initial interval for tests

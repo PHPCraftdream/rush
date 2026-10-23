@@ -239,7 +239,7 @@ func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 }
 
 // Step classification: a bash sleep/echo launch is an idle claim, a real
-// command is progress, run_command sleep is idle, job_output/todos are
+// command is progress, run_command sleep is idle, batch_output/todos are
 // neutral, text-only is nothing. Revert-check: counting a redirect-bearing or
 // substituted command as idle turns the `echo x > f` case red; counting the
 // leg's text as progress turns the text-only case red.
@@ -280,11 +280,11 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 	require.Empty(t, ts.att.chainIdleClaims)
 	require.True(t, ts.att.chainProgress)
 
-	// sleep 5 && echo done IS idle; run_command sleep is; job_output and
+	// sleep 5 && echo done IS idle; run_command sleep is; batch_output and
 	// todos are neutral; a text-only step is nothing.
 	ts.att = &drainAttempt{}
 	ts.recordChainEvidence(mk(
-		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "job_output", `{}`), call("c4", "todos", `{}`)},
+		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "batch_output", `{}`), call("c4", "todos", `{}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag), res("c2", startedTag)},
 	))
 	require.Equal(t, []string{"claim-A", "claim-A"}, ts.att.chainIdleClaims)

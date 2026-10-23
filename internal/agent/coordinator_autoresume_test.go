@@ -267,9 +267,14 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
 	// not about model resolution.
 	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
-	conn, _ := batchFixtureConn(t)
+	conn, dataDir := batchFixtureConn(t)
 	ensureFixtureSession(t, conn, "sess-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	// Without a bound fact source the coordinator resolves unknownBatchCutoverFacts:
+	// SelectedDebtExists=true but PendingInclusiveDebt errors, so drainPolicy fails
+	// closed as drainDeferred and Run is never reached. Bind the real node facts so
+	// the inserted notice is genuine pending debt.
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 
 	var err error
 	require.NotPanics(t, func() {
@@ -309,9 +314,12 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	}
 	coord := newBatchRuntimeCoordinator()
 	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
-	conn, _ := batchFixtureConn(t)
+	conn, dataDir := batchFixtureConn(t)
 	ensureFixtureSession(t, conn, "child-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
+	// Same unbound-facts fix as TestWakeSession_RunPanicIsRecovered: without node
+	// facts the launch decision fails closed before Run.
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 
 	require.NoError(t, coord.noticeStore.InsertSessionNotice(t.Context(), "child-1", "manual_test_notice", "owed", true, ""))
 	err := coord.wakeSession(t.Context(), "child-1", true)

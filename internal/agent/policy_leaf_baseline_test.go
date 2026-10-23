@@ -9,6 +9,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/hooks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +29,7 @@ func TestPolicyLeafConstructionBaseline(t *testing.T) {
 	wantNames := []string{"ask_question", "bash", "fetch", "run_command", "view"}
 	wantSchemas := map[string]string{
 		"ask_question": "50543d487c7b4a54383e1926d0c5b29bc04322e8c7432e56165a491cbf767a83",
-		"bash":         "9b6b87744288dfd425b2fad09dbc45b0cb9fd2ebb0ceb2de6d6f80177fb72b67",
+		"bash":         "e87ae395ca1867258916a3f22d2aaa68fd7e4d15d9e9a4a153885903ef2df478",
 		"fetch":        "2511b98c205dd8b40b534035dc7f25c09b7c517ca84d082988a6beddf6aab38a",
 		"run_command":  "5842cf359ae8103b62a5cd7fdff4de7a52c5fb3e79c36824b4958e4dc2fa302c",
 		"view":         "d55c0dedd688a46ed1c3ea8934f1a6d4bb8fd946f770e03080d6903d2a45d704",
@@ -59,7 +60,7 @@ func TestPolicyLeafConstructionBaseline(t *testing.T) {
 				info.Description = ""
 				data, err := json.Marshal(info)
 				require.NoError(t, err)
-				require.Equal(t, wantSchemas[info.Name], fmt.Sprintf("%x", sha256.Sum256(data)), "schema golden: %s", info.Name)
+				assert.Equal(t, wantSchemas[info.Name], fmt.Sprintf("%x", sha256.Sum256(data)), "schema golden: %s", info.Name)
 			}
 			require.Equal(t, wantNames, names, "pinned filtered order")
 

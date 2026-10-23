@@ -150,8 +150,11 @@ const subAgentNoFinalTextText = "завершено без итогового о
 // noteSubAgentChildRunEnded is re-check trigger (iv): a run on sessionID has
 // just returned. The parked-delegation release it used to drive directly is
 // batch delivery now (the executor delivers the delegation outcome); the
-// retained half is the release-shaped retry -- the session joins the recheck
-// set, so the next 60s pass re-derives its wake/scope from the DB.
+// retained halves are the release-shaped retry (the session joins the
+// recheck set, so the next 60s pass re-derives its wake/scope from the DB)
+// and the driver-record release (afterReleaseContext's
+// releaseChildDriverIfScopeClosed tail: a delivered delegation is
+// unregistered by design, see parkedParentSessions below).
 func (c *coordinator) noteSubAgentChildRunEnded(sessionID string) {
 	if c == nil || sessionID == "" {
 		return

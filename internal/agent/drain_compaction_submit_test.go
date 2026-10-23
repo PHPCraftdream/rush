@@ -295,6 +295,14 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	// from the batch debt.
 	seedBatchJobDebt(t, env.conn, sess.ID, "call-1", false)
 
+	// H4: the ledger-era seed's dual-mode branch invoked the onWebDone
+	// delivery callback; the batch seed is static. Production batch
+	// delivery wakes the owner through notifyAsyncCompletion once its
+	// wake=1 row is committed -- drive that same wake here (the Drain hint
+	// the coordinator_background.go doc describes), then wait it out.
+	coord.notifyAsyncCompletion(AsyncCompletion{SessionID: sess.ID, Wake: true})
+	coord.waitRecheckWakes()
+
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		n := calls

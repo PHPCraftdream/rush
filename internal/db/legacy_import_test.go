@@ -3,6 +3,7 @@ package db
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -600,25 +601,100 @@ func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
 	}
 }
 
-func TestLegacyImportMigrationsMatchEmbedded(t *testing.T) {
+// legacyImportFrozenHashes pins the importer-owned frozen copy of the
+// pre-store-v1 migration chain, byte for byte. Before H4 the frozen
+// directory was compared against the active embedded chain; H4 replaced
+// that chain with the single store-v1 migration, so the comparison now
+// pins the frozen files directly: any edit to a frozen legacy migration
+// (renaming a column, rewriting an index, adding a migration) changes a
+// hash and fails this test, because such an edit would migrate legacy
+// rush.db snapshots to a schema that never existed when the source data
+// was written.
+//
+// legacyImportFrozenHeadVersion is the last pre-H4 embedded version; the
+// frozen chain must end exactly there and must never contain the
+// store-v1 migration.
+func TestLegacyImportFrozenChainPinned(t *testing.T) {
 	t.Parallel()
 	legacyFS, err := legacyMigrationFS()
 	require.NoError(t, err)
-	activeFS, err := migrationFS()
+	entries, err := fs.ReadDir(legacyFS, ".")
 	require.NoError(t, err)
-	legacyEntries, err := fs.ReadDir(legacyFS, ".")
-	require.NoError(t, err)
-	activeEntries, err := fs.ReadDir(activeFS, ".")
-	require.NoError(t, err)
-	require.Len(t, legacyEntries, len(activeEntries))
-	for i, entry := range legacyEntries {
-		require.Equal(t, activeEntries[i].Name(), entry.Name())
-		want, err := fs.ReadFile(activeFS, entry.Name())
+	require.NotEmpty(t, entries)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+		content, err := fs.ReadFile(legacyFS, entry.Name())
 		require.NoError(t, err)
-		got, err := fs.ReadFile(legacyFS, entry.Name())
-		require.NoError(t, err)
-		require.Equal(t, string(want), string(got), entry.Name())
+		sum := sha256.Sum256(content)
+		require.Equal(t, legacyImportFrozenHashes[entry.Name()], hex.EncodeToString(sum[:]), entry.Name())
 	}
+	sort.Strings(names)
+	require.Equal(t, legacyImportFrozenHeadVersion, names[len(names)-1],
+		"frozen chain must end exactly at the last pre-H4 version")
+	for name := range legacyImportFrozenHashes {
+		require.NotContains(t, name, "store_v1", "frozen chain must never gain a store-v1 migration")
+	}
+	require.Len(t, names, len(legacyImportFrozenHashes))
+}
+
+// legacyImportFrozenHeadVersion is the last version the active embedded
+// chain contained before H4 replaced it with the store-v1 schema; the
+// frozen importer chain stops exactly at this version.
+const legacyImportFrozenHeadVersion = "20261019000001_add_batch_timeout_checkins.sql"
+
+// legacyImportFrozenHashes pins the frozen legacy migration chain
+// byte-for-byte (sha256 over the exact embedded bytes).
+var legacyImportFrozenHashes = map[string]string{
+	"20250424200609_initial.sql":                               "07a62a147089293b128eed108b493de0de96dd2e47cdeedc0397bb8181e90a15",
+	"20250515105448_add_summary_message_id.sql":                "1d8597089034d7386d93b5da34741401d4b0ebb9d33580403d8ded1ab768ad27",
+	"20250624000000_add_created_at_indexes.sql":                "0c2cd46b4f3c3e29e9bf56705019264213e2069b10b33d62f06460d18568e612",
+	"20250627000000_add_provider_to_messages.sql":              "adcb6ee4202b0a360518dc0f03778e5e64558ad22c8ff1e390a8236506749889",
+	"20250810000000_add_is_summary_message.sql":                "5dae7e7fd55e2b6dac7e9190dd8759eeeb87b4aadabcefed44d67cb1df1a85f1",
+	"20250812000000_add_todos_to_sessions.sql":                 "8cd37232d6862bf4bc6f7d97786a0f5c6dec28c656e87a09e0953645271a2649",
+	"20260127000000_add_read_files_table.sql":                  "1b8cdda9ebbd0e9e4f415d2963bceaf33dc8d364915ec163277d4052ba6ed9a3",
+	"20260308000001_add_models_to_sessions.sql":                "e4f1df90460ad7ef34263f6644eb5aa4978a953dbaaa9f4110b0d01eda61105a",
+	"20260308000002_add_session_permissions.sql":               "95522f72ea6e725210c813d2bde1abb14d5a912b4d384b3a593d4e95b527f866",
+	"20260308000003_add_system_prompt_to_sessions.sql":         "2b81e0b97a09dd98384eb783424323ac680ef78fa7a306bf9ed14d2bdca18a50",
+	"20260309000001_cleanup_empty_permissions.sql":             "0b85f762d264b63ed3fd00b3ecf69cdbc44eafd1045be01701ffa6afe791a496",
+	"20260310000001_add_pinned_to_messages.sql":                "927b0c1d4e8163683f91fd6730de5bdbb797b18654cdc7e74d2e415ce263957f",
+	"20260311000001_add_hidden_to_messages.sql":                "2fcf82994da279b1d6adc64c4db2b5f3be53c45be1b7b91fc85ea431242cad5c",
+	"20260312000001_add_yolo_to_sessions.sql":                  "44a77c5f73a11ae59c6f53c7bf93419a57abd0436285bd4e98815f78738788a1",
+	"20260312000002_add_enabled_to_permissions.sql":            "75f913e3c06e90ab2c1dcb64097393390604ac9a24f5ca388727867ea041f472",
+	"20260313000000_add_reasoning_effort_to_sessions.sql":      "0eca46bdf7d4c2c57a4cb6373c3bfb82afbe04a96ea7dda25de270bff31249b4",
+	"20260313000001_add_reasoning_effort_to_messages.sql":      "6f1b4181281afaa3ca6623cbb555f09cb8c063ef37ae0122aab3ddc54673f317",
+	"20260517000001_permissions_dedup_and_indexes.sql":         "efd8b04f7b45354dc9209db08ca7c1f10523e049bdd57a9f3c7d267a15d6308d",
+	"20260520000001_add_cancel_to_sessions.sql":                "84cd6424e41ae1de5cde6169c1f99cb961f7b201764c9358839a09c1e8c3f167",
+	"20260520000002_add_queue_tasks.sql":                       "a4265559e15a166eb429d6f41edc484f99b21b62fd465eb2fbfa31d7f76027a3",
+	"20260521000001_add_ended_reason_and_budget.sql":           "bd81f2775b37bc85619ea79fcd33509addc873f19daabc08c8f2440f2dbb0f49",
+	"20260625000001_add_auto_resumed_to_messages.sql":          "86673256401237f946e9cb3903811142b9b94d59cea8e2e2773d726583e9192e",
+	"20260626000001_add_background_job_notice_to_messages.sql": "3c5093bb8191ce624977513f901139c4ec6f473ce4a681e69b51b2912c038fd7",
+	"20260627000002_add_deleted_todos_to_sessions.sql":         "7f81acedffde53339ddd89fe1a40d2a7846fee7f661f31eec209d83103bbedb1",
+	"20260703000001_add_pending_injects_table.sql":             "cf8270fdddb30e186a6cec3cedf4f199606cdeb0f01ade594c3683b3a6003644",
+	"20260728000001_add_parent_cost_accounted_to_sessions.sql": "9ea94a2e7c31837d3bff1bdae3b23c153fb9b65fa53ef66bc2c2ef56f861e06a",
+	"20260728000002_add_sessions_parent_session_id_index.sql":  "ab73913843eaf8bcd86bb8f7423db24527193170269639f969666c20e10e15ed",
+	"20260809000001_add_session_run_queue.sql":                 "012085e9171d08567f9319cff8551631ce11ce1f2e7d997bb757f5802b6d7f27",
+	"20260812000001_add_orphan_call_outbox.sql":                "64630e20bfe04c41447dc9c53c3bec8266f9cd5f91e7dd6399907e771eeffbc5",
+	"20260816000001_add_worker_reviewer_to_sessions.sql":       "0622d18aeaccbfa80f46148bba153842c8c6a1c3a6b1a1c823630df10dc6ee17",
+	"20260816000002_add_usage_to_messages.sql":                 "160e70bc7190915fab49c997dbaa2afc21da0f8713fcb2c307af5059a5e35ac3",
+	"20260818000001_rename_model_slots_to_smart_fast.sql":      "0ffdb517609824af9348dd9759be8e16ca76be5332880e1f71a00d7abac65ba8",
+	"20260819000001_add_checkpoint_generation_to_messages.sql": "f6f3bcd3974ce73f57d88dba149203b2b9ab2267b7f04e2d02968cf2f0f40669",
+	"20260826000001_add_unfinished_assistant_index.sql":        "ea7102eb3a93f4a679598c855e31fc3f80dca85b18d63e500cd8546427180b48",
+	"20260828000001_add_query_covering_indexes.sql":            "c98a8ffcea60674b051d821ead18916e1d079af9e313e87a045e77a4b5e91aa3",
+	"20260831000001_add_origin_to_sessions_and_messages.sql":   "420f901f482e853075bf2596d4d98c7b30b6e6e04931e2fd161ba35ad365b7c3",
+	"20260928000001_add_notice_kind_to_messages.sql":           "4f36341021b618032539f5c125029c6b8bffa0b4a57053ea0c33e014953e0352",
+	"20260928000002_add_async_phase4_core.sql":                 "0dd9be9cecbd48ee47e7f1fadb46fc87dd4823a367bb0ca0a5ae202b8fcf5f3c",
+	"20260929000001_add_session_notices_owner_index.sql":       "b667ebfb4de28baaf0612519108e56fd83536344acd84679765f8502296c8fc0",
+	"20260929000002_add_claim_id_to_async_jobs.sql":            "6f620059d66d87979f2e5936c37cd8f50aa15307bf3a3bdc112089e7673a11a8",
+	"20260929000003_add_announce_message_id_to_async_jobs.sql": "255416a1b4d809b316a44245f2817bb67f731d79aa9874bb26c67ef478a890c4",
+	"20260929000004_add_session_drivers.sql":                   "a1d5d0d384342a090439eab41010e96902d942f23d106650eb11c738ee7a194c",
+	"20260929000005_add_wake_schedules.sql":                    "7ace189d98b1203892bed0238dbbba1c8afb13bfd5368300415bf1af21208d8b",
+	"20261001000001_run_cost_subtree.sql":                      "aa19b7a965b9cea9f7f635b658e36922bc640f9d0bae5443763c8af926e07cf7",
+	"20261002000001_add_workspace_to_sessions.sql":             "4df80a84789e39edbe1366ed918bb063afe1b6bc4bc0157ec83e4b5da2af98a5",
+	"20261005000001_bg_shell_jobs.sql":                         "8d9f4bc2e0af426e76ee74fa598d8ff8f2c9921b25912c5c2be2e8a64e92eb3e",
+	"20261012000001_batch_projection.sql":                      "fd3a47cf2eaa9d8c101474001b54f22fe30552e93e80f6f16e41d69f5d5bcc49",
+	"20261012000002_batch_runner_incarnation.sql":              "f6a47b975c286c654dff2d089b215d22a458b60b8b09570d637745ceef678af8",
+	"20261019000001_add_batch_timeout_checkins.sql":            "1eff3bc1c5cad7b33fc8215e414ea817004be3887f8c2c0086113f5a03c66d74",
 }
 
 func queryAllRows(t *testing.T, conn *sql.DB, query string) [][]any {

@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,6 +110,15 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f.coord.noticeStore = session.NewSessionNoticeStore(f.env.conn)
 	f.store = newAttemptStore(f.env.conn)
 	bindBatchNodeFacts(t, f.coord, f.env.conn, f.env.workingDir)
+	// The durable driver-marker store, bound exactly like the composition
+	// root (internal/app wires SetBatchDriverClaimer with the session
+	// HostStore). The claim/release and the foreign read are the same store
+	// in production; a bare fixture answers (false, nil) from
+	// foreignLiveDriver and the ForeignLiveDriver fact can never fail nor
+	// fire. An unclaimed store over an empty session_drivers table answers
+	// not-foreign, so only tests that seed a foreign marker see it.
+	require.NoError(t, SetBatchDriverClaimer(f.coord,
+		session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "fixture-host")))
 	t.Cleanup(func() {
 		f.coord.waitRecheckWakes()
 		f.waitReleases()

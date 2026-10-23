@@ -28,9 +28,17 @@ import (
 // changing the fixture signature. Test-only bookkeeping.
 var supervisionTestConns sync.Map // *coordinator -> *sql.DB
 
-// supervisionTestNotices returns the notice store over the fixture's conn.
+// supervisionTestNotices returns the notice store over the fixture's conn:
+// the coordinator's BOUND store (newSupervisionTestCoordinator wires it, the
+// composition root's SetCoordinatorSessionNoticeStore equivalent -- the
+// deadline path persists through sessionNoticeStore() and returns without
+// waking when nil, supervision.go), falling back to a parallel store over
+// the same connection.
 func supervisionTestNotices(t *testing.T, c *coordinator) *session.SessionNoticeStore {
 	t.Helper()
+	if c != nil && c.noticeStore != nil {
+		return c.noticeStore
+	}
 	v, ok := supervisionTestConns.Load(c)
 	if !ok {
 		t.Fatalf("no connection registered for the supervision fixture coordinator")
@@ -80,6 +88,10 @@ func newSupervisionTestCoordinator(t *testing.T) *coordinator {
 	coord := newBatchRuntimeCoordinator()
 	conn, dataDir := batchFixtureConn(t)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
+	// The check-in notice persists through sessionNoticeStore(); without the
+	// bound store the deadline logs and RETURNS WITHOUT WAKING
+	// (supervision.go), so the real-timer tests never reached agent.Run.
+	coord.noticeStore = session.NewSessionNoticeStore(conn)
 	supervisionTestConns.Store(coord, conn)
 	t.Cleanup(func() { supervisionTestConns.Delete(coord) })
 	return coord
@@ -257,16 +269,11 @@ func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
 // (timed out waiting for the wake). Removed the early return; re-ran,
 // passed.
 //
-// LEGACY-AUTHORITY ORACLE, flag OFF: the asserted check-in text names the
-// LEGACY guidance and tool set ("job_output", "job_kill", "inspect_agent",
-// "stop_agent", produced by buildSupervisionSummaryAt's legacy branch,
-// supervision.go:516). Under RUSH_BATCH_RUNTIME=1 the batch summary is a
-// different, deliberately narrower text (buildSupervisionSummaryBatch,
-// supervision.go:601: "Inspect with batch_output, or stop with
-// batch_stop."); no batch equivalent of the legacy tool guidance exists,
-// so this test pins the legacy branch only.
+// Batch-runtime oracle (H4): the asserted check-in text is the single
+// batch-world summary (buildSupervisionSummaryAt, supervision.go:410-473:
+// "Inspect with batch_output, or stop with batch_stop."); the legacy/batch
+// RUSH_BATCH_RUNTIME split it used to pin is gone.
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "0")
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
 	defer coord.timeouts.close()
