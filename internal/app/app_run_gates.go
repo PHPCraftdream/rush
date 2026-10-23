@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -179,6 +180,9 @@ func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDe
 			return false
 		}
 		lastErr = err
+		if errors.Is(err, agent.ErrBatchFactsSourceUnavailable) {
+			break
+		}
 		slog.Warn("reviewer pass: scope check failed; retrying", "session_id", sessionID, "attempt", attempt, "err", err)
 		if attempt == reviewerPassScopeOpenRetries || !sleepOrCtxDone(ctx, cliDBRetryPause) {
 			break

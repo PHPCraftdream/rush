@@ -1,0 +1,115 @@
+# Ktav purity gate (lane K0, design doc
+# docs/plans/2026-10-22-ktav-config.md section 8, "Backend and
+# dependency gates").
+#
+# The repository's ONLY permitted Ktav import is the pure,
+# standard-library-only backend github.com/ktav-lang/golang/pure. The
+# root wrapper github.com/ktav-lang/golang drags in
+# github.com/ebitengine/purego and a native C-ABI engine; CGO_ENABLED=0
+# alone does NOT prove purity (a purego wrapper can pass it), so the
+# dependency closure of the product root package is inspected under
+# BOTH CGO settings, per matrix GOOS. No tests, no full build: this is
+# deliberately cheap. Conformance and semantics are build.yml's job.
+name: ktav-purity
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ktav-purity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  purity:
+    strategy:
+      # Same fail-fast rationale as build.yml: one leg's failure must
+      # not cancel the others mid-run.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            goos: linux
+          - os: macos-latest
+            goos: darwin
+          - os: windows-latest
+            goos: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Same pinned actions and Go version source as build.yml/lint.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # shell: bash everywhere (Git Bash on Windows) so the grep
+      # logic below is one portable implementation, inlined twice
+      # (once per CGO setting) to keep the gate a single file.
+      #
+      # shell: bash runs with -e and the run block sets -o pipefail:
+      # a clean graph makes `grep -E` exit 1 inside the command
+      # substitution and errexit kills the step before
+      # `if [ -n "$bad" ]` is reached -- the exact hazard documented
+      # in build.yml's non-ASCII guard. `|| true` inside the
+      # substitution keeps grep's status from escaping it; the
+      # emptiness check alone decides. `tr -d '\r'` strips the CR
+      # that `go list` can emit on Windows before the grep runs.
+      #
+      # Forbidden in the product root closure (main.go):
+      #   - github.com/ebitengine/purego (any path)
+      #   - anything under ktav-lang/golang/internal/native
+      #   - any package path containing "cabi"
+      #   - the exact root package github.com/ktav-lang/golang
+      - name: dependency-closure purity (CGO_ENABLED=0)
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          set -uo pipefail
+          deps="$(go list -deps -f '{{.ImportPath}}' . | tr -d '\r')"
+          bad="$(printf '%s\n' "$deps" \
+            | grep -E 'ebitengine/purego|ktav-lang/golang/internal/native|cabi|^github\.com/ktav-lang/golang$' || true)"
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad"
+            echo "::error::forbidden Ktav/native packages in the product dependency closure (GOOS=${{ matrix.goos }}, CGO_ENABLED=0)"
+            exit 1
+          fi
+      - name: dependency-closure purity (CGO_ENABLED=1)
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "1"
+        shell: bash
+        run: |
+          set -uo pipefail
+          deps="$(go list -deps -f '{{.ImportPath}}' . | tr -d '\r')"
+          bad="$(printf '%s\n' "$deps" \
+            | grep -E 'ebitengine/purego|ktav-lang/golang/internal/native|cabi|^github\.com/ktav-lang/golang$' || true)"
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad"
+            echo "::error::forbidden Ktav/native packages in the product dependency closure (GOOS=${{ matrix.goos }}, CGO_ENABLED=1)"
+            exit 1
+          fi
+      # The pure backend must actually be in the codec's closure —
+      # checked against ./internal/ktavcodec because the codec is not
+      # yet wired into the product root package (lane K1 does that).
+      # The grep sits in an if/! condition, which POSIX exempts from
+      # errexit, so its exit status only reaches the branch decision
+      # and cannot kill the step; tr -d '\r' strips CR that
+      # `go list` can emit on Windows.
+      - name: pure backend present in internal/ktavcodec closure
+        env:
+          GOOS: ${{ matrix.goos }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! go list -deps ./internal/ktavcodec | tr -d '\r' \
+            | grep -Fx 'github.com/ktav-lang/golang/pure'; then
+            echo "::error::github.com/ktav-lang/golang/pure is NOT in the internal/ktavcodec dependency closure"
+            exit 1
+          fi

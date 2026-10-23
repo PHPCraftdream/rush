@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "limits": {
+    "max_concurrent": 3,
+    "max_depth": 8,
+    "max_nodes": 64,
+    "by_group": {
+      "agents": 1,
+      "commands": 1,
+      "tools": 1
+    }
+  },
+  "runner": {
+    "control_timeout_ms": 50,
+    "record_retention": 256
+  },
+  "wait_bound_ms": 10000,
+  "payloads": {
+    "p": {
+      "kind": "controlled"
+    }
+  },
+  "script": [
+    {
+      "action": "submit",
+      "root": "X",
+      "ref": "wcii-X",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "all",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p",
+                "group": "commands"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "X.1",
+      "bind": "x1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "x1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "X.1",
+      "state": "running"
+    },
+    {
+      "action": "hold_stop",
+      "attempt": "x1"
+    },
+    {
+      "action": "stop",
+      "node": "X.1"
+    },
+    {
+      "action": "await_stop",
+      "attempt": "x1",
+      "call": 1
+    },
+    {
+      "action": "await_record",
+      "type": "control",
+      "node": "X.1",
+      "code": "stop_timeout"
+    },
+    {
+      "action": "submit",
+      "root": "A",
+      "ref": "wcii-A",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "all",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p",
+                "group": "agents"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "A.1",
+      "bind": "a1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "a1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "A.1",
+      "state": "running"
+    },
+    {
+      "action": "submit",
+      "root": "B",
+      "ref": "wcii-B",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "all",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p",
+                "group": "commands"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "submit",
+      "root": "T",
+      "ref": "wcii-T",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "all",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p",
+                "group": "tools"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "T.1",
+      "bind": "t1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "t1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "T.1",
+      "state": "running"
+    },
+    {
+      "action": "complete",
+      "attempt": "t1",
+      "state": "completed"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "T.1"
+    },
+    {
+      "action": "await_state",
+      "node": "T",
+      "state": "completed"
+    },
+    {
+      "action": "close",
+      "async": "c",
+      "timeout_ms": 500,
+      "expect": "timeout"
+    },
+    {
+      "action": "await_record",
+      "type": "host_closing"
+    },
+    {
+      "action": "await_state",
+      "node": "B",
+      "state": "interrupted"
+    },
+    {
+      "action": "await_stop",
+      "attempt": "a1",
+      "call": 1
+    },
+    {
+      "action": "complete",
+      "attempt": "a1",
+      "state": "interrupted"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "A.1"
+    },
+    {
+      "action": "await_state",
+      "node": "A",
+      "state": "interrupted"
+    },
+    {
+      "action": "join",
+      "name": "c"
+    },
+    {
+      "action": "return_stop",
+      "attempt": "x1",
+      "call": 1,
+      "result": "ok"
+    },
+    {
+      "action": "complete",
+      "attempt": "x1",
+      "state": "cancelled"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "X.1"
+    },
+    {
+      "action": "await_state",
+      "node": "X",
+      "state": "interrupted"
+    },
+    {
+      "action": "close",
+      "expect": "ok"
+    }
+  ],
+  "expect": {
+    "roots": [
+      {
+        "id": "X",
+        "state": "interrupted"
+      },
+      {
+        "id": "A",
+        "state": "interrupted"
+      },
+      {
+        "id": "B",
+        "state": "interrupted"
+      },
+      {
+        "id": "T",
+        "state": "completed"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "B.1",
+        "starts": 0
+      },
+      {
+        "id": "X.1",
+        "stops": 1
+      }
+    ],
+    "before": [
+      [
+        "T.1:started",
+        "X.1:settled"
+      ]
+    ],
+    "max_active": 3,
+    "exit_code": 3
+  }
+}

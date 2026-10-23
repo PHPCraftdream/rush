@@ -25,7 +25,7 @@ type BashParams struct {
 	Description         string `json:"description" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
 	Command             string `json:"command" description:"The command to execute"`
 	WorkingDir          string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
-	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use job_output to read the output later."`
+	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. The completion notice includes the output; use batch_output to read more later."`
 	AutoBackgroundAfter int    `json:"auto_background_after,omitempty" description:"Seconds to wait before automatically moving the command to a background job (default: 60)"`
 	// Timeout is an optional explicit deadline for this call (#1037). See
 	// TimeoutParams's doc for the shape; parsed generically by
@@ -124,6 +124,9 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
 			}
+			if guardErr := agentguard.CheckCommandPolicy(params.Command); guardErr != nil {
+				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
 
 			// Fork patch: batch 16 — refuse invocations of other AI agent
 			// CLIs (claude, codex, gemini, opencode, aider, rush itself, …).
@@ -196,17 +199,28 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 			}
 
+			if spawn := commandSpawnFromContext(ctx); spawn != nil {
+				return spawn(ctx, BashToolName, []string{params.Command})
+			}
+			if testCommandSpawn != nil {
+				return testCommandSpawn(ctx, BashToolName, []string{params.Command})
+			}
+			if leaf, ok := ctx.Value(shellLeafKey{}).(ShellLeaf); ok {
+				params.RunInBackground = false
+				return runBashLeaf(ctx, leaf, bgManager, sessionID, execWorkingDir, params)
+			}
+
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
+				bgShell, err := startBashShell(bgManager, sessionID, execWorkingDir, params)
 				if err != nil {
 					// Start's only failure mode today is the MaxBackgroundJobs
 					// cap (internal/shell/background.go). That cap is session
 					// state the model can act on — slots free themselves as
-					// jobs finish, and job_kill frees them on demand — so the
+					// jobs finish, and batch_stop frees them on demand — so the
 					// refusal is not invariant to a retry and must reach the
 					// model as a tool result rather than end the run.
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("error starting background shell: %s", err)), nil
@@ -265,7 +279,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					Background:       true,
 					ShellID:          bgShell.ID,
 				}
-				response := fmt.Sprintf("Background shell started with ID: %s\n\nUse job_output tool to view output or job_kill to terminate.", bgShell.ID)
+				response := fmt.Sprintf("Background shell started with ID: %s\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.", bgShell.ID)
 				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 			}
 
@@ -274,11 +288,11 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 
 			// Start with detached context so it can survive if moved to background
 			bgManager.Cleanup()
-			bgShell, err := bgManager.StartOwned(context.Background(), sessionID, execWorkingDir, blockFuncs(), params.Command, params.Description)
+			bgShell, err := startBashShell(bgManager, sessionID, execWorkingDir, params)
 			if err != nil {
 				// Same MaxBackgroundJobs cap as the explicit-background
 				// branch above, here hit by a plain foreground command: the
-				// model can free slots with job_kill or wait for jobs to
+				// model can free slots with batch_stop or wait for jobs to
 				// finish, so this must be a model-visible tool result, not
 				// a fatal error that kills the run over an ordinary `ls`.
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error starting shell: %s", err)), nil
@@ -349,30 +363,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				// Don't call Kill() as it cancels the context and corrupts the exit code
 				bgManager.RemoveOwned(sessionID, bgShell.ID)
 
-				interrupted := shell.IsInterrupt(execErr)
-				exitCode := shell.ExitCode(execErr)
-				if exitCode == 0 && !interrupted && execErr != nil {
-					return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
-				}
-
-				stdout = formatOutput(stdout, stderr, execErr)
-				if isSecurityBlockError(execErr) {
-					return fantasy.NewTextErrorResponse(stdout), nil
-				}
-
-				metadata := BashResponseMetadata{
-					StartTime:        startTime.UnixMilli(),
-					EndTime:          time.Now().UnixMilli(),
-					Output:           stdout,
-					Description:      params.Description,
-					Background:       params.RunInBackground,
-					WorkingDirectory: bgShell.WorkingDir,
-				}
-				if stdout == "" {
-					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
-				}
-				stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", normalizeWorkingDir(bgShell.WorkingDir))
-				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stdout), metadata), nil
+				return bashForegroundResponse(startTime, bgShell.ID, bgShell.WorkingDir, params, stdout, stderr, execErr)
 			}
 
 			// Still running - keep as background job
@@ -389,14 +380,26 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				Background:       true,
 				ShellID:          bgShell.ID,
 			}
-			response := fmt.Sprintf("Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: %s\n\nUse job_output tool to view output or job_kill to terminate.", bgShell.ID)
+			response := fmt.Sprintf("Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: %s\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.", bgShell.ID)
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 		},
 	)
 }
 
+// startBashShell is the legacy detached launch, after guards and permission.
+func startBashShell(manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundShell, error) {
+	return manager.StartOwned(context.Background(), sessionID, workingDir, blockFuncs(), params.Command, params.Description)
+}
+
+// startRetainedBashShell is an inert lifetime seam for a future policy-approved
+// caller. It does not perform policy checks or activate batch ingress. The
+// caller must use the same guards and permission boundary as NewBashTool.
+func startRetainedBashShell(ctx context.Context, manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundExecution, error) {
+	return manager.StartRetainedOwned(ctx, sessionID, workingDir, blockFuncs(), params.Command, params.Description)
+}
+
 func isSecurityBlockError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "command is not allowed for security reasons")
+	return err != nil && (strings.Contains(err.Error(), "command is not allowed for security reasons") || strings.Contains(err.Error(), "the command is denied by the CI-only policy (RUSH_DENY_EXEC)"))
 }
 
 // formatOutput formats the output of a completed command with error handling

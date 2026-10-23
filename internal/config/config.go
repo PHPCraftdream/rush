@@ -348,6 +348,14 @@ type Config struct {
 	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse)"`
 
 	Agents map[string]Agent `json:"-"`
+
+	// endpointDroppedProviders records the custom-provider ids that the most
+	// recent configureProviders run dropped because their base_url was
+	// missing or resolved to empty (see noteEndpointDroppedProvider in
+	// store_reload_providers.go). ReloadFromDisk reads it to reject a
+	// candidate that would silently drop a live provider; the initial Load
+	// keeps its historical warn-and-skip behaviour and ignores it.
+	endpointDroppedProviders map[string]struct{}
 }
 
 func (c *Config) EnabledProviders() []ProviderConfig {
@@ -414,7 +422,7 @@ func (c *Config) FastModel() *catwalk.Model {
 const maxRecentModelsPerType = 5
 
 func allToolNames() []string {
-	return []string{
+	names := []string{
 		"agent",
 		"read_delegation_transcript",
 		"ask_question",
@@ -423,8 +431,6 @@ func allToolNames() []string {
 		"run_command",
 		"rush_info",
 		"rush_logs",
-		"job_output",
-		"job_kill",
 		"inspect_agent",
 		"inject_agent",
 		"stop_agent",
@@ -457,6 +463,11 @@ func allToolNames() []string {
 		"fs_write_lines",
 		"fs_delete",
 	}
+	// R12-H4: the batch runtime is unconditional, so the native batch
+	// controls are always part of the inventory; the deleted job_kill and
+	// job_output tools are gone from the list.
+	names = append(names, "batch_run", "batch_add", "batch_status", "batch_output", "batch_stop")
+	return names
 }
 
 func resolveAllowedTools(allTools []string, disabledTools []string) []string {

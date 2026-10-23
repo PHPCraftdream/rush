@@ -13,6 +13,12 @@ export interface AsyncJobCompletion {
 export interface AsyncJobCompletionIndex {
   byToolCallID: Map<string, AsyncJobCompletion>;
   attachedNoticeIDs: Set<string>;
+  // R12-C: async job_id (and legacy shell_id) → tool call ID, read from
+  // tool_result metadata. The structured batch completion index uses it to
+  // attach a completion keyed by rootID (the batch runtime's job identity)
+  // back onto the tool call block, so a reused tool_call_id stays distinct
+  // per root. Read-only plumbing: the prose entries above are unchanged.
+  toolCallIDByJobID: Map<string, string>;
 }
 
 function messageText(message: Message): string {
@@ -54,13 +60,20 @@ export function indexAsyncJobCompletions(messages: Message[]): AsyncJobCompletio
   const attachedNoticeIDs = new Set<string>();
   const asyncCalls = new Map<string, string>();
   const shellCalls = new Map<string, string>();
+  const toolCallIDByJobID = new Map<string, string>();
 
   for (const message of messages) {
     for (const part of message.Parts) {
       if (part.type !== "tool_result") continue;
       const metadata = resultMetadata(part);
-      if (metadata?.async && metadata.job_id) asyncCalls.set(metadata.job_id, part.ToolCallID);
-      if (metadata?.background && metadata.shell_id) shellCalls.set(metadata.shell_id, part.ToolCallID);
+      if (metadata?.async && metadata.job_id) {
+        asyncCalls.set(metadata.job_id, part.ToolCallID);
+        toolCallIDByJobID.set(metadata.job_id, part.ToolCallID);
+      }
+      if (metadata?.background && metadata.shell_id) {
+        shellCalls.set(metadata.shell_id, part.ToolCallID);
+        toolCallIDByJobID.set(metadata.shell_id, part.ToolCallID);
+      }
     }
 
     if (message.Role !== "user") continue;
@@ -106,5 +119,5 @@ export function indexAsyncJobCompletions(messages: Message[]): AsyncJobCompletio
     }
   }
 
-  return { byToolCallID, attachedNoticeIDs };
+  return { byToolCallID, attachedNoticeIDs, toolCallIDByJobID };
 }

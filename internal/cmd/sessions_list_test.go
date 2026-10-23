@@ -168,16 +168,14 @@ func TestSessionLockFact_AgedLockWithLivePIDIsHeld(t *testing.T) {
 //   - a parent session whose lock file is stale (names a dead PID, aged
 //     past LockStaleDuration) and whose last assistant message finished
 //     with end_turn — the shape the pre-classifier reclassification turned into "done";
-//   - a REAL running async_jobs delegation row (owner=parent,
-//     child_session_id=child), claimed via the seed App's own
-//     AsyncJobStore -- step 7 replaced the session-lock-based descendant
-//     walk with this durable-state one (child_session_id, not
+//   - a REAL live batch delegation (owner=parent, the task child carrying
+//     the child-session link), reserved through the production BatchStore
+//     APIs -- the durable-state descendant walk (child_session_id, not
 //     parent_session_id).
 //
 // Pre-fix the parent's STATUS column read "done". With the cross-process
-// descendant walk (the pre-classifier descendant walk →
-// session.AsyncJobStore.LiveDescendantJobs) it must read "delegating"
-// instead — and fall back to "done" once the delegation row is terminal.
+// descendant walk it must read "delegating" instead — and fall back once
+// the delegation root is terminal.
 func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	a, _, dataDir := isolatedListEnvWithConfiguredDataDir(t)
 
@@ -204,30 +202,20 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
-	// A REAL running delegation row, claimed via the seed App's own
-	// AsyncJobStore (built unconditionally by app.New -- see AsyncJobStore's
-	// own doc) -- exactly like a sub-agent still working in another process.
-	store := a.AsyncJobStore()
-	require.NotNil(t, store, "app.New must build an AsyncJobStore for a data-dir'd App")
-	_, err = store.Claim(ctx, session.ClaimParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", Kind: session.JobKindAgent,
-		Input: "delegate to " + child.ID, ChildSessionID: child.ID,
-	})
-	require.NoError(t, err)
-
-	// Detach the store from the seed App BEFORE Shutdown: Shutdown's
-	// releaseResources Close()s app.asyncJobStore, which releases the OS
-	// host lock the delegation row's liveness depends on -- that would make
-	// the row look dead before sessionsListCmd.RunE (a brand-new App on the
-	// same data dir) ever gets to read it. Keep `store` itself alive (and
-	// its host lock held) for the rest of this test via an explicit,
-	// deferred Close.
-	a.SetAsyncJobStoreForTest(nil)
-	defer func() { _ = store.Close(context.Background()) }()
+	// A REAL live delegation fact: a live batch root whose task child
+	// carries the child-session link -- exactly like a sub-agent still
+	// working in another process. The delegation shape is the lane's
+	// constraint-valid Reserve seed (root + task child with the
+	// ChildSessionID in the reservation Values); a bare root has no task
+	// row to carry the link.
+	claimDelegation(t, a, parent.ID, "delegate-1", child.ID)
 
 	// SessionsListCmd.RunE creates its own full App. Release the seed App's
 	// process-wide MCP owner before invoking the command so the lifetimes
-	// do not overlap.
+	// do not overlap. The delegation's host lock stays held: the seed
+	// HostStore from claimDelegation stays open until cleanup, so the
+	// command's host probe reads the host alive (no second acquire:
+	// holdSeedHost would contend with the held lock).
 	a.Shutdown()
 
 	runList := func() string {
@@ -254,7 +242,7 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	parentRow := statusRowFor(phase1, parent.ID[:8])
 	require.NotEmpty(t, parentRow, "the parent session must be listed")
 	require.Contains(t, parentRow, "delegating",
-		"a parent with a live async_jobs delegation row must show delegating, never done — the observed bug")
+		"a parent with a live delegation must show delegating, never done — the observed bug")
 	require.NotContains(t, parentRow, "done",
 		"nothing may report done while a descendant session has live work")
 	require.NotContains(t, parentRow, "crashed",
@@ -266,21 +254,27 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	require.NotContains(t, phase1, child.ID,
 		"child sessions are filtered out of sessions list")
 
-	// Phase 2: the delegation row reaches a terminal state → back to done.
-	// This can't reuse `store`: a.Shutdown() plus runList()'s own
-	// connect/release cycle already dropped the shared pool's refcount for
-	// dataDir to zero, closing that *sql.DB handle (sqlite itself, being
-	// file-backed, is unaffected on disk -- only the in-process pooled
-	// handle dies). A fresh connection does the write; Transition needs no
-	// host registration (unlike Claim), so no extra host lock is involved.
+	// Phase 2: the delegation root reaches a terminal state → the parent's
+	// status falls back. The seed app is shut down, so write through a fresh
+	// connection (the settle UPDATE needs no host identity, unlike Project).
 	freshConn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	writer := session.NewAsyncJobStore(freshConn, dataDir, 1001, "test-writer")
-	_, err = writer.Transition(ctx, session.TransitionParams{
-		Owner: parent.ID, ToolCallID: "delegate-1", State: "completed", NoticeKind: "completed", Wake: true,
-	})
+	res, err := freshConn.ExecContext(ctx,
+		`UPDATE batch_nodes SET state = 'completed', control_state = 'none', updated_at = ?
+		 WHERE owner_session_id = ? AND (tool_call_id = ? OR root_id IN
+			 (SELECT root_id FROM batch_nodes WHERE owner_session_id = ? AND tool_call_id = ?))`,
+		time.Now().Unix(), parent.ID, "delegate-1", parent.ID, "delegate-1")
 	require.NoError(t, err)
+	rows, err := res.RowsAffected()
+	require.NoError(t, err)
+	// Exactly 2 rows: the root row (tool_call_id = 'delegate-1') and its one
+	// task child (tool_call_id NULL, root_id = the root, so it matches the
+	// root_id IN (...) arm). Reserve writes tool_call_id/input_hash on the
+	// ROOT only (batch_store.go batchInsertTree: children get NULL), so no
+	// other row of the owner can match.
+	require.EqualValues(t, 2, rows,
+		"the settle UPDATE must touch exactly the delegation root and its single task child")
 
 	phase2 := runList()
 	t.Logf("sessions list (delegation row terminal):\n%s", phase2)
@@ -293,5 +287,5 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	require.Contains(t, parentRow, "crashed",
 		"with no live descendant the recorded dead PID is the parent's own crash")
 	require.NotContains(t, parentRow, "delegating",
-		"delegating must be driven by a LIVE row, not by the mere existence of a past delegation")
+		"delegating must be driven by LIVE work, not by the mere existence of a past delegation")
 }

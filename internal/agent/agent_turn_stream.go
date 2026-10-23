@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -182,6 +183,13 @@ type turnStream struct {
 	// See the struct doc's third bullet: asymmetric locking preserved as-is.
 	stepMessages []fantasy.Message
 	stepTools    []fantasy.AgentTool
+	// toolReceipts is the per-step receipt sink installed by
+	// prepareStepWithToolReceipts and consumed by call ID in onToolResult;
+	// toolResultErr latches the first fused-persistence failure so the NEXT
+	// PrepareStep surfaces it (fantasy ignores OnToolResult errors).
+	toolResultMu  sync.Mutex
+	toolReceipts  *toolResultReceiptSink
+	toolResultErr error
 }
 
 func newTurnStream(cfg turnStreamConfig) *turnStream {
@@ -221,6 +229,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 // closure, this is the whole "router": one flat struct literal, no branching.
 func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.FilePart, maxOutputTokens *int64) fantasy.AgentStreamCall {
 	return fantasy.AgentStreamCall{
+		MaxRetries:       &ProviderMaxRetries,
 		Prompt:           message.PromptWithTextAttachments(ts.call.Prompt, ts.call.Attachments),
 		Files:            files,
 		Messages:         history,
@@ -232,7 +241,7 @@ func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.File
 		PresencePenalty:  ts.call.PresencePenalty,
 		TopK:             ts.call.TopK,
 		FrequencyPenalty: ts.call.FrequencyPenalty,
-		PrepareStep:      ts.prepareStep,
+		PrepareStep:      ts.prepareStepWithToolReceipts,
 		OnReasoningStart: ts.onReasoningStart,
 		OnReasoningDelta: ts.onReasoningDelta,
 		OnReasoningEnd:   ts.onReasoningEnd,
@@ -247,6 +256,85 @@ func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.File
 		OnStepFinish:     ts.onStepFinish,
 		StopWhen:         ts.stopConditions(),
 	}
+}
+
+type toolReceiptContextKey struct{}
+
+type toolResultReceipt struct {
+	identity session.BatchToolResultIdentity
+	// persist fuses the actual tool-result message with the guarded root
+	// consumption CAS in ONE transaction (session.BatchConsumeToolResult).
+	persist func(context.Context, message.CreateMessageParams) (message.Message, bool, error)
+}
+
+type toolResultReceiptSink struct {
+	mu       sync.Mutex
+	receipts map[string]toolResultReceipt
+}
+
+func (s *toolResultReceiptSink) add(receipt toolResultReceipt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.receipts == nil {
+		receipts := make(map[string]toolResultReceipt)
+		s.receipts = receipts
+	}
+	id := receipt.identity.ToolCallID
+	if _, exists := s.receipts[id]; exists {
+		return errors.New("batch tool result: duplicate call receipt")
+	}
+	s.receipts[id] = receipt
+	return nil
+}
+
+func (s *toolResultReceiptSink) take(callID string) (toolResultReceipt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.receipts[callID]
+	delete(s.receipts, callID)
+	return r, ok
+}
+
+func (ts *turnStream) prepareStepWithToolReceipts(ctx context.Context, opts fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+	ts.toolResultMu.Lock()
+	priorErr := ts.toolResultErr
+	ts.toolResultMu.Unlock()
+	if priorErr != nil {
+		return ctx, fantasy.PrepareStepResult{}, priorErr
+	}
+	sink := &toolResultReceiptSink{}
+	ts.toolResultMu.Lock()
+	ts.toolReceipts = sink
+	ts.toolResultMu.Unlock()
+	updated, prepared, err := ts.prepareStep(ctx, opts)
+	if err != nil {
+		return updated, prepared, err
+	}
+	return context.WithValue(updated, toolReceiptContextKey{}, sink), prepared, nil
+}
+
+// takeToolReceipt removes THIS step's receipt for the call, if the delivery
+// registered one. The sink is per-step and installed only by
+// prepareStepWithToolReceipts, so it never leaks across steps or turns.
+func (ts *turnStream) takeToolReceipt(callID string) (toolResultReceipt, bool) {
+	ts.toolResultMu.Lock()
+	sink := ts.toolReceipts
+	ts.toolResultMu.Unlock()
+	if sink == nil {
+		return toolResultReceipt{}, false
+	}
+	return sink.take(callID)
+}
+
+func (ts *turnStream) recordToolReceiptError(err error) {
+	if err == nil {
+		return
+	}
+	ts.toolResultMu.Lock()
+	if ts.toolResultErr == nil {
+		ts.toolResultErr = err
+	}
+	ts.toolResultMu.Unlock()
 }
 
 // beginAssistantStep installs a freshly created step assistant row as the
@@ -493,15 +581,25 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 			toolResult,
 		},
 	}
-	// Ack gate (DUR-7, doc sec.3.8) and job_kill result fusion (A3): the
-	// ledger decides which results are a tracked job's own -- by claim tag,
-	// never by tool_call_id alone -- and writes them in one transaction with
-	// the job's row. Every other result is a plain Create. The outer ctx is
-	// used so the message is created even if the request is canceled
-	// mid-stream.
-	if ts.a.asyncJobs != nil {
-		return ts.a.asyncJobs.persistToolResult(ts.ctx, sessionID, toolResult, ts.a.messages, params)
+	receipt, hasReceipt := ts.takeToolReceipt(result.ToolCallID)
+	if hasReceipt {
+		if receipt.identity.Owner != sessionID || receipt.identity.ToolCallID != result.ToolCallID {
+			err := errors.New("batch tool result: receipt identity mismatch")
+			ts.recordToolReceiptError(err)
+			return err
+		}
+		// Fused delivery identity: the actual tool message IS the consumed
+		// delivery. Ordinary persistence is skipped for this call.
+		if _, _, err := receipt.persist(ts.ctx, params); err != nil {
+			ts.recordToolReceiptError(err)
+			return err
+		}
+		return nil
 	}
+	// Batch-only: a batch delivery's result was persisted above through its
+	// fused receipt (the tool message IS the consumed delivery); every other
+	// result is a plain Create. The outer ctx is used so the message is
+	// created even if the request is canceled mid-stream.
 	_, createMsgErr := ts.a.messages.Create(ts.ctx, sessionID, params)
 	return createMsgErr
 }

@@ -13,9 +13,11 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
@@ -460,6 +462,15 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if hook := s.reloadAfterDiskRead; hook != nil {
 		hook()
 	}
+	// Re-verify the models-integrity rule on the candidate's stable bytes
+	// (plan §3.8, P1: without this a running process systematically adopts
+	// a hand-edited models block within one poll interval). On a mismatch
+	// (operator decision D4) the candidate keeps the PREVIOUS role models
+	// while the rest of it still publishes. This lives in
+	// buildAndPublishReload, so every reload path is covered.
+	if reloadModelsIntegrityMismatch(s, configDocuments) {
+		cfg.Models = prevModelsSelections(prev)
+	}
 
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
@@ -507,6 +518,17 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// publishMu — a hung shell substitution here no longer blocks
 	// SetSkipPermissionRequests/SetProviderRuntimeConfig/other readers.
 	if err := cfg.configureProviders(ctx, s, baseEnv, candidateResolver, providers); err != nil {
+		return fmt.Errorf("failed to configure providers during reload: %w", err)
+	}
+
+	// Reject a candidate that would silently drop a live custom provider
+	// because its base_url is missing or empty (see
+	// store_reload_providers.go): publishing such a snapshot would leave
+	// role pins resolving to a provider that no longer exists. On error
+	// nothing below runs, so the previous snapshot, models, provider map
+	// and generation stay untouched. The initial Load keeps the
+	// warn-and-skip behaviour.
+	if err := rejectLiveProviderEndpointDrops(prev.config, cfg, providers); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
@@ -579,6 +601,65 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil
+}
+
+// prevModelsSelections snapshots the previous snapshot's raw role-model
+// selections for the integrity-mismatch carry-forward.
+func prevModelsSelections(prev *storeSnapshot) map[SelectedModelType]SelectedModel {
+	if prev == nil || prev.config == nil {
+		return nil
+	}
+	return maps.Clone(prev.config.Models)
+}
+
+// reloadModelsIntegrityMismatch re-verifies the models-integrity rule on
+// the candidate's stable bytes for the global-data and workspace paths.
+// A warning is logged once per distinct offending fingerprint.
+func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) bool {
+	lockExists := s.anySettingsLockExists()
+	mismatch := false
+	for _, path := range []string{s.globalDataPath, s.loadSnapshot().workspacePath} {
+		if path == "" {
+			continue
+		}
+		doc := stableConfigDocumentForPath(docs, path)
+		if doc == nil || !doc.present {
+			continue
+		}
+		if modelsIntegrityOf(doc.data, lockExists) != nil {
+			mismatch = true
+			warnModelsIntegrityFingerprintOnce(path, doc.fingerprint.digest)
+		}
+	}
+	return mismatch
+}
+
+// stableConfigDocumentForPath finds the candidate document for path.
+func stableConfigDocumentForPath(docs []stableConfigDocument, path string) *stableConfigDocument {
+	canonical := normalizeReloadPath(path)
+	for i := range docs {
+		if normalizeReloadPath(docs[i].path) == canonical {
+			return &docs[i]
+		}
+	}
+	return nil
+}
+
+var (
+	modelsIntegrityWarnMu sync.Mutex
+	modelsIntegrityWarned = map[[sha256.Size]byte]struct{}{}
+)
+
+// warnModelsIntegrityFingerprintOnce logs the unsigned-models warning at
+// most once per distinct file fingerprint.
+func warnModelsIntegrityFingerprintOnce(path string, digest [sha256.Size]byte) {
+	modelsIntegrityWarnMu.Lock()
+	defer modelsIntegrityWarnMu.Unlock()
+	if _, done := modelsIntegrityWarned[digest]; done {
+		return
+	}
+	modelsIntegrityWarned[digest] = struct{}{}
+	slog.Warn("Model settings were changed outside rush; keeping the previous role models", "path", path)
 }
 
 func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {

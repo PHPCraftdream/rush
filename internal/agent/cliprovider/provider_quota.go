@@ -12,7 +12,13 @@ import (
 // exitDiagnostics retains only bounded, sanitized non-JSON diagnostic lines.
 // JSON output may contain user, assistant or tool content, not failure evidence.
 // No provider-specific failure envelopes are interpreted here.
-type exitDiagnostics struct{ text string }
+type exitDiagnostics struct {
+	text      string
+	evidence  string
+	resetText string
+	hard      bool
+	transient bool
+}
 
 const maxExitDiagnostics = 8192
 
@@ -28,6 +34,19 @@ func (d *exitDiagnostics) add(line []byte) {
 		}
 		return r
 	}, string(line))
+	hard, transient := cliLimitText(clean)
+	d.hard = d.hard || hard
+	d.transient = d.transient || transient
+	if hard || transient {
+		d.evidence = boundedFailureText(strings.TrimSpace(d.evidence + "\n" + clean))
+	}
+	lower := strings.ToLower(clean)
+	for _, marker := range []string{"limit will reset", "reset at", "resets ", "try again at"} {
+		if strings.Contains(lower, marker) {
+			d.resetText = boundedFailureText(strings.TrimSpace(d.resetText + "\n" + clean))
+			break
+		}
+	}
 	remaining := maxExitDiagnostics - len(d.text)
 	if remaining <= 1 {
 		return
@@ -76,9 +95,11 @@ func mapCLIExitError(original error, stderr string, merged exitDiagnostics, fail
 	for _, line := range strings.Split(stderr, "\n") {
 		separate.add([]byte(line))
 	}
-	diagnostics := strings.TrimSpace(failure.text + "\n" + separate.text + merged.text)
+	diagnostics := strings.TrimSpace(failure.text + "\n" + separate.text + merged.text + "\n" + separate.evidence + "\n" + merged.evidence + "\n" + separate.resetText + "\n" + merged.resetText)
 	hard, transient := cliLimitText(diagnostics)
-	if transient || failure.transient || (!hard && !failure.hard) {
+	transient = transient || failure.transient || separate.transient || merged.transient
+	hard = hard || failure.hard || separate.hard || merged.hard
+	if transient || !hard {
 		return original
 	}
 	pe := &fantasy.ProviderError{StatusCode: 429, Title: "Quota limit", Message: diagnostics, Cause: original}

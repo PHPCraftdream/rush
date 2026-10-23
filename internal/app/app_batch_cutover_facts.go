@@ -1,0 +1,227 @@
+// Batch fact readers for the app layer's activity
+// and quota surfaces: reaction debt, live work, host
+// liveness and finished-work export read ONLY batch node state
+// (batch_nodes and its debt predicates). Nothing here reads async_jobs.
+// The readers build their own handles from the App's pools, so they work
+// on an App with no batch runtime installed (no provider configured).
+
+package app
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/session"
+)
+
+// batchWorkFacts is the live-work shape the classifier consumes:
+// the counts and the unreadable flags.
+type batchWorkFacts struct {
+	Own, Descendants      int
+	DescendantSessionIDs  []string
+	OwnIncomplete         bool
+	DescendantsIncomplete bool
+}
+
+// batchCutoverOn reports that the batch authority is the one live reader
+// selection: batch installs are unconditional, so this is always true. It
+// is retained (always-true) only for the residual callers in retained
+// files; new code must not branch on it.
+func batchCutoverOn() bool { return true }
+
+// batchCutoverWriter is the pool the batch debt store opens its read-only
+// transactions on (same pool choice as BatchCLIStore). Nil without a DB.
+func (app *App) batchCutoverWriter() *sql.DB {
+	if app == nil || app.DB == nil {
+		return nil
+	}
+	writer := app.DB()
+	if writer == nil {
+		return nil
+	}
+	if len(app.dbConns) > 0 && app.dbConns[0] != nil {
+		writer = app.dbConns[0]
+	}
+	return writer
+}
+
+// batchCutoverReader returns the read pool the batch live reader runs on
+// (nil falls back to the writer, like BatchCLIStore).
+func (app *App) batchCutoverReader(writer *sql.DB) *sql.DB {
+	if app.readDB != nil {
+		return app.readDB
+	}
+	return writer
+}
+
+// batchCutoverDebtOwners answers the pending-inclusive reaction-debt fact
+// from batch node/outbox predicates only. A nil pool answers "no debt"
+// (the configless-App rule), never an error.
+func (app *App) batchCutoverDebtOwners(ctx context.Context, ids []string) (map[string]bool, error) {
+	writer := app.batchCutoverWriter()
+	if writer == nil {
+		return map[string]bool{}, nil
+	}
+	return session.NewBatchStore(writer).BatchReactionDebtOwners(ctx, ids)
+}
+
+// batchCutoverLiveWork derives the live own-work and live-delegation facts
+// from batch nodes: BatchLiveForSessions walks the owner's live roots and,
+// delegation links included, the child-session forest in one shared BFS.
+// Host death never settles nodes (dead hosts stay live until recovery
+// commits), so there is no dead-host-running-rows fact under the batch
+// authority; a failed or Unknown-host read stays incomplete and surfaces
+// as an Unreadable entry, never as "nothing running".
+func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[string]batchWorkFacts {
+	out := make(map[string]batchWorkFacts, len(ids))
+	writer := app.batchCutoverWriter()
+	if writer == nil {
+		return out
+	}
+	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	// TxStarter: every live read runs in ONE read-only tx on the writer.
+	reader.TxStarter = writer
+	for id, r := range reader.BatchLiveForSessions(ctx, ids) {
+		f := batchWorkFacts{
+			Own:                   len(r.Own),
+			Descendants:           len(r.Descendants),
+			OwnIncomplete:         !r.OwnComplete,
+			DescendantsIncomplete: !r.Complete,
+		}
+		seen := make(map[string]struct{}, len(r.Descendants))
+		for _, n := range r.Descendants {
+			child := n.ChildSessionID
+			if child == "" {
+				continue
+			}
+			if _, dup := seen[child]; dup {
+				continue
+			}
+			seen[child] = struct{}{}
+			f.DescendantSessionIDs = append(f.DescendantSessionIDs, child)
+		}
+		out[id] = f
+	}
+	return out
+}
+
+// batchCutoverHostLiveness decides host liveness for the driver
+// facts with the shared, non-acquiring probe (the same predicate
+// BatchLiveReader uses). A host id
+// registered as this process's own is Alive by definition (the shared
+// probe refuses to answer it with ErrProbeOwnHost); foreign hosts keep
+// the conservative probe verdict.
+func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
+	return func(hostID string) session.HostLockStatus {
+		if hostID == "" || app.dataDir == "" {
+			return session.HostStatusUnknown
+		}
+		if session.IsOwnHostID(hostID) {
+			return session.HostStatusAlive
+		}
+		st, err := session.ProbeHostShared(app.dataDir, hostID)
+		if err != nil {
+			return session.HostStatusUnknown
+		}
+		if st != session.HostStatusAlive && st != session.HostStatusDead {
+			return session.HostStatusUnknown
+		}
+		return st
+	}
+}
+
+// quotaWorkRow is the finished-work row the quota terminal snapshot
+// consumes. Key is the per-node identity the quota terminal snapshot dedupes
+// on (the root/node incarnation); Announced mirrors the root row's
+// announcement (the tree's delivery is announced by the root).
+type quotaWorkRow struct {
+	OwnerSessionID string
+	Key            string
+	ToolCallID     string
+	State          string
+	Announced      bool
+	Result         string
+	ChildSessionID string
+}
+
+// batchFinishedWork exports every task node of the session's batch tree
+// (owner roots and, via child_session_id, the descendants' roots --
+// terminal roots INCLUDED, which is why the enumeration reads
+// BatchHistoryRootsForOwner, not the live-roots query). Roots and nested
+// structural batch nodes are structure, never work, so they are not
+// exported. A one-task root keeps the original tool-call id as the
+// exported identity; a multi-task root exports each task by its node id.
+// The root/node Key keeps incarnations distinct for the quota terminal
+// latch. Errors report incomplete, never a partial silent answer.
+func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
+	conn := app.activityConn()
+	if conn == nil {
+		return nil, false, nil
+	}
+	visited := map[string]bool{sessionID: true}
+	frontier := []string{sessionID}
+	var out []quotaWorkRow
+	for depth := 0; depth <= batchReadMaxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, owner := range frontier {
+			roots, err := conn.BatchHistoryRootsForOwner(ctx, owner)
+			if err != nil {
+				return nil, true, fmt.Errorf("quota exit: batch finished work: roots: %w", err)
+			}
+			for _, root := range roots {
+				nodes, err := conn.BatchLevelNodes(ctx, db.BatchLevelNodesParams{Owner: root.OwnerSessionID, RootID: root.RootID})
+				if err != nil {
+					return nil, true, fmt.Errorf("quota exit: batch finished work: nodes: %w", err)
+				}
+				announced := root.Announced != 0
+				// Export only task nodes; the root and nested batch nodes
+				// are structure. The child-link visiting must still run for
+				// every node so terminal descendant sessions stay reachable.
+				var tasks []db.BatchNode
+				for _, n := range nodes {
+					child := n.ChildSessionID.String
+					if n.ChildSessionID.Valid && child != "" && !visited[child] {
+						visited[child] = true
+						next = append(next, child)
+					}
+					if n.Kind == "task" {
+						tasks = append(tasks, n)
+					}
+				}
+				// An ordinary one-task root (the OneItem wrapper of a direct
+				// tool call) keeps the original tool-call id as its exported
+				// identity; a multi-task root exports each task by its node
+				// id. The Key stays root/node, so a reused id in a new root
+				// incarnation still yields a distinct row.
+				oneTask := len(tasks) == 1 && root.ToolCallID.Valid && root.ToolCallID.String != ""
+				for _, n := range tasks {
+					jobID := n.NodeID
+					if oneTask {
+						jobID = root.ToolCallID.String
+					}
+					out = append(out, quotaWorkRow{
+						OwnerSessionID: n.OwnerSessionID,
+						Key:            n.RootID + "/" + n.NodeID,
+						ToolCallID:     jobID,
+						State:          n.State,
+						Announced:      announced,
+						Result:         n.OutcomeSummary,
+						ChildSessionID: n.ChildSessionID.String,
+					})
+				}
+			}
+		}
+		frontier = next
+	}
+	// A depth-bounded walk must never read as complete (same rule as the
+	// session live-work walk).
+	if len(frontier) > 0 {
+		return out, true, nil
+	}
+	return out, false, nil
+}
+
+// batchReadMaxDepth matches the session-side batch walk depth bound.
+const batchReadMaxDepth = 16

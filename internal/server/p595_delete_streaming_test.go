@@ -367,7 +367,7 @@ func (m *mockAgentCoordinator) TakeSummarizeQueue(sessionID string) (*agent.Summ
 	return nil, false
 }
 
-func (m *mockAgentCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mockAgentCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 
@@ -376,9 +376,6 @@ func (m *mockAgentCoordinator) RunSessionAgentCall(ctx context.Context, call age
 }
 
 func (m *mockAgentCoordinator) CancelTurn(sessionID string) {}
-
-func (m *mockAgentCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-}
 
 func (m *mockAgentCoordinator) CancelQueuedSummarize(sessionID string) {}
 

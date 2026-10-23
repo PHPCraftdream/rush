@@ -22,6 +22,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -111,7 +112,7 @@ func bloatCompactDBConn(t *testing.T, conn *sql.DB, wantBytes int) {
 // untouched-file assertions.
 func dbFileSizeAndMtime(t *testing.T, dataDir string) (int64, int64) {
 	t.Helper()
-	st, err := os.Stat(filepath.Join(dataDir, "rush.db"))
+	st, err := os.Stat(storepath.ActivePath(dataDir))
 	require.NoError(t, err)
 	return st.Size(), st.ModTime().UnixNano()
 }
@@ -123,7 +124,7 @@ func TestSessionsCompactCmdRun_CompactsBloatedDB(t *testing.T) {
 
 	out, _, err := run(t)
 	require.NoError(t, err)
-	require.Contains(t, out, "database: "+filepath.Join(dataDir, "rush.db"))
+	require.Contains(t, out, "database: "+storepath.ActivePath(dataDir))
 	require.Contains(t, out, "before: ")
 	require.Contains(t, out, "after: ")
 	require.Contains(t, out, "reclaimed ")

@@ -161,6 +161,12 @@ type mailbox struct {
 	// CURRENT generation must be cancelled to make room for it.
 	replacement *SessionAgentCall
 
+	// armQueuedBuild, when non-nil, arms the retained build ownership on a
+	// call at the moment submit() enqueues it into submitted (Package L
+	// round 2). Set only by sessionAgent.getMailbox; nil for directly
+	// constructed mailboxes (tests), which keeps them retention-free.
+	armQueuedBuild func(*SessionAgentCall)
+
 	// injects holds messages already persisted to the DB, waiting to be
 	// spliced into prepared.Messages by the owner's PrepareStep.
 	injects []pendingInject

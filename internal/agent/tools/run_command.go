@@ -123,6 +123,9 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			}
 
 			argv := append([]string{params.Program}, params.Args...)
+			if guardErr := agentguard.CheckCommandPolicyArgs(argv); guardErr != nil {
+				return fantasy.NewTextErrorResponse(guardErr.Error()), nil
+			}
 
 			// Same shared block list as the bash tool (banned programs AND
 			// argument blockers like `go install` / `npm install --global` /
@@ -173,7 +176,11 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				clampNotice = fmt.Sprintf("(timeout_seconds %d clamped to %d)\n", n, runCommandMaxTimeoutSeconds)
 				n = runCommandMaxTimeoutSeconds
 			}
-			runCtx, cancel := context.WithTimeout(ctx, time.Duration(n)*time.Second)
+			runCtx := ctx
+			cancel := func() {}
+			if argvLeafFromContext(ctx) == nil {
+				runCtx, cancel = context.WithTimeout(ctx, time.Duration(n)*time.Second)
+			}
 			defer cancel()
 
 			sessionID := GetSessionFromContext(ctx)
@@ -200,25 +207,41 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			if spawn := commandSpawnFromContext(ctx); spawn != nil {
+				return spawn(ctx, RunCommandToolName, argv)
+			}
+			if testCommandSpawn != nil {
+				return testCommandSpawn(ctx, RunCommandToolName, argv)
+			}
 			startTime := time.Now()
-			cmd := platform.Command(runCtx, params.Program, params.Args...)
+			// R7b lifetime seam: only after the same shared guards and permission.
+			leaf := argvLeafFromContext(ctx)
+			commandCtx := runCtx
+			if leaf != nil {
+				commandCtx = context.WithoutCancel(ctx)
+			}
+			cmd := platform.Command(commandCtx, params.Program, params.Args...)
 			cmd.Dir = execDir
 			buf := newRunCommandOutputBuffer(0)
 			cmd.Stdout = buf
 			cmd.Stderr = buf
-			// Tree-kill on ctx cancellation (job_kill, terminate_and_wake
+			// Tree-kill on ctx cancellation (batch_stop, terminate_and_wake
 			// timeout -- task #1023 §3), not just the direct process.
 			configureRunCommandProcess(cmd)
 			execErr := cmd.Start()
 			if execErr == nil {
-				// Registers buf with the work ledger (via async_tool.go's
-				// context sink) WHILE the process is still running, so
-				// job_output can read progressive output and job_kill's
-				// stopped notice can quote it -- see LiveOutputBuffer's doc.
-				if sink := LiveOutputSinkFromContext(ctx); sink != nil {
-					sink(buf)
+				if leaf == nil {
+					// Registers buf via the context sink WHILE the process
+					// is still running, so the batch output cache can read
+					// progressive output and a stop's result can quote it
+					// -- see LiveOutputBuffer's doc.
+					if sink := LiveOutputSinkFromContext(ctx); sink != nil {
+						sink(buf)
+					}
+					execErr = cmd.Wait()
+				} else {
+					execErr = runArgvLeaf(ctx, leaf, cmd, buf)
 				}
-				execErr = cmd.Wait()
 			}
 			endTime := time.Now()
 

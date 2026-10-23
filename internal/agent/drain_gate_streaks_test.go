@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +16,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
-
-const blockPullTrigger = `CREATE TRIGGER fx_block_pull BEFORE UPDATE OF delivery ON async_jobs
-	WHEN NEW.delivery = 'done'
-	BEGIN SELECT RAISE(ABORT, 'fx: pull blocked'); END`
 
 // markerTexts is the text of every wake_failed marker written for the session.
 func (f *attemptFixture) markerTexts(ctx context.Context) []string {
@@ -42,19 +39,19 @@ func (f *attemptFixture) markerTexts(ctx context.Context) []string {
 // are made, nothing closes and this test goes red.
 func TestDrainGate_PullFailureDoesNotShortenThePaidBudget(t *testing.T) {
 	ctx := context.Background()
-	const retry = 100 * time.Millisecond
+	const retry = time.Hour
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "gate-mixed-streak", attemptFixtureOpts{handler: emptyReplyResponse})
+	f := newAttemptFixture(t, "gate-mixed-streak", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, blockPullTrigger)
+	unblockPull := a1BlockPull(t, f.env.conn)
 
 	require.NoError(t, f.wake(ctx, true)) // a no-turn Drain: the pull fails
 	require.Zero(t, f.requests.Load())
-	f.exec(ctx, `DROP TRIGGER fx_block_pull`)
-
+	unblockPull()
 	for want := int32(1); want <= 3; want++ {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.elapseDrainPause(ctx)
 		f.pass(ctx)
+		f.coord.afterRelease(f.sessID)
 		require.Equal(t, want, f.requests.Load(), "paid attempt %d must be allowed", want)
 	}
 	row := f.row(ctx, "call-1")
@@ -75,10 +72,10 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	shrinkDrainRetry(t, retry)
 	// No release hook: the test drives every launch itself (a release-launched
 	// Drain racing a fact's own would make the launch count nondeterministic).
-	f := newAttemptFixture(t, "gate-free-dormant", attemptFixtureOpts{noIdle: true})
+	f := newAttemptFixture(t, "gate-free-dormant", attemptFixtureOpts{noIdle: true, manualClock: true})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, blockPullTrigger)
+	a1BlockPull(t, f.env.conn)
 
 	for range drainDormantStreak {
 		require.NoError(t, f.wake(ctx, true)) // each fact is newer than the last pace
@@ -87,7 +84,8 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind, "three no-turn Drains: dormant")
 
 	for range 3 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
 	require.EqualValues(t, drainDormantStreak, launches.runs.Load(), "a pass never reopens a dormant gate")
@@ -106,31 +104,49 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	ctx := context.Background()
 	const retry = 100 * time.Millisecond
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "gate-paid-dormant", attemptFixtureOpts{})
+	f := newAttemptFixture(t, "gate-paid-dormant", attemptFixtureOpts{manualClock: true})
 	f.seedDebt(ctx, "call-1", false)
 	f.blockReactionsAndSettles(ctx)
-
+	// Under the batch runtime the release path can tear the driver down (see
+	// ensureDrainDriver); re-registering keeps every wake on the driver
+	// branch, exactly the OFF shape, so the gated wakes below never reach the
+	// root branch's nil-cfg drainCallFor.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
 	for range 2 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "three paid attempts, the close keeps failing")
 	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind)
 
 	f.seedDebt(ctx, "call-2", false)
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a newer fact does not reopen a paid-dormant gate")
 	// A refusal note (a queued Drain the lock refused) sets hintOpens; the
 	// dormant paid gate must not be reopened by the next fact through it.
 	f.coord.noteDrainRefused(f.sessID, errors.New("lock busy"))
-	f.ledger.bumpHint(f.sessID)
+	f.coord.driverHints.bumpHint(f.sessID)
 	require.NoError(t, f.wake(ctx, true))
+	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "a refusal note does not make a paid-dormant gate hint-openable")
 
+	f.waitDrainIdle()
 	f.coord.ResetAutoResumeCounter(f.sessID)
+	// The one wake allowed through the reopened gate: the driver must be in
+	// place or the root branch panics on the bare fixture's nil cfg.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
-	require.EqualValues(t, 4, f.requests.Load(), "a human message reopens it")
+	f.waitDrainIdle()
+	f.coord.recheckMu.Lock()
+	_, inFlight := f.coord.recheckWakeInFlight[f.sessID]
+	f.coord.recheckMu.Unlock()
+	state := fmt.Sprintf("gate=%+v requests=%d busy=%t inFlight=%t", f.coord.arb.snapshot(f.sessID).Gate, f.requests.Load(), f.sa.IsSessionBusy(f.sessID), inFlight)
+	require.EqualValues(t, 4, f.requests.Load(), "a human message reopens it; %s", state)
 }
 
 // R3B-5: when one row reaches K, only rows whose OWN counter reached it are
@@ -149,7 +165,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	for i := int64(1); i <= 2; i++ {
 		_, _ = f.drainRun(ctx)
 		require.Equal(t, i, f.row(ctx, "call-A").WakeAttempts)
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 	}
 	f.seedDebt(ctx, "call-B", false) // arrives while A is failing
 
@@ -168,7 +184,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "rows remain: the gate stays paced")
 
 	for want := int64(2); want <= 3; want++ {
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 		_, _ = f.drainRun(ctx)
 		require.Equal(t, want, f.row(ctx, "call-B").WakeAttempts)
 	}

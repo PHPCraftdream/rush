@@ -103,30 +103,40 @@ func TestRunInternal_RateLimitQueuedAdmissionNotRetried(t *testing.T) {
 	require.Equal(t, 1, *calls, "a queued admission ends the loop before the rate-limit branch ever waits")
 }
 
-// TestRunInternal_RateLimitNoArmedStallClock: the rate-limit wait sits
-// between attempts with no stall clock armed, so the SUCCESS attempt must
-// find no entry in armedStallClocks for the session.
+// TestRunInternal_RateLimitNoArmedStallClock observes the rate-limit wait
+// after its timer is created and verifies the stall clock is disarmed there.
+// Cancellation from the hook prevents another provider attempt.
 //
-// Revert-check: arming a stall clock around the rate-limit wait (instead of
-// only inside run()'s turn) makes the in-success-run assertion red.
+// Revert-check: arming the stall clock before the wait makes the recorded
+// state true and this test fails after runInternal returns.
 func TestRunInternal_RateLimitNoArmedStallClock(t *testing.T) {
-	shrinkRateLimitVars(t, time.Millisecond, 10*time.Millisecond, time.Second, time.Millisecond, time.Millisecond)
+	shrinkRateLimitVars(t, time.Minute, time.Minute, time.Hour, time.Minute, time.Millisecond)
 	var sessID string
-	_, calls, _, err := rateLimitLoopRun(t, t.Context(), "test-rl-no-stall-clock", nil,
-		func(t *testing.T, env *fakeEnv, sess session.Session, ctx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			if n == 1 {
-				sessID = sess.ID
-				_, ok := armedStallClocks.Load(sess.ID)
-				require.False(t, ok, "no stall clock may be armed during/between rate-limit attempts")
-			}
+	var armedDuringWait bool
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	observed := false
+	ctx = withRateLimitWaitObservation(ctx, func() {
+		observed = true
+		if sessID != "" {
+			_, armedDuringWait = armedStallClocks.Load(sessID)
+		}
+		cancel()
+	})
+	_, calls, _, err := rateLimitLoopRun(t, ctx, "test-rl-no-stall-clock", nil,
+		func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
 			if n == 0 {
-				return rateLimitErrorAttempt(t, env, sess, ctx, call, rateLimit429Err())
+				sessID = sess.ID
+				return rateLimitErrorAttempt(t, env, sess, callCtx, call, rateLimit429Err())
 			}
-			return &fantasy.AgentResult{}, nil
+			t.Fatal("cancelled rate-limit wait must not start another provider attempt")
+			return nil, nil
 		})
-	require.NoError(t, err)
-	require.Equal(t, 2, calls)
-	require.NotEmpty(t, sessID, "the success invocation must have run")
+	require.True(t, observed, "wait observation must execute")
+	require.NotEmpty(t, sessID, "wait hook must run after the failed attempt")
+	require.False(t, armedDuringWait, "stall clock must be disarmed inside the rate-limit wait")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, calls)
 }
 
 // TestRunInternal_RateLimitWaitWarnLog: the rate-limit branch emits exactly

@@ -27,8 +27,12 @@ func (mb *mailbox) clearAll() {
 	mb.mu.Unlock()
 
 	const reason = "the session's queue was explicitly cleared"
+	// Package L round 2: close any retained queued-call build scope on the
+	// way out (release is idempotent; no-op for unmarked calls).
+	releaseQueuedCallsBuildOwnership(dropped)
 	resolveCallsWithError(dropped, reason)
 	if replacement != nil {
+		releaseQueuedBuildOwnership(replacement)
 		resolveCallWithError(*replacement, reason)
 	}
 }

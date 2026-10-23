@@ -53,7 +53,7 @@ func refuseReread(streak int) bool {
 }
 
 // nextStreak folds one step's class into the streak (§1.1): progress resets it,
-// a wait/re-read/refusal extends it, a neutral step (`todos`, `job_output`,
+// a wait/re-read/refusal extends it, a neutral step (`todos`, `batch_output`,
 // an unknown tool) leaves it alone.
 func nextStreak(streak int, class stepCallClass) int {
 	switch class {
@@ -215,7 +215,7 @@ func progressGuardMetadataJSON(refused string) string {
 // that step's snapshot, the calls the plan §2.2 forbids: an async wait-only
 // launch while the session has its own work (or past the threshold), and a
 // windowed read whose windows were all already returned in this turn. Nothing
-// runs on a refusal — no workLedger.Start, no hook, no permission prompt — the
+// runs on a refusal — no batch launch, no hook, no permission prompt — the
 // model sees an ordinary error result carrying the guard's tag. Info and every
 // provider-facing seam are delegated, so the request, the cache prefix and
 // R3-1 are unchanged.

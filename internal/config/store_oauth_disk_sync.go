@@ -5,6 +5,8 @@ import (
 	"math/rand/v2"
 	"os"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -123,4 +125,68 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 	}
 	// Concurrent publications force another check even after successful adoption.
 	st.settled = settled && s.Generation() == sn.generation
+}
+
+// oauthOutboxDrainBudget bounds the synchronous outbox flush StopOAuthDiskSync
+// performs after joining the workers, so shutdown cannot hang on an
+// uncooperative lock.
+const oauthOutboxDrainBudget = 5 * time.Second
+
+// StopOAuthDiskSync cancels the poller and joins it together with any OAuth
+// journal workers on the shared worker goroutines. It is idempotent, and a
+// later StartOAuthDiskSync is refused.
+func (s *ConfigStore) StopOAuthDiskSync() {
+	s.stopOAuthJournalWorkers()
+	s.drainOAuthOutboxOnStop()
+}
+
+// drainOAuthOutboxOnStop flushes any rotation left in the in-memory outbox
+// after the workers have joined. A journal worker cancelled before its first
+// loop iteration never attempts its outbox entry, and a later start is
+// refused on the cancelled context, so an unflushed rotation would lose its
+// journal WAL at shutdown (review P2-4) while the provider has already
+// burned the old refresh token. Each flush runs after the join, so it cannot
+// race the workers, and is bounded by oauthOutboxDrainBudget.
+func (s *ConfigStore) drainOAuthOutboxOnStop() {
+	s.publishMu.Lock()
+	keys := make([]oauthOutboxKey, 0, len(s.oauthOutbox))
+	for key := range s.oauthOutbox {
+		keys = append(keys, key)
+	}
+	s.publishMu.Unlock()
+	if len(keys) == 0 {
+		return
+	}
+	slices.SortFunc(keys, func(a, b oauthOutboxKey) int {
+		if c := strings.Compare(a.path, b.path); c != 0 {
+			return c
+		}
+		return strings.Compare(a.provider, b.provider)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), oauthOutboxDrainBudget)
+	defer cancel()
+	for _, key := range keys {
+		if ctx.Err() != nil {
+			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain exceeded its shutdown budget")
+			return
+		}
+		lockPath := oauthRefreshLockPath(key.path, key.provider)
+		lock, err := acquireConfigFileLock(ctx, lockPath)
+		if err != nil {
+			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain could not take the refresh sidecar")
+			continue
+		}
+		if err := s.flushOAuthOutbox(ctx, key.path, key.provider); err != nil {
+			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain flush failed")
+		}
+		releaseConfigFileLock(lockPath, lock)
+	}
+}
+
+// OAuthDiskSyncRunning reports whether the OAuth disk-sync poller goroutine
+// is running: started, not stopped, and not refused after a stop.
+func (s *ConfigStore) OAuthDiskSyncRunning() bool {
+	s.oauthWorkerMu.Lock()
+	defer s.oauthWorkerMu.Unlock()
+	return s.oauthDiskSyncStarted && s.oauthWorkerCtx != nil && s.oauthWorkerCtx.Err() == nil
 }

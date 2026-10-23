@@ -24,7 +24,7 @@ func TestSessionsAuditHelp_StatesTheReadOnlyContract(t *testing.T) {
 	require.Contains(t, long, "mode=ro")
 	require.Contains(t, long, "PRAGMA query_only")
 	require.Contains(t, long, "no migrations, no locks, no writes")
-	require.Contains(t, long, "the rush.db file is not modified")
+	require.Contains(t, long, "the session store file is not modified")
 	require.Contains(t, long, "creates nothing", "the help must say audit creates nothing")
 
 	short := oneLine(sessionsAuditCmd.Short)
@@ -55,7 +55,7 @@ func TestSessionsAuditHelp_DeclaresTheRulesAndTheirThresholds(t *testing.T) {
 	require.Contains(t, long, "wait-only commands")
 	require.Contains(t, long, "tool errors, counted per error class")
 	require.Contains(t, long, "supervision / wake_failed notices")
-	require.Contains(t, long, "unfinished async jobs")
+	require.Contains(t, long, "unfinished batch work")
 
 	thresholds := map[string]int{
 		"file views":      auditThresholdFileViews,

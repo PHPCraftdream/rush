@@ -34,6 +34,17 @@ import (
 //   - TestExitMapsStallAbort guards app's exit mapping of ErrTurnStalled
 //     to exit_reason "stalled".
 
+// restoreTurnStallPolicy puts back a value read by turnStallPolicy.Load. A
+// test that runs before any policy was installed sees nil, which atomic.Value
+// refuses to Store; the lazily installed policy is process-wide (sync.Once), so
+// it is left in place rather than uninstalled behind the Once's back.
+func restoreTurnStallPolicy(prev any) {
+	if prev == nil {
+		return
+	}
+	turnStallPolicy.Store(prev)
+}
+
 // newStallPolicyClock arms a clock under sessionID with fake-clock
 // control, an attempt-cancel holder and an abort recorder; restores the
 // global registry and policy on cleanup.
@@ -43,7 +54,7 @@ func newStallPolicyClock(t *testing.T, abortTimeout time.Duration) (*stallClock,
 	// restore whatever seam value the test process had before.
 	prev := turnStallPolicy.Load()
 	installTurnStallPolicy()
-	t.Cleanup(func() { turnStallPolicy.Store(prev) })
+	t.Cleanup(func() { restoreTurnStallPolicy(prev) })
 	t0 := time.Now()
 	set := installFakeStallNow(t)
 	set(t0)

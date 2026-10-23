@@ -55,9 +55,14 @@ func (c *coordinator) chainGuardMarker(ctx context.Context, sessionID string) {
 	}
 	slog.Warn("reaction chain without progress: automatic turns for this session are deferred",
 		"session_id", sessionID, "links", c.arb.chainLinksOf(sessionID))
+	store := c.sessionNoticeStore()
+	if store == nil {
+		slog.Error("reaction-chain marker not persisted: no session notice store bound", "session_id", sessionID)
+		return
+	}
 	insertCtx, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
 	defer cancel()
-	if err := c.asyncJobs.store.InsertSessionNotice(insertCtx, sessionID, session.NoticeKindReactionChain, reactionChainMarkerText, false, ""); err != nil {
+	if err := store.InsertSessionNotice(insertCtx, sessionID, session.NoticeKindReactionChain, reactionChainMarkerText, false, ""); err != nil {
 		slog.Error("failed to persist the reaction-chain marker notice", "session_id", sessionID, "err", err)
 	}
 }

@@ -337,6 +337,11 @@ type RunQueuePumpConfig struct {
 	// nil = use production RunQueuePumpInterval.
 	TestTick func() time.Duration
 
+	// TestStopGrace is a test seam for overriding Stop's 5s grace window, so a
+	// test of the bounded-shutdown contract does not measure wall-clock
+	// jitter against the production constant. nil = production 5s.
+	TestStopGrace func() time.Duration
+
 	// TestLeaseTTL is a test seam for overriding RunQueueLeaseTTL. 0 = use
 	// the production constant. RunQueueLeaseTTL (30s) is not itself
 	// test-overridable, which made the lease-renewal-during-a-long-turn

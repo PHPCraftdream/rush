@@ -12,8 +12,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,7 +72,21 @@ func drainConnectRequest(conn net.Conn) error {
 // the always-unresolvable authority "tunnel-target.invalid:443" and
 // returns the raw dial outcome; the test aborts when the dial does
 // not settle within testAbortWait.
-func dialThroughStub(t *testing.T, ln net.Listener) (net.Conn, error) {
+func dialThroughStub(t *testing.T, ln net.Listener, diagnostics ...func()) (net.Conn, error) {
+	t.Helper()
+	return runConnectDial(t, connectDialer(mustURL("http://"+ln.Addr().String())), diagnostics...)
+}
+
+// dialThroughPipe is dialThroughStub over an in-memory connection: the
+// dialer treats proxyEnd as the (already open) connection to the proxy.
+func dialThroughPipe(t *testing.T, proxyEnd net.Conn, diagnostics ...func()) (net.Conn, error) {
+	t.Helper()
+	dial := connectDialerVia(mustURL("http://pipe-proxy.invalid:80"),
+		func(context.Context, string) (net.Conn, error) { return proxyEnd, nil })
+	return runConnectDial(t, dial, diagnostics...)
+}
+
+func runConnectDial(t *testing.T, dial dialFunc, diagnostics ...func()) (net.Conn, error) {
 	t.Helper()
 
 	type dialResult struct {
@@ -80,40 +96,83 @@ func dialThroughStub(t *testing.T, ln net.Listener) (net.Conn, error) {
 	ctx := t.Context()
 	ch := make(chan dialResult, 1)
 	go func() {
-		conn, err := connectDialer(mustURL("http://"+ln.Addr().String()))(
-			ctx, "tcp", "tunnel-target.invalid:443")
+		conn, err := dial(ctx, "tcp", "tunnel-target.invalid:443")
 		ch <- dialResult{conn: conn, err: err}
 	}()
 	select {
 	case r := <-ch:
 		return r.conn, r.err
 	case <-time.After(testAbortWait):
+		dumpConnectStubTimeout(t, diagnostics...)
 		t.Fatal("connectDialer did not return within testAbortWait")
 		return nil, nil
 	}
 }
 
+func dumpConnectStubTimeout(t *testing.T, diagnostics ...func()) {
+	t.Helper()
+	for _, diagnostic := range diagnostics {
+		diagnostic()
+	}
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	t.Logf("All-goroutine stacks (possibly truncated=%t):\n%s", n == len(buf), buf[:n])
+}
+
 func TestConnectResponseHeadByteBounded(t *testing.T) {
 	t.Parallel()
 
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
+	// An in-memory pipe, not kernel TCP: every flooded byte reaches the
+	// client exactly as the stub writes it and a Write returns only once
+	// the client consumed it or closed. Over loopback TCP the delivery
+	// rate depended on the runner's socket buffers and retransmit timers:
+	// a CI run showed the stub parked in Write, the client parked in Read,
+	// ~2.7 MB written and the dial unsettled after testAbortWait, with no
+	// defect in the head limit this test pins.
+	clientEnd, stubEnd := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientEnd.Close()
+		_ = stubEnd.Close()
+	})
 
 	// stubDone closes once the stub has flooded past the head budget
 	// and then observed a write failure or the client's close.
 	stubDone := make(chan struct{})
+	var mu sync.Mutex
+	phase := "start"
+	var responseBytes int64
+	var stubErr error
+	update := func(next string, n int, err error) {
+		mu.Lock()
+		phase = next
+		responseBytes += int64(n)
+		stubErr = err
+		mu.Unlock()
+	}
+	diagnostic := func() {
+		mu.Lock()
+		p, n, err := phase, responseBytes, stubErr
+		mu.Unlock()
+		t.Logf("CONNECT stub: phase=%q response_bytes=%d head_budget=%d error=%v", p, n, maxConnectResponseHead, err)
+	}
 	go func() {
 		defer close(stubDone)
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
+		defer func() {
+			mu.Lock()
+			if stubErr == nil {
+				phase = "done"
+			}
+			mu.Unlock()
+		}()
+		conn := stubEnd
 		defer func() { _ = conn.Close() }()
+		update("draining request", 0, nil)
 
-		// Consume the CONNECT request head before answering (see
-		// drainConnectRequest's doc for why this must happen before Close).
+		// Consume the CONNECT request head before answering (a pipe
+		// Write blocks until the peer reads, so the client's request
+		// write needs this read to complete at all).
 		if err := drainConnectRequest(conn); err != nil {
+			update("draining request error", 0, err)
 			return
 		}
 
@@ -121,32 +180,29 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 		// rejects the very first ~1000-byte line as "malformed HTTP
 		// status code" long before the byte budget is ever tested,
 		// which is a different failure than the one this test pins.
-		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n")); err != nil {
+		update("status write", 0, nil)
+		n, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n"))
+		update("status write", n, err)
+		if err != nil {
+			update("status write error", 0, err)
 			return
 		}
 		// Flood header lines far past the client's head budget; a
 		// failing write is the client's close surfacing.
 		pad := "X-Pad: " + strings.Repeat("A", 1000) + "\r\n"
+		update("flooding", 0, nil)
 		for written := 0; written < 4*int(maxConnectResponseHead); {
 			n, err := conn.Write([]byte(pad))
 			written += n
+			update("flooding", n, err)
 			if err != nil {
+				update("flooding error", 0, err)
 				return
 			}
-		}
-
-		// The flood may still fit in kernel buffers; keep poking the
-		// socket until the close surfaces or the abort wait expires.
-		deadline := time.Now().Add(testAbortWait)
-		for time.Now().Before(deadline) {
-			if _, err := conn.Write([]byte(pad)); err != nil {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 
-	conn, err := dialThroughStub(t, ln)
+	conn, err := dialThroughPipe(t, clientEnd, diagnostic)
 	require.Error(t, err, "an over-budget CONNECT head must fail the dial")
 	require.Nil(t, conn)
 	require.Contains(t, err.Error(), "head limit")
@@ -154,6 +210,7 @@ func TestConnectResponseHeadByteBounded(t *testing.T) {
 	select {
 	case <-stubDone:
 	case <-time.After(testAbortWait):
+		dumpConnectStubTimeout(t, diagnostic)
 		t.Fatal("stub never observed a write failure or client close")
 	}
 }

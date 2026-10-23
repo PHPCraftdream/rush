@@ -70,6 +70,15 @@ func (mb *mailbox) submit(call SessionAgentCall, dispatcherCancel context.Cancel
 		return false, 0 // caller reports ErrSessionBusy instead of queueing
 	}
 	if !call.FromDurableQueue {
+		// Package L round 2: arm the retained build ownership ONLY here --
+		// the moment the mailbox accepts the call into submitted -- never
+		// before the reservation. Winners, lock-busy refusals and
+		// admission-setup failures never arm (round-1 flaw A). A non-Drain
+		// call is never dropped by mergeQueuedCall (it only filters queued
+		// Drains), so an armed call is always the one enqueued.
+		if !call.IsDrain && mb.armQueuedBuild != nil {
+			mb.armQueuedBuild(&call)
+		}
 		mb.submitted = mergeQueuedCall(mb.submitted, call)
 	}
 	return false, 0 // caller queues and returns nil, exactly like today

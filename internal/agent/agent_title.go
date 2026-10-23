@@ -249,8 +249,9 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 
 	var reasoningBuf strings.Builder
 	streamCall := fantasy.AgentStreamCall{
-		Prompt:  fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
-		Headers: sessionHeaders(sessionID),
+		MaxRetries: &ProviderMaxRetries,
+		Prompt:     fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
+		Headers:    sessionHeaders(sessionID),
 		// A reasoning-only stream (the whole answer as `reasoning_content`, no
 		// text part) never flushes fantasy's ReasoningContent — the openaicompat
 		// hook only emits ReasoningEnd when a content delta follows the reasoning

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,7 +73,87 @@ func TestRunNonInlineWindow_FastBashAnsweredInline(t *testing.T) {
 	require.Equal(t, 0, notices, "the result traveled in the tool result; no completion notice")
 }
 
+func testBatchWindowZeroKeepsStartedFlow(t *testing.T) {
+	command, release := recoveryJobCommand(t)
+	command += "; echo E1-WINDOW-OUTPUT"
+	completionText := make(chan string, 1)
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	var launches, startedReplies, completions, finalRequests atomic.Int32
+	var yielded sync.Once
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
+	defer cancel()
+	old := cliLoopTurnDoneSeam
+	cliLoopTurnDoneSeam = func() {
+		yielded.Do(func() {
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return
+			}
+		})
+		releaseOnce.Do(func() { releaseRecoveryJob(t, release) })
+	}
+	defer func() { cliLoopTurnDoneSeam = old }()
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, lastUser, lastTool := lastTurnParts(body)
+		switch {
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// Title requests quote the run prompt ("run held job"); answer
+			// first and count nothing (not a launch, not a phase).
+			admissionWriteSSE(w, []string{admissionSSEText("title", "Window test"), admissionSSEStop("title", "stop")})
+		case strings.Contains(lastUser, "Async job call-1 () finished"):
+			completions.Add(1)
+			finalRequests.Add(1)
+			completionText <- lastUser
+			admissionWriteSSE(w, []string{admissionSSEText("final", "window final"), admissionSSEStop("final", "stop")})
+		case strings.Contains(lastTool, "completions arrive as selected notices"):
+			startedReplies.Add(1)
+			startedOnce.Do(func() { close(started) })
+			admissionWriteSSE(w, []string{admissionSSEText("yield", "job started"), admissionSSEStop("yield", "stop")})
+		default:
+			launches.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("start", "call-1", "bash", `{"command":`+jsonString(command)+`,"description":"held job"}`), admissionSSEStop("start", "tool_calls")})
+		}
+	})
+	t.Cleanup(func() { releaseOnce.Do(func() { releaseRecoveryJob(t, release) }); application.Shutdown() })
+	done := make(chan struct{})
+	var runErr error
+	var result *RunResult
+	go func() {
+		defer close(done)
+		result, runErr = application.RunNonInteractiveWithResult(ctx, io.Discard, "run held job", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("held job run did not finish")
+	}
+	require.NoError(t, runErr)
+	require.NotNil(t, result)
+	require.Equal(t, "window final", result.FinalText)
+	require.EqualValues(t, 1, launches.Load())
+	require.EqualValues(t, 1, startedReplies.Load())
+	require.EqualValues(t, 1, completions.Load())
+	require.EqualValues(t, 1, finalRequests.Load())
+	select {
+	case text := <-completionText:
+		require.Contains(t, text, "E1-WINDOW-OUTPUT")
+	case <-ctx.Done():
+		t.Fatal("completion text not observed")
+	}
+	// Only the selected terminal completion carries NoticeKind "root"; the
+	// started announcement is a BackgroundJobNotice without a kind.
+	require.Equal(t, 1, countBackgroundNotices(t, application, sessionID, "root"))
+}
+
 func TestRunNonInlineWindow_WindowZeroKeepsStartedFlow(t *testing.T) {
+	if f6BatchOn() {
+		testBatchWindowZeroKeepsStartedFlow(t)
+		return
+	}
 	calls, notices := runInlineWindowE2E(t, false)
 	// Without the window the result can never travel in the tool call's own
 	// response: at least one extra provider call past the issuing turn (a

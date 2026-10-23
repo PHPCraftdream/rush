@@ -10,6 +10,7 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,9 @@ type auditDBReport struct {
 	Health       *auditDBHealth    `json:"health,omitempty"`
 	Sessions     []auditSessionRow `json:"sessions,omitempty"`
 	Findings     []auditFinding    `json:"findings,omitempty"`
+	// Batch is the additive flag-on block: batch facts from batch_nodes and
+	// the unfinished_jobs rule's status. Absent with the flag off.
+	Batch *auditBatchReport `json:"batch,omitempty"`
 }
 
 // auditPrintReports writes every scanned database, either as text or as a
@@ -55,7 +59,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 		return nil
 	}
 
-	fmt.Fprintf(w, "== %s (rush.db)\n", report.DataDir)
+	fmt.Fprintf(w, "== %s (%s)\n", report.DataDir, storepath.ActiveFilename)
 
 	for _, issue := range report.SchemaIssues {
 		fmt.Fprintf(w, "%s: this does not look like a Rush session database (a foreign one, or one too old to analyse); audit is read-only and changed nothing\n", issue)
@@ -88,6 +92,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 		fmt.Fprintf(w, "%s: session %s — %s (x%d)\n",
 			finding.Rule, short(finding.SessionID), finding.Detail, finding.Count)
 	}
+	report.Batch.printText(w)
 	return nil
 }
 

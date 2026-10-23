@@ -311,8 +311,7 @@ res, err := client.Run(ctx, sdk.RunRequest{
 })
 ```
 
-`sdk.OSDiskProvider()` returns the real-filesystem implementation `nil`
-falls back to — wrap it (e.g. to log every write) instead of
+`sdk.OSDiskProvider()` returns the real-filesystem implementation. `nil` falls back to it; wrap it (e.g. to log every write) instead of
 reimplementing ripgrep dispatch and gitignore-aware directory walking
 from scratch.
 
@@ -344,21 +343,28 @@ Boundaries to know:
   to do, and is not a defence against a hostile model that has other
   tools. The `FolderScope` ACL is still what limits which paths the
   model may name.
-- **Per-call only, never persisted** — same as `FolderScopes` above: a
-  later run on the same `ContinueSessionID` without `DiskProvider` is an
-  ordinary run against the real disk.
-- **Never survives a durable restart, by design — unlike `FolderScopes`
-  above.** A `DiskProvider` is arbitrary in-process Go code (often a
-  closure over host state — an open DB handle, an HTTP client, an
-  in-memory map) with no serializable form at all, so there is nothing
-  to persist and recompile the way a folder scope's spec is. A call
-  carrying one is refused outright rather than durably queued: if it
-  cannot execute immediately (in-process) it is dropped with an error
-  wrapping `sdk.ErrDiskProviderNotDurable`, never silently replayed
-  onto the real disk after a restart. Combine with
-  `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
-  it already) so you get a fast, synchronous refusal instead of a
-  swallowed one.
+- **Per-call provider identity.** A run without an explicit provider is
+  never assumed safe to continue an earlier provider-backed session. A
+  provider-backed SDK run persists a session execution requirement (the
+  fence) at admission; same-process continuations (durable queued turns,
+  drains/wakes, reviewer follow-ups) restore the exact binding, never
+  "the latest provider for the session". The same-process root
+  drain/wake continuation ALSO restores the persisted folder-scope/command-tool
+  and restricted-run baseline from the fence, so the continued turn is judged
+  by the same policy the fenced run was admitted under.
+- By default, SDK runs use the batch execution runtime. Rush borrows the provider and does not close it. Provider-backed runs retain a process-bound provider binding until associated work terminates; a process restart cannot restore that in-memory capability, so provider-dependent continuations fail closed with `sdk.ErrDiskProviderUnavailable` rather than falling back to the OS filesystem. Keep it usable until
+  associated executions—including detached work and held delegations—
+  have actually terminated and disposed. Cancellation requests are not
+  proof that provider operations stopped; SDK Run/wait returning does
+  not end detached work. Concurrent calls may overlap, so providers
+  need concurrency safety. Crashes never resume old provider-backed
+  work: after a restart, provider-dependent continuations fail closed
+  with `sdk.ErrDiskProviderUnavailable` — terminally for durable rows,
+  never replayed onto the OS disk — and a new SDK run supplying a
+  provider establishes a new epoch. Ordinary turns and unmarked
+  continuations of a fenced session are refused, never downgraded to
+  the real disk. FolderScope and command-tool safety floors above
+  remain in force.
 - **An ephemeral library-mode session (see "Library mode" above) has no
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply

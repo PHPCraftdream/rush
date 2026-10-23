@@ -168,6 +168,12 @@ func (mb *mailbox) interruptAndReplaceLocked(call SessionAgentCall) (context.Can
 		// the mailbox back, so there is no reentrancy risk, and every other
 		// mutation in this function already happens under the same lock.
 		if mb.replacement != nil {
+			// Package L round 2: safety net -- by construction the
+			// replacement slot never holds a submit-armed call
+			// (InterruptAndSend calls own their scope and are skipped by
+			// the arm guard), so this is a no-op unless that invariant
+			// ever breaks.
+			releaseQueuedBuildOwnership(mb.replacement)
 			resolveCallWithError(*mb.replacement, "this queued turn was superseded by a newer interrupt-and-replace before it could run")
 		}
 		mb.replacement = &call

@@ -8,11 +8,15 @@ import (
 )
 
 // TestHandleGetSessionLiveWork_AwaitingAnswerBadge: a pending child_question
-// notice bound to a running delegation row must surface as the row's
+// notice in session_notices must surface as the running delegation row's
 // awaitingAnswer/awaitingQuestion wire fields (#1158); a delegation without
-// such a notice stays clean. Revert-check: removing the PendingChildQuestions
-// read or the fill() match in buildSessionLiveWork leaves both fields zero,
-// failing the first two assertions.
+// such a notice stays clean. The notice is written through the same store
+// the production path reads (db.New(a.DB()) session-notice inserts) in the
+// legacy session-parentheses frame keyed by the held delegation's tool call
+// id — batchPendingQuestions keeps that fallback keyed by JobToolCallID.
+// Revert-check: removing the batchPendingQuestions read or the fill() match
+// in buildSessionLiveWorkFromBatch leaves both fields zero, failing the
+// first two assertions.
 func TestHandleGetSessionLiveWork_AwaitingAnswerBadge(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
@@ -28,16 +32,16 @@ func TestHandleGetSessionLiveWork_AwaitingAnswerBadge(t *testing.T) {
 	require.NoError(t, err)
 	other, err := a.Sessions.CreateTaskSession(ctx, "lw-plain-child", root.ID, "worker")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: root.ID, ToolCallID: "tc-await", Kind: session.JobKindAgent, Input: "investigate", ToolName: "agent", ChildSessionID: child.ID})
-	require.NoError(t, err)
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: root.ID, ToolCallID: "tc-plain", Kind: session.JobKindAgent, Input: "also work", ToolName: "agent", ChildSessionID: other.ID})
-	require.NoError(t, err)
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-await", taskKind: "agent", childSessionID: child.ID, state: "running"})
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: root.ID, toolCallID: "tc-plain", taskKind: "agent", childSessionID: other.ID, state: "running"})
 
 	text := "Supervision summary.\n\nSUB-AGENT QUESTION (session " + child.ID + "): QUESTION: which adapter?" +
 		"\n\nThe sub-agent is paused on this question."
-	require.NoError(t, store.InsertSessionNotice(ctx, root.ID, session.NoticeKindChildQuestion, text, true, "tc-await"))
+	_, err = a.DB().ExecContext(ctx, `INSERT INTO session_notices
+		(owner, kind, text, wake, delivery, reacted, job_tool_call_id, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 'pending', 0, 'tc-await', 1700000002, 1700000002)`,
+		root.ID, session.NoticeKindChildQuestion, text)
+	require.NoError(t, err)
 
 	snap := requestSnapshot(t, a, client, root.ID)
 	require.NotNil(t, snap)

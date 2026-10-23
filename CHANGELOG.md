@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- The batch-only runtime is now unconditionally selected for every `RUSH_BATCH_RUNTIME` value (including unset, `false`, and garbage); the selector remains temporarily. Startup imports durable history, settings, queues and schedules once from untouched `.rush/rush.db` into active `.rush/rush_store_v1.db` before opening it; old/preparation execution and control state is discarded. Stop old processes and automatic restarts throughout import; drain/stop preparation hosts before upgrade. Requeued work may repeat external side effects. Rollback means stopping new hosts and using the previous binary with untouched `rush.db` (old snapshot only); preserve the new store and sidecars, with no reverse import/merge-back. See [job-batch rollout](docs/jobbatch.md). This note records intended current behavior, not evidence of CI gates passing.
+
 ## [0.2.0-alpha.16] - 2026-10-11
 
 - `rush run` no longer stays alive after the agent has finished because of an orphaned `await_tasks` `max_wait` timer: the timer is now remembered and cancelled for `until: any` as well as `all`, and a run start cancels the session's leftover `max_wait` timers from an earlier process (for example one that hit the run timeout). Timers the model schedules itself (`wakein`, `wakeon`, loops) still hold the run open.

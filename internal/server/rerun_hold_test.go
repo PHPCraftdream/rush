@@ -3,7 +3,8 @@ package server
 // R2C-4 / R2C-12 (docs/reviews/2026-09-30-async-phase4-round2-attempts-design.md):
 // a rerun keeps automatic (Drain) turns off the session from the moment it
 // cancels the live turn until it hands the reservation to the replacement turn,
-// and the stop of the voided jobs runs off the handler.
+// and the stop of the voided batch incarnations runs off the handler on a
+// detached goroutine (the legacy StopRerunJobs contract is gone).
 
 import (
 	"context"
@@ -140,30 +141,76 @@ func TestRerun_BailoutReleasesTheHold(t *testing.T) {
 	require.True(t, f.exists(t, f.tail.ID), "nothing was changed")
 }
 
-// blockingStopCoordinator's StopRerunJobs blocks until released, like a child
-// transition retried until it commits.
+// blockingStopCoordinator's BatchRerunStopVoided (the agent.BatchRerunStopper
+// surface the detached stop goroutine runs on) blocks until released, like a
+// child transition retried until it commits. It follows the record → signal →
+// block order: record the call, signal entered, then block on unblock
+// (batchDone closes only after unblock, so a test joins the handler's
+// detached goroutine by closing unblock and waiting batchDone).
 type blockingStopCoordinator struct {
 	cancellableHoldCoordinator
 	entered chan struct{}
 	unblock chan struct{}
+	// batchDone is closed by BatchRerunStopVoided after its embedded unblock
+	// wait returns, so cleanup can join the handler's detached goroutine.
+	// closeOnce guards the close (defensive: only one detached stop runs per
+	// rerun, but the goroutine is the only closer and cleanup never closes).
+	batchDone   chan struct{}
+	closeOnce   sync.Once
+	batchMu     sync.Mutex
+	batchCalls  int
+	batchVoided []session.BatchRerunVoidedNode
 }
 
-func (m *blockingStopCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
+// BatchRerunStopVoided implements agent.BatchRerunStopper. Like the
+// production stop goroutine, it never writes delivery state — the reconcile
+// already committed the void. Record → signal → block: the call is recorded
+// and entered closed BEFORE it blocks on unblock, so the test's post-run
+// assertions see the call while the stop is still blocked (the handler did
+// not block on it).
+func (m *blockingStopCoordinator) BatchRerunStopVoided(_ context.Context, _ string, voided []session.BatchRerunVoidedNode) {
+	m.batchMu.Lock()
+	m.batchCalls++
+	m.batchVoided = append(m.batchVoided, voided...)
+	m.batchMu.Unlock()
 	close(m.entered)
 	<-m.unblock
-	m.cancellableHoldCoordinator.StopRerunJobs(ctx, sessionID, voided)
+	m.closeOnce.Do(func() {
+		if m.batchDone != nil {
+			close(m.batchDone)
+		}
+	})
 }
 
-// TestRerun_StopRerunJobsDoesNotBlockTheHandler: a StopRerunJobs that never
-// returns must not keep the handler, its reservation or the reply waiting.
+// batchStopSnapshot returns the recorded stop calls and voided set.
+func (m *blockingStopCoordinator) batchStopSnapshot() (int, []session.BatchRerunVoidedNode) {
+	m.batchMu.Lock()
+	defer m.batchMu.Unlock()
+	return m.batchCalls, append([]session.BatchRerunVoidedNode(nil), m.batchVoided...)
+}
+
+// TestRerun_DetachedBatchStopDoesNotBlockTheHandler: a BatchRerunStopVoided
+// that never returns must not keep the handler, its reservation or the reply
+// waiting — the detached goroutine runs it.
 //
-// Revert-check: calling StopRerunJobs inline in the handler blocks the reply
-// until the 10s handler bound and this test goes red.
-func TestRerun_StopRerunJobsDoesNotBlockTheHandler(t *testing.T) {
+// Revert-check: calling BatchRerunStopVoided inline in the handler blocks the
+// reply until the 10s handler bound and this test goes red.
+func TestRerun_DetachedBatchStopDoesNotBlockTheHandler(t *testing.T) {
 	f := newRerunHandlerFx(t, "rerun-stop-detached")
-	coord := &blockingStopCoordinator{entered: make(chan struct{}), unblock: make(chan struct{})}
+	coord := &blockingStopCoordinator{entered: make(chan struct{}), unblock: make(chan struct{}), batchDone: make(chan struct{})}
 	f.a.AgentCoordinator = coord
-	t.Cleanup(func() { close(coord.unblock) })
+	t.Cleanup(func() {
+		// Release the stop, then join the handler's detached
+		// BatchRerunStopVoided goroutine: it can only return once unblock is
+		// closed. Cleanup runs on the test goroutine, so failures are
+		// t.Errorf, never t.Fatal.
+		close(coord.unblock)
+		select {
+		case <-coord.batchDone:
+		case <-time.After(10 * time.Second):
+			t.Errorf("the detached BatchRerunStopVoided goroutine did not return after unblock")
+		}
+	})
 
 	env := f.run(t)
 
@@ -171,9 +218,12 @@ func TestRerun_StopRerunJobsDoesNotBlockTheHandler(t *testing.T) {
 	select {
 	case <-coord.entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the voided jobs were never stopped")
+		t.Fatal("the voided incarnations were never stopped")
 	}
 	require.Equal(t, "void", f.jobDelivery(t))
-	_, _, _, _, owned := coord.counters()
+	calls, batchVoided := coord.batchStopSnapshot()
+	require.Equal(t, 1, calls, "the detached stop must run exactly once")
+	require.Len(t, batchVoided, 1, "the stop carries the voided incarnation")
+	_, _, owned := coord.counters()
 	require.False(t, owned, "the reservation is released while the stop is still running")
 }

@@ -15,33 +15,100 @@ type AsyncHost struct {
 	StartedAt int64  `json:"started_at"`
 }
 
-type AsyncJob struct {
-	OwnerSessionID    string         `json:"owner_session_id"`
-	ToolCallID        string         `json:"tool_call_id"`
-	Kind              string         `json:"kind"`
-	ToolName          string         `json:"tool_name"`
-	TimeoutSeconds    int64          `json:"timeout_seconds"`
-	InputHash         string         `json:"input_hash"`
-	ChildSessionID    sql.NullString `json:"child_session_id"`
-	OriginCli         int64          `json:"origin_cli"`
-	State             string         `json:"state"`
-	NoticeKind        string         `json:"notice_kind"`
-	HostID            string         `json:"host_id"`
-	Announced         int64          `json:"announced"`
-	Delivery          string         `json:"delivery"`
-	NoticeMessageID   sql.NullString `json:"notice_message_id"`
-	Wake              int64          `json:"wake"`
-	Reacted           int64          `json:"reacted"`
-	WakeAttempts      int64          `json:"wake_attempts"`
-	ReactedFailed     int64          `json:"reacted_failed"`
-	DeadlineAt        sql.NullInt64  `json:"deadline_at"`
-	TimeoutKind       sql.NullString `json:"timeout_kind"`
-	ResultSummary     sql.NullString `json:"result_summary"`
-	ResultIsError     sql.NullInt64  `json:"result_is_error"`
-	CreatedAt         int64          `json:"created_at"`
-	UpdatedAt         int64          `json:"updated_at"`
-	ClaimID           string         `json:"claim_id"`
-	AnnounceMessageID sql.NullString `json:"announce_message_id"`
+type BatchControlRequest struct {
+	RequestID      string        `json:"request_id"`
+	OwnerSessionID string        `json:"owner_session_id"`
+	RootID         string        `json:"root_id"`
+	NodeID         string        `json:"node_id"`
+	HostID         string        `json:"host_id"`
+	Operation      string        `json:"operation"`
+	Status         string        `json:"status"`
+	AnswerCode     string        `json:"answer_code"`
+	AnswerSequence sql.NullInt64 `json:"answer_sequence"`
+	CreatedAt      int64         `json:"created_at"`
+	AnsweredAt     sql.NullInt64 `json:"answered_at"`
+	RunnerID       string        `json:"runner_id"`
+}
+
+type BatchNode struct {
+	NodeID              string         `json:"node_id"`
+	RootID              string         `json:"root_id"`
+	OwnerSessionID      string         `json:"owner_session_id"`
+	HostID              string         `json:"host_id"`
+	ParentID            sql.NullString `json:"parent_id"`
+	Ordinal             int64          `json:"ordinal"`
+	Kind                string         `json:"kind"`
+	ToolCallID          sql.NullString `json:"tool_call_id"`
+	InputHash           sql.NullString `json:"input_hash"`
+	Announced           int64          `json:"announced"`
+	AnnounceMessageID   sql.NullString `json:"announce_message_id"`
+	OriginCli           int64          `json:"origin_cli"`
+	Mode                sql.NullString `json:"mode"`
+	OnFail              sql.NullString `json:"on_fail"`
+	Notify              sql.NullString `json:"notify"`
+	MaxParallel         int64          `json:"max_parallel"`
+	TaskKind            sql.NullString `json:"task_kind"`
+	TaskGroup           string         `json:"task_group"`
+	TaskPayload         sql.NullString `json:"task_payload"`
+	TimeoutNs           int64          `json:"timeout_ns"`
+	ChildSessionID      sql.NullString `json:"child_session_id"`
+	State               string         `json:"state"`
+	Cause               string         `json:"cause"`
+	Token               int64          `json:"token"`
+	Attempts            int64          `json:"attempts"`
+	ControlState        string         `json:"control_state"`
+	ControlError        string         `json:"control_error"`
+	ControlPending      int64          `json:"control_pending"`
+	OutcomeState        string         `json:"outcome_state"`
+	OutcomeCode         string         `json:"outcome_code"`
+	OutcomeSummary      string         `json:"outcome_summary"`
+	ResponseEnvelopeRef sql.NullString `json:"response_envelope_ref"`
+	RootSequence        int64          `json:"root_sequence"`
+	ProjectionSequence  int64          `json:"projection_sequence"`
+	NoticeSelected      int64          `json:"notice_selected"`
+	NoticeKind          sql.NullString `json:"notice_kind"`
+	NoticeState         sql.NullString `json:"notice_state"`
+	NoticeCause         sql.NullString `json:"notice_cause"`
+	NoticeSequence      sql.NullInt64  `json:"notice_sequence"`
+	NoticeOrdinal       sql.NullInt64  `json:"notice_ordinal"`
+	NoticePending       int64          `json:"notice_pending"`
+	NoticeActive        int64          `json:"notice_active"`
+	NoticeCompleted     int64          `json:"notice_completed"`
+	NoticeFailed        int64          `json:"notice_failed"`
+	NoticeCancelled     int64          `json:"notice_cancelled"`
+	NoticeTimedOut      int64          `json:"notice_timed_out"`
+	NoticeInterrupted   int64          `json:"notice_interrupted"`
+	NoticeSkipped       int64          `json:"notice_skipped"`
+	Delivery            string         `json:"delivery"`
+	NoticeMessageID     sql.NullString `json:"notice_message_id"`
+	Wake                int64          `json:"wake"`
+	Reacted             int64          `json:"reacted"`
+	WakeAttempts        int64          `json:"wake_attempts"`
+	ReactedFailed       int64          `json:"reacted_failed"`
+	CreatedAt           int64          `json:"created_at"`
+	UpdatedAt           int64          `json:"updated_at"`
+	RunnerID            string         `json:"runner_id"`
+	ResponseEnvelope    sql.NullString `json:"response_envelope"`
+}
+
+type BatchRunnerCheckpoint struct {
+	HostID    string `json:"host_id"`
+	RunnerID  string `json:"runner_id"`
+	Sequence  int64  `json:"sequence"`
+	EventType string `json:"event_type"`
+	Final     int64  `json:"final"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type BatchTimeoutCheckin struct {
+	RootID         string `json:"root_id"`
+	NodeID         string `json:"node_id"`
+	HostID         string `json:"host_id"`
+	Token          int64  `json:"token"`
+	Kind           string `json:"kind"`
+	OwnerSessionID string `json:"owner_session_id"`
+	CreatedAt      int64  `json:"created_at"`
 }
 
 type File struct {

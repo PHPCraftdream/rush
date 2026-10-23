@@ -2,8 +2,8 @@ package cmd
 
 // User-facing strings of `sessions gc` and `sessions why` must say what is
 // actually true (review round 1): job retention is NOT a background pass on a
-// CLI-only install, and a live delegation is a running async_jobs row on a
-// host whose process holds the host lock -- not a "live lock" of a sub-agent
+// CLI-only install, and a live delegation is a held batch root on a host
+// whose process holds the host lock -- not a "live lock" of a sub-agent
 // session.
 
 import (
@@ -65,13 +65,13 @@ func TestSessionsHelp_WhyGcJobsAreAccurate(t *testing.T) {
 	require.Contains(t, why, ".rush/hosts", "why probes host locks as well as session locks")
 
 	gc := oneLine(sessionsGcCmd.Long)
-	require.Contains(t, gc, "delivered-but-unreacted debt")
+	require.Contains(t, gc, "unreacted delivery debt")
 	require.Contains(t, gc, "are NEVER purged regardless of age")
 
 	jobs := oneLine(sessionsJobsCmd.Long)
-	require.Contains(t, jobs, `"kill -INT <pid>"`)
-	require.Contains(t, jobs, "WHOLE host process")
-	require.NotContains(t, jobs, "does nothing between turns")
+	require.Contains(t, jobs, "not stopped by killing a session lock holder",
+		"the jobs help must name the batch stop lever")
+	require.Contains(t, jobs, "rush batch stop")
 }
 
 // timeLimitsParagraph returns the text from marker (the "Time limits" heading) on.

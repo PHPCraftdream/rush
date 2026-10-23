@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -26,13 +27,19 @@ func setupHostLockDB(t *testing.T) (context.Context, *db.Queries) {
 	return ctx, db.New(conn)
 }
 
+// nodeStore routes a *db.Queries through the retained hostNodeStore adapter
+// (host_store.go) onto AsyncHostStore: *db.Queries itself no longer satisfies
+// the interface (its legacy async_jobs host methods were deleted), so every
+// RegisterHost/Close call in these tests must go through the adapter.
+func nodeStore(q *db.Queries) AsyncHostStore { return hostNodeStore{q: q} }
+
 // failingStore's RegisterAsyncHost always fails -- used to prove
 // RegisterHost releases the lock it already won before returning
 // the DB error (doc sec.3.6: a failed registration must never leak a held
 // lock).
 type failingStore struct{}
 
-func (failingStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostParams) (db.AsyncHost, error) {
+func (failingStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostRowParams) (db.AsyncHost, error) {
 	return db.AsyncHost{}, errors.New("boom: db insert failed")
 }
 
@@ -42,7 +49,7 @@ func (failingStore) DeleteAsyncHostIfNoJobs(context.Context, string) (int64, err
 // prove a lock-acquisition failure never reaches the DB at all.
 type spyStore struct{ called bool }
 
-func (s *spyStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostParams) (db.AsyncHost, error) {
+func (s *spyStore) RegisterAsyncHost(context.Context, db.RegisterAsyncHostRowParams) (db.AsyncHost, error) {
 	s.called = true
 	return db.AsyncHost{}, nil
 }
@@ -52,13 +59,13 @@ func TestRegisterHost_LazyRegistration(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 4242, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 4242, "cli", nodeStore(q))
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	assert.NotEmpty(t, h.ID)
 	assert.True(t, IsOwnHostID(h.ID), "the registering process must mark its own host id")
 
-	row, err := q.GetAsyncHost(ctx, h.ID)
+	row, err := q.GetAsyncHostRow(ctx, h.ID)
 	require.NoError(t, err, "RegisterAsyncHost must have inserted a display-only row")
 	assert.EqualValues(t, 4242, row.Pid)
 	assert.Equal(t, "cli", row.Label)
@@ -71,7 +78,7 @@ func TestRegisterHost_LazyRegistration(t *testing.T) {
 	var contended *ErrLockContended
 	assert.True(t, errors.As(err, &contended))
 
-	require.NoError(t, h.Close(ctx, q))
+	require.NoError(t, h.Close(ctx, nodeStore(q)))
 	unmarkOwnHostID(h.ID) // test cleanup; Close already does this in production
 }
 
@@ -198,9 +205,9 @@ func TestProbeHost_RefusesOwnHostID(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = h.Close(ctx, q) })
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
 	status, lock, err := ProbeHost(dataDir, h.ID)
 	assert.Equal(t, HostStatusUnknown, status)
@@ -212,13 +219,13 @@ func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
 	lockPath := HostLockPath(dataDir, h.ID)
 
-	require.NoError(t, h.Close(ctx, q))
+	require.NoError(t, h.Close(ctx, nodeStore(q)))
 
-	rows, err := q.ListAsyncHosts(ctx)
+	rows, err := q.ListAsyncHostRows(ctx)
 	require.NoError(t, err)
 	for _, r := range rows {
 		assert.NotEqual(t, h.ID, r.ID, "a host with zero referencing jobs must have its row deleted at Close")
@@ -230,23 +237,28 @@ func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 }
 
 func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
-	ctx, q := setupHostLockDB(t)
+	conn, q, _, ctx := newHostTestDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
 	lockPath := HostLockPath(dataDir, h.ID)
 
 	require.NoError(t, seedSession(ctx, q, "owner-1"))
-	_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
-		OwnerSessionID: "owner-1", ToolCallID: "call-1", Kind: "command",
-		InputHash: "h", HostID: h.ID, CreatedAt: 1700000000, UpdatedAt: 1700000000,
+	// A live batch_nodes row owned by this host keeps the host row and lock
+	// file alive across Close (the DeleteAsyncHostIfNoNodes guard).
+	_, err = NewBatchStore(conn).Reserve(ctx, BatchReservation{
+		Owner: "owner-1", Host: h.ID, RunnerID: "runner", ToolCallID: "call-1", InputHash: "hash", Sequence: 1,
+		Root: BatchReservationNode{
+			Values:   db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "pending", ControlState: "none"},
+			Children: []BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}},
+		},
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, h.Close(ctx, q))
+	require.NoError(t, h.Close(ctx, nodeStore(q)))
 
-	_, err = q.GetAsyncHost(ctx, h.ID)
+	_, err = q.GetAsyncHostRow(ctx, h.ID)
 	require.NoError(t, err, "a host row with referencing jobs must survive Close")
 
 	_, statErr := os.Stat(lockPath)
@@ -399,9 +411,9 @@ func TestProbeHostShared_RefusesOwnHostID(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = h.Close(ctx, q) })
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
 	status, err := ProbeHostShared(dataDir, h.ID)
 	assert.Equal(t, HostStatusUnknown, status)

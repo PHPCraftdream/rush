@@ -119,10 +119,7 @@ type ReactionDebtSource interface {
 // that) is logged and the in-memory marker alone is kept -- the pre-durable
 // behaviour; every other claim error is returned.
 func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string) error {
-	if c.asyncJobs == nil {
-		return nil
-	}
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
 			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
 				return err
@@ -131,7 +128,7 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 				"session_id", sessionID, "err", err)
 		}
 	}
-	c.asyncJobs.claimExternalDriver(sessionID)
+	c.driverHints.claimExternalDriver(sessionID)
 	// The same 60s pass the web process runs (recheck set, parked children,
 	// maintenance): the CLI root itself is a hint-only no-op for it, but its
 	// delegated children's retries and refusals ride it. Stopped by CancelAll.
@@ -156,13 +153,10 @@ func (c *coordinator) ClaimExternalDriver(ctx context.Context, sessionID string)
 // in-memory marker) -- so simply never releasing it here is both safe and
 // sufficient; the marker dies with the process either way.
 func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID string) {
-	if c.asyncJobs == nil {
-		return
-	}
 	// The DURABLE marker is released unconditionally: it is what other
 	// processes consult, and it must not keep naming a host that stays alive
 	// until this process really exits (shutdown can take a while).
-	if store := c.asyncJobs.store; store != nil {
+	if store := c.driverMarkerStore(); store != nil {
 		if err := store.ReleaseSessionDriver(ctx, sessionID); err != nil {
 			slog.Warn("external driver: releasing the durable marker failed; Close is the backstop",
 				"session_id", sessionID, "err", err)
@@ -171,16 +165,14 @@ func (c *coordinator) ReleaseExternalDriver(ctx context.Context, sessionID strin
 	if !c.persistentMode.Load() {
 		return // C4: the in-memory marker of a one-shot CLI process dies with it
 	}
-	c.asyncJobs.releaseExternalDriver(sessionID)
+	c.driverHints.releaseExternalDriver(sessionID)
 }
 
 // ReactionDebtExists reads doc sec.3.4's pending-inclusive debt predicate for
 // sessionID.
 func (c *coordinator) ReactionDebtExists(ctx context.Context, sessionID string) (bool, error) {
-	if c.asyncJobs == nil {
-		return false, nil
-	}
-	return c.asyncJobs.reactionDebtExists(ctx, sessionID)
+	// Pending-inclusive selected-notice debt from batch reads.
+	return coordinatorBatchCutoverFacts(c).SelectedDebtExists(ctx, sessionID)
 }
 
 // reactionDebtSourceHintFallback bounds WaitForHint's wait even without a
@@ -191,35 +183,29 @@ const reactionDebtSourceHintFallback = 5 * time.Second
 
 // WaitForHint implements ReactionDebtSource.
 func (c *coordinator) WaitForHint(ctx context.Context, sessionID string, until time.Time) {
-	if c.asyncJobs == nil {
-		return
-	}
-	since := c.asyncJobs.hintSeqOf(sessionID)
+	since := c.driverHints.hintSeqOf(sessionID)
 	wait := reactionDebtSourceHintFallback
 	if !until.IsZero() {
 		wait = min(wait, max(time.Until(until), 0))
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	c.asyncJobs.waitForHint(waitCtx, sessionID, since)
+	c.driverHints.waitForHint(waitCtx, sessionID, since)
 }
 
 // RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and
 // retention purge halves of the 60s pass (doc sec.3.6/3.7), factored out of
 // RecheckPass so a `rush run` can run them once at its start.
 func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
+	store := batchCutoverReactionStore(c)
+	if store == nil {
 		return
 	}
-	// Doc sec.3.6/3.7: the host-level sweep over every dead host with a
-	// running row -- the only cross-process fallback for a host that never
-	// gets a turn/scope-evaluation of its own to trigger own-scope recovery.
-	if _, err := c.asyncJobs.store.SweepDeadHosts(ctx, c.messages); err != nil {
-		slog.Debug("coordinator: maintenance sweep: dead-host sweep failed", "err", err)
-	}
-	// Retention (doc sec.3.7): old delivered/voided rows and empty dead
-	// hosts' lock files, same pass, best-effort.
-	if err := c.asyncJobs.store.PurgeExpired(ctx, session.AsyncDataRetentionAge); err != nil {
+	// Retention (doc sec.3.7): old terminal batch rows, same pass,
+	// best-effort. Dead-host recovery is scope-driven
+	// (recoverBatchScopeDeadCandidates / BatchRecoverPass), not a
+	// maintenance-table sweep.
+	if _, err := store.BatchPurgeExpired(ctx, session.BatchRetentionCutoff(time.Now())); err != nil {
 		slog.Debug("coordinator: maintenance sweep: retention purge failed", "err", err)
 	}
 }
@@ -227,9 +213,6 @@ func (c *coordinator) RunMaintenanceSweep(ctx context.Context) {
 // CLIScope implements ReactionDebtSource (see the interface doc for the
 // read order and the meaning of each field).
 func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error) {
-	if c.asyncJobs == nil || c.asyncJobs.store == nil {
-		return CLIScopeState{}, nil
-	}
 	// Read the shell manager's completion hold BEFORE the DB reads: released
 	// only after notifyBackgroundJobDone's notice insert commits, "hold gone"
 	// implies the debt read below sees the notice; reading it after that read
@@ -261,9 +244,9 @@ func (c *coordinator) CLIScope(ctx context.Context, sessionID string) (CLIScopeS
 	if pending {
 		state.WorkOpen = true
 	}
-	debt, err := c.asyncJobs.store.ReactionDebtExists(ctx, sessionID)
-	if err != nil {
-		return CLIScopeState{}, err
+	debt, debtErr := coordinatorBatchCutoverFacts(c).SelectedDebtExists(ctx, sessionID)
+	if debtErr != nil {
+		return CLIScopeState{}, debtErr
 	}
 	if !debt {
 		return state, nil
@@ -298,16 +281,15 @@ func (c *coordinator) runningWorkOpen(ctx context.Context, sessionID string) (bo
 	// 'interrupted' before answering, so a row whose host just died is
 	// treated as recoverable-and-gone rather than kept "open" forever (or,
 	// once recovered, correctly reported closed if nothing else is
-	// outstanding). Best-effort: RecoverOwnerScope never fails this call.
-	c.asyncJobs.store.RecoverOwnerScope(ctx, sessionID, c.messages)
-	rows, err := c.asyncJobs.store.ListRunningForOwners(ctx, []string{sessionID})
-	if err != nil {
-		return false, err
+	// outstanding). Best-effort: recovery never fails this call.
+	// Scope-time recovery first, then liveness from a FRESH batch live read
+	// (conservative: an unreadable read reports open). A failed or
+	// budget-exhausted recovery keeps the conservative live answer and the
+	// App's background maintenance pass completes it later.
+	recoverBatchScopeDeadCandidates(ctx, c, sessionID)
+	entries, scopeErr := coordinatorBatchCutoverFacts(c).LiveScopeForOwners(ctx, []string{sessionID})
+	if scopeErr != nil {
+		return false, scopeErr
 	}
-	for _, row := range rows {
-		if c.asyncJobs.store.HostNotDead(row.HostID) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return len(entries) > 0 && entries[0].Live, nil
 }

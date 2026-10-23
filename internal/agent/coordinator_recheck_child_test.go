@@ -1,7 +1,11 @@
-// B12/C14 (docs/reviews/2026-09-29-async-phase4-round1.md, W-DRAIN): the 60s
-// pass's own recheck of parked delegations must call recheckChild with the
-// CHILD session id (recheckChild indexes l.byChild by child id) -- not the
-// PARENT id parkedParentSessions() returns, which was always a miss.
+// The deleted ledger parked-delegation recheck tests
+// (TestParkedChildSessions_ReturnsChildIdsNotParentIds,
+// TestRecheckPass_DeliversParkedDelegationViaChildRecheck) were obsolete
+// contracts: recheckChild indexed the deleted ledger's byChild map, and a
+// batch delegation's outcome is delivered by the batch executor, not by a
+// recheck pass. What survives of the 60s pass is the wake machinery over the
+// recheck set (the release-shaped retry noteSubAgentChildRunEnded feeds),
+// pinned by the tests below.
 package agent
 
 import (
@@ -12,75 +16,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
-
-// TestParkedChildSessions_ReturnsChildIdsNotParentIds is the direct, narrow
-// proof of the underlying bug: parkedParentSessions() and
-// parkedChildSessions() must report DIFFERENT ids for the same armed
-// delegation.
-func TestParkedChildSessions_ReturnsChildIdsNotParentIds(t *testing.T) {
-	t.Parallel()
-	coord := newParkedOutcomeCoordinator(t, func(AsyncCompletion) {})
-	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, false)
-	parkDelegation(t, coord, parkedChildSession, "still working")
-	require.True(t, coord.asyncJobs.hasParked())
-
-	require.Equal(t, []string{parkedParentSession}, coord.asyncJobs.parkedParentSessions())
-	require.Equal(t, []string{parkedChildSession}, coord.asyncJobs.parkedChildSessions())
-}
-
-// TestRecheckPass_DeliversParkedDelegationViaChildRecheck reproduces B12's
-// scenario: a child's owned job finishes (e.g. via another process's dead-
-// host recovery, which deliberately never wakes/delivers -- DUR-6) WITHOUT
-// the normal in-process "child run ended" trigger (noteSubAgentChildRunEnded)
-// ever firing. The delegation stays parked until SOMETHING re-evaluates it;
-// the 60s pass is that fallback.
-//
-// Revert-check performed: changed RecheckPass's loop back to `for _, parent
-// := range c.parkedParentSessions() { c.asyncJobs.recheckChild(parent) }` --
-// this test's `require.Len(t, drainCompletions(delivered), 1)` FAILED (0
-// items: recheckChild(parentSession) looked up the empty
-// byChild[parentSession] and did nothing). Restored parkedChildSessions();
-// re-ran, passed.
-func TestRecheckPass_DeliversParkedDelegationViaChildRecheck(t *testing.T) {
-	t.Parallel()
-	delivered := make(chan AsyncCompletion, 4)
-	coord, messages := newParkedOutcomeCoordinatorWithMessages(t, func(completion AsyncCompletion) { delivered <- completion })
-
-	startChildOwnedJob(t, coord.asyncJobs, parkedChildSession, parkedChildJob, false)
-	parkDelegation(t, coord, parkedChildSession, "still working")
-	require.True(t, coord.asyncJobs.hasParked())
-	require.Empty(t, drainCompletions(delivered))
-
-	// The child's owned job completes, but the normal "child run ended"
-	// trigger is deliberately NOT invoked here -- simulating a completion
-	// this process's own in-process triggers never got a chance to react to
-	// (e.g. dead-host recovery in a DIFFERENT process, which never wakes or
-	// delivers by design).
-	coord.asyncJobs.finish(jobOf(coord.asyncJobs, parkedChildSession, parkedChildJob), jobResult{content: "gate ok"})
-	select {
-	case <-delivered:
-	default:
-		t.Fatal("the child's own job result must still wake the child in-memory")
-	}
-	require.True(t, coord.asyncJobs.hasParked(), "precondition: the delegation itself must still be parked (no run-ended trigger fired)")
-
-	// B3/C6 fix follow-up: childScopeDrained now also waits for the child's
-	// OWN cross-process reaction debt to clear. Write that reaction directly
-	// (simulateChildReactionWithoutTrigger, NOT simulateChildReaction) so the
-	// only thing that re-evaluates the delegation is RecheckPass itself, not
-	// an in-process run-ended trigger this test deliberately never fires.
-	simulateChildReactionWithoutTrigger(t, coord, messages, parkedChildSession, "child reacted", message.FinishReasonEndTurn)
-
-	coord.RecheckPass(context.Background())
-
-	got := drainCompletions(delivered)
-	require.Len(t, got, 1, "the 60s pass must deliver the parked delegation once the child's scope is actually drained")
-	require.Equal(t, parkedParentCall, got[0].ToolCallID)
-	require.False(t, coord.asyncJobs.hasParked())
-}
 
 // newBlockingWakeCoordinator builds a coordinator whose sessions each owe a
 // pending notice and whose driver's Run blocks until release is closed, so a
@@ -89,18 +27,18 @@ func newBlockingWakeCoordinator(t *testing.T, ids ...string) (coord *coordinator
 	t.Helper()
 	release = make(chan struct{})
 	entered = &atomic.Int32{}
-	store := newTestAsyncJobStore(t)
-	coord = &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.asyncJobs = newWorkLedger(coord.notifyAsyncCompletion)
-	coord.asyncJobs.store = store
-	coord.asyncJobs.coord = coord
+	conn, dataDir := batchFixtureConn(t)
+	coord = newBatchRuntimeCoordinator()
+	bindBatchNodeFacts(t, coord, conn, dataDir)
 	blocked := &mockSessionAgent{runFunc: func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		entered.Add(1)
 		<-release
 		return nil, nil
 	}}
 	for _, id := range ids {
-		require.NoError(t, store.InsertSessionNotice(context.Background(), id, "manual_test_notice", "owed", true, ""))
+		ensureFixtureSession(t, conn, id)
+		notices := session.NewSessionNoticeStore(conn)
+		require.NoError(t, notices.InsertSessionNotice(context.Background(), id, "manual_test_notice", "owed", true, ""))
 		coord.subAgentDrivers.register(id, subAgentDriver{agent: blocked, call: SessionAgentCall{SessionID: id}})
 	}
 	return coord, release, entered

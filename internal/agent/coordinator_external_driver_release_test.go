@@ -21,19 +21,16 @@ import (
 // release) FAILED (isExternalDriver was false). Restored the guard; re-ran,
 // passed.
 func TestReleaseExternalDriver_NonPersistentCoordinator_NeverReleases(t *testing.T) {
-	coord := &coordinator{}
-	ledger := newWorkLedger(nil)
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := newBatchRuntimeCoordinator()
 	// persistentMode left at its zero value (false) -- matches `rush run`,
 	// which never calls SetPersistentMode(true).
 
 	const sessID = "cli-root-session"
 	require.NoError(t, coord.ClaimExternalDriver(context.Background(), sessID))
-	require.True(t, ledger.isExternalDriver(sessID))
+	require.True(t, coord.driverHints.isExternalDriver(sessID))
 
 	coord.ReleaseExternalDriver(context.Background(), sessID)
-	require.True(t, ledger.isExternalDriver(sessID),
+	require.True(t, coord.driverHints.isExternalDriver(sessID),
 		"a non-persistent (CLI) coordinator must never release its external-driver marker")
 }
 
@@ -41,18 +38,15 @@ func TestReleaseExternalDriver_NonPersistentCoordinator_NeverReleases(t *testing
 // regression guard: the web server's coordinator (persistentMode true) must
 // keep releasing normally.
 func TestReleaseExternalDriver_PersistentCoordinator_StillReleases(t *testing.T) {
-	coord := &coordinator{}
-	ledger := newWorkLedger(nil)
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := newBatchRuntimeCoordinator()
 	coord.SetPersistentMode(true)
 	t.Cleanup(coord.StopRecheckTicker)
 
 	const sessID = "web-tab-session"
 	require.NoError(t, coord.ClaimExternalDriver(context.Background(), sessID))
-	require.True(t, ledger.isExternalDriver(sessID))
+	require.True(t, coord.driverHints.isExternalDriver(sessID))
 
 	coord.ReleaseExternalDriver(context.Background(), sessID)
-	require.False(t, ledger.isExternalDriver(sessID),
+	require.False(t, coord.driverHints.isExternalDriver(sessID),
 		"a persistent (web) coordinator must still release its external-driver marker normally")
 }

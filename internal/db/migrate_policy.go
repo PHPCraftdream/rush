@@ -74,7 +74,18 @@ type MigrateOptions struct {
 	// dbPath is the database file the option set was built for. It is only
 	// used to describe the migration to the test seam.
 	dbPath string
+	// PreMigrationChecks run, in order and fail-fast, inside the
+	// "pending && MayMigrate" branch while the decision lock is still held,
+	// immediately before anything is applied. Empty/nil keeps behavior
+	// byte-identical for existing callers. R12-H will register the
+	// live-host gate (CheckLiveHosts) here for the destructive async_jobs
+	// cutover migration.
+	PreMigrationChecks []PreMigrationCheck
 }
+
+// PreMigrationCheck is a gate run before pending migrations are applied.
+// Returning an error aborts the migration with nothing applied.
+type PreMigrationCheck func(ctx context.Context, conn *sql.DB, dbPath string) error
 
 // MigrateOption customizes MigrateOptions.
 type MigrateOption func(*MigrateOptions)
@@ -82,6 +93,12 @@ type MigrateOption func(*MigrateOptions)
 // WithMayMigrate sets whether pending migrations may be applied.
 func WithMayMigrate(v bool) MigrateOption {
 	return func(o *MigrateOptions) { o.MayMigrate = v }
+}
+
+// WithPreMigrationChecks appends gates that run before any pending
+// migration is applied (while the decision lock is still held).
+func WithPreMigrationChecks(checks ...PreMigrationCheck) MigrateOption {
+	return func(o *MigrateOptions) { o.PreMigrationChecks = append(o.PreMigrationChecks, checks...) }
 }
 
 // WithMigrationLockPath sets the cross-process lock guarding the migration
@@ -149,13 +166,24 @@ func migrate(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS, opts 
 	case len(unknown) > 0:
 		// The database is ahead of this binary. Goose itself would ignore
 		// those rows (it only raises dbMax), so opening read-only is the
-		// safe, non-destructive reading of this state.
+		// safe, non-destructive reading of this state. This warn-only
+		// "open without migrating" policy is NOT an old-binary fence: an
+		// older binary treats this binary's versions the same way, so a
+		// rolling upgrade is made safe by operational quiescence, not by
+		// this policy.
 		slog.Warn("Database contains unknown migration versions, opening without migrating",
 			"unknown", formatVersions(unknown))
 		return nil
 	case len(pending) > 0 && !opts.MayMigrate:
 		return &SchemaMigrationNotAllowedError{Pending: pending}
 	case len(pending) > 0:
+		// Gates run here, before anything is applied, while the decision
+		// lock is still held.
+		for i, check := range opts.PreMigrationChecks {
+			if err := check(ctx, conn, dbPath); err != nil {
+				return fmt.Errorf("pre-migration check %d failed: %w", i+1, err)
+			}
+		}
 		// A second provider is deliberately built for the apply: the one
 		// above exists to answer questions, and out-of-order applies need
 		// the relaxed version check that may only be enabled here.

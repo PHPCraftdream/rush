@@ -53,6 +53,12 @@ const (
 	// CmdGetSessionWakeSchedules and CmdCancelWakeSchedule, always a full
 	// snapshot, never a delta. handlers_wake_schedules.go builds it.
 	EventSessionWakeSchedules = "session_wake_schedules"
+	// EventSessionBatchWork carries a structured batch-node snapshot
+	// (R15a, handlers_batch.go) for one session's delegation tree --
+	// pushed on change and replied to CmdGetSessionBatchWork. INERT unless
+	// RUSH_BATCH_RUNTIME is on; the old session_live_work wire is
+	// untouched either way.
+	EventSessionBatchWork = "session_batch_work"
 )
 
 // Inbound command types (client → server).
@@ -98,6 +104,11 @@ const (
 	// snapshot for one session (stage 5b); handleGetSessionWakeSchedules
 	// (handlers_wake_schedules.go) answers it.
 	CmdGetSessionWakeSchedules = "get_session_wake_schedules"
+	// CmdGetSessionBatchWork asks for a fresh EventSessionBatchWork
+	// snapshot for one session (R15a, handlers_batch.go). Registered only
+	// when RUSH_BATCH_RUNTIME is on; flag off the route answers the normal
+	// "unknown command" error.
+	CmdGetSessionBatchWork = "get_session_batch_work"
 	// CmdCancelWakeSchedule cancels one of the session's own wake schedules
 	// (stage 5b); handleCancelWakeSchedule answers it with a fresh snapshot.
 	CmdCancelWakeSchedule = "cancel_wake_schedule"
@@ -748,6 +759,22 @@ type SessionLiveWorkPayload struct {
 	SessionID string             `json:"sessionID"`
 	Commands  []LiveWorkItemWire `json:"commands"`
 	Agents    []LiveWorkItemWire `json:"agents"`
+	// R12-C, additive: set ONLY on the batch-runtime ON path
+	// (handlers_livework_batch.go). Nil is the flag-off path — no wire bytes
+	// change. ON always sets it: true on a full read, false on a partial
+	// read. False means the batch-node read was partial — the client must
+	// MERGE this snapshot into the previously shown work, never replace (an
+	// incomplete read never drops active work). A pointer keeps complete
+	//=false visible on the wire: with omitempty, a plain false bool was
+	// indistinguishable from the flag-off zero value.
+	Complete *bool `json:"complete,omitempty"`
+}
+
+// GetSessionBatchWorkPayload requests a structured batch-work snapshot
+// (R15a, handlers_batch.go) for one session. Wire shape mirrors
+// GetSessionLiveWorkPayload.
+type GetSessionBatchWorkPayload struct {
+	SessionID string `json:"sessionID"`
 }
 
 // ── Wake schedules panel (stage 5b) ─────────────────────────────────────────

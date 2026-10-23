@@ -46,10 +46,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
-	"runtime/pprof"
 	"slices"
 	"strings"
 	"sync"
@@ -63,230 +64,11 @@ import (
 )
 
 func TestRunNonInteractiveRootWaitsForChildOwnedBackgroundJob(t *testing.T) {
-	// childJobKilled is closed by the child's job_kill tool call, i.e. the
-	// moment the child's OWN background job becomes terminal. The root's
-	// final turn is gated on it.
-	childJobKilled := make(chan struct{})
-	// closeGate closes childJobKilled exactly once: both post-kill child
-	// branches below prove the job terminal (see the merged-Drain note on
-	// child:final), and which of them serves the child's last turn is a
-	// scheduling race, not a contract.
-	var closeGate sync.Once
-	var childTurns atomic.Int32
-	var requests atomic.Int32
-	// requestOrder records the phase label of every served model request, in
-	// order, so the full root-finishes-last contract can be asserted on the
-	// sequence rather than on counters.
-	var requestOrder safeRequestOrder
-	var rootFinalTurn atomic.Int32
-
-	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		n := requests.Add(1)
-		t.Logf("model request %d: %q", n, firstLine(string(body)))
-		route := routeModelRequest(body)
-		switch route {
-		case "title":
-			// Title generation (system prompt is the title prompt). A plain
-			// short title — no tool call — so the fast model succeeds on its
-			// first attempt instead of failing into a retry storm.
-			admissionWriteSSE(w, []string{
-				admissionSSEText("title", "Root Wait Child"), admissionSSEStop("title", "stop"),
-			})
-		case "root:final":
-			// The root's post-delegation turn. It must not start until the
-			// child's owned job is terminal.
-			select {
-			case <-childJobKilled:
-			case <-time.After(15 * time.Second):
-				http.Error(w,
-					"root resumed before the delegated child's owned background job was terminal",
-					http.StatusServiceUnavailable)
-				return
-			}
-			rootFinalTurn.Add(1)
-			requestOrder.add("root:final")
-			admissionWriteSSE(w, []string{
-				admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop"),
-			})
-		case "child:final":
-			// The child's turn that carries the pulled bg-shell-done notice
-			// ("Async job call-bash (bash) was stopped (job_kill)"). The
-			// notice is only persisted after the shell actually exited, so
-			// serving this turn is itself production proof that the child's
-			// OWN owned background job is terminal -- release the gate here.
-			//
-			// This branch also serves the case where the completion Drain
-			// MERGED into the child's plain post-job_kill continuation: the
-			// merged turn carries BOTH the notice and the "terminated
-			// successfully" tool result, and the misroute-sensitive harness
-			// used to classify it as child:result without ever closing the
-			// gate -- the root then resumed first, the 15s gate refused with
-			// 503 twice, and the run died of its own ctx deadline (~61s) --
-			// the reported #1083 flake, load/race dependent.
-			closeGate.Do(func() { close(childJobKilled) })
-			childTurns.Add(1)
-			requestOrder.add("child:final")
-			admissionWriteSSE(w, []string{
-				admissionSSEText("child-final", "child final: gate job reported"), admissionSSEStop("child-final", "stop"),
-			})
-		case "child:yield":
-			// Child turn 3 (unmerged path): the plain post-job_kill
-			// continuation, the bg-shell-done notice not pulled yet. The kill
-			// tool result is production proof the job is terminal, so the
-			// gate is released here too; the completion Drain arrives after
-			// this as its own child:final turn.
-			closeGate.Do(func() { close(childJobKilled) })
-			childTurns.Add(1)
-			requestOrder.add("child:yield")
-			admissionWriteSSE(w, []string{
-				admissionSSEText("child-yield", "child yielded: gate still running"), admissionSSEStop("child-yield", "stop"),
-			})
-		case "child:kill":
-			// Child turn 2: its own background command is up, so it kills it.
-			// This is the test-controlled terminal event for the child's OWN
-			// owned async work. The inner bash tool registered the shell as
-			// "001" (first job in the app's background manager), which is
-			// what the child is told to kill.
-			childTurns.Add(1)
-			requestOrder.add("child:kill")
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-kill", "call-kill", "job_kill", `{"shell_id":"001"}`),
-				admissionSSEStop("child-kill", "tool_calls"),
-			})
-		case "child:bash":
-			// Child turn 1: the delegation prompt. The child starts its OWN
-			// background command — exactly the shape that used to release the
-			// parent prematurely. The command must outlive bash's 1s
-			// fast-failure probe: a fast command (`go version`) is REMOVED by
-			// that probe and never becomes a live background shell, so the
-			// child would own nothing at all.
-			childTurns.Add(1)
-			requestOrder.add("child:bash")
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-bash", "call-bash", "bash",
-					`{"command":`+jsonString(longRunningCommand())+`,"description":"hold the gate open","run_in_background":true}`),
-				admissionSSEStop("child-bash", "tool_calls"),
-			})
-		case "root:yield":
-			// The root's turn 2 — the continuation the model always gets after
-			// an async tool call returned. It must YIELD (plain text, end of
-			// turn) rather than delegate again; the delegation is already
-			// parked and the drain loop is what resumes this session later.
-			requestOrder.add("root:yield")
-			admissionWriteSSE(w, []string{
-				admissionSSEText("root-yield", "root yielded: delegation parked"), admissionSSEStop("root-yield", "stop"),
-			})
-		default:
-			requestOrder.add("root:delegate")
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`),
-				admissionSSEStop("delegate", "tool_calls"),
-			})
-		}
-	})
-	grantChildBackgroundShellTools(t, application)
-
-	// A rare full-package-only hang (61s = the ctx timeout below) left no
-	// evidence; on failure dump the served-request order and every goroutine.
-	t.Cleanup(func() {
-		if !t.Failed() {
-			return
-		}
-		t.Logf("DIAG request order: %v", requestOrder.snapshot())
-		var buf strings.Builder
-		_ = pprof.Lookup("goroutine").WriteTo(&buf, 1)
-		dump := buf.String()
-		if len(dump) > 200_000 {
-			dump = dump[:200_000]
-		}
-		t.Logf("DIAG goroutines:\n%s", dump)
-	})
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	var output syncBuffer
-	result, err := application.RunNonInteractiveWithResult(ctx, &output, "start a worker", RunOverrides{
-		Origin: message.OriginCLI,
-	}, true, RunModeJSON, sessionID, false)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// THE FULL CONTRACT, asserted on request order and exit_reason:
-	//
-	//  1. root turn-1 yields after delegation,
-	//  2. the gate holds (no final JSON is produced while the child's
-	//     owned job is still live — enforced by the barrier in the
-	//     handler, which refuses to serve the root's final turn until the
-	//     child's job_kill has landed),
-	//  3. the child-owned job completes and that completion is CONSUMED as
-	//     the root's turn-2 input,
-	//  4. the root then finishes,
-	//  5. the final JSON envelope is emitted exactly once, and nothing
-	//     further runs afterwards.
-	//
-	// The order is asserted by index rather than by exact sequence: the
-	// root's post-delegation yield turn (a real request — the model is always
-	// called again after an async tool result) races the child's first turn,
-	// so its position is not deterministic. The child's post-kill shape is
-	// likewise racy: the completion Drain may merge into the plain
-	// continuation (a single child:final turn) or follow it (child:yield,
-	// then child:final). What IS contractual is the relative order of the
-	// phases: exactly one root:delegate first, the child's phases in order,
-	// and root:final LAST.
-	order := requestOrder.snapshot()
-	require.Contains(t, order, "root:delegate", "the root must delegate exactly once: %v", order)
-	require.Equal(t, "root:delegate", order[0], "the delegation must be the first served request: %v", order)
-	require.Equal(t, "root:final", order[len(order)-1], "the root must be the LAST phase to run: %v", order)
-	require.Equal(t, 1, countLabel(order, "root:delegate"), "the root must delegate exactly once: %v", order)
-	require.Equal(t, 1, countLabel(order, "root:final"), "the root must be resumed exactly once by the delegation result: %v", order)
-	require.Equal(t, 1, countLabel(order, "child:bash"), "the child must start exactly one background job: %v", order)
-	require.Equal(t, 1, countLabel(order, "child:kill"), "the child must kill its job exactly once: %v", order)
-	require.Less(t, indexOf(order, "child:bash"), indexOf(order, "child:kill"),
-		"the child must start its background job before killing it: %v", order)
-	// The post-kill phase: at least one child:final (the turn carrying the
-	// pulled bg-shell-done notice, merged or standalone), optionally preceded
-	// by the unmerged plain continuation. Every child phase precedes the
-	// root's final turn.
-	require.GreaterOrEqual(t, countLabel(order, "child:final"), 1,
-		"the child's final turn (carrying the pulled job-done notice) must be served: %v", order)
-	require.Less(t, indexOf(order, "child:kill"), indexOf(order, "child:final"),
-		"the child must kill its job before its final turn: %v", order)
-	require.Less(t, indexOf(order, "child:final"), indexOf(order, "root:final"),
-		"the child's answer to its own job result must reach the parent "+
-			"before the root's final turn: %v", order)
-
-	require.EqualValues(t, 1, rootFinalTurn.Load(),
-		"the root must be resumed exactly once by the delegation result")
-	require.Equal(t, "root final answer", result.FinalText)
-
-	// The root ran to its own clean completion, not to a queued/canceled or
-	// error exit caused by the descendant gate holding it open.
-	require.Equal(t, "end_turn", result.ExitReason,
-		"the root must finish with its OWN end_turn, not an artifact of the "+
-			"transitive gate")
-	require.Empty(t, result.Error,
-		"holding the root open for descendant work must not surface as an error")
-
-	// Exactly one JSON envelope, emitted after the child's owned job was
-	// terminal. "session_id" appears once per envelope, so more than one
-	// means the root returned early and was resumed again.
-	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`),
-		"exactly one final JSON envelope may be emitted")
-
-	// Exactly one delegation notice, and it carries the child's own result.
-	msgs, listErr := application.Messages.List(t.Context(), sessionID)
-	require.NoError(t, listErr)
-	var notices int
-	for _, item := range msgs {
-		if !item.BackgroundJobNotice {
-			continue
-		}
-		notices++
-		require.Contains(t, item.FullText(), "child final",
-			"the parent's only delegation notice must carry the child's final answer")
-	}
-	require.Equal(t, 1, notices, "exactly one delegation notice may reach the parent session")
+	// The batch runtime is unconditional: the retained scenario is the
+	// batch twin (batch_stop on the child's own escaped root id); the
+	// legacy job_kill(shell_id) transcript this test used to carry is
+	// deleted with the removed tool.
+	testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t)
 }
 
 func countLabel(order []string, label string) int {
@@ -308,7 +90,7 @@ func indexOf(order []string, label string) int {
 	return len(order) + 1
 }
 
-// grantChildBackgroundShellTools layers bash/job_kill/job_output onto the
+// grantChildBackgroundShellTools layers bash/run_command/batch_stop onto the
 // delegated sub-agent's toolset.
 //
 // The default Task-agent toolset is read-only (internal/config's
@@ -324,7 +106,10 @@ func grantChildBackgroundShellTools(t *testing.T, application *App) {
 	task, ok := cfg.Agents[config.AgentTask]
 	require.True(t, ok, "the delegated task agent must be configured")
 	tools := slices.Clone(task.AllowedTools)
-	for _, name := range []string{"bash", "job_kill", "job_output"} {
+	// bash/run_command make the child OWN batch work; batch_stop lets it
+	// stop its own escaped root. The removed job_kill/job_output tools are
+	// not granted: they no longer exist in the batch toolset.
+	for _, name := range []string{"bash", "run_command", "batch_stop"} {
 		if !slices.Contains(tools, name) {
 			tools = append(tools, name)
 		}
@@ -353,8 +138,9 @@ func jsonString(s string) string {
 
 // wireRequest / wireMessage mirror the JSON shapes the provider stub sees.
 type wireMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string `json:"role"`
+	Content    any    `json:"content"`
+	ToolCallID string `json:"tool_call_id"`
 }
 
 type wireRequest struct {
@@ -369,62 +155,11 @@ type wireRequest struct {
 // continuation turns into the child branch (and the title requests into the
 // child branch with them).
 func routeModelRequest(body []byte) string {
-	var req wireRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return "root:delegate"
-	}
-	system := ""
-	if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
-		if s, ok := req.Messages[0].Content.(string); ok {
-			system = s
-		}
-	}
-	lastUser, lastTool := "", ""
-	for _, m := range req.Messages {
-		switch m.Role {
-		case "user":
-			if s, ok := m.Content.(string); ok {
-				lastUser = s
-			}
-		case "tool":
-			if s, ok := m.Content.(string); ok {
-				lastTool = s
-			}
-		}
-	}
-
-	// Ambiguity note: the completion Drain can MERGE into the plain
-	// post-job_kill continuation, making that turn carry BOTH the pulled
-	// bg-shell-done notice (lastUser) and the "terminated successfully" tool
-	// result (lastTool). The notice check must therefore win: that merged
-	// turn is the child's final turn (child:final), not a loss of the kill
-	// phase. Ordering within a session is stable, so once the kill tool
-	// result exists it stays the last tool result for every later child
-	// turn; the notice's presence is what distinguishes final from yield.
-	switch {
-	case strings.Contains(system, "short title"):
-		return "title"
-	case strings.Contains(lastUser, "Async job call-agent (agent) finished"):
-		return "root:final"
-	case strings.Contains(lastUser, "Async job call-bash (bash)"):
-		return "child:final"
-	case strings.Contains(lastTool, "terminated successfully"):
-		return "child:yield"
-	case strings.Contains(lastTool, "Async bash job"):
-		return "child:kill"
-	case strings.Contains(lastUser, "WORKER-MARKER do the task"):
-		return "child:bash"
-	case strings.Contains(lastTool, "Async agent job call-agent started"):
-		return "root:yield"
-	default:
-		return "root:delegate"
-	}
+	// A fresh stateless router carries no cross-request state.
+	route, _ := newRBRouter().route(body)
+	return route
 }
 
-// safeRequestOrder records the phase label of each served model request, in
-// arrival order, so a test can assert the exact sequence the root and its
-// descendants ran in. The handler runs on the provider's goroutine while the
-// assertions run on the test goroutine, hence the mutex.
 type safeRequestOrder struct {
 	mu     sync.Mutex
 	labels []string
@@ -469,4 +204,186 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu <- struct{}{}
 	defer func() { <-b.mu }()
 	return b.Builder.Write(p)
+}
+
+func testRunNonInteractiveRootWaitsForChildOwnedBatchJob(t *testing.T) {
+	command, release := recoveryJobCommand(t)
+	defer releaseRecoveryJob(t, release)
+	var rootID atomic.Value
+	rootID.Store("")
+	var delegateRoot atomic.Value
+	delegateRoot.Store("")
+	var childID atomic.Value
+	childID.Store("")
+	var order safeRequestOrder
+	var stopIntentSeen atomic.Bool
+	var childNoticeCount, parentFinalCount, startedCount atomic.Int32
+	var liveApp atomic.Pointer[App]
+	var liveSession atomic.Value
+	router := newRBRouter()
+	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		system, lastUser, lastTool := lastTurnParts(body)
+		route, seqErr := router.route(body)
+		if seqErr != "" {
+			http.Error(w, "out-of-sequence batch request: "+seqErr, http.StatusBadRequest)
+			return
+		}
+		switch route {
+		case "title":
+			admissionWriteSSE(w, []string{admissionSSEText("title", "Root Wait Child"), admissionSSEStop("title", "stop")})
+		case "root:delegate":
+			order.add("root:delegate")
+			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`), admissionSSEStop("delegate", "tool_calls")})
+		case "child:bash":
+			order.add("child:bash")
+			var id string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `
+SELECT t.child_session_id
+FROM batch_nodes r
+JOIN batch_nodes t
+  ON t.owner_session_id = r.owner_session_id
+ AND t.root_id = r.root_id AND t.host_id = r.host_id
+ AND t.kind = 'task'
+WHERE r.owner_session_id = ? AND r.tool_call_id = 'call-agent'
+  AND r.node_id = r.root_id AND r.kind = 'batch'
+ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			if err != nil {
+				http.Error(w, "delegation child lookup failed: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			if id == "" {
+				http.Error(w, "delegation child lookup returned an empty child id", http.StatusServiceUnavailable)
+				return
+			}
+			childID.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
+		case "child:started":
+			startedCount.Add(1)
+			id := batchStartedRootID(lastTool)
+			if id == "" {
+				t.Errorf("child started tool result has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
+			rootID.Store(id)
+			input, err := json.Marshal(map[string]string{"root_id": id})
+			if err != nil {
+				t.Errorf("marshal batch_stop input: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			admissionWriteSSE(w, []string{admissionSSEToolCall("stop", "call-stop", "batch_stop", string(input)), admissionSSEStop("stop", "tool_calls")})
+		case "child:stop":
+			if !strings.Contains(lastTool, `"accepted":true`) || !strings.Contains(lastTool, `"terminal":false`) {
+				http.Error(w, "batch_stop must expose cancellation intent, not terminal completion: "+lastTool, http.StatusServiceUnavailable)
+				return
+			}
+			stopIntentSeen.Store(true)
+			order.add("child:stop")
+			if err := releaseRecoveryJobAsync(release); err != nil {
+				t.Errorf("release the recovery job: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+		case "child:stopAck":
+			// The stop-ack tool result stays in history; the router replays
+			// repeats here so the child can yield until its completion is
+			// pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("stop-ack", "stop intent already recorded"), admissionSSEStop("stop-ack", "stop")})
+		case "child:final":
+			// Same-turn deliveries carry the stop ack in history, so the stop
+			// intent is provable without a dedicated ack turn.
+			var histReq wireRequest
+			if json.Unmarshal(body, &histReq) == nil {
+				for _, m := range histReq.Messages {
+					if m.Role != "tool" {
+						continue
+					}
+					if s, ok := m.Content.(string); ok && strings.Contains(s, `"accepted":true`) && strings.Contains(s, `"terminal":false`) {
+						stopIntentSeen.Store(true)
+					}
+				}
+			}
+			childNoticeCount.Add(1)
+			var state string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" {
+				http.Error(w, fmt.Sprintf("selected child notice before terminal state: %s (%v)", state, err), http.StatusServiceUnavailable)
+				return
+			}
+			order.add("child:final")
+			admissionWriteSSE(w, []string{admissionSSEText("child-final", "child final: terminal command result received"), admissionSSEStop("child-final", "stop")})
+		case "root:yield":
+			id := batchStartedRootID(lastTool)
+			if id == "" {
+				t.Errorf("root started notice has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
+			delegateRoot.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "waiting for child completion"), admissionSSEStop("root-yield", "stop")})
+		case "root:final":
+			parentFinalCount.Add(1)
+			var state string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), rootID.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" || childNoticeCount.Load() != 1 {
+				http.Error(w, fmt.Sprintf("parent completion before child terminal notice: %s notices=%d err=%v", state, childNoticeCount.Load(), err), http.StatusServiceUnavailable)
+				return
+			}
+			order.add("root:final")
+			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
+		case "child:wait":
+			// A replayed started announcement (also persisted as user history):
+			// the child just yields until its completion is pulled.
+			order.add("child:wait")
+			admissionWriteSSE(w, []string{admissionSSEText("child-wait", "child waiting for build"), admissionSSEStop("child-wait", "stop")})
+		case "root:wait":
+			// A replayed started announcement on the root side: yield until the
+			// delegation completion arrives.
+			order.add("root:wait")
+			admissionWriteSSE(w, []string{admissionSSEText("root-wait", "waiting for child completion"), admissionSSEStop("root-wait", "stop")})
+		default:
+			http.Error(w, "unexpected batch root-wait route="+route+" system="+system+" lastUser="+lastUser+" lastTool="+lastTool, http.StatusBadRequest)
+		}
+	})
+	liveApp.Store(application)
+	liveSession.Store(sessionID)
+	grantChildBackgroundShellTools(t, application)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	var output syncBuffer
+	result, err := application.RunNonInteractiveWithResult(ctx, &output, "start a worker", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	seen := order.snapshot()
+	require.Equal(t, 1, countLabel(seen, "root:delegate"))
+	require.Equal(t, 1, countLabel(seen, "child:bash"))
+	require.Equal(t, 1, countLabel(seen, "child:final"))
+	require.Equal(t, 1, countLabel(seen, "root:final"))
+	require.Less(t, indexOf(seen, "child:bash"), indexOf(seen, "child:final"))
+	require.Less(t, indexOf(seen, "child:final"), indexOf(seen, "root:final"))
+	require.EqualValues(t, 1, childNoticeCount.Load())
+	require.EqualValues(t, 1, parentFinalCount.Load())
+	require.EqualValues(t, 1, startedCount.Load(), "one started identity is consumed")
+	require.True(t, stopIntentSeen.Load(), "one durable stop request is issued (dedicated ack turn or same-turn delivery)")
+	require.Equal(t, "root final answer", result.FinalText)
+	require.Equal(t, 1, strings.Count(output.String(), `"session_id"`))
+	require.NotEmpty(t, childID.Load().(string))
+}
+
+func batchStartedRootID(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) < 4 || fields[0] != "batch" || fields[1] != "root" || fields[3] != "started;" {
+		return ""
+	}
+	return fields[2]
+}
+
+// releaseRecoveryJobAsync writes the recovery-job release sentinel without
+// touching testing state, so a helper goroutine may call it: require (and
+// t.Errorf after completion) panics when reached on a goroutine.
+func releaseRecoveryJobAsync(release string) error {
+	return os.WriteFile(release, nil, 0o644)
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,8 +19,8 @@ import (
 )
 
 // explainWhy points a hand-built App's lock reader at dataDir (the seam
-// explainSessionStatus stopped setting itself out of production code) and
-// renders the verdict into out.
+// explainSessionStatus takes as its dataDir parameter) and renders the
+// batch-authority verdict into out.
 func explainWhy(a *app.App, dataDir, sessionID string, out io.Writer) error {
 	a.SetDataDirForTest(dataDir)
 	return explainSessionStatus(context.Background(), a, dataDir, sessionID, out)
@@ -48,7 +49,7 @@ func writeLockFile(t *testing.T, sessionID string, pid int) string {
 func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -69,7 +70,7 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, m.Update(context.Background(), assistant))
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	// t.TempDir() with no locks dir created → no lock file → "at rest".
 	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
@@ -79,13 +80,11 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	require.Contains(t, out, "end_turn")
 }
 
-// TestExplainSessionStatus_Crashed_NoCleanFinish: lock file exists, holder PID
-// is dead, and the last assistant message did NOT finish cleanly → verdict is
-// "crashed" and the reason mentions dying mid-turn.
+// TestExplainSessionStatus_Crashed_NoCleanFinish: lock file exists, holder
+// PID is dead, and the last assistant message did NOT finish cleanly →
+// verdict is "crashed" and the reason says the holder is no longer alive.
 func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -104,7 +103,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -123,9 +122,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 // end signal (only ended_reason is). The verdict is therefore "crashed" --
 // the old "done (stale lock)" reclassification by finish reason is gone.
 func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -148,7 +145,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -165,7 +162,7 @@ func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -178,7 +175,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))
 
@@ -192,9 +189,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 // TestExplainSessionStatus_Running: lock file exists and holder PID is alive
 // (we use our own PID) → verdict is "running" and the heartbeat age is shown.
 func TestExplainSessionStatus_Running(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -213,15 +208,15 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, os.Getpid())
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
 	out := buf.String()
 	require.Contains(t, out, "status: running")
-	// CHANGED STRING (R-ACT-2): the reason names the holder PID; the
-	// heartbeat age is gone (D10 -- no mtime in the enum).
-	require.Contains(t, out, "held by PID")
+	// The batch render's held-lock reason replaces the legacy "held by PID"
+	// phrasing; the raw finish_reason is still reported.
+	require.Contains(t, out, "held by a live process")
 	require.Contains(t, out, "tool_use")
 }
 
@@ -234,7 +229,7 @@ func TestExplainSessionStatus_Running(t *testing.T) {
 func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -244,7 +239,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 	// pid=0 simulates a lock file whose PID line couldn't be read.
 	cwd := writeLockFile(t, sess.ID, 0)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -267,7 +262,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	t.Parallel()
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -279,7 +274,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	old := time.Now().Add(-30 * time.Second)
 	require.NoError(t, os.Chtimes(lockPath, old, old))
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -295,9 +290,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 // assistant message finished with FinishReasonError and stored error text,
 // the output must include that error text so the operator sees the cause.
 func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -314,7 +307,7 @@ func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 
 	cwd := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, cwd, sess.ID, &buf))
 
@@ -343,7 +336,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 		t.Skip("spawns a real child process; skipped in -short")
 	}
 
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -360,7 +353,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
 		"back-dating mtime: the enum must not depend on it")
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
@@ -368,7 +361,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	// An aged pulse with a live holder renders the STALLED variant of running.
 	require.Regexp(t, `(?m)^(status: running|STALLED )`, out,
 		"an alive recorded PID is held, whatever the lock's age (D10)")
-	require.Contains(t, out, "held by PID")
+	require.Contains(t, out, "held by a live process")
 	require.NotContains(t, out, "is not alive",
 		"the recorded PID is factually alive in this scenario -- the dead phrasing must never fire here")
 }
@@ -377,9 +370,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 // the plain dead-PID phrasing (the #257 property survives the rework: the
 // classifier only says "no longer alive" after IsProcessAlive said so).
 func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -389,7 +380,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	dataDir := writeLockFile(t, sess.ID, 999999)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 
@@ -411,9 +402,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 // Revert-check: making an unreadable lock classify as released/idle flips
 // the first assertion to "status: at rest".
 func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
-	t.Parallel()
-
-	conn, q := newTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 
@@ -436,7 +425,7 @@ func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	require.False(t, os.IsNotExist(err),
 		"this failure must NOT be ENOENT -- we need a different stat error class for this test")
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, dataDir, sess.ID, &buf))
 

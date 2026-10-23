@@ -1,13 +1,17 @@
 package app
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type cliQuotaStop struct {
@@ -102,18 +106,22 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	if !l.quota.reset.IsZero() {
 		l.final.QuotaResetAt = l.quota.reset.Format(time.RFC3339)
 	}
-	rows, incomplete := l.app.asyncJobStore.JobsInTree(l.ctx, l.sessionID)
+	rows, incomplete, err := l.quotaJobsInTree(l.ctx)
+	if err != nil {
+		final, exitErr := l.exitWait(err)
+		return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
+	}
 	if incomplete {
 		final, err := l.exitWait(fmt.Errorf("quota exit: finished work read incomplete"))
 		return cliStepResult{ev: evScopeWaitErr, final: final, err: err}
 	}
 	children := map[string]bool{}
 	for _, row := range rows {
-		if row.State != "running" && row.Announced != 0 && !l.quota.terminal[row.ClaimID] {
-			l.final.FinishedWork = append(l.final.FinishedWork, FinishedWork{SessionID: row.OwnerSessionID, JobID: row.ToolCallID, State: row.State, Result: row.ResultSummary.String})
+		if l.quotaTerminalState(row.State) && row.Announced && !l.quota.terminal[row.Key] {
+			l.final.FinishedWork = append(l.final.FinishedWork, FinishedWork{SessionID: row.OwnerSessionID, JobID: row.ToolCallID, State: row.State, Result: row.Result})
 		}
-		if row.ChildSessionID.Valid {
-			children[row.ChildSessionID.String] = true
+		if row.ChildSessionID != "" {
+			children[row.ChildSessionID] = true
 		}
 	}
 	childIDs := make([]string, 0, len(children))
@@ -121,21 +129,41 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 		childIDs = append(childIDs, child)
 	}
 	slices.Sort(childIDs)
-	for _, child := range childIDs {
-		msgs, err := l.app.Messages.List(l.ctx, child)
-		if err != nil {
-			final, exitErr := l.exitWait(err)
+	questions := make(map[string]session.ChildQuestion)
+	writer := l.app.batchCutoverWriter()
+	facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.app.batchCutoverReader(writer)), nil, writer)
+	owners := make(map[string]bool)
+	for _, row := range rows {
+		if row.OwnerSessionID != "" {
+			owners[row.OwnerSessionID] = true
+		}
+	}
+	for owner := range owners {
+		held, heldErr := facts.LiveHeldQuestions(l.ctx, owner)
+		if heldErr != nil {
+			final, exitErr := l.exitWait(heldErr)
 			return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
 		}
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
-				continue
+		for _, heldRow := range held {
+			var noticeText string
+			err := l.app.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				final, exitErr := l.exitWait(err)
+				return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
 			}
-			fp := msgs[i].FinishPart()
-			if fp != nil && agent.IsAwaitingAnswerFinish(fp) {
-				l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: fp.Message, Details: fp.Details})
+			question, ok := session.ParseBatchChildQuestionNotice(noticeText)
+			if ok && question.NodeID == heldRow.NodeID && question.ChildSessionID == heldRow.ChildSessionID {
+				question.Question = quotaQuestionText(noticeText)
+				questions[question.ChildSessionID] = question
 			}
-			break
+		}
+	}
+	for _, child := range childIDs {
+		if question, ok := questions[child]; ok {
+			l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: question.Question, Details: question.Question})
 		}
 	}
 	l.tot.subAgentOutputs = l.app.collectSubAgentOutputs(l.ctx, l.sessionID)
@@ -157,20 +185,47 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	return cliStepResult{ev: evScopeStop, final: final, err: err}
 }
 
+func quotaQuestionText(notice string) string {
+	const prefix = "SUB-AGENT QUESTION: "
+	i := strings.Index(notice, prefix)
+	if i < 0 {
+		return ""
+	}
+	text := notice[i+len(prefix):]
+	const guidance = "\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
+	return strings.TrimSuffix(text, guidance)
+}
+
 // cliQuotaActiveWorkSeam injects read failures in real-loop tests only.
 var cliQuotaActiveWorkSeam func(bool, error) (bool, error)
 
 func (l *cliLoop) snapshotQuotaTerminal() {
-	rows, incomplete := l.app.asyncJobStore.JobsInTree(l.ctx, l.sessionID)
-	l.quota.snapshotIncomplete = incomplete
-	if incomplete {
+	rows, incomplete, err := l.quotaJobsInTree(l.ctx)
+	l.quota.snapshotIncomplete = incomplete || err != nil
+	if l.quota.snapshotIncomplete {
 		return
 	}
 	for _, row := range rows {
-		if row.State != "running" {
-			l.quota.terminal[row.ClaimID] = true
+		if l.quotaTerminalState(row.State) {
+			l.quota.terminal[row.Key] = true
 		}
 	}
+}
+
+// quotaJobsInTree reads the finished-work rows of the session's tree: the
+// batch root/node walk (batchFinishedWork in app_batch_cutover_facts.go).
+func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]quotaWorkRow, bool, error) {
+	return l.app.batchFinishedWork(ctx, l.sessionID)
+}
+
+// quotaTerminalState is the terminal predicate: the terminal node state set
+// (a pending/starting/cancelling node is not finished).
+func (l *cliLoop) quotaTerminalState(state string) bool {
+	switch state {
+	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
+		return true
+	}
+	return false
 }
 
 func (l *cliLoop) resumeRole() string {

@@ -27,6 +27,13 @@ type PurgedQueuedWork struct {
 // the next process on the same database. The messages rows behind inject
 // signals are NOT touched: kill must not destroy conversation history, only
 // the "something should run this" signals.
+//
+// The session execution requirement fence row
+// (SessionExecutionRequirementRowID) is deliberately preserved: it is
+// status 'acked' metadata, invisible to pending selection and
+// outstanding-work checks (run_queue.sql), so it cannot resurrect the
+// session — and design 2.1 removes it only when the session itself is
+// deleted (the sessions FK ON DELETE CASCADE does that).
 func (s *service) PurgeQueuedWorkForSession(ctx context.Context, sessionID string) (PurgedQueuedWork, error) {
 	var purged PurgedQueuedWork
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -37,13 +44,18 @@ func (s *service) PurgeQueuedWorkForSession(ctx context.Context, sessionID strin
 
 	for _, step := range []struct {
 		query  string
+		args   []any
 		target *int64
 	}{
-		{`DELETE FROM session_run_queue WHERE session_id = ?`, &purged.RunQueue},
-		{`DELETE FROM pending_injects WHERE session_id = ?`, &purged.PendingInject},
-		{`DELETE FROM orphan_call_outbox WHERE session_id = ?`, &purged.OrphanOutbox},
+		{
+			`DELETE FROM session_run_queue WHERE session_id = ? AND id <> ?`,
+			[]any{sessionID, SessionExecutionRequirementRowID(sessionID)},
+			&purged.RunQueue,
+		},
+		{`DELETE FROM pending_injects WHERE session_id = ?`, []any{sessionID}, &purged.PendingInject},
+		{`DELETE FROM orphan_call_outbox WHERE session_id = ?`, []any{sessionID}, &purged.OrphanOutbox},
 	} {
-		res, execErr := tx.ExecContext(ctx, step.query, sessionID)
+		res, execErr := tx.ExecContext(ctx, step.query, step.args...)
 		if execErr != nil {
 			return purged, execErr
 		}

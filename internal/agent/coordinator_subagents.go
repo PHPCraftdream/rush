@@ -40,6 +40,12 @@ type subAgentParams struct {
 	// ParentSessionID equals SessionID; runSubAgent verifies this before
 	// touching it (see the ownership check in runSubAgent).
 	ResumeSessionID string
+	// slotModel reports that params.Agent's model was built from a config
+	// role slot (the agent tool's buildAgent cascade). Only such dispatches
+	// may be refreshed at dispatch time; agentic_fetch's fast-built child
+	// and any other caller are exempt.
+	slotModel  bool
+	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
 // runSubAgent runs a sub-agent and handles session management and cost accumulation.
@@ -47,6 +53,20 @@ type subAgentParams struct {
 // runs the agent with the given prompt, and propagates the cost to the parent
 // session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
+	var childSelected bool
+	var pctReleases []func()
+	var pctDriverTransferred bool
+	defer func() {
+		if !pctDriverTransferred {
+			pctReleaseScopeRefs(pctReleases)
+		}
+	}()
+	lifecycle, lifecycleBound := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
+	defer func() {
+		if !childSelected && lifecycleBound && lifecycle.NoChildSelected != nil {
+			lifecycle.NoChildSelected()
+		}
+	}()
 	var session session.Session
 	if params.ResumeSessionID != "" {
 		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so
@@ -80,6 +100,18 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 		session = created
 	}
+
+	// Session selection has been validated; bind this exact ID, including
+	// resume. The bind persists the batch delegation child link BEFORE the
+	// child runs: a bind failure is fatal to this launch (the child must
+	// not start), so the error propagates and NoChildSelected marks the
+	// node through the defer above.
+	if lifecycleBound && lifecycle.BindChildSession != nil {
+		if err := lifecycle.BindChildSession(ctx, session.ID); err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("bind batch child session: %w", err)
+		}
+	}
+	childSelected = true
 
 	// A delegation starting on this child lifts any suspension of its
 	// automatic turns (a Stop, or a question it asked earlier and the parent
@@ -137,6 +169,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// cannot leak into a concurrent sub-agent dispatch from a different
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
+	cfg, _ := c.cfg.Snapshot()
 
 	// Per-call CredentialSet (RunWithCredentials): the parent call's
 	// tenant credentials win for the slots they cover — worker first (the
@@ -158,8 +191,6 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			choice, covered = creds.Models[RoleSmart]
 		}
 		if covered {
-			// One atomic snapshot for this build's provider + network reads (F6).
-			cfg, _ := c.cfg.Snapshot()
 			credModel, provCfg, err := c.buildCredentialModel(ctx, cfg, creds, choice)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to build sub-agent model from per-call credentials: %w", err)
@@ -178,6 +209,20 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			hbSource = hbSourceSessionOverride
 		}
 	}
+	// The refresh is best-effort; preserve the selected role for future turns.
+	var dispatchSlotRole config.SelectedModelType
+	if params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+		dispatchSlotRole = config.SelectedModelTypeSmart
+		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
+			if c.workerSubAgentActiveForCall(ctx, cfg) {
+				dispatchSlotRole = config.SelectedModelTypeWorker
+			}
+		}
+		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, cfg, dispatchSlotRole, model); ok {
+			model = refreshed
+			hbSource = hbSourceSlotLive
+		}
+	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -188,7 +233,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		providerCfg = *credProviderCfg
 	} else {
 		var ok bool
-		providerCfg, ok = c.cfg.Config().Providers.Get(model.ModelCfg.Provider)
+		providerCfg, ok = cfg.Providers.Get(model.ModelCfg.Provider)
 		if !ok {
 			return fantasy.ToolResponse{}, errModelProviderNotConfigured
 		}
@@ -242,6 +287,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// driver must keep the model the delegation actually started with, not
 	// whatever a later retry rebuilds it to.
 	driverModel := *pinnedModel
+	// Driver slot provenance is maintained independently of refresh outcome.
+	driverSlotRole := dispatchSlotRole
 	callTemplate := SessionAgentCall{
 		SessionID:        session.ID,
 		MaxOutputTokens:  maxTokens,
@@ -255,7 +302,14 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 	}
-	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID})
+	if params.pctHandoff != nil {
+		pctReleases = params.pctHandoff.pctClaimDriver()
+	}
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole, pctReleases: pctReleases})
+	pctDriverTransferred = generation != 0
+	if !pctDriverTransferred {
+		pctReleaseScopeRefs(pctReleases)
+	}
 	// R1-1: inherit the parent run's per-session restricted-run gate too, so
 	// a delegated sub-agent's tool calls are judged by its own run's policy
 	// rather than by whatever a concurrent run last armed on the
@@ -291,7 +345,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// session; root inherited from the dispatching turn (design pt. 2).
 	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
-		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, SessionAgentCall{
+		call := SessionAgentCall{
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
@@ -304,7 +358,13 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			NonInteractive:   true,
 			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
-		})
+		}
+		if lifecycleBound {
+			if sa, ok := params.Agent.(*sessionAgent); ok {
+				call.Tools, _ = buildBatchQuestionTools(sa.tools.Copy(), ctx)
+			}
+		}
+		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, call)
 		return result, runErr
 	}
 	var result *fantasy.AgentResult

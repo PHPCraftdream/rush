@@ -26,7 +26,7 @@ BEGIN SELECT RAISE(ABORT, 'injected: async_hosts insert refused'); END`
 // pre-fix code) -> ErrorIs/NotErrorIs below fail.
 func TestClaimSessionDriver_HostInsertDBError_FailsClaim(t *testing.T) {
 	t.Parallel()
-	stores, _, ctx := nStores(t, 1, "s1")
+	stores, _, ctx, _ := nStores(t, 1, "s1")
 	st := stores[0]
 	_, err := st.sqlDB.ExecContext(ctx, abortHostInsertTrigger)
 	require.NoError(t, err)
@@ -37,13 +37,13 @@ func TestClaimSessionDriver_HostInsertDBError_FailsClaim(t *testing.T) {
 	require.NotErrorIs(t, err, ErrHostLockUnavailable)
 	require.ErrorContains(t, err, "async_hosts insert refused", "the DB error itself must reach the caller")
 	require.Empty(t, st.HostID(), "a failed registration publishes no host")
-	_, ok := driverRow(t, ctx, st, "s1")
+	_, ok := driverRow(t, ctx, st.q, "s1")
 	require.False(t, ok, "no marker may be written")
 
 	_, err = st.sqlDB.ExecContext(ctx, `DROP TRIGGER abort_async_hosts_insert`)
 	require.NoError(t, err)
 	require.NoError(t, st.ClaimSessionDriver(ctx, "s1"), "the failure is not sticky")
-	row, ok := driverRow(t, ctx, st, "s1")
+	row, ok := driverRow(t, ctx, st.q, "s1")
 	require.True(t, ok)
 	require.Equal(t, st.HostID(), row.HostID)
 }
@@ -54,7 +54,7 @@ func TestClaimSessionDriver_HostInsertDBError_FailsClaim(t *testing.T) {
 // Revert-check: as above.
 func TestClaimSessionDriver_CancelledCtx_FailsClaim(t *testing.T) {
 	t.Parallel()
-	stores, _, _ := nStores(t, 1, "s1")
+	stores, _, _, _ := nStores(t, 1, "s1")
 	st := stores[0]
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -74,27 +74,28 @@ func TestClaimSessionDriver_CancelledCtx_FailsClaim(t *testing.T) {
 // above fail too).
 func TestRegisterHost_ErrorClasses(t *testing.T) {
 	t.Run("hosts_dir_is_a_file", func(t *testing.T) {
-		store, q, ctx := newTestStore(t)
-		require.NoError(t, os.WriteFile(HostsDir(store.dataDir), []byte("x"), 0o644))
-		_, err := RegisterHost(ctx, store.dataDir, 1, "x", q)
+		_, q, ctx, dataDir := nStores(t, 1, "s1")
+		require.NoError(t, os.WriteFile(HostsDir(dataDir), []byte("x"), 0o644))
+		_, err := RegisterHost(ctx, dataDir, 1, "x", nodeStore(q))
 		require.ErrorIs(t, err, ErrHostLockUnavailable)
 	})
 
 	t.Run("db_insert_failure", func(t *testing.T) {
-		store, q, ctx := newTestStore(t)
-		_, err := store.sqlDB.ExecContext(ctx, abortHostInsertTrigger)
+		stores, _, ctx, dataDir := nStores(t, 1, "s1")
+		st := stores[0]
+		_, err := st.sqlDB.ExecContext(ctx, abortHostInsertTrigger)
 		require.NoError(t, err)
-		_, err = RegisterHost(ctx, store.dataDir, 1, "x", q)
+		_, err = RegisterHost(ctx, dataDir, 1, "x", nodeStore(st.q))
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrHostLockUnavailable)
 		require.ErrorContains(t, err, "db insert")
 	})
 
 	t.Run("every_attempt_loses_to_a_peer", func(t *testing.T) {
-		store, q, ctx := newTestStore(t)
+		stores, _, ctx, dataDir := nStores(t, 1, "s1")
 		var held []*FileLock
 		registerHostAfterCreateSeam = func(lockPath string) {
-			if filepath.Dir(lockPath) != HostsDir(store.dataDir) {
+			if filepath.Dir(lockPath) != HostsDir(dataDir) {
 				return
 			}
 			status, lock, err := ProbeHostLock(lockPath)
@@ -108,7 +109,7 @@ func TestRegisterHost_ErrorClasses(t *testing.T) {
 				_ = l.Release()
 			}
 		})
-		_, err := RegisterHost(ctx, store.dataDir, 1, "x", q)
+		_, err := RegisterHost(ctx, dataDir, 1, "x", nodeStore(stores[0].q))
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrHostLockUnavailable, "contention with live peers is not a lock-incapable data dir")
 		require.Len(t, held, registerHostAttempts)

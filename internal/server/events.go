@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -15,14 +17,37 @@ import (
 
 const batchInterval = 16 * time.Millisecond
 
+// configNotificationsProcessed counts fully processed notifications; enqueued
+// counts snapshots accepted by the hub's coalescing config queue. Test hooks.
+var (
+	configNotificationsProcessed atomic.Int64
+	configNotificationsEnqueued  atomic.Int64
+)
+
+func forwardConfigSnapshot(h *Hub, wire ConfigWire, ok bool) {
+	if ok && h.BroadcastConfig(wire) {
+		configNotificationsEnqueued.Add(1)
+	}
+	configNotificationsProcessed.Add(1)
+}
+
 // Fork merge note: upstream rewrote events.go as REST /v1/... protocol
 // conversions (sessionToProto, messageToProto, etc.). Our events.go is a
 // WebSocket subscriber that forwards pubsub events to our Hub. Different
 // architectures — keep ours. CHANGELOG.fork.md section 4.A.
 
-// subscribeAndBroadcast subscribes to all app event sources and forwards them
-// to the hub, batching high-frequency message updates the same way the TUI does.
-func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
+type eventForwarders struct {
+	join       func()
+	syncConfig func()
+}
+
+func (f eventForwarders) Wait()       { f.join() }
+func (f eventForwarders) SyncConfig() { f.syncConfig() }
+
+// subscribeAndBroadcast subscribes to app event sources and forwards them to the hub.
+func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForwarders {
+	var forwarders sync.WaitGroup
+	forwarders.Add(4)
 	// Live-work snapshots: the forwarders below only MARK sessions dirty;
 	// this worker does the DB reads off the broadcast hot path (#1058) and
 	// exits with ctx.
@@ -30,6 +55,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 
 	// Sessions
 	go func() {
+		defer forwarders.Done()
 		ch := a.Sessions.Subscribe(ctx)
 		for {
 			select {
@@ -57,6 +83,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 
 	// Messages ΓÇö batch streaming updates to avoid flooding the client.
 	go func() {
+		defer forwarders.Done()
 		ch := a.Messages.Subscribe(ctx)
 		ticker := time.NewTicker(batchInterval)
 		defer ticker.Stop()
@@ -108,6 +135,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 	// name-keyed registry + shared event bus); isolation via IsConfigured
 	// filtering in buildMCPSnapshot below.
 	go func() {
+		defer forwarders.Done()
 		ch := mcp.SubscribeEvents(ctx)
 		for {
 			select {
@@ -122,11 +150,72 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) {
 		}
 	}()
 
+	// Poll-driven config changes (plan §2.4): re-broadcast the full config
+	// snapshot so web sessions that inherit their models display the new
+	// defaults. The channel is coalescing (buffer 1), so bursts of reloads
+	// cannot flood clients. The subscription is registered SYNCHRONOUSLY
+	// before the forwarder goroutine starts: once subscribeAndBroadcast
+	// returns, a poll-driven publish is guaranteed to land in ch (buffer 1)
+	// even if it fires before the goroutine's first receive.
+	type configBarrier struct{ done chan struct{} }
+	barriers := make(chan configBarrier)
+	configForwarderDone := make(chan struct{})
+	ch := a.SubscribeModelsChanged(ctx)
+	go func() {
+		defer close(configForwarderDone)
+		defer forwarders.Done()
+		process := func() {
+			wire, ok := buildConfigWire(a)
+			forwardConfigSnapshot(h, wire, ok)
+		}
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+				process()
+			case barrier := <-barriers:
+				for {
+					select {
+					case _, ok := <-ch:
+						if !ok {
+							close(barrier.done)
+							return
+						}
+						process()
+					default:
+						close(barrier.done)
+						goto drained
+					}
+				}
+			drained:
+			}
+		}
+	}()
+
 	slog.Debug("ws: event subscriptions started")
 
 	// Unused imports guard — referenced through the generic channels above.
 	_ = session.Session{}
-	_ = message.Message{}
+	return eventForwarders{
+		join: func() {
+			forwarders.Wait()
+			<-liveWork.stopped
+		},
+		syncConfig: func() {
+			done := make(chan struct{})
+			select {
+			case barriers <- configBarrier{done: done}:
+			case <-configForwarderDone:
+				return
+			}
+			select {
+			case <-done:
+			case <-configForwarderDone:
+			}
+		},
+	}
 }
 
 // buildMCPSnapshot returns the current state of all MCP servers in wire format.

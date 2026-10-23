@@ -60,10 +60,14 @@
 //     own destructive cleanup; see ReadLockGeneration's doc for why a bare
 //     pid is not an identity but a (session id, generation) pair is.
 //   - Every pgid is re-validated for plausibility immediately before
-//     signalling (see verifyGroupStillPlausible): still a live process
-//     group leader. This narrows, but as documented on
-//     verifyGroupStillPlausible, does not fully close, the residual
-//     pid-reuse race between validation and the signal itself.
+//     signalling (see verifyGroupStillPlausible): still a signalable
+//     registered group -- either the registered leader still leads it
+//     (start-time-checked where the platform can), or the leader has been
+//     reaped but the group still holds a living member whose registration-
+//     time identity (pid + start time) is proven by a recorded witness.
+//     This narrows, but as
+//     documented on verifyGroupStillPlausible, does not fully close, the
+//     residual pid-reuse race between validation and the signal itself.
 //
 // WRITE DURABILITY (2026-08-19 static-follow-up review, task #591 part 3):
 // the registry file is written via a temp-file-in-same-dir + fsync + rename
@@ -86,6 +90,18 @@
 // registry, still fenced by the same (generation, start-time) pair, so a
 // second "sessions kill" has a durable pointer to retry against instead of
 // silently losing the only record of an unreached child tree.
+//
+// KNOWN LIMITATION (2026-10-19 review, P2-4): on platforms without a
+// start-time/member-enumeration facility (macOS, BSD -- see
+// starttime_other_unix.go) registration records NO witnesses, so a
+// registered group whose leader has been reaped is RETAINED and NEVER
+// signalled by the leader-gone branch of verifyGroupStillPlausibleOutcome:
+// descendants of a vanished leader are NOT cleaned by the sweep there (they
+// rely on their own parent-death handling). This is accepted conservative
+// behaviour ("inconclusive, do not kill"), not a bug. Per-OS behaviour:
+// Linux records and re-checks witnesses via /proc
+// (starttime_linux.go's startTimeToken/groupMemberPIDs); macOS/BSD are
+// inert in this branch (retained, never signalled).
 package session
 
 import (
@@ -132,6 +148,21 @@ func childGroupRegistryPath(dataDir, sessionID string) string {
 // across processes for the sweep's duration.
 var childGroupFileMu sync.Mutex
 
+// childGroupWitness is one member-identity record captured at registration
+// time: a pid that was a non-leader member of the registered group then,
+// and its start-time token at that moment (see startTimeToken). Witnesses
+// are the ownership evidence that SURVIVES leader exit: at sweep time, in
+// the leader-gone branch of verifyGroupStillPlausibleOutcome, the group may
+// be signalled only if at least one witness pid still exists with the
+// recorded start time (2026-10-18 review, finding 2 -- the old "identity by
+// pid reservation" argument could not distinguish a surviving member of the
+// registered group from members of an unrelated group a reused pgid number
+// had since acquired).
+type childGroupWitness struct {
+	PID       int
+	StartTime string
+}
+
 // childGroupEntry is one recorded process group: the pgid, and the session
 // lock generation token that was live when it was registered.
 type childGroupEntry struct {
@@ -144,6 +175,13 @@ type childGroupEntry struct {
 	// (macOS) or the capture failed. A non-empty value must still match at
 	// signal time -- see verifyGroupStillPlausible.
 	StartTime string
+	// Witnesses are (pid, start-time) pairs of non-leader group members
+	// captured at registration time, while the pgid was still a verified
+	// live leader. Nil/empty when the platform cannot enumerate members
+	// (macOS) or the group had no other members at registration. Entries
+	// persisted by older versions carry none; for those the leader-gone
+	// branch is inconclusive and the entry is retained, not signalled.
+	Witnesses []childGroupWitness
 }
 
 // RegisterChildGroup durably records that the rush process currently
@@ -181,22 +219,64 @@ func RegisterChildGroup(dataDir, sessionID string, pgid int, generation string) 
 		return
 	}
 	startTime, _ := startTimeToken(pgid)
+	// Capture the member witness list NOW, while pgid is still a verified
+	// live leader (the caller's contract): this is the only moment the
+	// group's membership can be attributed to THIS registration. After the
+	// leader exits, membership alone proves nothing -- any unrelated group
+	// that later reuses the pgid number also has members (2026-10-18
+	// review, finding 2). Capped so a pathological group cannot grow a
+	// registry line without bound.
+	witnesses := captureGroupWitnesses(pgid)
 	existing := readChildGroupFileLocked(path)
 	for i, e := range existing {
 		if e.PGID == pgid && e.Generation == generation {
 			// Re-registering the same (pgid, generation): refresh the
 			// start-time token in case it was unavailable the first time
 			// (e.g. captured before the child fully started) and is
-			// available now.
+			// available now. Same for the witness list, which may have
+			// been empty because members had not been forked yet.
+			refreshed := false
 			if startTime != "" && e.StartTime == "" {
 				existing[i].StartTime = startTime
+				refreshed = true
+			}
+			if len(witnesses) > 0 && len(e.Witnesses) == 0 {
+				existing[i].Witnesses = witnesses
+				refreshed = true
+			}
+			if refreshed {
 				writeChildGroupFileLocked(path, existing)
 			}
 			return
 		}
 	}
-	existing = append(existing, childGroupEntry{PGID: pgid, Generation: generation, StartTime: startTime})
+	existing = append(existing, childGroupEntry{PGID: pgid, Generation: generation, StartTime: startTime, Witnesses: witnesses})
 	writeChildGroupFileLocked(path, existing)
+}
+
+// maxGroupWitnesses bounds how many member witnesses one registry entry
+// records, keeping each registry line well under any sane line-length
+// limit even for a group with hundreds of members.
+const maxGroupWitnesses = 16
+
+// captureGroupWitnesses records (pid, start-time) pairs for the current
+// non-leader members of pgid, up to maxGroupWitnesses. Best-effort: members
+// whose start-time token cannot be read (exited mid-capture, or a platform
+// with no facility) yield no witness -- fewer witnesses only narrows what a
+// later sweep may signal, never widens it.
+func captureGroupWitnesses(pgid int) []childGroupWitness {
+	var witnesses []childGroupWitness
+	for _, pid := range groupMemberPIDs(pgid) {
+		if len(witnesses) >= maxGroupWitnesses {
+			break
+		}
+		start, ok := startTimeToken(pid)
+		if !ok {
+			continue
+		}
+		witnesses = append(witnesses, childGroupWitness{PID: pid, StartTime: start})
+	}
+	return witnesses
 }
 
 // UnregisterChildGroup removes pgid from sessionID's durable registry,
@@ -232,8 +312,19 @@ func UnregisterChildGroup(dataDir, sessionID string, pgid int) {
 // session. Caller must hold childGroupFileMu. A missing or malformed file
 // (or a malformed line within an otherwise-valid file) reads as nothing
 // registered for that line rather than an error -- this registry is a
-// best-effort augmentation, never a correctness dependency. Format: one
-// pgid-space-generation pair per line.
+// best-effort augmentation, never a correctness dependency.
+//
+// Format, one entry per line:
+//
+//	pgid generation [leaderStart [pid@start ...]]
+//
+// The third field space-separated list starts with the leader's start-time
+// token, followed by zero or more "pid@start" member-witness tokens (see
+// childGroupWitness). 2-field lines (no third field) and 3-field lines
+// carrying only the leader start time -- both written by older versions --
+// parse with NO witnesses, which the sweep treats as "identity unverifiable
+// in the leader-gone branch: retained, not signalled" (the conservative
+// direction). Malformed witness tokens are skipped, also conservative.
 func readChildGroupFileLocked(path string) []childGroupEntry {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -261,10 +352,25 @@ func readChildGroupFileLocked(path string) []childGroupEntry {
 			continue
 		}
 		var startTime string
+		var witnesses []childGroupWitness
 		if len(fields) == 3 {
-			startTime = strings.TrimSpace(fields[2])
+			// Field 3: leader start token, then optional "pid@start"
+			// witness tokens -- see the format comment above.
+			for i, tok := range strings.Fields(fields[2]) {
+				if pidPart, start, hasAt := strings.Cut(tok, "@"); hasAt {
+					wpid, werr := strconv.Atoi(pidPart)
+					if werr != nil || wpid <= 0 || start == "" {
+						continue
+					}
+					witnesses = append(witnesses, childGroupWitness{PID: wpid, StartTime: start})
+					continue
+				}
+				if i == 0 {
+					startTime = tok
+				}
+			}
 		}
-		entries = append(entries, childGroupEntry{PGID: pgid, Generation: gen, StartTime: startTime})
+		entries = append(entries, childGroupEntry{PGID: pgid, Generation: gen, StartTime: startTime, Witnesses: witnesses})
 	}
 	return entries
 }
@@ -322,12 +428,20 @@ func readChildGroupFileLocked(path string) []childGroupEntry {
 func writeChildGroupFileLocked(path string, entries []childGroupEntry) {
 	var sb strings.Builder
 	for _, e := range entries {
+		// Format: pgid generation [leaderStart [pid@start ...]] -- see
+		// readChildGroupFileLocked, the authoritative parse-site comment.
 		sb.WriteString(strconv.Itoa(e.PGID))
 		sb.WriteByte(' ')
 		sb.WriteString(e.Generation)
 		if e.StartTime != "" {
 			sb.WriteByte(' ')
 			sb.WriteString(e.StartTime)
+		}
+		for _, w := range e.Witnesses {
+			sb.WriteByte(' ')
+			sb.WriteString(strconv.Itoa(w.PID))
+			sb.WriteByte('@')
+			sb.WriteString(w.StartTime)
 		}
 		sb.WriteByte('\n')
 	}
@@ -452,7 +566,8 @@ type ChildGroupSweepResult struct {
 	// CONFIRMED not to be the originally-registered process any more
 	// (verifyGroupStillPlausibleOutcome reporting confirmedGone or
 	// confirmedMismatch -- see that type) -- most likely already exited
-	// and the pgid number reused for something else, so signalling it
+	// and the pgid number reused for something else, or the whole group
+	// has exited with nothing left to signal, so signalling it
 	// would be unrelated to the original CLI-provider child. These are
 	// also dropped: retrying against a pgid confirmed to be a DIFFERENT
 	// process would never become correct by waiting.
@@ -477,7 +592,10 @@ type ChildGroupSweepResult struct {
 // permission-denied process group, neither of which this codebase's test
 // suite can reliably construct. Production always uses the real syscall;
 // only tests in this package (which can see this unexported variable)
-// override it, and always restore it via t.Cleanup.
+// override it, and always restore it via t.Cleanup. It is used for BOTH
+// the real SIGKILL and the signal-0 group-existence probe in
+// verifyGroupStillPlausibleOutcome's leader-gone branch, so a test fake
+// must also expect (and handle) (-pgid, 0) probes.
 var killpgFunc = syscall.Kill
 
 // KillRegisteredChildGroups killpg's every process group registered for
@@ -573,7 +691,7 @@ func KillRegisteredChildGroups(dataDir, sessionID, victimGeneration string) Chil
 			retained = append(retained, e)
 			continue
 		}
-		switch verifyGroupStillPlausibleOutcome(e.PGID, e.StartTime) {
+		switch verifyGroupStillPlausibleOutcome(e.PGID, e.StartTime, e.Witnesses) {
 		case plausibilityConfirmedGone, plausibilityConfirmedMismatch:
 			// Confirmed: either the process is gone (Getpgid/ESRCH-shaped
 			// failure) or a DIFFERENT process now holds this pgid (start
@@ -634,17 +752,25 @@ type plausibilityOutcome int
 const (
 	// plausibilityConfirmedLive: still exists, still a group leader, and
 	// (if a start-time token was captured at registration) the start time
-	// still matches. Safe to signal.
+	// still matches -- OR the registered leader has been reaped but a
+	// member witness captured at registration still exists with its
+	// recorded identity (the historical-ownership proof that survives
+	// leader exit; see verifyGroupStillPlausibleOutcome's leader-gone
+	// branch). Safe to signal.
 	plausibilityConfirmedLive plausibilityOutcome = iota
-	// plausibilityConfirmedGone: Getpgid failed or the pgid is no longer
-	// its own group's leader -- the original process-group leader is
-	// confirmed not reachable any more. Safe to drop the entry.
+	// plausibilityConfirmedGone: the leader is gone AND no group with that
+	// id remains (the leader-gone branch's signal-0 probe returned ESRCH),
+	// or the pid exists but does not lead its own group -- the original
+	// process-group leader is confirmed not reachable any more. Safe to
+	// drop the entry.
 	plausibilityConfirmedGone
 	// plausibilityConfirmedMismatch: still exists and is still a group
 	// leader, but the CURRENT start-time token does not match the one
 	// captured at registration -- a DIFFERENT process has since reused
 	// this exact pgid number. Safe to drop the entry: it will never again
-	// refer to the process this registry entry was written for.
+	// refer to the process this registry entry was written for. This is
+	// also how a reused pgid under a NEW live leader is safely
+	// distinguished from the still-ours case.
 	plausibilityConfirmedMismatch
 	// plausibilityInconclusive: the group-leader check passed but the
 	// start-time re-read itself could not be completed for a reason other
@@ -655,53 +781,141 @@ const (
 )
 
 // verifyGroupStillPlausibleOutcome re-checks, immediately before
-// signalling, whether pgid still looks like a real, original process group
-// leader rather than a stale number the OS has since recycled for
-// something unrelated -- and, unlike a plain bool, reports WHICH of those
-// it confirmed, so the caller can decide whether a negative result is safe
-// to discard or must be retained. See verifyGroupStillPlausible (the
-// pre-#591-part-3 bool-returning wrapper, kept for any external caller that
-// only needs a yes/no) for the original two-layer design this refines.
+// signalling, whether a registered pgid still looks like a signalable
+// member of the originally-registered process group rather than a stale
+// number the OS has since recycled for something unrelated -- and reports
+// WHICH of those it confirmed, so the caller can decide whether a negative
+// result is safe to discard or must be retained. See
+// verifyGroupStillPlausible (the pre-#591-part-3 bool-returning wrapper,
+// kept for any external caller that only needs a yes/no) for the original
+// two-layer design this refines.
 //
-// Two layers, in order:
+// Two branches, in order:
 //
-//  1. syscall.Getpgid(pgid) == pgid: still exists and is still the leader
-//     of its own group. Rules out "no such process" and "exists but is no
-//     longer (or never was, for a freshly recycled number) a leader" --
-//     both reported as plausibilityConfirmedGone, since both mean this
-//     specific registration can never be actioned again.
+//  1. Leader branch -- syscall.Getpgid(pgid) succeeds. UNCHANGED
+//     semantics: if pgid is no longer its own group's leader
+//     (Getpgid(pgid) != pgid), plausibilityConfirmedGone. If
+//     wantStartTime is empty (macOS: no start-time facility, would need a
+//     sysctl/libproc binding not currently vendored),
+//     plausibilityConfirmedLive on the leader check alone. Otherwise the
+//     CURRENT start time (Linux: /proc/pid/stat field 22, see
+//     startTimeToken) is re-read right here and must match EXACTLY: a
+//     mismatch is plausibilityConfirmedMismatch (a different process now
+//     owns this pgid -- confirmed, safe to drop), a re-read failing for a
+//     reason other than confirmed death is plausibilityInconclusive
+//     (deliberately NOT collapsed into confirmedGone, because this branch
+//     already independently confirmed the pgid was a live group leader a
+//     moment ago).
 //
-//  2. If wantStartTime is non-empty (Linux: captured from
-//     /proc/pid/stat field 22 at registration time, see startTimeToken),
-//     the CURRENT start time for pgid is re-read right here and must
-//     match EXACTLY. A mismatch is plausibilityConfirmedMismatch (a
-//     different process now owns this pgid -- confirmed, safe to drop). A
-//     re-read that fails for a reason OTHER than confirmed process death
-//     (the only way startTimeToken signals failure on this codebase's
-//     supported platforms is "could not read /proc/pid/stat", which does
-//     not by itself distinguish "process just exited in this exact
-//     instant" from "a transient read failure") is
-//     plausibilityInconclusive -- deliberately NOT collapsed into
-//     confirmedGone, because layer 1 already independently confirmed the
-//     pgid was a live group leader a moment ago; treating an ambiguous
-//     failure at layer 2 as a hard "gone" would discard a registry entry
-//     this check never actually confirmed dead.
+//  2. Leader-gone branch -- Getpgid returns an error, meaning no process
+//     with this pid exists. That is the NORMAL state by sweep time: a
+//     real "sessions kill" runs from a separate process after the holder
+//     died, and the group's LEADER may long since have exited and been
+//     reaped while non-leader members (grandchildren forked into the
+//     group) still live -- a Getpgid-only check wrongly reported exactly
+//     that state as plausibilityConfirmedGone and dropped the entry
+//     without signalling. So this branch probes the GROUP itself with
+//     killpgFunc(-pgid, 0) -- signal 0 is an existence/permission check
+//     that sends nothing:
 //
-// On platforms without a start-time facility this codebase otherwise
-// depends on (macOS: no /proc, would need a sysctl/libproc binding not
-// currently vendored), wantStartTime is always "" and this function
-// returns plausibilityConfirmedLive on layer 1 alone -- the same narrow,
-// accepted TOCTOU window documented on probeThenKillHolder in
-// internal/cmd/sessions_kill.go for the plain-pid case ("Given this is a
-// manual rescue tool an operator runs deliberately, that structural fix is
-// not implemented; the window is accepted as a narrow, known
-// limitation"). THIS IS UNVERIFIED ON REAL LINUX/macOS FROM THIS (Windows)
-// DEVELOPMENT MACHINE -- see the package-level task notes for the exact
-// run that would confirm it.
-func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string) plausibilityOutcome {
+//     - nil, or EPERM (the group exists but holds a process we may not
+//     signal -- the real SIGKILL below would surface EPERM into the
+//     existing Retained path): plausibilityConfirmedLive, but ONLY if a
+//     member witness still holds (below).
+//     - ESRCH: no group with that id remains --
+//     plausibilityConfirmedGone.
+//     - Anything else: plausibilityInconclusive (retained for retry).
+//
+//     IDENTITY in this branch, and the options the 2026-10-18 review
+//     weighed once the previous "identity by pid reservation" argument was
+//     refuted by historical reuse: the registered group can exit
+//     COMPLETELY, the pgid number can later be handed to an unrelated new
+//     leader (pid == that number), which forks non-leader members and is
+//     itself reaped -- Getpgid then fails again, the probe succeeds, and
+//     the old code SIGKILLed those unrelated surviving members. The
+//     options:
+//
+//     (a) record start-time identity of at least one MEMBER at
+//     registration and require a surviving member with that identity --
+//     the strongest available historical evidence, because a member's
+//     (pid, start-time) pair is unique for the pid's lifetime and the
+//     pair is captured while the registration is still verifiably ours;
+//     (b) record the group's session id (SID) and compare -- rejected:
+//     SID is inherited from the spawner (rush) or set by Setsid, is NOT
+//     unique to this group (every CLI child of one rush shares it or has
+//     its own, and a reused pgid under a new Setsid leader would carry a
+//     new SID only by luck), so it narrows but does not establish
+//     ownership;
+//     (c) treat unverifiable identity as inconclusive, skip the kill --
+//     the safe default, but alone it would forfeit the legitimate
+//     cleanup of descendants of an exited leader even when we CAN prove
+//     they are ours.
+//
+//     IMPLEMENTED: a hybrid of (a)+(c). Registration (RegisterChildGroup)
+//     captures (pid, startTimeToken(pid)) pairs for the group's
+//     non-leader members while the pgid is still a verified live leader.
+//     At sweep time in THIS branch the group may be signalled only if at
+//     least one recorded witness still exists with its recorded start
+//     time; if no witnesses were recorded (platform without member
+//     enumeration, no other members at registration, or an older
+//     version's registry file) or none survives with matching identity,
+//     the outcome is plausibilityInconclusive -- RETAINED, never
+//     signalled. This preserves the intentional requirement that
+//     descendants of an exited leader ARE cleaned when the evidence
+//     holds (TestChildGroupRegistry_LeaderReaped_GroupStillSwept), and
+//     makes the genuinely unprovable case conservatively inert.
+//
+// The residual TOCTOU windows -- between the Getpgid and the probe here,
+// and between the probe (or the leader-branch checks) and the real
+// SIGKILL in the caller -- are the same narrow, accepted class this file
+// already documents (see probeThenKillHolder in
+// internal/cmd/sessions_kill.go: "Given this is a manual rescue tool an
+// operator runs deliberately, that structural fix is not implemented; the
+// window is accepted as a narrow, known limitation"). The macOS
+// no-start-time note above and this whole function were UNVERIFIED ON
+// REAL LINUX/macOS FROM THIS (WINDOWS) DEVELOPMENT MACHINE -- the test
+// suite, including the new leader-reaped regression test, now runs on
+// Linux CI; see the package-level task notes for the run that confirms
+// it.
+func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string, witnesses []childGroupWitness) plausibilityOutcome {
 	pg, err := syscall.Getpgid(pgid)
 	if err != nil {
-		return plausibilityConfirmedGone
+		// Leader gone: probe the group itself. See this function's doc
+		// comment (leader-gone branch) for why a Getpgid failure alone is
+		// NOT proof the registered group is gone -- the normal sweep-time
+		// state is a reaped leader with non-leader members still living.
+		probeErr := killpgFunc(-pgid, 0)
+		switch {
+		case probeErr == nil || isErrno(probeErr, syscall.EPERM):
+			// The group still exists (EPERM: and holds a process we may
+			// not signal -- still ours; the real SIGKILL surfaces EPERM
+			// into the Retained path). But EXISTENCE is not IDENTITY: a
+			// pgid number whose registered group fully exited can later be
+			// reused by an unrelated new leader whose own forked members
+			// keep the number alive after that leader is reaped -- exactly
+			// the state this branch probes. The historical-ownership
+			// witness captured at registration is the only evidence that
+			// survives leader exit, so require at least one recorded
+			// witness to still exist WITH its recorded start time before
+			// signalling. No witnesses recorded (platform without member
+			// enumeration, group had no other members at registration, or
+			// a registry written by an older version) or none surviving
+			// with matching identity => INCONCLUSIVE: retained, never
+			// signalled. "Inconclusive, do not kill" is the safe outcome
+			// whenever ownership cannot be established.
+			if !anyWitnessStillHolds(pgid, witnesses) {
+				return plausibilityInconclusive
+			}
+			return plausibilityConfirmedLive
+		case isErrno(probeErr, syscall.ESRCH):
+			// No group with that id remains: confirmed gone, safe to
+			// drop.
+			return plausibilityConfirmedGone
+		default:
+			// Neither confirmed alive nor confirmed gone: retained, not
+			// discarded.
+			return plausibilityInconclusive
+		}
 	}
 	if pg != pgid {
 		return plausibilityConfirmedGone
@@ -730,7 +944,30 @@ func verifyGroupStillPlausibleOutcome(pgid int, wantStartTime string) plausibili
 // only need a live/not-live answer and do not need to distinguish
 // confirmed-dead from inconclusive.
 func verifyGroupStillPlausible(pgid int, wantStartTime string) bool {
-	return verifyGroupStillPlausibleOutcome(pgid, wantStartTime) == plausibilityConfirmedLive
+	return verifyGroupStillPlausibleOutcome(pgid, wantStartTime, nil) == plausibilityConfirmedLive
+}
+
+// anyWitnessStillHolds reports whether at least one recorded member
+// witness still exists with the start-time token captured at registration
+// -- the historical-ownership proof used by the leader-gone branch above.
+// A witness pid that is gone, or whose current start time differs (its pid
+// number was reused by a different process), fails; an empty witness list
+// fails outright. The witness must also STILL BE A MEMBER of pgid: a process
+// group number is not reused while any process remains in it, so a surviving
+// member with the recorded birth identity proves the group is still the one
+// we registered; a witness that moved to another group (setsid/setpgid) says
+// nothing about a later group that reuses the number and must not authorise
+// a signal.
+func anyWitnessStillHolds(pgid int, witnesses []childGroupWitness) bool {
+	for _, w := range witnesses {
+		if pg, err := syscall.Getpgid(w.PID); err != nil || pg != pgid {
+			continue
+		}
+		if got, ok := startTimeToken(w.PID); ok && got == w.StartTime {
+			return true
+		}
+	}
+	return false
 }
 
 // isErrno (used above to classify the SIGKILL syscall's own error) is

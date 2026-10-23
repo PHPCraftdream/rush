@@ -13,7 +13,7 @@ import (
 // maxIntEnd is the "to the end of the file" end of a readSpan.
 const maxInt = math.MaxInt
 
-// asyncCapTag is the ClientMetadata async_tool.go stamps on a workLedger.Start
+// asyncCapTag is the ClientMetadata the batch delivery stamps on a reserved
 // the session's cap refused: the job never started, so nothing ran and no
 // claim was taken (work_ledger_cap.go).
 const asyncCapTag = `{"async_cap":{"running":50,"limit":50,"wait_timers":30}}`
@@ -105,13 +105,13 @@ func TestClassifyStepCall(t *testing.T) {
 		{"fs_read whole file covered -> reread", call("fs_read", `{"items":[{"path":"c.go"}]}`), ok(""), wholeFileCoverage("c.go"), stepCallReread},
 		{"fs_read unparsable -> read", call("fs_read", `{"items":`), ok(""), full, stepCallRead},
 		{"grep -> read", call("grep", `{"pattern":"x","path":"."}`), ok(""), nil, stepCallRead},
-		{"job_output -> neutral", call("job_output", `{"job_id":"j"}`), ok(""), nil, stepCallNeutral},
+		{"batch_output -> neutral", call("batch_output", `{"root_id":"r","node_id":"n"}`), ok(""), nil, stepCallNeutral},
 		{"todos -> neutral", call("todos", `{"todos":[]}`), ok(""), nil, stepCallNeutral},
 		{"edit error -> act", call("edit", `{"file_path":"a.go"}`), errored(), nil, stepCallAct},
 		{"unknown mcp -> act", call("mcp_foo", `{}`), ok(""), nil, stepCallAct},
 		{"tool not found -> neutral", call("mcp_foo", `{}`), unknownTool(), nil, stepCallNeutral},
 		{"guard refusal -> refused", call("view", viewInput), guardRefusedResult(), full, stepCallRefused},
-		{"refusal outranks neutral tool", call("job_output", `{}`), guardRefusedResult(), nil, stepCallRefused},
+		{"refusal outranks neutral tool", call("batch_output", `{}`), guardRefusedResult(), nil, stepCallRefused},
 		{"async cap refusal -> refused", call("bash", `{"command":"go build ./..."}`), capRefusal(), nil, stepCallRefused},
 		{"async cap refusal of a wait command -> refused", call("bash", `{"command":"cd /tmp && sleep 600; echo w1"}`), capRefusal(), nil, stepCallRefused},
 		{"async cap refusal alongside a read -> refused (not read)", call("view", viewInput), capRefusal(), full, stepCallRefused},

@@ -42,8 +42,8 @@ func setRegisterSeam(t *testing.T, dataDir string, fn func(lockPath string)) {
 // acquireFreshHostLock attempt (the pre-fix behaviour, one TryAcquireFileLock)
 // -> RegisterHost returned "file lock contended" and require.NoError failed.
 func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing.T) {
-	store, q, ctx := newTestStore(t)
-	dataDir := store.dataDir
+	ctx, q := setupHostLockDB(t)
+	dataDir := t.TempDir()
 
 	var firstPath string
 	var held *FileLock
@@ -55,12 +55,12 @@ func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing
 		held = lock
 	})
 
-	h, err := RegisterHost(ctx, dataDir, 1, "race", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "race", nodeStore(q))
 	if held != nil {
 		require.NoError(t, held.Release())
 	}
 	require.NoError(t, err, "losing the create-to-lock race must cost a retry, not the registration")
-	t.Cleanup(func() { _ = h.Close(ctx, q) })
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
 	require.NotEmpty(t, firstPath)
 	require.NotEqual(t, firstPath, HostLockPath(dataDir, h.ID), "the retry must use a fresh id")
@@ -70,8 +70,8 @@ func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing
 }
 
 // TestRegisterHost_ReaperUnlinksFreshFile_RegistrantDoesNotKeepUnlinkedInode:
-// the reaper (purgeOrphanHostLockFiles: "file with no async_hosts row")
-// wins the lock on the fresh file and unlinks it before the registrant locks.
+// the reaper wins the lock on the fresh file and unlinks it (while holding
+// the lock, the remover's own ordering law) before the registrant locks.
 // The registrant must notice and retry: afterwards its file must exist at the
 // path and be held, so every probe of the id says alive.
 //
@@ -85,17 +85,19 @@ func TestRegisterHost_ReaperUnlinksFreshFile_RegistrantDoesNotKeepUnlinkedInode(
 	if runtime.GOOS == "windows" {
 		t.Skip("an open lock file cannot be unlinked on Windows; the create-to-lock unlink window does not exist")
 	}
-	store, q, ctx := newTestStore(t)
-	dataDir := store.dataDir
-	reaper := NewAsyncJobStore(store.sqlDB, dataDir, 998, "reaper")
+	ctx, q := setupHostLockDB(t)
+	dataDir := t.TempDir()
 
-	setRegisterSeam(t, dataDir, func(string) {
-		require.NoError(t, reaper.purgeOrphanHostLockFiles(ctx))
+	setRegisterSeam(t, dataDir, func(lockPath string) {
+		held, err := TryAcquireFileLock(lockPath)
+		require.NoError(t, err, "the reaper must win the lock on the fresh unlocked file")
+		require.NoError(t, os.Remove(lockPath), "the reaper unlinks only while holding the lock")
+		require.NoError(t, held.Release())
 	})
 
-	h, err := RegisterHost(ctx, dataDir, 1, "race", q)
+	h, err := RegisterHost(ctx, dataDir, 1, "race", nodeStore(q))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = h.Close(ctx, q) })
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
 	_, statErr := os.Stat(HostLockPath(dataDir, h.ID))
 	require.NoError(t, statErr, "a registered host's lock file must exist at its path")

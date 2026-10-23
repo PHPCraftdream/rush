@@ -15,6 +15,13 @@ func tryLockFile(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
 
+// tryLockFileShared takes a SHARED non-blocking advisory lock using
+// flock(2). Returns an error (non-nil, typically EWOULDBLOCK) if
+// another process holds the lock EXCLUSIVELY.
+func tryLockFileShared(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+}
+
 // unlockFile releases the lock taken by tryLockFile.
 func unlockFile(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

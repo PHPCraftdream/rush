@@ -1,0 +1,22 @@
+{
+ "version":1,
+ "limits":{"max_concurrent":1,"max_depth":8,"max_nodes":64},
+ "runner":{"control_timeout_ms":1000,"record_retention":128},
+ "wait_bound_ms":10000,
+ "payloads":{"p":{"kind":"controlled"}},
+ "script":[
+  {"action":"submit","ref":"r3-chain-R","root":"R","spec":{"batch":{"mode":"parallel","notify":"each","items":[{"batch":{"mode":"parallel","notify":"each","items":[{"task":{"payload_ref":"p"}}]}}]}}},
+  {"action":"await_start","node":"R.1.1","bind":"r11","timeout_ms":1000},
+  {"action":"release_start","attempt":"r11","decision":"accept"},
+  {"action":"await_state","node":"R.1.1","state":"running","timeout_ms":1000},
+  {"action":"complete","attempt":"r11","state":"completed"},
+  {"action":"await_state","node":"R","state":"completed","timeout_ms":1000},
+  {"action":"close","timeout_ms":1000,"expect":"ok"}
+ ],
+ "expect":{
+  "roots":[{"id":"R","state":"completed"}],
+  "nodes":[{"id":"R.1.1","attempts":1,"starts":1,"accepted":1,"stops":0,"disposes":1}],
+  "notices":{"R":[{"node":"R","state":"completed"}]},
+  "max_active":1,"exit_code":0
+ }
+}

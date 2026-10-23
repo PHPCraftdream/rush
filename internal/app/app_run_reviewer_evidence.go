@@ -589,7 +589,7 @@ var reviewSyncExitRe = regexp.MustCompile(`Exit code (\d+)`)
 // reviewAsyncExitRe matches backgroundJobSummary's "finished: exit N".
 var reviewAsyncExitRe = regexp.MustCompile(`finished:?\s+exit\s+(-?\d+)`)
 
-// reviewAsyncStatusRe matches agent.FormatAsyncCompletion's finished/failed
+// reviewAsyncStatusRe matches the batch completion notice's finished/failed
 // notices ("Async job <id> (<tool>) finished.").
 var reviewAsyncStatusRe = regexp.MustCompile(`(?s)\AAsync job \S+ \([^)]*\) (finished|failed)\.`)
 
@@ -597,8 +597,8 @@ var reviewAsyncStatusRe = regexp.MustCompile(`(?s)\AAsync job \S+ \([^)]*\) (fin
 var reviewAsyncTailRe = regexp.MustCompile(`Exit code (\d+)\s*\z`)
 
 // evidenceNoticeExit reads the exit code out of a background-job notice. Both
-// notice families are handled; the other terminal wordings
-// FormatAsyncCompletion uses ("timed out", "was stopped", "was cancelled",
+// notice families are handled; the other terminal wordings the batch
+// completion format uses ("timed out", "was stopped", "was cancelled",
 // "was interrupted") carry no exit code, and the caller maps that to unknown
 // rather than to zero.
 func evidenceNoticeExit(content string) (int, bool) {
@@ -636,7 +636,7 @@ func noticeJobID(content string) string {
 }
 
 var reviewNoticeIDRes = []*regexp.Regexp{
-	// The FormatAsyncCompletion header names the CALL id; the body may name a
+	// The completion notice header names the CALL id; the body may name a
 	// shell id ("Background job 001"), which must not win.
 	regexp.MustCompile(`\AAsync job ([^\s(` + "`" + `]+)`),
 	regexp.MustCompile(`Background job ([^\s(` + "`" + `]+)`),

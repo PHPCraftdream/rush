@@ -1,7 +1,12 @@
 # Job batches — standalone engine and later Rush integration
 
-Status: design only; this document does not authorize implementation or agent
-launches. Revision 3 (2026-10-11) reconciles contract references, acceptance fences and the closure matrix in Appendix A.
+Status: the autonomous deliverable (sections 0-8: `internal/jobbatch`, `lab`,
+`cmd/batchlab`) was implemented on the operator's command on 2026-10-12; see
+`docs/jobbatch.md`, `docs/jobbatch-acceptance.md` and the implementation notes at
+the end of Appendix A. Section 9 (Rush integration) is refined by
+`2026-10-12-job-batches-rush-integration.md`. Revision 4 (2026-10-11) withdraws singleton root and legacy-contract
+preservation (operator decisions 2026-10-11) and adds sole-child notice elision.
+Revision 3 (2026-10-11) reconciles contract references, acceptance fences and the closure matrix in Appendix A.
 Revision 2 (2026-10-08) addressed four independent reviews of revision 1
 (`51599fa4`); Appendix A maps those findings and their round-two residuals:
 
@@ -58,9 +63,10 @@ Required behavior, retained from the operator's original request:
 - Success, failure, cancellation, timeout, interruption, and skipped work are
   distinct. An executor reports outcomes explicitly; the engine never
   interprets natural-language answers.
-- Every independent CLI-command, MCP-call, or agent launch will eventually
-  enter as a batch with one task. An existing batch's leaf is not wrapped
-  again. This is a future integration invariant, tested abstractly now.
+- Every invocation (built-in, MCP, CLI, or agent) enters as an ordinary
+  batch; there is no standalone leaf or special singleton root. A one-task
+  invocation uses the shared `OneItem` helper. An existing batch's leaf is
+  not wrapped again. Rush wiring is later work, tested abstractly now.
 
 Job batches are not the existing `fs_*` batching utilities. This component
 owns group scheduling and policy, not filesystem-operation atomicity.
@@ -132,7 +138,9 @@ types, enum constants, error sentinels — plus small pure methods on those
 types that every slice must answer identically (for example
 `State.Terminal`). The function and method signatures listed in this section
 and in section 5.3 are frozen by this document; each is declared exactly
-once, with its real body, by its owning slice (section 7.2). No placeholder
+once, with its real body, by its owning slice (section 7.2). The exported
+pure helper `OneItem` belongs to the Runtime slice; A0 freezes its signature
+here but writes no helper implementation. No placeholder
 bodies, function variables or empty concrete structs exist to make early
 compilation possible.
 
@@ -273,6 +281,7 @@ func (e *Engine) Snapshot(ID) (BatchView, bool)
 Public runtime API:
 
 ```go
+func OneItem(TaskSpec) Spec
 func NewRunner(context.Context, RunnerConfig) (*Runner, error)
 func (r *Runner) Submit(context.Context, SubmitRequest) (*Batch, error)
 func (r *Runner) Add(context.Context, AddRequest) ([]ID, error)
@@ -289,6 +298,12 @@ func (b *Batch) ID() ID
 func (b *Batch) Done() <-chan struct{}
 func (b *Batch) Wait(context.Context) (Summary, error)
 ```
+
+There is one exported pure ingress helper in `internal/jobbatch`:
+`OneItem(TaskSpec) Spec` returns
+`Batch{Mode: parallel, OnFail: "", Notify: all, MaxParallel: 0, Items: [task]}`.
+Its implementation belongs to Runtime, not A0 or lab. Lab run and replay,
+and the later Rush adapter, call this helper; Rush never imports lab.
 
 Supporting types, also frozen in A0:
 
@@ -364,11 +379,14 @@ paths, such as `root.1.2`. Parent and ordinal are explicit view fields;
 consumers must not parse IDs for ownership. Duplicate root submission fails
 without executing anything. Rerunning work requires a new root ID.
 
-Root specs must be batches; the engine rejects a root task. Consumer ingress
-examines only the root: a raw Task becomes
-`Batch{Mode: parallel, OnFail: "", Notify: all, MaxParallel: 0, Items: [task]}`.
-Nested leaves and Add items are never wrapped. Callers wanting another
-policy submit an explicit batch.
+Root specs must be batches; both Engine and `Runner.Submit` reject task
+roots with `ErrInvalidSpec`. Consumer ingress examines only the root: a raw
+Task becomes an ordinary batch through `jobbatch.OneItem`. Nested leaves
+and Add items are never wrapped.
+The result is an ordinary batch; Add, Stop(root) and NotifyEach apply.
+It has no special singleton policy or reducer.
+Callers wanting another policy submit an explicit batch. Notify is an
+explicit launch policy whose absent value defaults to `all`, unchanged.
 
 Validate a complete Submit/Add subtree before accepting any of it: exactly
 one node shape, known mode/policy, nonnegative timeout, valid limits, IDs and
@@ -505,7 +523,7 @@ stateDiagram-v2
     Cancelling --> Interrupted: all direct children terminal (cause host_closing)
 ```
 
-A nonterminal batch (Pending, Running or Cancelling) settles in the transition in which its last nonterminal direct child becomes terminal — by any path (Settled, a rejected start under a latched cause, Stop of a Pending leaf or batch, a skip, a nested batch settling) and whether or not any leaf was ever admitted. A batch created with no nonterminal direct child (empty, or holding only empty batches) settles in its creating transition. Outcome: its own latched cause wins (stop ⇒ Cancelled, host_closing ⇒ Interrupted, stop_on_fail ⇒ Skipped); otherwise the unchanged leaf-count reducer with an empty cause (zero leaves ⇒ Completed). A never-admitted batch can only reduce to Completed or Cancelled. Within one transition: latch the event's causes top-down (Stop: the addressed node and its nonterminal descendants; HostClosing: every nonterminal node), change leaf states, settle bottom-up to a fixpoint (a child that ends Failed under stop-on-fail skips its successors in the same pass), then admit (§3.2). Notices follow settlement order: descendants before ancestors, siblings by ordinal. Invariant after every transition: every nonterminal batch has a nonterminal direct child, and no terminal batch has a nonterminal descendant.
+A nonterminal batch (Pending, Running or Cancelling) settles in the transition in which its last nonterminal direct child becomes terminal — by any path (Settled, a rejected start under a latched cause, Stop of a Pending leaf or batch, a skip, a nested batch settling) and whether or not any leaf was ever admitted. A batch created with no nonterminal direct child (empty, or holding only empty batches) settles in its creating transition. Outcome: its own latched cause wins (stop ⇒ Cancelled, host_closing ⇒ Interrupted, stop_on_fail ⇒ Skipped); otherwise the unchanged leaf-count reducer with an empty cause (zero leaves ⇒ Completed). A never-admitted batch can only reduce to Completed or Cancelled. Within one transition: latch the event's causes top-down (Stop: the addressed node and its nonterminal descendants; HostClosing: every nonterminal node), change leaf states, settle bottom-up to a fixpoint (a child that ends Failed under stop-on-fail skips its successors in the same pass), then admit (§3.2). Notices follow settlement order: descendants before ancestors, siblings by ordinal, after section 4.1 sole-child elision. Invariant after every transition: every nonterminal batch has a nonterminal direct child, and no terminal batch has a nonterminal descendant.
 
 The unchanged leaf-count reducer is: any Failed/TimedOut/Interrupted ⇒ Failed;
 otherwise any Cancelled ⇒ Cancelled; otherwise Completed, including zero leaves.
@@ -855,12 +873,13 @@ to later send `CapacityAvailable(g)` unless an accepted execution in g is
 active and its eventual settlement supplies the generation advance.
 
 **Integration dependencies (sections 9.1/9.2/9.4).** Rush wiring must cover
-singleton Stop at leaf (§9.2), terminal ledger outcome before cancellation
-(with the shutdown exception in §9.2), repeated
-`job_kill` reissue and ledger order, kill timeout as `stop_timeout`, shell and
-delegation Disposer implementations and shutdown `ErrDispose` logging, and
-cross-process routing. These are forward dependencies, not changes to those
-sections; restart/resumption and cross-process delivery remain later work.
+kill timeout as `stop_timeout`, shell and delegation Disposer implementations,
+and `ErrDispose` logging/routing. These are forward dependencies, not changes
+to those sections.
+
+With section 9.2's Rush-only commit hook, a failed commit faults the Runner and
+it leaves this lifecycle at once: no HostClosing, F or Closed follows (section
+9.2). Without a hook nothing here changes.
 
 ## 4. Notifications, output, and injection
 
@@ -923,21 +942,31 @@ repeating descendant output. A settlement cascade selects notices in settlement
 order: descendants before ancestors, siblings by ordinal. Reducer notices have
 an empty cause absent the batch's own latch, even when its leaf counts include
 Cancelled; Notice/NodeView cause is separate from Summary, which has no cause
-field. For B{B.1}, NotifyAll suppresses the B.1 notice and selects B once;
-NotifyEach permits B.1 before the exactly-once B root notice. Question/input
-requests are not engine events (section 4.4) and are never suppressed by
-completion-notification policy.
+field. For B{B.1}, NotifyAll and NotifyEach both select only B, once (sole-child elision).
+Question/input requests are not engine events (section 4.4) and are never
+suppressed by completion-notification policy.
 
-The later singleton-policy bridge (§9.2) needs its root notice/view to mirror
-the sole authoritative leaf's state/cause in the same transition, not this
-ordinary batch reducer. This is a forward dependency only; no autonomous
-core or lab notice-selection change is made here.
+**Sole-child elision (Engine Core, `notice.go`).** If B settles with exactly
+one direct child C, C is not selected; selected B covers C. Children are
+append-only, and Add to a terminal batch returns `ErrTerminal`, so one child
+at settlement means B has only ever had one child. C settles in the same
+transition as B. B has the same no-NotifyAll-ancestor eligibility as ordinary
+notice selection; the root notice is always preserved. B keeps its own state
+and cause, never mirrors C: Stop(root) keeps the root Cancelled with cause
+`stop` even over a Completed child.
 
-Ordinary singleton ingress is fixed to NotifyAll by the later bridge (§9.2).
-Its adapter delivers either the synchronous result or the root completion
-notice, never both plus a leaf notice. Explicit batches may opt into
-NotifyEach to expose lifecycle information, but must not duplicate the full
-user-facing result.
+Apply elision per level: a one-child chain collapses to its outermost selected
+batch. `R(Each){R.1(Each){a,b}}` selects `a,b,R`. For `R(Each){R.1}` with
+R.1 a task, if Add appends R.2 before R.1 settles, selection is `R.1,R.2,R`.
+For the nested tree, if Add appends task R.2 to R before either a or b settles
+and completion order is a,b,R.2, both batches have two children and selection is
+`a,b,R.1,R.2,R`. Batches with at least two direct
+children retain the last child's notice and the parent's notice as separate
+events, with descendants before ancestors and siblings by ordinal.
+
+Invariants: each node is selected at most once, only in its settlement
+transition; each root is selected exactly once; no transition selects both
+a batch and its sole child.
 
 ### 4.2 Discovery (A8)
 
@@ -1168,10 +1197,11 @@ but their actually-run actions appear in the diagnostic footer inputs (§5.5).
   Fixture labels are observations, not synthetic feed records. For real
   processes the oracle checks invariants, never an OS completion order.
 
-Run and replay share one ingress-normalization function implementing the
-fixed raw-root Task wrapper of section 2.1 (E1); nested/Add items are never
-wrapped. Policy/singleton fields are unknown and rejected, not additional
-scenario knobs. Named smoke scenarios with their acceptance IDs live in
+Run and replay ingress both call `jobbatch.OneItem` for a raw-root Task
+(section 2.1, E1); nested/Add items are never wrapped. Policy fields are
+unknown and rejected, not additional scenario knobs. Explicit BatchSpec
+policy fields, including Notify with default `all`, remain unchanged.
+Named smoke scenarios with their acceptance IDs live in
 `internal/jobbatch/lab/testdata/scenarios/`.
 
 ### 5.3 Controlled executor (P2)
@@ -1321,8 +1351,9 @@ Platform strategy — an A0 decision, not left to the slice:
   fixed field order, sorted map keys), limits and runner settings.
 - **Records:** the public feed of section 4.1 with cursors contiguous from 1.
   The `ref` of submit/add records binds them to the UNIQUE scenario action
-  of the same action type and root/parent. Run and replay use the same ingress
-  normalization; other record types need no scenario lookup.
+  of the same action type and root/parent. Run and replay ingress both call
+  `jobbatch.OneItem` for raw-root Tasks; nested/Add items are never wrapped.
+  Other record types need no scenario lookup.
 - **Footer:** `final_cursor` (absent if never Closed), `final_sequence`,
   `last_cursor`; `capture: complete | gap{first_missing,resumed_at} |
   write_error`; `outcome: closed | unfinished{IDs}`; each root's state,
@@ -1391,8 +1422,9 @@ gap behavior is unchanged.
 
 `replay` validates header version/digest, cursor continuity and footer. It
 rebuilds accepted events in order — specs from the unique scenario action
-with that ref, same action type and root/parent, normalized through the same
-ingress as run; executor
+with that ref, same action type and root/parent, normalized at replay ingress
+by calling `jobbatch.OneItem` for a raw-root Task, just as run does; nested/Add
+items are never wrapped; executor
 results from journal — in a fresh Engine, reproducing event, command, notice
 and `closed` records with the same cursors and sequences. Replay uses
 Transition.Final to reproduce `closed` at the same boundary; no records may
@@ -1468,21 +1500,24 @@ Close. Physical Start return/report callback return alone is not loop acceptance
 For shorthand, integration reports, and held physical returns, the harness
 observes the corresponding public accepted record/state before the next dependent
 action; no new script/schema field is added. Intentional early/repeated actions
-with expect_error, and deliberately held reports such as SR-a, retain their
+with expect_error, and deliberately held reports, retain their
 specified negative/ordering fences rather than acquiring a contradictory wait.
 Every live run ends in nonasync Close or an async Close joined within its bound,
 then the F/cut journal drain of §5.5. F-b/V-d are post-Closed reads/corruptions,
-V-a rejects before constructing a Runner, and SR-c dead-host recovery has no
-live Runner to Close. R-e/W-e generators finish by HostClosing and valid current-
-token rejection/termination drain through Final, checking invariants on the drain;
+V-a and other invalid-loader inputs reject before constructing a Runner;
+replay-only inputs launch no work. Pure-event generators, including R-e/W-e,
+finish by HostClosing and valid current-token rejection/termination drain
+through Final, checking invariants on the drain;
 this is core-event cleanup, not synthetic execution termination.
 
 ### 6.1 Engine and admission
 
-- **E1:** a standalone task through the real lab ingress and an explicit
-  one-task batch produce the same tree (one leaf, no wrapper), one launch,
-  and one result; nested leaves are not wrapped twice; the engine rejects a
-  root task.
+- **E1:** a raw-root task through real lab ingress calling `jobbatch.OneItem`
+  and an explicit one-item batch produce the same ordinary tree, one launch,
+  one result and the same notices. Nested leaves are not wrapped twice.
+  Engine and Runner.Submit both reject a task root. Add to the helper-created
+  root succeeds while nonterminal, with the same behavior as an explicit batch
+  (R3-add supplies the deterministic Add fence; V-b covers Add/replay).
 - **E2:** sequential and nested sequential ordering; parallel overlap and
   ancestor caps; `Sequential(0)` overlaps inside a nested Parallel child
   while `Sequential(1)` serializes it, and in both the next direct sibling
@@ -1492,8 +1527,9 @@ this is core-event cleanup, not synthetic execution termination.
 - **E3:** StopOnFail skips only pending successors after Failed/TimedOut/
   Interrupted; ContinueOnFail executes successors; Cancelled alone does not
   trigger StopOnFail; a skipped nested batch is Skipped (not Completed), its
-  pending leaves never start, one Skipped notice is selected under a
-  NotifyEach parent, and already-terminal descendants keep their state.
+  pending leaves never start, one Skipped notice is selected under an
+  eligible NotifyEach parent after section 4.1 sole-child elision, and
+  already-terminal descendants keep their state.
   An already-Cancelled successor batch keeps Cancelled when its predecessor
   later fails; it is not renamed Skipped.
 - **E4:** several roots/groups share budgets. With `MaxConcurrent = 1`, root
@@ -1533,7 +1569,9 @@ this is core-event cleanup, not synthetic execution termination.
   terminal batch has a nonterminal descendant. Also after every transition,
   `active[g]` equals the number of Starting/Running/Cancelling leaves in g
   across the forest; for every set ByGroup entry, `active[g] <= ByGroup[g]`,
-  and `sum_g active[g] <= MaxConcurrent`.
+  and `sum_g active[g] <= MaxConcurrent`. Each node is selected at most once,
+  only in its settlement transition; each root is selected exactly once;
+  no transition selects both a batch and its sole direct child.
 - **E9:** ownership: mutating each caller-owned value of section 2.2 after
   its hand-off point changes nothing accepted; mutate ByGroup after either
   NewEngine or NewRunner returns and verify budgets are unchanged. Snapshots
@@ -1560,6 +1598,28 @@ this is core-event cleanup, not synthetic execution termination.
   do not freeze scheduling or cancellation; gaps are explicit and frozen
   final snapshots remain correct. F-a/F-b in section 6.4 read selected
   notices through F after Close and check concurrent nonconsuming readers.
+  Three independent named cases use controlled payloads, unique refs,
+  `wait_bound_ms:10000`, bounded awaits, and nonasync `close {expect:ok}`:
+  - **R3-one:** submit `Parallel/NotifyEach{R.1}` with ref r3-one-R;
+    await_start/bind r1, release_start accept, await R.1 Running, complete r1
+    Completed, then await R Completed before Close. Notices are only R once.
+  - **R3-chain:** submit `R=Parallel/NotifyEach{R.1=Parallel/NotifyEach{R.1.1}}`
+    with ref r3-chain-R; await_start/bind r11, release_start accept, await
+    R.1.1 Running, complete r11 Completed, then await R Completed before
+    Close. Only outermost selected R appears, not R.1 or R.1.1.
+  - **R3-add:** `max_concurrent:1`; submit `Parallel/NotifyEach{R.1}` with ref r3-add-R;
+    await_start/bind r1, release_start accept, await R.1 Running; Add a
+    controlled task to R with ref r3-add-second and observe reply [R.2]
+    before completing r1. Complete r1 Completed, await R.1 Completed;
+    await_start/bind r2, release_start accept, await R.2 Running, complete
+    r2 Completed, await R Completed, then Close. Notices are R.1,R.2,R
+    in that order: last child and parent remain separate events. Repeat with
+    fresh refs r3-add-helper-R/r3-add-helper-second and raw-root Task ingress
+    through OneItem, which yields Notify all: retain all fences, but the
+    notice oracle is [R] only, since NotifyAll suppresses R.1 and R.2. The
+    NotifyEach variant of a helper-created batch is a Runtime-API test
+    (Runner.Submit with OneItem's result changed to Notify each before
+    Submit), not a scenario script: scenario JSON has no policy knob (5.2).
 - **R4:** output A → pause → B → completion read by cursor without false EOF
   or busy polling; small retention truncates the beginning with an explicit
   gap and recovery point, then the rest and a real EOF; not-started,
@@ -1649,7 +1709,8 @@ to Cancelled with cause stop, no token and attempts=0, with no StopLeaf or
 command record. The reducer settles B with empty cause, newly settled roots
 [B], and sequence s: Done closes and Wait returns `Summary{B,cancelled,counts,s}`
 with nil error. The `stop_requested` B.1 record precedes selected notices:
-only B under NotifyAll; in the NotifyEach variant B.1 precedes B. The later
+only B under NotifyAll and also only B in the NotifyEach variant, by
+sole-child elision. The later
 terminal Stops return nil without records or Head change. A.1 receives no Stop.
 Before Release, Output(B.1) returns `ErrNotStarted`, Inject(B.1) returns
 `ErrTerminal`, and Add(B, nonempty items) returns `ErrTerminal`. Release(B)
@@ -1680,8 +1741,8 @@ other actions and closing only after the added cleanup:
   B.1 attempts=0/starts=0; H.1 attempts=1/starts=1/accepted=0/cause=stop;
   no capacity_available; max_active=1, exit 1.
 
-The same never-admitted settlement occurs without a wake-up. Singleton and
-waiting-level consumers depend on this lifecycle rule (9.2); integration
+The same never-admitted settlement occurs without a wake-up. Rush one-item
+roots and waiting levels depend on this lifecycle rule (9.2); integration
 accounting is unchanged.
 
 **R-d Close ordering.** A literal sequential `close {expect:ok}` followed by
@@ -1775,23 +1836,28 @@ read-entry barrier, not a new action or schema field.
 | **W-d** | Closed `{max_concurrent:2,by_group:{agents:1,commands:1}}`. `submit {ref:wd-X,root:X,spec:Parallel/NotifyAll{X.1@commands}}`; `await_start {node:X.1,bind:x1}`; `release_start {attempt:x1,decision:accept}`; `await_state {node:X.1,state:running}`; `submit {ref:wd-A,root:A,spec:Parallel/NotifyAll{A.1@agents}}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:wd-B,root:B,spec:Parallel/NotifyAll{B.1@commands,B.2@commands}}`; `submit {ref:wd-D,root:D,spec:Parallel/NotifyAll{D.1@agents}}`; after accepted Submit replies public Snapshots show all B/D leaves Pending, attempts=0; `hold_stop {attempt:a1}`; `stop {node:A.1}`; `await_stop {attempt:a1,call:1}`; public Snapshot(B) confirms Stop(A.1) alone left B's Pending leaves/empty causes unchanged before stopping B; `stop {node:B}`; `await_state {node:B,state:cancelled}`; `await_record {type:notice,node:B}`; public Snapshot(D) still Pending; `return_stop {attempt:a1,call:1,result:ok}`; `complete {attempt:a1,state:cancelled}`; `await_record {type:settled,node:A.1}`; `await_state {node:A,state:cancelled}`; `await_start {node:D.1,bind:d1}`; `release_start {attempt:d1,decision:accept}`; `await_state {node:D.1,state:running}`; `complete {attempt:d1,state:completed}`; `await_record {type:settled,node:D.1}`; `await_state {node:D,state:completed}`; `complete {attempt:x1,state:completed}`; `await_record {type:settled,node:X.1}`; `await_state {node:X,state:completed}`; public Snapshot(B) confirms Cancelled leaves/attempts=0 even after commands cap frees; `close {expect:ok}`. | B Cancelled, cancelled=2, own cause=stop; B leaves starts=0; A Cancelled, X/D Completed. B:notice before A.1:settled; A.1:settled before D.1:started; D.1:started before X.1:settled. A stops=1; no B physical Stops; max_active=2; exit 1. |
 | **W-e** | Core seeded valid Submit/Add/Stop/StartRejected (ALL reasons: capacity, failure, cancelled)/Settled/ControlReported/DeadlineExpired/CapacityAvailable/HostClosing sequences, current tokens, appropriate causes/control gates, bounded event counts, retained failing seeds/sequences. Closed `{max_concurrent:3,by_group:{a:1,b:1,"":1}}` and open `{max_concurrent:2,by_group:{a:1,b:1,"":1}}`; mapped groups, explicit Parallel/NotifyAll roots; finish with HostClosing and valid current-token drain through Final. | EVERY transition: active[g] equals Starting/Running/Cancelling leaf count; each set cap bounds its group; global sum <= MaxConcurrent. Units acquired only by emitted StartLeaf, released only by accepted current-token StartRejected/Settled. gen[g] advances only on accepted-execution Settled in g or accepted CapacityAvailable(g); StartLeaf/StartRejected do not advance gen. Excluded events neither acquire nor release units nor advance gen; admission commands emitted by their transitions are accounted separately. In closed profile while Runner open, no uncaused Pending leaf passing clauses 1,3,4,5,6 remains after admission. Open generator must produce a leaf blocked solely by clause 2. Include E8/R-e invariants and bottom-up settlement. No execution result asserted before the required HostClosing/drain ending. |
 
-### 6.7 Rush integration scenarios (I2, I8)
+### 6.7 Rush integration scenarios (I8)
 
 STATIC integration-harness contracts, not executed lab scenarios. `rush:`
 steps and `[fence]` observations are future integration/public-API seams,
-NOT section 5.2 fields. Authoritative reports come only from the integration
-adapter, never the lab executor. `spec:task` abbreviates ordinary ingress
-normalization to a one-task root with leaf R.1 (or the named root's .1);
-it is not a new root Spec type and does not change A0's root-task rejection.
+NOT section 5.2 fields. Executor reports confirm termination; the host event
+loop's first accepted event determines engine state. `spec:task` abbreviates
+ordinary ingress calling `jobbatch.OneItem` to create a one-task root with
+leaf R.1 (or the named root's .1); it is not a new root Spec type and does
+not change Engine/Runner root-task rejection.
 Every run uses bounded waits and joins (`wait_bound_ms:10000` as a harness
 bound, not a selected Rush default), unique refs, and explicit acceptance
 fences before dependent actions. Variants use distinct refs and fresh runs.
-Reservation/ack is committed before delivery is enabled. A `complete` below
-confirms actual exit; the adapter combines it with the committed outcome.
+Node rows project accepted engine state; only selected node notices create
+durable completion debt. An elected synchronous answer consumes root notice
+delivery; a generic stop answer does not. A `complete` below confirms actual
+exit; a held termination report leaves the root live until confirmation is
+accepted. Every live scenario ends in nonasync Close or joined async Close.
+R-a already covers stopping a never-admitted one-item root.
 
 Worker waiters are harness-driven against a separately accounted rank-1
-agent budget; command roots are rank-0 targets in separate roots. In SR-b
-and AW-b, `max_concurrent:1` denotes the tested command Runner's executable
+agent budget; command roots are rank-0 targets in separate roots. In AW-b,
+`max_concurrent:1` denotes the tested command Runner's executable
 slot, NOT a global budget of 1 shared with an admitted waiting agent.
 A co-resident production Runner instead uses §3.2's closed profile with
 global budget covering both finite group caps; these fixtures do not claim
@@ -1799,11 +1865,8 @@ that an unranked co-resident worker can progress at global=1.
 
 | ID | Explicit actions and acceptance fences | Independent expected oracle |
 |---|---|---|
-| **SR-a** | `submit {ref:sa-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; rush: natural CAS completed committed and actual exit confirmed, adapter report held [fence]; `hold_stop {attempt:r1}`; `stop {node:R}` (public singleton-policy intent test, not Rush-originated stop); `await_stop {attempt:r1,call:1}`; rush: Execution.Stop CAS Lost, zero legacy cancels [fence]; `return_stop {attempt:r1,call:1,result:ok}`; rush: observe actual Stop return [fence], release Authoritative Completed report; `await_state {node:R,state:completed}`; rush: public leaf/root view and exactly one delivery [fence], later job_kill returns AlreadyTerminal with no Stop [fence]; `close {expect:ok}`. Explicit one-item variant repeats these actions with ref sa-exp-R and rush: batch_run ingress `Parallel/NotifyAll{R.1}`; after report await R cancelled and R.1 completed instead. | Singleton row/leaf/root Completed; root's independent own cause empty, view mirrors leaf; notices R=[R completed], exactly one consumer delivery. Execution.Stop loses without cancellation. Explicit batch row/leaf Completed but root Cancelled with own stop cause is legitimate, notices R=[R cancelled]; no relabelled leaf or duplicate execution delivery. |
-| **SR-b** | `max_concurrent:1`; `submit {ref:sb-A,root:A,spec:task}`; `await_start {node:A.1,bind:a1}`; `release_start {attempt:a1,decision:accept}`; `await_state {node:A.1,state:running}`; `submit {ref:sb-B,root:B,spec:task}`; public View(B.1) Pending/attempts=0 [fence]; rush: job_kill CAS Won, delivery done [fence]; `stop {node:B.1}`; `await_state {node:B,state:cancelled}`; rush: second job_kill terminal/idempotent answer and zero Stop dispatch [fence]; `complete {attempt:a1,state:completed}`; `await_record {type:settled,node:A.1}`; `await_state {node:A,state:completed}`; `close {expect:ok}`. | B starts=0, stops=0, disposes=0; B leaf/root settle in the stop_requested transition with Done closed, no synthetic report or admission release. No Runner.Stop before commit; second job_kill causes no Stop. B has zero completion debt and no later duplicate notice delivery. A Completed. |
-| **SR-c** | `submit {ref:sc-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; rush: read owner/current claim c1 [fence]; rush: P2 stop request async:p2, request row keyed c1 committed [fence]; rush: owning H CAS Won [fence]; `stop {node:R.1}`; `await_stop {attempt:r1,call:1}`; `complete {attempt:r1,state:cancelled}`; `await_record {type:settled,node:R.1}`; `await_state {node:R,state:cancelled}`; rush: ack c1 committed winner [fence]; `join {name:p2}`; rush: stale claim request rejected with zero additional stops [fence]; `close {expect:ok}`. Dead-H variant uses fresh ref sc-dead-R and the same full start/bind/accept/running setup and async:p2 request fence, then rush: H confirmed dead before CAS [fence], RecoverDeadHost announced row interrupted [fence], recovery ack [fence], join p2, restart observation [fence]; no local Stop/complete is invented for a dead Runner. | Live H: row/leaf/root Cancelled, cancellation strictly after commit; P2 writes a request, NEVER an execution outcome or cancellation. Stale request stops=0. Dead H: recovery row Interrupted, not Cancelled; no execution Stop by P2 and restart reruns nothing. Unknown host status permits no outcome write. |
-| **AW-a** | `submit {ref:wa-R,root:R,spec:Parallel/NotifyAll{R.1,R.2}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `await_start {node:R.2,bind:r2}`; `release_start {attempt:r2,decision:accept}`; `await_state {node:R.2,state:running}`; rush: worker await_tasks any async:w, captured target set {R} [fence]; `complete {attempt:r1,state:completed}`; `await_record {type:settled,node:R.1}`; `await_state {node:R.1,state:completed}`; rush: w blocked, zero selected completion debt [fence]; rush: hold root delivery D [fence]; `complete {attempt:r2,state:completed}`; `await_record {type:settled,node:R.2}`; `await_state {node:R,state:completed}`; rush: root debt committed, D still held [fence]; `join {name:w}`; rush: release D and observe one R delivery [fence]; `close {expect:ok}`. Top-level any variant repeats with fresh ref wa-top-R, replacing worker entry/join with StopTurn acceptance and arbiter fences: no launch after R.1, one eligible launch after root debt (delivery hold does not suppress durable debt). All/S variants are specified below. | Worker finished=1 BEFORE D; only R is counted, no leaf delivery or double count. Zero debt after R.1 is not zero debt after R settles: root debt exists while D is held. Top-level any has no leaf-triggered launch and one root-triggered launch, subject to other arbiter gates. All remains deferred with S live; child_question from S breaks sleep without completing S. |
-| **AW-b** | Tested command `max_concurrent:1`, separate ranked waiter budget as above; `submit {ref:wb-D,root:D,spec:task}`; `await_start {node:D.1,bind:d1}`; `release_start {attempt:d1,decision:accept}`; `await_state {node:D.1,state:running}`; `complete {attempt:d1,state:completed}`; `await_record {type:settled,node:D.1}`; `await_state {node:D,state:completed}`; rush: D root debt committed, delivery held [fence]; `submit {ref:wb-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `hold_stop {attempt:r1}`; rush: worker await_tasks all async:w, captured targets {R} [fence]; rush: top-level all SleepAll armed for R [fence]; rush: job_kill CAS Won, delivery done [fence]; `stop {node:R.1}`; `await_stop {attempt:r1,call:1}`; `submit {ref:wb-B,root:B,spec:task}`; public View(B.1) Pending [fence]; rush: with D’s debt pending, rule 4b defers on live R, no launch [fence]; rush: guard sees live R, worker all blocked, B Pending [fence]; `return_stop {attempt:r1,call:1,result:ok}`; rush: actual Stop return and R still live/B Pending [fence]; `complete {attempt:r1,state:cancelled}`; `await_record {type:settled,node:R.1}`; `await_state {node:R,state:cancelled}`; `join {name:w}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_record {type:settled,node:B.1}`; `await_state {node:B,state:completed}`; rush: R and B settled, D’s debt pending: 4b lifts, exactly one eligible launch; release D, one D delivery [fence]; `close {expect:ok}`. | R's slot frees only at confirmed complete, never CAS or Stop return; B starts only after R settles. Worker returns once R Done closes (B was not in its entry set). Job_kill creates no wake and zero duplicate completion debt. D's completion debt remains pending throughout live R and B. Top-level 4b continues deferring while later B is live and lifts only once R/B settle, permitting exactly one eligible launch before one D delivery; R exit alone cannot lift it if B is already live. Guard clears R only after real exit. |
+| **AW-a** | `submit {ref:wa-R,root:R,spec:Parallel/NotifyAll{R.1,R.2}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `await_start {node:R.2,bind:r2}`; `release_start {attempt:r2,decision:accept}`; `await_state {node:R.2,state:running}`; rush: worker await_tasks any async:w, captured target set {R} [fence]; `complete {attempt:r1,state:completed}`; `await_record {type:settled,node:R.1}`; `await_state {node:R.1,state:completed}`; rush: R.1 node row Completed, w blocked, zero selected completion debt [fence]; rush: hold root delivery D [fence]; `complete {attempt:r2,state:completed}`; `await_record {type:settled,node:R.2}`; `await_state {node:R,state:completed}`; rush: R node row Completed and selected R notice debt committed, D still held [fence]; `join {name:w}`; rush: release D and observe one R delivery [fence]; `close {expect:ok}`. Top-level any variant repeats with fresh ref wa-top-R, replacing worker entry/join with StopTurn acceptance and arbiter fences: no launch after R.1, one eligible launch after root debt (delivery hold does not suppress durable debt). All/S variants are specified below. | Worker finished=1 BEFORE D; only R is counted, no leaf delivery or double count. Zero debt after R.1 is not zero debt after R settles: root debt exists while D is held. Top-level any has no leaf-triggered launch and one root-triggered launch, subject to other arbiter gates. All remains deferred with S live; child_question from S breaks sleep without completing S. |
+| **AW-b** | Tested command `max_concurrent:1`, separate ranked waiter budget as above; `submit {ref:wb-D,root:D,spec:task}`; `await_start {node:D.1,bind:d1}`; `release_start {attempt:d1,decision:accept}`; `await_state {node:D.1,state:running}`; `complete {attempt:d1,state:completed}`; `await_record {type:settled,node:D.1}`; `await_state {node:D,state:completed}`; rush: D node row Completed and selected D notice debt committed, delivery held [fence]; `submit {ref:wb-R,root:R,spec:task}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `hold_stop {attempt:r1}`; rush: worker await_tasks all async:w, captured targets {R} [fence]; rush: top-level all SleepAll armed for R [fence]; rush: batch_stop(R) accepted by host event loop, R node row Cancelling [fence]; `await_stop {attempt:r1,call:1}`; `submit {ref:wb-B,root:B,spec:task}`; public View(B.1) Pending [fence]; rush: with D’s debt pending, rule 4b defers on live R, no launch [fence]; rush: guard sees live R, worker all blocked, B Pending [fence]; `return_stop {attempt:r1,call:1,result:ok}`; rush: actual Stop return and R still live/B Pending [fence]; `complete {attempt:r1,state:cancelled}`; `await_record {type:settled,node:R.1}`; `await_state {node:R,state:cancelled}`; rush: R node row Cancelled, explicitly elect synchronous R result delivery once confirmed settlement is accepted; consume R root notice delivery exactly once, leaving zero pending R debt [fence]; `join {name:w}`; `await_start {node:B.1,bind:b1}`; `release_start {attempt:b1,decision:accept}`; `await_state {node:B.1,state:running}`; `complete {attempt:b1,state:completed}`; `await_record {type:settled,node:B.1}`; `await_state {node:B,state:completed}`; rush: R and B settled, D’s debt pending: 4b lifts, exactly one eligible launch; release D, one D delivery [fence]; `close {expect:ok}`. | R's slot frees only at confirmed complete, never stop intent or Stop return; B starts only after R settles. Worker returns once R Done closes (B was not in its entry set). Batch_stop's intent answer is not completion delivery; explicitly elected synchronous delivery consumes the selected R root notice only after settlement, leaving zero pending R debt. D's completion debt remains pending throughout live R and B. Top-level 4b continues deferring while later B is live and lifts only once R/B settle, permitting exactly one eligible launch before one D delivery; R exit alone cannot lift it if B is already live. Guard clears R only after real exit. |
 
 **AW-b arbiter fence.** D supplies independent completion-class debt, held
 pending throughout live R and B. With that debt, rule 4b defers until both
@@ -1813,9 +1876,11 @@ for top-level 4b. Independent debt-free variant: remove the entire D fixture
 and all D fences, use fresh refs wb-free-R/wb-free-B, and split the arbiter
 fences/acceptance:
 
-- **EARLY:** while R is live after job_kill and before B completes, with no
+- **EARLY:** while R is live after batch_stop and before B completes, with no
   pending-inclusive completion debt, rule 1 gives no launch and no 4b verdict.
-  Job_kill's zero debt alone is never evidence of a 4b decision.
+  Stop intent alone creates no completion debt and is never evidence of a
+  4b decision; R's selected root delivery is consumed by the explicitly
+  elected synchronous answer only after confirmed settlement.
 - **FINAL:** B completes naturally and its root settlement commits durable
   completion debt (§9.2). With R/B settled, 4b no longer defers; one eligible
   launch follows, subject to the other arbiter gates. This final fence is not
@@ -1855,7 +1920,7 @@ Tree/task abbreviations follow 6.3; every await is bounded.
 | **V-b** | `max_concurrent:2`; `submit {ref:vb-R,root:R,spec:Parallel/NotifyAll{R.1}}`; `await_start {node:R.1,bind:r1}`; `release_start {attempt:r1,decision:accept}`; `await_state {node:R.1,state:running}`; `add {ref:vb-g,parent:R,items:[task@g payload_ref:pa]}`; `await_start {node:R.2,bind:r2}`; `release_start {attempt:r2,decision:accept}`; `await_state {node:R.2,state:running}`; `complete {attempt:r2,state:completed,code:ok_a}`; `await_record {type:settled,node:R.2}`; `await_state {node:R.2,state:completed}`; `add {ref:vb-h,parent:R,items:[task@h payload_ref:pb]}`; `complete {attempt:r1,state:completed}`; `await_record {type:settled,node:R.1}`; `await_start {node:R.3,bind:r3}`; `release_start {attempt:r3,decision:accept}`; `await_state {node:R.3,state:running}`; `complete {attempt:r3,state:failed,code:exit_7}`; `await_record {type:settled,node:R.3}`; `await_state {node:R,state:failed}`; `add {ref:vb-late,parent:R,items:[task],expect_error:terminal}`; `close {expect:ok}`. | R.2 outcome completed/ok_a, R.3 failed/exit_7; each attempts=starts=accepted=1. Inputs in order: vb-R accepted [R], vb-g accepted [R.2], vb-h accepted [R.3], vb-late rejected error terminal, no vb-late record. Replay retains groups g/h and those outcomes; run/replay exit 1. |
 | **V-c** | `max_concurrent:4`; `submit {ref:vc-R,root:R,spec:Parallel/NotifyAll{R.1,R.2,R.3,R.4}}`; bind r1/r2/r3/r4 with await_start for the corresponding leaves; release_start each with decision fail and respective RAW codes `missing_program`, `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (exactly 65 ASCII a bytes), `PRIVATE_SENTINEL/argv=x`, `stop_timeout`; `await_record {type:start_rejected,node:R.2,code:invalid_code}`; `await_state {node:R,state:failed}`; `close {expect:ok}`. | Outcomes failed/missing_program, then failed/invalid_code for three leaves; each starts=1, accepted=0. Run/replay exit 1. Empty-code variant replaces r1's fail code with empty: start_failed. Result-code variant replaces r1's fail release with accept, then `complete {attempt:r1,state:failed,code:PRIVATE_SENTINEL/argv=x}`: invalid_code, accepted=1. Kept-code variant makes that same accept/complete replacement with code exit_7: failed/exit_7, accepted=1. All variants use fresh refs; other leaves/actions unchanged. |
 | **V-d** | Independently corrupt V-b/F-d journals: drop vb-h input; change vb-late result to accepted; swap vb-g/vb-h inputs; replace one submit/add record ref with vb-zz; set F-d request_counts.capacity_available to 2. | Each replay exits 2 via I1-I4; original V-b replays normally with exit 1, original F-d with exit 0. No synthetic missing events. |
-| **V-e** | Independent E1 runs: `submit {ref:e1-T,root:T,spec:task}`, bind T.1 as t1, `release_start {attempt:t1,decision:accept_complete,state:completed}`, `await_state {node:T,state:completed}`, `close {expect:ok}`; versus `submit {ref:e1-E,root:E,spec:Parallel/NotifyAll{E.1}}`, bind E.1 as e1, accept_complete completed, await E completed, close ok. | Under identity relabeling, equal normalized trees/policy, one launch and starts=accepted=1 each; run/replay exit 0. Separate raw-task file with a policy field exits 2 before header/Start; singleton is likewise an unknown scenario field, not a lab knob. |
+| **V-e** | Independent E1 runs: `submit {ref:e1-T,root:T,spec:task}`, bind T.1 as t1, `release_start {attempt:t1,decision:accept_complete,state:completed}`, `await_state {node:T,state:completed}`, `close {expect:ok}`; versus `submit {ref:e1-E,root:E,spec:Parallel/NotifyAll{E.1}}`, bind E.1 as e1, accept_complete completed, await E completed, close ok. | Under identity relabeling, equal normalized trees/policy, one launch and starts=accepted=1 each; run/replay exit 0. Separate raw-task file with a policy field exits 2 before header/Start; policy is not a lab knob. |
 
 V-c extends E9 privacy: neither `PRIVATE_SENTINEL` nor
 `batchlab-error-sentinel` appears in feed, journal, views or Close errors.
@@ -1877,7 +1942,9 @@ this document.
 Before fan-out:
 
 1. Write the data declarations of section 2 in `types.go`, `events.go`,
-   `executor.go`, `runtime_types.go` and `errors.go` — data only (P1).
+   `executor.go`, `runtime_types.go` and `errors.go`, with the small pure
+   methods permitted there (P1). Freeze `OneItem(TaskSpec) Spec` in the
+   contract; its implementation belongs only to Runtime, not A0.
 2. Write the scenario, payload, `ProcessOptions`, `StartDecision`, and
    journal header/footer types in `internal/jobbatch/lab/schema.go`
    (sections 5.2-5.5). Factory and controlled-executor signatures stay in
@@ -1890,6 +1957,19 @@ Before fan-out:
 5. Set the target branch/worktree and allowed file ownership. No commits,
    pushes, Rush integration, library bumps, or nested agent launches by
    implementers.
+
+**A0a as written (2026-10-11).** `internal/jobbatch/{types,events,executor,runtime_types,errors}.go`
+hold the section 2 data declarations. Additions beyond the section 2 listing,
+all owner decisions: the pure helpers `ValidCode`, `ReservedCode` and `ValidRef`
+(Core validation and Runtime `norm` must answer identically); `ErrInvalidEvent`
+for invalid, stale or out-of-order events; the typed carriers `DisposeError`
+and `CloseTimeoutError` behind `ErrDispose` and `ErrCloseTimeout`;
+`NodeView.Control` (none, pending, acked, failed) exposing the control gate the
+`control` oracle mirrors, with `ControlError` its code and `ControlPending`
+exactly `Control == pending`; `Transition.SettledRoots` carrying the `Summary`
+each newly settled root's `Wait` returns; `Event` is one flat struct whose
+`Type` selects the field set documented on it. `Engine`, `Runner` and `Batch`
+are declared by their owning slices, not A0 (no empty placeholder structs).
 
 Contract changes later belong only to the integration owner. An implementer
 reports the missing field/method and its consumer-visible reason; the owner
@@ -1912,10 +1992,10 @@ flowchart LR
 
 | Slice | Owned files | Acceptance it proves | Test helpers / fixtures |
 |---|---|---|---|
-| Core | `internal/jobbatch/engine.go`, `tree.go`, `tree_apply.go`, `admission.go`, `view.go`, `notice.go` and their tests | E2-E8 at the pure-event level; R-e (6.3), W-e (6.6); the engine side of E1 (root task rejected) | `coreTest*`; `internal/jobbatch/testdata/core/` |
-| Runtime | `internal/jobbatch/runner.go`, `runner_dispatch.go`, `runner_control.go`, `runner_observe.go`, `runner_requests.go` and their tests | R1-R5; the public-API parts of E8/E9; R-a..R-d/F-a..F-f/C-a..C-e public-API fences (6.3-6.5); W-a..W-d public acceptance/Snapshot checks and physical-return barriers (6.6); V-b/V-c public views (6.8) | `runtimeTest*`; `internal/jobbatch/testdata/runtime/` |
+| Core | `internal/jobbatch/engine.go`, `tree.go`, `tree_apply.go`, `admission.go`, `view.go`, `notice.go` and their tests | E2-E8 at the pure-event level, including sole-child elision in `notice.go`; R-e (6.3), W-e (6.6); the engine side of E1 (root task rejected) | `coreTest*`; `internal/jobbatch/testdata/core/` |
+| Runtime | `internal/jobbatch/runner.go`, `runner_dispatch.go`, `runner_control.go`, `runner_observe.go`, `runner_requests.go` (including the exported pure `OneItem` helper) and their tests | R1-R5, including R3-one/R3-chain/R3-add; E1 Runner root-task rejection and helper-created root Add; the public-API parts of E8/E9; R-a..R-d/F-a..F-f/C-a..C-e public-API fences (6.3-6.5); W-a..W-d public acceptance/Snapshot checks and physical-return barriers (6.6); V-b/V-c public views (6.8) | `runtimeTest*`; `internal/jobbatch/testdata/runtime/` |
 | Process executor | `internal/jobbatch/lab/process*.go`, the helper program and process tests | process-level L1/L2: codes, output cap, tree termination, sentinel isolation — not the CLI aggregate | `processTest*`; `internal/jobbatch/lab/testdata/process/` |
-| Laboratory | `internal/jobbatch/lab/scenario.go`, `controlled.go`, `journal.go`, `replay.go`, `cmd/batchlab/*.go`, scenario testdata and tests | E1 through the real ingress; L1-L6 through the CLI; R-a..R-d/F-a..F-f/C-a..C-e/W-a..W-d/V-a..V-e scripts and journal checks (6.3-6.8); the journal-privacy part of E9 | `labTest*`; `internal/jobbatch/lab/testdata/scenarios/` |
+| Laboratory | `internal/jobbatch/lab/scenario.go`, `controlled.go`, `journal.go`, `replay.go`, `cmd/batchlab/*.go`, scenario testdata and tests | E1 through the real ingress; R3-one/R3-chain/R3-add scripts and notice oracles; L1-L6 through the CLI; R-a..R-d/F-a..F-f/C-a..C-e/W-a..W-d/V-a..V-e scripts and journal checks (6.3-6.8); the journal-privacy part of E9 | `labTest*`; `internal/jobbatch/lab/testdata/scenarios/` |
 
 Runtime may write against the frozen Engine API while Core is unfinished;
 Laboratory may do the same against Runner and the process factory. Shared
@@ -1927,7 +2007,7 @@ Package-level test helpers carry their slice's prefix, so two slices in one
 package never declare the same name (P8). There is no shared mutable helper
 file. README/changelog, contract files, the cross-slice acceptance file
 (`internal/jobbatch/lab/acceptance_test.go`, written in A2), and cross-slice
-reconciliation remain owned by the integration owner. SR-a..SR-c/AW-a..AW-b
+reconciliation remain owned by the integration owner. AW-a/AW-b
 belong to the later §9.2 execution-cutover / §9.4 integration-acceptance owner,
 not an autonomous A1 slice. F/C/R/V public-API and Laboratory responsibilities
 are joint proofs at §7.3, not duplicate scenario definitions.
@@ -1985,7 +2065,8 @@ Fixed for autonomous implementation:
 - Machine codes use section 2's private normalization and reserved runtime
   set; raw error text and rejected codes never reach records (V-c).
 - NewEngine alone copies Limits/ByGroup; production uses Runner. Raw-root
-  ingress uses the fixed parallel/all/no-cap wrapper shared by run/replay,
+  ingress calls the shared exported `jobbatch.OneItem` helper in run/replay
+  and the later Rush adapter, producing an ordinary parallel/all/no-cap batch,
   with no nested/Add wrapping or scenario policy knob (2.1/2.2; E9/V-e).
 - Helper spawns use platform.Command without isolation escape, no exemptions
   or shared platform edits; absolute fixture paths have no variable expansion
@@ -1996,11 +2077,14 @@ Fixed for autonomous implementation:
   These are STATIC closures, not executed results.
 
 - Notifications default to NotifyAll; callers may request NotifyEach.
+  Core sole-child elision selects only the covering batch, collapsing a
+  one-child chain per level; no transition selects parent and sole child.
   Selected notices are records in the public feed.
 - Cancelled does not trigger StopOnFail; aggregate still exposes
   cancellation. A nonterminal Pending successor batch under stop-on-fail is
   Skipped; an already-terminal successor preserves its state.
-- A batch settles when its last direct child is terminal, admitted or not; so empty batches complete immediately; Add to terminal/cancelling batches fails.
+- A batch settles when its last direct child is terminal, admitted or not;
+  empty batches complete immediately; Add to terminal batches fails.
 - No automatic task retries; typed pre-execution capacity refusal is
   different and cannot lose a wake-up (availability generation per group).
 - `MaxParallel = 0` adds no cap; `Sequential(1)` caps its whole subtree.
@@ -2039,22 +2123,18 @@ Fixed for autonomous implementation:
 
 Deferred to Rush integration, without blocking autonomous development:
 
-- Default numeric limits, existing per-session admission caps, and the
-  kind→group→rank mapping plus validator (§9.2 execution-cutover owner).
-- Durable root/leaf representation, transactional delivery, and recovery.
-- Singleton-policy reserved shape, Settled.Authoritative and ledger/CAS
-  bridge, and implementation/acceptance of the contract-closed top-level/worker
-  await mapping (I8; §9.2 execution-cutover owner).
-- Cross-process transport (§9.4 control-routing owner); durable input ledgers
-  are not the diagnostic lab footer (§9.3 persistence/recovery owner).
+- Default numeric limits and the kind→group→rank mapping plus validator
+  (§9.2 execution-cutover owner).
+- Durable root/node representation, transactional delivery, recovery and
+  the optional Rush-only Runner commit-hook contract (§9.2/9.3 owners).
+- Implementation/acceptance of the contract-closed top-level/worker await
+  mapping (I8; §9.2 execution-cutover owner).
+- Cross-process transport (§9.4 control-routing owner); durable node/control
+  projections are not the diagnostic lab footer (§9.3 persistence/recovery owner).
 - Agentguard for future agent-bearing payloads belongs to §9.1 policy wiring,
   not autonomous lab payloads; no lab agentguard integration is authorized.
-- Worker await_tasks count-replacement bug implementation backlog (§9.2
-  execution-cutover owner, P3 implementation notes), not a completed fix.
-- Required task_outcome for new explicitly outcome-aware agent work.
-  Preserve the existing success contract for automatically wrapped legacy
-  agents until an explicit migration is approved; do not silently make all
-  their text-only completions fail because they are now singleton batches.
+- Whether task_outcome is required for explicitly outcome-aware agent work
+  remains undecided.
 - Which operator/model controls expose additional batch items and nesting.
 
 The old recommendations of 4 parallel tasks, 16 hard maximum, 2 commands,
@@ -2066,338 +2146,300 @@ Do not run every heavy command at once merely because a batch is parallel.
 This is a separate work package, started only after autonomous acceptance.
 It must be planned against the then-current repository, not old file offsets.
 
-### 9.1 Addressed pre-refactoring
+### 9.1 Pre-refactoring still worth doing
 
-- Pure move of job-control methods from `work_ledger.go` to
-  `work_ledger_jobctl.go`; preserve observable behavior and ownership checks.
-- Extract shared permission-inheritance/executor-launch setup from
-  `asyncTool.launchExecutor`. Separate starting work from synchronous waiting,
-  inline-window delivery, and detached "started" responses.
-- Two observation seams for the adapter, outside ledger locks and guarded by
-  claim identity (I3): the committed outcome with its cause, and the actual
-  termination of the execution taken from its real completion source
-  (background shell `Wait`/done, `cmd.Wait`, release of the delegation
-  scope). The execution handle keeps that source even after the job leaves
-  the ledger map or the shell leaves its manager. The Result callback fires
-  only when both facts are known. A bounded kill that times out is a control
-  error, not termination. An in-memory duplicate or stale execution cannot
-  settle another claim's leaf.
-- One tool construction path retaining hooks, permissions, restricted-run,
+- Confirm termination from the real completion source: background shell
+  `Wait`/done, `cmd.Wait`, or release of the delegation scope. The execution
+  handle retains that source until confirmation. A bounded kill timeout is a
+  control error, not termination.
+- One tool construction path retains hooks, permissions, restricted-run,
   folder scope, and agentguard. A leaf reuses policy-wrapped execution without
-  recursively reapplying the batch ingress wrapper, and executors resolve
-  their target from the pinned, policy-filtered tool set, never from a raw
-  factory fed by Payload.
-- Batch-managed executions are excluded from the stall-detach wrapper on the
-  same construction path, including dynamically named MCP tools, so one
-  operation never becomes both a batch leaf and a `stall-*` job;
-  `job_output`/`job_kill` on a batch-managed leaf resolve to its original
-  execution (I4). Stall policy for unmigrated tools stays unchanged.
-
-No second registry, no wholesale coordinator rewrite, and no MCP
-connection/protocol refactor just to accommodate batching.
+  recursively reapplying batch ingress; executors resolve their target from
+  the pinned, policy-filtered tool set, never a raw factory fed by Payload.
+- Exclude batch-managed work from the stall-detach wrapper on that same path,
+  including dynamically named MCP tools, so one operation never becomes both
+  a batch leaf and a `stall-*` job.
 
 ### 9.2 Execution cutover
 
-Ordinary command/MCP/agent ingress becomes a one-task root. Explicit groups
-submit multiple tasks to the same scheduler. Adapters reuse existing
-executors; the core does not import Fantasy or parse Rush tool input.
+Every built-in, CLI, MCP and agent invocation enters as an ordinary batch.
+Direct-call ingress uses `jobbatch.OneItem`; explicit groups submit their
+BatchSpec to the same scheduler. Nested tasks are not wrapped again. Rush
+imports jobbatch, never lab; the core does not parse Rush tool input.
 
-Preserve existing response/cancellation semantics:
+- Synchronous/SDK calls may wait, and inline-window delivery may be elected:
+  an elected sync/inline answer consumes the root notice’s delivery. Caller
+  cancellation requests Runner.Stop, rather than deciding a terminal outcome.
+  A background escape retains the same execution, not a new batch.
+- Asynchronous calls may return started, then deliver selected notices.
+  Web Drain stays nonblocking; neither universal detachment nor universal
+  synchronous waiting is required.
+- Questions and descendant work keep an agent item live; a child model turn
+  returning is not delegation termination. Input resumes the held execution.
+- MCP leaves use `tools.Tool.Run` -> `Owner.RunTool(ctx, ...)`. Stop cancels
+  that call's execution context, not the shared MCP server session. Two calls
+  sharing an owner, with only one stopped, are an acceptance case.
 
-- SDK/synchronous calls may wait for the root outcome; caller cancellation
-  commits through the local ledger latch (or claim CAS when DB-backed), then
-  only the winner calls `Runner.Stop(leaf)` with a detached context (§9.2).
-  They are not automatically detached.
-  For an SDK background escape the shell identity stays the same execution;
-  it does not become a new batch.
-- CLI/web asynchronous calls and explicit batch_run may return started plus
-  later aggregate delivery. Web Drain must not block a turn for a long batch.
-  There is no blanket "every batch is never sync" rule and no blanket SDK ban.
-- Agent completion comes from settled delegation work, not merely Run()
-  returning after a child model turn. Questions and descendant work keep
-  the item nonterminal; existing inject/resume ownership rules remain.
-- MCP leaves use `tools.Tool.Run` -> `Owner.RunTool(ctx, ...)`. Stopping the
-  call cancels its execution context without killing the shared MCP server
-  session (existing MCP cancellation invariants); two concurrent calls on one
-  owner, one of them stopped, is a required acceptance case.
-- Existing job-control code may record cancellation before its executor
-  returns. The adapter must not treat that row alone as proof of physical
-  termination: hold Runner admission until the corresponding executor has
-  actually finished. Test that a stopped leaf cannot free capacity early.
+**Durable model — design only.** The owning host event loop is the ONLY
+terminal authority for live work. SQLite is a write-ahead projection of
+accepted engine transitions, not a competing arbiter.
 
-**Waiting levels (I1).** A consumer promising admission progress uses a
-closed profile (section 3.2) covering every group the adapter maps, ranked
-separate-root dependencies and premises (a)-(d). The consumer validates
-these preconditions before Submit, including later Add work. Child launches
-are accounted by group, not by the agent leaf's structural ancestors, and
-never create a second executor for an existing leaf.
+Checked-today historical facts, not constraints on the chosen model:
+`async_jobs` has primary key (owner_session_id, tool_call_id), claim_id-scoped
+terminal CAS, an announced gate, and delivery/wake/reacted outbox state
+(`internal/db/migrations/20261005000001_bg_shell_jobs.sql`,
+`internal/db/sql/async_jobs.sql`). `pullOneJobNotice` performs its delivery CAS
+and history insert in one transaction (`internal/session/notice_pull.go`).
+`RecoverDeadHost` uses an OS-lock probe: running announced rows become
+Interrupted with wake=0, unannounced rows are deleted, and unknown host
+status permits no recovery write (`internal/session/async_job_recovery.go`).
+Those observations do not retain the old terminal authority or row shape.
 
-Later integration tasks own kind→group→rank mapping, numeric caps and
-validator code; all are outside task #1310 and none is selected here. They
-also own per-owner `maxAsyncJobsPerSession` and legacy migration: legacy work
-must be Runner units or an external `ErrCapacity` pool with real
-`CapacityAvailable` signals, and legacy waiters add ranked dependency edges.
-An I8 worker `await_tasks` rank-1 waiter is admission-safe under this rule
-when it waits only on rank-0 work; its actual targets are specified in Await
-mapping (I8) below. Implementation and integration acceptance remain later
-work outside this task. I2 authority and singleton bridge below are
-independent of that admission mapping.
+Chosen representation, without SQL in this design:
 
-**Singleton roots (I2).** A singleton root is the one-task root that ingress
-builds for an ordinary bash, run_command, MCP or delegation call. Identity,
-outcome and delivery belong to the ledger row of the call's current claim
-(owner, tool_call_id, claim_id). Its CAS is the only terminal decision. A sync
-call without a DB claim uses the in-memory ledger latch instead
-(`transitionSync`, `work_ledger_transition.go: transitionSync`; callers in
-`work_ledger.go: MarkJobStopped / StopRunCommandJob`). Admission and termination confirmation
-belong to Engine leaf. For admitted execution, its unit stays held and Done
-closes only after the adapter sends `Settled{Authoritative}`, only when both
-§9.1 facts are known. A never-admitted Pending leaf is the exception: it
-settles its root and closes Done in the same transition without a report or
-held unit (§3.1, R-a). Engine-latched cause is intent only. The
-`Settled.Authoritative` flag is additive, default false; lab executors never
-set it.
+- `batch_nodes` has one row per node. A fresh UUID `root_id` identifies each
+  incarnation; node IDs derive from it. Rows carry owner, root_id, parent,
+  ordinal, kind, host_id, batch policy or task fields, state, cause, outcome
+  code/summary, response-envelope reference, and child_session_id. Root rows
+  additionally carry tool_call_id, input_hash, and announced.
+- Each node is selected for notice at most once (section 4.1), so its outbox
+  columns live on that same row: selected notice metadata, delivery, wake,
+  reacted, and delivery/history identity. Suppressed nodes have no notice debt;
+  selected child notices do, after sole-child elision.
+- `batch_control_requests` holds node-ID stop requests and the owning host's
+  answers. It is not another execution or terminal authority.
+- Keep `async_hosts`, host locks, and `session_notices`; drop `async_jobs`
+  without migration or preservation of its rows. sqlc naming details and
+  schema-change timestamps are implementation-time choices.
 
-Order:
+**Single writer and commit boundary.** An optional Runner commit hook is used
+only by Rush. Autonomous Engine/Runner/lab do not need durable storage.
+The hook contract must be frozen by the later Rush owner before that wiring,
+not by autonomous A0; this document invents no signature.
 
-1. Rush-originated stop (job_kill, session Stop, SDK caller cancellation,
-   routed remote stop, ledger timer) commits cause by CAS FIRST. Only the
-   winner calls `Runner.Stop(leaf)` with a detached context; the loser calls
-   nothing and answers the committed row (`job_kill.go: NewJobKillTool`). For a sync
-   call the local ledger latch replaces the CAS.
-2. Engine-originated cause arrives through StopLeaf (item timeout or explicit
-   ancestor stop); `Execution.Stop` commits before cancelling the legacy
-   context. If it loses to natural completion, it reports that committed
-   result, not the Engine's intent.
-3. `host_closing` writes nothing durable. It cancels under the ledger shutdown
-   latch and leaves the running row for recovery
-   (`work_ledger.go: close`, `work_ledger_transition.go: commitTransition`).
-4. No execution context is cancelled before its row is terminal (or its sync
-   ledger latch is terminal), except shutdown under rule 3. A natural CAS
-   already won before shutdown suppression remains the winner.
+The writer commits transitions in sequence order. Submit/Add reserve all
+accepted node rows before dispatch; StopRequested projects the latched cause;
+Settled projects state and reported outcome together with selected notices'
+pending delivery and wake in ONE transaction.
 
-Ordinary control addresses the leaf, never the root. A never-admitted leaf
-settles its root in the same transition (§3.1, R-a), with no synthetic Settled,
-Start, Stop or Dispose. The singleton row is the only durable record and
-consumer-delivery owner; the Engine root notice is a feed record, never a
-second delivery. Explicit `batch_run`, even with one item, is NOT singleton:
-`batch_stop` may latch the root's own cause, and a Cancelled aggregate over a
-Completed leaf is legitimate. One winner applies to execution surfaces:
-leaf, singleton root row/view/Wait, `job_kill` and `job_output`; it does not
-remove an explicit batch's independent group intent.
+Effects split in two. OUTWARD effects of transition s - StartLeaf dispatch and
+its timer, request replies, feed records, Done closing and notice delivery -
+occur only after commit s. CONTAINMENT effects - StopLeaf dispatch,
+Start-context cancellation and Dispose - never wait for a commit: they only
+reduce running work, latch no cause and accept no event. Section 3.3 rule 3 is
+unaffected because the winner is the loop's acceptance order, not dispatch
+order. Confirmed termination is unaffected because a Stop is not a termination
+report.
 
-| ledger row | owning-host Engine state | winner/action |
-|---|---|---|
-| running | Pending/Starting/Running, no cause | CAS first; only winner calls Stop(leaf), detached, then adapter cancels. Loser answers row, no Stop. Pending becomes Cancelled with zero starts/stops/disposals and root settles in that transition. |
-| running | Engine stop/timeout intent | Execution.Stop commits by CAS, then cancels; if lost to natural completion, report the committed result. |
-| terminal natural | Running/Cancelling, latched cause, report delayed | Ledger wins: Authoritative Completed/Failed; singleton root mirrors it, one delivery. |
-| terminal cause committed | Exit not confirmed | Outcome fixed; unit held and work remains live for await, 4b and guard until real exit. Discard exit content and finish as today with the committed outcome. |
-| Gone, or Lost with running under another claim (A11) | Nonterminal old leaf | After real exit settle its own outcome with code `claim_gone`, no consumer delivery; new claim untouched (`work_ledger_transition.go: commitTransition`). |
-| running, dead host | No Runner | RecoverDeadHost: announced rows become interrupted, unannounced rows are deleted; no rerun. A matching retry after recovery obtains a new claim/root (`async_job_recovery.go: RecoverDeadHost`); an active matching retry still attaches before Submit. |
-| terminal, delivery pending, crash | No Runner | Notice-pull transaction owns delivery, never Engine (`notice_pull.go: pullOneJobNotice`). |
-| running | Closing; root/leaf Interrupted locally after termination | No durable write: ledger close leaves running for recovery. Natural CAS won before suppression wins; local Interrupted is not a synthetic durable outcome. |
-| any | Cross-process requester P2 | Durable request keyed by claim; owning host H runs the first applicable row above and acks the winner. P2 never CASes or cancels. Reject stale claims; dead H goes through recovery (interrupted, not cancelled); unknown host status writes nothing. |
+A failed commit, or one with an unknown outcome, is fatal and never retried; the
+Runner becomes faulted. It applies no further event, so no HostClosing, Final
+or F follows. It publishes no outward effect of the failed transition or of any
+later one. It contains running work: no undispatched StartLeaf runs; Start
+contexts are cancelled; every accepted execution with no physical Stop
+dispatched yet, including one returned by an in-flight Start, gets one under
+section 3.1.2's slot rules, never retrying a failed control; Dispose follows
+section 4.5. Every public call, Wait included, then returns an error wrapping
+`ErrCommitFailed`. That sentinel belongs to the later hook contract, not A0's
+list. Done stays open for roots whose settlement was not published, so readers
+lag toward live (I8); Done channels already closed and cached Summaries stay
+valid. Events serves retained records, then the error; Final stays 0. Close
+waits, bounded by its ctx, for termination reports and disposal results of
+contained executions, then returns an error wrapping `ErrCommitFailed`, never
+nil or `ErrCloseTimeout`. A caller whose request was in the failed transition
+gets that error instead of a committed reply (the exception to section 2.3).
 
-**Singleton-policy RESERVED SHAPE (later implementation only).** Reserve
-`SubmitRequest.Singleton bool` → `Submit{..., singleton}` → submit record
-`singleton` → root NodeView policy `singleton`. This text adds no A0
-declaration or current scenario schema. Later raw-task ingress alone sets it;
-never batch_run, Add, nested nodes or scenario JSON. Validate the fixed 2.1
-wrapper with exactly one Task, otherwise ErrInvalidSpec. Policy is immutable,
-including frozen views. Add to its root returns ErrUnsupported without a
-record. Notify is all: one root notice, no leaf notice.
+Rush then exits the process. Exit releases the OS host lock and ends in-process
+work, which is what makes section 9.3's dead-host sweep sound. Rush never
+releases that lock, or opens another writer for the host, while the process
+lives. Rows that were not committed terminal get the sweep's `host_lost`;
+whichever rows of the failed commit actually landed are reconciled by the same
+sweep. The live host never synthesizes a settlement, and no outward effect is
+ever published for an uncommitted transition.
 
-Stop(root) records one stop_requested for the root but latches only the leaf;
-HostClosing likewise latches only the leaf. The root's own cause latch stays
-empty. It settles in the same leaf transition with identical leaf state,
-including TimedOut, and mirrors leaf cause in view/notice. Summary.state is
-the leaf state; the count reducer is not used. Later lab normalization sets
-Singleton=true and E1 is updated then, not in autonomous A0/lab now.
-Implementation and mirror mechanics remain deferred; SR-a's additive
-Settled.Authoritative and ledger/CAS authority remain unchanged.
-`claim_gone` is an ordinary adapter code, not a reserved runtime code.
+Stop follows Runner.Stop cause acceptance, then StopLeaf cancellation, then
+confirmed report/Settled. Section 3.3 rule 3 applies: the first accepted event
+wins, not a DB CAS or callback arrival. Stop(root) latches the root's own
+cause; an ordinary one-item batch keeps its reducer and supports Add while
+nonterminal. Accepted execution holds admission until termination is confirmed.
+R-a covers never-admitted settlement without an execution report or unit.
 
-`job_kill` resolves owner/job_id to the current claim, then its derived leaf
-ID. Its stall-controller check runs first (`job_kill.go: NewJobKillTool`), but cannot
-collide because §9.1 excludes stall-detach for batch-managed executions.
-For an explicit batch, `job_kill` is leaf-only; the root keeps its reducer.
+**Reservation and ack are different gates (I7).** Submit/Add reserve ordinary
+node rows; a started tool_result and the root's announced flag commit in ONE
+transaction. That ack gates completion delivery, so completion never appears
+before ack even when execution finishes first. The outer root ack covers its
+internal nodes; they have no separate launch tool_result. Durable pull/history
+and the elected inline-close transaction own delivery. An elected answer
+consumes root delivery in its transaction and cannot produce a later duplicate;
+a generic stop-intent answer is not completion delivery.
 
-**Implementation discrepancy (noticed, not changed).** Today's run_command
-stop cancels even after losing CAS (`work_ledger.go: StopRunCommandJob`), unlike the
-winner-only integration contract; bash `job_kill.go: NewJobKillTool` answers a
-terminal loser without killing.
+Acceptance uses ordinary node rows: delay root ack while two leaves finish,
+then observe only selected notices after ack; elect an inline result for a
+one-item root and observe no later completion turn; fail root ack while work
+is running and retain a controllable reserved identity until cleanup/recovery,
+without repeating side effects; fail a commit while a running leaf needs Stop:
+bounded Close returns an error wrapping `ErrCommitFailed`, the process exits,
+the sweep writes `host_lost`, and no Done or notice is published for the
+uncommitted settlement.
 
-Acceptance: delay the Runner report after natural CAS and real termination,
-then ordinary stop/timeout/caller cancellation; execution surfaces retain one
-winner and one delivery. Delay a cause write: legacy context stays uncancelled
-until commit, and both §9.1 observations gate settlement. Explicit batch root
-stop keeps legitimate aggregate cancellation. These are future integration
-checks, not executed verification.
+**Results (I6).** `Result.Details` carries or references the full response
+envelope, including text/media and metadata. Denial or failure never becomes
+success; this is not a promise of identical direct-call formatting.
 
-**Results keep their shape (I6).** The adapter keeps the full immutable
-response envelope — type, media bytes and MIME, metadata, error shape —
-referenced from `Result.Details`, so a synchronous MCP image or audio result
-stays identical to the direct call and a denied or failed call never turns
-into success. Root completion delivery defines how non-text results are
-carried; `FormatAsyncCompletion` is not the single format of every MCP
-result.
+**Timeout intent.** `wake_only` does not terminate work and never maps to
+DeadlineExpired. `terminate_and_wake` maps to the execution deadline. There
+is one termination timer, not independent adapter and Runner timers.
 
-**Reservation and ack are different gates (I7).** For both singleton and
-explicit batch, durable reservation precedes dispatch and transactional ack
-precedes public completion delivery. A singleton reservation is its ONE
-ledger row, not separate durable root and leaf rows; an explicit batch has
-root/leaf reservations. Finish-before-ack is allowed; an uncommitted result
-is never published. The outer root's ack covers the internal execution
-records of an explicit `batch_run`, whose leaves have no tool results of
-their own; their ledger rows never produce separate user-facing completions.
-Singleton,
-aggregate, and inline delivery each have exactly one owner. Acceptance: two
-leaves finish before a delayed root ack, and after its commit exactly one
-aggregate arrives with no unannounced records left behind; a singleton
-command inside the inline window returns its result in the current call and
-causes no later completion turn; a failed root ack leaves running work with a
-controllable identity, and recovery repeats no side effects.
+**Waiting levels (I1).** A consumer promising admission progress uses section
+3.2's closed profile covering every mapped group, ranked separate-root
+dependencies and premises (a)-(d). Validate before Submit and for later Add.
+Child launches are accounted by group, not structural agent ancestors; never
+create a second executor for an existing leaf. Later Rush work owns numeric
+caps, kind→group→rank mapping and its validator. A rank-1 worker waiting on
+rank-0 separate-root work remains subject to these conditions.
 
-**Timeout intent.** Engine `TaskSpec.Timeout` means termination confirmed as
-TimedOut. Rush's `wake_only` job timeout does not end work and must not map
-to `DeadlineExpired`; `terminate_and_wake` does. One execution has one
-termination deadline, never two independent timers.
+**Await mapping (I8).** Capture EVERY nonterminal root in the session scope at
+entry, once, with its Batch.Done channel. Live means its root row is
+nonterminal, including Pending and stopped work awaiting confirmed termination.
+Readers may lag toward live, never toward falsely finished. A held termination
+report leaves the root live for await, scope, rule 4b and the guard.
 
-**Await mapping (I8).** The CAPTURE SET is nonterminal roots taken at entry,
-each once with its Batch.Done channel: a singleton through its one row, a
-delegation through its root; explicit-batch execution rows are never targets.
-AWAIT UNITS are derived from those captured roots: the root under NotifyAll,
-and the root plus its direct children under NotifyEach. On Events signals,
-Snapshot supplies level state, including direct children added to captured
-roots after entry; newly added roots are not captured. ANY observes the first
-await unit of any captured root becoming terminal; ALL requires every captured
-root's Done to be closed, not just selected child settlement. Top-level wake
-and delivery still depend on durable debt and arbiter gates, not feed signals.
-Live means the root has not settled (admitted execution requires exit
-confirmation; never-admitted settlement needs no report; confirmed dead-host
-recovery decides without a Runner), NOT that its ledger row is running.
-Readers may lag toward live, never toward falsely finished;
-physically-live work remains visible to await, scope, 4b and the guard after
-stop commit and until confirmed exit.
+Await units are derived from captured roots: root under NotifyAll, root plus
+its direct children under NotifyEach. Events hints trigger Snapshot level
+reads, including later Add children of captured roots; newly submitted roots
+are not captured. ANY observes the first terminal await unit; ALL requires
+every captured root Done, not merely a child settlement. Await-unit state does
+not itself create durable debt: ONLY selected node notices after section 4.1
+elision do. Top-level relaunch still requires durable facts and arbiter gates.
 
 | Aspect | Top-level (ParentSessionID empty) | Worker (ParentSessionID set) |
 |---|---|---|
-| TODAY | Any returns StopTurn (`tools/await_tasks.go: NewAwaitTasksTool`); arbiter relaunch requires debt (rule 1, `turn_arbiter.go: decide, rule 1`). All arms SleepAll (`coordinator_await_tasks.go: AwaitTasks`) and uses rule 4b (`turn_arbiter.go: decide, rule 4b`). | LiveWorkForRoots poll, 1s cadence: any `n < initial`, all `n == 0` (`coordinator_await_tasks.go: awaitTasksForWorker`), 40m cap (same worker function). No StopTurn (`tools/await_tasks.go: NewAwaitTasksTool`); never stall-detached (`turn_stall_tool_detach.go: wrapToolsWithStallDetach`). |
-| WAITS ON | Nothing in process: For wake-producing asynchronous completion, durable debt is committed in the SAME transaction as terminal CAS/root settlement; relaunch follows durable facts, not a callback or feed record. Existing job_kill tool-answer and elected inline/synchronous delivery produce no duplicate completion debt (§9.2 Reservation and ack; SR-b/AW-b). | Batch.Done for each root target captured at entry, plus context and min(max_wait, cap), using cap when max_wait is omitted; unmigrated polling tracks claim identity, not counts. |
-| ANY | First durable debt for a terminal await unit of any captured root (root under NotifyAll; root or direct child under NotifyEach, including children added after entry), or non-completion `child_question`, `timeout_wake_only`, `wake_fired`; other arbiter gates still apply. | First await unit of any captured root becomes terminal. On Events signals, Snapshot supplies level state, including direct children added to captured NotifyEach roots after entry; delivery/reaction is not required and may follow tool return. |
-| ALL | All captured roots must have Done closed; selected child settlement alone does not finish all. Rule 4b counts root units as running work and root/selected child durable debts as completion-class; question, wake_only and max_wait break sleep, and relaunch still requires durable facts and arbiter gates. | Every captured root's Batch.Done is closed; selected child settlement alone does not finish all. |
-| NO DUPLICATE / NO LOST WAKE | Exactly-once pull per row; explicit-batch execution leaf rows are non-debt, `wake=0`, delivery done. Selected child notices have their own debt, not execution-row debt. Debt is durable and re-evaluated on every hint. | One return per call; level-triggered Done/state prevents a lost signal. Next call captures only nonterminal roots. Timeout reports remaining work, never stops it. |
-| ADMISSION | No execution admission unit held by the await call. | Holds the agent's rank-1 unit; targets rank-0 work in separate roots under §3.2. |
+| TODAY | Any returns StopTurn; rule 1 requires debt. All arms SleepAll and uses rule 4b. | Current worker captures (owner,tool_call_id) pairs at entry, not claim_id (9d390c38; `coordinator_await_tasks.go: awaitTasksWorker`). Any completes when one captured pair leaves a COMPLETE read; all when none remain. Incomplete reads remove nothing. No StopTurn or stall-detach. |
+| WAITS ON | Durable selected-node notice debt, not callbacks or feed records; elected sync/inline root delivery consumes that notice's delivery, rather than creating duplicate debt. | Captured roots' Done plus level state, context and min(max_wait, cap), cap when omitted. |
+| ANY | Durable selected notice for a terminal await unit, or non-completion child_question, timeout_wake_only or wake_fired, subject to arbiter gates. | First terminal await unit; Snapshot includes later Add children of captured NotifyEach roots. Delivery/reaction is not required. |
+| ALL | All captured roots must settle; session live roots replace RunningOwnJobs/RunningDelegation for rule 4b. Selected child settlement alone cannot finish all; question, wake_only and max_wait can break sleep. | Every captured root Done closes; child settlement alone cannot finish all. |
+| NO DUPLICATE / NO LOST WAKE | Transactional pull per selected node notice; debt is durable and re-evaluated on every hint. Suppressed nodes create no completion turn. | One return per call; level-triggered Done/state prevents lost signals. A later call captures only nonterminal roots. Timeout reports remaining work without stopping it. |
+| ADMISSION | Await holds no execution admission unit. | Holds the agent's rank-1 unit, with rank-0 separate-root targets under section 3.2. |
 
-**P3 implementation notes.** Today's `n < initial` can miss a finish when a
-new job replaces its count (`coordinator_await_tasks.go: awaitTasksForWorker`).
-CompletionOnly currently accepts only bg_shell_done/supervision notice kinds
-(job debt is unconditionally completion-class), so later implementation adds
-root/selected child notice kinds and makes execution leaf rows non-debt
-(`turn_arbiter.go: readTurnFacts`, `notice_row_ids.go: PendingInclusiveDebtRows`).
+CompletionOnly treats selected node notices of any node kind as
+completion-class, including batches; child_question is not completion-class.
+Pending-inclusive debt participates in rule 1/4b. Elected synchronous root
+completion consumes delivery; stop intent alone is neither completion nor an
+exception to selected-notice debt (AW-b).
 
-Later tasks own adapter code, schemas (root row, liveness, control request,
-singleton policy), numeric values (today's 40m cap, 1s polling and max_wait
-bounds 60–21600 in `coordinator_await_tasks.go: AwaitTasks / awaitTasksForWorker`), validator and
-kind→group→rank mapping, and cross-process transport. These observed values
-are not new defaults selected here. No lab Authoritative mode is introduced.
-This is static text closure only; implementation and acceptance are not
-claimed, and historical reviews remain unchanged.
-
-Shared admission must account for Rush work outside a batch during migration.
-A ledger refusal needs a capacity-release signal from that work as well; the
-source of CapacityAvailable for legacy work is chosen before the migration,
-and nobody waits only for settlements inside the same Runner. Root
-orchestration records never occupy execution slots. Define record/accounting
-rules before the DB migration.
+Today's observed 40m worker cap, 1s polling and max_wait bounds 60–21600
+(`coordinator_await_tasks.go`) are not defaults selected for batch integration.
+These are static design contracts, not implementation or executed acceptance.
 
 ### 9.3 Outcomes, persistence, and recovery
 
 `task_outcome(success|failure)` belongs to the agent adapter, not the engine.
-New outcome-aware agent items can require it; undeclared outcome is Failed
-only where that contract was explicitly selected. Declarations are stored per
-incarnation/attempt and scoped to a new execution, never allowed to overwrite
-an already terminal leaf.
+Whether it is required remains undecided; undeclared outcome is Failed only
+where that contract is explicitly selected. Declarations are scoped to the
+incarnation/attempt and cannot overwrite an already terminal node.
 
-**Identity per incarnation (I5).** Keep separate mappings for the logical
-call (owner, tool_call_id), its incarnation (the durable claim, a fresh UUID
-per claim), the root/node, and the admission token. Derive a singleton root
-ID from the claim, never from tool_call_id alone: a matching active retry
-finds the existing root before Submit; a mismatched retry is rejected;
-reusing a tool ID after its history is archived starts a new incarnation and
-a new root. Late acks, stops and reports of an old claim never reach the new
-one, and an old completion notice keeps showing its own tool ID. Synchronous
-paths without a DB claim use a local incarnation identity. There is one
-ledger row per singleton claim: root/leaf identities map to that same row,
-not independent outcome or delivery records.
+**Identity per incarnation (I5).** `root_id` is a fresh UUID per execution
+incarnation; node IDs derive from it, not tool_call_id alone. A retry with the
+same (owner, tool_call_id, input_hash) attaches to the LIVE root before Submit;
+a mismatched input is rejected. A new run gets a fresh incarnation. Stale
+reports, acks and controls for an old root/node never reach a new incarnation.
+Admission tokens still identify attempts within that incarnation.
 
-**Held questions.** An answer to a held delegation question goes to the held
-execution as Inject/control — the existing answer-hold path, with no new
-claim and the original origin kept — never as a new agent batch.
+**Held questions.** An answer goes through Inject/control to the existing
+held execution at its nesting depth, not a new batch or incarnation.
 
-**Shutdown vs user stop.** Runner.Close must not ride the legacy user-stop
-path, and `context.Canceled` alone is not a cause code. Closing the host writes
-NOTHING durable: under the ledger shutdown latch it cancels execution while
-leaving the row running for recovery (§9.2). Root/leaf Interrupted is local
-and only follows confirmed termination, not a synthetic post-commit event.
-Recovery decides the durable outcome; a natural CAS that won before
-suppression remains the winner.
+**Shutdown vs user stop.** `context.Canceled` alone is not a cause. Closing
+uses HostClosing and drains as in sections 3.4/4.5, committing confirmed
+Interrupted results with wake=0 rather than manufacturing termination at a
+deadline. Accepted Pending interruption still needs no executor report under
+section 3.1. An admitted execution not confirmed by the Close deadline stays
+nonterminal in DB; keep the projection available for the later drain, and
+close DB only after Runner.Close's drain/cleanup mechanics permit it. A
+bounded Close timeout does not discard the still-draining writer. Existing
+latched causes and terminal outcomes remain unchanged.
 
-Persist batch structure and stable execution mappings using existing SQLite/
-sqlc conventions. Choose tables/migration timestamps at implementation time;
-do not reserve the original plan's historical filename. Preserve the ledger's
-shutdown-vs-user-stop distinction, claim CAS, ack gate, and delivery state.
+**Crash recovery.** Only an OS-lock confirmed-dead verdict permits the
+recovery sweep; unknown host status writes nothing. Sweep every nonterminal
+node of the dead host, Pending included, to Interrupted with code `host_lost`,
+without rerunning side effects. For an announced root, create one root notice,
+not a notice cascade for recovered descendants; preserve existing
+terminal state and already-selected delivery records. Delete unannounced
+roots and their subtree rows. Recovery is the dead-host path, not a second
+arbiter racing the owning event loop. A commit-faulted host (section 9.2) is
+recovered here after its process exits. Diagnostic replay is not execution
+recovery.
 
-After a host crash, expose interrupted work and unstarted descendants without
-silently rerunning side effects. Replay of a diagnostic trace is not execution
-recovery. Exactly-once durable notification requires its own transactional
-contract; a callback from Runner alone does not provide it. Root aggregates
-use the existing durable delivery ownership (the notice-pull transaction),
-never the bounded Events feed, and suppressed leaves never trigger billable
-turns.
+Durable pull/history and inline-close transactions own consumer delivery,
+not the bounded Events feed. Selected child notices are durable on their
+node rows; suppressed notices never create completion turns. A Runner
+callback alone does not provide transactional delivery.
 
 ### 9.4 Model tools, operator CLI, and web
 
-Model tools: batch_run, batch_add, batch_status, batch_stop. Commands:
-`rush batch run|show|add|stop`. `batchlab` already proves model-less execution;
-Rush-specific commands add authenticated ownership and cross-process control.
-Web presents the same hierarchy and operations, not a separate scheduler.
+Model tools: batch_run, batch_add, batch_status, batch_output, batch_stop.
+Commands: `rush batch run|show|add|stop`. Rush adds authenticated ownership
+and cross-process control; web presents the same hierarchy and operations,
+not another scheduler.
 
-Runner methods are process-local: a second Runner inside an operator CLI
-controls nothing. Leaf control needs durable owner/root/item/claim routing
-with request and ack on the host that owns the handle, idle detached roots
-included. The requester never CASes the execution row or cancels its
-context: only the owning host runs §9.2's ordering and returns an ack of the
-committed winner. Requests are claim-keyed; stale requests are rejected. A
-confirmed dead host uses RecoverDeadHost (interrupted, not user-cancelled);
-unknown host status permits no write. The session-wide cancel request behind
-`rush sessions cancel` must
-not be reused to stop one leaf, because it stops sibling work too.
+Notify is exposed ONLY on batch specs: batch_run and batch nodes supplied
+in batch_run/batch_add items. Ordinary direct calls use NotifyAll through
+OneItem. A model wanting per-item notification MUST use batch_run, which
+supports one item as well as many; Notify remains an explicit launch choice.
 
-Control routing, job_kill/job_output, and inject must resolve stable owner/
-item/execution identities. Do not bypass hooks/permissions or allow a child
-to block awaiting its own parent batch. Generic tool items must not recursively
-invoke scheduler/control tools; use explicit task kinds for supported work.
+Rejected alternatives:
 
-Integration acceptance must include SR-a..SR-c and AW-a..AW-b in §6.7
-(static harness contracts, not executed verification), plus:
+- A reserved notify argument on every tool adds schema tokens every turn,
+  causes prompt-cache churn and MCP-name collisions, and would need stripping
+  before MCP, hooks, permissions, agentguard and input_hash calculation.
+- An envelope around tool arguments breaks native and MCP input schemas.
+- A session default adds hidden state and races instead of a launch-chosen
+  policy.
 
-- single-task CLI, MCP, and agent launches with unchanged results and exactly
-  one consumer completion; sync caller cancellation and detached work;
-- parallel/sequential/nested groups, failure policy, Add, subtree Stop,
-  cross-process operator control (a second process stops one nested leaf
-  without touching its siblings; stale control never reaches a new claim),
-  and group-aware cap accounting with waiting levels;
-- immediate finish before ack, duplicate tool-call retries, late old-claim
-  reports, crash/shutdown recovery, one terminal winner across Runner and
-  ledger, and no duplicate notices;
-- held child questions, input injection at nested depth, declared failure,
-  and unchanged legacy-agent success semantics;
-- MCP text, image, and audio results unchanged through a singleton;
-  an interrupted MCP call without connection destruction; and actual WebUI
-  controls verified in the browser.
+Started and inline results carry opaque batch_id and item_id. batch_add takes
+parent=batch_id while that batch is nonterminal, then returns ErrTerminal.
+batch_stop addresses a node: root stop latches the root's cause; item stop
+addresses only that item/subtree, not its siblings. batch_status/batch_output
+accept item_id; await_tasks exposes batch IDs for its captured root set.
+`job_kill`/`job_output` may be aliases resolving item IDs, or may be removed;
+that is an implementation choice, not a separate control authority.
 
-No integration phase is marked complete merely because batchlab passed.
+**Cross-process control.** Runner methods are process-local; constructing a
+second Runner controls nothing on the owning host. A requester writes a
+node stop request and awaits its ack in batch_control_requests. ONLY the
+owning host accepts the intent through Runner and cancels the execution.
+Reject stale node/root incarnations; unknown host status permits no outcome
+write. A confirmed-dead host goes through section 9.3 recovery, not requester
+cancellation. A session-wide cancellation request cannot substitute for a
+nested leaf stop because it would stop siblings too.
+
+Control and Inject resolve stable owner/node/execution identities without
+bypassing hooks or permissions. A child must not await its own parent batch.
+Generic task items must not recursively invoke scheduler/control tools;
+explicit task kinds describe supported execution.
+
+Integration acceptance includes AW-a/AW-b (6.7) and R-a (6.3), all static
+harness contracts until actually verified, plus:
+
+- Ordinary one-item CLI, MCP and agent launches, sync/inline or detached,
+  each with one consumer completion; sync caller cancellation and held
+  termination cannot release admission early.
+- Parallel/sequential/nested groups, failure policy, Add, subtree Stop,
+  ranked waiting levels and group-aware caps; a second process stops one
+  nested leaf while siblings stay unchanged, and stale incarnation control
+  never reaches a new run.
+- Finish before delayed ack, elected inline-close, failed ack, matching live
+  retries and input mismatch rejection; ordered commit before effects/reply/
+  Done, commit failure, shutdown drain and dead-host recovery without rerun
+  or duplicate notices.
+- Held questions and Inject at nested depth, with descendants keeping the
+  agent live and explicit failure remaining failure.
+- Details envelopes carrying MCP text, image and audio; stopping one MCP
+  call does not destroy the shared connection or another call.
+- Actual WebUI hierarchy and controls verified in the browser; Web Drain
+  remains nonblocking.
+
+No integration phase is complete merely because batchlab passed. The later
+Rush owner freezes the optional Runner commit-hook contract before wiring;
+autonomous A0 adds no hook declaration or implementation requirement.
 
 ## Appendix A. Review findings and their resolution
 
@@ -2409,8 +2451,9 @@ owned as in §7.2 and verified later by the §7.3 integration owner. “Deferred
 names the later §9 work-package owner, not a fabricated task number. I8 is
 contract-closed; implementation and integration acceptance remain deferred.
 The 43 rows comprise 37 closed contract rows (some with explicit integration
-implementation deferrals), six deferred integration rows with selected contracts,
-and zero partial/unresolved rows. Historical reports remain unchanged.
+implementation deferrals), five deferred integration rows with selected contracts,
+and one withdrawn row (I2). There are zero partial/unresolved rows.
+Historical reports remain unchanged.
 
 | Finding ID | Finding / residual | Normative section(s) | Scenario(s) / acceptance gate / overlap | Status and later owner |
 |---|---|---|---|---|
@@ -2436,7 +2479,7 @@ and zero partial/unresolved rows. Historical reports remain unchanged.
 | R2-API-03 | Stop timeout/retry ordering | 3.1.2 Stop and disposal protocol; 3.3 Linearization rules | E6, C-b | Closed |
 | R2-API-04 | Selective subtree Stop retry | 3.1.2 Stop and disposal protocol | E6, C-c | Closed |
 | R2-API-05 | Closed cleanup ownership/results | 3.4 Host shutdown, Close and draining; 4.5 Retention and Release; 5.5 Journal and replay | R4, C-d | Closed |
-| R2-API-06 | Authoritative producer boundary/drain | 2 Contract; 3.4 Host shutdown, Close and draining; 4.1 Records, notices and the public feed; 5.5 Journal and replay | R2/R3, L4/L6, F-a..F-f; overlap S-R2-3/P3-A | Closed |
+| R2-API-06 | Producer-owned boundary/drain | 2 Contract; 3.4 Host shutdown, Close and draining; 4.1 Records, notices and the public feed; 5.5 Journal and replay | R2/R3, L4/L6, F-a..F-f; overlap S-R2-3/P3-A | Closed |
 | R2-API-07 | Start/Result code privacy | 2 Machine codes; 3.1.1 Errors by phase; 4.1 Records, notices and the public feed | E9, V-c | Closed |
 | R2-API-08 | Direct NewEngine ownership | 2.2 Ownership of mutable values | E9; one NewEngine copy, no double Runner copy | Closed |
 | P1 | Data-only A0, no Go prototypes | 2 Contract to freeze before parallel implementation; 7.1 A0; 7.2 A1 | Structural declaration/ownership gate §7.3; scenario not applicable | Closed |
@@ -2447,20 +2490,20 @@ and zero partial/unresolved rows. Historical reports remain unchanged.
 | P6 | CLI cancellation and bounded cleanup | 5.6 Timeouts and cleanup; 3.4 Host shutdown, Close and draining | L5, R2, F-e/F-f | Closed |
 | P7 | Per-child process isolation | 5.4 Process executor | L2/L5, §7.3 platform gate | Closed |
 | P8 | Package helper namespace ownership | 7.1 A0; 7.2 A1 | §7.3 ownership gate; scenario not applicable | Closed |
-| N1 | Absent scenario singleton policy | 2.1 IDs, ownership, and validation; 5.2 Scenario format | E1, V-e; selected fixed raw-root wrapper, not a new policy knob | Closed; later singleton-policy implementation owned by §9.2 execution-cutover owner |
+| N1 | Fixed raw-root constructor | 2 Contract; 2.1 IDs, ownership, and validation; 5.2 Scenario format; 7.2 A1 | E1, V-e, R3-add; OneItem creates an ordinary batch | Closed in contract text; Runtime owns OneItem implementation and the §7.3 integration owner owns verification. |
 | N2 | Helper imports versus spawn guard | 5.4 Process executor | L1/L2/L5, §7.3 spawn/platform gate; helper may import platform, no exemption | Closed |
-| I1 | Waiting-agent admission deadlock | 3.2 Admission and fairness; 9.2 Waiting levels | E4, W-a..W-e; I1-R2 is this residual, overlap S-R2-2 | Closed autonomous contract; mapping/caps/validator/legacy migration and integration acceptance deferred to §9.2 execution-cutover owner (outside task #1310) |
-| I2 | CAS authority and singleton mirror | 9.2 Singleton roots; Singleton-policy RESERVED SHAPE | SR-a..SR-c; explicit-batch group intent preserved | Deferred implementation/acceptance to §9.2 execution-cutover owner; bridge contract selected |
-| I3 | Committed result plus actual termination | 9.1 Addressed pre-refactoring; 9.2 Execution cutover | SR-a/SR-c, AW-b; §9.4 integration acceptance | Deferred implementation/acceptance to §9.1 adapter-seam owner |
-| I4 | Policy construction and stall exclusion | 9.1 Addressed pre-refactoring | §9.4 policy/MCP/sibling-call integration acceptance; autonomous scenario not applicable | Deferred implementation/acceptance to §9.1 policy-wiring owner |
-| I5 | Claim/incarnation identity | 9.3 Identity per incarnation | SR-c; §9.4 retry/stale-claim/recovery acceptance | Deferred implementation/acceptance to §9.3 persistence/recovery owner |
-| I6 | Full MCP media envelope | 9.2 Results keep their shape; 9.4 Model tools, operator CLI, and web | §9.4 text/image/audio acceptance; autonomous scenario not applicable | Deferred implementation/acceptance to §9.2 result-adapter owner |
-| I7 | Reservation versus ack and delivery | 9.2 Reservation and ack are different gates; 9.3 Outcomes, persistence, and recovery | AW-a delivery hold; §9.2 delayed-ack/inline acceptance and §9.4 integration gate | Deferred implementation/acceptance to §9.2 reservation/delivery owner |
-| I8 | Top-level/worker await targets | 9.2 Await mapping | AW-a/AW-b cover NotifyAll only; §9.4 integration acceptance | Closed in contract text: entry-captured roots, derived NotifyEach await units including later-added direct children; implementation/acceptance deferred to §9.2 execution-cutover owner |
+| I1 | Waiting-agent admission deadlock | 3.2 Admission and fairness; 9.2 Waiting levels | E4, W-a..W-e; I1-R2 is this residual, overlap S-R2-2 | Closed autonomous contract; mapping/caps/validator and integration acceptance are deferred to the §9.2 execution-cutover owner. |
+| I2 | Historical singleton root / second terminal authority withdrawn | 9.2 Durable model; 3.3 Linearization rules | Ordinary-batch replacement: E1, R-a, AW-b | Withdrawn 2026-10-11, operator decision 1. |
+| I3 | Real-source termination confirmation | 9.1 Pre-refactoring still worth doing; 9.2 Execution cutover | AW-b; §9.4 held-termination integration acceptance | Deferred to the §9.1 adapter-seam owner: real completion sources confirm termination without a second terminal authority. |
+| I4 | Policy construction and stall exclusion | 9.1 Pre-refactoring still worth doing | §9.4 policy/MCP/sibling-call integration acceptance; autonomous scenario not applicable | Deferred to the §9.1 policy-wiring owner: ordinary batches use the pinned policy toolset and are excluded from stall-detach. |
+| I5 | UUID root_id incarnation identity | 9.3 Identity per incarnation | §9.4 live retry/input mismatch/stale-incarnation/recovery acceptance | Deferred to the §9.3 persistence/recovery owner: fresh UUID roots and derived node IDs isolate new runs from stale controls and reports. |
+| I6 | Details response envelope, failure is not success | 9.2 Results; 9.4 Model tools, operator CLI, and web | §9.4 text/image/audio acceptance; autonomous scenario not applicable | Deferred to the §9.2 result-adapter owner: Details carries the envelope and failure never becomes success, without a sameness guarantee. |
+| I7 | Write-ahead reservation, ack and delivery | 9.2 Single writer and commit boundary; Reservation and ack are different gates; 9.3 Outcomes, persistence, and recovery | AW-a delivery hold; §9.2 delayed-ack/inline/failed-ack acceptance and §9.4 integration gate | Deferred to the §9.2 reservation/delivery owner: node-row projection commits before effects/reply/Done and transactional ack gates selected-notice delivery. |
+| I8 | Captured roots and selected-notice debt | 9.2 Await mapping; 4.1 Records, notices and the public feed | AW-a/AW-b cover NotifyAll; R3-one/R3-chain/R3-add cover elision; §9.4 integration acceptance | Closed in contract text; the §9.2 execution-cutover owner implements entry-captured roots, later Add await units and selected debt after elision. |
 
 ### A.1 Separately tracked round-two residuals and implementation notes
 
-These seven rows are subclaims/backlog, not seven extra unique finding IDs.
+These seven rows are subclaims/implementation notes, not seven extra unique finding IDs.
 Report section numbers below refer to the named round-two report, not this plan.
 
 | Report heading / residual | Plan section(s) | Scenario(s) / overlap | Status and owner |
@@ -2471,7 +2514,23 @@ Report section numbers below refer to the named round-two report, not this plan.
 | Parallel/testing §3.2 P3 residual C — unique ref lookup | 5.2 Scenario format; 5.5 Journal and replay | V-a/V-b/V-d; R2-API-01, A3 | Closed in contract text; ordinary Runner refs remain optional/nonunique; §7.3 acceptance unexecuted. |
 | Parallel/testing §3.3 P5 residual — leaf codes and independent counters | 5.2 Scenario format; 5.4 Process executor | L1/L3, V-b/V-c/V-e, E4/E5; parent P5 | Closed in contract text; fixture starts/accepted/attempts are distinct; §7.3 acceptance unexecuted. |
 | API §4 P3 residual — producer final boundary and refs (also R2-API-06 §3) | 4.1 Records, notices and the public feed; 5.2 Scenario format; 5.5 Journal and replay | F-a..F-f, V-a/V-b/V-d, L4/L6; P3-A/P3-C, R2-API-01/06 | Closed in contract text; neither public Events nor diagnostic footer is durable storage; §7.3 acceptance unexecuted. |
-| Integration P3 worker count bug (plan §9.2 P3 implementation notes; related report I8) | 8 Deferred decisions; 9.2 Await mapping and P3 implementation notes | AW-a/AW-b are root/NotifyAll contracts, not count-replacement bug execution proof | Noticed, implementation/acceptance deferred to §9.2 execution-cutover owner; claim-identity polling/Done replacement not implemented here. |
+| Integration P3 worker captured-set repair (related report I8) | 9.2 Await mapping | Current entry keys (owner,tool_call_id), not claim_id; AW-a/AW-b cover the replacement root contracts | Closed by 9d390c38 (row-key set); superseded by Batch.Done; the §9.2 execution-cutover owner implements the batch await mapping. |
+
+### Revision 4 changes
+
+| Item | Sections | Scenarios touched |
+|---|---|---|
+| Sole-child notice elision, settlement ordering and selection invariants | 3.1, 4.1, 6.1-6.3, 7.2, 8 | E8, R3-one/R3-chain/R3-add, R-a; R-b retained |
+| Withdraw special root/second authority and legacy-contract preservation | 0, 2.1, 6.7, 8, 9.2, Appendix A | E1, R-a, AW-a/AW-b; obsolete integration rows removed |
+| OneItem exported pure constructor; Runtime owns body, A0 retains small pure methods | 2, 2.1, 5.2/5.5, 6.1/6.8, 7.1/7.2, 8, 9.2 | E1, R3-add, V-b/V-e |
+| Host-loop authority, node/control rows, ordered write-ahead projection and Rush-only hook; stop cause before cancellation | 3.4, 6.7, 8, 9.2/9.4 | R-a, AW-a/AW-b; later commit-failure/control acceptance |
+| Reservation/ack, elected root delivery and Details envelope without sameness guarantee | 6.7, 9.2/9.4, Appendix A | AW-a/AW-b; delayed/failed ack, inline and media acceptance |
+| UUID root incarnation, live retry, held input, confirmed shutdown drain and dead-host sweep | 9.3/9.4, Appendix A | AW-b, R-a; later retry/recovery/nested-input acceptance |
+| Batch-only Notify, opaque batch_id/item_id, node addressing, alias/removal choice and three rejected alternatives | 9.4 | R3-one/R3-add; later model/operator/browser acceptance |
+| Captured roots, derived later Add await units, selected debt after elision and corrected current worker row-key note | 6.7, 8, 9.2, A.1/A.2 | AW-a/AW-b, R3-one/R3-chain/R3-add |
+| Reduced pre-refactoring and deferred ownership; no caps/migration/count-bug backlog | 3.4, 7.2, 8, 9.1/9.2, Appendix A | AW-a/AW-b; policy/termination acceptance |
+| Revision header, 43-ID matrix, 37 closed / 5 deferred / 1 withdrawn, whole-plan reference and cleanup sweep | Header, 2.1, 6, 8, Appendix A | Existing IDs retained; bounded Close/drain rules apply |
+| Post-review P1 fixes: outward vs containment effects, fatal commit fault (`ErrCommitFailed`, no HostClosing/Final, process exit then dead-host sweep); nested Add example in sole-child elision; R3-add helper variant keeps NotifyAll and expects [R] | 3.4, 4.1, 6.2, 9.2/9.3 | R3-add, R3-chain; later commit-failure acceptance in 9.2 |
 
 ### A.2 Noticed coverage and deferred boundaries
 
@@ -2485,15 +2544,44 @@ Report section numbers below refer to the named round-two report, not this plan.
   direct children later added under NotifyEach. ANY observes a terminal await
   unit; ALL requires every captured root Done closed. Implementation and
   integration acceptance remain deferred; AW-a/AW-b cover NotifyAll only.
-- The SAME-transaction debt promise in §9.2 applies to wake-producing async
-  completion, with the already-selected job_kill and elected inline/synchronous
-  no-duplicate-delivery exceptions. SR-b/AW-b keep zero job_kill completion debt;
-  AW-b FINAL naturally completed B is not debt-free.
-- Reserved singleton policy and Settled.Authoritative/ledger-CAS bridges,
-  kind→group→rank mappings/validators, numeric defaults, cross-process transport,
-  durable input ledgers, agentguard for future agent-bearing payloads, and the
-  worker count-bug implementation backlog remain owned by the named §9 packages
-  in §8. None is an autonomous lab prerequisite or a claim of implementation.
+- Selected notice state and durable delivery/wake debt commit in the SAME
+  transition transaction (§9.2). An elected sync/inline answer consumes root
+  delivery without duplication; a generic stop answer does not. AW-b consumes
+  R's root delivery only after settlement; FINAL naturally completed B is not
+  debt-free.
+- kind→group→rank mappings/validators, numeric defaults, cross-process transport,
+  durable node/control projections and transactional delivery, agentguard for
+  future agent-bearing payloads, and the optional Runner commit-hook contract
+  remain owned by the named §9 packages in §8. None is an autonomous lab
+  prerequisite or a claim of implementation.
 - Existing frozen API/schema snippets are design declarations/signatures, not
   new executable implementation. Structural process/ownership gates use §7.3;
-  no extra scenario, schema field, executable, or new review cycle is introduced.
+  no scenario beyond the listed Revision 4 cases, schema field, executable,
+  or new review cycle is introduced.
+
+### A.3 Implementation notes (2026-10-12)
+
+Facts found while implementing sections 0-8; none changes the operator's
+decisions.
+
+- **W-c ii.** The acceptance row says the stopped never-admitted root X ends
+  Cancelled. Under sections 3.1/3.1.2 a root's own latched cause wins and the
+  leaf cause is separate: with HostClosing latched first, X settles Interrupted
+  with cause `host_closing` and X.1 Cancelled with cause `stop`. The fixture
+  `w-c-ii.json` follows the lifecycle rules. W-c i likewise expects the final
+  control state `none`, because settlement retires the control gate.
+- **Contract additions at A0** are listed in section 7.1 (`ErrInvalidEvent`,
+  `DisposeError`/`CloseTimeoutError`, `NodeView.Control`,
+  `Transition.SettledRoots`, `ValidCode`/`ReservedCode`/`ValidRef`).
+- **Process executor choices.** Windows resumes the suspended, job-assigned
+  child with `NtResumeProcess` (Go closes the primary thread handle); Unix
+  SIGTERM grace is 100 ms bounded by the Stop context; stdout and stderr share
+  one OS pipe. Unix behavior is cross-vetted only and is first exercised by CI.
+- **Backlog (P2, not fixed in this cycle).** After Final the Runner still holds
+  the Engine, so task payloads of unreleased terminal roots stay reachable from
+  a closed Runner; released-descendant lookup in the Runtime classifies by ID
+  prefix although consumers must not parse IDs for ownership (Core does the
+  same); the Unix process-test child observer is a stub; the replay
+  side-effect test uses a nonexistent program; F-c lacks a complete-capture
+  counterpart; L6 lacks the compound HostClosing+closed deletion case
+  (`docs/jobbatch-acceptance.md`).

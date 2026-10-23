@@ -18,7 +18,7 @@ import (
 )
 
 // toolSuggestFixture builds the thinnest turnStream that reaches the hook: a
-// sessionAgent with real messages and real tools but asyncJobs nil, so every
+// sessionAgent with real messages and real tools but no coordinator, so every
 // result is persisted by onToolResult's plain Create path.
 type toolSuggestFixture struct {
 	svc message.Service
@@ -30,7 +30,7 @@ func newToolSuggestFixture(t *testing.T, sessionID string) *toolSuggestFixture {
 	// Same connection helper the ack-gate fixture uses: it opens a migrated
 	// DB and disables foreign keys, so the session row does not have to exist
 	// for the tool message to be created.
-	_, _, conn := newTestAsyncJobStoreWithDataDir(t)
+	conn := batchFixtureConnNoFK(t)
 	svc := message.NewService(db.New(conn))
 	sa := &sessionAgent{
 		messages: svc,

@@ -74,7 +74,7 @@ func (f *fakeIsSessionBusyCoordinator) TakeSummarizeQueue(sessionID string) (*ag
 	return nil, false
 }
 
-func (f *fakeIsSessionBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (f *fakeIsSessionBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 
@@ -83,9 +83,6 @@ func (f *fakeIsSessionBusyCoordinator) RunSessionAgentCall(ctx context.Context, 
 }
 
 func (f *fakeIsSessionBusyCoordinator) CancelTurn(sessionID string) {}
-
-func (f *fakeIsSessionBusyCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-}
 
 func (f *fakeIsSessionBusyCoordinator) CancelQueuedSummarize(sessionID string) {
 }

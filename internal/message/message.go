@@ -60,8 +60,8 @@ type Service interface {
 	// CreateTx is Create's transaction-aware counterpart (phase-4 step 3,
 	// docs/plans/2026-09-28-async-phase4-durable-core.md sec.3.3): the INSERT
 	// runs on tx instead of this service's own connection, so a caller that
-	// also needs to UPDATE another table (async_jobs/session_notices'
-	// delivery outbox) in the SAME transaction can do so atomically -- "one
+	// also needs to UPDATE another table (session_notices' delivery outbox) in
+	// the SAME transaction can do so atomically -- "one
 	// transaction per notice: UPDATE ... RETURNING -> INSERT the history
 	// message -> id in the row". Deliberately does NOT publish CreatedEvent
 	// (tx may still roll back) -- the caller commits tx first, then calls
@@ -77,7 +77,7 @@ type Service interface {
 	// write, but against tx instead of this service's own connection, and
 	// with publishing deferred to the returned func -- call it ONLY after
 	// tx commits (the reaction-debt marker writes the step's final message
-	// and marks async_jobs/session_notices rows reacted=1 in ONE
+	// and marks session_notices rows reacted=1 in ONE
 	// transaction; publishing before commit could let a subscriber observe
 	// a write that still rolls back). On success the returned func is never
 	// nil; it publishes nothing when the update affected 0 rows (e.g. the

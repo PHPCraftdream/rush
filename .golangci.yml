@@ -2,6 +2,7 @@ version: "2"
 linters:
   enable:
     - bodyclose
+    - depguard
     # - exhaustive
     # - goconst
     # - godot
@@ -30,6 +31,24 @@ linters:
     - ineffassign
     - unused
   settings:
+    # Ktav purity gate (lane K0): the ONLY permitted Ktav import is
+    # the stdlib-only pure backend. The root wrapper package pulls in
+    # github.com/ebitengine/purego and the native C-ABI engine; none
+    # of them may appear in the dependency graph, in non-test or test
+    # code alike. depguard's `$` suffix marks an exact-match pattern:
+    # `github.com/ktav-lang/golang$` denies only the root package, so
+    # `github.com/ktav-lang/golang/pure` stays allowed (it matches
+    # nothing in the deny list).
+    depguard:
+      rules:
+        ktav-purity:
+          deny:
+            - pkg: github.com/ktav-lang/golang$
+              desc: use github.com/ktav-lang/golang/pure (pure stdlib-only backend); the root package is the purego C-ABI wrapper
+            - pkg: github.com/ktav-lang/golang/internal
+              desc: the engine's internal packages are not importable; use github.com/ktav-lang/golang/pure
+            - pkg: github.com/ebitengine/purego
+              desc: the purego FFI backend is forbidden; use github.com/ktav-lang/golang/pure
     revive:
       # Exactly one rule: the operator's file-size limit. A non-empty
       # `rules` list REPLACES revive's default rule set (verified against

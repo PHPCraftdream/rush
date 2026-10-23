@@ -23,6 +23,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,25 +47,145 @@ CREATE TABLE messages (
 	updated_at INTEGER,
 	notice_kind TEXT DEFAULT ''
 );
-CREATE TABLE async_jobs (
-	owner_session_id TEXT,
-	tool_call_id TEXT,
-	kind TEXT,
-	state TEXT,
-	child_session_id TEXT,
-	created_at INTEGER,
-	updated_at INTEGER,
-	PRIMARY KEY (owner_session_id, tool_call_id)
+`
+
+// auditBatchProjectionDDL carries the batch projection tables the audit
+// reads: batch_nodes verbatim from the production migration
+// (internal/db/migrations/20261012000001_batch_projection.sql, the CREATE
+// TABLE and its five indexes, plus the runner_id and response_envelope columns
+// the store-v1 migration added and BatchLiveNodesForOwners selects) and
+// session_notices verbatim from
+// internal/db/migrations/20260928000002_add_async_phase4_core.sql. The audit
+// refuses a store without batch_nodes (sessions_audit_db.go) and reads batch
+// facts through reduceBatchSessionFacts, whose bound-notice and debt queries
+// also read session_notices (sessions_batch_read.go), so every fixture
+// carries both tables.
+const auditBatchProjectionDDL = `
+CREATE TABLE batch_nodes (
+    node_id TEXT PRIMARY KEY,
+    root_id TEXT NOT NULL,
+    owner_session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    host_id TEXT NOT NULL,
+    parent_id TEXT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('task', 'batch')),
+    tool_call_id TEXT,
+    input_hash TEXT,
+    announced INTEGER NOT NULL DEFAULT 0 CHECK (announced IN (0, 1)),
+    announce_message_id TEXT,
+    origin_cli INTEGER NOT NULL DEFAULT 0 CHECK (origin_cli IN (0, 1)),
+    mode TEXT CHECK (mode IN ('parallel', 'sequential')),
+    on_fail TEXT CHECK (on_fail IN ('', 'stop', 'continue')),
+    notify TEXT CHECK (notify IN ('', 'all', 'each')),
+    max_parallel INTEGER NOT NULL DEFAULT 0 CHECK (max_parallel >= 0),
+    task_kind TEXT,
+    task_group TEXT NOT NULL DEFAULT '',
+    task_payload TEXT,
+    timeout_ns INTEGER NOT NULL DEFAULT 0 CHECK (timeout_ns >= 0),
+    child_session_id TEXT,
+    state TEXT NOT NULL CHECK (state IN (
+        'pending', 'starting', 'running', 'cancelling', 'completed',
+        'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped'
+    )),
+    cause TEXT NOT NULL DEFAULT '' CHECK (cause IN ('', 'stop', 'timeout', 'host_closing', 'stop_on_fail')),
+    token INTEGER NOT NULL DEFAULT 0 CHECK (token >= 0),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    control_state TEXT NOT NULL DEFAULT 'none' CHECK (control_state IN ('none', 'pending', 'acked', 'failed')),
+    control_error TEXT NOT NULL DEFAULT '',
+    control_pending INTEGER NOT NULL DEFAULT 0 CHECK (control_pending IN (0, 1)),
+    outcome_state TEXT NOT NULL DEFAULT '' CHECK (outcome_state IN ('', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted')),
+    outcome_code TEXT NOT NULL DEFAULT '',
+    outcome_summary TEXT NOT NULL DEFAULT '',
+    response_envelope_ref TEXT,
+    root_sequence INTEGER NOT NULL DEFAULT 0 CHECK (root_sequence >= 0),
+    projection_sequence INTEGER NOT NULL DEFAULT 0 CHECK (projection_sequence >= 0),
+    notice_selected INTEGER NOT NULL DEFAULT 0 CHECK (notice_selected IN (0, 1)),
+    notice_kind TEXT CHECK (notice_kind IN ('task', 'batch', 'root')),
+    notice_state TEXT CHECK (notice_state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped')),
+    notice_cause TEXT CHECK (notice_cause IN ('', 'stop', 'timeout', 'host_closing', 'stop_on_fail')),
+    notice_sequence INTEGER,
+    notice_ordinal INTEGER,
+    notice_pending INTEGER NOT NULL DEFAULT 0 CHECK (notice_pending >= 0),
+    notice_active INTEGER NOT NULL DEFAULT 0 CHECK (notice_active >= 0),
+    notice_completed INTEGER NOT NULL DEFAULT 0 CHECK (notice_completed >= 0),
+    notice_failed INTEGER NOT NULL DEFAULT 0 CHECK (notice_failed >= 0),
+    notice_cancelled INTEGER NOT NULL DEFAULT 0 CHECK (notice_cancelled >= 0),
+    notice_timed_out INTEGER NOT NULL DEFAULT 0 CHECK (notice_timed_out >= 0),
+    notice_interrupted INTEGER NOT NULL DEFAULT 0 CHECK (notice_interrupted >= 0),
+    notice_skipped INTEGER NOT NULL DEFAULT 0 CHECK (notice_skipped >= 0),
+    delivery TEXT NOT NULL DEFAULT 'none' CHECK (delivery IN ('none', 'pending', 'done', 'void')),
+    notice_message_id TEXT,
+    wake INTEGER NOT NULL DEFAULT 0 CHECK (wake IN (0, 1)),
+    reacted INTEGER NOT NULL DEFAULT 0 CHECK (reacted IN (0, 1)),
+    wake_attempts INTEGER NOT NULL DEFAULT 0 CHECK (wake_attempts >= 0),
+    reacted_failed INTEGER NOT NULL DEFAULT 0 CHECK (reacted_failed IN (0, 1)),
+    runner_id TEXT NOT NULL DEFAULT '',
+    response_envelope TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (root_id, node_id, owner_session_id, host_id),
+    UNIQUE (root_id, parent_id, ordinal),
+    FOREIGN KEY (root_id, root_id, owner_session_id, host_id)
+        REFERENCES batch_nodes (root_id, node_id, owner_session_id, host_id) ON DELETE CASCADE,
+    FOREIGN KEY (root_id, parent_id, owner_session_id, host_id)
+        REFERENCES batch_nodes (root_id, node_id, owner_session_id, host_id) ON DELETE CASCADE,
+    CHECK ((node_id = root_id AND parent_id IS NULL AND kind = 'batch' AND ordinal = 0
+            AND tool_call_id IS NOT NULL AND input_hash IS NOT NULL)
+        OR (node_id != root_id AND parent_id IS NOT NULL AND tool_call_id IS NULL
+            AND input_hash IS NULL AND announced = 0 AND announce_message_id IS NULL
+            AND root_sequence = 0)),
+    CHECK ((kind = 'batch' AND mode IS NOT NULL AND task_kind IS NULL)
+        OR (kind = 'task' AND task_kind IS NOT NULL AND mode IS NULL AND on_fail IS NULL AND notify IS NULL)),
+    CHECK (announced = 0 OR announce_message_id IS NOT NULL),
+    CHECK ((notice_selected = 0 AND notice_kind IS NULL AND notice_state IS NULL
+            AND notice_cause IS NULL AND notice_sequence IS NULL AND notice_ordinal IS NULL
+            AND delivery = 'none' AND wake = 0)
+        OR (notice_selected = 1 AND notice_kind IS NOT NULL AND notice_state IS NOT NULL
+            AND notice_cause IS NOT NULL AND notice_sequence IS NOT NULL AND notice_sequence > 0
+            AND notice_ordinal IS NOT NULL AND notice_ordinal >= 0 AND delivery != 'none'))
+);
+CREATE UNIQUE INDEX idx_batch_nodes_live_key ON batch_nodes (owner_session_id, tool_call_id)
+    WHERE node_id = root_id AND state IN ('pending', 'starting', 'running', 'cancelling');
+CREATE INDEX idx_batch_nodes_host_live ON batch_nodes (host_id, root_id)
+    WHERE node_id = root_id AND state IN ('pending', 'starting', 'running', 'cancelling');
+CREATE INDEX idx_batch_nodes_owner_roots ON batch_nodes (owner_session_id, created_at, root_id)
+    WHERE node_id = root_id;
+CREATE INDEX idx_batch_nodes_parent ON batch_nodes (root_id, parent_id, ordinal);
+CREATE INDEX idx_batch_nodes_pending_notice ON batch_nodes (owner_session_id, root_id, notice_sequence, notice_ordinal)
+    WHERE notice_selected = 1 AND delivery = 'pending';
+CREATE INDEX idx_batch_nodes_debt ON batch_nodes (owner_session_id, root_id)
+    WHERE notice_selected = 1 AND wake = 1 AND reacted = 0 AND delivery != 'void';
+
+CREATE TABLE session_notices (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner             TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    kind              TEXT NOT NULL,
+    text              TEXT NOT NULL,
+    wake              INTEGER NOT NULL DEFAULT 0,
+    delivery          TEXT NOT NULL DEFAULT 'pending' CHECK (delivery IN ('none', 'pending', 'done', 'void')),
+    notice_message_id TEXT,
+    reacted           INTEGER NOT NULL DEFAULT 0,
+    wake_attempts     INTEGER NOT NULL DEFAULT 0,
+    reacted_failed    INTEGER NOT NULL DEFAULT 0,
+    job_tool_call_id  TEXT,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
 );
 `
 
-// seedAuditFixtureDB writes a Rush-shaped rush.db into dataDir and returns
-// its path. dataDir must be a t.TempDir(): the audit command is pointed at
-// it, and the whole test asserts nothing else touches it.
+// auditDDLForTest appends the batch projection DDL: every fixture carries
+// the tables the schema guard and the batch scan need.
+func auditDDLForTest() string {
+	return auditSchemaFixture + auditBatchProjectionDDL
+}
+
+// seedAuditFixtureDB writes a Rush-shaped session store into dataDir and
+// returns its path. dataDir must be a t.TempDir(): the audit command is
+// pointed at it, and the whole test asserts nothing else touches it.
 func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 	t.Helper()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -77,7 +198,7 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 		}
 	})
 
-	_, err = db.ExecContext(context.Background(), auditSchemaFixture)
+	_, err = db.ExecContext(context.Background(), auditDDLForTest())
 	require.NoError(t, err)
 
 	now := timeNowUnix()
@@ -91,11 +212,6 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 		('m2', 'audit-alpha-1', 'assistant', '[]', ?, ?, '')`,
 		now, now, now, now)
 	require.NoError(t, err)
-	_, err = db.ExecContext(context.Background(), `INSERT INTO async_jobs
-		(owner_session_id, tool_call_id, kind, state, child_session_id, created_at, updated_at)
-		VALUES ('audit-alpha-1', 'call-1', 'command', 'running', NULL, ?, ?)`, now, now)
-	require.NoError(t, err)
-
 	// A clean close is what leaves the database with no journal file at all.
 	require.NoError(t, db.Close())
 	closed = true
@@ -168,7 +284,7 @@ func auditDirNames(t *testing.T, dir string) []string {
 
 // TestSessionsAudit_IsStrictlyReadOnly is the command's core guarantee:
 // running it against a data directory changes NOTHING in it — not a byte of
-// rush.db, not the file list (no -wal/-shm/journal/migrate.lock appears).
+// the store file, not the file list (no -wal/-shm/journal/migrate.lock appears).
 //
 // Revert-check: with the fixture above the audit only ever reads, so the
 // assertions are also what makes a regression visible — the run is repeated
@@ -181,7 +297,7 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := seedAuditFixtureDB(t, dataDir)
 
-	require.Equal(t, []string{"rush.db"}, auditDirNames(t, dataDir),
+	require.Equal(t, []string{storeBaseName()}, auditDirNames(t, dataDir),
 		"precondition: the fixture must leave a clean, sidecar-free database")
 	beforeHash := auditFileSHA256(t, dbPath)
 
@@ -190,8 +306,8 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 		require.NoError(t, err, "audit pass %d stderr: %s", pass, stderr)
 
 		require.Equal(t, beforeHash, auditFileSHA256(t, dbPath),
-			"audit pass %d modified rush.db", pass)
-		require.Equal(t, []string{"rush.db"}, auditDirNames(t, dataDir),
+			"audit pass %d modified the session store", pass)
+		require.Equal(t, []string{storeBaseName()}, auditDirNames(t, dataDir),
 			"audit pass %d created or removed a file in the data directory", pass)
 		require.Contains(t, stdout, "audit-alpha-1",
 			"audit pass %d must actually report the seeded session", pass)
@@ -212,8 +328,8 @@ func TestSessionsAudit_IsStrictlyReadOnly(t *testing.T) {
 // listing going from three entries to one:
 //
 //	audit created or removed a file in the data directory
-//	    expected: [rush.db rush.db-shm rush.db-wal]
-//	    actual  : [rush.db]
+//	    expected: [<store> <store>-shm <store>-wal]
+//	    actual  : [<store>]
 //
 // which is precisely the damage the read-only contract forbids.
 func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
@@ -224,14 +340,14 @@ func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
 
 	require.FileExists(t, dbPath+"-wal", "precondition: the fixture must leave a pending WAL")
 	beforeFiles := auditDirNames(t, dataDir)
-	require.Len(t, beforeFiles, 3, "precondition: rush.db with WAL sidecars")
+	require.Len(t, beforeFiles, 3, "precondition: store file with WAL sidecars")
 	beforeHash := auditFileSHA256(t, dbPath)
 
 	stdout, stderr, err := runAuditCmd(t, "--data-dir", dataDir, "--all")
 	require.NoError(t, err, "audit stderr: %s", stderr)
 
 	require.Equal(t, beforeHash, auditFileSHA256(t, dbPath),
-		"audit must not checkpoint a pending WAL into rush.db")
+		"audit must not checkpoint a pending WAL into the store file")
 	require.Equal(t, beforeFiles, auditDirNames(t, dataDir),
 		"a read-only connection must not checkpoint and remove the WAL sidecars")
 	require.Contains(t, stdout, "wal", "the health block must report the WAL size")
@@ -246,7 +362,7 @@ func TestSessionsAudit_ReadOnlyWithPendingWAL(t *testing.T) {
 func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 	t.Helper()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -257,10 +373,10 @@ func seedAuditWALFixtureDB(t *testing.T, dataDir string) string {
 		}
 	})
 
-	_, err = db.ExecContext(context.Background(), auditSchemaFixture)
+	_, err = db.ExecContext(context.Background(), auditDDLForTest())
 	require.NoError(t, err)
 	// journal_mode must be set before the inserts for the data to land in
-	// the -wal rather than being checkpointed straight into rush.db.
+	// the -wal rather than being checkpointed straight into the store file.
 	_, err = db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL;`)
 	require.NoError(t, err)
 
@@ -290,7 +406,7 @@ func holdAuditSidecars(t *testing.T, dataDir string) func() {
 	if runtime.GOOS == "windows" {
 		// Windows refuses to delete a file that still has an open handle
 		// without FILE_SHARE_DELETE, which os.OpenFile does not request.
-		for _, name := range []string{"rush.db-wal", "rush.db-shm"} {
+		for _, name := range []string{storeBaseName() + "-wal", storeBaseName() + "-shm"} {
 			file, err := os.OpenFile(filepath.Join(dataDir, name), os.O_RDONLY, 0)
 			if err != nil {
 				continue
@@ -332,14 +448,14 @@ func TestOpenAuditRO_RefusesWrites(t *testing.T) {
 	require.Equal(t, before, auditFileSHA256(t, dbPath), "a refused write must not modify the file")
 }
 
-// TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal: a rush.db that is
-// not a Rush session database (a foreign one, or one far too old) is
+// TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal: a store file that
+// is not a Rush session database (a foreign one, or one far too old) is
 // reported and left completely alone — audit exits 0 and writes nothing.
 func TestSessionsAudit_UnrecognizedSchemaIsReportedNotFatal(t *testing.T) {
 	isolateConfigEnvForTests(t)
 
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -362,8 +478,8 @@ CREATE TABLE something_else (x INTEGER);`)
 }
 
 // TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing: a data
-// directory without rush.db is a message, not an empty directory the command
-// goes on to create.
+// directory without a session store is a message, not an empty directory the
+// command goes on to create.
 func TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing(t *testing.T) {
 	isolateConfigEnvForTests(t)
 
@@ -372,7 +488,7 @@ func TestSessionsAudit_MissingDatabaseSaysSoAndCreatesNothing(t *testing.T) {
 	stdout, stderr, err := runAuditCmd(t, "--data-dir", dataDir, "--all")
 	require.NoError(t, err, "stderr: %s", stderr)
 
-	require.Contains(t, stdout, "no rush.db found in "+dataDir)
+	require.Contains(t, stdout, "no session store found in "+dataDir)
 	require.Contains(t, stdout, "does not create anything")
 	require.Empty(t, auditDirNames(t, dataDir), "audit must not create the data directory's contents")
 }
@@ -412,6 +528,9 @@ func TestSessionsAudit_PrefixSelection(t *testing.T) {
 	require.NotContains(t, stdout, "sessions (", "an ambiguous prefix must not audit anything")
 }
 
+// storeBaseName is the fixture's store file name (the active store filename).
+func storeBaseName() string { return storepath.ActiveFilename }
+
 // timeNowUnix keeps the fixture's timestamps in Unix seconds, the unit the
 // real schema stores (a millisecond fixture is how #1162 shipped with 1970
 // dates and an empty --since window).
@@ -448,7 +567,7 @@ func TestSessionsAudit_JSONOutput(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &reports))
 	require.Len(t, reports, 1)
 	require.Equal(t, dataDir, reports[0].DataDir)
-	require.Equal(t, filepath.Join(dataDir, "rush.db"), reports[0].DBPath)
+	require.Equal(t, storepath.ActivePath(dataDir), reports[0].DBPath)
 	require.NotNil(t, reports[0].Health, "the health block must be in the JSON output")
 	require.Greater(t, reports[0].Health.PageSize, int64(0))
 	require.Greater(t, reports[0].Health.PageCount, int64(0))

@@ -16,13 +16,13 @@ jobs:
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Check model shortcode drift
@@ -42,10 +42,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: go mod tidy
@@ -86,6 +86,12 @@ jobs:
       - name: self-test db release pairing guard
         if: matrix.os == 'ubuntu-latest'
         run: bash .githooks/check_db_release_pairing_selftest.sh
+      - name: no hand-written source file over 1000 lines (ratchet allowlist)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size.sh
+      - name: self-test file-size guard
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .githooks/check_file_size_selftest.sh
       # Regenerate the sqlc output and fail if it drifts from what's
       # committed. Pinned to v1.30.0 — the exact version this repo's own
       # sqlc.yaml targets and whose byte/rune span-counting bug the ASCII
@@ -140,11 +146,18 @@ jobs:
       - name: "test: internal/app"
         run: go test -short -failfast -p 2 -timeout 20m ./internal/app/...
         shell: bash
+      # internal/session ran out of go test's 600s default on windows-latest
+      # (2026-10-13, 600.080s) once the batch store/commit-hook/history suites
+      # landed (many DB-backed tests); same fix as internal/app above.
       - name: "test: internal/server, internal/session"
-        run: go test -short -failfast -p 2 ./internal/server/... ./internal/session/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/server/... ./internal/session/...
         shell: bash
+      # internal/config ran out of go test's 600s default on windows-latest
+      # (2026-10-18, 600.114s with TestOAuthRound7_CartesianMatrix alone at 451s):
+      # its 2112 sequential subtests share package-level journal seams and cannot
+      # run in parallel, so the step gets the same explicit -timeout as above.
       - name: "test: internal/permission, internal/config, internal/csync"
-        run: go test -short -failfast -p 2 ./internal/permission/... ./internal/config/... ./internal/csync/...
+        run: go test -short -failfast -p 2 -timeout 20m ./internal/permission/... ./internal/config/... ./internal/csync/...
         shell: bash
       - name: "test: internal/cmd, internal/commands"
         run: go test -short -failfast -p 2 ./internal/cmd/... ./internal/commands/...
@@ -233,7 +246,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/cmd/
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Test npm wrapper cache logic (crush, legacy package)
@@ -287,10 +300,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: go test ./internal/agent/ split into sequential batches
@@ -440,10 +453,10 @@ jobs:
     # 45m -- 60m is only a runaway backstop, not a target.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: go test -race -short -failfast (internal/hooks, internal/session)
@@ -452,6 +465,10 @@ jobs:
       # race-sensitive and cheap (seconds), so they run here too.
       - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
         run: go test -race -short -failfast -timeout 15m ./internal/tasktree/... ./cmd/tasklab/ ./internal/csync/
+      # The job-batch engine, Runner and batchlab are single-loop concurrent
+      # code with real process trees in the lab tests; -race is the point.
+      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+        run: go test -race -short -failfast -timeout 15m ./internal/jobbatch/... ./cmd/batchlab/
       # internal/agent -- the most concurrency-heavy package in the repo
       # (generation fences, stream watchdog, mailboxes, coordinator
       # background work) -- gets -race coverage via the batched split

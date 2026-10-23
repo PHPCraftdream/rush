@@ -39,17 +39,17 @@ func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 // paceDrainGate is the test fixture spelling of the gate pacing (the
 // production writer paths are accountDrainAttempt/noteDrainRefused; tests
 // pace by hand to reach a given gate state).
-func (l *workLedger) paceDrainGate(owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) bool {
-	if l.coord == nil {
+func paceDrainGateOn(c *coordinator, owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) bool {
+	if c == nil {
 		return false
 	}
-	return l.coord.arb.pace(owner, hintAt, wait, hintOpens, kind)
+	return c.arb.pace(owner, hintAt, wait, hintOpens, kind)
 }
 
-// resetDrainGate is the test fixture spelling of the gate reset.
-func (l *workLedger) resetDrainGate(owner string) {
-	if l.coord != nil {
-		l.coord.arb.resetGate(owner)
+// resetDrainGateOn is the test fixture spelling of the gate reset.
+func resetDrainGateOn(c *coordinator, owner string) {
+	if c != nil {
+		c.arb.resetGate(owner)
 	}
 }
 
@@ -85,10 +85,7 @@ func gateOpen(c *coordinator, owner string, now time.Time) (open, dormant bool, 
 	if !g.Paced {
 		return true, false, time.Time{}
 	}
-	hintNow := uint64(0)
-	if c.asyncJobs != nil {
-		hintNow = c.asyncJobs.hintSeqOf(owner)
-	}
+	hintNow := c.driverHints.hintSeqOf(owner)
 	paidDormant := g.PaidStreak >= turnDormantStreak
 	if g.HintOpens && !paidDormant && hintNow != g.HintSeen {
 		return true, false, g.RetryAt

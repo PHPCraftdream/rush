@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"slices"
@@ -57,7 +58,7 @@ const (
 	// the expensive part (up to 2*maxStreamBufferBytes per job) and are only
 	// realistically useful for a short window right after completion, while
 	// job metadata is cheap to keep for the full retention window so status
-	// queries (job_output on a long-finished job) still resolve, just
+	// queries (batch_status on a long-finished job) still resolve, just
 	// without the original bytes.
 	BufferRetentionMinutes = 15
 
@@ -74,7 +75,7 @@ const (
 	// unbounded multiplier on process memory. 3 MiB per stream (6 MiB per job
 	// including both stdout+stderr, ~300 MiB worst case across 50 jobs) is
 	// generous enough to hold many thousands of lines of real command output
-	// (job_output/bash still only ever surface the last MaxOutputLength=30000
+	// (bash and the batch output cache still only ever surface the last MaxOutputLength=30000
 	// characters to the model via TruncateOutput) while capping the pathological
 	// case at a small, predictable ceiling.
 	maxStreamBufferBytes = 3 * 1024 * 1024
@@ -304,6 +305,7 @@ type BackgroundShell struct {
 
 	// retentionMu serializes attached retention, detached callback release,
 	// callback registration/completion, and the detached transition.
+	retained             bool
 	retentionMu          sync.Mutex
 	retentionTimer       *time.Timer
 	detachedReleaseTimer *time.Timer
@@ -426,6 +428,10 @@ func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, work
 }
 
 func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, false)
+}
+
+func (m *BackgroundShellManager) startWithRetention(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string, retained bool) (*BackgroundShell, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
 	if m.closed {
@@ -445,7 +451,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 	}
 	active := m.activeJobs.Load()
 	if active >= int64(limit) {
-		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: job_kill the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: batch_stop the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
 	}
 	// Warn on the approach, not only at the wall. Hitting the cap kills the
 	// run with one line and no warning; this gives the operator the count
@@ -465,6 +471,11 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 	})
 
 	shellCtx, cancel := context.WithCancel(ctx)
+	if retained {
+		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+			stops.cancel = cancel
+		}
+	}
 
 	bgShell := &BackgroundShell{
 		ID:          id,
@@ -479,6 +490,7 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 		cancel:      cancel,
 		stdout:      newBoundedBuffer(maxStreamBufferBytes),
 		stderr:      newBoundedBuffer(maxStreamBufferBytes),
+		retained:    retained,
 		done:        make(chan struct{}),
 	}
 
@@ -499,7 +511,14 @@ func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDi
 			}
 		}()
 
-		err := shell.ExecStream(shellCtx, command, bgShell.stdout, bgShell.stderr)
+		var stdout, stderr io.Writer = bgShell.stdout, bgShell.stderr
+		if retained {
+			if stops, ok := shellCtx.Value(retainedStopKey{}).(*retainedStops); ok {
+				stdout = retainedWriter{bgShell.stdout, stops.output}
+				stderr = retainedWriter{bgShell.stderr, stops.output}
+			}
+		}
+		err := shell.ExecStream(shellCtx, command, stdout, stderr)
 
 		bgShell.exitErr = err
 		bgShell.completedAt.Store(time.Now().Unix())

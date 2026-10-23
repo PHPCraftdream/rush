@@ -18,12 +18,12 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/spf13/cobra"
 )
@@ -56,9 +56,6 @@ var auditWaitOnlyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^\s*timeout\s+\S+(\s+\S+)?\s*$`),
 	// The shell's own `wait`, with or without a list of pids.
 	regexp.MustCompile(`^\s*wait(\s+\S+)?\s*$`),
-	// A background-job reader invoked to block: `job_output 12 --wait`,
-	// `job_output 12 --wait=true`.
-	regexp.MustCompile(`^\s*job_output(\s+(\S+=\S*|--?wait\S*|[0-9A-Za-z_.-]+))*\s*$`),
 	// Any other poll/wait helper run only to block, e.g. `poll.sh --wait`,
 	// `wait-for-ci --interval=5`.
 	regexp.MustCompile(`^\s*\S*(poll|wait)\S*(\s+(\S+=\S*|--?wait\S*|[0-9A-Za-z_.-]+))*\s*$`),
@@ -71,9 +68,9 @@ var sessionsAuditCmd = &cobra.Command{
 work, a delegation that never finished, a supervision loop.
 
 Read-only: the database is opened with mode=ro and PRAGMA query_only; no
-migrations, no locks, no writes — the rush.db file is not modified (not even
-its mtime), and no -wal/-shm/journal sidecar is created or removed. This is
-deliberately NOT the setupApp path, which opens the database read-write and
+migrations, no locks, no writes — the session store file is not modified (not
+even its mtime), and no -wal/-shm/journal sidecar is created or removed. This
+is deliberately NOT the setupApp path, which opens the database read-write and
 migrates it: audit resolves the data directory itself, the same lightweight
 way "sessions reap" and "sessions kill" do.
 
@@ -86,7 +83,7 @@ Flags:
                  suffix (7d), or a bare integer read as days
   --worktrees    also scan the databases of the linked worktrees: every
                  other checkout Rush has registered keeps its own
-                 .rush/rush.db (see "rush projects", read-only)
+                 .rush store (see "rush projects", read-only)
   --json         one JSON object per scanned database instead of text
   --data-dir <p> (inherited from the root command) the data directory to
                  read; defaults to <cwd>/.rush
@@ -100,19 +97,19 @@ Rules and thresholds:
   wait-only commands (sleep/poll loops)               >= 3 times
   tool errors, counted per error class                >= 3 times
   supervision / wake_failed notices                   >= 1
-  unfinished async jobs (state running/interrupted)   >= 1
+  unfinished batch work (held roots, unknown reads)      >= 1
 A session's verdict lists the rules it tripped, the evidence (file path,
 command or notice) and the counts. Every rule is implemented and every
 threshold is declared once as a constant, so the help and the analysis can
 never drift apart. Wait-only means a command that does nothing but wait:
 after every run of digits has been folded to "N", its whole line has to
-match one of 'sleep 5', 'timeout 30 <cmd>', 'wait', 'job_output 12 --wait'
-or a poll/wait helper. A command that waits and then works ('sleep 5 && git
+match one of 'sleep 5', 'timeout 30 <cmd>', 'wait' or a poll/wait helper.
+A command that waits and then works ('sleep 5 && git
 status') is ordinary work, counted as a repeated command instead.
 
 DB health is printed for every scanned database: size, page_size x
 page_count, freelist pages and the percentage of the file that is free
-space, plus the size of the rush.db-wal and rush.db-shm sidecars when the
+space, plus the size of the -wal and -shm sidecars when the
 database is live in WAL mode.`,
 	Example: `
 # Audit every session's last 24 hours of activity
@@ -190,8 +187,8 @@ func sessionsAuditCmdRun(cmd *cobra.Command, args []string) error {
 // auditWorktreeDataDirs lists the data directories of the linked worktrees
 // Rush knows about (the registered project list, read-only). Each linked
 // worktree runs its own "rush" process and therefore keeps its own
-// .rush/rush.db; --worktrees audits those alongside the current one.
-// The current data dir is never repeated, and a project whose rush.db is
+// .rush store; --worktrees audits those alongside the current one.
+// The current data dir is never repeated, and a project whose store is
 // gone is skipped rather than reported as an error.
 func auditWorktreeDataDirs(current string) []string {
 	list, err := projects.List()
@@ -203,7 +200,7 @@ func auditWorktreeDataDirs(current string) []string {
 		if project.DataDir == "" || project.DataDir == current {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(project.DataDir, "rush.db")); err != nil {
+		if _, err := os.Stat(storepath.ActivePath(project.DataDir)); err != nil {
 			continue
 		}
 		dirs = append(dirs, project.DataDir)

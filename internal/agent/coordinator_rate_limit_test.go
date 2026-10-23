@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"testing"
 	"time"
@@ -176,9 +177,52 @@ func TestRetryAfter_Table(t *testing.T) {
 	require.Positive(t, d)
 	require.LessOrEqual(t, d, rateLimitMaxWait, "HTTP-date waits are capped too")
 
-	d, ok = retryAfter(pe(map[string]string{"retry-after": "99999"}))
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{"59999", 59999 * time.Millisecond},
+		{"60000", time.Minute},
+		{"60001", time.Minute},
+		{"9223372036855", time.Minute},
+		{"9223372036854775808", time.Minute},
+		{"+9223372036854775808", time.Minute},
+	} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": tc.header}))
+		require.True(t, ok, tc.header)
+		require.Equal(t, tc.want, d, tc.header)
+	}
+	for _, bad := range []string{"1.5", "1e3", "-1", "NaN", "+Inf", "-Inf"} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": bad, "retry-after": "2"}))
+		require.True(t, ok, bad)
+		require.Equal(t, 2*time.Second, d, bad)
+	}
+	for _, header := range []string{"NaN", "+Inf", "-Inf", "-1", "0", "1e309"} {
+		_, ok = retryAfter(pe(map[string]string{"retry-after": header}))
+		require.False(t, ok, header)
+	}
+	for _, header := range []string{"1e300", "9223372036854775807", "99999"} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after": header}))
+		require.True(t, ok, header)
+		require.Equal(t, time.Minute, d, header)
+	}
+	_, ok = retryAfter(pe(map[string]string{"retry-after-ms": "-1", "retry-after": "2"}))
 	require.True(t, ok)
-	require.Equal(t, rateLimitMaxWait, d, "huge values must be capped")
+	_, ok = retryAfter(pe(map[string]string{"retry-after-ms": "1.5"}))
+	require.False(t, ok)
+
+	minuteMax := rateLimitMaxWait
+	t.Cleanup(func() { rateLimitMaxWait = minuteMax })
+	rateLimitMaxWait = 1500 * time.Microsecond
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{{"1", time.Millisecond}, {"2", 1500 * time.Microsecond}} {
+		d, ok = retryAfter(pe(map[string]string{"retry-after-ms": tc.header}))
+		require.True(t, ok)
+		require.Equal(t, tc.want, d)
+	}
+	rateLimitMaxWait = minuteMax
 
 	_, ok = retryAfter(pe(nil))
 	require.False(t, ok)
@@ -191,6 +235,29 @@ func TestRetryAfter_Table(t *testing.T) {
 
 	_, ok = retryAfter(pe(map[string]string{"retry-after": "not-a-number"}))
 	require.False(t, ok)
+}
+
+func TestRateLimitWaitForSaturates(t *testing.T) {
+	origBase, origMax := rateLimitBaseWait, rateLimitMaxWait
+	t.Cleanup(func() { rateLimitBaseWait, rateLimitMaxWait = origBase, origMax })
+	rateLimitBaseWait, rateLimitMaxWait = 4_000_000_000_000_000_000, 9_000_000_000_000_000_000
+	require.Equal(t, time.Duration(9_000_000_000_000_000_000), rateLimitWaitFor(nil, 1))
+	rateLimitBaseWait, rateLimitMaxWait = 10*time.Second, 5*time.Minute
+	for _, tc := range []struct {
+		prior int
+		want  time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 30 * time.Second},
+		{2, 90 * time.Second},
+		{3, 270 * time.Second},
+		{4, 5 * time.Minute},
+		{19, 5 * time.Minute},
+		{math.MaxInt - 1, 5 * time.Minute},
+		{math.MaxInt, 5 * time.Minute},
+	} {
+		require.Equal(t, tc.want, rateLimitWaitFor(nil, tc.prior), "prior waits %d", tc.prior)
+	}
 }
 
 // TestRunInternal_RateLimitRetriesBeyondMaxRetries: the rate-limit leg does
@@ -234,6 +301,35 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 	require.Equal(t, 1, calls)
 }
 
+// TestRunInternal_RateLimitFailingFactsEndsAfterOneAttempt pins the F3
+// END-TO-END bound: with the batch runtime ON and a BOUND fact source whose
+// liveness read fails at runtime, the retry loop must end with the ORIGINAL
+// provider error after at most one attempt. Before the fix the loop's
+// rate-limit branch had no attempt cap and the failed read paused the budget
+// forever: the fixture spun re-running the attempt and re-reading the
+// ever-growing history (the CI 600s hang, run 39139589128).
+//
+// Revert-check: restoring hasLiveTreeWork's `if err != nil { return true }`
+// makes the wait never exhaust the (zero) budget: the mock is called a second
+// time and the test never returns (the CI hang).
+func TestRunInternal_RateLimitFailingFactsEndsAfterOneAttempt(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	shrinkRateLimitVars(t, time.Millisecond, 10*time.Millisecond, 0, time.Millisecond, time.Millisecond)
+	rlErr := rateLimit429Err()
+	res, calls, _, err := rateLimitLoopRunWith(t, t.Context(), "test-rl-failing-facts", nil,
+		func(c *coordinator) {
+			BindCoordinatorBatchCutoverFacts(c, rateLimitFailedBatchFacts{})
+			t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(c) })
+		},
+		func(t *testing.T, env *fakeEnv, sess session.Session, ctx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			return rateLimitErrorAttempt(t, env, sess, ctx, call, rlErr)
+		})
+	require.Error(t, err)
+	require.ErrorIs(t, err, rlErr, "the ORIGINAL 429 must surface, not a facts error")
+	require.Nil(t, res)
+	require.Equal(t, 1, calls, "a failed liveness read buys no second attempt")
+}
+
 // TestRunInternal_RateLimitWaitContextDeadline: the ctx.Done() select inside
 // waitRateLimit must surface ctx.Err().
 //
@@ -241,17 +337,24 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 // makes the wait run to completion and this test goes red.
 func TestRunInternal_RateLimitWaitContextDeadline(t *testing.T) {
 	shrinkRateLimitVars(t, time.Minute, time.Minute, time.Hour, 10*time.Millisecond, time.Millisecond)
-	// The deadline starts at the first provider call: a cold setup slower
-	// than the deadline would otherwise expire it before the wait begins.
+	// Cancel at the wait notification, after retry evidence has been read.
+	// Cancelling in the provider can instead abort those DB reads and return
+	// the original 429 without ever entering waitRateLimit.
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	_, calls, _, err := rateLimitLoopRun(t, ctx, "test-rl-ctx-deadline", nil,
+	waits := 0
+	_, calls, _, err := rateLimitLoopRunWith(t, ctx, "test-rl-ctx-deadline", nil,
+		func(c *coordinator) {
+			c.SetRateLimitNotify(func(_ string, _ time.Time, attempt int) {
+				waits++
+				require.Equal(t, 1, attempt)
+				cancel()
+			})
+		},
 		func(t *testing.T, env *fakeEnv, sess session.Session, callCtx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			if n == 0 {
-				time.AfterFunc(300*time.Millisecond, cancel)
-			}
-			return rateLimitErrorAttempt(t, env, sess, context.WithoutCancel(callCtx), call, rateLimit429Err())
+			return rateLimitErrorAttempt(t, env, sess, callCtx, call, rateLimit429Err())
 		})
+	require.Equal(t, 1, waits, "the rate-limit wait must actually be reached")
 	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, 1, calls)
 }

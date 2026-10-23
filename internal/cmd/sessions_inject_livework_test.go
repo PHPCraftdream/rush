@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,11 +45,20 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	require.NoError(t, err)
 	ageLock(t, releasedLock(t, dataDir, driven.ID), 2*time.Minute)
 	ageLock(t, releasedLock(t, dataDir, lone.ID), 2*time.Minute)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	require.NoError(t, store.ClaimSessionDriver(ctx, driven.ID))
-	a.SetAsyncJobStoreForTest(nil)
-	defer func() { _ = store.Close(context.Background()) }()
+	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "inject-driver-fixture")
+	driverHostID, err := driverHost.EnsureHost(ctx)
+	require.NoError(t, err)
+	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven.ID))
+	// A12 pattern: CloseKeepLock forgets the in-memory handle WITHOUT
+	// releasing the OS lock or deleting the host row/driver markers, so the
+	// marker survives the seed App's Shutdown and the command's host probe
+	// reads the host alive (a second TryAcquireFileLock from this same
+	// process would contend with the held lock, so holdSeedHost is not
+	// used).
+	driverHost.CloseKeepLock()
+	// The pinned lock file stays open for the process lifetime; release it at
+	// test end so the data dir can be removed on Windows.
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	decode := func(out string) injectResult {
@@ -100,12 +110,8 @@ func TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning(t *testing
 	jobID, delegID, loneID := mk("inject-web-job"), mk("inject-web-deleg"), mk("inject-web-lone")
 	child, err := a.Sessions.CreateTaskSession(ctx, "inject-web-child", delegID, "sub-agent")
 	require.NoError(t, err)
-	store := a.AsyncJobStore()
-	require.NotNil(t, store)
-	claimOwnJob(t, store, jobID, "bash-1")
-	claimDelegation(t, store, delegID, "delegate-1", child.ID)
-	a.SetAsyncJobStoreForTest(nil)
-	defer func() { _ = store.Close(context.Background()) }()
+	claimOwnJob(t, a, jobID, "bash-1")
+	claimDelegation(t, a, delegID, "delegate-1", child.ID)
 	a.Shutdown()
 
 	decode := func(out string) injectResult {

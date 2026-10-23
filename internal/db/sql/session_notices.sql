@@ -124,19 +124,15 @@ SELECT COUNT(*) FROM session_notices WHERE delivery IN ('done', 'void') AND upda
 UPDATE session_notices SET reacted_failed = 0, updated_at = ?
 WHERE owner = ? AND reacted_failed = 1;
 
--- name: RepointSessionNoticesJobToolCallID :execrows
--- R2A-4: session_notices.job_tool_call_id names its async_jobs row by
--- tool_call_id text (the wake_only pull-time void reads that row). When the
--- archive rename above moves the row, its notices follow it: otherwise the
--- text would resolve to the NEW row a later claim put under the reused id
--- and a check-in about the old job would be delivered as if about the new
--- one. Runs in the archive's own transaction, before the fresh claim
--- inserts, so every notice matching the old text belongs to the old row.
-UPDATE session_notices SET job_tool_call_id = @new_job_tool_call_id
-WHERE owner = @owner AND job_tool_call_id = @old_job_tool_call_id;
-
 -- name: VoidUndeliveredSessionNoticesForOwner :execrows
 -- session_notices half of VoidUndeliveredAsyncJobsForOwner (`sessions reset`,
 -- R8A-3): every pending or delivered notice of the owner becomes void.
 UPDATE session_notices SET delivery = 'void', reacted_failed = 0, updated_at = ?
 WHERE owner = ? AND delivery IN ('pending', 'done');
+
+-- name: SessionNoticeDebtOwners :many
+-- The session_notices half of the reaction-debt check (the table has no
+-- announced concept): owners with unconsumed wake notices.
+SELECT DISTINCT owner FROM session_notices
+WHERE wake = 1 AND reacted = 0 AND delivery != 'void'
+  AND owner IN (sqlc.slice('owner_ids'));

@@ -43,12 +43,12 @@ func dbConnectForTest(t *testing.T, dataDir string) (*sql.DB, error) {
 	return conn, err
 }
 
-func newDeadHostStore(t *testing.T, dataDir string, pid int, label string) *session.AsyncJobStore {
+func newDeadHostStore(t *testing.T, dataDir string, pid int, label string) *session.HostStore {
 	t.Helper()
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	st := session.NewAsyncJobStore(conn, dataDir, pid, label)
+	st := session.NewHostStore(conn, dataDir, pid, label)
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	return st
 }
@@ -75,8 +75,9 @@ func tailDone(ctx context.Context, a *app.App, sessionID string) bool {
 }
 
 // newActivityCmdApp builds a lightweight App with the real SQLite stores on
-// a temp data dir -- the shape every sessions_* command test drives.
-func newActivityCmdApp(t *testing.T) (*app.App, string, *session.AsyncJobStore) {
+// a temp data dir -- the shape every sessions_* command test drives. The
+// returned store is the host store the driver markers are claimed through.
+func newActivityCmdApp(t *testing.T) (*app.App, string, *session.HostStore) {
 	t.Helper()
 	dataDir := t.TempDir()
 	conn, err := dbConnectForTest(t, dataDir)
@@ -88,16 +89,14 @@ func newActivityCmdApp(t *testing.T) (*app.App, string, *session.AsyncJobStore) 
 		DB:       func() *sql.DB { return conn },
 	}
 	a.SetDataDirForTest(dataDir)
-	store := session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "activity-cmd-test")
+	store := session.NewHostStore(conn, dataDir, os.Getpid(), "activity-cmd-test")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	a.SetAsyncJobStoreForTest(store)
 	a.SetWakeScheduleStoreForTest(session.NewWakeScheduleStore(conn))
 	return a, dataDir, store
 }
 
 // TestSessionsActivity_OneTableEveryCommand is the cross-command oracle.
 func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	a, dataDir, store := newActivityCmdApp(t)
 
@@ -118,21 +117,17 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	// between turns (R6C-1/R5C-5): released lock, live driver, debt pending.
 	between := mk("between")
 	require.NoError(t, store.ClaimSessionDriver(ctx, between.ID))
-	require.NoError(t, store.InsertSessionNotice(ctx, between.ID, "wake", "x", true, ""))
+	require.NoError(t, session.NewSessionNoticeStore(a.DB()).InsertSessionNotice(ctx, between.ID, "wake", "x", true, ""))
 	releasedLock(t, dataDir, between.ID)
 
-	// delegating (D2): a live delegation outranks everything else. The row
-	// is claimed on the store's own (alive) host.
+	// delegating (D2): a live delegation outranks everything else. The
+	// delegation is a live batch root on the fixture's own (alive) host;
+	// `sessions why` reads it as batch live (the batch facts outrank the
+	// classifier), while list/inject/tail read the classifier verdict.
 	delegating := mk("delegating")
 	require.NoError(t, store.ClaimSessionDriver(ctx, delegating.ID))
 	child := mk("delegating-child")
-	deadline := time.Now().Add(time.Hour)
-	_, err := store.Claim(ctx, session.ClaimParams{
-		Owner: delegating.ID, ToolCallID: "call-1", Kind: session.JobKindAgent,
-		Input: "delegating fixture", ChildSessionID: child.ID,
-		Deadline: &deadline, TimeoutKind: "wake_only",
-	})
-	require.NoError(t, err)
+	claimDelegation(t, a, delegating.ID, "call-1", child.ID)
 
 	// crashed (D3): a dead foreign PID and NO live work, whatever the finish.
 	crashed := mk("crashed")
@@ -165,7 +160,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	table := map[string]expect{
 		inTurn.ID:     {status: "running", whyStatus: "status: running", live: true},
 		between.ID:    {status: "running", whyStatus: "status: running", live: true},
-		delegating.ID: {status: "delegating", whyStatus: "status: delegating", live: true},
+		delegating.ID: {status: "delegating", whyStatus: "status: batch live", live: true},
 		crashed.ID:    {status: "crashed", whyStatus: "status: crashed", live: false},
 		ended.ID:      {status: "done", whyStatus: "status: done", live: false},
 		idle.ID:       {status: "", whyStatus: "status: at rest", live: false},

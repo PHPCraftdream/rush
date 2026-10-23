@@ -307,6 +307,14 @@ var _ credentialRunner = (*coordinator)(nil)
 // call's state, and every ad-hoc provider client is built fresh per
 // call (never cached).
 func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt string, creds *CredentialSet, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// R12-H2a round 2: resolution builds this call's toolset into the
+	// trusted call state's build-resource scope before runInternal runs, so
+	// every return from here — resolution failure included — must release
+	// it. Close is idempotent; runInternal's own defer double-closes
+	// harmlessly.
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -352,7 +360,7 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 func (c *coordinator) resolveCallModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	if creds == nil {
 		if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
-			return c.applyModelOverrides(ctx, smartOverride, fastOverride)
+			return c.applyModelOverrides(ctx, sessionID, smartOverride, fastOverride)
 		}
 		return c.resolveSessionModels(ctx, sessionID)
 	}

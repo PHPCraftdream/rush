@@ -1,105 +1,86 @@
 // Own-scope recovery (doc sec.3.5/3.7, step 5): CLIScope recovers its
 // owner's dead-host rows to 'interrupted' before answering, so a row whose
 // host just died is treated as recoverable, never as open scope forever.
+//
+// The deleted newTestAsyncJobStoreWithDataDir helper and this file's OFF
+// twins (the async_jobs ClaimAsyncJob/MarkAsyncJobAnnounced seeds and their
+// store.Get readbacks) were obsolete contracts: the batch rows are the only
+// live-work authority, so both fixtures seed and read through batch_nodes
+// (b1SeedBatchRootOnHost / batchScopeRootState) over a one-migration store.
 package agent
 
 import (
 	"context"
-	"database/sql"
-	"os"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
-// newTestAsyncJobStoreWithDataDir is newTestAsyncJobStore plus the raw
-// *sql.DB and data dir, needed here to fabricate a dead host's lock file and
-// seed a running row directly (session.AsyncJobStore.Claim always registers
-// THIS process's own host id, never an arbitrary one).
-func newTestAsyncJobStoreWithDataDir(t *testing.T) (*session.AsyncJobStore, string, *sql.DB) {
-	t.Helper()
-	dataDir := t.TempDir()
-	ctx := context.Background()
-	conn, err := db.Connect(ctx, dataDir)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
-	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
-	require.NoError(t, err)
-	store := session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	return store, dataDir, conn
-}
-
 // TestCLIScope_RecoversDeadHostRowBeforeAnswering pins the CLI-loop wiring
-// (app_run_async.go's nextStep calls CLIScope between turns): a
-// row on a host that has since died must be recovered to 'interrupted' as
-// part of answering the scope question, not merely skipped by HostNotDead
+// (app_run_async.go's nextStep calls CLIScope between turns): a running
+// batch root on a host that has since died must be recovered to 'interrupted'
+// as part of answering the scope question, not merely skipped by HostNotDead
 // and left 'running' forever.
 func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	q := db.New(conn)
+	conn, dataDir := batchFixtureConn(t)
 
+	// Fabricate the dead host: a lock file that exists but is not held --
+	// exactly what a crashed process leaves behind.
 	seed, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "dead-host-x"))
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
-	_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
-		OwnerSessionID: "sess-1", ToolCallID: "call-1", Kind: "command", ToolName: "bash",
-		InputHash: "h1", HostID: "dead-host-x", CreatedAt: 1700000000, UpdatedAt: 1700000000,
-	})
-	require.NoError(t, err)
-	_, err = q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
-		UpdatedAt: 1700000001, OwnerSessionID: "sess-1", ToolCallID: "call-1",
-	})
-	require.NoError(t, err)
+	batchRoot, batchChild := b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "dead-host-x", "running")
 
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(nil)
-	c.asyncJobs.store = store
+	c := newBatchRuntimeCoordinator()
+	// Standalone coordinator: an explicit node-facts binding is required, or
+	// a CLIScope answers through unknownBatchCutoverFacts ("batch facts:
+	// node source unavailable").
+	bindBatchNodeFacts(t, c, conn, dataDir)
 
 	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
-	require.False(t, st.WorkOpen, "an interrupted row (wake=0) with nothing else outstanding must close the scope")
+	require.False(t, st.WorkOpen, "an interrupted root (wake=0) with nothing else outstanding must close the scope")
 
-	row, err := store.Get(ctx, "sess-1", "call-1")
-	require.NoError(t, err)
-	require.Equal(t, "interrupted", row.State, "CLIScope must have recovered the dead host's row, not merely skipped it")
-	require.Equal(t, "interrupted", row.NoticeKind)
-	require.EqualValues(t, 0, row.Wake)
+	state, outcome := batchScopeRootState(t, conn, batchRoot)
+	require.Equal(t, "interrupted", state)
+	require.Equal(t, "host_lost", outcome)
+	count, wake := batchScopeSelectedNotices(t, conn, batchRoot)
+	require.Equal(t, 1, count)
+	require.Zero(t, wake)
+	var childState, childOutcome string
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT state, outcome_code FROM batch_nodes WHERE node_id = ?`, batchChild).Scan(&childState, &childOutcome))
+	require.Equal(t, "interrupted", childState)
+	require.Equal(t, "host_lost", childOutcome)
 }
 
 // TestCLIScope_LiveHostRunningRowKeepsScopeOpen is the negative twin: a
-// running row on a LIVE host must still report scope open, unrecovered.
+// running root on a LIVE host must still report scope open, unrecovered.
 func TestCLIScope_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store, dataDir, conn := newTestAsyncJobStoreWithDataDir(t)
-	q := db.New(conn)
+	conn, dataDir := batchFixtureConn(t)
 
+	// A live host holds its lock for the whole test.
 	holder, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "live-host-x"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 
-	_, err = q.ClaimAsyncJob(ctx, db.ClaimAsyncJobParams{
-		OwnerSessionID: "sess-1", ToolCallID: "call-1", Kind: "command", ToolName: "bash",
-		InputHash: "h1", HostID: "live-host-x", CreatedAt: 1700000000, UpdatedAt: 1700000000,
-	})
-	require.NoError(t, err)
+	batchRoot, _ := b1SeedBatchRootOnHost(t, conn, "sess-1", "batch-call-1", "live-host-x", "running")
 
-	c := &coordinator{}
-	c.asyncJobs = newWorkLedger(nil)
-	c.asyncJobs.store = store
+	c := newBatchRuntimeCoordinator()
+	// Explicit facts binding for the standalone coordinator.
+	bindBatchNodeFacts(t, c, conn, dataDir)
 
 	st, err := c.CLIScope(ctx, "sess-1")
 	require.NoError(t, err)
-	require.True(t, st.WorkOpen, "a running row on a live host must keep the scope open")
+	require.True(t, st.WorkOpen, "a running root on a live host must keep the scope open")
 
-	row, err := store.Get(ctx, "sess-1", "call-1")
-	require.NoError(t, err)
-	require.Equal(t, "running", row.State, "a live host's row must never be recovered")
+	state, outcome := batchScopeRootState(t, conn, batchRoot)
+	require.Equal(t, "running", state, "a live host's root must never be recovered")
+	require.Empty(t, outcome, "a live host's root must never be recovered")
 }

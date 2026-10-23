@@ -27,17 +27,125 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.ackRunQueueEntryStmt, err = db.PrepareContext(ctx, ackRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query AckRunQueueEntry: %w", err)
 	}
+	if q.advanceBatchRootSequenceStmt, err = db.PrepareContext(ctx, advanceBatchRootSequence); err != nil {
+		return nil, fmt.Errorf("error preparing query AdvanceBatchRootSequence: %w", err)
+	}
 	if q.advanceLoopWakeOccurrenceStmt, err = db.PrepareContext(ctx, advanceLoopWakeOccurrence); err != nil {
 		return nil, fmt.Errorf("error preparing query AdvanceLoopWakeOccurrence: %w", err)
 	}
-	if q.archiveAsyncJobToolCallIDStmt, err = db.PrepareContext(ctx, archiveAsyncJobToolCallID); err != nil {
-		return nil, fmt.Errorf("error preparing query ArchiveAsyncJobToolCallID: %w", err)
+	if q.answerBatchControlRequestStmt, err = db.PrepareContext(ctx, answerBatchControlRequest); err != nil {
+		return nil, fmt.Errorf("error preparing query AnswerBatchControlRequest: %w", err)
 	}
-	if q.asyncJobDebtOwnersStmt, err = db.PrepareContext(ctx, asyncJobDebtOwners); err != nil {
-		return nil, fmt.Errorf("error preparing query AsyncJobDebtOwners: %w", err)
+	if q.batchDisposeBoundNoticesByToolCallIDStmt, err = db.PrepareContext(ctx, batchDisposeBoundNoticesByToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchDisposeBoundNoticesByToolCallID: %w", err)
 	}
-	if q.asyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, asyncReactionDebtExists); err != nil {
-		return nil, fmt.Errorf("error preparing query AsyncReactionDebtExists: %w", err)
+	if q.batchHistoryRependNodesByDeletedNoticeMessagesStmt, err = db.PrepareContext(ctx, batchHistoryRependNodesByDeletedNoticeMessages); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryRependNodesByDeletedNoticeMessages: %w", err)
+	}
+	if q.batchHistoryRootsForOwnerStmt, err = db.PrepareContext(ctx, batchHistoryRootsForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryRootsForOwner: %w", err)
+	}
+	if q.batchHistoryStateCountsStmt, err = db.PrepareContext(ctx, batchHistoryStateCounts); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchHistoryStateCounts: %w", err)
+	}
+	if q.batchLevelNodesStmt, err = db.PrepareContext(ctx, batchLevelNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchLevelNodes: %w", err)
+	}
+	if q.batchListBoundNoticesByToolCallIDStmt, err = db.PrepareContext(ctx, batchListBoundNoticesByToolCallID); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchListBoundNoticesByToolCallID: %w", err)
+	}
+	if q.batchLiveNodesForOwnersStmt, err = db.PrepareContext(ctx, batchLiveNodesForOwners); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchLiveNodesForOwners: %w", err)
+	}
+	if q.batchOutboxAccountNodeStmt, err = db.PrepareContext(ctx, batchOutboxAccountNode); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAccountNode: %w", err)
+	}
+	if q.batchOutboxAccountNoticeStmt, err = db.PrepareContext(ctx, batchOutboxAccountNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAccountNotice: %w", err)
+	}
+	if q.batchOutboxAnnounceStmt, err = db.PrepareContext(ctx, batchOutboxAnnounce); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxAnnounce: %w", err)
+	}
+	if q.batchOutboxClearFailureStmt, err = db.PrepareContext(ctx, batchOutboxClearFailure); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxClearFailure: %w", err)
+	}
+	if q.batchOutboxConsumeWithToolResultStmt, err = db.PrepareContext(ctx, batchOutboxConsumeWithToolResult); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxConsumeWithToolResult: %w", err)
+	}
+	if q.batchOutboxDebtNodesStmt, err = db.PrepareContext(ctx, batchOutboxDebtNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxDebtNodes: %w", err)
+	}
+	if q.batchOutboxDebtNoticesStmt, err = db.PrepareContext(ctx, batchOutboxDebtNotices); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxDebtNotices: %w", err)
+	}
+	if q.batchOutboxFailedNodesStmt, err = db.PrepareContext(ctx, batchOutboxFailedNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxFailedNodes: %w", err)
+	}
+	if q.batchOutboxInlineElectStmt, err = db.PrepareContext(ctx, batchOutboxInlineElect); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxInlineElect: %w", err)
+	}
+	if q.batchOutboxNameMessageStmt, err = db.PrepareContext(ctx, batchOutboxNameMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxNameMessage: %w", err)
+	}
+	if q.batchOutboxPendingStmt, err = db.PrepareContext(ctx, batchOutboxPending); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxPending: %w", err)
+	}
+	if q.batchOutboxPullStmt, err = db.PrepareContext(ctx, batchOutboxPull); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxPull: %w", err)
+	}
+	if q.batchOutboxReactNodesStmt, err = db.PrepareContext(ctx, batchOutboxReactNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxReactNodes: %w", err)
+	}
+	if q.batchOutboxSetAnnouncementMessageStmt, err = db.PrepareContext(ctx, batchOutboxSetAnnouncementMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxSetAnnouncementMessage: %w", err)
+	}
+	if q.batchOutboxWakeZeroStmt, err = db.PrepareContext(ctx, batchOutboxWakeZero); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchOutboxWakeZero: %w", err)
+	}
+	if q.batchRecoveryCloseControlsStmt, err = db.PrepareContext(ctx, batchRecoveryCloseControls); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryCloseControls: %w", err)
+	}
+	if q.batchRecoveryElectStmt, err = db.PrepareContext(ctx, batchRecoveryElect); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryElect: %w", err)
+	}
+	if q.batchRecoveryInterruptStmt, err = db.PrepareContext(ctx, batchRecoveryInterrupt); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryInterrupt: %w", err)
+	}
+	if q.batchRecoveryNoticeStmt, err = db.PrepareContext(ctx, batchRecoveryNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryNotice: %w", err)
+	}
+	if q.batchRecoveryRootsStmt, err = db.PrepareContext(ctx, batchRecoveryRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRecoveryRoots: %w", err)
+	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByAnnounceMessageIDs: %w", err)
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt, err = db.PrepareContext(ctx, batchRerunLiveRootsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunLiveRootsByToolCallIDs: %w", err)
+	}
+	if q.batchRerunRependNodesByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunRependNodesByNoticeMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunRependNodesByNoticeMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidNodesByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidNodesByNoticeMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidNodesByNoticeMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidNodesOfVoidedRootsStmt, err = db.PrepareContext(ctx, batchRerunVoidNodesOfVoidedRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidNodesOfVoidedRoots: %w", err)
+	}
+	if q.batchRerunVoidRootsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidRootsByAnnounceMessageIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidRootsByAnnounceMessageIDs: %w", err)
+	}
+	if q.batchRerunVoidRootsByToolCallIDsStmt, err = db.PrepareContext(ctx, batchRerunVoidRootsByToolCallIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRerunVoidRootsByToolCallIDs: %w", err)
+	}
+	if q.batchResetDeleteOwnerNodesStmt, err = db.PrepareContext(ctx, batchResetDeleteOwnerNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchResetDeleteOwnerNodes: %w", err)
+	}
+	if q.batchRetentionRootsStmt, err = db.PrepareContext(ctx, batchRetentionRoots); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRetentionRoots: %w", err)
+	}
+	if q.batchRetentionWriterStmt, err = db.PrepareContext(ctx, batchRetentionWriter); err != nil {
+		return nil, fmt.Errorf("error preparing query BatchRetentionWriter: %w", err)
 	}
 	if q.cancelAllWakeSchedulesForOwnerStmt, err = db.PrepareContext(ctx, cancelAllWakeSchedulesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query CancelAllWakeSchedulesForOwner: %w", err)
@@ -45,17 +153,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.cancelWakeScheduleStmt, err = db.PrepareContext(ctx, cancelWakeSchedule); err != nil {
 		return nil, fmt.Errorf("error preparing query CancelWakeSchedule: %w", err)
 	}
-	if q.claimAsyncJobStmt, err = db.PrepareContext(ctx, claimAsyncJob); err != nil {
-		return nil, fmt.Errorf("error preparing query ClaimAsyncJob: %w", err)
-	}
 	if q.claimWakeScheduleLeaseStmt, err = db.PrepareContext(ctx, claimWakeScheduleLease); err != nil {
 		return nil, fmt.Errorf("error preparing query ClaimWakeScheduleLease: %w", err)
 	}
 	if q.cleanupExpiredLeasesStmt, err = db.PrepareContext(ctx, cleanupExpiredLeases); err != nil {
 		return nil, fmt.Errorf("error preparing query CleanupExpiredLeases: %w", err)
-	}
-	if q.clearReactedFailedForOwnerStmt, err = db.PrepareContext(ctx, clearReactedFailedForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query ClearReactedFailedForOwner: %w", err)
 	}
 	if q.clearSessionNoticesReactedFailedForOwnerStmt, err = db.PrepareContext(ctx, clearSessionNoticesReactedFailedForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ClearSessionNoticesReactedFailedForOwner: %w", err)
@@ -65,9 +167,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.countActiveWakeSchedulesForOwnerStmt, err = db.PrepareContext(ctx, countActiveWakeSchedulesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query CountActiveWakeSchedulesForOwner: %w", err)
-	}
-	if q.countAsyncJobsOlderThanStmt, err = db.PrepareContext(ctx, countAsyncJobsOlderThan); err != nil {
-		return nil, fmt.Errorf("error preparing query CountAsyncJobsOlderThan: %w", err)
 	}
 	if q.countMessagesBySessionStmt, err = db.PrepareContext(ctx, countMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query CountMessagesBySession: %w", err)
@@ -80,6 +179,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.countSessionNoticesOlderThanStmt, err = db.PrepareContext(ctx, countSessionNoticesOlderThan); err != nil {
 		return nil, fmt.Errorf("error preparing query CountSessionNoticesOlderThan: %w", err)
+	}
+	if q.createBatchControlRequestStmt, err = db.PrepareContext(ctx, createBatchControlRequest); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateBatchControlRequest: %w", err)
 	}
 	if q.createFileStmt, err = db.PrepareContext(ctx, createFile); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateFile: %w", err)
@@ -96,8 +198,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createSessionPermissionStmt, err = db.PrepareContext(ctx, createSessionPermission); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSessionPermission: %w", err)
 	}
-	if q.deleteAsyncHostIfNoJobsStmt, err = db.PrepareContext(ctx, deleteAsyncHostIfNoJobs); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteAsyncHostIfNoJobs: %w", err)
+	if q.deleteAsyncHostIfNoNodesStmt, err = db.PrepareContext(ctx, deleteAsyncHostIfNoNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteAsyncHostIfNoNodes: %w", err)
+	}
+	if q.deleteBatchSubtreeStmt, err = db.PrepareContext(ctx, deleteBatchSubtree); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBatchSubtree: %w", err)
 	}
 	if q.deleteFileStmt, err = db.PrepareContext(ctx, deleteFile); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteFile: %w", err)
@@ -135,35 +240,29 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionMessagesByIDsStmt, err = db.PrepareContext(ctx, deleteSessionMessagesByIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessagesByIDs: %w", err)
 	}
-	if q.deleteTerminalUnannouncedAsyncJobsForHostStmt, err = db.PrepareContext(ctx, deleteTerminalUnannouncedAsyncJobsForHost); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteTerminalUnannouncedAsyncJobsForHost: %w", err)
-	}
-	if q.deleteUnannouncedAsyncJobStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJob); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJob: %w", err)
-	}
-	if q.deleteUnannouncedAsyncJobForClaimStmt, err = db.PrepareContext(ctx, deleteUnannouncedAsyncJobForClaim); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteUnannouncedAsyncJobForClaim: %w", err)
-	}
-	if q.deliverAsyncJobInlineStmt, err = db.PrepareContext(ctx, deliverAsyncJobInline); err != nil {
-		return nil, fmt.Errorf("error preparing query DeliverAsyncJobInline: %w", err)
-	}
 	if q.enqueueRunQueueEntryStmt, err = db.PrepareContext(ctx, enqueueRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query EnqueueRunQueueEntry: %w", err)
 	}
 	if q.finishLoopWakeScheduleStmt, err = db.PrepareContext(ctx, finishLoopWakeSchedule); err != nil {
 		return nil, fmt.Errorf("error preparing query FinishLoopWakeSchedule: %w", err)
 	}
-	if q.getAsyncHostStmt, err = db.PrepareContext(ctx, getAsyncHost); err != nil {
-		return nil, fmt.Errorf("error preparing query GetAsyncHost: %w", err)
-	}
-	if q.getAsyncJobStmt, err = db.PrepareContext(ctx, getAsyncJob); err != nil {
-		return nil, fmt.Errorf("error preparing query GetAsyncJob: %w", err)
-	}
-	if q.getAsyncJobByClaimIDStmt, err = db.PrepareContext(ctx, getAsyncJobByClaimID); err != nil {
-		return nil, fmt.Errorf("error preparing query GetAsyncJobByClaimID: %w", err)
+	if q.getAsyncHostRowStmt, err = db.PrepareContext(ctx, getAsyncHostRow); err != nil {
+		return nil, fmt.Errorf("error preparing query GetAsyncHostRow: %w", err)
 	}
 	if q.getAverageResponseTimeStmt, err = db.PrepareContext(ctx, getAverageResponseTime); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAverageResponseTime: %w", err)
+	}
+	if q.getBatchControlRequestStmt, err = db.PrepareContext(ctx, getBatchControlRequest); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchControlRequest: %w", err)
+	}
+	if q.getBatchNodeStmt, err = db.PrepareContext(ctx, getBatchNode); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchNode: %w", err)
+	}
+	if q.getBatchRootStmt, err = db.PrepareContext(ctx, getBatchRoot); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchRoot: %w", err)
+	}
+	if q.getBatchRootIdentityStmt, err = db.PrepareContext(ctx, getBatchRootIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBatchRootIdentity: %w", err)
 	}
 	if q.getCallTreeActivityStmt, err = db.PrepareContext(ctx, getCallTreeActivity); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCallTreeActivity: %w", err)
@@ -183,6 +282,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getHourDayHeatmapStmt, err = db.PrepareContext(ctx, getHourDayHeatmap); err != nil {
 		return nil, fmt.Errorf("error preparing query GetHourDayHeatmap: %w", err)
 	}
+	if q.getLiveBatchRootStmt, err = db.PrepareContext(ctx, getLiveBatchRoot); err != nil {
+		return nil, fmt.Errorf("error preparing query GetLiveBatchRoot: %w", err)
+	}
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
@@ -194,9 +296,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getRunQueueEntryStmt, err = db.PrepareContext(ctx, getRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query GetRunQueueEntry: %w", err)
-	}
-	if q.getRunningAsyncJobByChildSessionStmt, err = db.PrepareContext(ctx, getRunningAsyncJobByChildSession); err != nil {
-		return nil, fmt.Errorf("error preparing query GetRunningAsyncJobByChildSession: %w", err)
 	}
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
@@ -240,9 +339,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.hasOutstandingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, hasOutstandingRunQueueEntryForSession); err != nil {
 		return nil, fmt.Errorf("error preparing query HasOutstandingRunQueueEntryForSession: %w", err)
 	}
-	if q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt, err = db.PrepareContext(ctx, incrementAsyncJobWakeAttemptsForSnapshotRow); err != nil {
-		return nil, fmt.Errorf("error preparing query IncrementAsyncJobWakeAttemptsForSnapshotRow: %w", err)
-	}
 	if q.incrementSessionCostStmt, err = db.PrepareContext(ctx, incrementSessionCost); err != nil {
 		return nil, fmt.Errorf("error preparing query IncrementSessionCost: %w", err)
 	}
@@ -270,20 +366,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listAllUserMessagesStmt, err = db.PrepareContext(ctx, listAllUserMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAllUserMessages: %w", err)
 	}
-	if q.listAsyncHostsStmt, err = db.PrepareContext(ctx, listAsyncHosts); err != nil {
-		return nil, fmt.Errorf("error preparing query ListAsyncHosts: %w", err)
+	if q.listAsyncHostRowsStmt, err = db.PrepareContext(ctx, listAsyncHostRows); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAsyncHostRows: %w", err)
 	}
-	if q.listAsyncHostsWithNoJobsStmt, err = db.PrepareContext(ctx, listAsyncHostsWithNoJobs); err != nil {
-		return nil, fmt.Errorf("error preparing query ListAsyncHostsWithNoJobs: %w", err)
+	if q.listAsyncHostsWithNoNodesStmt, err = db.PrepareContext(ctx, listAsyncHostsWithNoNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAsyncHostsWithNoNodes: %w", err)
 	}
-	if q.listAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, listAsyncJobsForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query ListAsyncJobsForOwner: %w", err)
+	if q.listBatchChildrenStmt, err = db.PrepareContext(ctx, listBatchChildren); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBatchChildren: %w", err)
+	}
+	if q.listBatchNodesStmt, err = db.PrepareContext(ctx, listBatchNodes); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBatchNodes: %w", err)
 	}
 	if q.listCandidateInterruptedAssistantSessionsStmt, err = db.PrepareContext(ctx, listCandidateInterruptedAssistantSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCandidateInterruptedAssistantSessions: %w", err)
-	}
-	if q.listDistinctRecoverableHostIDsStmt, err = db.PrepareContext(ctx, listDistinctRecoverableHostIDs); err != nil {
-		return nil, fmt.Errorf("error preparing query ListDistinctRecoverableHostIDs: %w", err)
 	}
 	if q.listDueWakeSchedulesStmt, err = db.PrepareContext(ctx, listDueWakeSchedules); err != nil {
 		return nil, fmt.Errorf("error preparing query ListDueWakeSchedules: %w", err)
@@ -297,6 +393,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listLatestSessionFilesStmt, err = db.PrepareContext(ctx, listLatestSessionFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListLatestSessionFiles: %w", err)
 	}
+	if q.listLiveBatchRootsForHostStmt, err = db.PrepareContext(ctx, listLiveBatchRootsForHost); err != nil {
+		return nil, fmt.Errorf("error preparing query ListLiveBatchRootsForHost: %w", err)
+	}
+	if q.listLiveBatchRootsForOwnerStmt, err = db.PrepareContext(ctx, listLiveBatchRootsForOwner); err != nil {
+		return nil, fmt.Errorf("error preparing query ListLiveBatchRootsForOwner: %w", err)
+	}
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
 	}
@@ -309,14 +411,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionPaginatedStmt, err = db.PrepareContext(ctx, listMessagesBySessionPaginated); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySessionPaginated: %w", err)
 	}
-	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
-		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
-	}
 	if q.listOpenOnceWakeSchedulesForOwnersStmt, err = db.PrepareContext(ctx, listOpenOnceWakeSchedulesForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query ListOpenOnceWakeSchedulesForOwners: %w", err)
 	}
-	if q.listPendingAsyncJobNoticesForOwnerStmt, err = db.PrepareContext(ctx, listPendingAsyncJobNoticesForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query ListPendingAsyncJobNoticesForOwner: %w", err)
+	if q.listPendingBatchControlRequestsStmt, err = db.PrepareContext(ctx, listPendingBatchControlRequests); err != nil {
+		return nil, fmt.Errorf("error preparing query ListPendingBatchControlRequests: %w", err)
 	}
 	if q.listPendingInjectsBySessionStmt, err = db.PrepareContext(ctx, listPendingInjectsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPendingInjectsBySession: %w", err)
@@ -330,17 +429,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listPendingSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, listPendingSessionNoticesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPendingSessionNoticesForOwner: %w", err)
 	}
-	if q.listReactedFailedAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, listReactedFailedAsyncJobsForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query ListReactedFailedAsyncJobsForOwner: %w", err)
-	}
 	if q.listReactedFailedSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, listReactedFailedSessionNoticesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListReactedFailedSessionNoticesForOwner: %w", err)
-	}
-	if q.listRunningAsyncJobsForHostStmt, err = db.PrepareContext(ctx, listRunningAsyncJobsForHost); err != nil {
-		return nil, fmt.Errorf("error preparing query ListRunningAsyncJobsForHost: %w", err)
-	}
-	if q.listRunningAsyncJobsForOwnersStmt, err = db.PrepareContext(ctx, listRunningAsyncJobsForOwners); err != nil {
-		return nil, fmt.Errorf("error preparing query ListRunningAsyncJobsForOwners: %w", err)
 	}
 	if q.listSessionDriverHostIDsStmt, err = db.PrepareContext(ctx, listSessionDriverHostIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessionDriverHostIDs: %w", err)
@@ -375,12 +465,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listWakeSchedulesForOwnerStmt, err = db.PrepareContext(ctx, listWakeSchedulesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query ListWakeSchedulesForOwner: %w", err)
 	}
-	if q.markAsyncJobAnnouncedStmt, err = db.PrepareContext(ctx, markAsyncJobAnnounced); err != nil {
-		return nil, fmt.Errorf("error preparing query MarkAsyncJobAnnounced: %w", err)
-	}
-	if q.markAsyncJobsReactedForOwnerStmt, err = db.PrepareContext(ctx, markAsyncJobsReactedForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query MarkAsyncJobsReactedForOwner: %w", err)
-	}
 	if q.markSessionNoticesReactedForOwnerStmt, err = db.PrepareContext(ctx, markSessionNoticesReactedForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkSessionNoticesReactedForOwner: %w", err)
 	}
@@ -396,14 +480,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.nextDueWakeScheduleAtStmt, err = db.PrepareContext(ctx, nextDueWakeScheduleAt); err != nil {
 		return nil, fmt.Errorf("error preparing query NextDueWakeScheduleAt: %w", err)
 	}
-	if q.pullPendingAsyncJobNoticeStmt, err = db.PrepareContext(ctx, pullPendingAsyncJobNotice); err != nil {
-		return nil, fmt.Errorf("error preparing query PullPendingAsyncJobNotice: %w", err)
+	if q.projectBatchNodeStmt, err = db.PrepareContext(ctx, projectBatchNode); err != nil {
+		return nil, fmt.Errorf("error preparing query ProjectBatchNode: %w", err)
 	}
 	if q.pullPendingSessionNoticeStmt, err = db.PrepareContext(ctx, pullPendingSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query PullPendingSessionNotice: %w", err)
-	}
-	if q.purgeAsyncJobsOlderThanStmt, err = db.PrepareContext(ctx, purgeAsyncJobsOlderThan); err != nil {
-		return nil, fmt.Errorf("error preparing query PurgeAsyncJobsOlderThan: %w", err)
 	}
 	if q.purgeSessionNoticesOlderThanStmt, err = db.PrepareContext(ctx, purgeSessionNoticesOlderThan); err != nil {
 		return nil, fmt.Errorf("error preparing query PurgeSessionNoticesOlderThan: %w", err)
@@ -417,8 +498,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.recoverExpiredWakeLeasesStmt, err = db.PrepareContext(ctx, recoverExpiredWakeLeases); err != nil {
 		return nil, fmt.Errorf("error preparing query RecoverExpiredWakeLeases: %w", err)
 	}
-	if q.registerAsyncHostStmt, err = db.PrepareContext(ctx, registerAsyncHost); err != nil {
-		return nil, fmt.Errorf("error preparing query RegisterAsyncHost: %w", err)
+	if q.registerAsyncHostRowStmt, err = db.PrepareContext(ctx, registerAsyncHostRow); err != nil {
+		return nil, fmt.Errorf("error preparing query RegisterAsyncHostRow: %w", err)
 	}
 	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
 		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
@@ -426,35 +507,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.renewRunQueueLeaseStmt, err = db.PrepareContext(ctx, renewRunQueueLease); err != nil {
 		return nil, fmt.Errorf("error preparing query RenewRunQueueLease: %w", err)
 	}
-	if q.rependAsyncJobsByNoticeMessageIDsStmt, err = db.PrepareContext(ctx, rependAsyncJobsByNoticeMessageIDs); err != nil {
-		return nil, fmt.Errorf("error preparing query RependAsyncJobsByNoticeMessageIDs: %w", err)
-	}
-	if q.rependJobKillRowWithoutNoticeStmt, err = db.PrepareContext(ctx, rependJobKillRowWithoutNotice); err != nil {
-		return nil, fmt.Errorf("error preparing query RependJobKillRowWithoutNotice: %w", err)
-	}
-	if q.rependJobKillRowsWithoutNoticeForHostStmt, err = db.PrepareContext(ctx, rependJobKillRowsWithoutNoticeForHost); err != nil {
-		return nil, fmt.Errorf("error preparing query RependJobKillRowsWithoutNoticeForHost: %w", err)
-	}
 	if q.rependSessionNoticesByMessageIDsStmt, err = db.PrepareContext(ctx, rependSessionNoticesByMessageIDs); err != nil {
 		return nil, fmt.Errorf("error preparing query RependSessionNoticesByMessageIDs: %w", err)
 	}
-	if q.repointSessionNoticesJobToolCallIDStmt, err = db.PrepareContext(ctx, repointSessionNoticesJobToolCallID); err != nil {
-		return nil, fmt.Errorf("error preparing query RepointSessionNoticesJobToolCallID: %w", err)
+	if q.reserveBatchNodeStmt, err = db.PrepareContext(ctx, reserveBatchNode); err != nil {
+		return nil, fmt.Errorf("error preparing query ReserveBatchNode: %w", err)
+	}
+	if q.selectBatchNodeNoticeStmt, err = db.PrepareContext(ctx, selectBatchNodeNotice); err != nil {
+		return nil, fmt.Errorf("error preparing query SelectBatchNodeNotice: %w", err)
 	}
 	if q.sessionNoticeDebtOwnersStmt, err = db.PrepareContext(ctx, sessionNoticeDebtOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SessionNoticeDebtOwners: %w", err)
-	}
-	if q.setAsyncJobAnnounceMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobAnnounceMessageID); err != nil {
-		return nil, fmt.Errorf("error preparing query SetAsyncJobAnnounceMessageID: %w", err)
-	}
-	if q.setAsyncJobNoticeMessageIDStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageID); err != nil {
-		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageID: %w", err)
-	}
-	if q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt, err = db.PrepareContext(ctx, setAsyncJobNoticeMessageIDForClaimIfDone); err != nil {
-		return nil, fmt.Errorf("error preparing query SetAsyncJobNoticeMessageIDForClaimIfDone: %w", err)
-	}
-	if q.setAsyncJobsWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setAsyncJobsWakeZeroPendingForOwners); err != nil {
-		return nil, fmt.Errorf("error preparing query SetAsyncJobsWakeZeroPendingForOwners: %w", err)
 	}
 	if q.setParentCostAccountedStmt, err = db.PrepareContext(ctx, setParentCostAccounted); err != nil {
 		return nil, fmt.Errorf("error preparing query SetParentCostAccounted: %w", err)
@@ -464,9 +527,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setSessionNoticesWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionNoticesWakeZeroPendingForOwners: %w", err)
-	}
-	if q.settleAsyncJobReactedFailedForSnapshotRowStmt, err = db.PrepareContext(ctx, settleAsyncJobReactedFailedForSnapshotRow); err != nil {
-		return nil, fmt.Errorf("error preparing query SettleAsyncJobReactedFailedForSnapshotRow: %w", err)
 	}
 	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt, err = db.PrepareContext(ctx, settleSessionNoticeReactedFailedForSnapshotRow); err != nil {
 		return nil, fmt.Errorf("error preparing query SettleSessionNoticeReactedFailedForSnapshotRow: %w", err)
@@ -489,8 +549,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.terminalFailRunQueueEntryStmt, err = db.PrepareContext(ctx, terminalFailRunQueueEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query TerminalFailRunQueueEntry: %w", err)
 	}
-	if q.transitionAsyncJobTerminalPreserveVoidStmt, err = db.PrepareContext(ctx, transitionAsyncJobTerminalPreserveVoid); err != nil {
-		return nil, fmt.Errorf("error preparing query TransitionAsyncJobTerminalPreserveVoid: %w", err)
+	if q.updateBatchRunnerCheckpointStmt, err = db.PrepareContext(ctx, updateBatchRunnerCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateBatchRunnerCheckpoint: %w", err)
 	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
@@ -522,20 +582,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.updateSessionWorkerReviewerReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionWorkerReviewerReasoningEffort); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionWorkerReviewerReasoningEffort: %w", err)
 	}
-	if q.visibleAsyncReactionDebtExistsStmt, err = db.PrepareContext(ctx, visibleAsyncReactionDebtExists); err != nil {
-		return nil, fmt.Errorf("error preparing query VisibleAsyncReactionDebtExists: %w", err)
-	}
-	if q.voidAsyncJobsByAnnounceMessageIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByAnnounceMessageIDs); err != nil {
-		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByAnnounceMessageIDs: %w", err)
-	}
-	if q.voidAsyncJobsByToolCallIDsStmt, err = db.PrepareContext(ctx, voidAsyncJobsByToolCallIDs); err != nil {
-		return nil, fmt.Errorf("error preparing query VoidAsyncJobsByToolCallIDs: %w", err)
-	}
 	if q.voidPendingSessionNoticeStmt, err = db.PrepareContext(ctx, voidPendingSessionNotice); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidPendingSessionNotice: %w", err)
-	}
-	if q.voidUndeliveredAsyncJobsForOwnerStmt, err = db.PrepareContext(ctx, voidUndeliveredAsyncJobsForOwner); err != nil {
-		return nil, fmt.Errorf("error preparing query VoidUndeliveredAsyncJobsForOwner: %w", err)
 	}
 	if q.voidUndeliveredSessionNoticesForOwnerStmt, err = db.PrepareContext(ctx, voidUndeliveredSessionNoticesForOwner); err != nil {
 		return nil, fmt.Errorf("error preparing query VoidUndeliveredSessionNoticesForOwner: %w", err)
@@ -556,24 +604,204 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing ackRunQueueEntryStmt: %w", cerr)
 		}
 	}
+	if q.advanceBatchRootSequenceStmt != nil {
+		if cerr := q.advanceBatchRootSequenceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing advanceBatchRootSequenceStmt: %w", cerr)
+		}
+	}
 	if q.advanceLoopWakeOccurrenceStmt != nil {
 		if cerr := q.advanceLoopWakeOccurrenceStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing advanceLoopWakeOccurrenceStmt: %w", cerr)
 		}
 	}
-	if q.archiveAsyncJobToolCallIDStmt != nil {
-		if cerr := q.archiveAsyncJobToolCallIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing archiveAsyncJobToolCallIDStmt: %w", cerr)
+	if q.answerBatchControlRequestStmt != nil {
+		if cerr := q.answerBatchControlRequestStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing answerBatchControlRequestStmt: %w", cerr)
 		}
 	}
-	if q.asyncJobDebtOwnersStmt != nil {
-		if cerr := q.asyncJobDebtOwnersStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing asyncJobDebtOwnersStmt: %w", cerr)
+	if q.batchDisposeBoundNoticesByToolCallIDStmt != nil {
+		if cerr := q.batchDisposeBoundNoticesByToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchDisposeBoundNoticesByToolCallIDStmt: %w", cerr)
 		}
 	}
-	if q.asyncReactionDebtExistsStmt != nil {
-		if cerr := q.asyncReactionDebtExistsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing asyncReactionDebtExistsStmt: %w", cerr)
+	if q.batchHistoryRependNodesByDeletedNoticeMessagesStmt != nil {
+		if cerr := q.batchHistoryRependNodesByDeletedNoticeMessagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryRependNodesByDeletedNoticeMessagesStmt: %w", cerr)
+		}
+	}
+	if q.batchHistoryRootsForOwnerStmt != nil {
+		if cerr := q.batchHistoryRootsForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryRootsForOwnerStmt: %w", cerr)
+		}
+	}
+	if q.batchHistoryStateCountsStmt != nil {
+		if cerr := q.batchHistoryStateCountsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchHistoryStateCountsStmt: %w", cerr)
+		}
+	}
+	if q.batchLevelNodesStmt != nil {
+		if cerr := q.batchLevelNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchLevelNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchListBoundNoticesByToolCallIDStmt != nil {
+		if cerr := q.batchListBoundNoticesByToolCallIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchListBoundNoticesByToolCallIDStmt: %w", cerr)
+		}
+	}
+	if q.batchLiveNodesForOwnersStmt != nil {
+		if cerr := q.batchLiveNodesForOwnersStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchLiveNodesForOwnersStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAccountNodeStmt != nil {
+		if cerr := q.batchOutboxAccountNodeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAccountNodeStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAccountNoticeStmt != nil {
+		if cerr := q.batchOutboxAccountNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAccountNoticeStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxAnnounceStmt != nil {
+		if cerr := q.batchOutboxAnnounceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxAnnounceStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxClearFailureStmt != nil {
+		if cerr := q.batchOutboxClearFailureStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxClearFailureStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxConsumeWithToolResultStmt != nil {
+		if cerr := q.batchOutboxConsumeWithToolResultStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxConsumeWithToolResultStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxDebtNodesStmt != nil {
+		if cerr := q.batchOutboxDebtNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxDebtNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxDebtNoticesStmt != nil {
+		if cerr := q.batchOutboxDebtNoticesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxDebtNoticesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxFailedNodesStmt != nil {
+		if cerr := q.batchOutboxFailedNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxFailedNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxInlineElectStmt != nil {
+		if cerr := q.batchOutboxInlineElectStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxInlineElectStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxNameMessageStmt != nil {
+		if cerr := q.batchOutboxNameMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxNameMessageStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxPendingStmt != nil {
+		if cerr := q.batchOutboxPendingStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxPendingStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxPullStmt != nil {
+		if cerr := q.batchOutboxPullStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxPullStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxReactNodesStmt != nil {
+		if cerr := q.batchOutboxReactNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxReactNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxSetAnnouncementMessageStmt != nil {
+		if cerr := q.batchOutboxSetAnnouncementMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxSetAnnouncementMessageStmt: %w", cerr)
+		}
+	}
+	if q.batchOutboxWakeZeroStmt != nil {
+		if cerr := q.batchOutboxWakeZeroStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchOutboxWakeZeroStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryCloseControlsStmt != nil {
+		if cerr := q.batchRecoveryCloseControlsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryCloseControlsStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryElectStmt != nil {
+		if cerr := q.batchRecoveryElectStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryElectStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryInterruptStmt != nil {
+		if cerr := q.batchRecoveryInterruptStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryInterruptStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryNoticeStmt != nil {
+		if cerr := q.batchRecoveryNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryNoticeStmt: %w", cerr)
+		}
+	}
+	if q.batchRecoveryRootsStmt != nil {
+		if cerr := q.batchRecoveryRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRecoveryRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunLiveRootsByToolCallIDsStmt != nil {
+		if cerr := q.batchRerunLiveRootsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunLiveRootsByToolCallIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunRependNodesByNoticeMessageIDsStmt != nil {
+		if cerr := q.batchRerunRependNodesByNoticeMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunRependNodesByNoticeMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidNodesByNoticeMessageIDsStmt != nil {
+		if cerr := q.batchRerunVoidNodesByNoticeMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidNodesByNoticeMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidNodesOfVoidedRootsStmt != nil {
+		if cerr := q.batchRerunVoidNodesOfVoidedRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidNodesOfVoidedRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidRootsByAnnounceMessageIDsStmt != nil {
+		if cerr := q.batchRerunVoidRootsByAnnounceMessageIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidRootsByAnnounceMessageIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchRerunVoidRootsByToolCallIDsStmt != nil {
+		if cerr := q.batchRerunVoidRootsByToolCallIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRerunVoidRootsByToolCallIDsStmt: %w", cerr)
+		}
+	}
+	if q.batchResetDeleteOwnerNodesStmt != nil {
+		if cerr := q.batchResetDeleteOwnerNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchResetDeleteOwnerNodesStmt: %w", cerr)
+		}
+	}
+	if q.batchRetentionRootsStmt != nil {
+		if cerr := q.batchRetentionRootsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRetentionRootsStmt: %w", cerr)
+		}
+	}
+	if q.batchRetentionWriterStmt != nil {
+		if cerr := q.batchRetentionWriterStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing batchRetentionWriterStmt: %w", cerr)
 		}
 	}
 	if q.cancelAllWakeSchedulesForOwnerStmt != nil {
@@ -586,11 +814,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing cancelWakeScheduleStmt: %w", cerr)
 		}
 	}
-	if q.claimAsyncJobStmt != nil {
-		if cerr := q.claimAsyncJobStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing claimAsyncJobStmt: %w", cerr)
-		}
-	}
 	if q.claimWakeScheduleLeaseStmt != nil {
 		if cerr := q.claimWakeScheduleLeaseStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing claimWakeScheduleLeaseStmt: %w", cerr)
@@ -599,11 +822,6 @@ func (q *Queries) Close() error {
 	if q.cleanupExpiredLeasesStmt != nil {
 		if cerr := q.cleanupExpiredLeasesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing cleanupExpiredLeasesStmt: %w", cerr)
-		}
-	}
-	if q.clearReactedFailedForOwnerStmt != nil {
-		if cerr := q.clearReactedFailedForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing clearReactedFailedForOwnerStmt: %w", cerr)
 		}
 	}
 	if q.clearSessionNoticesReactedFailedForOwnerStmt != nil {
@@ -619,11 +837,6 @@ func (q *Queries) Close() error {
 	if q.countActiveWakeSchedulesForOwnerStmt != nil {
 		if cerr := q.countActiveWakeSchedulesForOwnerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countActiveWakeSchedulesForOwnerStmt: %w", cerr)
-		}
-	}
-	if q.countAsyncJobsOlderThanStmt != nil {
-		if cerr := q.countAsyncJobsOlderThanStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing countAsyncJobsOlderThanStmt: %w", cerr)
 		}
 	}
 	if q.countMessagesBySessionStmt != nil {
@@ -644,6 +857,11 @@ func (q *Queries) Close() error {
 	if q.countSessionNoticesOlderThanStmt != nil {
 		if cerr := q.countSessionNoticesOlderThanStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countSessionNoticesOlderThanStmt: %w", cerr)
+		}
+	}
+	if q.createBatchControlRequestStmt != nil {
+		if cerr := q.createBatchControlRequestStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createBatchControlRequestStmt: %w", cerr)
 		}
 	}
 	if q.createFileStmt != nil {
@@ -671,9 +889,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing createSessionPermissionStmt: %w", cerr)
 		}
 	}
-	if q.deleteAsyncHostIfNoJobsStmt != nil {
-		if cerr := q.deleteAsyncHostIfNoJobsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteAsyncHostIfNoJobsStmt: %w", cerr)
+	if q.deleteAsyncHostIfNoNodesStmt != nil {
+		if cerr := q.deleteAsyncHostIfNoNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteAsyncHostIfNoNodesStmt: %w", cerr)
+		}
+	}
+	if q.deleteBatchSubtreeStmt != nil {
+		if cerr := q.deleteBatchSubtreeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBatchSubtreeStmt: %w", cerr)
 		}
 	}
 	if q.deleteFileStmt != nil {
@@ -736,26 +959,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionMessagesByIDsStmt: %w", cerr)
 		}
 	}
-	if q.deleteTerminalUnannouncedAsyncJobsForHostStmt != nil {
-		if cerr := q.deleteTerminalUnannouncedAsyncJobsForHostStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteTerminalUnannouncedAsyncJobsForHostStmt: %w", cerr)
-		}
-	}
-	if q.deleteUnannouncedAsyncJobStmt != nil {
-		if cerr := q.deleteUnannouncedAsyncJobStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobStmt: %w", cerr)
-		}
-	}
-	if q.deleteUnannouncedAsyncJobForClaimStmt != nil {
-		if cerr := q.deleteUnannouncedAsyncJobForClaimStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteUnannouncedAsyncJobForClaimStmt: %w", cerr)
-		}
-	}
-	if q.deliverAsyncJobInlineStmt != nil {
-		if cerr := q.deliverAsyncJobInlineStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deliverAsyncJobInlineStmt: %w", cerr)
-		}
-	}
 	if q.enqueueRunQueueEntryStmt != nil {
 		if cerr := q.enqueueRunQueueEntryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing enqueueRunQueueEntryStmt: %w", cerr)
@@ -766,24 +969,34 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing finishLoopWakeScheduleStmt: %w", cerr)
 		}
 	}
-	if q.getAsyncHostStmt != nil {
-		if cerr := q.getAsyncHostStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getAsyncHostStmt: %w", cerr)
-		}
-	}
-	if q.getAsyncJobStmt != nil {
-		if cerr := q.getAsyncJobStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getAsyncJobStmt: %w", cerr)
-		}
-	}
-	if q.getAsyncJobByClaimIDStmt != nil {
-		if cerr := q.getAsyncJobByClaimIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getAsyncJobByClaimIDStmt: %w", cerr)
+	if q.getAsyncHostRowStmt != nil {
+		if cerr := q.getAsyncHostRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getAsyncHostRowStmt: %w", cerr)
 		}
 	}
 	if q.getAverageResponseTimeStmt != nil {
 		if cerr := q.getAverageResponseTimeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getAverageResponseTimeStmt: %w", cerr)
+		}
+	}
+	if q.getBatchControlRequestStmt != nil {
+		if cerr := q.getBatchControlRequestStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchControlRequestStmt: %w", cerr)
+		}
+	}
+	if q.getBatchNodeStmt != nil {
+		if cerr := q.getBatchNodeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchNodeStmt: %w", cerr)
+		}
+	}
+	if q.getBatchRootStmt != nil {
+		if cerr := q.getBatchRootStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchRootStmt: %w", cerr)
+		}
+	}
+	if q.getBatchRootIdentityStmt != nil {
+		if cerr := q.getBatchRootIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBatchRootIdentityStmt: %w", cerr)
 		}
 	}
 	if q.getCallTreeActivityStmt != nil {
@@ -816,6 +1029,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getHourDayHeatmapStmt: %w", cerr)
 		}
 	}
+	if q.getLiveBatchRootStmt != nil {
+		if cerr := q.getLiveBatchRootStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getLiveBatchRootStmt: %w", cerr)
+		}
+	}
 	if q.getMessageStmt != nil {
 		if cerr := q.getMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
@@ -834,11 +1052,6 @@ func (q *Queries) Close() error {
 	if q.getRunQueueEntryStmt != nil {
 		if cerr := q.getRunQueueEntryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getRunQueueEntryStmt: %w", cerr)
-		}
-	}
-	if q.getRunningAsyncJobByChildSessionStmt != nil {
-		if cerr := q.getRunningAsyncJobByChildSessionStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getRunningAsyncJobByChildSessionStmt: %w", cerr)
 		}
 	}
 	if q.getSessionByIDStmt != nil {
@@ -911,11 +1124,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing hasOutstandingRunQueueEntryForSessionStmt: %w", cerr)
 		}
 	}
-	if q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt != nil {
-		if cerr := q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing incrementAsyncJobWakeAttemptsForSnapshotRowStmt: %w", cerr)
-		}
-	}
 	if q.incrementSessionCostStmt != nil {
 		if cerr := q.incrementSessionCostStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing incrementSessionCostStmt: %w", cerr)
@@ -961,29 +1169,29 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listAllUserMessagesStmt: %w", cerr)
 		}
 	}
-	if q.listAsyncHostsStmt != nil {
-		if cerr := q.listAsyncHostsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listAsyncHostsStmt: %w", cerr)
+	if q.listAsyncHostRowsStmt != nil {
+		if cerr := q.listAsyncHostRowsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAsyncHostRowsStmt: %w", cerr)
 		}
 	}
-	if q.listAsyncHostsWithNoJobsStmt != nil {
-		if cerr := q.listAsyncHostsWithNoJobsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listAsyncHostsWithNoJobsStmt: %w", cerr)
+	if q.listAsyncHostsWithNoNodesStmt != nil {
+		if cerr := q.listAsyncHostsWithNoNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAsyncHostsWithNoNodesStmt: %w", cerr)
 		}
 	}
-	if q.listAsyncJobsForOwnerStmt != nil {
-		if cerr := q.listAsyncJobsForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listAsyncJobsForOwnerStmt: %w", cerr)
+	if q.listBatchChildrenStmt != nil {
+		if cerr := q.listBatchChildrenStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBatchChildrenStmt: %w", cerr)
+		}
+	}
+	if q.listBatchNodesStmt != nil {
+		if cerr := q.listBatchNodesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBatchNodesStmt: %w", cerr)
 		}
 	}
 	if q.listCandidateInterruptedAssistantSessionsStmt != nil {
 		if cerr := q.listCandidateInterruptedAssistantSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listCandidateInterruptedAssistantSessionsStmt: %w", cerr)
-		}
-	}
-	if q.listDistinctRecoverableHostIDsStmt != nil {
-		if cerr := q.listDistinctRecoverableHostIDsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listDistinctRecoverableHostIDsStmt: %w", cerr)
 		}
 	}
 	if q.listDueWakeSchedulesStmt != nil {
@@ -1006,6 +1214,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listLatestSessionFilesStmt: %w", cerr)
 		}
 	}
+	if q.listLiveBatchRootsForHostStmt != nil {
+		if cerr := q.listLiveBatchRootsForHostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listLiveBatchRootsForHostStmt: %w", cerr)
+		}
+	}
+	if q.listLiveBatchRootsForOwnerStmt != nil {
+		if cerr := q.listLiveBatchRootsForOwnerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listLiveBatchRootsForOwnerStmt: %w", cerr)
+		}
+	}
 	if q.listMessagesBySessionStmt != nil {
 		if cerr := q.listMessagesBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
@@ -1026,19 +1244,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionPaginatedStmt: %w", cerr)
 		}
 	}
-	if q.listNewFilesStmt != nil {
-		if cerr := q.listNewFilesStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listNewFilesStmt: %w", cerr)
-		}
-	}
 	if q.listOpenOnceWakeSchedulesForOwnersStmt != nil {
 		if cerr := q.listOpenOnceWakeSchedulesForOwnersStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listOpenOnceWakeSchedulesForOwnersStmt: %w", cerr)
 		}
 	}
-	if q.listPendingAsyncJobNoticesForOwnerStmt != nil {
-		if cerr := q.listPendingAsyncJobNoticesForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listPendingAsyncJobNoticesForOwnerStmt: %w", cerr)
+	if q.listPendingBatchControlRequestsStmt != nil {
+		if cerr := q.listPendingBatchControlRequestsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listPendingBatchControlRequestsStmt: %w", cerr)
 		}
 	}
 	if q.listPendingInjectsBySessionStmt != nil {
@@ -1061,24 +1274,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listPendingSessionNoticesForOwnerStmt: %w", cerr)
 		}
 	}
-	if q.listReactedFailedAsyncJobsForOwnerStmt != nil {
-		if cerr := q.listReactedFailedAsyncJobsForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listReactedFailedAsyncJobsForOwnerStmt: %w", cerr)
-		}
-	}
 	if q.listReactedFailedSessionNoticesForOwnerStmt != nil {
 		if cerr := q.listReactedFailedSessionNoticesForOwnerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listReactedFailedSessionNoticesForOwnerStmt: %w", cerr)
-		}
-	}
-	if q.listRunningAsyncJobsForHostStmt != nil {
-		if cerr := q.listRunningAsyncJobsForHostStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listRunningAsyncJobsForHostStmt: %w", cerr)
-		}
-	}
-	if q.listRunningAsyncJobsForOwnersStmt != nil {
-		if cerr := q.listRunningAsyncJobsForOwnersStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listRunningAsyncJobsForOwnersStmt: %w", cerr)
 		}
 	}
 	if q.listSessionDriverHostIDsStmt != nil {
@@ -1136,16 +1334,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listWakeSchedulesForOwnerStmt: %w", cerr)
 		}
 	}
-	if q.markAsyncJobAnnouncedStmt != nil {
-		if cerr := q.markAsyncJobAnnouncedStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing markAsyncJobAnnouncedStmt: %w", cerr)
-		}
-	}
-	if q.markAsyncJobsReactedForOwnerStmt != nil {
-		if cerr := q.markAsyncJobsReactedForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing markAsyncJobsReactedForOwnerStmt: %w", cerr)
-		}
-	}
 	if q.markSessionNoticesReactedForOwnerStmt != nil {
 		if cerr := q.markSessionNoticesReactedForOwnerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing markSessionNoticesReactedForOwnerStmt: %w", cerr)
@@ -1171,19 +1359,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing nextDueWakeScheduleAtStmt: %w", cerr)
 		}
 	}
-	if q.pullPendingAsyncJobNoticeStmt != nil {
-		if cerr := q.pullPendingAsyncJobNoticeStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing pullPendingAsyncJobNoticeStmt: %w", cerr)
+	if q.projectBatchNodeStmt != nil {
+		if cerr := q.projectBatchNodeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing projectBatchNodeStmt: %w", cerr)
 		}
 	}
 	if q.pullPendingSessionNoticeStmt != nil {
 		if cerr := q.pullPendingSessionNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing pullPendingSessionNoticeStmt: %w", cerr)
-		}
-	}
-	if q.purgeAsyncJobsOlderThanStmt != nil {
-		if cerr := q.purgeAsyncJobsOlderThanStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing purgeAsyncJobsOlderThanStmt: %w", cerr)
 		}
 	}
 	if q.purgeSessionNoticesOlderThanStmt != nil {
@@ -1206,9 +1389,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing recoverExpiredWakeLeasesStmt: %w", cerr)
 		}
 	}
-	if q.registerAsyncHostStmt != nil {
-		if cerr := q.registerAsyncHostStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing registerAsyncHostStmt: %w", cerr)
+	if q.registerAsyncHostRowStmt != nil {
+		if cerr := q.registerAsyncHostRowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing registerAsyncHostRowStmt: %w", cerr)
 		}
 	}
 	if q.renameSessionStmt != nil {
@@ -1221,54 +1404,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing renewRunQueueLeaseStmt: %w", cerr)
 		}
 	}
-	if q.rependAsyncJobsByNoticeMessageIDsStmt != nil {
-		if cerr := q.rependAsyncJobsByNoticeMessageIDsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing rependAsyncJobsByNoticeMessageIDsStmt: %w", cerr)
-		}
-	}
-	if q.rependJobKillRowWithoutNoticeStmt != nil {
-		if cerr := q.rependJobKillRowWithoutNoticeStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing rependJobKillRowWithoutNoticeStmt: %w", cerr)
-		}
-	}
-	if q.rependJobKillRowsWithoutNoticeForHostStmt != nil {
-		if cerr := q.rependJobKillRowsWithoutNoticeForHostStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing rependJobKillRowsWithoutNoticeForHostStmt: %w", cerr)
-		}
-	}
 	if q.rependSessionNoticesByMessageIDsStmt != nil {
 		if cerr := q.rependSessionNoticesByMessageIDsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing rependSessionNoticesByMessageIDsStmt: %w", cerr)
 		}
 	}
-	if q.repointSessionNoticesJobToolCallIDStmt != nil {
-		if cerr := q.repointSessionNoticesJobToolCallIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing repointSessionNoticesJobToolCallIDStmt: %w", cerr)
+	if q.reserveBatchNodeStmt != nil {
+		if cerr := q.reserveBatchNodeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing reserveBatchNodeStmt: %w", cerr)
+		}
+	}
+	if q.selectBatchNodeNoticeStmt != nil {
+		if cerr := q.selectBatchNodeNoticeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing selectBatchNodeNoticeStmt: %w", cerr)
 		}
 	}
 	if q.sessionNoticeDebtOwnersStmt != nil {
 		if cerr := q.sessionNoticeDebtOwnersStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing sessionNoticeDebtOwnersStmt: %w", cerr)
-		}
-	}
-	if q.setAsyncJobAnnounceMessageIDStmt != nil {
-		if cerr := q.setAsyncJobAnnounceMessageIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing setAsyncJobAnnounceMessageIDStmt: %w", cerr)
-		}
-	}
-	if q.setAsyncJobNoticeMessageIDStmt != nil {
-		if cerr := q.setAsyncJobNoticeMessageIDStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDStmt: %w", cerr)
-		}
-	}
-	if q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt != nil {
-		if cerr := q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing setAsyncJobNoticeMessageIDForClaimIfDoneStmt: %w", cerr)
-		}
-	}
-	if q.setAsyncJobsWakeZeroPendingForOwnersStmt != nil {
-		if cerr := q.setAsyncJobsWakeZeroPendingForOwnersStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing setAsyncJobsWakeZeroPendingForOwnersStmt: %w", cerr)
 		}
 	}
 	if q.setParentCostAccountedStmt != nil {
@@ -1284,11 +1437,6 @@ func (q *Queries) Close() error {
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt != nil {
 		if cerr := q.setSessionNoticesWakeZeroPendingForOwnersStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setSessionNoticesWakeZeroPendingForOwnersStmt: %w", cerr)
-		}
-	}
-	if q.settleAsyncJobReactedFailedForSnapshotRowStmt != nil {
-		if cerr := q.settleAsyncJobReactedFailedForSnapshotRowStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing settleAsyncJobReactedFailedForSnapshotRowStmt: %w", cerr)
 		}
 	}
 	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt != nil {
@@ -1326,9 +1474,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing terminalFailRunQueueEntryStmt: %w", cerr)
 		}
 	}
-	if q.transitionAsyncJobTerminalPreserveVoidStmt != nil {
-		if cerr := q.transitionAsyncJobTerminalPreserveVoidStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing transitionAsyncJobTerminalPreserveVoidStmt: %w", cerr)
+	if q.updateBatchRunnerCheckpointStmt != nil {
+		if cerr := q.updateBatchRunnerCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateBatchRunnerCheckpointStmt: %w", cerr)
 		}
 	}
 	if q.updateMessageStmt != nil {
@@ -1381,29 +1529,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionWorkerReviewerReasoningEffortStmt: %w", cerr)
 		}
 	}
-	if q.visibleAsyncReactionDebtExistsStmt != nil {
-		if cerr := q.visibleAsyncReactionDebtExistsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing visibleAsyncReactionDebtExistsStmt: %w", cerr)
-		}
-	}
-	if q.voidAsyncJobsByAnnounceMessageIDsStmt != nil {
-		if cerr := q.voidAsyncJobsByAnnounceMessageIDsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing voidAsyncJobsByAnnounceMessageIDsStmt: %w", cerr)
-		}
-	}
-	if q.voidAsyncJobsByToolCallIDsStmt != nil {
-		if cerr := q.voidAsyncJobsByToolCallIDsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing voidAsyncJobsByToolCallIDsStmt: %w", cerr)
-		}
-	}
 	if q.voidPendingSessionNoticeStmt != nil {
 		if cerr := q.voidPendingSessionNoticeStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing voidPendingSessionNoticeStmt: %w", cerr)
-		}
-	}
-	if q.voidUndeliveredAsyncJobsForOwnerStmt != nil {
-		if cerr := q.voidUndeliveredAsyncJobsForOwnerStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing voidUndeliveredAsyncJobsForOwnerStmt: %w", cerr)
 		}
 	}
 	if q.voidUndeliveredSessionNoticesForOwnerStmt != nil {
@@ -1461,30 +1589,65 @@ type Queries struct {
 	db                                                   DBTX
 	tx                                                   *sql.Tx
 	ackRunQueueEntryStmt                                 *sql.Stmt
+	advanceBatchRootSequenceStmt                         *sql.Stmt
 	advanceLoopWakeOccurrenceStmt                        *sql.Stmt
-	archiveAsyncJobToolCallIDStmt                        *sql.Stmt
-	asyncJobDebtOwnersStmt                               *sql.Stmt
-	asyncReactionDebtExistsStmt                          *sql.Stmt
+	answerBatchControlRequestStmt                        *sql.Stmt
+	batchDisposeBoundNoticesByToolCallIDStmt             *sql.Stmt
+	batchHistoryRependNodesByDeletedNoticeMessagesStmt   *sql.Stmt
+	batchHistoryRootsForOwnerStmt                        *sql.Stmt
+	batchHistoryStateCountsStmt                          *sql.Stmt
+	batchLevelNodesStmt                                  *sql.Stmt
+	batchListBoundNoticesByToolCallIDStmt                *sql.Stmt
+	batchLiveNodesForOwnersStmt                          *sql.Stmt
+	batchOutboxAccountNodeStmt                           *sql.Stmt
+	batchOutboxAccountNoticeStmt                         *sql.Stmt
+	batchOutboxAnnounceStmt                              *sql.Stmt
+	batchOutboxClearFailureStmt                          *sql.Stmt
+	batchOutboxConsumeWithToolResultStmt                 *sql.Stmt
+	batchOutboxDebtNodesStmt                             *sql.Stmt
+	batchOutboxDebtNoticesStmt                           *sql.Stmt
+	batchOutboxFailedNodesStmt                           *sql.Stmt
+	batchOutboxInlineElectStmt                           *sql.Stmt
+	batchOutboxNameMessageStmt                           *sql.Stmt
+	batchOutboxPendingStmt                               *sql.Stmt
+	batchOutboxPullStmt                                  *sql.Stmt
+	batchOutboxReactNodesStmt                            *sql.Stmt
+	batchOutboxSetAnnouncementMessageStmt                *sql.Stmt
+	batchOutboxWakeZeroStmt                              *sql.Stmt
+	batchRecoveryCloseControlsStmt                       *sql.Stmt
+	batchRecoveryElectStmt                               *sql.Stmt
+	batchRecoveryInterruptStmt                           *sql.Stmt
+	batchRecoveryNoticeStmt                              *sql.Stmt
+	batchRecoveryRootsStmt                               *sql.Stmt
+	batchRerunLiveRootsByAnnounceMessageIDsStmt          *sql.Stmt
+	batchRerunLiveRootsByToolCallIDsStmt                 *sql.Stmt
+	batchRerunRependNodesByNoticeMessageIDsStmt          *sql.Stmt
+	batchRerunVoidNodesByNoticeMessageIDsStmt            *sql.Stmt
+	batchRerunVoidNodesOfVoidedRootsStmt                 *sql.Stmt
+	batchRerunVoidRootsByAnnounceMessageIDsStmt          *sql.Stmt
+	batchRerunVoidRootsByToolCallIDsStmt                 *sql.Stmt
+	batchResetDeleteOwnerNodesStmt                       *sql.Stmt
+	batchRetentionRootsStmt                              *sql.Stmt
+	batchRetentionWriterStmt                             *sql.Stmt
 	cancelAllWakeSchedulesForOwnerStmt                   *sql.Stmt
 	cancelWakeScheduleStmt                               *sql.Stmt
-	claimAsyncJobStmt                                    *sql.Stmt
 	claimWakeScheduleLeaseStmt                           *sql.Stmt
 	cleanupExpiredLeasesStmt                             *sql.Stmt
-	clearReactedFailedForOwnerStmt                       *sql.Stmt
 	clearSessionNoticesReactedFailedForOwnerStmt         *sql.Stmt
 	completeOnceWakeScheduleStmt                         *sql.Stmt
 	countActiveWakeSchedulesForOwnerStmt                 *sql.Stmt
-	countAsyncJobsOlderThanStmt                          *sql.Stmt
 	countMessagesBySessionStmt                           *sql.Stmt
 	countMessagesMissingUsageStmt                        *sql.Stmt
 	countMessagesMissingUsageInRangeStmt                 *sql.Stmt
 	countSessionNoticesOlderThanStmt                     *sql.Stmt
+	createBatchControlRequestStmt                        *sql.Stmt
 	createFileStmt                                       *sql.Stmt
 	createMessageStmt                                    *sql.Stmt
 	createPendingInjectStmt                              *sql.Stmt
 	createSessionStmt                                    *sql.Stmt
 	createSessionPermissionStmt                          *sql.Stmt
-	deleteAsyncHostIfNoJobsStmt                          *sql.Stmt
+	deleteAsyncHostIfNoNodesStmt                         *sql.Stmt
+	deleteBatchSubtreeStmt                               *sql.Stmt
 	deleteFileStmt                                       *sql.Stmt
 	deleteMessageStmt                                    *sql.Stmt
 	deleteMessageIfTerminalStmt                          *sql.Stmt
@@ -1497,27 +1660,25 @@ type Queries struct {
 	deleteSessionFilesStmt                               *sql.Stmt
 	deleteSessionMessagesStmt                            *sql.Stmt
 	deleteSessionMessagesByIDsStmt                       *sql.Stmt
-	deleteTerminalUnannouncedAsyncJobsForHostStmt        *sql.Stmt
-	deleteUnannouncedAsyncJobStmt                        *sql.Stmt
-	deleteUnannouncedAsyncJobForClaimStmt                *sql.Stmt
-	deliverAsyncJobInlineStmt                            *sql.Stmt
 	enqueueRunQueueEntryStmt                             *sql.Stmt
 	finishLoopWakeScheduleStmt                           *sql.Stmt
-	getAsyncHostStmt                                     *sql.Stmt
-	getAsyncJobStmt                                      *sql.Stmt
-	getAsyncJobByClaimIDStmt                             *sql.Stmt
+	getAsyncHostRowStmt                                  *sql.Stmt
 	getAverageResponseTimeStmt                           *sql.Stmt
+	getBatchControlRequestStmt                           *sql.Stmt
+	getBatchNodeStmt                                     *sql.Stmt
+	getBatchRootStmt                                     *sql.Stmt
+	getBatchRootIdentityStmt                             *sql.Stmt
 	getCallTreeActivityStmt                              *sql.Stmt
 	getCallTreeActivityBatchStmt                         *sql.Stmt
 	getFileStmt                                          *sql.Stmt
 	getFileByPathAndSessionStmt                          *sql.Stmt
 	getFileReadStmt                                      *sql.Stmt
 	getHourDayHeatmapStmt                                *sql.Stmt
+	getLiveBatchRootStmt                                 *sql.Stmt
 	getMessageStmt                                       *sql.Stmt
 	getOldestPendingRunQueueEntryForSessionStmt          *sql.Stmt
 	getOrphanOutboxEntryStmt                             *sql.Stmt
 	getRunQueueEntryStmt                                 *sql.Stmt
-	getRunningAsyncJobByChildSessionStmt                 *sql.Stmt
 	getSessionByIDStmt                                   *sql.Stmt
 	getSessionCostAccountingStmt                         *sql.Stmt
 	getSessionCostBaseStmt                               *sql.Stmt
@@ -1532,7 +1693,6 @@ type Queries struct {
 	getUsageByModelStmt                                  *sql.Stmt
 	getWakeScheduleStmt                                  *sql.Stmt
 	hasOutstandingRunQueueEntryForSessionStmt            *sql.Stmt
-	incrementAsyncJobWakeAttemptsForSnapshotRowStmt      *sql.Stmt
 	incrementSessionCostStmt                             *sql.Stmt
 	incrementSessionNoticeWakeAttemptsForSnapshotRowStmt *sql.Stmt
 	insertSessionDriverStmt                              *sql.Stmt
@@ -1542,30 +1702,28 @@ type Queries struct {
 	listAllSessionPermissionsStmt                        *sql.Stmt
 	listAllSessionsStmt                                  *sql.Stmt
 	listAllUserMessagesStmt                              *sql.Stmt
-	listAsyncHostsStmt                                   *sql.Stmt
-	listAsyncHostsWithNoJobsStmt                         *sql.Stmt
-	listAsyncJobsForOwnerStmt                            *sql.Stmt
+	listAsyncHostRowsStmt                                *sql.Stmt
+	listAsyncHostsWithNoNodesStmt                        *sql.Stmt
+	listBatchChildrenStmt                                *sql.Stmt
+	listBatchNodesStmt                                   *sql.Stmt
 	listCandidateInterruptedAssistantSessionsStmt        *sql.Stmt
-	listDistinctRecoverableHostIDsStmt                   *sql.Stmt
 	listDueWakeSchedulesStmt                             *sql.Stmt
 	listFilesByPathStmt                                  *sql.Stmt
 	listFilesBySessionStmt                               *sql.Stmt
 	listLatestSessionFilesStmt                           *sql.Stmt
+	listLiveBatchRootsForHostStmt                        *sql.Stmt
+	listLiveBatchRootsForOwnerStmt                       *sql.Stmt
 	listMessagesBySessionStmt                            *sql.Stmt
 	listMessagesBySessionAtCreatedAtStmt                 *sql.Stmt
 	listMessagesBySessionOlderThanCreatedAtStmt          *sql.Stmt
 	listMessagesBySessionPaginatedStmt                   *sql.Stmt
-	listNewFilesStmt                                     *sql.Stmt
 	listOpenOnceWakeSchedulesForOwnersStmt               *sql.Stmt
-	listPendingAsyncJobNoticesForOwnerStmt               *sql.Stmt
+	listPendingBatchControlRequestsStmt                  *sql.Stmt
 	listPendingInjectsBySessionStmt                      *sql.Stmt
 	listPendingOrphanOutboxEntriesStmt                   *sql.Stmt
 	listPendingRunQueueEntriesStmt                       *sql.Stmt
 	listPendingSessionNoticesForOwnerStmt                *sql.Stmt
-	listReactedFailedAsyncJobsForOwnerStmt               *sql.Stmt
 	listReactedFailedSessionNoticesForOwnerStmt          *sql.Stmt
-	listRunningAsyncJobsForHostStmt                      *sql.Stmt
-	listRunningAsyncJobsForOwnersStmt                    *sql.Stmt
 	listSessionDriverHostIDsStmt                         *sql.Stmt
 	listSessionDriversStmt                               *sql.Stmt
 	listSessionEndReasonsForIDsStmt                      *sql.Stmt
@@ -1577,37 +1735,27 @@ type Queries struct {
 	listSubSessionsStmt                                  *sql.Stmt
 	listUserMessagesBySessionStmt                        *sql.Stmt
 	listWakeSchedulesForOwnerStmt                        *sql.Stmt
-	markAsyncJobAnnouncedStmt                            *sql.Stmt
-	markAsyncJobsReactedForOwnerStmt                     *sql.Stmt
 	markSessionNoticesReactedForOwnerStmt                *sql.Stmt
 	matchSessionPermissionStmt                           *sql.Stmt
 	nackRunQueueEntryStmt                                *sql.Stmt
 	nackRunQueueEntryNoAttemptPenaltyStmt                *sql.Stmt
 	nextDueWakeScheduleAtStmt                            *sql.Stmt
-	pullPendingAsyncJobNoticeStmt                        *sql.Stmt
+	projectBatchNodeStmt                                 *sql.Stmt
 	pullPendingSessionNoticeStmt                         *sql.Stmt
-	purgeAsyncJobsOlderThanStmt                          *sql.Stmt
 	purgeSessionNoticesOlderThanStmt                     *sql.Stmt
 	recordFileReadStmt                                   *sql.Stmt
 	recordOrphanOutboxFailureStmt                        *sql.Stmt
 	recoverExpiredWakeLeasesStmt                         *sql.Stmt
-	registerAsyncHostStmt                                *sql.Stmt
+	registerAsyncHostRowStmt                             *sql.Stmt
 	renameSessionStmt                                    *sql.Stmt
 	renewRunQueueLeaseStmt                               *sql.Stmt
-	rependAsyncJobsByNoticeMessageIDsStmt                *sql.Stmt
-	rependJobKillRowWithoutNoticeStmt                    *sql.Stmt
-	rependJobKillRowsWithoutNoticeForHostStmt            *sql.Stmt
 	rependSessionNoticesByMessageIDsStmt                 *sql.Stmt
-	repointSessionNoticesJobToolCallIDStmt               *sql.Stmt
+	reserveBatchNodeStmt                                 *sql.Stmt
+	selectBatchNodeNoticeStmt                            *sql.Stmt
 	sessionNoticeDebtOwnersStmt                          *sql.Stmt
-	setAsyncJobAnnounceMessageIDStmt                     *sql.Stmt
-	setAsyncJobNoticeMessageIDStmt                       *sql.Stmt
-	setAsyncJobNoticeMessageIDForClaimIfDoneStmt         *sql.Stmt
-	setAsyncJobsWakeZeroPendingForOwnersStmt             *sql.Stmt
 	setParentCostAccountedStmt                           *sql.Stmt
 	setSessionNoticeMessageIDStmt                        *sql.Stmt
 	setSessionNoticesWakeZeroPendingForOwnersStmt        *sql.Stmt
-	settleAsyncJobReactedFailedForSnapshotRowStmt        *sql.Stmt
 	settleSessionNoticeReactedFailedForSnapshotRowStmt   *sql.Stmt
 	stampInterruptedAssistantIfStillLastStmt             *sql.Stmt
 	sumMessageUsageByDayInRangeStmt                      *sql.Stmt
@@ -1615,7 +1763,7 @@ type Queries struct {
 	sumMessageUsageBySessionStmt                         *sql.Stmt
 	takeOverSessionDriverStmt                            *sql.Stmt
 	terminalFailRunQueueEntryStmt                        *sql.Stmt
-	transitionAsyncJobTerminalPreserveVoidStmt           *sql.Stmt
+	updateBatchRunnerCheckpointStmt                      *sql.Stmt
 	updateMessageStmt                                    *sql.Stmt
 	updateMessageIfNotTerminalStmt                       *sql.Stmt
 	updateMessagePinnedStmt                              *sql.Stmt
@@ -1626,11 +1774,7 @@ type Queries struct {
 	updateSessionSystemPromptStmt                        *sql.Stmt
 	updateSessionWorkerReviewerModelsStmt                *sql.Stmt
 	updateSessionWorkerReviewerReasoningEffortStmt       *sql.Stmt
-	visibleAsyncReactionDebtExistsStmt                   *sql.Stmt
-	voidAsyncJobsByAnnounceMessageIDsStmt                *sql.Stmt
-	voidAsyncJobsByToolCallIDsStmt                       *sql.Stmt
 	voidPendingSessionNoticeStmt                         *sql.Stmt
-	voidUndeliveredAsyncJobsForOwnerStmt                 *sql.Stmt
 	voidUndeliveredSessionNoticesForOwnerStmt            *sql.Stmt
 	voidWakeFailedNoticesByMessageIDsStmt                *sql.Stmt
 	writeToOrphanOutboxStmt                              *sql.Stmt
@@ -1638,33 +1782,68 @@ type Queries struct {
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                                 tx,
-		tx:                                 tx,
-		ackRunQueueEntryStmt:               q.ackRunQueueEntryStmt,
-		advanceLoopWakeOccurrenceStmt:      q.advanceLoopWakeOccurrenceStmt,
-		archiveAsyncJobToolCallIDStmt:      q.archiveAsyncJobToolCallIDStmt,
-		asyncJobDebtOwnersStmt:             q.asyncJobDebtOwnersStmt,
-		asyncReactionDebtExistsStmt:        q.asyncReactionDebtExistsStmt,
-		cancelAllWakeSchedulesForOwnerStmt: q.cancelAllWakeSchedulesForOwnerStmt,
-		cancelWakeScheduleStmt:             q.cancelWakeScheduleStmt,
-		claimAsyncJobStmt:                  q.claimAsyncJobStmt,
-		claimWakeScheduleLeaseStmt:         q.claimWakeScheduleLeaseStmt,
-		cleanupExpiredLeasesStmt:           q.cleanupExpiredLeasesStmt,
-		clearReactedFailedForOwnerStmt:     q.clearReactedFailedForOwnerStmt,
+		db:                                       tx,
+		tx:                                       tx,
+		ackRunQueueEntryStmt:                     q.ackRunQueueEntryStmt,
+		advanceBatchRootSequenceStmt:             q.advanceBatchRootSequenceStmt,
+		advanceLoopWakeOccurrenceStmt:            q.advanceLoopWakeOccurrenceStmt,
+		answerBatchControlRequestStmt:            q.answerBatchControlRequestStmt,
+		batchDisposeBoundNoticesByToolCallIDStmt: q.batchDisposeBoundNoticesByToolCallIDStmt,
+		batchHistoryRependNodesByDeletedNoticeMessagesStmt:   q.batchHistoryRependNodesByDeletedNoticeMessagesStmt,
+		batchHistoryRootsForOwnerStmt:                        q.batchHistoryRootsForOwnerStmt,
+		batchHistoryStateCountsStmt:                          q.batchHistoryStateCountsStmt,
+		batchLevelNodesStmt:                                  q.batchLevelNodesStmt,
+		batchListBoundNoticesByToolCallIDStmt:                q.batchListBoundNoticesByToolCallIDStmt,
+		batchLiveNodesForOwnersStmt:                          q.batchLiveNodesForOwnersStmt,
+		batchOutboxAccountNodeStmt:                           q.batchOutboxAccountNodeStmt,
+		batchOutboxAccountNoticeStmt:                         q.batchOutboxAccountNoticeStmt,
+		batchOutboxAnnounceStmt:                              q.batchOutboxAnnounceStmt,
+		batchOutboxClearFailureStmt:                          q.batchOutboxClearFailureStmt,
+		batchOutboxConsumeWithToolResultStmt:                 q.batchOutboxConsumeWithToolResultStmt,
+		batchOutboxDebtNodesStmt:                             q.batchOutboxDebtNodesStmt,
+		batchOutboxDebtNoticesStmt:                           q.batchOutboxDebtNoticesStmt,
+		batchOutboxFailedNodesStmt:                           q.batchOutboxFailedNodesStmt,
+		batchOutboxInlineElectStmt:                           q.batchOutboxInlineElectStmt,
+		batchOutboxNameMessageStmt:                           q.batchOutboxNameMessageStmt,
+		batchOutboxPendingStmt:                               q.batchOutboxPendingStmt,
+		batchOutboxPullStmt:                                  q.batchOutboxPullStmt,
+		batchOutboxReactNodesStmt:                            q.batchOutboxReactNodesStmt,
+		batchOutboxSetAnnouncementMessageStmt:                q.batchOutboxSetAnnouncementMessageStmt,
+		batchOutboxWakeZeroStmt:                              q.batchOutboxWakeZeroStmt,
+		batchRecoveryCloseControlsStmt:                       q.batchRecoveryCloseControlsStmt,
+		batchRecoveryElectStmt:                               q.batchRecoveryElectStmt,
+		batchRecoveryInterruptStmt:                           q.batchRecoveryInterruptStmt,
+		batchRecoveryNoticeStmt:                              q.batchRecoveryNoticeStmt,
+		batchRecoveryRootsStmt:                               q.batchRecoveryRootsStmt,
+		batchRerunLiveRootsByAnnounceMessageIDsStmt:          q.batchRerunLiveRootsByAnnounceMessageIDsStmt,
+		batchRerunLiveRootsByToolCallIDsStmt:                 q.batchRerunLiveRootsByToolCallIDsStmt,
+		batchRerunRependNodesByNoticeMessageIDsStmt:          q.batchRerunRependNodesByNoticeMessageIDsStmt,
+		batchRerunVoidNodesByNoticeMessageIDsStmt:            q.batchRerunVoidNodesByNoticeMessageIDsStmt,
+		batchRerunVoidNodesOfVoidedRootsStmt:                 q.batchRerunVoidNodesOfVoidedRootsStmt,
+		batchRerunVoidRootsByAnnounceMessageIDsStmt:          q.batchRerunVoidRootsByAnnounceMessageIDsStmt,
+		batchRerunVoidRootsByToolCallIDsStmt:                 q.batchRerunVoidRootsByToolCallIDsStmt,
+		batchResetDeleteOwnerNodesStmt:                       q.batchResetDeleteOwnerNodesStmt,
+		batchRetentionRootsStmt:                              q.batchRetentionRootsStmt,
+		batchRetentionWriterStmt:                             q.batchRetentionWriterStmt,
+		cancelAllWakeSchedulesForOwnerStmt:                   q.cancelAllWakeSchedulesForOwnerStmt,
+		cancelWakeScheduleStmt:                               q.cancelWakeScheduleStmt,
+		claimWakeScheduleLeaseStmt:                           q.claimWakeScheduleLeaseStmt,
+		cleanupExpiredLeasesStmt:                             q.cleanupExpiredLeasesStmt,
 		clearSessionNoticesReactedFailedForOwnerStmt:         q.clearSessionNoticesReactedFailedForOwnerStmt,
 		completeOnceWakeScheduleStmt:                         q.completeOnceWakeScheduleStmt,
 		countActiveWakeSchedulesForOwnerStmt:                 q.countActiveWakeSchedulesForOwnerStmt,
-		countAsyncJobsOlderThanStmt:                          q.countAsyncJobsOlderThanStmt,
 		countMessagesBySessionStmt:                           q.countMessagesBySessionStmt,
 		countMessagesMissingUsageStmt:                        q.countMessagesMissingUsageStmt,
 		countMessagesMissingUsageInRangeStmt:                 q.countMessagesMissingUsageInRangeStmt,
 		countSessionNoticesOlderThanStmt:                     q.countSessionNoticesOlderThanStmt,
+		createBatchControlRequestStmt:                        q.createBatchControlRequestStmt,
 		createFileStmt:                                       q.createFileStmt,
 		createMessageStmt:                                    q.createMessageStmt,
 		createPendingInjectStmt:                              q.createPendingInjectStmt,
 		createSessionStmt:                                    q.createSessionStmt,
 		createSessionPermissionStmt:                          q.createSessionPermissionStmt,
-		deleteAsyncHostIfNoJobsStmt:                          q.deleteAsyncHostIfNoJobsStmt,
+		deleteAsyncHostIfNoNodesStmt:                         q.deleteAsyncHostIfNoNodesStmt,
+		deleteBatchSubtreeStmt:                               q.deleteBatchSubtreeStmt,
 		deleteFileStmt:                                       q.deleteFileStmt,
 		deleteMessageStmt:                                    q.deleteMessageStmt,
 		deleteMessageIfTerminalStmt:                          q.deleteMessageIfTerminalStmt,
@@ -1677,27 +1856,25 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionFilesStmt:                               q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:                            q.deleteSessionMessagesStmt,
 		deleteSessionMessagesByIDsStmt:                       q.deleteSessionMessagesByIDsStmt,
-		deleteTerminalUnannouncedAsyncJobsForHostStmt:        q.deleteTerminalUnannouncedAsyncJobsForHostStmt,
-		deleteUnannouncedAsyncJobStmt:                        q.deleteUnannouncedAsyncJobStmt,
-		deleteUnannouncedAsyncJobForClaimStmt:                q.deleteUnannouncedAsyncJobForClaimStmt,
-		deliverAsyncJobInlineStmt:                            q.deliverAsyncJobInlineStmt,
 		enqueueRunQueueEntryStmt:                             q.enqueueRunQueueEntryStmt,
 		finishLoopWakeScheduleStmt:                           q.finishLoopWakeScheduleStmt,
-		getAsyncHostStmt:                                     q.getAsyncHostStmt,
-		getAsyncJobStmt:                                      q.getAsyncJobStmt,
-		getAsyncJobByClaimIDStmt:                             q.getAsyncJobByClaimIDStmt,
+		getAsyncHostRowStmt:                                  q.getAsyncHostRowStmt,
 		getAverageResponseTimeStmt:                           q.getAverageResponseTimeStmt,
+		getBatchControlRequestStmt:                           q.getBatchControlRequestStmt,
+		getBatchNodeStmt:                                     q.getBatchNodeStmt,
+		getBatchRootStmt:                                     q.getBatchRootStmt,
+		getBatchRootIdentityStmt:                             q.getBatchRootIdentityStmt,
 		getCallTreeActivityStmt:                              q.getCallTreeActivityStmt,
 		getCallTreeActivityBatchStmt:                         q.getCallTreeActivityBatchStmt,
 		getFileStmt:                                          q.getFileStmt,
 		getFileByPathAndSessionStmt:                          q.getFileByPathAndSessionStmt,
 		getFileReadStmt:                                      q.getFileReadStmt,
 		getHourDayHeatmapStmt:                                q.getHourDayHeatmapStmt,
+		getLiveBatchRootStmt:                                 q.getLiveBatchRootStmt,
 		getMessageStmt:                                       q.getMessageStmt,
 		getOldestPendingRunQueueEntryForSessionStmt:          q.getOldestPendingRunQueueEntryForSessionStmt,
 		getOrphanOutboxEntryStmt:                             q.getOrphanOutboxEntryStmt,
 		getRunQueueEntryStmt:                                 q.getRunQueueEntryStmt,
-		getRunningAsyncJobByChildSessionStmt:                 q.getRunningAsyncJobByChildSessionStmt,
 		getSessionByIDStmt:                                   q.getSessionByIDStmt,
 		getSessionCostAccountingStmt:                         q.getSessionCostAccountingStmt,
 		getSessionCostBaseStmt:                               q.getSessionCostBaseStmt,
@@ -1712,7 +1889,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByModelStmt:                                  q.getUsageByModelStmt,
 		getWakeScheduleStmt:                                  q.getWakeScheduleStmt,
 		hasOutstandingRunQueueEntryForSessionStmt:            q.hasOutstandingRunQueueEntryForSessionStmt,
-		incrementAsyncJobWakeAttemptsForSnapshotRowStmt:      q.incrementAsyncJobWakeAttemptsForSnapshotRowStmt,
 		incrementSessionCostStmt:                             q.incrementSessionCostStmt,
 		incrementSessionNoticeWakeAttemptsForSnapshotRowStmt: q.incrementSessionNoticeWakeAttemptsForSnapshotRowStmt,
 		insertSessionDriverStmt:                              q.insertSessionDriverStmt,
@@ -1722,30 +1898,28 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listAllSessionPermissionsStmt:                        q.listAllSessionPermissionsStmt,
 		listAllSessionsStmt:                                  q.listAllSessionsStmt,
 		listAllUserMessagesStmt:                              q.listAllUserMessagesStmt,
-		listAsyncHostsStmt:                                   q.listAsyncHostsStmt,
-		listAsyncHostsWithNoJobsStmt:                         q.listAsyncHostsWithNoJobsStmt,
-		listAsyncJobsForOwnerStmt:                            q.listAsyncJobsForOwnerStmt,
+		listAsyncHostRowsStmt:                                q.listAsyncHostRowsStmt,
+		listAsyncHostsWithNoNodesStmt:                        q.listAsyncHostsWithNoNodesStmt,
+		listBatchChildrenStmt:                                q.listBatchChildrenStmt,
+		listBatchNodesStmt:                                   q.listBatchNodesStmt,
 		listCandidateInterruptedAssistantSessionsStmt:        q.listCandidateInterruptedAssistantSessionsStmt,
-		listDistinctRecoverableHostIDsStmt:                   q.listDistinctRecoverableHostIDsStmt,
 		listDueWakeSchedulesStmt:                             q.listDueWakeSchedulesStmt,
 		listFilesByPathStmt:                                  q.listFilesByPathStmt,
 		listFilesBySessionStmt:                               q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:                           q.listLatestSessionFilesStmt,
+		listLiveBatchRootsForHostStmt:                        q.listLiveBatchRootsForHostStmt,
+		listLiveBatchRootsForOwnerStmt:                       q.listLiveBatchRootsForOwnerStmt,
 		listMessagesBySessionStmt:                            q.listMessagesBySessionStmt,
 		listMessagesBySessionAtCreatedAtStmt:                 q.listMessagesBySessionAtCreatedAtStmt,
 		listMessagesBySessionOlderThanCreatedAtStmt:          q.listMessagesBySessionOlderThanCreatedAtStmt,
 		listMessagesBySessionPaginatedStmt:                   q.listMessagesBySessionPaginatedStmt,
-		listNewFilesStmt:                                     q.listNewFilesStmt,
 		listOpenOnceWakeSchedulesForOwnersStmt:               q.listOpenOnceWakeSchedulesForOwnersStmt,
-		listPendingAsyncJobNoticesForOwnerStmt:               q.listPendingAsyncJobNoticesForOwnerStmt,
+		listPendingBatchControlRequestsStmt:                  q.listPendingBatchControlRequestsStmt,
 		listPendingInjectsBySessionStmt:                      q.listPendingInjectsBySessionStmt,
 		listPendingOrphanOutboxEntriesStmt:                   q.listPendingOrphanOutboxEntriesStmt,
 		listPendingRunQueueEntriesStmt:                       q.listPendingRunQueueEntriesStmt,
 		listPendingSessionNoticesForOwnerStmt:                q.listPendingSessionNoticesForOwnerStmt,
-		listReactedFailedAsyncJobsForOwnerStmt:               q.listReactedFailedAsyncJobsForOwnerStmt,
 		listReactedFailedSessionNoticesForOwnerStmt:          q.listReactedFailedSessionNoticesForOwnerStmt,
-		listRunningAsyncJobsForHostStmt:                      q.listRunningAsyncJobsForHostStmt,
-		listRunningAsyncJobsForOwnersStmt:                    q.listRunningAsyncJobsForOwnersStmt,
 		listSessionDriverHostIDsStmt:                         q.listSessionDriverHostIDsStmt,
 		listSessionDriversStmt:                               q.listSessionDriversStmt,
 		listSessionEndReasonsForIDsStmt:                      q.listSessionEndReasonsForIDsStmt,
@@ -1757,37 +1931,27 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listSubSessionsStmt:                                  q.listSubSessionsStmt,
 		listUserMessagesBySessionStmt:                        q.listUserMessagesBySessionStmt,
 		listWakeSchedulesForOwnerStmt:                        q.listWakeSchedulesForOwnerStmt,
-		markAsyncJobAnnouncedStmt:                            q.markAsyncJobAnnouncedStmt,
-		markAsyncJobsReactedForOwnerStmt:                     q.markAsyncJobsReactedForOwnerStmt,
 		markSessionNoticesReactedForOwnerStmt:                q.markSessionNoticesReactedForOwnerStmt,
 		matchSessionPermissionStmt:                           q.matchSessionPermissionStmt,
 		nackRunQueueEntryStmt:                                q.nackRunQueueEntryStmt,
 		nackRunQueueEntryNoAttemptPenaltyStmt:                q.nackRunQueueEntryNoAttemptPenaltyStmt,
 		nextDueWakeScheduleAtStmt:                            q.nextDueWakeScheduleAtStmt,
-		pullPendingAsyncJobNoticeStmt:                        q.pullPendingAsyncJobNoticeStmt,
+		projectBatchNodeStmt:                                 q.projectBatchNodeStmt,
 		pullPendingSessionNoticeStmt:                         q.pullPendingSessionNoticeStmt,
-		purgeAsyncJobsOlderThanStmt:                          q.purgeAsyncJobsOlderThanStmt,
 		purgeSessionNoticesOlderThanStmt:                     q.purgeSessionNoticesOlderThanStmt,
 		recordFileReadStmt:                                   q.recordFileReadStmt,
 		recordOrphanOutboxFailureStmt:                        q.recordOrphanOutboxFailureStmt,
 		recoverExpiredWakeLeasesStmt:                         q.recoverExpiredWakeLeasesStmt,
-		registerAsyncHostStmt:                                q.registerAsyncHostStmt,
+		registerAsyncHostRowStmt:                             q.registerAsyncHostRowStmt,
 		renameSessionStmt:                                    q.renameSessionStmt,
 		renewRunQueueLeaseStmt:                               q.renewRunQueueLeaseStmt,
-		rependAsyncJobsByNoticeMessageIDsStmt:                q.rependAsyncJobsByNoticeMessageIDsStmt,
-		rependJobKillRowWithoutNoticeStmt:                    q.rependJobKillRowWithoutNoticeStmt,
-		rependJobKillRowsWithoutNoticeForHostStmt:            q.rependJobKillRowsWithoutNoticeForHostStmt,
 		rependSessionNoticesByMessageIDsStmt:                 q.rependSessionNoticesByMessageIDsStmt,
-		repointSessionNoticesJobToolCallIDStmt:               q.repointSessionNoticesJobToolCallIDStmt,
+		reserveBatchNodeStmt:                                 q.reserveBatchNodeStmt,
+		selectBatchNodeNoticeStmt:                            q.selectBatchNodeNoticeStmt,
 		sessionNoticeDebtOwnersStmt:                          q.sessionNoticeDebtOwnersStmt,
-		setAsyncJobAnnounceMessageIDStmt:                     q.setAsyncJobAnnounceMessageIDStmt,
-		setAsyncJobNoticeMessageIDStmt:                       q.setAsyncJobNoticeMessageIDStmt,
-		setAsyncJobNoticeMessageIDForClaimIfDoneStmt:         q.setAsyncJobNoticeMessageIDForClaimIfDoneStmt,
-		setAsyncJobsWakeZeroPendingForOwnersStmt:             q.setAsyncJobsWakeZeroPendingForOwnersStmt,
 		setParentCostAccountedStmt:                           q.setParentCostAccountedStmt,
 		setSessionNoticeMessageIDStmt:                        q.setSessionNoticeMessageIDStmt,
 		setSessionNoticesWakeZeroPendingForOwnersStmt:        q.setSessionNoticesWakeZeroPendingForOwnersStmt,
-		settleAsyncJobReactedFailedForSnapshotRowStmt:        q.settleAsyncJobReactedFailedForSnapshotRowStmt,
 		settleSessionNoticeReactedFailedForSnapshotRowStmt:   q.settleSessionNoticeReactedFailedForSnapshotRowStmt,
 		stampInterruptedAssistantIfStillLastStmt:             q.stampInterruptedAssistantIfStillLastStmt,
 		sumMessageUsageByDayInRangeStmt:                      q.sumMessageUsageByDayInRangeStmt,
@@ -1795,7 +1959,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		sumMessageUsageBySessionStmt:                         q.sumMessageUsageBySessionStmt,
 		takeOverSessionDriverStmt:                            q.takeOverSessionDriverStmt,
 		terminalFailRunQueueEntryStmt:                        q.terminalFailRunQueueEntryStmt,
-		transitionAsyncJobTerminalPreserveVoidStmt:           q.transitionAsyncJobTerminalPreserveVoidStmt,
+		updateBatchRunnerCheckpointStmt:                      q.updateBatchRunnerCheckpointStmt,
 		updateMessageStmt:                                    q.updateMessageStmt,
 		updateMessageIfNotTerminalStmt:                       q.updateMessageIfNotTerminalStmt,
 		updateMessagePinnedStmt:                              q.updateMessagePinnedStmt,
@@ -1806,11 +1970,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateSessionSystemPromptStmt:                        q.updateSessionSystemPromptStmt,
 		updateSessionWorkerReviewerModelsStmt:                q.updateSessionWorkerReviewerModelsStmt,
 		updateSessionWorkerReviewerReasoningEffortStmt:       q.updateSessionWorkerReviewerReasoningEffortStmt,
-		visibleAsyncReactionDebtExistsStmt:                   q.visibleAsyncReactionDebtExistsStmt,
-		voidAsyncJobsByAnnounceMessageIDsStmt:                q.voidAsyncJobsByAnnounceMessageIDsStmt,
-		voidAsyncJobsByToolCallIDsStmt:                       q.voidAsyncJobsByToolCallIDsStmt,
 		voidPendingSessionNoticeStmt:                         q.voidPendingSessionNoticeStmt,
-		voidUndeliveredAsyncJobsForOwnerStmt:                 q.voidUndeliveredAsyncJobsForOwnerStmt,
 		voidUndeliveredSessionNoticesForOwnerStmt:            q.voidUndeliveredSessionNoticesForOwnerStmt,
 		voidWakeFailedNoticesByMessageIDsStmt:                q.voidWakeFailedNoticesByMessageIDsStmt,
 		writeToOrphanOutboxStmt:                              q.writeToOrphanOutboxStmt,

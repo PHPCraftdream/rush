@@ -2,12 +2,15 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/stretchr/testify/require"
 )
+
+func dbNullString(s string) (v sql.NullString) { v.String, v.Valid = s, true; return v }
 
 // noticeText is the exact frame shape agent.childQuestionNoticeText writes:
 // the SUB-AGENT QUESTION frame inside a larger preamble.
@@ -57,8 +60,8 @@ func TestPendingChildQuestions(t *testing.T) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	store := NewAsyncJobStore(conn, dataDir, 1, "test")
-	t.Cleanup(func() { _ = store.Close(ctx) })
+	store := NewSessionNoticeStore(conn)
+	store.SetReadConn(db.New(conn))
 
 	// session_notices.owner is an FK: real session rows first.
 	svc := NewService(db.New(conn), conn)
@@ -67,11 +70,16 @@ func TestPendingChildQuestions(t *testing.T) {
 	root2, err := svc.Create(ctx, "other root")
 	require.NoError(t, err)
 
-	// The void filter drops a notice whose bound job row is missing (the
-	// pull path's rule), so the fixture claims its running delegation.
-	_, err = store.Claim(ctx, ClaimParams{
-		Owner: root1.ID, ToolCallID: "delegate-1", Kind: JobKindAgent,
-		Input: "ask", ToolName: "agent", ChildSessionID: "child-1",
+	// The void filter drops a notice whose bound work row is gone (the
+	// pull path's rule, evaluated over batch root facts), so the fixture
+	// reserves a constraint-valid LIVE batch root for the binding.
+	_, err = NewBatchStore(conn).Reserve(ctx, BatchReservation{
+		Owner: root1.ID, Host: "host-child-question", RunnerID: "runner",
+		ToolCallID: "delegate-1", InputHash: "hash-child-question", Sequence: 1,
+		Root: BatchReservationNode{
+			Values:   db.ReserveBatchNodeParams{Kind: "batch", Mode: dbNullString("parallel"), State: "pending", ControlState: "none"},
+			Children: []BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: dbNullString("agent"), State: "pending", ControlState: "none"}}},
+		},
 	})
 	require.NoError(t, err)
 
