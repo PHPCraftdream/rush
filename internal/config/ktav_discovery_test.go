@@ -125,7 +125,7 @@ func TestKtavSlotSelectionMatrix(t *testing.T) {
 		writeTestFile(t, legacy, jsonBody)
 		// The invalid bytes CARRY the secret: the diagnostic must not echo
 		// the parser input.
-		require.NoError(t, os.WriteFile(ktavPath, []byte("not ktav at all {{{ "+ktavTestSecret), 0o600))
+		require.NoError(t, os.WriteFile(ktavPath, []byte("k: "+ktavTestSecret+"\nk: "+ktavTestSecret+"\n"), 0o600))
 		require.Equal(t, ktavPath, selectConfigSlot(legacy))
 		logs := captureSlogOutput(t)
 		_, _, _, _, err := loadConfigCandidateStable([]string{ktavPath})
@@ -135,9 +135,11 @@ func TestKtavSlotSelectionMatrix(t *testing.T) {
 		require.NotContains(t, logs.String(), ktavTestSecret)
 	})
 	t.Run("backup-only hidden ancestor blocks visible ancestor fallback", func(t *testing.T) {
-		root := t.TempDir()
+		// Canonical root: projectBoundary resolves symlinks (macOS /var).
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
 		working := filepath.Join(root, "child", "project")
-		_, err := exec.LookPath("git")
+		_, err = exec.LookPath("git")
 		require.NoError(t, err)
 		gitHome := t.TempDir()
 		t.Setenv("HOME", gitHome)

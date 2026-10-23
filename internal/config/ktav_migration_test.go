@@ -24,7 +24,7 @@ import (
 func ktavSeedLegacy(t *testing.T, dir string) string {
 	t.Helper()
 	legacy := filepath.Join(dir, "rush.json")
-	writeTestFile(t, legacy, `{"providers":{"p":{"api_key":"`+ktavTestSecret+`"}},"numeric_fixture":{"decimal":0.50,"large":9007199254740993}}`)
+	writeTestFile(t, legacy, `{"providers":{"p":{"api_key":"`+ktavTestSecret+`"}},"numeric_fixture":{"decimal":0.50,"big":9007199254740993}}`)
 	return legacy
 }
 
