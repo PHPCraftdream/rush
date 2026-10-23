@@ -4,11 +4,9 @@ package config
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -70,7 +68,7 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := renameWindowsConfigHandleNoReplace(source, parent, backupBase); err != nil {
+	if err := renameConfigTempHandle(source, sourcePath, parent, backupBase, false, expected, owner, enforceOwner, sourcePath); err != nil {
 		return err
 	}
 	if err := runKtavMigrationStep("after-backup-rename"); err != nil {
@@ -92,32 +90,4 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 		return err
 	}
 	return nil
-}
-
-// renameWindowsConfigHandleNoReplace issues FileRenameInformationEx with
-// POSIX semantics (no replacement) against the pinned parent directory
-// handle, for an existing source handle. FILE_RENAME_POSIX_SEMANTICS alone
-// (without REPLACE_IF_EXISTS) fails with a collision status when the
-// destination exists: the operation is genuinely no-replace.
-func renameWindowsConfigHandleNoReplace(source, parent *os.File, destination string) error {
-	name, err := windows.UTF16FromString(destination)
-	if err != nil {
-		return err
-	}
-	name = name[:len(name)-1]
-	headerSize := int(unsafe.Offsetof(windowsFileRenameInfo{}.FileName))
-	buffer := make([]byte, headerSize+len(name)*2)
-	info := (*windowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
-	info.Flags = windows.FILE_RENAME_POSIX_SEMANTICS
-	info.RootDirectory = windows.Handle(parent.Fd())
-	info.FileNameLength = uint32(len(name) * 2)
-	for i, value := range name {
-		binary.LittleEndian.PutUint16(buffer[headerSize+i*2:], value)
-	}
-	return windows.SetFileInformationByHandle(
-		windows.Handle(source.Fd()),
-		windows.FileRenameInfoEx,
-		&buffer[0],
-		uint32(len(buffer)),
-	)
 }

@@ -627,7 +627,7 @@ func TestKtavMigrationBudgetIsSharedAndBounded(t *testing.T) {
 	configTestHooks.Lock()
 	previousAcquire := configTestHooks.acquireConfigLock
 	configTestHooks.acquireConfigLock = func(ctx context.Context, path string) (*filelock.FileLock, error) {
-		if filepath.Clean(path) == filepath.Clean(globalJSON+".lock") || filepath.Clean(path) == filepath.Clean(projectJSON+".lock") {
+		if canonLockPath(path) == canonLockPath(globalJSON+".lock") || canonLockPath(path) == canonLockPath(projectJSON+".lock") {
 			deadline, ok := ctx.Deadline()
 			require.True(t, ok)
 			deadlines = append(deadlines, deadline)
@@ -718,4 +718,14 @@ func TestReloadBackupOnlyFailsClosed(t *testing.T) {
 	require.FileExists(t, backup)
 	require.Same(t, before, store.Config())
 	require.True(t, store.Config().Options.Debug)
+}
+
+// canonLockPath resolves the parent directory's symlinks (macOS /var) so a
+// lock path compares equal however the caller spelled its directory.
+func canonLockPath(p string) string {
+	dir, err := filepath.EvalSymlinks(filepath.Dir(p))
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(dir, filepath.Base(p))
 }

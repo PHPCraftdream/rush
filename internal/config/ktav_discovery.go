@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
@@ -263,7 +264,8 @@ func ktavEntryExists(path string) bool {
 		return false
 	}
 	_, err := os.Lstat(path)
-	return err == nil || !os.IsNotExist(err)
+	// A path below a regular file (ENOTDIR) holds no entry either.
+	return err == nil || (!os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR))
 }
 
 func fileExists(path string) bool {
