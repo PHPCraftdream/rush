@@ -369,7 +369,7 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 			// stale annotation refers to.
 			pid := activity.Verdict.CrashedPID
 			if pid == 0 {
-				pid = lock.PID
+				pid = int64(lock.PID)
 			}
 			if pid > 0 {
 				reason += fmt.Sprintf(" (the session lock records dead PID %d)", pid)

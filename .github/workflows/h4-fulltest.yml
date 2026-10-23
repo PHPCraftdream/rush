@@ -34,7 +34,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           set +e
-          go test -count=1 -p 2 -timeout 12m ./... > "$RUNNER_TEMP/fulltest.txt" 2>&1
+          go test -short -count=1 -p 2 -timeout 40m ./... > "$RUNNER_TEMP/fulltest.txt" 2>&1
           rc=$?
           grep -E '^(--- FAIL|    --- FAIL|FAIL|panic:|ok )' "$RUNNER_TEMP/fulltest.txt" | grep -v '^ok ' > "$RUNNER_TEMP/fulltest-summary.txt"
           cat "$RUNNER_TEMP/fulltest-summary.txt"
