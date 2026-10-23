@@ -114,7 +114,7 @@ func TestSessionsAudit_CountsAndTerminalRoot(t *testing.T) {
 
 	// Held (cancelling) root: one finding, named with the tool call and state.
 	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	require.Contains(t, stdout, auditBatchRuleBatchStatus)
+	require.Contains(t, stdout, auditLegacyAbsentRuleStatus)
 	require.Contains(t, stdout,
 		auditFindingLine("unfinished_jobs", sessionID, f.toolCallID+":cancelling", 1))
 	require.NotNil(t, reports[0].Batch)
@@ -128,7 +128,7 @@ func TestSessionsAudit_CountsAndTerminalRoot(t *testing.T) {
 	// forbidden, never the status line.
 	require.NotContains(t, stdout, "unfinished_jobs: ",
 		"a completed root produces no unfinished_jobs finding")
-	require.Contains(t, stdout, auditBatchRuleBatchStatus,
+	require.Contains(t, stdout, auditLegacyAbsentRuleStatus,
 		"the batch status line (counted from batch_nodes) stays")
 	require.NotNil(t, reports[0].Batch)
 	facts := reports[0].Batch.Sessions[sessionID]

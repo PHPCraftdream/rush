@@ -202,7 +202,9 @@ func TestBGShellDone_ParentOfARunningDelegationKeepsTheCap(t *testing.T) {
 func TestDelegatedChildDriven_ReadsTheDurableRow(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "durable-child", attemptFixtureOpts{noDriver: true})
-	child, err := f.env.sessions.Create(ctx, "child")
+	// A delegated child is a task session durably linked to its parent: the
+	// durable read resolves the parent from the child's own row.
+	child, err := f.env.sessions.CreateTaskSession(ctx, "remote-delegate", f.sessID, "child")
 	require.NoError(t, err)
 
 	driven, err := f.coord.delegatedChildDriven(ctx, child.ID)
