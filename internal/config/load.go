@@ -43,8 +43,11 @@ func runLoadAfterProviderConfigTestHook(workingDir string) {
 // run).
 func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	var lastErr error
+	// ONE shared migration deadline for every slot and every load attempt.
+	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget)
+	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
-		store, err := loadOnce(workingDir, dataDir, debug)
+		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug)
 		if !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			if err == nil {
 				store.recoverOAuthJournalsAtLoad()
@@ -56,7 +59,15 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	return nil, fmt.Errorf("%w after %d attempts: %v", ErrConfigReloadUnstable, reloadMaxAttempts, lastErr)
 }
 
-func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
+func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool) (*ConfigStore, error) {
+	if err := checkAuthoritativeBackupOnly(workingDir); err != nil {
+		return nil, err
+	}
+	// Migrate initial discovery sources before constructing the candidate
+	// snapshot. Gated by ktavAutoMigrate (false in this change).
+	if err := ktavMigrateStartupSlots(ktavCtx, workingDir); err != nil {
+		return nil, err
+	}
 	// Read every deterministic candidate, including absent paths. This closes
 	// the create-after-discovery gap for project and workspace configuration.
 	configPaths := lookupConfigCandidates(workingDir)
@@ -81,9 +92,19 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	sharedDataDir := dataDirIsSharedOfLinkedWorktree(workingDir, dataDirResolved, dataDirSource)
 	workspaceHomeFlag.Store(!sharedDataDir)
 
-	globalDataPath := normalizeReloadPath(GlobalConfigData())
-	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	globalDataPath := normalizeReloadPath(selectConfigSlot(GlobalConfigData()))
+	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
 	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
+	if err := checkBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
+		return nil, err
+	}
+	if err := ktavMigrateWorkspaceIfNeeded(ktavCtx, workingDir, cfg.Options.DataDirectory); err != nil {
+		return nil, err
+	}
+	if fileExists(ktavSiblingOf(filepath.Join(cfg.Options.DataDirectory, appName+".json"))) {
+		workspaceDiscoveryPath = normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
+		workspacePath = normalizeReloadPath(workspaceDiscoveryPath)
+	}
 
 	if debug {
 		cfg.Options.Debug = true
@@ -108,6 +129,13 @@ func loadOnce(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 			return nil, fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
 		}
 		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
+		if readErr == nil {
+			var decodeErr error
+			wsData, decodeErr = decodeConfigDocument(workspaceDiscoveryPath, wsData)
+			if decodeErr != nil {
+				return nil, fmt.Errorf("failed to decode workspace config %s: %w", workspacePath, decodeErr)
+			}
+		}
 		if readErr == nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{

@@ -309,6 +309,14 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot reload: working directory not set")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		defer cancel()
+	}
 	return s.reloadFromDiskUnlocked(ctx)
 }
 
@@ -344,6 +352,26 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 // writer finishes after the candidate was published but before reloadMu is
 // released.
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		defer cancel()
+	}
+	if err := ktavMigrateStartupSlots(ctx, s.workingDir); err != nil {
+		s.releaseReloadLock()
+		return err
+	}
+	prev := s.loadSnapshot()
+	dataDir := ""
+	if prev.config != nil && prev.config.Options != nil {
+		dataDir = prev.config.Options.DataDirectory
+	}
+	if dataDir != "" {
+		if err := ktavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
+			s.releaseReloadLock()
+			return err
+		}
+	}
 	expectedUncertainty := s.MCPUncertaintyVersions()
 	for attempt := 1; attempt <= reloadMaxAttempts; attempt++ {
 		err := s.buildAndPublishReload(ctx, expectedUncertainty)
@@ -402,6 +430,11 @@ func (s *ConfigStore) releaseReloadLock() {
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncertainty map[string]uint64) error {
 	configPaths := lookupConfigCandidates(s.workingDir)
+	// Mirror the initial-load fail-closed rule: an authoritative slot that
+	// holds only a backup must never reload into an unlocked, empty config.
+	if err := checkAuthoritativeBackupOnly(s.workingDir); err != nil {
+		return err
+	}
 	externalPaths := mcpJSONCandidatePaths(s.workingDir)
 	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, s.workingDir)
 	if err != nil {
@@ -420,14 +453,24 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}
 	cfg.setDefaults(s.workingDir, dataDir)
 
-	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
 	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
+	if err := checkBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
+		return err
+	}
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && s.workingDir != "" {
 		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(s.workingDir)
 		if ownerErr != nil {
 			return fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
 		}
 		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
+		if readErr == nil {
+			var decodeErr error
+			wsData, decodeErr = decodeConfigDocument(workspaceDiscoveryPath, wsData)
+			if decodeErr != nil {
+				return fmt.Errorf("failed to decode workspace config %s: %w", workspacePath, decodeErr)
+			}
+		}
 		if readErr == nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
