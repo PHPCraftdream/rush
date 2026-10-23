@@ -46,11 +46,14 @@ func TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork(t *testing.T) {
 	writeLockFileAt(t, dataDir, locked, os.Getpid())
 
 	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "cancel-driver-fixture")
-	_, err = driverHost.EnsureHost(ctx)
+	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven))
-	// A12 pattern: pin the host lock and keep the driver marker.
+	// A12 pattern: pin the host lock and keep the driver marker. The pinned
+	// lock file stays open for the process lifetime; release it at test end
+	// so the data dir can be removed on Windows.
 	driverHost.CloseKeepLock()
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
 	claimOwnJob(t, a, owner, "bash-1")
 	claimDelegation(t, a, parent, "delegate-1", child.ID)
 	a.Shutdown()

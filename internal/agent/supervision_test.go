@@ -523,7 +523,10 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 	}}
 	coord.subAgentDrivers.register("backoff-root", subAgentDriver{agent: agent})
 
-	cfg := SupervisionConfig{Enabled: true, Interval: 10 * time.Millisecond, MaxInterval: 40 * time.Millisecond, MaxNoProgress: 3}
+	// Second-scale intervals: the deadlines are driven by hand
+	// (handleSupervisionDeadline), so the real timer each tick re-arms must
+	// never fire on its own inside the test, even on a slow -race runner.
+	cfg := SupervisionConfig{Enabled: true, Interval: 10 * time.Second, MaxInterval: 40 * time.Second, MaxNoProgress: 3}
 	coord.supervision.byRoot["backoff-root"] = &supervisionState{rootSessionID: "backoff-root", cfg: cfg, interval: cfg.Interval, generation: 1}
 
 	fireAndWait := func(gen uint64, wantCalls int) {
@@ -532,21 +535,21 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 		require.Eventually(t, func() bool { return promptCount() >= wantCalls }, 2*time.Second, 5*time.Millisecond)
 	}
 
-	fireAndWait(1, 1) // tick 1: 10ms -> 20ms
+	fireAndWait(1, 1) // tick 1: 10s -> 20s
 	coord.supervision.mu.Lock()
 	st := coord.supervision.byRoot["backoff-root"]
 	require.Equal(t, 1, st.tickCount)
-	require.Equal(t, 20*time.Millisecond, st.interval)
+	require.Equal(t, 20*time.Second, st.interval)
 	require.False(t, st.paused)
 	gen2 := st.generation
 	coord.supervision.mu.Unlock()
 	require.Contains(t, sessionNoticeTextAt(t, coord, "backoff-root", 0), "tick 1")
 
-	fireAndWait(gen2, 2) // tick 2: 20ms -> 40ms (== cap)
+	fireAndWait(gen2, 2) // tick 2: 20s -> 40s (== cap)
 	coord.supervision.mu.Lock()
 	st = coord.supervision.byRoot["backoff-root"]
 	require.Equal(t, 2, st.tickCount)
-	require.Equal(t, 40*time.Millisecond, st.interval, "must cap at MaxInterval, not keep doubling")
+	require.Equal(t, 40*time.Second, st.interval, "must cap at MaxInterval, not keep doubling")
 	gen3 := st.generation
 	coord.supervision.mu.Unlock()
 
