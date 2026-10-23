@@ -110,7 +110,7 @@ func selectConfigSlot(legacyJSON string) string {
 	}
 	ktav := ktavSiblingOf(legacyJSON)
 	info, err := os.Stat(ktav)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !ktavEntryAbsentErr(err) {
 		// Unreadable parent or I/O error: keep the Ktav spelling so the
 		// stable reader surfaces the real error instead of silently
 		// falling back to JSON.
@@ -264,8 +264,13 @@ func ktavEntryExists(path string) bool {
 		return false
 	}
 	_, err := os.Lstat(path)
-	// A path below a regular file (ENOTDIR) holds no entry either.
-	return err == nil || (!os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR))
+	return err == nil || !ktavEntryAbsentErr(err)
+}
+
+// ktavEntryAbsentErr reports a stat failure that proves the entry cannot
+// exist: not found, or a parent path component that is not a directory.
+func ktavEntryAbsentErr(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func fileExists(path string) bool {
