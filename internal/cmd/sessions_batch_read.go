@@ -364,6 +364,17 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 	if !f.Unknown && status != "at rest" && activity.Verdict.Kind != session.ActivityCrashed &&
 		(activity.Verdict.CrashedPID > 0 || lock.Kind == session.LockDead) {
 		status += " (stale lock)"
+		if f.Live {
+			// Live work outranks the dead recorded holder; say which PID the
+			// stale annotation refers to.
+			pid := activity.Verdict.CrashedPID
+			if pid == 0 {
+				pid = lock.PID
+			}
+			if pid > 0 {
+				reason += fmt.Sprintf(" (the session lock records dead PID %d)", pid)
+			}
+		}
 	}
 	printStallHeader(ctx, a, dataDir, sessionID, status, lock, out)
 	fmt.Fprintf(out, "reason: %s.\n", reason)

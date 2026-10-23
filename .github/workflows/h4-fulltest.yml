@@ -1,0 +1,49 @@
+# TEMPORARY (H4 composed PR repair): run every Go test package to the end
+# (go test never stops at the first failing package) and publish the full list
+# of failing tests in one run. Remove together with .github/h4-fulltest.trigger
+# when the composed PR is green.
+name: h4-fulltest
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/h4-fulltest.trigger'
+      - '.github/workflows/h4-fulltest.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h4-fulltest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fulltest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test every package
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set +e
+          go test -count=1 -p 2 -timeout 12m ./... > "$RUNNER_TEMP/fulltest.txt" 2>&1
+          rc=$?
+          grep -E '^(--- FAIL|    --- FAIL|FAIL|panic:|ok )' "$RUNNER_TEMP/fulltest.txt" | grep -v '^ok ' > "$RUNNER_TEMP/fulltest-summary.txt"
+          cat "$RUNNER_TEMP/fulltest-summary.txt"
+          exit $rc
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fulltest
+          path: |
+            ${{ runner.temp }}/fulltest.txt
+            ${{ runner.temp }}/fulltest-summary.txt

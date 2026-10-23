@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -226,8 +228,17 @@ func (c *coordinator) IsSessionBusy(sessionID string) bool {
 func (c *coordinator) delegatedChildDriven(ctx context.Context, sessionID string) (bool, error) {
 	parent := ""
 	if c.sessions != nil {
-		if sess, err := c.sessions.Get(ctx, sessionID); err == nil {
+		sess, err := c.sessions.Get(ctx, sessionID)
+		switch {
+		case err == nil:
 			parent = sess.ParentSessionID
+		case !errors.Is(err, sql.ErrNoRows):
+			// The session row is unreadable (not merely absent): the parent
+			// cannot be resolved, so fall back to the driver registration
+			// and surface the read error, exactly like an unreadable
+			// delegation read.
+			_, registered := c.subAgentDrivers.get(sessionID)
+			return registered, err
 		}
 	}
 	if parent != "" {
