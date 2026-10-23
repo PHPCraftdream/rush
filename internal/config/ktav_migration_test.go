@@ -365,14 +365,29 @@ func TestMigrateLegacyConfigFile_SourceChangedDuringArchival(t *testing.T) {
 	require.NoError(t, err)
 	changed := []byte(`{"providers":{"p":{"api_key":"CHANGED-DURING-ARCHIVAL"}}}`)
 	previousHook := ktavMigrationStepHook
+	var rewriteErr error
 	ktavMigrationStepHook = func(step string) error {
 		if step == "during-backup-rename" {
-			return os.WriteFile(legacy, changed, 0o600)
+			rewriteErr = os.WriteFile(legacy, changed, 0o600)
 		}
 		return nil
 	}
 	err = migrateLegacyConfigFile(context.Background(), legacy, dir)
 	ktavMigrationStepHook = previousHook
+	if runtime.GOOS == "windows" {
+		// The pinned source handle denies a concurrent rewrite outright, so
+		// the window cannot be exploited: the original generation is archived.
+		require.Error(t, rewriteErr, "pinned source handle must deny a concurrent rewrite")
+		require.NoError(t, err)
+		backupBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.json.bak"))
+		require.NoError(t, readErr)
+		require.Equal(t, original, backupBytes)
+		require.NoFileExists(t, legacy)
+		require.FileExists(t, filepath.Join(dir, "rush.ktav"))
+		require.NoFileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
+		return
+	}
+	require.NoError(t, rewriteErr)
 	require.ErrorIs(t, err, errKtavMigrationConflict)
 	require.Contains(t, err.Error(), "rush.json")
 	require.Contains(t, err.Error(), "rush.json.bak")
