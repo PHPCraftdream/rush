@@ -133,7 +133,7 @@ func TestKtavWriteTypePreservation(t *testing.T) {
 		{"env var string", "v.env", "$VAR", gjson.String, `"$VAR"`},
 		{"command substitution", "v.cmd", "$(cmd)", gjson.String, `"$(cmd)"`},
 		{"windows path", "v.win", `C:\Users\x\y`, gjson.String, `"C:\\Users\\x\\y"`},
-		{"hash-prefix key", "##anchor", "anchored", gjson.String, `"anchored"`},
+		{"hash-prefix key", `\#\#anchor`, "anchored", gjson.String, `"anchored"`},
 		{"real bool", "v.realbool", true, gjson.True, `true`},
 		{"real int", "v.int", 42, gjson.Number, `42`},
 		{"real float", "v.float", 1.5, gjson.Number, `1.5`},
