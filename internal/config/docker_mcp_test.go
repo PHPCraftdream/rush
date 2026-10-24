@@ -205,9 +205,7 @@ func TestEnableDockerMCPWithRealDockerWhenAvailable(t *testing.T) {
 		resolver:       NewShellVariableResolver(env.New()),
 	})
 	store.systemConfigPathOverride = filepath.Join(tmpDir, "missing-system", "rush.json")
-	paths, pathErr := store.orderedMCPPaths()
-	require.NoError(t, pathErr)
-	for _, path := range paths {
+	for _, path := range store.orderedMCPPaths() {
 		require.NotEqual(t, operatorGlobalPath, normalizeReloadPath(path))
 		require.NotEqual(t, operatorDataPath, normalizeReloadPath(path))
 	}

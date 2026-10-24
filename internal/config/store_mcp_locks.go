@@ -270,20 +270,8 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 	if err != nil {
 		return err
 	}
-	// Resolve the PHYSICAL slot file before target resolution: locks,
-	// binding verification, and identity expectations must all bind the
-	// file the transaction will really edit. A backup-only slot is a hard
-	// error here, never an absent target.
-	globalPath, err = mcpConfigSlotPath(normalizeReloadPath(globalPath))
-	if err != nil {
-		return err
-	}
 	paths = append(paths, normalizeDiscoveryPath(globalPath))
 	if workspacePath, workspaceErr := s.configPath(ScopeWorkspace); workspaceErr == nil {
-		workspacePath, slotErr := mcpConfigSlotPath(normalizeReloadPath(workspacePath))
-		if slotErr != nil {
-			return slotErr
-		}
 		paths = append(paths, normalizeDiscoveryPath(workspacePath))
 	}
 	slices.Sort(paths)
