@@ -48,7 +48,7 @@ func visibleCatalogModels(provider string, models []catwalk.Model) []catwalk.Mod
 }
 
 func readModelCatalog(path, fingerprint string) (cachedModelCatalog, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readCacheDocument(path)
 	if err != nil {
 		return cachedModelCatalog{}, false
 	}
@@ -82,7 +82,7 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err == nil {
-		err = atomicWriteFile(path, data, 0o600)
+		err = writeCacheDocument(path, data, 0o600, atomicWriteFile)
 	}
 	if err != nil {
 		slog.Warn("Failed to cache model catalog", "provider", provider, "error", err)
@@ -110,8 +110,12 @@ func ClearModelCatalogCache(provider string) error {
 }
 
 func clearModelCatalog(provider string) error {
-	if err := os.Remove(modelCatalogPath(provider)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clear %s model catalog: %w", provider, err)
+	// Both generations must go: leaving one behind would let the next
+	// process resurrect the cleared catalog.
+	for _, path := range []string{modelCatalogPath(provider), ktavSiblingOf(modelCatalogPath(provider))} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear %s model catalog: %w", provider, err)
+		}
 	}
 	if provider == "zai" {
 		return clearModelCatalog("zai-docs")
