@@ -191,7 +191,7 @@ func stageConfigFileHandle(path string, data []byte, perm os.FileMode) (windowsS
 	return stageConfigFileHandleAt(nil, path, data, perm)
 }
 
-func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.FileMode) (windowsStagedConfigFile, error) {
+func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.FileMode, migrationHooks ...func(string) error) (windowsStagedConfigFile, error) {
 	dir := filepath.Dir(filepath.Clean(path))
 	base := filepath.Base(path)
 	for range configTempNameAttempts {
@@ -246,7 +246,17 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 		if !identity.valid || !info.Mode().IsRegular() {
 			return windowsStagedConfigFile{}, os.ErrInvalid
 		}
-		if _, err := file.Write(data); err != nil {
+		if _, err := file.Write(data[:len(data)/2]); err != nil {
+			return windowsStagedConfigFile{}, err
+		}
+		if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+			if err := migrationHooks[0]("during-staging"); err != nil {
+				cleanup = false
+				_ = file.Close()
+				return windowsStagedConfigFile{}, err
+			}
+		}
+		if _, err := file.Write(data[len(data)/2:]); err != nil {
 			return windowsStagedConfigFile{}, err
 		}
 		if err := file.Chmod(perm); err != nil {
@@ -254,6 +264,11 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 		}
 		if err := file.Sync(); err != nil {
 			return windowsStagedConfigFile{}, err
+		}
+		if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+			if err := migrationHooks[0]("after-staging"); err != nil {
+				return windowsStagedConfigFile{}, err
+			}
 		}
 		// The identity is deliberately captured while this DELETE-capable
 		// handle remains open. The pathname is not used as an identity oracle.

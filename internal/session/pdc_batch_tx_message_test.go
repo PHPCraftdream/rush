@@ -17,8 +17,9 @@ import (
 )
 
 // pdcUUIDRe scrubs the random message UUIDs the two scenario runs mint; the
-// batch node UUIDs are already scrubbed via pdaEquivState.scrubList.
-var pdcUUIDRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+// batch node UUIDs are already scrubbed via pdaEquivState.scrubList. The
+// dump pre-scrubs digit runs to TS, so an all-digit UUID tail arrives as TS.
+var pdcUUIDRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-(?:[0-9a-f]{12}|TS)`)
 
 // pdcPublishProbe counts CreatedEvent publications and asserts the "publish
 // only after commit" contract: when the event goes out, the row must already
