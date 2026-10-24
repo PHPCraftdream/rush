@@ -59,14 +59,34 @@ func decodeSettingsDocument(path string, rawBytes []byte, rawFingerprint reloadF
 	}, nil
 }
 
-// readSettingsDocument reads one settings file with the same stable-read
-// discipline as the reload path and decodes it per its format.
+// readSettingsDocument is THE single choke point for reading any settings or
+// protection document. It takes a LOGICAL path in any spelling (legacy rush.json
+// or a rush.ktav sibling, any case) and, BY CONSTRUCTION rather than per call
+// site:
+//
+//  1. normalizes it to its logical LEGACY name (legacySlotOf);
+//  2. selects the active slot (selectConfigSlot — the Ktav sibling wins);
+//  3. fails closed BEFORE reading when the slot is backup-only
+//     (checkBackupOnlySlot) — that error propagates as an ERROR and must
+//     never be mapped to "no lock"/"unlocked" by any caller;
+//  4. stable-reads the SELECTED file and decodes it (decodeConfigDocument);
+//     decode errors propagate as errors.
+//
+// CONTRACT: an os.IsNotExist returned from this function means EXACTLY that
+// neither the .ktav nor the .json spelling of the slot exists AND no backup
+// exists (a backup-only slot already errored in step 3). Callers may treat
+// such an error as "no document"; every other error is a real failure.
 func readSettingsDocument(path string) (settingsDocument, error) {
-	rawBytes, rawFingerprint, err := readStableConfigFile(path)
+	legacy := legacySlotOf(path)
+	selected := selectConfigSlot(legacy)
+	if err := checkBackupOnlySlot(legacy); err != nil {
+		return settingsDocument{}, err
+	}
+	rawBytes, rawFingerprint, err := readStableConfigFile(selected)
 	if err != nil {
 		return settingsDocument{}, err
 	}
-	return decodeSettingsDocument(path, rawBytes, rawFingerprint)
+	return decodeSettingsDocument(selected, rawBytes, rawFingerprint)
 }
 
 // encodeSettingsDocument converts JSON-shaped bytes back to the raw bytes a
@@ -103,25 +123,32 @@ func newConfigFileIsKtav() bool {
 	return ktavAutoMigrate
 }
 
-// configWriteLockAnchor returns the path the inter-process write sidecar
-// anchors on: the LEGACY JSON spelling of a .ktav path, so a rush.ktav store
-// contends on rush.json.lock — the same sidecar the pre-Ktav write path
-// used. A non-Ktav path is returned unchanged, so a .json input anchors on
-// itself. Mirrors ktavSiblingOf's construction inverted: same directory,
+// legacySlotOf returns the LEGACY JSON spelling of a logical config slot:
+// a .ktav path maps to its .json sibling, any other path is returned
+// unchanged. Mirrors ktavSiblingOf's construction inverted: same directory,
 // same base name, .ktav replaced with .json.
 //
 // The extension strip is deliberately case-insensitive, NOT strings.TrimSuffix:
 // isKtavConfigPath matches the extension with strings.EqualFold, so "rush.KTAV"
 // is a Ktav path, but TrimSuffix (byte-case-sensitive) would leave it intact
-// and produce the bogus anchor "rush.KTAV.json". EqualFold-matched extensions
+// and produce the bogus slot "rush.KTAV.json". EqualFold-matched extensions
 // have identical length, so cutting by length is safe. (The case-insensitive
 // classification lives in isKtavConfigPath in ktav_discovery.go, which this
 // lane does not own; this helper only keeps the strip consistent with it.)
-func configWriteLockAnchor(path string) string {
+func legacySlotOf(path string) string {
 	if !isKtavConfigPath(path) {
 		return path
 	}
 	return path[:len(path)-len(ktavConfigExt)] + ".json"
+}
+
+// configWriteLockAnchor returns the path the inter-process write sidecar
+// anchors on: the LEGACY JSON spelling of a .ktav path, so a rush.ktav store
+// contends on rush.json.lock — the same sidecar the pre-Ktav write path
+// used. A non-Ktav path is returned unchanged, so a .json input anchors on
+// itself.
+func configWriteLockAnchor(path string) string {
+	return legacySlotOf(path)
 }
 
 // readSlotOf resolves the physical READ path for a logical slot named by a
@@ -131,9 +158,13 @@ func configWriteLockAnchor(path string) string {
 // an already-selected .ktav path is never re-selected into "rush.ktav.ktav"),
 // WITHOUT the creation redirect — a read source must observe the slot as it
 // exists and never reserve the Ktav spelling for a slot that has neither
-// file. Settings-protection sources (lock probes, models-signature checks)
-// route every logical legacy path through this helper so a lock or models
-// block living only in a rush.ktav document is visible to them.
+// file.
+//
+// Note: with the slot selection now built into readSettingsDocument, this
+// helper is redundant for settings-protection callers but remains in use by
+// the platform source helpers (settings_lock_sources*.go) and
+// settings_models_integrity.go, which pass its result to path-sensitive
+// logic (not just document reads).
 func readSlotOf(path string) string {
 	if path == "" || isKtavConfigPath(path) {
 		return path
