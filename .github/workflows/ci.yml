@@ -1,0 +1,287 @@
+# ci — NEW TIERED ENTRY POINT, SHADOW MODE (phase 2).
+#
+# Sole new entry point for the tiered CI experiment. Gates NOTHING yet:
+# triggers only on pushes to `ci-shadow/**` branches and manual dispatch,
+# so it can be validated in parallel with the existing build/lint/security
+# workflows (which stay authoritative until cutover). No schedule/cron.
+#
+# Cutover (later task) edits ONLY this file's `on:` block — the exact diff
+# is documented in .github/ci-structure.md. All job/step bodies already
+# implement both the shadow path (base = merge-base origin/ci/job-batches)
+# and the real pull_request path, so the flip is a trigger edit only.
+#
+# Heavy bodies live in reusable workflows called below:
+#   ./.github/workflows/ci-tests.yml     — test/agent/race/native jobs
+#   ./.github/workflows/ci-security.yml  — CodeQL / govulncheck / Grype
+# ci-gate stays here (a `uses:` job cannot have steps).
+name: ci
+run-name: ci [${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'full' || github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci') && 'full' || 'quick' }}]
+
+on:
+  push:
+    branches: ["ci-shadow/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'full-ci') && format('isolated-{0}', github.run_id) || ((github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && 'full' || 'quick') }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  plan:
+    if: github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci'
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.read.outputs.mode }}
+      ubuntu_needed: ${{ steps.read.outputs.ubuntu_needed }}
+      macos_needed: ${{ steps.read.outputs.macos_needed }}
+      windows_needed: ${{ steps.read.outputs.windows_needed }}
+      linux_packages: ${{ steps.read.outputs.linux_packages }}
+      darwin_packages: ${{ steps.read.outputs.darwin_packages }}
+      windows_packages: ${{ steps.read.outputs.windows_packages }}
+      race_packages: ${{ steps.read.outputs.race_packages }}
+      race_needed: ${{ steps.read.outputs.race_needed }}
+      agent_selected: ${{ steps.read.outputs.agent_selected }}
+      web_changed: ${{ steps.read.outputs.web_changed }}
+      security_full: ${{ steps.read.outputs.security_full }}
+      security_deps: ${{ steps.read.outputs.security_deps }}
+      security_actions: ${{ steps.read.outputs.security_actions }}
+      heavy_allowed: ${{ steps.read.outputs.heavy_allowed }}
+      native_required: ${{ steps.read.outputs.native_required }}
+      validated_head: ${{ steps.read.outputs.validated_head }}
+      validated_base: ${{ steps.read.outputs.validated_base }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: resolve validated base/head
+        id: shas
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=$(git merge-base origin/ci/job-batches HEAD)" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: choose validation lane
+        id: lane
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" != true ]; then echo cheap_only=true >> "$GITHUB_OUTPUT"; echo force_full=false >> "$GITHUB_OUTPUT"; else echo cheap_only=false >> "$GITHUB_OUTPUT"; fi
+          if { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
+      - name: setup Go for plan
+        if: steps.lane.outputs.cheap_only != 'true'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: extract platform graphs
+        if: steps.lane.outputs.cheap_only != 'true'
+        run: |
+          set -euo pipefail; mkdir -p .ci-plan-tmp
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/linux.json
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/darwin.json
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/windows.json
+      - name: select plan and export outputs
+        id: read
+        env:
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD: ${{ steps.shas.outputs.head }}
+          FORCE_FULL: ${{ steps.lane.outputs.force_full }}
+          CHEAP_ONLY: ${{ steps.lane.outputs.cheap_only }}
+        run: |
+          set -euo pipefail; mkdir -p .ci-plan-tmp
+          if [ "$CHEAP_ONLY" = true ]; then python3 .github/scripts/ci_gate_decide.py minimal-plan --base "$BASE" --head "$HEAD" --output .ci-plan-tmp/plan.json
+          else
+            python3 .github/scripts/ci_plan.py --base "$BASE" --head "$HEAD" --go-list-json linux=.ci-plan-tmp/linux.json --go-list-json darwin=.ci-plan-tmp/darwin.json --go-list-json windows=.ci-plan-tmp/windows.json --out .ci-plan-tmp/selector-plan.json --summary .ci-plan-tmp/plan.md
+            extra=(); if [ "$FORCE_FULL" = true ]; then extra+=(--force-full); fi
+            python3 .github/scripts/ci_gate_decide.py prepare-plan --plan .ci-plan-tmp/selector-plan.json --graph-dir .ci-plan-tmp --policy .github/ci-policy.toml --output .ci-plan-tmp/plan.json --base "$BASE" --head "$HEAD" "${extra[@]}"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: {name: ci-plan, path: .ci-plan-tmp/plan.json}
+  checks:
+    needs: plan
+    if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        with: {go-version-file: go.mod}
+      - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
+        run: |
+          if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+            printf '\033[31mnon-ASCII bytes in:\033[0m\n%s\n' "$offenders"
+            echo "::error::a non-ASCII character in a .sql file silently corrupts sqlc codegen -- replace it with an ASCII equivalent"
+            exit 1
+          fi
+      - name: no stale large/small model-slot spelling (renamed to smart/fast)
+        run: bash .githooks/check_stale_model_slots.sh
+      - name: test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)
+        run: bash .githooks/check_db_release_pairing.sh
+      - name: self-test db release pairing guard
+        run: bash .githooks/check_db_release_pairing_selftest.sh
+      - name: no hand-written source file over 1000 lines (ratchet allowlist)
+        run: bash .githooks/check_file_size.sh
+      - name: self-test file-size guard
+        run: bash .githooks/check_file_size_selftest.sh
+      - name: go mod tidy produces no diff
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        run: go mod tidy -diff
+      - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+      - name: sqlc generate produces no diff (committed internal/db/*.sql.go matches internal/db/sql/*.sql)
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        run: |
+          set -uo pipefail
+          "$(go env GOPATH)/bin/sqlc" generate
+          git diff --exit-code -- internal/db/ || {
+            echo "::error::internal/db/*.sql.go is stale relative to internal/db/sql/*.sql -- run 'sqlc generate' and commit the result"
+            exit 1
+          }
+      - name: go build ./...
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        run: go build ./...
+      - name: go vet ./...
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        run: go vet ./...
+      # lint.yml `lint` job, ubuntu leg only (the macOS/Windows legs of the
+      # lint matrix stay in lint.yml until cutover — see ci-structure.md).
+      - name: golangci-lint
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          args: --config=.golangci.yml --timeout=10m ./...
+          version: v2.13
+      # lint.yml `lint-ncruces-driver` job (verbatim): the ncruces SQLite
+      # driver branch is compiled on no runner otherwise.
+      - name: golangci-lint (GOOS=linux GOARCH=mips64)
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: linux
+          GOARCH: mips64
+        with:
+          args: --config=.golangci.yml --timeout=10m ./internal/db/...
+          version: v2.13
+  tests:
+    needs: [plan, checks]
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.ubuntu_needed == 'true' || needs.plan.outputs.macos_needed == 'true' || needs.plan.outputs.windows_needed == 'true' || needs.plan.outputs.agent_selected == 'true' || needs.plan.outputs.race_needed == 'true')
+    uses: ./.github/workflows/ci-tests.yml
+    permissions: {contents: read}
+    with:
+      mode: ${{ needs.plan.outputs.mode }}
+      linux_packages: ${{ needs.plan.outputs.linux_packages }}
+      darwin_packages: ${{ needs.plan.outputs.darwin_packages }}
+      windows_packages: ${{ needs.plan.outputs.windows_packages }}
+      race_packages: ${{ needs.plan.outputs.race_packages }}
+      ubuntu_needed: ${{ needs.plan.outputs.ubuntu_needed == 'true' }}
+      macos_needed: ${{ needs.plan.outputs.macos_needed == 'true' }}
+      windows_needed: ${{ needs.plan.outputs.windows_needed == 'true' }}
+      agent_selected: ${{ needs.plan.outputs.agent_selected == 'true' }}
+      race_needed: ${{ needs.plan.outputs.race_needed == 'true' }}
+    secrets: inherit
+  web:
+    needs: plan
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && needs.plan.outputs.web_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit
+        working-directory: web
+        run: pnpm typecheck
+      - name: oxlint
+        working-directory: web
+        run: pnpm lint
+      - name: web unit tests (node --test)
+        working-directory: web
+        run: node --test src/*.test.ts
+      - name: production build (rsbuild build)
+        working-directory: web
+        run: pnpm build
+  security:
+    needs: plan
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.security_full == 'true' || needs.plan.outputs.security_deps == 'true' || needs.plan.outputs.security_actions == 'true')
+    uses: ./.github/workflows/ci-security.yml
+    permissions: {actions: read, contents: read, pull-requests: read, security-events: write}
+    with:
+      security_full: ${{ needs.plan.outputs.security_full == 'true' }}
+      security_deps: ${{ needs.plan.outputs.security_deps == 'true' }}
+      security_actions: ${{ needs.plan.outputs.security_actions == 'true' }}
+    secrets: inherit
+  cancel-full-on-unlabel:
+    if: github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name == 'full-ci'
+    runs-on: ubuntu-latest
+    permissions: {actions: write, contents: read, pull-requests: read}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - name: cancel matching full runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_LABEL: ${{ github.event.label.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python3 .github/scripts/ci_gate_decide.py cancel-full
+  ci-gate:
+    needs: [plan, checks, tests, web, security]
+    if: always()
+    permissions: {actions: read, contents: read, pull-requests: read}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: {persist-credentials: false}
+      - name: download plan artifact
+        if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: ci-plan, path: plan}
+      - name: download Windows assignment
+        if: always() && needs.plan.outputs.mode == 'full' && needs.plan.outputs.windows_needed == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: shard-assignment, path: assignment}
+      - name: gate live state and receipts
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_LABEL: ${{ github.event.label.name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          PR_BASE_REF: ${{ github.base_ref || github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          VALIDATED_HEAD: ${{ needs.plan.outputs.validated_head }}
+          VALIDATED_BASE: ${{ needs.plan.outputs.validated_base }}
+          PLAN_OUTPUTS_JSON: ${{ toJSON(needs.plan.outputs) }}
+          NEEDS_JSON: '{"plan":"${{ needs.plan.result }}","checks":"${{ needs.checks.result }}","tests":"${{ needs.tests.result }}","web":"${{ needs.web.result }}","security":"${{ needs.security.result }}"}'
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/ci_gate_decide.py gate --plan plan/plan.json --assignment assignment/assignment.json --output gate-result.json
