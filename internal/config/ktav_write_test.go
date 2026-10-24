@@ -187,7 +187,7 @@ func TestKtavWritePreservesUnknownFields(t *testing.T) {
 
 	var expected, actual any
 	require.NoError(t, json.Unmarshal([]byte(unknown), &expected))
-	require.NoError(t, json.Unmarshal(gjson.Get(string(ktavDecodedJSON(t, ktavPath)), "made_up_future_field").Raw, &actual))
+	require.NoError(t, json.Unmarshal([]byte(gjson.Get(string(ktavDecodedJSON(t, ktavPath)), "made_up_future_field").Raw), &actual))
 	require.Equal(t, expected, actual, "the unknown top-level field must survive byte-semantically")
 }
 

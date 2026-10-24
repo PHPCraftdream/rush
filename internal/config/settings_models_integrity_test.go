@@ -772,3 +772,111 @@ func TestModelsIntegrityKtav_MigrationPreservesMismatchAndMissing(t *testing.T) 
 		require.NoError(t, modelsIntegrityOf(decoded, false))
 	})
 }
+
+// ---------------------------------------------------------------------------
+// KTAV-3a round 2: slot-aware settings-protection sources. Every protection
+// source (lock probes, models-signature lock detection) must see a lock that
+// lives ONLY in a rush.kav-style Ktav document, and must fail closed when a
+// Ktav protection source cannot be decoded. ADDITIVE only.
+// ---------------------------------------------------------------------------
+
+// writeLockedKtavDoc writes an offline fixture document carrying a sync_rev
+// lock to path as a rush.ktav file and returns the decoded JSON bytes.
+func writeLockedKtavDoc(t *testing.T, path, password, modelsJSON string) []byte {
+	t.Helper()
+	doc := integrityModelsFixture(t, path, modelsJSON)
+	locked, err := sjson.Set(doc, syncRevKey, HashPassword(password))
+	require.NoError(t, err)
+	return ktavIntegrityWrite(t, path, locked)
+}
+
+// withProcessPassword installs a process password for the test's duration.
+func withProcessPassword(t *testing.T, password string) {
+	t.Helper()
+	SetProcessPassword(password)
+	t.Cleanup(func() { SetProcessPassword("") })
+}
+
+// TestSettingsLockKtav_GlobalKtavOnly pins that a sync_rev lock present only
+// in the Ktav GLOBAL-DATA document makes LockState report Global and
+// SettingsLocked report locked: the store's already-selected globalDataPath
+// is decoded through the settings-document layer, never re-selected.
+func TestSettingsLockKtav_GlobalKtavOnly(t *testing.T) {
+	integrityIsolate(t)
+	ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+	writeLockedKtavDoc(t, ktavPath, "pw", `{"smart":{"provider":"p","model":"m"}}`)
+
+	s := ktavIntegrityStore(t, ktavPath)
+	state, err := s.LockState()
+	require.NoError(t, err)
+	require.True(t, state.Global, "a lock only in the global rush.ktav must be Global")
+	require.False(t, state.Local)
+
+	locked, err := s.SettingsLocked()
+	require.NoError(t, err)
+	require.True(t, locked)
+}
+
+// TestSettingsLockKtav_WorkspaceKtavOnly pins that a sync_rev lock present
+// only in the Ktav WORKSPACE document (the natural <dataDir>/rush.* slot)
+// locks the store via the workspace/natural source, and that
+// naturalWorkspaceSettingsPath selects the Ktav sibling of the legacy name.
+func TestSettingsLockKtav_WorkspaceKtavOnly(t *testing.T) {
+	dir := integrityIsolate(t)
+	work := filepath.Join(dir, "workspace")
+	dataDir := filepath.Join(work, ".rush")
+	ktavPath := filepath.Join(dataDir, "rush.ktav")
+	writeLockedKtavDoc(t, ktavPath, "pw", `{"smart":{"provider":"p","model":"m"}}`)
+
+	require.Equal(t, ktavPath, readSlotOf(filepath.Join(dataDir, "rush.json")),
+		"the legacy workspace slot name must resolve to its rush.ktav sibling for read sources")
+
+	s := newTestConfigStore(testStoreOpts{config: &Config{}, workspacePath: ktavPath})
+	s.workingDir = work
+
+	state, err := s.LockState()
+	require.NoError(t, err)
+	require.False(t, state.Global)
+	require.True(t, state.Local, "a lock only in the workspace rush.ktav must be Local")
+
+	locked, err := s.SettingsLocked()
+	require.NoError(t, err)
+	require.True(t, locked)
+}
+
+// TestSettingsLockKtav_CorruptKtavFailsClosed pins that an UNDECODABLE Ktav
+// protection source is treated as locked/error everywhere, never as
+// unlocked: anySettingsLockExists returns true, LockState errors, and
+// CheckProcessPassword refuses with ErrSettingsLocked.
+func TestSettingsLockKtav_CorruptKtavFailsClosed(t *testing.T) {
+	integrityIsolate(t)
+	ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+	require.NoError(t, os.WriteFile(ktavPath, []byte("k: not a ktav document\nk: not a ktav document\n"), 0o600))
+
+	s := ktavIntegrityStore(t, ktavPath)
+
+	require.True(t, s.anySettingsLockExists(), "an undecodable protection source must fail closed")
+	_, err := s.LockState()
+	require.Error(t, err)
+
+	withProcessPassword(t, "pw")
+	require.ErrorIs(t, s.CheckProcessPassword(), ErrSettingsLocked)
+}
+
+// TestSettingsLockKtav_CanonicalKtavLocksWrite pins that a sync_rev lock in
+// the CANONICAL global location (as rush.ktav) makes SettingsWriteAllowed
+// refuse, via the slot-aware canonical source (readSlotOf inside the
+// platform source helper; the var stub mirrors settings_lock_migrate_test).
+func TestSettingsLockKtav_CanonicalKtavLocksWrite(t *testing.T) {
+	integrityIsolate(t)
+	canonical := filepath.Join(t.TempDir(), "rush.ktav")
+	writeLockedKtavDoc(t, canonical, "operator-pw", `{"smart":{"provider":"p","model":"m"}}`)
+
+	previous := canonicalGlobalDataPath
+	canonicalGlobalDataPath = func() string { return canonical }
+	t.Cleanup(func() { canonicalGlobalDataPath = previous })
+
+	withProcessPassword(t, "wrong-pw")
+	require.ErrorIs(t, SettingsWriteAllowed(t.TempDir()), ErrSettingsLocked,
+		"a canonical rush.ktav lock must refuse a settings write")
+}

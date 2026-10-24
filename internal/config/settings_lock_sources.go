@@ -19,7 +19,11 @@ func naturalWorkspaceSettingsPath(workingDir string) string {
 		return ""
 	}
 	dataDir, _ := defaultDataDirForWorkspace(workingDir)
-	return filepath.Join(dataDir, "rush.json")
+	// The natural workspace settings file is a LOGICAL slot: select the
+	// active sibling (rush.ktav when present) so a lock living only in the
+	// Ktav document is visible. readSlotOf passes an already-selected .ktav
+	// path through unchanged.
+	return readSlotOf(filepath.Join(dataDir, "rush.json"))
 }
 
 // checkExternalSettingsSources checks locks in settings sources outside the

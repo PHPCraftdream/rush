@@ -173,8 +173,11 @@ func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, 
 	// The sidecar lock anchors on the LEGACY JSON spelling so a rush.ktav
 	// store contends on rush.json.lock, the same sidecar the pre-Ktav write
 	// path used (see configWriteLockAnchor). target.selectedPath stays the
-	// physical slot file.
-	return configWriteTarget{path: resolved, selectedPath: normalizeDiscoveryPath(path), lockPath: normalizeReloadPath(configWriteLockAnchor(path)) + ".lock", expected: expected, owner: owner, enforce: enforce}, nil
+	// physical slot file. The anchor derives from the RESOLVED physical
+	// destination (normalizeReloadPath first, Ktav->legacy mapping second),
+	// so two symlink aliases of one rush.ktav resolve to the same physical
+	// spelling and share one lock.
+	return configWriteTarget{path: resolved, selectedPath: normalizeDiscoveryPath(path), lockPath: normalizeReloadPath(configWriteLockAnchor(resolved)) + ".lock", expected: expected, owner: owner, enforce: enforce}, nil
 }
 
 // verifyConfigWriteTarget rereads the destination after the sidecar lock is

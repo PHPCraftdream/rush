@@ -97,11 +97,17 @@ func touchesModelsKey(keys []string) bool {
 // A read error counts as "lock exists" and fails closed.
 func (s *ConfigStore) anySettingsLockExists() bool {
 	sources := []settingsLockSource{
-		{path: GlobalConfigData(), global: true},
+		// s.globalDataPath is ALREADY slot-selected (load.go selectConfigSlot),
+		// so it must not be re-selected; GlobalConfigData() would be the raw
+		// logical name and would miss a lock living only in rush.ktav.
+		{path: s.globalDataPath, global: true},
+		// canonicalGlobalDataPath() and naturalWorkspaceSettingsPath() are
+		// slot-selected inside their source helpers; the raw workspace join
+		// still needs selection.
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: s.loadSnapshot().workspacePath},
 		{path: naturalWorkspaceSettingsPath(s.workingDir)},
-		{path: filepath.Join(s.workingDir, "rush.json")},
+		{path: readSlotOf(filepath.Join(s.workingDir, "rush.json"))},
 	}
 	globals, locals, err := collectSettingsSourceHashes(sources)
 	if err != nil {

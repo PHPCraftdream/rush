@@ -82,7 +82,7 @@ func CheckPasswordAgainstDisk(password string) error {
 	// when present) and decode through the settings-document layer, the same
 	// discipline as freshSettingsHash — a literal read of the legacy name
 	// would miss a global rush.ktav entirely.
-	doc, err := readSettingsDocument(selectConfigSlot(GlobalConfigData()))
+	doc, err := readSettingsDocument(readSlotOf(GlobalConfigData()))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -102,10 +102,13 @@ func CheckPasswordAgainstDisk(password string) error {
 func SettingsWriteAllowed(workspaceDir string) error {
 	process := processPasswordHash()
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
-		{path: selectConfigSlot(GlobalConfigData()), global: true},
+		{path: readSlotOf(GlobalConfigData()), global: true},
+		// canonicalGlobalDataPath() is already slot-selected by the platform
+		// source helper (readSlotOf inside), and naturalWorkspaceSettingsPath
+		// likewise; only the raw legacy join below still needs selection.
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: naturalWorkspaceSettingsPath(workspaceDir)},
-		{path: filepath.Join(workspaceDir, "rush.json")},
+		{path: readSlotOf(filepath.Join(workspaceDir, "rush.json"))},
 	})
 	if err != nil {
 		return ErrSettingsLocked
@@ -177,6 +180,11 @@ func freshSettingsHash(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
+	// Fail closed on a backup-only slot: a protection source whose logical
+	// location holds only a retained backup must never read as "no lock".
+	if err := settingsSourceBackupOnlyCheck(path); err != nil {
+		return "", err
+	}
 	doc, err := readSettingsDocument(path)
 	if os.IsNotExist(err) {
 		return "", nil
@@ -185,6 +193,19 @@ func freshSettingsHash(path string) (string, error) {
 		return "", err
 	}
 	return settingsHash(doc.jsonBytes), nil
+}
+
+// settingsSourceBackupOnlyCheck applies the backup-only fail-closed rule to
+// a protection-source read path. A LEGACY logical path that holds only a
+// retained backup (both actives absent) is an error, never "no lock"; an
+// already-selected .ktav path is skipped because selectConfigSlot never
+// selects a backup and checkBackupOnlySlot's slot reasoning assumes a legacy
+// spelling.
+func settingsSourceBackupOnlyCheck(path string) error {
+	if path == "" || isKtavConfigPath(path) {
+		return nil
+	}
+	return checkBackupOnlySlot(path)
 }
 
 func settingsHash(data []byte) string {
@@ -234,6 +255,13 @@ func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string
 func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	if candidate == "" {
 		return "", nil
+	}
+	// Same fail-closed backup-only rule as freshSettingsHash: this guard is
+	// the write-path source reader (checkExternalSettingsSources,
+	// lockHashesForTarget) and must never read a backup-only slot as
+	// "no lock".
+	if err := settingsSourceBackupOnlyCheck(candidate); err != nil {
+		return "", err
 	}
 	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
 		return settingsHash(data), nil
@@ -364,9 +392,10 @@ func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte)
 				return ErrSettingsLocked
 			}
 		} else {
-			doc, err = decodeSettingsDocument(target.selectedPath, raw, expected)
-			if err != nil {
-				return err
+			var decodeErr error
+			doc, decodeErr = decodeSettingsDocument(target.selectedPath, raw, expected)
+			if decodeErr != nil {
+				return decodeErr
 			}
 		}
 		newJSON, err := mutate(doc.jsonBytes)

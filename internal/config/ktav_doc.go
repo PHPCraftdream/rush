@@ -8,7 +8,6 @@ package config
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 )
@@ -110,11 +109,36 @@ func newConfigFileIsKtav() bool {
 // used. A non-Ktav path is returned unchanged, so a .json input anchors on
 // itself. Mirrors ktavSiblingOf's construction inverted: same directory,
 // same base name, .ktav replaced with .json.
+//
+// The extension strip is deliberately case-insensitive, NOT strings.TrimSuffix:
+// isKtavConfigPath matches the extension with strings.EqualFold, so "rush.KTAV"
+// is a Ktav path, but TrimSuffix (byte-case-sensitive) would leave it intact
+// and produce the bogus anchor "rush.KTAV.json". EqualFold-matched extensions
+// have identical length, so cutting by length is safe. (The case-insensitive
+// classification lives in isKtavConfigPath in ktav_discovery.go, which this
+// lane does not own; this helper only keeps the strip consistent with it.)
 func configWriteLockAnchor(path string) string {
 	if !isKtavConfigPath(path) {
 		return path
 	}
-	return strings.TrimSuffix(path, ktavConfigExt) + ".json"
+	return path[:len(path)-len(ktavConfigExt)] + ".json"
+}
+
+// readSlotOf resolves the physical READ path for a logical slot named by a
+// legacy config path: rush.ktav when it is the selected file of the slot,
+// otherwise the legacy name. It is the READ counterpart of writeTargetSlot:
+// the same guard (empty and already-Ktav inputs pass through unchanged, so
+// an already-selected .ktav path is never re-selected into "rush.ktav.ktav"),
+// WITHOUT the creation redirect — a read source must observe the slot as it
+// exists and never reserve the Ktav spelling for a slot that has neither
+// file. Settings-protection sources (lock probes, models-signature checks)
+// route every logical legacy path through this helper so a lock or models
+// block living only in a rush.ktav document is visible to them.
+func readSlotOf(path string) string {
+	if path == "" || isKtavConfigPath(path) {
+		return path
+	}
+	return selectConfigSlot(path)
 }
 
 // writeTargetSlot resolves the physical write target for an already-resolved
