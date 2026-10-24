@@ -89,7 +89,7 @@ func TestCacheKtavReadPrecedence(t *testing.T) {
 			name: "invalid ktav is an error",
 			setup: func(t *testing.T, dir string) {
 				require.NoError(t, os.WriteFile(
-					filepath.Join(dir, "providers.ktav"), []byte("not ktav {{{"), 0o644))
+					filepath.Join(dir, "providers.ktav"), []byte("k: a\nk: b\n"), 0o644))
 				require.NoError(t, os.WriteFile(
 					filepath.Join(dir, "providers.json"), []byte(ktavCacheFixtureJSON), 0o644))
 			},
