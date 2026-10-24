@@ -79,7 +79,8 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		return
 	}
 	st.tick++
-	fi, err := oauthDiskSyncStat(s.globalDataPath)
+	selected := readSlotOf(s.globalDataPath)
+	fi, err := oauthDiskSyncStat(selected)
 	if err != nil {
 		st.settled = false
 		return
@@ -89,10 +90,12 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		return
 	}
 	st.fi, st.gen, st.settled = fi, sn.generation, false
-	data, err := os.ReadFile(s.globalDataPath)
+	doc, err := readSettingsDocument(s.globalDataPath)
 	if err != nil {
+		st.settled = false
 		return
 	}
+	data := doc.jsonBytes
 	settled := true
 	for id, pc := range providers {
 		descriptor, known := oauthProvider(id)
