@@ -287,7 +287,7 @@ func TestMCPKtavCorruptDocumentAbortsAndHidesSecret(t *testing.T) {
 	require.NoError(t, os.WriteFile(ktavPath, testKtavBytes(t, mcpKtavFixture(`{"srv":{"type":"http","url":"http://seed.example"}}`, mcpKtavSecret)), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: ktavPath})
 
-	corrupt := []byte("{broken" + mcpKtavSecret + "}")
+	corrupt := []byte("k: " + mcpKtavSecret + "\nk: " + mcpKtavSecret + "\n")
 	require.NoError(t, os.WriteFile(ktavPath, corrupt, 0o600))
 
 	logs := captureSlogOutput(t)
