@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -584,4 +585,190 @@ func TestModelsIntegrity_CanonicalForms(t *testing.T) {
 	n2, _, err := canonicalModelsJSON(`{"price":1.5}`)
 	require.NoError(t, err)
 	require.NotEqual(t, n1, n2, "numeric literals must stay distinct (UseNumber)")
+}
+
+// ---------------------------------------------------------------------------
+// Ktav-source cases (ADDITIVE — every JSON-source assertion above is
+// untouched). A .ktav document is verified via the SAME modelsIntegrityOf on
+// its DECODED JSON bytes (decodeSettingsDocument -> ktavcodec), so the
+// signature must be computed over the Ktav-normalized models lexemes.
+// ---------------------------------------------------------------------------
+
+// ktavIntegrityWrite writes jsonDoc to path as a rush.ktav document and
+// returns the decoded JSON bytes of what is on disk.
+func ktavIntegrityWrite(t *testing.T, path, jsonDoc string) []byte {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, testKtavBytes(t, jsonDoc), 0o600))
+	return mustDecodeTestKtav(t, fileBytes(t, path))
+}
+
+// ktavIntegrityStore returns a store whose global file is the .ktav document
+// at path, ready for verifyModelsIntegrityAtLoad.
+func ktavIntegrityStore(t *testing.T, path string) *ConfigStore {
+	t.Helper()
+	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
+	s.workingDir = t.TempDir()
+	return s
+}
+
+// TestModelsIntegrityKtav_ValidSignaturePasses pins that a valid signature
+// computed over the canonical models verifies against a .ktav document,
+// through both modelsIntegrityOf (on the decoded bytes) and the real
+// verifyModelsIntegrityAtLoad path.
+func TestModelsIntegrityKtav_ValidSignaturePasses(t *testing.T) {
+	integrityIsolate(t)
+	ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+	doc := integrityModelsFixture(t, ktavPath, `{"smart":{"provider":"p","model":"m"}}`)
+	signed, err := applyModelsIntegrity(doc)
+	require.NoError(t, err)
+	decoded := ktavIntegrityWrite(t, ktavPath, signed)
+
+	require.NoError(t, modelsIntegrityOf(decoded, false))
+	require.NoError(t, modelsIntegrityOf(decoded, true), "a valid signature passes locked or not")
+
+	s := ktavIntegrityStore(t, ktavPath)
+	s.verifyModelsIntegrityAtLoad()
+	require.NoError(t, s.ModelsIntegrity())
+}
+
+// TestModelsIntegrityKtav_MissingSignatureFollowsJSONRule pins that a .ktav
+// document whose models carry no cache_rev behaves exactly like the legacy
+// JSON case: accepted when no settings lock exists, a mismatch when one does.
+func TestModelsIntegrityKtav_MissingSignatureFollowsJSONRule(t *testing.T) {
+	integrityIsolate(t)
+	models := `{"smart":{"provider":"p","model":"m"}}`
+
+	t.Run("accepted without lock", func(t *testing.T) {
+		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+		decoded := ktavIntegrityWrite(t, ktavPath, integrityModelsFixture(t, ktavPath, models))
+		require.NoError(t, modelsIntegrityOf(decoded, false))
+		s := ktavIntegrityStore(t, ktavPath)
+		s.verifyModelsIntegrityAtLoad()
+		require.NoError(t, s.ModelsIntegrity())
+	})
+
+	t.Run("mismatch with lock", func(t *testing.T) {
+		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+		doc := integrityModelsFixture(t, ktavPath, models)
+		locked, err := sjson.Set(doc, "sync_rev", HashPassword("pw"))
+		require.NoError(t, err)
+		decoded := ktavIntegrityWrite(t, ktavPath, locked)
+		require.ErrorIs(t, modelsIntegrityOf(decoded, true), ErrModelsEditedDirectly)
+		s := ktavIntegrityStore(t, ktavPath)
+		s.verifyModelsIntegrityAtLoad()
+		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
+	})
+}
+
+// TestModelsIntegrityKtav_InvalidSignatureFails pins that an invalid (bogus
+// string or non-string) cache_rev on a .ktav document is a mismatch, and that
+// an UNDECODABLE .ktav fails closed at the load-time check.
+func TestModelsIntegrityKtav_InvalidSignatureFails(t *testing.T) {
+	integrityIsolate(t)
+
+	t.Run("bogus string signature", func(t *testing.T) {
+		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+		doc := integrityModelsFixture(t, ktavPath, `{"smart":{"provider":"p","model":"m"}}`)
+		bogus, err := sjson.Set(doc, "cache_rev", strings.Repeat("0", 64))
+		require.NoError(t, err)
+		decoded := ktavIntegrityWrite(t, ktavPath, bogus)
+		require.ErrorIs(t, modelsIntegrityOf(decoded, false), ErrModelsEditedDirectly)
+		s := ktavIntegrityStore(t, ktavPath)
+		s.verifyModelsIntegrityAtLoad()
+		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
+	})
+
+	t.Run("non-string signature", func(t *testing.T) {
+		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+		doc := integrityModelsFixture(t, ktavPath, `{"smart":{"provider":"p","model":"m"}}`)
+		numeric, err := sjson.Set(doc, "cache_rev", 123)
+		require.NoError(t, err)
+		decoded := ktavIntegrityWrite(t, ktavPath, numeric)
+		require.ErrorIs(t, modelsIntegrityOf(decoded, false), ErrModelsEditedDirectly)
+	})
+
+	t.Run("undecodable document fails closed", func(t *testing.T) {
+		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
+		require.NoError(t, os.WriteFile(ktavPath, []byte("k: not a ktav document\nk: not a ktav document\n"), 0o600))
+		s := ktavIntegrityStore(t, ktavPath)
+		s.verifyModelsIntegrityAtLoad()
+		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
+	})
+}
+
+// TestModelsIntegrityKtav_MigrationRecomputesValidSignature pins the 1.50 ->
+// 1.5 migration hazard: a signature computed over the JSON lexemes (1.50)
+// would NOT verify after Ktav normalizes the lexeme (1.5), so
+// applyKtavMigrationModelsIntegrity must recompute it over the models value
+// AS IT READS BACK from the Ktav document. The migrated .ktav must verify
+// VALID via modelsIntegrityOf on its decoded bytes.
+func TestModelsIntegrityKtav_MigrationRecomputesValidSignature(t *testing.T) {
+	integrityIsolate(t)
+	source := integrityModelsFixture(t, "rush.json", `{"smart":{"provider":"p","model":"m","temperature":1.50}}`)
+	// Sanity for the hazard: the two canonical forms are distinct lexically.
+	canonicalSource, present, err := canonicalModelsJSON(gjson.Get(source, "models").Raw)
+	require.NoError(t, err)
+	require.True(t, present)
+
+	// Sign over the JSON document, convert to Ktav, run the migration
+	// cache_rev step exactly as runKtavMigrationTransaction does.
+	signed, err := applyModelsIntegrity(source)
+	require.NoError(t, err)
+	converted, err := ktavcodec.ConvertJSONToKtav([]byte(signed))
+	require.NoError(t, err)
+	migrated, err := applyKtavMigrationModelsIntegrity([]byte(signed), converted)
+	require.NoError(t, err)
+
+	decoded := mustDecodeTestKtav(t, migrated)
+	canonicalDecoded, present, err := canonicalModelsJSON(gjson.GetBytes(decoded, "models").Raw)
+	require.NoError(t, err)
+	require.True(t, present)
+	require.NotEqual(t, canonicalSource, canonicalDecoded,
+		"the fixture must actually exercise the 1.50 -> 1.5 lexeme normalization")
+
+	require.Equal(t, modelsIntegritySignature(canonicalDecoded), gjson.GetBytes(decoded, "cache_rev").String(),
+		"cache_rev must be recomputed over the Ktav-normalized models")
+	require.NoError(t, modelsIntegrityOf(decoded, false), "the migrated .ktav must verify VALID")
+	require.NoError(t, modelsIntegrityOf(decoded, true))
+}
+
+// TestModelsIntegrityKtav_MigrationPreservesMismatchAndMissing pins the other
+// two classifications of applyKtavMigrationModelsIntegrity: a TAMPERED
+// cache_rev (tampered before migration) is copied through UNCHANGED and stays
+// a mismatch, and a MISSING cache_rev stays missing; sync_rev is untouched.
+func TestModelsIntegrityKtav_MigrationPreservesMismatchAndMissing(t *testing.T) {
+	integrityIsolate(t)
+	models := `{"smart":{"provider":"p","model":"m","temperature":1.50}}`
+
+	t.Run("tampered cache_rev stays a mismatch", func(t *testing.T) {
+		tampered := integrityModelsFixture(t, "rush.json", models)
+		var err error
+		tampered, err = sjson.Set(tampered, "cache_rev", "deadbeef")
+		require.NoError(t, err)
+		tampered, err = sjson.Set(tampered, "sync_rev", HashPassword("pw"))
+		require.NoError(t, err)
+		converted, err := ktavcodec.ConvertJSONToKtav([]byte(tampered))
+		require.NoError(t, err)
+		migrated, err := applyKtavMigrationModelsIntegrity([]byte(tampered), converted)
+		require.NoError(t, err)
+
+		decoded := mustDecodeTestKtav(t, migrated)
+		require.Equal(t, "deadbeef", gjson.GetBytes(decoded, "cache_rev").String(),
+			"the tampered value must never be recomputed (blessed) by the migration")
+		require.Equal(t, HashPassword("pw"), gjson.GetBytes(decoded, "sync_rev").String(),
+			"sync_rev must be untouched by the migration integrity step")
+		require.ErrorIs(t, modelsIntegrityOf(decoded, false), ErrModelsEditedDirectly)
+	})
+
+	t.Run("missing cache_rev stays missing", func(t *testing.T) {
+		source := integrityModelsFixture(t, "rush.json", models)
+		converted, err := ktavcodec.ConvertJSONToKtav([]byte(source))
+		require.NoError(t, err)
+		migrated, err := applyKtavMigrationModelsIntegrity([]byte(source), converted)
+		require.NoError(t, err)
+		decoded := mustDecodeTestKtav(t, migrated)
+		require.False(t, gjson.GetBytes(decoded, "cache_rev").Exists())
+		require.NoError(t, modelsIntegrityOf(decoded, false))
+	})
 }

@@ -49,27 +49,19 @@ func (s *ConfigStore) HasWorkspaceConfig() bool {
 // the sjson/JSON read-modify-write path.
 var errKtavWriteNotSupported = errors.New("writing rush.ktav is not supported yet in this build")
 
-// ensureKtavWriteSupported rejects config mutations whose selected target
-// file is a Ktav document.
-func ensureKtavWriteSupported(path string) error {
-	if isKtavConfigPath(filepath.Clean(path)) {
-		return fmt.Errorf("%w: %s", errKtavWriteNotSupported, path)
-	}
-	return nil
-}
-
 // HasConfigField checks whether a key exists in the config file for the given
-// scope.
+// scope. The read goes through the settings-document layer, so a .ktav file
+// is decoded before the key lookup; a decode failure is not "field absent".
 func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(path)
+	doc, err := readSettingsDocument(path)
 	if err != nil {
 		return false
 	}
-	return gjson.Get(string(data), key).Exists()
+	return gjson.Get(string(doc.jsonBytes), key).Exists()
 }
 
 // configWriteLockTimeout caps how long a config write waits for the
@@ -178,7 +170,14 @@ func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, 
 	if resolved == "" {
 		return configWriteTarget{}, fmt.Errorf("empty config write target")
 	}
-	return configWriteTarget{path: resolved, selectedPath: normalizeDiscoveryPath(path), lockPath: resolved + ".lock", expected: expected, owner: owner, enforce: enforce}, nil
+	// The sidecar lock anchors on the LEGACY JSON spelling so a rush.ktav
+	// store contends on rush.json.lock, the same sidecar the pre-Ktav write
+	// path used (see configWriteLockAnchor). target.selectedPath stays the
+	// physical slot file. The anchor derives from the RESOLVED physical
+	// destination (normalizeReloadPath first, Ktav->legacy mapping second),
+	// so two symlink aliases of one rush.ktav resolve to the same physical
+	// spelling and share one lock.
+	return configWriteTarget{path: resolved, selectedPath: normalizeDiscoveryPath(path), lockPath: normalizeReloadPath(configWriteLockAnchor(resolved)) + ".lock", expected: expected, owner: owner, enforce: enforce}, nil
 }
 
 // verifyConfigWriteTarget rereads the destination after the sidecar lock is
@@ -340,9 +339,7 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
 	}
-	if err := ensureKtavWriteSupported(path); err != nil {
-		return err
-	}
+	path = writeTargetSlot(path)
 
 	// Apply keys in sorted order so the on-disk output is deterministic
 	// regardless of map iteration order (keeps rush.json diffs stable).
@@ -360,12 +357,17 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	// doc comment. The lock is released before autoReload below so that
 	// autoReload's publishMu acquisition cannot deadlock.
 	if err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		var doc settingsDocument
 		if err != nil {
-			if os.IsNotExist(err) {
-				data = []byte("{}")
-			} else {
+			if !os.IsNotExist(err) {
 				return fmt.Errorf("failed to read config file: %w", err)
+			}
+			doc = settingsDocument{jsonBytes: []byte("{}"), format: settingsDocumentFormatOf(target.selectedPath)}
+		} else {
+			doc, err = decodeSettingsDocument(target.selectedPath, raw, expected)
+			if err != nil {
+				return err
 			}
 		}
 		allRecent := len(keys) > 0
@@ -378,12 +380,12 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		if !allRecent {
 			ev := &SettingsEvent{Scope: settingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: selectedModelsAudit(keys, kv)}
 			audit = ev
-			refusedBy, err = s.guardSettingsWrite(target.path, data, keys)
+			refusedBy, err = s.guardSettingsWrite(target.path, doc.jsonBytes, keys)
 			if err != nil {
 				return err
 			}
 		}
-		newValue := string(data)
+		newValue := string(doc.jsonBytes)
 		for _, key := range keys {
 			newValue, err = sjson.Set(newValue, key, kv[key])
 			if err != nil {
@@ -399,7 +401,10 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written := []byte(newValue)
+		written, err := encodeSettingsDocument([]byte(newValue), doc.format)
+		if err != nil {
+			return err
+		}
 		if !expected.exists {
 			_, expected, err = readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 			if err != nil && !os.IsNotExist(err) {
@@ -503,9 +508,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // both the full-timeout public API and the short-timeout internal caller
 // (configureProviders) go through one write implementation.
 func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool) error {
-	if err := ensureKtavWriteSupported(path); err != nil {
-		return err
-	}
+	path = writeTargetSlot(path)
 	if touchesReservedKey(key) {
 		if userInitiated {
 			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}}
@@ -539,18 +542,22 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 	var audit *SettingsEvent
 	refusedBy := ""
 	if err := s.withConfigWriteLockCtx(ctx, path, func(target configWriteTarget) error {
-		data, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, expected, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
+		}
+		doc, err := decodeSettingsDocument(target.selectedPath, raw, expected)
+		if err != nil {
+			return err
 		}
 		if userInitiated && !strings.HasPrefix(key, "recent_models.") {
 			audit = &SettingsEvent{Scope: s.settingsScopeForPath(target.path), Path: target.path, Keys: []string{key}}
 		}
-		refusedBy, err = s.guardSettingsWrite(target.path, data, []string{key})
+		refusedBy, err = s.guardSettingsWrite(target.path, doc.jsonBytes, []string{key})
 		if err != nil {
 			return err
 		}
-		newValue, err := sjson.Delete(string(data), key)
+		newValue, err := sjson.Delete(string(doc.jsonBytes), key)
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
 		}
@@ -563,7 +570,10 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written := []byte(newValue)
+		written, err := encodeSettingsDocument([]byte(newValue), doc.format)
+		if err != nil {
+			return err
+		}
 		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
 		if commitErr != nil {
 			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {

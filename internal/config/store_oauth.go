@@ -363,6 +363,9 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	if err != nil {
 		return false, err
 	}
+	if err := rejectUnconvertedKtavWrite(path); err != nil {
+		return false, err
+	}
 	isCodex := rotatingOAuthProvider(providerID)
 	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
 	if !isCodex {

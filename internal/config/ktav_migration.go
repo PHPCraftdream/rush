@@ -232,6 +232,10 @@ func runKtavMigrationTransaction(ctx context.Context, legacy, backup, recordPath
 	if err != nil {
 		return fmt.Errorf("ktav conversion failed for %s: %w", filepath.Base(legacy), err)
 	}
+	ktavBytes, err = applyKtavMigrationModelsIntegrity(source, ktavBytes)
+	if err != nil {
+		return err
+	}
 	if err := ktavMigrationCheckContext(ctx, "after-convert"); err != nil {
 		return err
 	}
