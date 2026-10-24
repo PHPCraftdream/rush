@@ -554,7 +554,7 @@ func TestOAuthKtavCorruptConfigAbortsCASAndDiskReads(t *testing.T) {
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.ktav")
-	corrupt := []byte("not ktav at all")
+	corrupt := []byte("k: a\nk: b\n")
 	require.NoError(t, os.WriteFile(configPath, corrupt, 0o600))
 
 	providers := csync.NewMap[string, ProviderConfig]()
