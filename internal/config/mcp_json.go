@@ -269,11 +269,14 @@ func readMCPDisabledOverride(store *ConfigStore, scope Scope, name string) (bool
 	if err != nil {
 		return false, false
 	}
-	data, err := os.ReadFile(path)
+	// The scope path is a logical slot: readSettingsDocument selects the
+	// active file (rush.ktav wins) and decodes Ktav to JSON-shaped bytes.
+	// A read or decode failure stays "no override", as before.
+	doc, err := readSettingsDocument(path)
 	if err != nil {
 		return false, false
 	}
-	entry, ok := mcpEntryFromJSON(data, name)
+	entry, ok := mcpEntryFromJSON(doc.jsonBytes, name)
 	if !isMCPDisabledOnlyEntry(entry, ok) {
 		return false, false
 	}
