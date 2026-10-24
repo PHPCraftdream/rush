@@ -46,15 +46,17 @@ func readCacheDocument(legacyJSON string) ([]byte, error) {
 }
 
 // writeCacheDocument writes JSON-shaped cache bytes in the gate-selected
-// format. With the gate off the legacy JSON path and os.WriteFile bytes are
-// unchanged from before Ktav existed. With the gate on the bytes are
+// format. The caller supplies its historical JSON writer so that with the
+// gate off BOTH the bytes AND the write mechanics are unchanged per call
+// site (os.WriteFile where os.WriteFile was used before, atomicWriteFile
+// where atomicWriteFile was used before). With the gate on the bytes are
 // converted strictly to Ktav and the <name>.ktav sibling is published
 // through the same atomic stage+rename helper the config documents use; the
 // legacy JSON file is deliberately left alone because reads always prefer
 // the Ktav sibling, so a stale JSON copy can never win.
-func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode) error {
+func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
 	if !newConfigFileIsKtav() {
-		return os.WriteFile(legacyJSON, jsonBytes, perm)
+		return writeJSON(legacyJSON, jsonBytes, perm)
 	}
 	ktavBytes, err := ktavcodec.ConvertJSONToKtav(jsonBytes)
 	if err != nil {

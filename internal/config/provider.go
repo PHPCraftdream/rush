@@ -289,6 +289,12 @@ func newCache[T any](path string) cache[T] {
 // the network round-trip when the cache is fresh, so a read-only
 // `rush models show` does not spend ~3s on two HTTP requests every
 // invocation. See CHANGELOG.fork.md (Section 4.J).
+//
+// Ktav note: freshness is mtime-based because these documents carry no
+// timestamp field. Any later migration or read-through conversion
+// (KTAV-4b) MUST preserve the source file's mtime on the newly created
+// <name>.ktav sibling (os.Chtimes) — a conversion that resets mtime would
+// wrongly mark stale cache content fresh.
 func (c cache[T]) Age() (time.Duration, error) {
 	path := c.path
 	if ktav := ktavSiblingOf(c.path); ktavEntryExists(ktav) {
@@ -326,7 +332,7 @@ func (c cache[T]) Store(v T) error {
 		return fmt.Errorf("failed to marshal provider data: %w", err)
 	}
 
-	if err := writeCacheDocument(c.path, data, 0o644); err != nil {
+	if err := writeCacheDocument(c.path, data, 0o644, os.WriteFile); err != nil {
 		return fmt.Errorf("failed to write provider data to cache: %w", err)
 	}
 	return nil

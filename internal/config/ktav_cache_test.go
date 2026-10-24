@@ -5,6 +5,7 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 
 // ktavCacheFixtureJSON is a valid custom provider with numeric/string
 // lexemes that stress lossless Ktav conversion fidelity.
-const ktavCacheFixtureJSON = `[{"id":"ktav-p","name":"Ktav Provider","api_endpoint":"https://ktav.example/v1","models":[{"id":"m-1","name":"Model One","cost_per_1m_in":0.50,"cost_per_1m_out":1.5,"context_window":128000,"default_max_tokens":8192,"options":{"provider_options":{"ratio":0.50,"big":9007199254740993,"looks_num":"123","looks_bool":"true"}}}]`
+const ktavCacheFixtureJSON = `[{"id":"ktav-p","name":"Ktav Provider","api_endpoint":"https://ktav.example/v1","models":[{"id":"m-1","name":"Model One","cost_per_1m_in":0.50,"cost_per_1m_out":1.5,"context_window":128000,"default_max_tokens":8192,"options":{"provider_options":{"ratio":0.50,"big":9007199254740993,"looks_num":"123","looks_bool":"true"}}}]}]`
 
 const ktavHyperFixtureJSON = `{"id":"ktav-h","name":"Hyper Ktav","api_endpoint":"https://h.example/v1","models":[{"id":"hm-1","name":"Hyper Model","cost_per_1m_in":0.50,"cost_per_1m_out":1.5,"context_window":128000,"default_max_tokens":8192}]}`
 
@@ -32,8 +33,8 @@ func isolateCacheTestEnv(t *testing.T) string {
 	t.Setenv("USERPROFILE", dir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
-	t.Setenv("RUSH_GLOBAL_DATA", "")
-	t.Setenv("RUSH_GLOBAL_CONFIG", "")
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(dir, "global-data"))
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(dir, "global-config"))
 	return filepath.Join(dir, "data")
 }
 
@@ -112,7 +113,7 @@ func TestCacheKtavReadPrecedence(t *testing.T) {
 			require.NoError(t, err)
 			require.NotEmpty(t, etagValue)
 			require.Len(t, providers, len(tt.providers))
-			require.Equal(t, tt.providers[0].ID, string(providers[0].ID))
+			require.Equal(t, string(tt.providers[0].ID), string(providers[0].ID))
 		})
 	}
 
@@ -175,7 +176,7 @@ func TestCacheKtavTypedDecodeMatchesJSON(t *testing.T) {
 	ktavPath := filepath.Join(ktavDir, "providers.json")
 	ktav, err := ktavcodec.ConvertJSONToKtav([]byte(ktavCacheFixtureJSON))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(ktavPath+".ktav", ktav, 0o644))
+	require.NoError(t, os.WriteFile(ktavSiblingOf(ktavPath), ktav, 0o644))
 	fromKtav, _, err := newCache[[]catwalk.Provider](ktavPath).Get()
 	require.NoError(t, err)
 
@@ -320,4 +321,65 @@ func TestUpdateHyperAcceptsKtavFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ktav-h", string(provider.ID))
 	require.Equal(t, "hm-1", provider.Models[0].ID)
+}
+
+func TestWriteCacheDocumentJSONWriterSeam(t *testing.T) {
+	t.Run("gate off delegates to caller's writer", func(t *testing.T) {
+		setKtavAutoMigrateForCacheTest(t, false)
+		dir := t.TempDir()
+		legacy := filepath.Join(dir, "providers.json")
+		var calls [][]any
+		sentinel := errors.New("writer seam boom")
+		writer := func(path string, data []byte, perm os.FileMode) error {
+			calls = append(calls, []any{path, append([]byte(nil), data...), perm})
+			return sentinel
+		}
+		err := writeCacheDocument(legacy, []byte("data"), 0o600, writer)
+		require.ErrorIs(t, err, sentinel)
+		require.Len(t, calls, 1)
+		require.Equal(t, legacy, calls[0][0])
+		require.Equal(t, []byte("data"), calls[0][1])
+		require.Equal(t, os.FileMode(0o600), calls[0][2])
+		_, statErr := os.Stat(legacy)
+		require.ErrorIs(t, statErr, fs.ErrNotExist)
+	})
+
+	t.Run("gate on writes ktav sibling via atomicWriteFile", func(t *testing.T) {
+		setKtavAutoMigrateForCacheTest(t, true)
+		dir := t.TempDir()
+		legacy := filepath.Join(dir, "providers.json")
+		poison := func(string, []byte, os.FileMode) error {
+			return errors.New("poison writer must not be called")
+		}
+		require.NoError(t, writeCacheDocument(legacy, []byte(ktavHyperFixtureJSON), 0o600, poison))
+		raw, err := os.ReadFile(ktavSiblingOf(legacy))
+		require.NoError(t, err)
+		tree, err := ktavcodec.DecodeKtav(raw)
+		require.NoError(t, err)
+		want, err := ktavcodec.ParseJSONLossless([]byte(ktavHyperFixtureJSON))
+		require.NoError(t, err)
+		require.NoError(t, ktavcodec.Equivalent(want, tree))
+	})
+}
+
+func TestAgeUsesActiveGenerationMtime(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "providers.json")
+	ktavPath := ktavSiblingOf(jsonPath)
+	require.NoError(t, os.WriteFile(jsonPath, []byte("{}"), 0o644))
+	old := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(jsonPath, old, old))
+
+	require.NoError(t, os.WriteFile(ktavPath, []byte("{}"), 0o644))
+	now := time.Now()
+	require.NoError(t, os.Chtimes(ktavPath, now, now))
+
+	age, err := newCache[[]catwalk.Provider](jsonPath).Age()
+	require.NoError(t, err)
+	require.Less(t, age, time.Hour, "active Ktav generation mtime must govern")
+
+	require.NoError(t, os.Remove(ktavPath))
+	age, err = newCache[[]catwalk.Provider](jsonPath).Age()
+	require.NoError(t, err)
+	require.Greater(t, age, 47*time.Hour, "must fall back to the legacy JSON mtime")
 }
