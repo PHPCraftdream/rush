@@ -129,7 +129,14 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 			mismatch = true
 			break
 		}
-		if modelsIntegrityOf(data, s.anySettingsLockExists()) != nil {
+		doc, err := decodeSettingsDocument(path, data, reloadFileFingerprint{})
+		if err != nil {
+			// An undecodable document fails closed: it counts as a
+			// mismatch, never as an absent models field.
+			mismatch = true
+			break
+		}
+		if modelsIntegrityOf(doc.jsonBytes, s.anySettingsLockExists()) != nil {
 			mismatch = true
 			break
 		}
@@ -140,12 +147,20 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 	}
 }
 
-// modelsIntegrityOf checks one config document's bytes against the
+// modelsIntegrityOf checks one config document's JSON-shaped bytes against the
 // models-integrity rule: a models block must carry a valid cache_rev
 // signature. A models block with no cache_rev at all is a legacy file,
 // accepted only when no settings lock exists. data unreadable (nil or
 // garbage) fails closed. Reload reuses this on the candidate's stable
 // bytes, so a hand-edited models block never reaches a running process.
+//
+// data is the decoded JSON for .ktav documents (decodeConfigDocument ->
+// ktavcodec.DecodeKtav + ToJSON), so no extra number normalization is
+// needed before canonicalModelsJSON: the codec re-tokenizes every float
+// through strconv.FormatFloat('g', -1, 64) and integers through
+// strconv.FormatInt, and ToJSON emits those normalized lexemes, so a
+// cache_rev computed over Ktav-normalized values at migration time
+// verifies here unchanged.
 func modelsIntegrityOf(data []byte, lockExists bool) error {
 	canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
 	if err != nil {

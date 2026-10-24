@@ -78,14 +78,18 @@ func processPasswordHash() string {
 
 // CheckPasswordAgainstDisk checks only the global file because the workspace is unknown before Init.
 func CheckPasswordAgainstDisk(password string) error {
-	data, _, err := readStableConfigFile(GlobalConfigData())
+	// The global path is a logical slot: read the SELECTED file (rush.ktav
+	// when present) and decode through the settings-document layer, the same
+	// discipline as freshSettingsHash — a literal read of the legacy name
+	// would miss a global rush.ktav entirely.
+	doc, err := readSettingsDocument(selectConfigSlot(GlobalConfigData()))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return ErrSettingsLocked
 	}
-	hash := settingsHash(data)
+	hash := settingsHash(doc.jsonBytes)
 	if hash == "" {
 		return nil
 	}
@@ -98,7 +102,7 @@ func CheckPasswordAgainstDisk(password string) error {
 func SettingsWriteAllowed(workspaceDir string) error {
 	process := processPasswordHash()
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
-		{path: GlobalConfigData(), global: true},
+		{path: selectConfigSlot(GlobalConfigData()), global: true},
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: naturalWorkspaceSettingsPath(workspaceDir)},
 		{path: filepath.Join(workspaceDir, "rush.json")},
@@ -173,14 +177,14 @@ func freshSettingsHash(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, _, err := readStableConfigFile(path)
+	doc, err := readSettingsDocument(path)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(data), nil
+	return settingsHash(doc.jsonBytes), nil
 }
 
 func settingsHash(data []byte) string {
@@ -234,14 +238,14 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
 		return settingsHash(data), nil
 	}
-	contents, _, err := readStableConfigFile(candidate)
+	doc, err := readSettingsDocument(candidate)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(contents), nil
+	return settingsHash(doc.jsonBytes), nil
 }
 
 func pathWithinDirectory(directory, path string) bool {
@@ -295,6 +299,7 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
+	path = writeTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		if err := s.checkExternalSettingsSources(path, data); err != nil {
@@ -315,6 +320,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
+	path = writeTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		globals, locals, hashErr := s.lockHashesForTarget(path, data)
@@ -349,22 +355,31 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
 	var committedErr error
 	err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		data, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		var doc settingsDocument
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
-				data = []byte("{}")
+				doc = settingsDocument{jsonBytes: []byte("{}"), format: settingsDocumentFormatOf(target.selectedPath)}
 			} else {
 				return ErrSettingsLocked
 			}
+		} else {
+			doc, err = decodeSettingsDocument(target.selectedPath, raw, expected)
+			if err != nil {
+				return err
+			}
 		}
-		newValue, err := mutate(data)
+		newJSON, err := mutate(doc.jsonBytes)
 		if err != nil {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written := []byte(newValue)
+		written, err := encodeSettingsDocument([]byte(newJSON), doc.format)
+		if err != nil {
+			return err
+		}
 		if !expected.exists {
 			_, expected, err = readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 			if err != nil && !os.IsNotExist(err) {

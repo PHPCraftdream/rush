@@ -331,6 +331,9 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 		if record == nil || record.selectedPath == "" {
 			return fmt.Errorf("MCP transaction record %q has no selected destination", key)
 		}
+		if err := rejectUnconvertedKtavWrite(record.selectedPath); err != nil {
+			return err
+		}
 		if !record.expectation.exists {
 			parentPath := filepath.Dir(record.commitPath)
 			if currentParent := configDiscoveryFingerprint(filepath.Dir(record.selectedPath)); currentParent != record.expectation.parentDiscovery {

@@ -1,7 +1,8 @@
 // Ktav logical-slot discovery tests: slot selection matrix, unchanged merge
 // order across mixed formats, raw-byte fingerprints, ownership rejection,
-// the (D) .ktav write guard, deferred migration on EACCES, and the empty
-// (Windows) system slot.
+// deferred migration on EACCES, and the empty (Windows) system slot.
+// (The old (D) .ktav write-guard tests were replaced by the write-success
+// tests in ktav_write_test.go when Ktav writes landed.)
 package config
 
 import (
@@ -283,37 +284,6 @@ func TestKtavWorkspacePathPrefersKtav(t *testing.T) {
 	require.Equal(t, filepath.Join(dir, "rush.json"), workspaceConfigPath(dir))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "rush.ktav"), testKtavBytes(t, `{}`), 0o600))
 	require.Equal(t, filepath.Join(dir, "rush.ktav"), workspaceConfigPath(dir))
-}
-
-func TestKtavWriteGuardNeverModifiesKtavTarget(t *testing.T) {
-	ktavIsolateGlobals(t)
-	dir := t.TempDir()
-	ktavPath := filepath.Join(dir, "rush.ktav")
-	raw := testKtavBytes(t, `{"providers":{"p":{"api_key":"untouched"}}}`)
-	require.NoError(t, os.WriteFile(ktavPath, raw, 0o600))
-
-	store := &ConfigStore{workingDir: dir, globalDataPath: ktavPath}
-
-	err := store.SetConfigFields(ScopeGlobal, map[string]any{"providers.p.api_key": "rewritten"})
-	require.ErrorIs(t, err, errKtavWriteNotSupported)
-	err = store.RemoveConfigField(ScopeGlobal, "providers.p.api_key")
-	require.ErrorIs(t, err, errKtavWriteNotSupported)
-
-	onDisk, readErr := os.ReadFile(ktavPath)
-	require.NoError(t, readErr)
-	require.Equal(t, string(raw), string(onDisk))
-	require.NotContains(t, string(onDisk), "rewritten")
-}
-
-func TestKtavWriteGuardErrorNamesTheFile(t *testing.T) {
-	ktavIsolateGlobals(t)
-	dir := t.TempDir()
-	ktavPath := filepath.Join(dir, "rush.ktav")
-	require.NoError(t, os.WriteFile(ktavPath, testKtavBytes(t, `{}`), 0o600))
-	err := ensureKtavWriteSupported(ktavPath)
-	require.ErrorIs(t, err, errKtavWriteNotSupported)
-	require.Contains(t, err.Error(), "rush.ktav")
-	require.Contains(t, err.Error(), "not supported")
 }
 
 func TestKtavOwnershipRejectionWithoutJSONFallback(t *testing.T) {
