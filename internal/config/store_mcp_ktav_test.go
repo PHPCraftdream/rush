@@ -14,9 +14,10 @@
 //     failure to "no servers"/absent (store_mcp_locks.go decode / mcpPathData)
 //     makes the mutation succeed and rewrite the document, or leak the
 //     secret into the error message.
-//   - TestMCPKtavStaleRawFingerprintABARefusal -> committing against a
-//     fingerprint computed from the DECODED bytes instead of the RAW bytes
-//     lets the stale transaction overwrite the concurrent writer.
+//   - TestMCPKtavConcurrentRawRewriteRefusedAtCommit -> skipping the
+//     post-staging expectation re-check in commitConfigFile
+//     (config_commit_unix.go / config_commit_windows.go) lets a stale
+//     transaction overwrite a concurrent writer's newer raw bytes.
 //   - TestMCPKtavRevisionsTrackRawBytes -> dropping the raw-digest mixing
 //     for Ktav documents in mcpInputFingerprints (mcp_revisions.go) keeps
 //     the revision frozen across a raw-bytes-only rewrite.
@@ -30,6 +31,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,37 +237,39 @@ func TestMCPKtavMixedScopesKeepOrderingAndExternalBytes(t *testing.T) {
 	require.Equal(t, "true", string(entry["disabled"]))
 }
 
-// TestMCPKtavStaleRawFingerprintABARefusal injects a concurrent raw rewrite
-// of rush.ktav between target resolution and lock-time binding verification:
-// the stale transaction must be refused with ErrMCPStale and must not commit
-// its own content.
-func TestMCPKtavStaleRawFingerprintABARefusal(t *testing.T) {
+// TestMCPKtavConcurrentRawRewriteRefusedAtCommit injects a concurrent raw
+// rewrite of rush.ktav at the commit seam (configTestHooks.beforeCommitCheck
+// fires inside commitConfigFile right before the expectation re-check): the
+// re-read then observes a raw digest that differs from the lock-time
+// expectation, the commit is refused with errConfigCommitVerification,
+// wrapped into ErrMCPStale at the writeMCPFileChanges boundary, and the
+// stale transaction must not commit its own content.
+func TestMCPKtavConcurrentRawRewriteRefusedAtCommit(t *testing.T) {
 	_, _, dataDir := mcpKtavIsolate(t)
 	ktavPath := filepath.Join(dataDir, "rush.ktav")
 	require.NoError(t, os.WriteFile(ktavPath, testKtavBytes(t, mcpKtavFixture(`{"srv":{"type":"http","url":"http://seed.example"}}`, mcpKtavSecret)), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: ktavPath})
 
 	configTestHooks.Lock()
-	previous := configTestHooks.beforeMCPTargetBindingVerification
-	configTestHooks.beforeMCPTargetBindingVerification = func(target *configWriteTarget) {
-		if normalizeReloadPath(target.selectedPath) != normalizeReloadPath(ktavPath) {
-			return
-		}
-		// The "concurrent writer": a raw rewrite with different content.
+	previous := configTestHooks.beforeCommitCheck
+	configTestHooks.beforeCommitCheck = func() {
+		// The "concurrent writer": a raw rewrite with different content,
+		// applied after staging but before the final expectation check.
 		concurrent := mcpKtavFixture(`{"srv":{"type":"http","url":"http://seed.example"},"other":{"type":"http","url":"http://other.example"}}`, mcpKtavSecret)
 		_ = os.WriteFile(ktavPath, testKtavBytes(t, concurrent), 0o600)
 	}
 	configTestHooks.Unlock()
 	t.Cleanup(func() {
 		configTestHooks.Lock()
-		configTestHooks.beforeMCPTargetBindingVerification = previous
+		configTestHooks.beforeCommitCheck = previous
 		configTestHooks.Unlock()
 	})
 
 	err := store.PersistMCPConfig(ScopeGlobal, "aba-target", MCPConfig{
 		Type: MCPHttp, URL: "http://aba.example",
 	})
-	require.ErrorIs(t, err, ErrMCPStale)
+	require.ErrorIs(t, err, ErrMCPStale,
+		"the post-staging expectation re-check must refuse the stale commit")
 
 	doc := mcpKtavDiskJSON(t, ktavPath)
 	_, ok := mcpEntryFromJSON(doc, "other")
@@ -283,9 +287,10 @@ func TestMCPKtavCorruptDocumentAbortsAndHidesSecret(t *testing.T) {
 	require.NoError(t, os.WriteFile(ktavPath, testKtavBytes(t, mcpKtavFixture(`{"srv":{"type":"http","url":"http://seed.example"}}`, mcpKtavSecret)), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: ktavPath})
 
-	corrupt := []byte("this is definitely not a ktav document")
+	corrupt := []byte("{broken" + mcpKtavSecret + "}")
 	require.NoError(t, os.WriteFile(ktavPath, corrupt, 0o600))
 
+	logs := captureSlogOutput(t)
 	_, err := store.PersistMCPConfigResult(ScopeGlobal, "added", MCPConfig{
 		Type: MCPHttp, URL: "http://added.example",
 	})
@@ -293,9 +298,64 @@ func TestMCPKtavCorruptDocumentAbortsAndHidesSecret(t *testing.T) {
 	require.NotErrorIs(t, err, ErrMCPTargetExists, "corruption must not look like a duplicate-name refusal")
 	require.NotErrorIs(t, err, ErrMCPNotFound, "corruption must not look like an absent document")
 	require.NotContains(t, err.Error(), mcpKtavSecret, "the error must carry no document values")
+	require.NotContains(t, logs.String(), mcpKtavSecret,
+		"no log line on the abort path may echo document values")
 	require.Equal(t, corrupt, fileBytes(t, ktavPath),
 		"an aborted transaction must leave the bytes untouched")
 }
+
+// mcpKtavRevisionsVariantA and mcpKtavRevisionsVariantB are HAND-AUTHORED
+// Ktav documents that decode to the SAME JSON value as the fixture but are
+// RAW-DISTINCT. ConvertJSONToKtav canonicalizes (sorted keys, fixed
+// whitespace), so two member orders of the same JSON encode to identical
+// bytes; the oracle therefore differs through text-level freedom the DECODER
+// accepts: key order, `##` comment lines, blank lines, inline containers,
+// and indentation. Syntax is modeled on the codec's own canonical examples
+// (codec_test.go TestEncodeKtavExactCanonicalText: `key: value`, nested
+// `key: {\n    k: v\n}`, arrays `[\n    x\n]`, inline `k: {a: 1}` and
+// `[a, b]` per testdata/spec-0.8.1/valid) and on the spec's comment and
+// inline examples.
+const mcpKtavRevisionsVariantA = `## rush config variant A
+future_unknown_field: {
+    nested: [
+        1
+        2
+        three
+    ]
+}
+mcp: {
+    srv: {
+        type: http
+        url: http://same.example
+    }
+}
+providers: {
+    custom: {
+        api_key: ` + mcpKtavSecret + `
+        base_url: https://example.invalid/v1
+        models: [
+            {
+                id: model
+                name: Model
+            }
+        ]
+    }
+}
+`
+
+const mcpKtavRevisionsVariantB = `## rush config variant B, reordered
+mcp: {
+    srv: {type: http, url: http://same.example}
+}
+providers: {
+    custom: {
+        base_url: https://example.invalid/v1
+        api_key: ` + mcpKtavSecret + `
+        models: [{id: model, name: Model}]
+    }
+}
+future_unknown_field: {nested: [1, 2, three]}
+`
 
 // TestMCPKtavRevisionsTrackRawBytes pins that revisions of a Ktav document
 // are driven by the RAW bytes: two documents that decode to identical JSON
@@ -304,15 +364,15 @@ func TestMCPKtavCorruptDocumentAbortsAndHidesSecret(t *testing.T) {
 func TestMCPKtavRevisionsTrackRawBytes(t *testing.T) {
 	root, _, dataDir := mcpKtavIsolate(t)
 	ktavPath := filepath.Join(dataDir, "rush.ktav")
-	// Same semantics, different member order => different raw bytes after
-	// ConvertJSONToKtav.
-	first := mcpKtavFixture(`{"srv":{"type":"http","url":"http://same.example"}}`, mcpKtavSecret)
-	second := `{"mcp":{"srv":{"type":"http","url":"http://same.example"}},"future_unknown_field":{"nested":[1,2,"three"]},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"` + mcpKtavSecret + `","models":[{"id":"model","name":"Model"}]}}}`
-	require.NotEqual(t, first, second)
-	require.JSONEq(t, first, second)
-	firstRaw := testKtavBytes(t, first)
-	secondRaw := testKtavBytes(t, second)
-	require.NotEqual(t, firstRaw, secondRaw, "the two encodings must differ in raw bytes")
+	firstRaw := []byte(mcpKtavRevisionsVariantA)
+	secondRaw := []byte(mcpKtavRevisionsVariantB)
+	// Both variants are valid Ktav for the FULL fixture document and decode
+	// to the same JSON value, but are raw-distinct.
+	firstDecoded := mustDecodeTestKtav(t, firstRaw)
+	secondDecoded := mustDecodeTestKtav(t, secondRaw)
+	require.JSONEq(t, string(firstDecoded), string(secondDecoded),
+		"the two hand-authored variants must decode to the same document")
+	require.NotEqual(t, firstRaw, secondRaw, "the two variants must differ in raw bytes")
 	require.NoError(t, os.WriteFile(ktavPath, firstRaw, 0o600))
 
 	store, err := Init(root, root, false)
@@ -364,7 +424,112 @@ func TestMCPKtavLockAnchorMatchesLegacySidecar(t *testing.T) {
 	lock, lockErr := acquireConfigFileLock(ctx, target.lockPath)
 	require.NoError(t, lockErr)
 	require.FileExists(t, target.lockPath)
-	require.Equal(t, normalizeReloadPath(legacyPath), normalizeReloadPath(filepath.TrimSuffix(target.lockPath, ".lock")))
+	require.Equal(t, normalizeReloadPath(legacyPath), normalizeReloadPath(strings.TrimSuffix(target.lockPath, ".lock")))
 	require.NoFileExists(t, ktavPath+".lock")
 	require.NoError(t, lock.Release(), "the sidecar handle must be released before TempDir cleanup")
+}
+
+// TestMCPConfigSlotMutationPrefersKtavSibling drives a store whose global
+// slot resolved to rush.json at Init, then sees rush.ktav APPEAR: the next
+// PersistMCPConfig must edit the .ktav slot (the active file), leave the
+// rush.json bytes byte-for-byte untouched, and the committed Ktav document
+// must contain the new entry.
+func TestMCPConfigSlotMutationPrefersKtavSibling(t *testing.T) {
+	root, _, dataDir := mcpKtavIsolate(t)
+	jsonPath := filepath.Join(dataDir, "rush.json")
+	ktavPath := filepath.Join(dataDir, "rush.ktav")
+	seed := []byte(mcpKtavFixture(`{"legacy":{"type":"http","url":"http://legacy.example"}}`, "sk-json-key"))
+	require.NoError(t, os.WriteFile(jsonPath, seed, 0o600))
+
+	store, err := Init(root, root, false)
+	require.NoError(t, err)
+
+	// The Ktav sibling appears after the store was built.
+	ktavSeed := mcpKtavFixture(`{"legacy":{"type":"http","url":"http://legacy.example"}}`, mcpKtavSecret)
+	require.NoError(t, os.WriteFile(ktavPath, testKtavBytes(t, ktavSeed), 0o600))
+
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "added", MCPConfig{
+		Type: MCPHttp, URL: "http://added.example",
+	}))
+
+	require.Equal(t, seed, fileBytes(t, jsonPath),
+		"the inactive rush.json slot must stay byte-for-byte untouched")
+	doc := mcpKtavDiskJSON(t, ktavPath)
+	_, ok := mcpEntryFromJSON(doc, "added")
+	require.True(t, ok, "the mutation must land in the active rush.ktav slot")
+	_, ok = mcpEntryFromJSON(doc, "legacy")
+	require.True(t, ok, "the Ktav document's pre-existing entry must survive")
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	cfg, exists := store.MCPConfig("added")
+	require.True(t, exists)
+	require.Equal(t, "http://added.example", cfg.URL)
+}
+
+// TestMCPConfigSlotBackupOnlyFailsClosed pins that a mutation against a
+// backup-only slot (rush.json.bak present, neither rush.json nor rush.ktav)
+// fails closed with errKtavBackupOnly and creates or changes nothing.
+func TestMCPConfigSlotBackupOnlyFailsClosed(t *testing.T) {
+	_, _, dataDir := mcpKtavIsolate(t)
+	legacyPath := filepath.Join(dataDir, "rush.json")
+	ktavPath := filepath.Join(dataDir, "rush.ktav")
+	backupPath := filepath.Join(dataDir, "rush.json.bak")
+	backup := []byte(mcpKtavFixture(`{"srv":{"type":"http","url":"http://backup.example"}}`, "sk-backup-key"))
+	require.NoError(t, os.WriteFile(backupPath, backup, 0o600))
+	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: legacyPath})
+
+	err := store.PersistMCPConfig(ScopeGlobal, "added", MCPConfig{
+		Type: MCPHttp, URL: "http://added.example",
+	})
+	require.ErrorIs(t, err, errKtavBackupOnly,
+		"a backup-only slot must fail closed, never be treated as an empty config")
+	require.Equal(t, backup, fileBytes(t, backupPath), "the backup must stay untouched")
+	require.NoFileExists(t, legacyPath)
+	require.NoFileExists(t, ktavPath)
+}
+
+// TestMCPConfigSlotCreationFollowsGateJSON pins that with the auto-migrate
+// gate OFF, a mutation into a slot with NEITHER format present creates the
+// legacy rush.json, never rush.ktav.
+func TestMCPConfigSlotCreationFollowsGateJSON(t *testing.T) {
+	root, _, dataDir := mcpKtavIsolate(t)
+	jsonPath := filepath.Join(dataDir, "rush.json")
+	ktavPath := filepath.Join(dataDir, "rush.ktav")
+	require.NoFileExists(t, jsonPath)
+	require.NoFileExists(t, ktavPath)
+
+	store, err := Init(root, root, false)
+	require.NoError(t, err)
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "added", MCPConfig{
+		Type: MCPHttp, URL: "http://added.example",
+	}))
+
+	require.NoFileExists(t, ktavPath, "the gate is off: no Ktav file may be created")
+	doc := fileBytes(t, jsonPath)
+	_, ok := mcpEntryFromJSON(doc, "added")
+	require.True(t, ok, "the mutation must create the legacy rush.json")
+}
+
+// TestMCPConfigSlotCreationFollowsGateKtav flips ktavAutoMigrate (a
+// package-level var; set directly, restored via t.Cleanup — this test must
+// NOT use t.Parallel) and pins that a slot with NEITHER format present then
+// creates rush.ktav.
+func TestMCPConfigSlotCreationFollowsGateKtav(t *testing.T) {
+	savedGate := ktavAutoMigrate
+	ktavAutoMigrate = true
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+
+	root, _, dataDir := mcpKtavIsolate(t)
+	jsonPath := filepath.Join(dataDir, "rush.json")
+	ktavPath := filepath.Join(dataDir, "rush.ktav")
+
+	store, err := Init(root, root, false)
+	require.NoError(t, err)
+	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "added", MCPConfig{
+		Type: MCPHttp, URL: "http://added.example",
+	}))
+
+	require.NoFileExists(t, jsonPath, "the gate is on: no legacy file may be created")
+	doc := mcpKtavDiskJSON(t, ktavPath)
+	_, ok := mcpEntryFromJSON(doc, "added")
+	require.True(t, ok, "the mutation must create the rush.ktav slot")
 }

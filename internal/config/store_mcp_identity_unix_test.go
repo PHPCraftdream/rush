@@ -44,7 +44,8 @@ func TestMCPTransactionExcludesForeignOwnedFixedAndExternalInputs(t *testing.T) 
 	store.workingDir = root
 	store.systemConfigPathOverride = system
 
-	paths := store.orderedMCPPaths()
+	paths, pathErr := store.orderedMCPPaths()
+	require.NoError(t, pathErr)
 	for _, foreign := range []string{workspace, system} {
 		require.NotContains(t, paths, foreign)
 	}

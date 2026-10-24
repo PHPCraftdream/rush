@@ -31,7 +31,10 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path, err = mcpConfigSlotPath(normalizeReloadPath(path))
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -93,7 +96,10 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path, err = mcpConfigSlotPath(normalizeReloadPath(path))
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -195,7 +201,10 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path, err = mcpConfigSlotPath(normalizeReloadPath(path))
+	if err != nil {
+		return MCPMutationResult{}, err
+	}
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -481,7 +490,10 @@ func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record
 }
 
 func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, error) {
-	paths := s.orderedMCPPaths()
+	paths, err := s.orderedMCPPaths()
+	if err != nil {
+		return mcpEvaluation{}, err
+	}
 	externalPaths := uniqueMCPPaths(mcpJSONCandidatePaths(s.workingDir))
 	input := make([][]byte, 0, len(paths))
 	fingerprints := make(map[string]reloadFileFingerprint, len(paths)+len(externalPaths))
@@ -576,28 +588,47 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 	}, nil
 }
 
-func (s *ConfigStore) orderedMCPPaths() []string {
+func (s *ConfigStore) orderedMCPPaths() ([]string, error) {
 	paths := make([]string, 0, 8)
-	appendSafe := func(path string, owner int) {
-		if eligible := eligibleConfigCandidate(path, owner); eligible != "" {
+	// Every Rush candidate is resolved to its physical slot file BEFORE
+	// binding, so evaluation reads (and fingerprints) the file a mutation
+	// will really edit. A backup-only slot is an ERROR here, never an
+	// absent candidate.
+	appendSafe := func(path string, owner int) error {
+		slot, err := mcpConfigSlotPath(path)
+		if err != nil {
+			return err
+		}
+		if eligible := eligibleConfigCandidate(slot, owner); eligible != "" {
 			paths = append(paths, eligible)
 		}
+		return nil
 	}
 	if systemPath := s.systemConfigPathValue(); systemPath != "" {
-		appendSafe(systemPath, systemConfigOwner())
+		if err := appendSafe(systemPath, systemConfigOwner()); err != nil {
+			return nil, err
+		}
 	}
-	appendSafe(GlobalConfig(), homeConfigOwner())
-	appendSafe(s.globalDataPath, homeConfigOwner())
+	if err := appendSafe(GlobalConfig(), homeConfigOwner()); err != nil {
+		return nil, err
+	}
+	if err := appendSafe(s.globalDataPath, homeConfigOwner()); err != nil {
+		return nil, err
+	}
 	// lookupConfigCandidates applies the same global/project owner policy;
 	// retain its discovery spelling so mcpPathData can bind the alias to the
 	// opened file identity.
 	paths = append(paths, lookupConfigCandidates(s.workingDir)...)
 	if workspacePath := s.configPathOrEmpty(ScopeWorkspace); workspacePath != "" {
 		if owner, enforce, err := configOwnerForWorkingDir(s.workingDir); err == nil && (!enforce || eligibleConfigCandidate(workspacePath, owner) != "") {
+			workspacePath, err = mcpConfigSlotPath(workspacePath)
+			if err != nil {
+				return nil, err
+			}
 			paths = append(paths, workspacePath)
 		}
 	}
-	return uniqueMCPPaths(paths)
+	return uniqueMCPPaths(paths), nil
 }
 
 func (s *ConfigStore) systemConfigPathValue() string {
@@ -608,6 +639,13 @@ func (s *ConfigStore) systemConfigPathValue() string {
 }
 
 func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, bool, error) {
+	// Idempotent slot resolution: orderedMCPPaths already converted its
+	// candidates, but any future caller passing a logical spelling must
+	// bind the physical file too.
+	path, err := mcpConfigSlotPath(path)
+	if err != nil {
+		return nil, false, err
+	}
 	key := normalizeDiscoveryPath(path)
 	if record := files.mcpRecord(key); record != nil {
 		fingerprint, ok := files.fingerprints[key]
@@ -664,10 +702,12 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 		return s.workingDirOwner, s.workingDir != "", nil
 	}
 	canonical := normalizeReloadPath(path)
-	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == normalizeReloadPath(systemPath) {
+	if systemPath := s.systemConfigPathValue(); systemPath != "" && matchesLogicalSlot(canonical, systemPath) {
 		return systemConfigOwner(), true, nil
 	}
-	if canonical == normalizeReloadPath(GlobalConfig()) || canonical == normalizeReloadPath(s.globalDataPath) {
+	// A slot-selected .ktav spelling must keep its logical slot's owner
+	// policy, so match both spellings of each well-known slot.
+	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, s.globalDataPath) {
 		return homeConfigOwner(), true, nil
 	}
 	if canonical == normalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
@@ -686,6 +726,9 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 
 func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {
 	path = normalizeReloadPath(path)
+	// A slot-selected .ktav document keeps its logical slot's origin, so
+	// match against the LEGACY spelling of the physical path.
+	path = legacySlotOf(path)
 	workspacePath = normalizeReloadPath(workspacePath)
 	globalPath = normalizeReloadPath(globalPath)
 	systemPath = normalizeReloadPath(systemPath)
