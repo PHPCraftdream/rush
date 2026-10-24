@@ -33,6 +33,15 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// ktavIsolateHomePoints keeps home-dependent lookups inside the test's
+// temporary directory.
+func ktavIsolateHomePoints(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 // writeKtavFixture converts doc to Ktav with the production converter and
 // writes it to path, returning the raw bytes on disk.
 func writeKtavFixture(t *testing.T, path string, doc map[string]any) []byte {
@@ -69,6 +78,7 @@ func decodeKtavFixtureJSON(t *testing.T, path string) []byte {
 // and must never materialize a legacy rush.json sibling.
 func TestOAuthKtavCredentialSetAndDeleteOnKtavConfig(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.ktav")
@@ -128,9 +138,11 @@ func TestOAuthKtavCredentialSetAndDeleteOnKtavConfig(t *testing.T) {
 
 // A CAS write whose expected token no longer matches the Ktav document must
 // be refused cleanly (committed=false, err=nil) and leave the raw bytes
-// byte-for-byte unchanged.
+// byte-for-byte unchanged, while the same call with the CURRENT token
+// succeeds — proving the changed-token guard is the only refusal reason.
 func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.ktav")
@@ -143,20 +155,19 @@ func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 	}
 	writeKtavFixture(t, configPath, map[string]any{
 		"providers": map[string]any{
-			"p1": map[string]any{"oauth": tokenA},
+			"p1": map[string]any{"oauth": tokenA, "api_key": tokenA.AccessToken},
 		},
 	})
-	rawBefore, err := os.ReadFile(configPath)
-	require.NoError(t, err)
-
 	tokenB := *tokenA
 	tokenB.AccessToken = "stale-other-access"
 	tokenB.RefreshToken = "stale-other-refresh"
 	writeKtavFixture(t, configPath, map[string]any{
 		"providers": map[string]any{
-			"p1": map[string]any{"oauth": &tokenB},
+			"p1": map[string]any{"oauth": &tokenB, "api_key": tokenB.AccessToken},
 		},
 	})
+	rawExpected, err := os.ReadFile(configPath)
+	require.NoError(t, err)
 
 	providers := csync.NewMap[string, ProviderConfig]()
 	providers.Set("p1", ProviderConfig{ID: "p1", OAuthToken: tokenA})
@@ -175,9 +186,18 @@ func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.False(t, committed)
 	require.NoError(t, err, "a lost CAS race is a clean refusal, not an error")
-	rawAfter, err := os.ReadFile(configPath)
+	raw, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	require.Equal(t, rawBefore, rawAfter, "a refused CAS write must not touch the raw bytes")
+	require.Equal(t, rawExpected, raw, "a refused CAS write must not touch the raw bytes")
+
+	// Positive control: with the CURRENT token every guard passes, so the
+	// refusal above can only have come from expected-vs-disk comparison.
+	committed2, err2 := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", &tokenB, tokenC)
+	require.NoError(t, err2)
+	require.True(t, committed2)
+	jsonBytes := decodeKtavFixtureJSON(t, configPath)
+	require.Equal(t, tokenC.RefreshToken, gjson.Get(string(jsonBytes), "providers.p1.oauth.refresh_token").String())
+	require.Equal(t, tokenC.AccessToken, gjson.Get(string(jsonBytes), "providers.p1.api_key").String())
 }
 
 // Two stores rotating one single-use refresh token through ONE rush.ktav
@@ -186,6 +206,7 @@ func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 // rush.json spelling. Ported from runOAuthRefreshSingleUseRace.
 func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.ktav")
@@ -334,6 +355,9 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 		require.NotNil(t, current.OAuthToken)
 		require.Equal(t, "single-use-new-access", current.OAuthToken.AccessToken)
 		require.Equal(t, "single-use-new-refresh", current.OAuthToken.RefreshToken)
+		require.Equal(t, oldToken.AccountID, current.OAuthToken.AccountID)
+		require.False(t, current.OAuthToken.IsExpired())
+		require.Empty(t, current.APIKey)
 	}
 	diskToken, err := stores[0].loadTokenFromDisk(ScopeGlobal, "openai-codex")
 	require.NoError(t, err)
@@ -354,11 +378,179 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 	require.Empty(t, staleLocks, "no refresh sidecar may use the Ktav spelling")
 }
 
+// A rush.ktav config must still discover journals anchored on the LEGACY
+// rush.json spelling (written before migration); an existing Ktav journal
+// wins selection, and gated writes follow newConfigFileIsKtav through the
+// PRODUCTION selector. Serial: the package gate var is saved and restored
+// via t.Cleanup.
+func TestOAuthKtavJournalDiscoveryFromKtavConfigPath(t *testing.T) {
+	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
+	provider := "openai-codex"
+	record := &oauthJournalRecord{Token: &oauth.Token{
+		AccessToken:  "discovery-access",
+		RefreshToken: "discovery-refresh",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+	}}
+
+	// Only the legacy journal exists: its on-disk name is the rush.json
+	// spelling, the selector returns it, and it decodes equal.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	configPath := filepath.Join(dir, "rush.ktav")
+	legacyPath := oauthJournalLegacyPath(configPath, provider)
+	require.NoError(t, writeOAuthJournalOnce(legacyPath, record))
+	require.Contains(t, filepath.Base(legacyPath), "rush.json.oauth-pending-")
+	require.True(t, strings.HasSuffix(legacyPath, ".json"))
+	selected := selectOAuthJournalPath(configPath, provider, false)
+	require.Equal(t, normalizeReloadPath(legacyPath), normalizeReloadPath(selected))
+	legacyRead, err := readOAuthJournal(selected)
+	require.NoError(t, err)
+	require.Equal(t, record, legacyRead)
+
+	// Both journals exist: selection returns the Ktav path and both decode
+	// equal.
+	ktavPath := oauthJournalKtavPath(configPath, provider)
+	require.NoError(t, writeOAuthJournalOnce(ktavPath, record))
+	selected = selectOAuthJournalPath(configPath, provider, false)
+	require.Equal(t, normalizeReloadPath(ktavPath), normalizeReloadPath(selected))
+	ktavRead, err := readOAuthJournal(selected)
+	require.NoError(t, err)
+	require.Equal(t, record, ktavRead)
+
+	// Gate-off write through the production selector: the record lands on
+	// the legacy plain-JSON name and no Ktav journal appears.
+	savedGate := ktavAutoMigrate
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	ktavAutoMigrate = false
+	dirOff, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	configOff := filepath.Join(dirOff, "rush.ktav")
+	selectedOff := selectOAuthJournalPath(configOff, provider, true)
+	require.Contains(t, filepath.Base(selectedOff), "rush.json.oauth-pending-")
+	require.True(t, strings.HasSuffix(selectedOff, ".json"))
+	require.NoError(t, writeOAuthJournalOnce(selectedOff, record))
+	legacyRaw, err := os.ReadFile(selectedOff)
+	require.NoError(t, err)
+	var unused map[string]any
+	require.NoError(t, json.Unmarshal(legacyRaw, &unused), "the gated-off journal must stay plain JSON")
+	_, statErr := os.Stat(oauthJournalKtavPath(configOff, provider))
+	require.True(t, os.IsNotExist(statErr), "a gated-off write must not create a Ktav journal")
+
+	// Gate-on write through the production selector: the bytes are Ktav.
+	ktavAutoMigrate = true
+	dirOn, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	configOn := filepath.Join(dirOn, "rush.ktav")
+	selectedOn := selectOAuthJournalPath(configOn, provider, true)
+	require.Equal(t, normalizeReloadPath(oauthJournalKtavPath(configOn, provider)), normalizeReloadPath(selectedOn))
+	require.NoError(t, writeOAuthJournalOnce(selectedOn, record))
+	ktavRaw, err := os.ReadFile(selectedOn)
+	require.NoError(t, err)
+	require.Error(t, json.Unmarshal(ktavRaw, &unused), "Ktav journal bytes must not be plain JSON")
+	jsonBytes, err := decodeConfigDocument(selectedOn, ktavRaw)
+	require.NoError(t, err)
+	var decoded oauthJournalRecord
+	require.NoError(t, json.Unmarshal(jsonBytes, &decoded))
+	require.Equal(t, record, &decoded)
+}
+
+// A store holding the LEGACY rush.json path must resolve its CAS writes to
+// the ACTIVE rush.ktav slot and leave the legacy file untouched.
+func TestOAuthKtavCASResolvesActiveSlotFromLegacyPath(t *testing.T) {
+	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	legacyPath := filepath.Join(dir, "rush.json")
+	ktavPath := filepath.Join(dir, "rush.ktav")
+	tokenA := &oauth.Token{
+		AccessToken:  "slot-ktav-access",
+		RefreshToken: "slot-ktav-refresh",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		AccountID:    "slot-account",
+	}
+	tokenB := *tokenA
+	tokenB.AccessToken = "slot-legacy-access"
+	tokenB.RefreshToken = "slot-legacy-refresh"
+	writeKtavFixture(t, ktavPath, map[string]any{
+		"providers": map[string]any{
+			"p1": map[string]any{"oauth": tokenA, "api_key": tokenA.AccessToken},
+		},
+	})
+	writeKtavFixture(t, legacyPath, map[string]any{
+		"providers": map[string]any{
+			"p1": map[string]any{"oauth": &tokenB, "api_key": tokenB.AccessToken},
+		},
+	})
+	legacyRawBefore, err := os.ReadFile(legacyPath)
+	require.NoError(t, err)
+
+	providers := csync.NewMap[string, ProviderConfig]()
+	providers.Set("p1", ProviderConfig{ID: "p1", OAuthToken: tokenA})
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{Providers: providers},
+		globalDataPath: legacyPath,
+	})
+	trackOAuthJournalTestStore(t, store)
+	tokenC := &oauth.Token{
+		AccessToken:  "slot-new-access",
+		RefreshToken: "slot-new-refresh",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(2 * time.Hour).Unix(),
+		AccountID:    "slot-account",
+	}
+	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	require.NoError(t, err)
+	require.True(t, committed)
+	jsonBytes := decodeKtavFixtureJSON(t, ktavPath)
+	require.Equal(t, tokenC.RefreshToken, gjson.Get(string(jsonBytes), "providers.p1.oauth.refresh_token").String())
+	require.Equal(t, tokenC.AccessToken, gjson.Get(string(jsonBytes), "providers.p1.api_key").String())
+	legacyRawAfter, err := os.ReadFile(legacyPath)
+	require.NoError(t, err)
+	require.Equal(t, legacyRawBefore, legacyRawAfter, "the legacy slot must stay untouched")
+}
+
+// A backup-only slot must fail the CAS write closed with errKtavBackupOnly,
+// create no config file, and leave no sidecar lock behind.
+func TestOAuthKtavCASBackupOnlySlotFailsClosed(t *testing.T) {
+	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	legacyPath := filepath.Join(dir, "rush.json")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rush.json.bak"), []byte("stale backup bytes"), 0o600))
+
+	providers := csync.NewMap[string, ProviderConfig]()
+	tokenA := &oauth.Token{AccessToken: "backup-only-access", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	providers.Set("p1", ProviderConfig{ID: "p1", OAuthToken: tokenA})
+	store := newTestConfigStore(testStoreOpts{
+		config:         &Config{Providers: providers},
+		globalDataPath: legacyPath,
+	})
+	trackOAuthJournalTestStore(t, store)
+	tokenC := &oauth.Token{AccessToken: "backup-only-new-access", ExpiresAt: time.Now().Add(2 * time.Hour).Unix()}
+
+	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	require.ErrorIs(t, err, errKtavBackupOnly)
+	require.False(t, committed)
+	_, statErr := os.Stat(legacyPath)
+	require.True(t, os.IsNotExist(statErr), "a backup-only slot must not grow a legacy config")
+	_, statErr = os.Stat(filepath.Join(dir, "rush.ktav"))
+	require.True(t, os.IsNotExist(statErr), "a backup-only slot must not grow a Ktav config")
+	locks, globErr := filepath.Glob(filepath.Join(dir, "*.lock"))
+	require.NoError(t, globErr)
+	require.Empty(t, locks, "a failed-closed CAS write must leave no lock file")
+}
+
 // A corrupt rush.ktav must fail the CAS write with a real error (never the
 // clean CAS refusal), leave the bytes untouched, and fail token reads
 // instead of reporting a silently empty document.
 func TestOAuthKtavCorruptConfigAbortsCASAndDiskReads(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.ktav")
@@ -394,6 +586,7 @@ func TestOAuthKtavCorruptConfigAbortsCASAndDiskReads(t *testing.T) {
 // an invalid preferred journal is refused and quarantined byte-for-byte.
 func TestOAuthKtavJournalSpellingPrecedenceAndQuarantine(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configPath := filepath.Join(dir, "rush.json")
@@ -444,6 +637,7 @@ func TestOAuthKtavJournalSpellingPrecedenceAndQuarantine(t *testing.T) {
 // gate var is saved and restored via t.Cleanup.
 func TestOAuthKtavGatedJournalWriteSpelling(t *testing.T) {
 	ktavIsolateGlobals(t)
+	ktavIsolateHomePoints(t)
 	provider := "openai-codex"
 	record := &oauthJournalRecord{Token: &oauth.Token{
 		AccessToken:  "gated-access",
