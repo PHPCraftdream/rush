@@ -128,17 +128,16 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 		// e.g. "assistant activity 3s ago (session abc12345)". Computed from
 		// the shared call-tree walk (sessions_activity.go).
 		SubAgentActivity string `json:"sub_agent_activity,omitempty"`
-		// AsyncJobsTotal/AsyncJobsRunning are this session's batch work counts
-		// (total = every task node, running = active tasks). The historical
-		// JSON field spellings are retained; their rename is lane H5-C. Both
-		// are 0/0, and omitted from JSON, when the session owns no batch work.
-		AsyncJobsTotal   int       `json:"async_jobs_total,omitempty"`
-		AsyncJobsRunning int       `json:"async_jobs_running,omitempty"`
-		BatchRoots       int       `json:"batch_roots,omitempty"`
-		BatchDebt        int64     `json:"batch_debt,omitempty"`
-		BatchStatus      string    `json:"batch_status,omitempty"` // live | unknown
-		SystemPrompt     string    `json:"system_prompt,omitempty"`
-		Messages         []msgItem `json:"messages,omitempty"`
+		// BatchTasksTotal/BatchTasksRunning are this session's batch work
+		// counts (total = every task node, running = active tasks). Both are
+		// 0/0, and omitted from JSON, when the session owns no batch work.
+		BatchTasksTotal   int       `json:"batch_tasks_total,omitempty"`
+		BatchTasksRunning int       `json:"batch_tasks_running,omitempty"`
+		BatchRoots        int       `json:"batch_roots,omitempty"`
+		BatchDebt         int64     `json:"batch_debt,omitempty"`
+		BatchStatus       string    `json:"batch_status,omitempty"` // live | unknown
+		SystemPrompt      string    `json:"system_prompt,omitempty"`
+		Messages          []msgItem `json:"messages,omitempty"`
 	}
 
 	// Fetch the first user message as "purpose".
@@ -207,8 +206,8 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	// `sessions jobs <id>` is the place for the full delegation-tree view,
 	// this is just a summary line, not a second listing surface.
 	batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, []string{sess.ID})[sess.ID]
-	output.AsyncJobsTotal = batchFacts.Tasks.Pending + batchFacts.Tasks.Starting + batchFacts.Tasks.Active + batchFacts.Tasks.Completed + batchFacts.Tasks.Failed + batchFacts.Tasks.Cancelled + batchFacts.Tasks.TimedOut + batchFacts.Tasks.Interrupted + batchFacts.Tasks.Skipped
-	output.AsyncJobsRunning = batchFacts.Tasks.Active
+	output.BatchTasksTotal = batchFacts.Tasks.Pending + batchFacts.Tasks.Starting + batchFacts.Tasks.Active + batchFacts.Tasks.Completed + batchFacts.Tasks.Failed + batchFacts.Tasks.Cancelled + batchFacts.Tasks.TimedOut + batchFacts.Tasks.Interrupted + batchFacts.Tasks.Skipped
+	output.BatchTasksRunning = batchFacts.Tasks.Active
 	output.BatchRoots = len(batchFacts.Roots)
 	output.BatchDebt = batchFacts.Debt
 	switch {
@@ -346,8 +345,8 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 	if batchFacts.HasQuestion {
 		fmt.Println("Batch:        a held batch question is awaiting an answer")
 	}
-	if output.AsyncJobsTotal > 0 {
-		fmt.Printf("Async jobs:   %d total, %d running (see `sessions jobs %s`)\n", output.AsyncJobsTotal, output.AsyncJobsRunning, sess.ID)
+	if output.BatchTasksTotal > 0 {
+		fmt.Printf("Batch tasks:  %d total, %d running (see `sessions jobs %s`)\n", output.BatchTasksTotal, output.BatchTasksRunning, sess.ID)
 	}
 	if output.Purpose != "" {
 		fmt.Printf("Purpose:      %s\n", output.Purpose)
