@@ -198,6 +198,10 @@ func TestUnprotectedKtavRMWDeterministicallyLosesUpdate(t *testing.T) {
 		{"options.tui.compact_mode", true},
 	}
 	bases := [][]byte{readA, readB}
+	// The lost update comes from the stale bases; the final os.WriteFile calls
+	// are serialized so two truncating writers cannot interleave bytes into a
+	// corrupt file (observed on Windows as an undecodable document).
+	var writeMu sync.Mutex
 	for i, m := range mutations {
 		m := m
 		base := bases[i]
@@ -214,7 +218,9 @@ func TestUnprotectedKtavRMWDeterministicallyLosesUpdate(t *testing.T) {
 					if err == nil {
 						out, err = ktavcodec.ConvertJSONToKtav([]byte(jsonOut))
 						if err == nil {
+							writeMu.Lock()
 							err = os.WriteFile(configPath, out, 0o600)
+							writeMu.Unlock()
 						}
 					}
 				}
