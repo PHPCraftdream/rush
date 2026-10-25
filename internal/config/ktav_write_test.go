@@ -312,6 +312,10 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 // NEITHER file present, a gate-on write creates rush.ktav (KTAV-4 made the
 // gate default on), and a gate-off write still creates the legacy rush.json.
 func TestKtavCreationRespectsAutoMigrateGate(t *testing.T) {
+	// This test pins the gate-ON creation behavior (rush.ktav created with
+	// neither file present); the package test init() defaults the gate off,
+	// so opt in explicitly. NOT parallel: the helper mutates a shared global.
+	enableKtavAutoMigrateForTest(t)
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "rush.json")
 	ktavPath := filepath.Join(dir, "rush.ktav")
