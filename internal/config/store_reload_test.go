@@ -33,7 +33,10 @@ func TestReloadStalenessStateRebindsAliasedFingerprints(t *testing.T) {
 		map[string]reloadFileFingerprint{normalizeDiscoveryPath(path): fingerprint},
 	)
 	discovery := normalizeDiscoveryPath(path)
-	require.Equal(t, []string{discovery}, tracked)
+	// expandConfigSlotSiblings now tracks BOTH spellings of the logical
+	// slot: the alias rush.json plus its (absent) rush.ktav sibling, in
+	// sorted order. The alias rebinding under assertion is unchanged.
+	require.Equal(t, []string{discovery, ktavSiblingOf(discovery)}, tracked)
 	current, err := readReloadFingerprint(path)
 	require.NoError(t, err)
 	require.Equal(t, current, snapshots[discovery].fingerprint)

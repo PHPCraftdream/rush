@@ -32,6 +32,7 @@ import (
 // match over the OLD tracked paths, so a project-boundary change with every
 // previously tracked file byte-identical never reloads.
 func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	t.Run("Growth", func(t *testing.T) {
 		dir, configPath, globalPath := configSyncIsolate(t)
 		writeSignedModelsFixture(t, globalPath, `{"smart":{"provider":"openai","model":"gpt-global"}}`)
@@ -178,6 +179,7 @@ func TestConfigDiskSyncDriftFailureRecoversWhenFileFixed(t *testing.T) {
 // now-ineligible tracked path's fingerprint read fails; growth is the
 // drift-only oracle.)
 func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir, configPath, _ := configSyncIsolate(t)
 	globalCfg := GlobalConfig()
 	require.NotEqual(t, configPath, globalCfg)

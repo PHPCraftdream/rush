@@ -185,12 +185,24 @@ func TestAddCloseRollsBackCanceledPendingConfig(t *testing.T) {
 
 func TestInitializeRejectsChangedConfigBeforePublication(t *testing.T) {
 	const name = "initialize-stale-config"
+	// Legacy JSON semantics: the fixture is a global rush.json store whose
+	// bytes are mutated in place mid-initialization. With Ktav auto-migration
+	// on, config.Load renames rush.json to rush.ktav and the mid-flight
+	// mutation fails. The test also guarantees the test MCP server's
+	// tools/list handler releases its wait on ALL paths: if any assertion
+	// fails before close(release) runs, t.Cleanup closes the session, and a
+	// handler still parked on an unclosed channel would block
+	// Connection.Close forever (the 39m58s timeout hang).
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	server := mcp.NewServer(&mcp.Implementation{Name: "stale-init"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "stale-tool"}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 	var startOnce sync.Once
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
@@ -203,6 +215,9 @@ func TestInitializeRejectsChangedConfigBeforePublication(t *testing.T) {
 	})
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 	cleanupTestMCPServer(t, server, httpServer)
+	// Registered AFTER cleanupTestMCPServer so LIFO cleanup releases the
+	// tools/list handler before the sessions are closed, on every path.
+	t.Cleanup(releaseAll)
 	store := persistedMCPStore(t, name, httpServer.URL, false)
 	owner, err := Acquire()
 	require.NoError(t, err)
@@ -218,7 +233,7 @@ func TestInitializeRejectsChangedConfigBeforePublication(t *testing.T) {
 	require.NoError(t, store.PersistMCPFieldsExact(config.ScopeGlobal, name, map[string]any{
 		"url": replacement.URL,
 	}))
-	close(release)
+	releaseAll()
 	awaitMCPSignal(t, initDone)
 	require.False(t, hasSession(name))
 	current, ok := store.MCPConfig(name)

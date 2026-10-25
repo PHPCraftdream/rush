@@ -15,6 +15,7 @@ import (
 )
 
 func TestModelsState_ReportsWorkerAndReviewer(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -33,6 +34,7 @@ func TestModelsState_ReportsWorkerAndReviewer(t *testing.T) {
 }
 
 func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -58,6 +60,7 @@ func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
 // "glm5_turbo" (large, in this test) is set with no @effort suffix, so
 // m.ReasoningEffort == "" and effortEffectiveNote must fire.
 func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -84,6 +87,7 @@ func TestModelsState_UnsetEffort_ShowsKnownZAIDefault(t *testing.T) {
 // catwalk embedded data, not something this task touches. glm4_7_flash IS in
 // that embedded list, so it round-trips through config load untouched.
 func TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -115,6 +119,7 @@ func lineContaining(s, substr string) (string, bool) {
 // mode also surfaces the same fact machine-readably (nilOrEffortDefault),
 // not just the human text rendering.
 func TestModelsState_JSON_UnsetEffort_ShowsKnownDefault(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -141,6 +146,7 @@ func TestModelsState_JSON_UnsetEffort_ShowsKnownDefault(t *testing.T) {
 // the comment on TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault
 // for why glm4_7_flash is used instead of glm5_3 here.
 func TestModelsState_JSON_ExplicitEffort_NullDefault(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -309,6 +315,7 @@ func TestStaleEffortNote_ClaudeAtomNeverShellsOut(t *testing.T) {
 // against low/high/max) and asserts on the REAL rendered CLI output, not
 // just the note helpers in isolation.
 func TestModelsState_EndToEnd_FlagsStaleGLM53FlashEffort(t *testing.T) {
+	ktavGateOn(t)
 	globalPath := isolatedModelsEnv(t)
 
 	require.NoError(t, os.WriteFile(globalPath, []byte(`{

@@ -11,6 +11,7 @@ import (
 )
 
 func TestSettingsLockRegression_F2RedirectedGlobalPath(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	t.Cleanup(func() { SetProcessPassword("") })
 	root := t.TempDir()
 	canonical := filepath.Join(root, "canonical", "rush.json")

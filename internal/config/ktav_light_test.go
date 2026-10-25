@@ -108,21 +108,37 @@ func TestActiveConfigFileName(t *testing.T) {
 }
 
 func TestSetKtavAutoMigrateForTest(t *testing.T) {
+	// This test exercises the gate-ON world (it asserts the ambient value is
+	// true before flipping), so it opts in explicitly as its first
+	// statement: the package test init() defaults the gate to false. NOT
+	// parallel: the helper mutates the shared ktavAutoMigrate global.
+	enableKtavAutoMigrateForTest(t)
 	ktavLightIsolateEnv(t)
-	// NOT parallel: mutates the shared ktavAutoMigrate global.
+	require.True(t, ktavAutoMigrate, "KTAV-4: auto-migrate is the default")
+	restore := SetKtavAutoMigrateForTest(false)
 	require.False(t, ktavAutoMigrate)
-	restore := SetKtavAutoMigrateForTest(true)
-	require.True(t, ktavAutoMigrate)
 	restore()
-	require.False(t, ktavAutoMigrate)
+	require.True(t, ktavAutoMigrate)
 }
 
 func TestKtavAutoMigrateEnabled(t *testing.T) {
 	ktavLightIsolateEnv(t)
 	// NOT parallel: the gate is a shared global; the test mutates it via the
-	// test seam rather than assuming a pristine value.
-	on := SetKtavAutoMigrateForTest(true)
-	require.True(t, KtavAutoMigrateEnabled())
-	on()
+	// test seam rather than assuming a pristine value. The SHIPPED default is
+	// asserted via ktavShippedDefault (captured before the package test
+	// init() flips the gate off), so the production default can never be
+	// silently changed without this test going red.
+	require.True(t, ktavShippedDefault, "KTAV-4: the shipped default must keep auto-migrate ON")
+	// ktavShippedDefault is the var-init capture of ktavAutoMigrate
+	// (ktav_migration.go declares it true) taken BEFORE any init() in the
+	// package runs, so a true value here pins the declared production
+	// default. The AMBIENT value in this test binary is false (the test-only
+	// init() flips it), so the seam-restore round-trip must be asserted
+	// against the ambient value, not against the shipped default.
+	ambient := KtavAutoMigrateEnabled()
+	on := SetKtavAutoMigrateForTest(false)
 	require.False(t, KtavAutoMigrateEnabled())
+	on()
+	require.Equal(t, ambient, KtavAutoMigrateEnabled(),
+		"restoring the gate must return the ambient value it captured")
 }

@@ -13,9 +13,14 @@ import (
 // readConfigJSON reads and unmarshals the JSON config file at path.
 func readConfigJSON(t *testing.T, path string) map[string]any {
 	t.Helper()
+	// The active generation may be the Ktav sibling (gate on): decode it
+	// back to JSON-shaped bytes before asserting on the content.
+	path = selectConfigSlot(path)
 	baseDir := filepath.Dir(path)
 	fileName := filepath.Base(path)
-	b, err := fs.ReadFile(os.DirFS(baseDir), fileName)
+	raw, err := fs.ReadFile(os.DirFS(baseDir), fileName)
+	require.NoError(t, err)
+	b, err := decodeConfigDocument(path, raw)
 	require.NoError(t, err)
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(b, &out))
@@ -167,8 +172,9 @@ func TestRecordRecentModel_NoPersistOnNoop(t *testing.T) {
 	entry := SelectedModel{Provider: "openai", Model: "gpt-4o"}
 	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, entry))
 
-	baseDir := filepath.Dir(store.globalDataPath)
-	fileName := filepath.Base(store.globalDataPath)
+	activePath := selectConfigSlot(store.globalDataPath)
+	baseDir := filepath.Dir(activePath)
+	fileName := filepath.Base(activePath)
 	before, err := fs.ReadFile(os.DirFS(baseDir), fileName)
 	require.NoError(t, err)
 

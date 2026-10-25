@@ -11,6 +11,12 @@ import (
 )
 
 func TestLockedConfigHandlersRefuseWithoutMutation(t *testing.T) {
+	// Legacy-JSON fixture test: it reads the raw bytes of the global config
+	// at config.GlobalConfigData()'s literal legacy path to assert "no
+	// mutation", which only has its old meaning with the gate off.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
+
 	cases := []struct {
 		name string
 		run  func(*app.App, *Client)

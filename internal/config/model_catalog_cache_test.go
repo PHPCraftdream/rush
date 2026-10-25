@@ -14,6 +14,9 @@ import (
 )
 
 func TestModelCatalogCacheRefreshesAfterSevenDaysAndSeparatesCredentials(t *testing.T) {
+	// Legacy-JSON fixture test: it reads/rewrites the cache entry at the
+	// legacy JSON path, so pin the gate off (NOT parallel: shared global).
+	setKtavAutoMigrateForCacheTest(t, false)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	calls := 0
 	fetch := func(context.Context) ([]catwalk.Model, error) {
@@ -51,6 +54,12 @@ func TestModelCatalogCacheRefreshesAfterSevenDaysAndSeparatesCredentials(t *test
 // a fresh fetch never caches hidden families, and a catalog cached before
 // the filter existed still hides them when served from disk.
 func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
+	// Legacy-JSON fixture test: the stale-schema entry is written to the
+	// legacy JSON path and must be the generation served; with the gate on
+	// the fresh fetch above would publish a Ktav sibling that shadows it.
+	// The filter itself is format-agnostic (visibleCatalogModels runs on the
+	// decoded JSON shape either way). NOT parallel: shared gate global.
+	setKtavAutoMigrateForCacheTest(t, false)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	fetch := func(context.Context) ([]catwalk.Model, error) {
 		return []catwalk.Model{{ID: "glm-4.6"}, {ID: "glm-5.3"}, {ID: "unrelated"}}, nil

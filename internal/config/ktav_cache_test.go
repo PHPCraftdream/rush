@@ -135,6 +135,7 @@ func TestCacheStoreFormatFollowsGate(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("gate off writes json", func(t *testing.T) {
+		setKtavAutoMigrateForCacheTest(t, false)
 		dir := t.TempDir()
 		path := filepath.Join(dir, "providers.json")
 		require.NoError(t, newCache[[]catwalk.Provider](path).Store(fixture))
@@ -194,6 +195,10 @@ func TestCacheKtavTypedDecodeMatchesJSON(t *testing.T) {
 }
 
 func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
+	// The freshness semantics under test predate the Ktav cache format; the
+	// refetch step below is asserted to rewrite the legacy JSON generation,
+	// so pin the gate off (NOT parallel: shared global).
+	setKtavAutoMigrateForCacheTest(t, false)
 	dataDir := isolateCacheTestEnv(t)
 	require.NoError(t, os.MkdirAll(dataDir, 0o700))
 
