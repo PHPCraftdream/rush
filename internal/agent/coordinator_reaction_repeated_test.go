@@ -17,10 +17,9 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	const command = `cd /x && git log --oneline -1 >/dev/null; echo q`
 	launch := func(id, cmd string) *drainAttempt {
 		f.seedDebt(ctx, id, true)
-		var result fantasy.ToolResultContent
 		// A batch started result names its launched root and carries no
 		// ClientMetadata: the call id IS the chain identity.
-		result = batchStartedToolResult(id)
+		result := batchStartedToolResult(id)
 		call := fantasy.ToolCallContent{ToolCallID: id, ToolName: "bash", Input: `{"command":` + reactionJSON(cmd) + `}`}
 		ts.att = &drainAttempt{sessionID: f.sessID, outcome: drainAttempted}
 		ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
