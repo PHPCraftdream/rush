@@ -362,3 +362,78 @@ func TestLoopDetection_OnStepFinishOrdering(t *testing.T) {
 		t.Fatalf("finish text must be non-empty on the detection step; got msg=%q details=%q", msg, details)
 	}
 }
+
+// ackOutput returns the bash tool's auto-background launch-ack text for the
+// given shell ID, mirroring the template in internal/agent/tools/bash.go.
+func ackOutput(id string) string {
+	return "Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: " + id + "\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate."
+}
+
+// TestBackgroundLaunchAckCanonicalization proves the loop detector treats
+// identical background launches (whose acks embed a fresh shell ID each
+// time) as repeats, while ordinary results containing ID-like tokens still
+// hash raw.
+func TestBackgroundLaunchAckCanonicalization(t *testing.T) {
+	t.Run("same command, different ack IDs → same signature", func(t *testing.T) {
+		s1 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`,
+			"Background shell started with ID: 001\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.")
+		s2 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`,
+			"Background shell started with ID: 002\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.")
+		h1 := getToolInteractionSignature(s1.Response.Content)
+		h2 := getToolInteractionSignature(s2.Response.Content)
+		if h1 == "" {
+			t.Fatal("expected non-empty signature")
+		}
+		if h1 != h2 {
+			t.Errorf("distinct ack IDs produced different signatures; want identical")
+		}
+	})
+
+	t.Run("different input → different signature", func(t *testing.T) {
+		s1 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, ackOutput("001"))
+		s2 := makeToolStep("bash", `{"command":"sleep 301","run_in_background":true}`, ackOutput("001"))
+		if getToolInteractionSignature(s1.Response.Content) == getToolInteractionSignature(s2.Response.Content) {
+			t.Errorf("different commands produced identical signatures; want different")
+		}
+	})
+
+	t.Run("non-ack outputs with ID-like tokens hash raw", func(t *testing.T) {
+		// Ordinary results that merely contain ID-looking tokens must not be
+		// canonicalized.
+		s1 := makeToolStep("job", `{"i":1}`, "job 001 done")
+		s2 := makeToolStep("job", `{"i":2}`, "job 002 done")
+		if getToolInteractionSignature(s1.Response.Content) == getToolInteractionSignature(s2.Response.Content) {
+			t.Errorf("non-ack results differing in an ID token produced identical signatures; want different")
+		}
+		// A prefix-truncated ack is not a full match either.
+		trunc := ackOutput("001")
+		s3 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, trunc[:len(trunc)-5])
+		s4 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, trunc[:len(trunc)-6])
+		if getToolInteractionSignature(s3.Response.Content) == getToolInteractionSignature(s4.Response.Content) {
+			t.Errorf("truncated acks differing in an ID token produced identical signatures; want different")
+		}
+	})
+
+	t.Run("loop detected across distinct shell IDs", func(t *testing.T) {
+		// 6 identical background launches with distinct shell IDs (001..006)
+		// plus 4 unrelated tool steps; threshold 5 → detected.
+		steps := make([]fantasy.StepResult, 10)
+		for i := range 6 {
+			steps[i] = makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`,
+				ackOutput(fmt.Sprintf("%03d", i+1)))
+		}
+		for i := 6; i < 10; i++ {
+			steps[i] = makeToolStep("tool", fmt.Sprintf(`{"i":%d}`, i), fmt.Sprintf("result-%d", i))
+		}
+		result, detail := hasRepeatedToolCalls(steps, 10, 5)
+		if !result {
+			t.Fatal("expected detection of 6 identical background launches despite distinct shell IDs")
+		}
+		if detail.ToolName != "bash" {
+			t.Errorf("detail.ToolName = %q, want %q", detail.ToolName, "bash")
+		}
+		if detail.Count != 6 {
+			t.Errorf("detail.Count = %d, want 6", detail.Count)
+		}
+	})
+}

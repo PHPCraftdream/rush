@@ -13,11 +13,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -656,4 +658,32 @@ func idsOf(msgs []message.Message) []string {
 		ids[i] = m.ID
 	}
 	return ids
+}
+
+// TestSupervisionSummaryPaused_PutsGuidanceBeforePauseAnnouncement verifies
+// that when supervision is paused the guidance ("Inspect with batch_output,
+// or stop with batch_stop.") comes FIRST and the pause announcement comes
+// AFTER it. Reverting the order in supervision.go's paused branch (back to
+// prepending the pause sentence before the guidance) makes this test fail.
+func TestSupervisionSummaryPaused_PutsGuidanceBeforePauseAnnouncement(t *testing.T) {
+	t.Setenv("RUSH_BATCH_RUNTIME", "1")
+	leaf := newGatedLeaf("view")
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
+	releaseAllAt(t, leaf)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+
+	env.invokeDetached("call-super-pause", "view", leaf)
+	leaf.waitStarted(t, "call-super-pause")
+	defer leaf.letGo("call-super-pause")
+
+	require.True(t, coord.supervisionWorkOpen(env.sessionID), "the live gated root keeps the scope open")
+	text := coord.buildSupervisionSummaryAt(time.Now(), env.sessionID, 3, time.Minute, true)
+
+	guidance := "Inspect with batch_output, or stop with batch_stop."
+	paused := "Supervision is now paused after"
+	require.Contains(t, text, guidance, "guidance phrase present")
+	require.Contains(t, text, paused, "pause announcement present")
+	require.Less(t, strings.Index(text, guidance), strings.Index(text, paused),
+		"guidance must come before the pause announcement")
 }
