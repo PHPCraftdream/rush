@@ -390,8 +390,8 @@ func TestSessionsListCmdRun_BatchStatusAndJSON(t *testing.T) {
 }
 
 // TestSessionsShowCmdRun_BatchCounts: `sessions show` populates the
-// async_jobs_total/running fields from batch task counts (historical JSON
-// spellings retained) and adds batch_status/batch_roots.
+// batch_tasks_total/running fields from batch task counts and adds
+// batch_status/batch_roots.
 func TestSessionsShowCmdRun_BatchCounts(t *testing.T) {
 	tmp := isolateConfigEnvForTests(t)
 	workDir := t.TempDir()
@@ -423,16 +423,16 @@ func TestSessionsShowCmdRun_BatchCounts(t *testing.T) {
 		require.NoError(t, sessionsShowCmd.RunE(sessionsShowCmd, []string{sess.ID}))
 	})
 	var item struct {
-		ID               string `json:"id"`
-		Status           string `json:"status"`
-		AsyncJobsTotal   int    `json:"async_jobs_total"`
-		AsyncJobsRunning int    `json:"async_jobs_running"`
-		BatchRoots       int    `json:"batch_roots"`
-		BatchStatus      string `json:"batch_status"`
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		BatchTasksTotal   int    `json:"batch_tasks_total"`
+		BatchTasksRunning int    `json:"batch_tasks_running"`
+		BatchRoots        int    `json:"batch_roots"`
+		BatchStatus       string `json:"batch_status"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &item))
-	require.Equal(t, 2, item.AsyncJobsTotal, "two task nodes")
-	require.Equal(t, 2, item.AsyncJobsRunning, "both tasks running")
+	require.Equal(t, 2, item.BatchTasksTotal, "two task nodes")
+	require.Equal(t, 2, item.BatchTasksRunning, "both tasks running")
 	require.Equal(t, "live", item.BatchStatus)
 	require.Equal(t, 1, item.BatchRoots)
 }

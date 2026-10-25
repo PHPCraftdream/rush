@@ -2,7 +2,7 @@ package cmd
 
 // Real-DB coverage for `sessions show`'s batch work counts line: a session
 // with a running and a terminal task shows both counts (under the
-// historical async_jobs_total/running JSON spellings); a session with no
+// batch_tasks_total/running JSON fields); a session with no
 // batch work prints nothing extra.
 
 import (
@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSessionsShowCmdRun_AsyncJobCounts(t *testing.T) {
+func TestSessionsShowCmdRun_BatchTaskCounts(t *testing.T) {
 	tmp := isolateConfigEnvForTests(t)
 	workDir := t.TempDir()
 	orig, err := os.Getwd()
@@ -62,10 +62,10 @@ func TestSessionsShowCmdRun_AsyncJobCounts(t *testing.T) {
 	})
 	t.Logf("sessions show:\n%s", stdout)
 
-	require.Contains(t, stdout, "Async jobs:   2 total, 1 running")
+	require.Contains(t, stdout, "Batch tasks:  2 total, 1 running")
 }
 
-func TestSessionsShowCmdRun_NoAsyncJobsPrintsNothingExtra(t *testing.T) {
+func TestSessionsShowCmdRun_NoBatchTasksPrintsNothingExtra(t *testing.T) {
 	tmp := isolateConfigEnvForTests(t)
 	workDir := t.TempDir()
 	orig, err := os.Getwd()
@@ -91,5 +91,5 @@ func TestSessionsShowCmdRun_NoAsyncJobsPrintsNothingExtra(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		require.NoError(t, sessionsShowCmd.RunE(sessionsShowCmd, []string{sess.ID}))
 	})
-	require.NotContains(t, stdout, "Async jobs:")
+	require.NotContains(t, stdout, "Batch tasks:")
 }
