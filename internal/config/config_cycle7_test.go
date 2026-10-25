@@ -157,6 +157,7 @@ func TestCycle7StalenessTracksNegativeLookupAndMCPCandidates(t *testing.T) {
 }
 
 func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	isolateAllGlobalConfigPaths(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
@@ -251,6 +252,7 @@ func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
 }
 
 func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"options":{}}`), 0o600))

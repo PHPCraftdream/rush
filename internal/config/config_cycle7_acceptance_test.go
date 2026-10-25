@@ -13,6 +13,7 @@ import (
 )
 
 func TestCycle7LoadFinalVerifyRejectsProviderPhaseWrite(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	tests := []struct {
 		name    string
 		initial string

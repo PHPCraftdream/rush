@@ -464,6 +464,12 @@ func runForcedStaleSkippedInitialize(t *testing.T, single bool) {
 }
 
 func TestAdmissionRejectsDirectProjectRushSourceReplaceBeforePublication(t *testing.T) {
+	// Legacy JSON semantics: the test replaces the project rush.json source
+	// in place and requires the admission to observe the change. With Ktav
+	// auto-migration on, config.Load renames rush.json to rush.ktav, so the
+	// fixture must stay in the legacy format.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	runDirectAdmissionSourceMutation(t, false, false)
 }
 

@@ -33,6 +33,7 @@ func TestF8OAuthDiskTokenWinsExpiredMemoryUnderGlobalLock(t *testing.T) {
 }
 
 func TestF8OAuthRefreshCASPersistsFreshTokenUnderGlobalLock(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	_, dataDir := isolateAllGlobalConfigPaths(t)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
