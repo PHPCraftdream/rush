@@ -1010,7 +1010,10 @@ handle automatically, then follow its final report for anything it can't.
 > convert by hand, write the Ktav equivalent of the JSON content into
 > `rush.ktav` — never merely rename a `rush.json` to `rush.ktav` (a `.ktav`
 > file is decoded as Ktav, and JSON bytes under that name are an error with
-> no fallback). See [docs/ktav-config.md](./docs/ktav-config.md).
+> no fallback). If `rush.json` is a symbolic link (a dotfiles-managed
+> repository), migration publishes `rush.ktav` beside the link and removes
+> only the link — the physical target is left untouched and acts as the
+> backup (no `.bak`). See [docs/ktav-config.md](./docs/ktav-config.md).
 
 By default it operates on the current working directory (or `--cwd` if set)
 and always attempts the global/system locations above; `--recursive` walks
