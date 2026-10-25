@@ -105,6 +105,17 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool) (
 		workspaceDiscoveryPath = normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
 		workspacePath = normalizeReloadPath(workspaceDiscoveryPath)
 	}
+	// KTAV-4b (plan 4.2): convert legacy OAuth recovery journals for the
+	// slots the recovery workers are about to use, strictly BEFORE any
+	// worker starts (recoverOAuthJournalsAtLoad runs after loadOnce
+	// succeeds), under the same shared startup deadline. Gated on
+	// ktavAutoMigrate; failures defer with a warning and the JSON journal
+	// stays active. Library mode (sdk.ModeLibrary) never reaches Load, so
+	// it never runs any of this.
+	ktavMigrateOAuthJournalsAtStartup(ktavCtx, []string{
+		GlobalConfigData(),
+		filepath.Join(cfg.Options.DataDirectory, appName+".json"),
+	}, workingDir)
 
 	if debug {
 		cfg.Options.Debug = true
