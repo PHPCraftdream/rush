@@ -18,8 +18,9 @@ client, err := sdk.Open(ctx, sdk.Options{
 ```
 
 This is exactly what `rush run` does internally: `WorkingDir` is
-required, and Rush discovers and loads `rush.json` (project, workspace,
-global) and `.mcp.json` from it, the same way the CLI does. If
+required, and Rush discovers and loads `rush.ktav` (project, workspace,
+global — legacy `rush.json` is still read when no `rush.ktav` exists)
+and `.mcp.json` from it, the same way the CLI does. If
 `WorkingDir` doesn't exist yet, `Open` creates it — it stays a required
 parameter (there is no fallback to the process's own working directory
 or a temp directory), but the caller doesn't have to `mkdir` a
@@ -27,7 +28,7 @@ freshly-provisioned workspace by hand first.
 
 Use this mode when your host process manages a real, persistent project
 directory — the credentials, models, and tool settings all come from
-`rush.json` as usual. Opening an application-mode Client acquires an MCP
+`rush.ktav` (or legacy `rush.json`) as usual. Opening an application-mode Client acquires an MCP
 owner: the first client in the process takes the process-wide owner; a
 second concurrent application-mode `Open` reserves a standalone owner
 instead of failing, so two application-mode Clients coexist, each routing
@@ -61,9 +62,11 @@ client, err := sdk.Open(ctx, sdk.Options{
 
 `Options.Mode` defaults to `ModeApplication` (the zero value) — every
 existing caller that never sets `Mode` is completely unaffected.
-`ModeLibrary` skips config-file discovery entirely: no `rush.json`, no
-`.mcp.json`, no global config. Every provider and model role comes from
-`LibraryConfig` instead. `LibraryConfig.Models` must define at least the
+`ModeLibrary` skips config-file discovery entirely: no `rush.ktav`
+(or legacy `rush.json`), no `.mcp.json`, no global config. Library
+mode never reads or migrates disk config — only application mode
+discovers and loads `rush.ktav`/`rush.json`. Every provider and model
+role comes from `LibraryConfig` instead. `LibraryConfig.Models` must define at least the
 `smart` role; the others (`fast`, `worker`, `reviewer`) are optional.
 Library mode also calls `app.SkipMCP()`: it starts no MCP servers and does
 not acquire the process-wide MCP owner. It can therefore coexist with an
@@ -99,7 +102,7 @@ one another.
   real OS temp path, exactly what an ephemeral session promises not to
   touch.)
   There is no real working directory to point them at, so — unlike a
-  missing `rush.json` field silently falling back to a default — Rush
+  missing config field silently falling back to a default — Rush
   refuses to hand out tools whose only fallback would be the real host
   filesystem. If you need file access from an ephemeral session, opt in
   **per call** with `RunOverrides.FolderScopes` **and**
@@ -112,7 +115,8 @@ one another.
   disk.
 - **Given** → the directory is created if missing (same as application
   mode), and session data persists under `<WorkingDir>/.rush` — but
-  `rush.json` is still never read. `LibraryConfig` remains the only
+  no disk config (`rush.ktav` or legacy `rush.json`) is ever read, and
+  nothing is migrated. `LibraryConfig` remains the only
   config source; only the *persistence* differs from the ephemeral case.
   Because there **is** a real working directory here, the default
   toolset behaves exactly like application mode: file and command tools
@@ -126,7 +130,8 @@ are not loaded.
 ## `Run` vs `RunWithCredentials`
 
 `Client.Run` is the "normal" call: model and provider come from however
-the Client was opened (`rush.json` in application mode, `LibraryConfig`
+the Client was opened (`rush.ktav`, or legacy `rush.json`, in
+application mode; `LibraryConfig`
 in library mode).
 
 `Client.RunWithCredentials(ctx, req, creds)` is for genuine multi-tenant
