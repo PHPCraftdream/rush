@@ -29,10 +29,10 @@ var lockCmd = &cobra.Command{
 		if err := a.Store().LockSettings(scope, args[0]); err != nil {
 			return err
 		}
-		name, path := "global", config.GlobalConfigData()
+		name, path := "global", config.ActiveConfigFileName(config.GlobalConfigData())
 		if scope == config.ScopeWorkspace {
 			name = "local"
-			path = filepath.Join(a.Store().Config().Options.DataDirectory, "rush.json")
+			path = config.ActiveConfigFileName(filepath.Join(a.Store().Config().Options.DataDirectory, "rush.json"))
 		}
 		fmt.Printf("settings locked (%s) — %s\n", name, path)
 		fmt.Println("unlock with: rush unlock [--local] <password>   (or pass --password <password> to a command to change settings)")

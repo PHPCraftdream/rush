@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/spf13/cobra"
 )
 
@@ -577,6 +578,11 @@ func migrateDir(cmd *cobra.Command, oldDir string, dryRun bool, prefix string) (
 	// After the directory is renamed, check for the inner config at the new path.
 	innerConfigPath := filepath.Join(newDir, "crush.json")
 	newInnerConfigPath := filepath.Join(newDir, "rush.json")
+	// Dry-run only names the target; the real-run path goes through
+	// migrateFile, which derives the produced spelling from the same gate.
+	if config.KtavAutoMigrateEnabled() {
+		newInnerConfigPath = migrateKtavSibling(newInnerConfigPath)
+	}
 	configPrefix := formatPrefix(prefix, "(config inside migrated directory)")
 
 	// Check if the legacy inner config exists (at new path after rename, or old path in dry-run).
@@ -594,9 +600,10 @@ func migrateDir(cmd *cobra.Command, oldDir string, dryRun bool, prefix string) (
 
 	// In dry-run mode, report the migration with the correct target path.
 	if dryRun {
-		// Check for conflict with target file in the new directory.
-		if _, err := os.Stat(newInnerConfigPath); err == nil {
-			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, legacyInnerConfig, newInnerConfigPath)
+		// Check for conflict with either spelling of the target file in the
+		// new directory.
+		if existing := migrateExistingInnerConfig(newDir); existing != "" {
+			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, legacyInnerConfig, existing)
 			return dirStatus, statusRefused, newDir
 		}
 		cmd.Printf("would rename %s%s  ->  %s\n", configPrefix, legacyInnerConfig, newInnerConfigPath)
@@ -609,6 +616,40 @@ func migrateDir(cmd *cobra.Command, oldDir string, dryRun bool, prefix string) (
 	return dirStatus, innerStatus, newDir
 }
 
+// migrateKtavSibling returns the Ktav spelling of a legacy JSON config path:
+// same directory, same base name, ".json" replaced with ".ktav". This mirrors
+// config's unexported ktavSiblingOf; migrate constructs the sibling locally
+// rather than reaching into unexported config internals.
+func migrateKtavSibling(legacyJSON string) string {
+	return strings.TrimSuffix(legacyJSON, ".json") + ".ktav"
+}
+
+// migrateIsKtavConfigPath reports whether path names a Ktav-format config
+// file: a case-insensitive ".ktav" extension, matching how config itself
+// classifies Ktav paths (isKtavConfigPath) so both sides agree on which
+// files carry Ktav bytes.
+func migrateIsKtavConfigPath(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".ktav")
+}
+
+// migrateExistingInnerConfig returns whichever spelling of a migrated inner
+// config (rush.json or its rush.ktav sibling) already exists inside dir, or
+// "" when neither does. Destination-conflict detection must treat EITHER
+// spelling as an occupied slot: writing rush.json while rush.ktav is the
+// active file (or vice versa) would create a second config copy the app —
+// which selects exactly one slot — would silently ignore.
+func migrateExistingInnerConfig(dir string) string {
+	legacy := filepath.Join(dir, "rush.json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	ktav := migrateKtavSibling(legacy)
+	if _, err := os.Stat(ktav); err == nil {
+		return ktav
+	}
+	return ""
+}
+
 // migrateFile migrates a single crush.json file to rush.json.
 // Returns the status and the new file path (or empty if not migrated).
 func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string) (migrateStatus, string) {
@@ -617,20 +658,30 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 		return statusNone, ""
 	}
 
-	// Build the new file path.
+	// Build the new file path. The produced spelling follows the same gate
+	// config's writeTargetSlot applies to created config files: rush.ktav
+	// when newly created config files default to the Ktav format, rush.json
+	// otherwise. crush.json itself is only ever an INPUT — it is never
+	// written back under its legacy name.
 	parent := filepath.Dir(oldFile)
 	base := filepath.Base(oldFile)
 	var newFile string
 	if base == "crush.json" {
 		newFile = filepath.Join(parent, "rush.json")
+		if config.KtavAutoMigrateEnabled() {
+			newFile = migrateKtavSibling(newFile)
+		}
 	} else {
 		// Unexpected file name - this shouldn't happen in normal use.
 		return statusFailed, ""
 	}
 
-	// Check for conflict: new file already exists.
-	if _, err := os.Stat(newFile); err == nil {
-		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), oldFile, newFile)
+	// Check for conflict: EITHER spelling of the target slot already
+	// exists. The conflict message names the file that is actually there,
+	// so the user is told the true occupied path rather than the spelling
+	// this run would have produced.
+	if existing := migrateExistingInnerConfig(parent); existing != "" {
+		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), oldFile, existing)
 		return statusRefused, ""
 	}
 
@@ -803,7 +854,16 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 	}
 
 	if !changed {
-		return statusNone
+		// A Ktav-format target must always carry Ktav bytes, even when no
+		// legacy VALUE needed rewriting: the document was just renamed from
+		// a JSON spelling and would otherwise be JSON content in a .ktav
+		// file. Gate off, reportAs never spells .ktav, so this forced pass
+		// never triggers today.
+		if migrateIsKtavConfigPath(reportAs) {
+			changed = true
+		} else {
+			return statusNone
+		}
 	}
 
 	if dryRun {
@@ -825,7 +885,19 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
 		return statusFailed
 	}
-	newRaw = append(newRaw, '\n')
+	if migrateIsKtavConfigPath(reportAs) {
+		// Ktav target: write the document through the codec layer, replacing
+		// the JSON bytes (including their trailing newline, which belongs to
+		// the JSON spelling only) with the converted Ktav document.
+		converted, convErr := ktavcodec.ConvertJSONToKtav(newRaw)
+		if convErr != nil {
+			cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, convErr)
+			return statusFailed
+		}
+		newRaw = converted
+	} else {
+		newRaw = append(newRaw, '\n')
+	}
 
 	// Preserve the target's existing permission bits where practical (this
 	// file's own writes elsewhere - e.g. in tests seeding fixtures - use
