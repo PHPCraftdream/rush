@@ -389,7 +389,14 @@ func loadKtavMigrationRecord(recordPath, legacy, dest, workingDir string) (*ktav
 	if err := json.Unmarshal(recordBytes, &record); err != nil {
 		return nil, fmt.Errorf("%w: unreadable migration record %s", errKtavMigrationRecord, filepath.Base(recordPath))
 	}
-	if record.Version != ktavMigrationRecordVersion || record.Source != filepath.Base(legacy) || record.Destination != filepath.Base(dest) || record.Backup != filepath.Base(backupPathFor(legacy)) || record.SourceID == "" || record.ParentID == "" || !validKtavMigrationDigest(record.SourceDigest) || !validKtavMigrationDigest(record.StagedDigest) || recordFP.parentIdentity != configParentIdentity(recordPath) || !recordFP.identity.valid || recordFP.parentIdentity != configParentIdentity(legacy) {
+	// On Windows configParentIdentity resolves a symlinked leaf through
+	// physicalWindowsConfigPath, so for a Symlink-marked record the legacy
+	// path's parent anchor is the link TARGET's directory, not the directory
+	// holding the link. Symlink records are pinned to the LINK directory by
+	// the recordPath anchor above; the legacy-parent clause applies only to
+	// regular (non-symlink) records.
+	legacyParentAnchored := recordFP.parentIdentity == configParentIdentity(legacy)
+	if record.Version != ktavMigrationRecordVersion || record.Source != filepath.Base(legacy) || record.Destination != filepath.Base(dest) || record.Backup != filepath.Base(backupPathFor(legacy)) || record.SourceID == "" || record.ParentID == "" || !validKtavMigrationDigest(record.SourceDigest) || !validKtavMigrationDigest(record.StagedDigest) || recordFP.parentIdentity != configParentIdentity(recordPath) || !recordFP.identity.valid || (!record.Symlink && !legacyParentAnchored) {
 		return nil, fmt.Errorf("%w: migration record %s is malformed or bound to a different slot", errKtavMigrationRecord, filepath.Base(recordPath))
 	}
 	return &record, nil

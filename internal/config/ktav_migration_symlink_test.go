@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
@@ -220,4 +221,78 @@ func TestKtavSymlinkMigrationCrashRecovery(t *testing.T) {
 	persisted, err = os.ReadFile(physical)
 	require.NoError(t, err)
 	require.Equal(t, original, persisted)
+}
+
+// TestKtavSymlinkRecordParentAnchor pins the invariant that a
+// Symlink-marked migration record loads even when the legacy path's parent
+// identity diverges from the record path's parent identity, which happens
+// on Windows where configParentIdentity resolves a symlinked leaf through
+// physicalWindowsConfigPath and therefore reports the link TARGET's
+// directory, not the directory holding the link.
+//
+// Mutation: dropping the `!record.Symlink &&` gate in loadKtavMigrationRecord
+// re-enables the legacy-parent clause and this test fails on Windows
+// (CI-proven failure mode: "malformed or bound to a different slot"); it
+// stays green on POSIX, where the two parents coincide. Mutation: making
+// Windows configParentIdentity stop resolving the leaf link flips `diverged`
+// to false on Windows and the require.True fails — the test then documents
+// that the skip is redundant, not that it is wrong.
+func TestKtavSymlinkRecordParentAnchor(t *testing.T) {
+	enableKtavAutoMigrateForTest(t)
+	_, _ = isolateAllGlobalConfigPaths(t)
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	original := []byte(`{"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}},"options":{"disable_default_providers":true}}`)
+	physical := filepath.Join(dir, "dotfiles", "config.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(physical), 0o755))
+	require.NoError(t, os.WriteFile(physical, original, 0o600))
+	logical := filepath.Join(dir, "rush.json")
+	if err := os.Symlink(physical, logical); err != nil {
+		t.Skipf("logical rush.json symlink unavailable: %v", err)
+	}
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(original)
+	require.NoError(t, err)
+	ktavPath := ktavSiblingOf(logical)
+	require.NoError(t, os.WriteFile(ktavPath, ktavBytes, 0o600))
+	_, sourceFP, err := readStableConfigFileOwned(logical, 0, false)
+	require.NoError(t, err)
+	record := ktavMigrationRecord{
+		Version:      ktavMigrationRecordVersion,
+		Source:       filepath.Base(logical),
+		Destination:  filepath.Base(ktavPath),
+		Backup:       filepath.Base(backupPathFor(logical)),
+		SourceDigest: hex.EncodeToString(sourceFP.digest[:]),
+		StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)),
+		SourceID:     fmt.Sprintf("%v", sourceFP.identity),
+		ParentID:     fmt.Sprintf("%v", sourceFP.parentIdentity),
+		Symlink:      true,
+	}
+	recordBytes, err := json.Marshal(record)
+	require.NoError(t, err)
+	recordPath := migrationRecordPathFor(logical)
+	require.NoError(t, os.WriteFile(recordPath, append(recordBytes, '\n'), 0o600))
+
+	// Hand-trace (first assertion is require.NoError from
+	// loadKtavMigrationRecord) on the WINDOWS path: recordFP.parentIdentity
+	// is the identity of dir/ (the record is a regular file beside the
+	// link), configParentIdentity(recordPath) is also dir/ — the recordPath
+	// anchor passes. The legacy clause is skipped because record.Symlink is
+	// true, so the link-target divergence (configParentIdentity(logical)
+	// resolves through the leaf to dotfiles/) cannot reject the record.
+	// On POSIX configParentIdentity(logical) is lexically dir/, so the
+	// legacy clause would also pass — the test is green on both OSes.
+	loaded, err := loadKtavMigrationRecord(recordPath, logical, ktavPath, dir)
+	require.NoError(t, err)
+	require.True(t, loaded.Symlink)
+
+	// Pin the OS divergence explicitly: on Windows the symlinked legacy
+	// leaf resolves to the target's directory, diverging from the record
+	// (link) directory; on POSIX both are lexically dir/.
+	diverged := configParentIdentity(logical) != configParentIdentity(recordPath)
+	if runtime.GOOS == "windows" {
+		require.True(t, diverged, "configParentIdentity of a symlinked legacy path must resolve through the leaf on Windows — the Symlink skip in loadKtavMigrationRecord is load bearing")
+	} else {
+		require.False(t, diverged)
+	}
 }
