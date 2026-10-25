@@ -242,6 +242,8 @@ func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
 }
 
 func TestWindowsConfigSymlinkAliasInDifferentDirectoryPublishesToTarget(t *testing.T) {
+	// Legacy rush.json symlink alias; with the gate on the write targets rush.ktav.
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	root := t.TempDir()
 	targetDir := filepath.Join(root, "target")
 	aliasDir := filepath.Join(root, "alias")

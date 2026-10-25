@@ -1,0 +1,45 @@
+name: ktav-fulltest
+# Temporary diagnostic (remove before merge): the Ktav activation touches the
+# default of a gate that many tests load through, and the regular `build`
+# jobs run with -failfast (one failure per package hides the rest). This runs
+# every Go package once, without -failfast, and uploads the full log.
+on:
+  pull_request:
+    paths:
+      - .github/ktav-fulltest.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ktav-fulltest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fulltest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go test ./... -short (no failfast)
+        shell: bash
+        run: |
+          set +e
+          go test -short -count=1 -p 2 -timeout 40m ./... 2>&1 | tee fulltest.txt
+          exit 0
+      - name: failure summary
+        if: always()
+        shell: bash
+        run: |
+          grep -E '^(--- FAIL|FAIL|panic:)' fulltest.txt | sort | uniq -c | head -200 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: fulltest
+          path: fulltest.txt

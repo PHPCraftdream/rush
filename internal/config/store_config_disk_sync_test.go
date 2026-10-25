@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
 	"go.uber.org/goleak"
@@ -747,12 +748,22 @@ func TestReloadRejectsUnsignedModelsEdit(t *testing.T) {
 
 	// Hand edit: change the model id AND adopt an unrelated options field,
 	// leaving the original cache_rev untouched (stale signature).
-	raw := string(fileBytes(t, configPath))
-	edited, err := sjson.Set(raw, "models.smart.model", "hacked")
+	// The edit targets the ACTIVE generation: with the gate on Load has
+	// already migrated rush.json to rush.ktav, and an edit of the retained
+	// rush.json would be ignored.
+	active := selectConfigSlot(configPath)
+	rawJSON, err := decodeConfigDocument(active, fileBytes(t, active))
+	require.NoError(t, err)
+	edited, err := sjson.Set(string(rawJSON), "models.smart.model", "hacked")
 	require.NoError(t, err)
 	edited, err = sjson.Set(edited, "options.debug", true)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(configPath, []byte(edited), 0o600))
+	out := []byte(edited)
+	if isKtavConfigPath(active) {
+		out, err = ktavcodec.ConvertJSONToKtav(out)
+		require.NoError(t, err)
+	}
+	require.NoError(t, os.WriteFile(active, out, 0o600))
 
 	require.NoError(t, s.ReloadFromDisk(context.Background()))
 	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model,
