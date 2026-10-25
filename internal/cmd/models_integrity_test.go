@@ -125,6 +125,7 @@ func TestModelsIntegrityCmd_SessionsListAborts(t *testing.T) {
 // on stderr and proceed; the JSON payload flags edited_directly only on
 // failure, and a clean store stays silent both ways.
 func TestModelsIntegrityCmd_ModelsStateWarns(t *testing.T) {
+	ktavGateOn(t)
 	warning := "warning: the model settings were changed outside the rush models commands"
 
 	globalPath := isolatedModelsEnv(t)
@@ -192,6 +193,7 @@ func TestModelsIntegrityCmd_ModelsUseRepairs(t *testing.T) {
 // with a settings lock is treated as tampering by setupApp, while
 // setupAppLite still proceeds.
 func TestModelsIntegrityCmd_LockedMissingKeyAborts(t *testing.T) {
+	ktavGateOn(t)
 	globalPath := isolatedModelsEnv(t)
 	seedLockedModelsMissingRev(t, globalPath)
 
