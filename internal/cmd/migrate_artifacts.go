@@ -478,21 +478,20 @@ func migrateGlobalLocation(cmd *cobra.Command, legacyPath, currentPath string, d
 		return statusRenamed, statusNone, 0, 0, 0
 	}
 
-	if err := os.Rename(legacyPath, writePath); err != nil {
+	// Gate on: convert the legacy JSON document to the Ktav format the
+	// produced slot spelling expects, writing rush.ktav (or the ktav
+	// spelling of currentPath) first and only removing the legacy source
+	// once the converted bytes are on disk - a failure leaves crush.json in
+	// place. Gate off keeps today's plain rename untouched.
+	if config.KtavAutoMigrateEnabled() {
+		if st := migrateToKtavTarget(cmd, legacyPath, writePath, prefix); st != statusRenamed {
+			return st, statusNone, 0, 0, 0
+		}
+	} else if err := os.Rename(legacyPath, writePath); err != nil {
 		cmd.Printf("failed to rename %s%s  ->  %s: %v\n", formatPrefix(prefix), legacyPath, writePath, err)
 		return statusFailed, statusNone, 0, 0, 0
-	}
-
-	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, writePath)
-
-	// Gate on: the just-renamed document is still JSON-shaped; convert it
-	// to the Ktav format the produced slot spelling expects (the rewrite
-	// always converts when the target spells .ktav). Gate off keeps today's
-	// rename-only behavior untouched.
-	if config.KtavAutoMigrateEnabled() {
-		if rewriteStatus := rewriteLegacyConfigContent(cmd, writePath, writePath, dryRun, prefix); rewriteStatus == statusFailed {
-			return statusFailed, statusNone, 0, 0, 0
-		}
+	} else {
+		cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, writePath)
 	}
 
 	// Check if legacy directory is now empty.

@@ -37,6 +37,8 @@ func TestLock_KtavSlotFileNameInOutput(t *testing.T) {
 	defer restore()
 
 	t.Run("gate_off_no_ktav_names_rush_json", func(t *testing.T) {
+		// NOT parallel: ktavIsolateGlobalEnv uses t.Setenv.
+		ktavIsolateGlobalEnv(t) // last write wins: fills HOME/USERPROFILE gaps
 		_, workspace, dataDir := isolateLockEnv(t)
 		out, _, err := runLockTree(t, workspace, dataDir, "lock", "--local", "pw")
 		require.NoError(t, err)
@@ -59,6 +61,7 @@ func TestLock_KtavSlotFileNameInOutput(t *testing.T) {
 			})
 			return
 		}
+		ktavIsolateGlobalEnv(t) // last write wins: fills HOME/USERPROFILE gaps
 		_, workspace, dataDir := isolateLockEnv(t)
 		ktavDoc, err := ktavcodec.ConvertJSONToKtav([]byte(lockKtavFixtureJSON))
 		require.NoError(t, err)

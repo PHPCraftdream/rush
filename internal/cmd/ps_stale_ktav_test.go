@@ -30,6 +30,7 @@ import (
 // it (the Ktav sibling is selected and decoded).
 func TestReadPsSlotsKtavSlotSelected(t *testing.T) {
 	// NOT parallel: psIsolateEnv uses t.Setenv, which forbids t.Parallel.
+	ktavIsolateGlobalEnv(t) // last write wins: fills HOME/USERPROFILE gaps
 	_, dataDir := psIsolateEnv(t)
 	jsonDoc := []byte(`{"models":{"smart":{"provider":"p1","model":"m1"},"fast":{"provider":"p2","model":"m2"}}}`)
 	ktavDoc, err := ktavcodec.ConvertJSONToKtav(jsonDoc)
@@ -45,6 +46,7 @@ func TestReadPsSlotsKtavSlotSelected(t *testing.T) {
 // TestReadPsSlotsBothPresentKtavWins seeds both spellings with different
 // values and asserts the Ktav document wins.
 func TestReadPsSlotsBothPresentKtavWins(t *testing.T) {
+	ktavIsolateGlobalEnv(t)
 	_, dataDir := psIsolateEnv(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"),
 		[]byte(`{"models":{"smart":{"provider":"json-p","model":"json-m"}}}`), 0o644))
@@ -61,6 +63,7 @@ func TestReadPsSlotsBothPresentKtavWins(t *testing.T) {
 // isolated GlobalConfigData location: the light reader fails closed and
 // readPsSlots must degrade to known=false.
 func TestReadPsSlotsBackupOnlyUnknown(t *testing.T) {
+	ktavIsolateGlobalEnv(t)
 	_, dataDir := psIsolateEnv(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json.bak"),
 		[]byte(`{"models":{"smart":{"provider":"p","model":"m"}}}`), 0o644))
@@ -73,6 +76,7 @@ func TestReadPsSlotsBackupOnlyUnknown(t *testing.T) {
 // TestReadPsSlotsJSONUnchanged pins the pre-Ktav behavior for a plain
 // rush.json, including the empty-model guard.
 func TestReadPsSlotsJSONUnchanged(t *testing.T) {
+	ktavIsolateGlobalEnv(t)
 	_, dataDir := psIsolateEnv(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"),
 		[]byte(`{"models":{"smart":{"provider":"p","model":"m"},"fast":{"provider":"q","model":""}}}`), 0o644))

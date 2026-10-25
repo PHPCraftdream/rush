@@ -1,22 +1,26 @@
 package sdk_test
 
-// KTAV-4b SDK chunk: application mode must DISCOVER rush.ktav. sdk.go's
-// openApplication reads configuration exclusively through config.Init
-// (sdk/sdk.go, `store, err := config.Init(...)`), and config.Init's slot
-// discovery selects <legacy>.ktav over <legacy>.json, so a workspace
-// holding ONLY rush.ktav must be served exactly like one holding
-// rush.json — with no hardcoded rush.json read or write anywhere in the
-// SDK Open path (verified by grep before this test was written).
+// KTAV-4b SDK chunk: application mode must DISCOVER rush.ktav — and it
+// must prefer rush.ktav over rush.json. sdk.go's openApplication reads
+// configuration exclusively through config.Init (sdk/sdk.go,
+// `store, err := config.Init(...)`), and config.Init's slot discovery
+// selects <legacy>.ktav over <legacy>.json.
 //
-// The fixture writes a rush.ktav (Ktav-encoded via ktavcodec, converted
-// from the same JSON shape every other sdk test uses, because config.Load
-// fails with "no custom providers" when default providers are disabled)
-// and NOTHING else, opens an application-mode client, and asserts the
-// run is served by the rush.ktav-selected provider.
+// To prove the PREFERENCE (not merely tolerance), the workspace is
+// seeded with BOTH spellings pointing at DIFFERENT providers:
+//
+//   - rush.ktav  -> provider A (serverA, marker KTAV_DISCOVERY_OK, key A)
+//   - rush.json  -> provider B (serverB, marker JSON_MUST_LOSE,  key B)
+//
+// If discovery selected rush.json, the run would carry B's marker, hit
+// serverB, and authenticate with B's key. The assertions below pin that
+// the run is served by provider A only: A's marker text, A's Bearer
+// key, and serverB.totalRequests()==0.
 
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,53 +31,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOpenApplicationModeDiscoversRushKtav pins that application mode
-// discovers and serves runs from a rush.ktav-only workspace.
-func TestOpenApplicationModeDiscoversRushKtav(t *testing.T) {
-	isolateGlobalConfigForWorkdirTest(t)
+// TestOpenApplicationModePrefersRushKtavOverRushJSON pins that
+// application mode discovers rush.ktav IN PREFERENCE to rush.json.
+func TestOpenApplicationModePrefersRushKtavOverRushJSON(t *testing.T) {
+	// Uses t.Setenv (via ktavIsolateSDKGlobalEnv) — NOT parallel.
+	ktavIsolateSDKGlobalEnv(t)
 
 	// Canonical temp dir (Windows: 8.3-short-name-safe, symlink-resolved).
 	realTmp, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
-	workDir := filepath.Join(realTmp, "ktav-only-workspace")
+	workDir := filepath.Join(realTmp, "ktav-vs-json-workspace")
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 
-	server := newCredentialServer(t, "KTAV_DISCOVERY_OK")
+	serverA := newCredentialServer(t, "KTAV_DISCOVERY_OK")
+	serverB := newCredentialServer(t, "JSON_MUST_LOSE")
 
-	rushJSON := []byte(`{
+	providerJSON := func(serverURL, apiKey string) []byte {
+		return []byte(`{
   "disable_default_providers": true,
   "providers": {
-    "ktav-provider": {
-      "id": "ktav-provider",
-      "name": "ktav-provider",
+    "probe-provider": {
+      "id": "probe-provider",
+      "name": "probe-provider",
       "type": "openai-compat",
-      "base_url": "` + server.srv.URL + `",
-      "api_key": "ktav-key",
+      "base_url": "` + serverURL + `",
+      "api_key": "` + apiKey + `",
       "discover_models": false,
       "models": [
-        {"id": "ktav-model", "name": "ktav-model", "context_window": 200000, "default_max_tokens": 1000}
+        {"id": "probe-model", "name": "probe-model", "context_window": 200000, "default_max_tokens": 1000}
       ]
     }
   },
   "models": {
-    "smart": {"provider": "ktav-provider", "model": "ktav-model"},
-    "fast": {"provider": "ktav-provider", "model": "ktav-model"}
+    "smart": {"provider": "probe-provider", "model": "probe-model"},
+    "fast": {"provider": "probe-provider", "model": "probe-model"}
   }
 }`)
-	ktavBytes, err := ktavcodec.ConvertJSONToKtav(rushJSON)
+	}
+
+	// rush.ktav holds provider A (serverA); rush.json holds provider B.
+	ktavJSON := providerJSON(serverA.srv.URL, "keyA")
+	jsonJSON := providerJSON(serverB.srv.URL, "keyB")
+
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(ktavJSON)
 	require.NoError(t, err, "fixture JSON must convert to Ktav")
 	require.NotEmpty(t, ktavBytes)
-	// The workspace holds ONLY rush.ktav — no rush.json anywhere.
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "rush.ktav"), ktavBytes, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "rush.json"), jsonJSON, 0o600))
 
-	// Pin the slot selection the config package exposes: with only
-	// rush.ktav on disk, the logical rush.json slot resolves to rush.ktav.
+	// Pin the slot selection the config package exposes: with both
+	// spellings on disk, the logical rush.json slot resolves to rush.ktav.
 	require.Equal(t,
 		filepath.Join(workDir, "rush.ktav"),
 		filepath.Clean(config.ActiveConfigFileName(filepath.Join(workDir, "rush.json"))))
 
 	client, err := sdk.Open(context.Background(), sdk.Options{WorkingDir: workDir})
-	require.NoError(t, err, "application mode must load a rush.ktav-only workspace")
+	require.NoError(t, err, "application mode must load a rush.ktav+ rush.json workspace")
 	require.NotNil(t, client)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -87,16 +100,30 @@ func TestOpenApplicationModeDiscoversRushKtav(t *testing.T) {
 	res, runErr := client.Run(context.Background(), req)
 	require.NoError(t, runErr, "run failed (output %q)", buf.String())
 	require.Equal(t, "KTAV_DISCOVERY_OK", res.FinalText,
-		"the run must be served by the rush.ktav-selected provider")
+		"the run must be served by the rush.ktav provider (A), not the rush.json provider (B)")
 
-	// Every provider request went to the rush.ktav provider, with its key.
-	require.NotEmpty(t, server.hits(), "the rush.ktav-selected provider must receive the request")
-	for auth := range server.hits() {
-		require.Equal(t, "Bearer ktav-key", auth)
+	// Every provider request went to the rush.ktav provider, with key A.
+	require.NotEmpty(t, serverA.hits(),
+		"the rush.ktav-selected provider must receive the request")
+	for auth := range serverA.hits() {
+		require.Equal(t, "Bearer keyA", auth)
 	}
 
-	// No legacy rush.json may be synthesized by discovery.
-	_, statErr := os.Stat(filepath.Join(workDir, "rush.json"))
-	require.ErrorIs(t, statErr, os.ErrNotExist,
-		"discovering rush.ktav must not materialize a rush.json")
+	// The rush.json provider was never contacted: discovery selected
+	// rush.ktav, not rush.json.
+	require.Equal(t, 0, serverB.totalRequests(),
+		"rush.json provider must receive zero requests when rush.ktav is present")
+
+	// rush.json was not rewritten or migrated by discovery.
+	got, readErr := os.ReadFile(filepath.Join(workDir, "rush.json"))
+	require.NoError(t, readErr)
+	require.Equal(t, string(jsonJSON), string(got),
+		"discovering rush.ktav must not rewrite the rush.json")
+
+	// No migration artifacts may appear either.
+	for _, forbidden := range []string{"rush.json.bak", "rush.json.ktav-migration", "rush.ktav.bak", "rush.ktav.ktav-migration"} {
+		_, statErr := os.Stat(filepath.Join(workDir, forbidden))
+		require.ErrorIs(t, statErr, os.ErrNotExist,
+			fmt.Sprintf("%s must not appear", forbidden))
+	}
 }
