@@ -20,12 +20,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// auditLegacyAbsentRuleStatus is the stable wording for the unfinished_jobs
-// rule when the batch runtime is on and the legacy async_jobs table is
-// absent: the rule is reported as not applicable with its reason, never
-// silently disabled and never passed off as having run.
-const auditLegacyAbsentRuleStatus = "n/a (legacy table absent, batch runtime on)"
-
 // auditBatchRuleBatchStatus is the rule status when the flag is on and the
 // rule counts batch facts (with or without the legacy table present).
 const auditBatchRuleBatchStatus = "counted from batch_nodes (batch runtime on)"
@@ -108,22 +102,16 @@ type auditBatchSessionJSON struct {
 // auditBatchReport is the additive batch block of one audited database. It
 // is present in --json only when the batch runtime flag is on.
 type auditBatchReport struct {
-	// UnfinishedJobsRule says what the unfinished_jobs rule counted and,
-	// when the legacy table is absent, why it is not applicable.
-	UnfinishedJobsRule    string                           `json:"unfinished_jobs_rule"`
-	LegacyAsyncJobsAbsent bool                             `json:"legacy_async_jobs_absent"`
-	Sessions              map[string]auditBatchSessionJSON `json:"sessions"`
+	// UnfinishedJobsRule says what the unfinished_jobs rule counted from.
+	UnfinishedJobsRule string                           `json:"unfinished_jobs_rule"`
+	Sessions           map[string]auditBatchSessionJSON `json:"sessions"`
 }
 
 // report renders the scan into the additive JSON block.
-func (s *auditBatchScan) report(legacyAbsent bool) *auditBatchReport {
+func (s *auditBatchScan) report() *auditBatchReport {
 	out := &auditBatchReport{
-		UnfinishedJobsRule:    auditBatchRuleBatchStatus,
-		LegacyAsyncJobsAbsent: legacyAbsent,
-		Sessions:              map[string]auditBatchSessionJSON{},
-	}
-	if legacyAbsent {
-		out.UnfinishedJobsRule = auditLegacyAbsentRuleStatus
+		UnfinishedJobsRule: auditBatchRuleBatchStatus,
+		Sessions:           map[string]auditBatchSessionJSON{},
 	}
 	if s == nil {
 		return out

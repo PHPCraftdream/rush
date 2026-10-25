@@ -78,11 +78,8 @@ func (f batchSessionFacts) awaitingAnswer() bool {
 
 // renderBatchQuestionNote prints the awaiting-answer section of `sessions
 // why`: the generic conservative note plus, when the bound notice's frame
-// parsed, the child that asked and how the orchestrating agent answers.
-// The legacy render's operator relay line (`rush sessions inject <owner>`,
-// shown when no live driver existed) is NOT reproduced: which relay command
-// applies to a batch question is not decided (OPERATOR-SIGNOFF NEEDED); the
-// renderer states the in-process answer path instead.
+// parsed, the child that asked and how the orchestrating agent answers it
+// in-process via the inject_agent tool (no operator relay line).
 func renderBatchQuestionNote(f batchSessionFacts, out io.Writer) {
 	if !f.HasQuestion {
 		return
@@ -92,7 +89,7 @@ func renderBatchQuestionNote(f batchSessionFacts, out io.Writer) {
 		return
 	}
 	fmt.Fprintf(out, "  waiting for your answer: child %s asked: %s\n", f.QuestionChildID, f.QuestionText)
-	fmt.Fprintf(out, "  answer: the orchestrating agent must call `agent` with resume_session_id=%q and its answer as prompt.\n", f.QuestionChildID)
+	fmt.Fprintf(out, "  answer: the orchestrating agent must call `inject_agent` with child_session_id=%q and its answer as message.\n", f.QuestionChildID)
 }
 
 func (f *batchSessionFacts) addRoot(r batchRootFact) {

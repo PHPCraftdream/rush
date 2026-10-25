@@ -59,8 +59,8 @@ func TestExplainSessionStatus_BatchPublishedQuestionNamesChildAndResume(t *testi
 		"the batch-published question text must be quoted (fillBatchQuestionFromPending path: the question is unbound, so the per-root bound query never sees it)")
 	require.Contains(t, out, "waiting for your answer: child "+child.ID+" asked:",
 		"the asking child must be named")
-	require.Contains(t, out, "resume_session_id=\""+child.ID+"\"",
-		"the resume line must name the child session")
+	require.Contains(t, out, "child_session_id=\""+child.ID+"\"",
+		"the inject_agent answer path must name the child session")
 	require.Contains(t, out, "status: batch live",
 		"the held delegation keeps the verdict live")
 	require.NotContains(t, out, "status: at rest")

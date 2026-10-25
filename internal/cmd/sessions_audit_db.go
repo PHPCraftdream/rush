@@ -128,7 +128,7 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 	if err != nil {
 		return report, fmt.Errorf("read batch facts of %s: %w", dataDir, err)
 	}
-	report.Batch = batch.report(!schema.HasAsyncJobs)
+	report.Batch = batch.report()
 	findings, err := auditFindings(ctx, db, schema, ids, since, batch)
 	if err != nil {
 		return report, err
