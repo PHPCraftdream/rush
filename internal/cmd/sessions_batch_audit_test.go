@@ -2,9 +2,10 @@ package cmd
 
 // R12-B part 3 coverage: `rush sessions audit` counts batch facts through
 // the R10a live reader and the R10c BatchHistoryStateCounts query over its
-// own read-only handle, and the ABSENT legacy async_jobs table (the only
-// state a store-v1 database can be in) is a REPORTED normal state — never a
-// silently disabled rule. Fixtures are real migrated databases (db.Connect
+// own read-only handle; the ABSENT legacy async_jobs table (the only
+// state a store-v1 database can be in) is never read — the unfinished_jobs
+// rule counts from batch_nodes with a stable status, never a silently
+// disabled rule. Fixtures are real migrated databases (db.Connect
 // on a temp dir, never :memory:) seeded through session.BatchStore.Reserve
 // with a kind=batch root and task children.
 
@@ -35,10 +36,10 @@ func seedBatchAuditDB(t *testing.T, id string) (dataDir, sessionID string, f bat
 }
 
 // TestSessionsAudit_MissingLegacyTableReported is the flagship
-// case: a store-v1 database has no async_jobs table at all. The audit must still
-// run, must NOT silently disable unfinished_jobs, must report the legacy
-// table's absence with the stable wording, and must count the seeded batch
-// nodes (state distribution, held root, task counts).
+// case: a store-v1 database has no async_jobs table at all. The audit must
+// still run, must NOT silently disable unfinished_jobs, and must count the
+// seeded batch nodes from batch_nodes with the stable rule status (state
+// distribution, held root, task counts).
 //
 // Static-trace: db.Connect ran the real migrations (batch_nodes present, so
 // the schema guard passes); the audit's PRAGMA table_info probe sees no
@@ -52,8 +53,8 @@ func TestSessionsAudit_MissingLegacyTableReported(t *testing.T) {
 	t.Logf("audit of a legacy-free store:\n%s", stdout)
 
 	// The rule is reported, not silently disabled and not an error.
-	require.Contains(t, stdout, auditLegacyAbsentRuleStatus,
-		"the missing legacy table must be reported with the stable wording")
+	require.Contains(t, stdout, auditBatchRuleBatchStatus,
+		"the rule must count from batch_nodes with the stable status")
 	require.NotContains(t, stdout, "unrecognized schema",
 		"a missing optional legacy table is not a schema issue")
 
@@ -66,8 +67,7 @@ func TestSessionsAudit_MissingLegacyTableReported(t *testing.T) {
 	require.Len(t, reports, 1)
 	require.NotNil(t, reports[0].Batch, "the JSON must carry the batch block")
 	batch := reports[0].Batch
-	require.True(t, batch.LegacyAsyncJobsAbsent)
-	require.Equal(t, auditLegacyAbsentRuleStatus, batch.UnfinishedJobsRule)
+	require.Equal(t, auditBatchRuleBatchStatus, batch.UnfinishedJobsRule)
 	facts := batch.Sessions[sessionID]
 	require.True(t, facts.Live, "a held root must read as live")
 	require.False(t, facts.Unknown, "a complete read must not claim unknown")
@@ -114,7 +114,7 @@ func TestSessionsAudit_CountsAndTerminalRoot(t *testing.T) {
 
 	// Held (cancelling) root: one finding, named with the tool call and state.
 	stdout, reports := auditRunRulesDB(t, dataDir, "--all")
-	require.Contains(t, stdout, auditLegacyAbsentRuleStatus)
+	require.Contains(t, stdout, auditBatchRuleBatchStatus)
 	require.Contains(t, stdout,
 		auditFindingLine("unfinished_jobs", sessionID, f.toolCallID+":cancelling", 1))
 	require.NotNil(t, reports[0].Batch)
@@ -128,7 +128,7 @@ func TestSessionsAudit_CountsAndTerminalRoot(t *testing.T) {
 	// forbidden, never the status line.
 	require.NotContains(t, stdout, "unfinished_jobs: ",
 		"a completed root produces no unfinished_jobs finding")
-	require.Contains(t, stdout, auditLegacyAbsentRuleStatus,
+	require.Contains(t, stdout, auditBatchRuleBatchStatus,
 		"the batch status line (counted from batch_nodes) stays")
 	require.NotNil(t, reports[0].Batch)
 	facts := reports[0].Batch.Sessions[sessionID]

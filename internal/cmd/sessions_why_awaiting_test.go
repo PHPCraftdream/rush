@@ -44,7 +44,7 @@ func insertChildQuestionNotice(t *testing.T, store *session.SessionNoticeStore, 
 // delegation with a bound child_question notice must surface the awaiting-
 // answer section naming the child that asked and its question (parsed from
 // the bound notice's canonical frame), the in-process answer path
-// (agent + resume_session_id), the delegation's tool call under
+// (inject_agent + child_session_id), the delegation's tool call under
 // "Batch roots:", and the batch live verdict (never at rest).
 //
 // Revert-check: dropping the bound-notice check in reduceBatchSessionFacts,
@@ -73,8 +73,8 @@ func TestExplainSessionStatus_AwaitingAnswerNamesQuestion(t *testing.T) {
 	require.Contains(t, out, "waiting for your answer: child "+child.ID+" asked:",
 		"the child that asked must be named")
 	require.Contains(t, out, "adapter A or B?", "the question text must be quoted")
-	require.Contains(t, out, "resume_session_id=\""+child.ID+"\"",
-		"the in-process answer path must be shown (the notice frame embeds it)")
+	require.Contains(t, out, "child_session_id=\""+child.ID+"\"",
+		"the inject_agent answer path must name the child session")
 	require.Contains(t, out, "Batch roots:")
 	require.Contains(t, out, "delegate-9", "the held delegation's tool call must be named")
 	require.Contains(t, out, rootID[:8], "the held root's short id must be named")
