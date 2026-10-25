@@ -75,7 +75,12 @@ func TestLock_KtavSlotFileNameInOutput(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, out, "rush.ktav")
 		require.NotContains(t, out, "rush.json")
-		require.True(t, strings.Contains(out, filepath.Join(evalDataDir, "rush.ktav")),
-			"expected the printed active slot file %s in output:\n%s", filepath.Join(evalDataDir, "rush.ktav"), out)
+		// The command prints the path as the app spells it; accept the
+		// spelled and the symlink-resolved form (macOS /var -> /private/var).
+		require.True(t,
+			strings.Contains(out, filepath.Join(dataDir, "rush.ktav")) ||
+				strings.Contains(out, filepath.Join(evalDataDir, "rush.ktav")),
+			"expected the printed active slot file %s (or %s) in output:\n%s",
+			filepath.Join(dataDir, "rush.ktav"), filepath.Join(evalDataDir, "rush.ktav"), out)
 	})
 }
