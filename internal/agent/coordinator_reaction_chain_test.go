@@ -19,53 +19,37 @@ import (
 )
 
 // chainLink feeds one finished leg through the real accounting path:
-// outcome=drainAttempted, no error, the leg's snapshot naming the rows of
-// snapCalls (the claims of PREVIOUS legs' launches OFF, the launched roots'
-// call ids ON -- each leg reacts to the completions that arrived before it)
-// and the leg's own idle-launch identity.
-// OFF: claim-id snapshot + chainIdleClaims. ON: the batch twin -- the acted-on
-// set is the pending-inclusive debt rows whose root tool_call_id is in
-// snapCalls (a3BatchDebtSnapshotForCalls), captured BEFORE this leg's own row
-// is seeded, batchCaptured set so accountDrainAttempt resolves
-// batchDebtCallIDs itself, and the launched root's call id recorded into
-// chainBatchRoots (batch launches carry no claim ids).
+// outcome=drainAttempted, no error, the batch snapshot naming the rows of
+// snapCalls (the acted-on set is the pending-inclusive debt rows whose root
+// tool_call_id is in snapCalls -- a3BatchDebtSnapshotForCalls -- each leg
+// reacts to the completions that arrived before it) and the leg's own
+// idle-launch identity.
+// The snapshot is captured BEFORE this leg's own row is seeded, batchCaptured
+// set so accountDrainAttempt resolves batchDebtCallIDs itself, and the
+// launched root's call id recorded into chainBatchRoots (batch launches carry
+// no claim ids).
 func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapCalls []string, idle, progress bool) string {
 	f.t.Helper()
 	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, chainProgress: progress}
-	if batchFlagEnabled() {
-		att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
-		att.batchCaptured = true
-		// The leg models a link whose model actually REACTED to the rows it
-		// saw: in production the reaction marks the acted-on rows reacted=1
-		// during the turn, BEFORE closeDrainAttempt accounts the leg -- so
-		// the accounting finds them no longer in debt (decideAccount A5:
-		// "all rows reacted: gate reset"), never as unreacted paid attempts
-		// (A7) that would pace the gate behind the chain guard. Mark the
-		// snapshot's rows through the selected authority before the real
-		// accounting entry point.
-		for _, call := range snapCalls {
-			a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, call)
-		}
-		f.seedDebt(ctx, toolCallID, true)
-		identity := f.row(ctx, toolCallID).ToolCallID
-		if idle {
-			att.chainBatchRoots = []string{identity}
-		}
-		f.coord.accountDrainAttempt(ctx, att, nil)
-		return identity
+	att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
+	att.batchCaptured = true
+	// The leg models a link whose model actually REACTED to the rows it
+	// saw: in production the reaction marks the acted-on rows reacted=1
+	// during the turn, BEFORE closeDrainAttempt accounts the leg -- so
+	// the accounting finds them no longer in debt (decideAccount A5:
+	// "all rows reacted: gate reset"), never as unreacted paid attempts
+	// (A7) that would pace the gate behind the chain guard. Mark the
+	// snapshot's rows before the real accounting entry point.
+	for _, call := range snapCalls {
+		a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, call)
 	}
 	f.seedDebt(ctx, toolCallID, true)
-	row := f.row(ctx, toolCallID)
-	snap := session.BatchDebtSnapshot{}
-	for _, c := range snapCalls {
-		snap.Nodes = append(snap.Nodes, session.BatchDebtNodeRef{RootID: c})
-	}
-	att.snapshot = snap
+	identity := f.row(ctx, toolCallID).ToolCallID
 	if idle {
-		att.chainIdleClaims = []string{row.ClaimID}
+		att.chainBatchRoots = []string{identity}
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
-	return row.ClaimID
+	return identity
 }
 
 func (f *attemptFixture) chainCount() int {

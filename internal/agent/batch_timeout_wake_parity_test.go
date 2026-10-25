@@ -1,6 +1,5 @@
 // Batch-side timeout-wake parity tests. The legacy workLedger timeout
-// machinery (work_ledger_timeout.go) has four observable behaviors; the
-// RUSH_BATCH_RUNTIME path enforces timeouts differently -- the jobbatch
+// machinery (work_ledger_timeout.go) has four observable behaviors; the jobbatch
 // engine (internal/jobbatch/engine.go:88-89, EventDeadlineExpired ->
 // CauseTimeout) drives the runner-side Project, and the coordinator only
 // consumes the committed result through the batch outbox pull. These tests
@@ -18,9 +17,8 @@
 //     Terminate-and-wake intents ride TaskSpec.Timeout instead and are
 //     never scanned.
 //
-// Every test binds the batch store directly, which works identically with
-// RUSH_BATCH_RUNTIME unset and =1: the batch tables exist in both modes and
-// none of these tests read or set the flag.
+// Every test binds the batch store directly (none of these tests read or
+// set any environment variable).
 package agent
 
 import (

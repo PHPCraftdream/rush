@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/google/uuid"
 )
@@ -248,12 +247,4 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 		return true
 	}
 	return false
-}
-
-// batchRuntimeFlagEnabled re-exports the shared parser for the app package
-// (single flag definition in internal/config). The batch runtime installs
-// unconditionally; retained callers (app_run_setup.go's DiskProvider gate)
-// still read the shared parser until its own lane rewrites it.
-func batchRuntimeFlagEnabled() bool {
-	return config.BatchRuntimeEnabled()
 }

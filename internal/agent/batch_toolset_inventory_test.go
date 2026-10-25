@@ -1,11 +1,10 @@
 package agent
 
-// R12-H1 inventory tests: per-toolset batch control inventories in BOTH
-// preparation modes (RUSH_BATCH_RUNTIME off/on), plus the old-name
-// independence acceptance test.
+// R12-H1 inventory tests: per-toolset batch control inventories, plus the
+// old-name independence acceptance test.
 //
 // Static anchors each subtest pins (see the per-case comments):
-//   - internal/config/config.go allToolNames: the flag-on append of the five
+//   - internal/config/config.go allToolNames: the append of the five
 //     native names into the coder's AllowedTools (SetupAgents bakes them at
 //     fixture-build time, so the flag is set BEFORE the fixture).
 //   - internal/agent/batch_allowed_controls.go batchControlAvailability: the
@@ -120,7 +119,6 @@ func contains(names []string, want string) bool {
 // fixture-build time in every case.
 func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 	// The fixture must bake the flag-ON AllowedTools: setenv FIRST.
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 
 	t.Run("default coder", func(t *testing.T) {
 		env := testEnv(t)
@@ -294,7 +292,6 @@ func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 // presence lookups (present["job_output"]/present["job_kill"]) fails here
 // naming the control that resolved through the old name.
 func TestNativeControlsNeverResolveThroughOldNames(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	env := testEnv(t)
 	coord := newBatchInventoryCoordinator(t, env, false)
 

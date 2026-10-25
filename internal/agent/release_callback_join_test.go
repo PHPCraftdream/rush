@@ -215,7 +215,6 @@ func TestReleaseWakeDecisionReadUsesShutdownContext(t *testing.T) {
 	// drainDecision reads the facts seam only when the batch flag is on
 	// (batch_cutover_facts.go coordinatorBatchCutoverFacts). Flag tests set
 	// the env explicitly; t.Setenv forbids t.Parallel, so none here.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	c, a := newReleaseJoinCoordinator()
 	facts := &wakeCtxCaptureFacts{
 		entered: make(chan struct{}),

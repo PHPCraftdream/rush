@@ -3,8 +3,7 @@ package server
 // Batch-work snapshot handler + push (R15a): structured batch_nodes trees
 // delivered as session_batch_work. Batch selection is UNCONDITIONAL: the
 // handler is always registered and the snapshot is always built from
-// batch_nodes (batchRuntimeEnabled remains as an always-true symbol until
-// lane I removes it).
+// batch_nodes.
 //
 // Revert-check: forcing Complete=true in buildBatchWorkSnapshot fails
 // TestBatchWorkSnapshot_IncompleteKeepsRoots and the unknown-host test;

@@ -13,7 +13,6 @@ import (
 )
 
 func testHandleListSessionsLiveWorkAnnotationBatchOn(t *testing.T) {
-	require.True(t, batchRuntimeEnabled())
 	ctx := t.Context()
 	dataDir := t.TempDir()
 	_, err := db.Connect(ctx, dataDir)

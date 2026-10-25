@@ -502,7 +502,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		DiskProvider:      overrides.DiskProvider,
 		FailIfSessionBusy: failIfSessionBusy,
 	}
-	if tools.IsCustomDiskProvider(overrides.DiskProvider) && batchRuntimeFlagEnabled() {
+	if tools.IsCustomDiskProvider(overrides.DiskProvider) {
 		// resolveDiskBindings prefers the batch runtime install's registry
 		// (persisted Apps) and falls back to the ephemeral App's in-memory
 		// registry; nil still fails closed with the same sentinel — a

@@ -261,12 +261,3 @@ func TestSDKConcurrentRunsDifferentSessionsBothSucceed(t *testing.T) {
 	require.Equal(t, marker, resA.FinalText)
 	require.Equal(t, marker, resB.FinalText)
 }
-
-// unsetBatchRuntimeEnvForTest registers restoration of any inherited
-// RUSH_BATCH_RUNTIME value and then unsets the variable, so the
-// product's default-batch path sees it UNSET for this test only.
-func unsetBatchRuntimeEnvForTest(t *testing.T) {
-	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.NoError(t, os.Unsetenv("RUSH_BATCH_RUNTIME"))
-}

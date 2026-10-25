@@ -313,7 +313,6 @@ func TestRunInternal_RateLimitBudgetExhausted(t *testing.T) {
 // makes the wait never exhaust the (zero) budget: the mock is called a second
 // time and the test never returns (the CI hang).
 func TestRunInternal_RateLimitFailingFactsEndsAfterOneAttempt(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	shrinkRateLimitVars(t, time.Millisecond, 10*time.Millisecond, 0, time.Millisecond, time.Millisecond)
 	rlErr := rateLimit429Err()
 	res, calls, _, err := rateLimitLoopRunWith(t, t.Context(), "test-rl-failing-facts", nil,

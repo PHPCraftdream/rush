@@ -80,7 +80,6 @@ func newCLIMarkerInstall(t *testing.T) (*BatchInstall, *escrowAgentExecutor, *es
 }
 
 func TestBatchCLISubmitMarkerWithoutCredentials(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, executor, tool := newCLIMarkerInstall(t)
 	batch, err := install.SubmitCLI(context.Background(), "owner", cliMarkerAgentSpec(t, "cli-none-call"))
 	require.NoError(t, err)
@@ -100,7 +99,6 @@ func TestBatchCLISubmitMarkerWithoutCredentials(t *testing.T) {
 }
 
 func TestBatchCLISubmitMarkerWithCredentials(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, executor, tool := newCLIMarkerInstall(t)
 	ctx := withCallCredentials(context.Background(), escrowTestCreds("cli-tenant-secret"))
 	batch, err := install.SubmitCLI(ctx, "owner", cliMarkerAgentSpec(t, "cli-cred-call"))
@@ -132,7 +130,6 @@ func TestBatchCLISubmitMarkerWithCredentials(t *testing.T) {
 // unconditionally (or leaked caller credentials into a credential-less Add)
 // would surface a marked payload here.
 func TestBatchCLIAddMarkerWithoutCredentials(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, executor, tool := newCLIMarkerInstall(t)
 	batch, err := install.SubmitCLI(context.Background(), "owner", cliMarkerAgentSpec(t, "cli-add-none-root"))
 	require.NoError(t, err)
@@ -171,7 +168,6 @@ func TestBatchCLIAddMarkerWithoutCredentials(t *testing.T) {
 // leave the leaf unmarked; a path that serialized the secret would fail the
 // payload NotContains.
 func TestBatchCLIAddMarkerWithCredentials(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, executor, tool := newCLIMarkerInstall(t)
 	batch, err := install.SubmitCLI(context.Background(), "owner", cliMarkerAgentSpec(t, "cli-add-cred-root"))
 	require.NoError(t, err)
@@ -206,7 +202,6 @@ func TestBatchCLIAddMarkerWithCredentials(t *testing.T) {
 // Mutation caught: an AddCLI that dereferenced the missing owner (or treated
 // the empty owner as "owned by anyone") would panic or accept the add.
 func TestBatchCLIAddUnknownRootFailsCleanly(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, _, _ := newCLIMarkerInstall(t)
 	missing := jobbatch.ID("cli-add-missing-root")
 	err := install.AddCLI(context.Background(), missing, missing,
@@ -223,7 +218,6 @@ func TestBatchCLIAddUnknownRootFailsCleanly(t *testing.T) {
 // or the engine instead of the install's own owners map would accept adds
 // for roots this install never claimed.
 func TestBatchCLIAddUnownedRootFailsCleanly(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	install, executor, tool := newCLIMarkerInstall(t)
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: "cli-add-foreign-call", SessionID: "other", RegistryID: "registry",

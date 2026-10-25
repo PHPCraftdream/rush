@@ -1,8 +1,7 @@
 # Job batches in Rush: current runtime and standalone engine
 
-Rush currently selects the batch-only runtime unconditionally: `RUSH_BATCH_RUNTIME`
-may be unset or have any value (including `false` or garbage) without selecting
-a legacy runtime. The symbol is temporary pending I. Active persistence is
+Rush selects the batch-only runtime unconditionally; since the H4 cutover there
+is no legacy runtime and no selector variable. Active persistence is
 `.rush/rush_store_v1.db`, initialized from one embedded initial migration. A
 one-time import from untouched `.rush/rush.db` occurs before destination open.
 

@@ -26,11 +26,7 @@ func a3MarkRowsReacted(t *testing.T, ctx context.Context, conn *sql.DB, owner st
 	t.Helper()
 	for _, call := range calls {
 		var err error
-		if batchFlagEnabled() {
-			_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET reacted=1 WHERE owner_session_id=? AND (tool_call_id=? OR root_id IN (SELECT node_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=?))`, owner, call, owner, call)
-		} else {
-			_, err = conn.ExecContext(ctx, `UPDATE async_jobs SET reacted=1 WHERE owner_session_id=? AND tool_call_id=?`, owner, call)
-		}
+		_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET reacted=1 WHERE owner_session_id=? AND (tool_call_id=? OR root_id IN (SELECT node_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=?))`, owner, call, owner, call)
 		require.NoError(t, err)
 	}
 }

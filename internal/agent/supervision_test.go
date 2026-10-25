@@ -274,7 +274,7 @@ func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
 // Batch-runtime oracle (H4): the asserted check-in text is the single
 // batch-world summary (buildSupervisionSummaryAt, supervision.go:410-473:
 // "Inspect with batch_output, or stop with batch_stop."); the legacy/batch
-// RUSH_BATCH_RUNTIME split it used to pin is gone.
+// split it used to pin is gone.
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
@@ -666,7 +666,6 @@ func idsOf(msgs []message.Message) []string {
 // AFTER it. Reverting the order in supervision.go's paused branch (back to
 // prepending the pause sentence before the guidance) makes this test fail.
 func TestSupervisionSummaryPaused_PutsGuidanceBeforePauseAnnouncement(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)

@@ -14,7 +14,6 @@ import (
 
 func TestCoordinatorBatchStopZerosDelegatedChildWake(t *testing.T) {
 	t.Run("batch-only", func(t *testing.T) {
-		t.Setenv("RUSH_BATCH_RUNTIME", "1")
 		env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
 		ctx := context.Background()
 		parent, child := env.sessionID, "batch-stop-child"

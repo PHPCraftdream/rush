@@ -59,7 +59,7 @@ func (s *pctChildToolScope) pctProvisionalRelease() func() {
 }
 
 func pctChildToolBuildContext(ctx context.Context) (context.Context, *pctChildToolScope) {
-	if !batchFlagEnabled() || callOptionsFrom(ctx) == nil {
+	if callOptionsFrom(ctx) == nil {
 		return ctx, nil
 	}
 	parent := callBuildScopeFrom(ctx)

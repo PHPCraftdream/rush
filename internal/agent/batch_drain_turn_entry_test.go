@@ -8,8 +8,8 @@ package agent
 // f.sessID in the CUTOVER DB) so the ON capture -- filtered by owner --
 // actually sees it. async_jobs is DROPPED on the fixture's conn (the DB the
 // fixture's own store f.store wraps, drain_attempt_fixture_test.go): any
-// legacy async_jobs read anywhere in the turn (recovery: gated by
-// !batchFlagEnabled, agent_turn.go; pull: the ON branch reads batch facts
+// legacy async_jobs read anywhere in the turn (recovery is gone,
+// agent_turn.go); pull: the turn reads batch facts
 // only, agent_notice_pull.go; capture: CaptureVisibleDebt over batch
 // tables; decide: readTurnFactsBatch; accounting: the drainNoTurn early
 // return + the batch-sourced pendingLeft) fails loudly. The provider must
@@ -76,8 +76,6 @@ func rootTerminalFor(t *testing.T, env *cutoverEnv, owner, rootID string) string
 }
 
 func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-
 	// The real runTurn harness: sessionAgent + probe provider (its default
 	// handler answers one text step; requests counts provider calls).
 	f := newAttemptFixture(t, "batch-drain-entry", attemptFixtureOpts{noIdle: true})
@@ -128,7 +126,7 @@ func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 
 	// FIRST ASSERTION (static trace in the report): the turn reaches the
 	// provider. Trace: sa.Run -> runTurn with call.IsDrain -> the att block
-	// (agent_turn.go) -> batchFlagEnabled() && coordinatorBatchCutoverFacts
+	// (agent_turn.go) -> the bound coordinatorBatchCutoverFacts
 	// != nil (bound above) -> CaptureVisibleDebt over batch_nodes filtered
 	// by owner f.sessID (the delivered row: BatchOutboxDebtNodes keeps
 	// delivery IN ('pending','done') with wake=1, reacted=0) ->
@@ -141,7 +139,7 @@ func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 	require.NotNil(t, res)
 	require.GreaterOrEqual(t, f.requests.Load(), int32(1), "the provider was reached on the committed turn")
 
-	// The OFF twin cannot share the fixture (the flag is process-global and
-	// the batch DB binding is ON): the legacy-only twin lives in
+	// The deleted legacy twin cannot share this fixture (the batch DB
+	// binding is process-global): the legacy-only twin lives in
 	// drain_attempt_test.go's existing counted-attempt tests.
 }

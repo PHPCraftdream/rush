@@ -1,9 +1,8 @@
-// X2-slot helpers (delegation/scope residuals of the flag-ON test port,
-// stage 3): dual-mode fixture helpers owned by the X2 test files
+// X2-slot helpers (delegation/scope residuals of the batch test port,
+// stage 3): fixture helpers owned by the X2 test files
 // (turn_arbiter_shadow_test.go, work_ledger_delegation_test.go). Everything
-// here selects its authority through batchFlagEnabled() and the foundation
-// dual-mode helpers (batch_fixture_port_test.go) and never touches
-// RUSH_BATCH_RUNTIME.
+// here selects the batch authority and never touches any environment
+// variable.
 package agent
 
 import (

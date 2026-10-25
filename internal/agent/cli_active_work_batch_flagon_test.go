@@ -1,4 +1,4 @@
-// Class-A fix: under RUSH_BATCH_RUNTIME the live scope comes from the
+// Class-A fix: the live scope comes from the
 // bound node-backed fact source (batch_nodes), never from the legacy
 // async_jobs ledger. Invariant: a live batch root owned by the session
 // keeps CLIActiveWork true (a quota-hit `rush run` must not exit while
@@ -16,8 +16,6 @@ import (
 )
 
 func TestCLIActiveWork_BatchLiveRootKeepsCLIActiveFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-
 	// One held leaf: the root stays running until the gate releases.
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)

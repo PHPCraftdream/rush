@@ -106,9 +106,8 @@ comment in the code so conflicts surface at the right line.
 
 ## Batch runtime rollout and data
 
-Batch execution is the current runtime regardless of whether `RUSH_BATCH_RUNTIME`
-is unset or set to any value, including `false` or garbage; that selector remains
-only temporarily. Active data uses `.rush/rush_store_v1.db` with one embedded
+Batch execution is the current runtime, unconditionally since the H4 cutover;
+there is no legacy selector. Active data uses `.rush/rush_store_v1.db` with one embedded
 initial migration. On first startup, durable history, settings, queues and
 schedules are imported once from the untouched `.rush/rush.db` before the new
 destination is opened. Old and preparation-era execution/control state is

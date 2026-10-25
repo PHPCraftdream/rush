@@ -303,7 +303,7 @@ export interface SessionLiveWorkPayload {
   complete?: boolean;
 }
 
-// ─── Batch work (R15a, inert unless RUSH_BATCH_RUNTIME is on) ───────────────
+// ─── Batch work (R15a, unconditional since the H4 cutover) ──────────────────
 //
 // Structured batch-node wire, mirroring internal/server/handlers_batch.go's
 // BatchWorkSnapshotWire (v: 1). Consumed by web/src/batchWork.ts. No UI

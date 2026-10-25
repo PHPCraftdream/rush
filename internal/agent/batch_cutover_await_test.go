@@ -630,7 +630,6 @@ func nullString(s string) sql.NullString { return sql.NullString{String: s, Vali
 // creates selected completion debt while the root is live. ----
 
 func TestAWa1ChildSettlementNoWakeNoDebt(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)
@@ -684,7 +683,6 @@ func TestAWa1ChildSettlementNoWakeNoDebt(t *testing.T) {
 // delivery is still held; the production pull delivers exactly once. ----
 
 func TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)
@@ -732,7 +730,6 @@ func TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld(t *testing.T) {
 // keeps rule 4b deferring until it settles too. ----
 
 func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	viewLeaf := newGatedLeaf("view")
 	argvLeaf := newGatedLeaf("run_command")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)
@@ -831,7 +828,6 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 // ---- AW-a4: Mode ALL stays asleep while another captured root is live. ----
 
 func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	viewLeaf := newGatedLeaf("view")
 	argvLeaf := newGatedLeaf("run_command")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)
@@ -897,7 +893,6 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 // settling the question. ----
 
 func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	fast := &countingTool{name: "grep"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)

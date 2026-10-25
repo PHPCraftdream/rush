@@ -18,7 +18,6 @@ import (
 // batch reads alone; any legacy read would fail with "no such table". ----
 
 func TestBatchCutoverNoLegacyTableON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	fast := &countingTool{name: "grep"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
@@ -78,7 +77,6 @@ func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 // preserves the released-child identity (rule 7) after completion. ----
 
 func TestBatchCutoverDelegationFactsON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
 	coord := newCutoverCoordinator(t, env)
 	cutoverBindFacts(t, coord, env)
@@ -142,7 +140,6 @@ func TestBatchCutoverDelegationFactsON(t *testing.T) {
 // ON path (three self-sustaining links, no notice rows). ----
 
 func TestBatchCutoverChainGuardON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
@@ -214,7 +211,6 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 // on the ON path. ----
 
 func TestBatchCutoverSupervisionON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)
@@ -361,7 +357,6 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 // notices WITHOUT the legacy void queries (async_jobs is dropped). ----
 
 func TestBatchCutoverNoticePullON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	fast := &countingTool{name: "grep"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
@@ -434,7 +429,6 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 // ---- Fix 4 proof: the accounting settles EXACTLY the acted-on rows. ----
 
 func TestBatchCutoverSettleExactRowsON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)

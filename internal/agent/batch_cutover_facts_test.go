@@ -1,4 +1,4 @@
-// R12-E per-consumer cutover-facts tests: with RUSH_BATCH_RUNTIME=1 and the
+// R12-E per-consumer cutover-facts tests: with the
 // node-backed BatchCutoverFacts bound to a coordinator (the wiring R12-H must
 // add in production: BindCoordinatorBatchCutoverFacts(c,
 // NewBatchCutoverNodeFacts(store, live))), every ported consumer reads its
@@ -36,7 +36,6 @@ func newCutoverFactsCoordinator(t *testing.T) *coordinator {
 // visible through the ON-path drainDecision, with zero async_jobs writes. ----
 
 func TestBatchCutoverSelectedDebtON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverFactsCoordinator(t)
@@ -73,7 +72,6 @@ func TestBatchCutoverSelectedDebtON(t *testing.T) {
 // appears in the ON facts (HeldQuestions and the pending-inclusive summary). ----
 
 func TestBatchCutoverHeldQuestionsON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
 	coord := newCutoverFactsCoordinator(t)
 	cutoverBindFacts(t, coord, env)
@@ -105,7 +103,6 @@ func TestBatchCutoverHeldQuestionsON(t *testing.T) {
 // facts; settle-with-marker closes the debt; async_jobs stays empty. ----
 
 func TestBatchCutoverReactionFailureON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	failing := &errLeaf{countingTool: countingTool{name: "view"}}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, failing)
 	coord := newCutoverFactsCoordinator(t)
@@ -158,7 +155,6 @@ func TestBatchCutoverReactionFailureON(t *testing.T) {
 // settled debt rows. ----
 
 func TestBatchCutoverWakeBreakersON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverFactsCoordinator(t)
@@ -204,7 +200,6 @@ func TestBatchCutoverWakeBreakersON(t *testing.T) {
 // false after settle; own vs descendant halves distinct. ----
 
 func TestBatchCutoverScopeON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	releaseAllAt(t, leaf)
@@ -242,7 +237,6 @@ func TestBatchCutoverScopeON(t *testing.T) {
 // the conservative unknown source: debt true, live true, no legacy reads. ---
 
 func TestBatchCutoverUnknownFailSafeON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})
 	coord := newCutoverFactsCoordinator(t)
 	// Deliberately NO binding registered.
@@ -271,7 +265,6 @@ func TestBatchCutoverUnknownFailSafeON(t *testing.T) {
 // termination keeps admission until the real settle frees it. ----
 
 func TestBatchCutoverAdmissionHeldTerminationON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	viewLeaf := newGatedLeaf("view")
 	argvLeaf := newGatedLeaf("run_command")
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 1, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)

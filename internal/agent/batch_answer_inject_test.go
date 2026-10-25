@@ -21,7 +21,6 @@ import (
 )
 
 func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := newGatedLeaf("view")
 	// The parking agent turn: ask at depth 1; the turn only finishes once
 	// the injected answer arrives (the askAndShape production-shaped host

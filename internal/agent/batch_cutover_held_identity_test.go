@@ -1,8 +1,8 @@
 // LiveHeldQuestions' additive identity: the fenced rows must name their
 // marker's node and child session, because the CLI active-work exclusion
 // binds the commit decision to the CURRENT incarnation through them.
-// Flag-independent: nodeBatchCutoverFacts.LiveHeldQuestions never reads
-// RUSH_BATCH_RUNTIME.
+// Node facts only: nodeBatchCutoverFacts.LiveHeldQuestions never reads any
+// environment variable.
 package agent
 
 import (

@@ -23,7 +23,6 @@ import (
 // batch debt, a no-turn leg with a nonempty batch snapshot -> the gate must
 // stay paced (A3': the attempt is no evidence about the gate).
 func TestBatchGateRefusalUntouchedON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
@@ -83,7 +82,6 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 // snapshot refuses (gate untouched); an empty one resets the gate ("no debt:
 // gate reset").
 func TestBatchGateLegacyTwinsOFF(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
@@ -122,7 +120,6 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 // pending-inclusive source, never from async_jobs -- with the legacy table
 // DROPPED, a no-debt no-turn leg still reaches A3 "no debt: gate reset".
 func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)
@@ -176,7 +173,6 @@ func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
 // accounting paces the gate (A2 "pending debt left behind"), all with
 // async_jobs DROPPED (the ON branch never touches the legacy store).
 func TestBatchPendingLeftONPendingDebtPacesGate(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverCoordinator(t, env)

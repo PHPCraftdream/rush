@@ -16,7 +16,6 @@ import (
 )
 
 func TestBatchCutoverAccountingFunnelON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	fast := &countingTool{name: "view"}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
 	coord := newCutoverLedgerCoordinator(t)

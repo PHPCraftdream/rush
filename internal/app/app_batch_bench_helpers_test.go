@@ -599,11 +599,6 @@ func newD11Env(t *testing.T, mode, workload string) *d11Env {
 		t.Setenv(key, filepath.Join(dir, name))
 	}
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
-	if mode == "candidate" {
-		t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	} else {
-		t.Setenv("RUSH_BATCH_RUNTIME", "0")
-	}
 	fixture := filepath.Join(dir, d11FixtureName)
 	require.NoError(t, os.WriteFile(fixture, []byte("d11 fixture sentinel\n"), 0o600))
 	e := &d11Env{t: t, mode: mode, dir: dir}

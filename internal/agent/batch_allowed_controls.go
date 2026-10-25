@@ -5,10 +5,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/config"
 )
-
-func batchFlagEnabled() bool { return config.BatchRuntimeEnabled() }
 
 // batchControlAvailability reports, in stable order, the model-facing batch
 // controls one assembled toolset offers. R12-H1: every grant is decided by a

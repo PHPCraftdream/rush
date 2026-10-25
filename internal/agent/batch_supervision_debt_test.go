@@ -9,12 +9,8 @@
 // with NO kind exclusion) and section 2e (unknownBatchCutoverFacts'
 // conservative (true, nil) is intended today; P2 backlog).
 //
-// All tests bind the batch store directly and are dual-mode safe (they never
-// read or set RUSH_BATCH_RUNTIME) EXCEPT the coordinator-level tests T1/T3/T5,
-// which t.Setenv("RUSH_BATCH_RUNTIME", "1") -- same precedent as
-// internal/agent/batch_answer_inject_test.go -- because the flag gates which
-// facts a bound coordinator consults.
-//
+// All tests bind the batch store directly (they never touch any
+// environment variable).
 // No assertion here has the form "every supervision tick invokes Run":
 // legitimate refusals exist downstream of the debt/arbiter gates.
 package agent
@@ -92,7 +88,6 @@ func w5NoticeDelivery(t *testing.T, conn *sql.DB, owner string) []string {
 // exactly once with its wake bit intact.
 func TestBatchSupervisionNoticeDebt_EligibleCase(t *testing.T) {
 	// No t.Parallel: t.Setenv panics on a parallel test.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
@@ -173,7 +168,6 @@ func TestBatchSupervisionNoticeDebt_ClosedScopeVoidsCheckIn(t *testing.T) {
 // legitimate refusals exist downstream.
 func TestBatchSupervisionNoticeDebt_CompletionClassForSleepAll(t *testing.T) {
 	// No t.Parallel: t.Setenv panics on a parallel test.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, _, getEnv := newChildPolicyTestCoordinator(t)
 	env := getEnv(context.Background())
 	ctx := context.Background()
@@ -229,7 +223,6 @@ func TestBatchSupervisionNoticeDebt_DeliveryFailurePreservesPendingDebt(t *testi
 // "never retry".
 func TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle(t *testing.T) {
 	// No t.Parallel: t.Setenv panics on a parallel test.
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := testEnv(t)
 	ctx := context.Background()
 	// Deliberately NO bindBatchNodeFacts: the unbound shape.

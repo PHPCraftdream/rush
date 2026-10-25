@@ -169,7 +169,6 @@ func (r *round2StampRunner) Release(ctx context.Context, id jobbatch.ID) error {
 }
 
 func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	dataDir := t.TempDir()
 	var turnReqs atomic.Int64
 	fastSrv := round2FetchFastServer(t, dataDir, &turnReqs)
@@ -244,7 +243,6 @@ func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
 }
 
 func TestAgentDriverIncarnationOwnsBuildScope(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	env := newRound2DriverScopeInstall(t)
 	shared := (&coordinator{}).sharedBuildScopeFor()
 	env.stub.mu.Lock()

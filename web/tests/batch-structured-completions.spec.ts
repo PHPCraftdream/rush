@@ -1,20 +1,15 @@
 /**
- * R12-C structured batch completions (flag-gated e2e).
+ * R12-C structured batch completions (e2e).
  *
- * With RUSH_BATCH_RUNTIME ON the server delivers terminal-root completions
- * STRUCTURALLY on the `session_batch_work` snapshot (BatchCompletionWire
+ * The server delivers terminal-root completions STRUCTURALLY on the
+ * `session_batch_work` snapshot (BatchCompletionWire
  * with state + outcomeSummary, keyed by root_id) — no prose "Async job …"
  * notice message is written anymore. The tool-call block must badge the
  * completion from the structured record alone, and a reload (fresh
  * messages_list + snapshot re-read) must reconstruct it.
  *
- * GATING: the whole file is skipped unless RUSH_BATCH_RUNTIME is set to a
- * Go-strlib ParseBool truthy value (1/t/T/TRUE/true/True/on...) — any truthy
- * spelling the Go flag parser accepts — in the environment running
- * Playwright, so the default e2e set (which runs against the flag-OFF/prose
- * server) is untouched:
- *
- *   RUSH_BATCH_RUNTIME=1 npm run test -- batch-structured-completions
+ * This spec runs unconditionally against the batch-only runtime (the only
+ * runtime since the H4 cutover).
  *
  * Revert-check: reverting the structured branch of mergeCompletionIndex
  * (web/src/completionIndex.ts) — or the `state`/`outcomeSummary` fields on
@@ -25,12 +20,6 @@
 import { expect, test } from "@playwright/test";
 import { makeMessage, makeSession } from "./helpers/fixtures";
 import { sendMockWSMessage, setupMockWS } from "./helpers/mock-ws";
-
-// Accepts the Go strconv.ParseBool truthy set, not just the "ON" spelling:
-// the server's config.BatchRuntimeEnabled uses ParseBool semantics.
-const flagEnabled = /^(1|t|true)$/i.test(process.env.RUSH_BATCH_RUNTIME ?? "");
-
-test.skip(!flagEnabled, "R12-C structured completions require RUSH_BATCH_RUNTIME to parse true (1/t/T/true/TRUE/True)");
 
 const sessionID = "batch-struct";
 
