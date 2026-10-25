@@ -298,10 +298,8 @@ func TestMigrateKtavGateOnNoRewriteStillConverts(t *testing.T) {
 	workspace := isolateMigrateKtavEnv(t)
 	jsonBytes := requireGateOnKtavMigration(t, workspace, migrateKtavNoRewriteJSON)
 
-	var got, want map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(jsonBytes, &got))
-	require.NoError(t, json.Unmarshal([]byte(migrateKtavNoRewriteJSON), &want))
-	assert.Equal(t, want, got, "nothing-to-rewrite document must round-trip semantics exactly")
+	require.JSONEq(t, migrateKtavNoRewriteJSON, string(jsonBytes),
+		"nothing-to-rewrite document must round-trip semantics exactly")
 }
 
 // TestMigrateKtavGateOnConflictExistingKtav pins that, gate on, an existing

@@ -636,7 +636,9 @@ func applyLegacyRewrites(raw []byte) (newRaw []byte, notes []string, changed boo
 
 	optionsRaw, ok := top["options"]
 	if !ok {
-		return nil, nil, false
+		// A valid object with nothing to rewrite: hand the original bytes
+		// back so a format conversion can still proceed.
+		return raw, nil, false
 	}
 
 	var options map[string]json.RawMessage
