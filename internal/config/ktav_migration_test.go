@@ -485,7 +485,7 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 		owner, enforce, err := ownerPolicyForMigration(legacy, dir)
 		require.NoError(t, err)
 		if !enforce {
-			_, err = loadKtavMigrationRecord(recordPath, legacy, dir)
+			_, err = loadKtavMigrationRecord(recordPath, legacy, ktavSiblingOf(legacy), dir)
 			require.NoError(t, err)
 			return
 		}
@@ -495,18 +495,18 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 		}
 		if chownErr := os.Chown(recordPath, foreignOwner, -1); chownErr != nil {
 			if runtime.GOOS == "windows" {
-				_, err = loadKtavMigrationRecord(recordPath, legacy, dir)
+				_, err = loadKtavMigrationRecord(recordPath, legacy, ktavSiblingOf(legacy), dir)
 				require.NoError(t, err)
 				return
 			}
 			_, _, openedErr := readStableConfigFileOwned(recordPath, foreignOwner, true)
 			require.ErrorIs(t, openedErr, errConfigOwnerMismatch)
-			_, err = loadKtavMigrationRecord(recordPath, legacy, dir)
+			_, err = loadKtavMigrationRecord(recordPath, legacy, ktavSiblingOf(legacy), dir)
 			require.NoError(t, err)
 			return
 		}
 		t.Cleanup(func() { _ = os.Chown(recordPath, owner, -1) })
-		_, err = loadKtavMigrationRecord(recordPath, legacy, dir)
+		_, err = loadKtavMigrationRecord(recordPath, legacy, ktavSiblingOf(legacy), dir)
 		require.ErrorIs(t, err, errKtavMigrationRecord)
 	})
 }

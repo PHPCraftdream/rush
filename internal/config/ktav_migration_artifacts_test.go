@@ -7,6 +7,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -91,6 +92,18 @@ func TestKtavArtifactJournalMigrationSuccess(t *testing.T) {
 	require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir))
 	assertKtavArtifactJournalMigrated(t, dir, slot)
 
+	// The production journal reader resolves the SELECTED path back to the
+	// original token: one source of truth for the destination name.
+	selected := selectOAuthJournalPath(slot, "openai-codex", false)
+	require.Equal(t, oauthJournalKtavPath(slot, "openai-codex"), selected)
+	recovered, readErr := readOAuthJournalWithRetry(context.Background(), selected)
+	require.NoError(t, readErr)
+	require.NotNil(t, recovered)
+	require.NotNil(t, recovered.Token)
+	require.Equal(t, "at-artifact", recovered.Token.AccessToken)
+	require.Equal(t, ktavArtifactJournalSecret, recovered.Token.RefreshToken)
+	require.EqualValues(t, 1893456000, recovered.Token.ExpiresAt)
+
 	// Migration is idempotent once complete.
 	require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir))
 	assertKtavArtifactJournalMigrated(t, dir, slot)
@@ -166,6 +179,7 @@ func TestKtavArtifactCrashBoundariesRecovers(t *testing.T) {
 	type boundaryCase struct {
 		name       string
 		step       string
+		configHook bool
 		expectJSON bool
 		expectKtav bool
 		expectBak  bool
@@ -181,6 +195,13 @@ func TestKtavArtifactCrashBoundariesRecovers(t *testing.T) {
 		{name: "after publish", step: "after-publish", expectJSON: true, expectKtav: true},
 		{name: "before archive", step: "before-archive", expectJSON: true, expectKtav: true},
 		{name: "after archive", step: "after-archive", expectKtav: true, expectBak: true},
+		// The archival-internal boundaries fire the SHARED config hook
+		// (runKtavMigrationStep inside archiveKtavBackup), not the artifact
+		// hook. During-backup-rename stops BEFORE the rename, so the JSON is
+		// still intact. After-backup-rename is a post-archive crash: the
+		// record survives beside the Ktav and the backup.
+		{name: "during backup rename", step: "during-backup-rename", configHook: true, expectJSON: true, expectKtav: true},
+		{name: "after backup rename", step: "after-backup-rename", configHook: true, expectKtav: true, expectBak: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,27 +209,40 @@ func TestKtavArtifactCrashBoundariesRecovers(t *testing.T) {
 			dir := canonicalArtifactTempDir(t)
 			slot, legacy := seedKtavArtifactJournal(t, dir)
 
-			previousHook := ktavArtifactMigrationStepHook
-			ktavArtifactMigrationStepHook = func(step string) error {
+			previousArtifactHook := ktavArtifactMigrationStepHook
+			previousConfigHook := ktavMigrationStepHook
+			crash := func(step string) error {
 				if step == tc.step {
 					return errKtavMigrationCrashInjected
 				}
 				return nil
 			}
+			if tc.configHook {
+				ktavMigrationStepHook = crash
+			} else {
+				ktavArtifactMigrationStepHook = crash
+			}
+			t.Cleanup(func() {
+				ktavArtifactMigrationStepHook = previousArtifactHook
+				ktavMigrationStepHook = previousConfigHook
+			})
 			migrationErr := ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir)
-			ktavArtifactMigrationStepHook = previousHook
 			require.ErrorIs(t, migrationErr, errKtavMigrationCrashInjected)
 
 			require.Equal(t, tc.expectJSON, fileExists(legacy))
 			require.Equal(t, tc.expectKtav, fileExists(oauthJournalKtavPath(slot, "openai-codex")))
 			require.Equal(t, tc.expectBak, fileExists(backupPathFor(legacy)))
-			// Byte-safety invariant: the JSON is intact and active, or the
-			// Ktav and the backup both exist. Never anything else.
-			if !tc.expectJSON {
-				require.True(t, tc.expectKtav && tc.expectBak, "no JSON without a verified Ktav and backup")
-			}
+			// Byte-safety invariant, asserted on the OBSERVED files: the JSON is
+			// intact and active, or the Ktav and the backup both exist. Never
+			// anything else.
+			jsonThere := fileExists(legacy)
+			ktavThere := fileExists(oauthJournalKtavPath(slot, "openai-codex"))
+			bakThere := fileExists(backupPathFor(legacy))
+			require.True(t, jsonThere || (ktavThere && bakThere), "no JSON without a verified Ktav and backup")
 
-			// Recovery converges without losing bytes.
+			// Recovery converges without losing bytes (hooks released first).
+			ktavArtifactMigrationStepHook = previousArtifactHook
+			ktavMigrationStepHook = previousConfigHook
 			require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir))
 			assertKtavArtifactJournalMigrated(t, dir, slot)
 		})
@@ -368,6 +402,7 @@ func TestKtavArtifactConcurrentConverters(t *testing.T) {
 	ktavArtifactTestEnv(t)
 	dir := canonicalArtifactTempDir(t)
 	slot, legacy := seedKtavArtifactJournal(t, dir)
+	require.FileExists(t, legacy, "the seed journal must exist before the race")
 
 	const converters = 2
 	done := make(chan error, converters)
@@ -378,4 +413,223 @@ func TestKtavArtifactConcurrentConverters(t *testing.T) {
 		require.NoError(t, <-done)
 	}
 	assertKtavArtifactJournalMigrated(t, dir, slot)
+}
+
+// TestKtavArtifactCacheReaderResolvesConvertedCaches proves the production
+// cache reader (readCacheDocument) decodes the CONVERTED Ktav generation back
+// to the original JSON document for every Rush-owned cache slot.
+func TestKtavArtifactCacheReaderResolvesConvertedCaches(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	cases := []struct{ name, slot, body string }{
+		{"providers", "providers", `{"providers":[{"name":"p","api_key":"k"}]}`},
+		{"hyper", "hyper", `{"endpoints":[{"url":"https://example.invalid"}]}`},
+		{"model catalog", "model-catalog-openai-codex", `{"fingerprint":"fp-1","fetched_at":"2020-01-01T00:00:00Z","models":[{"id":"m"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			legacy := cachePathFor(tc.slot)
+			writeTestFile(t, legacy, tc.body)
+
+			require.NoError(t, migrateKtavArtifact(context.Background(), legacy, dir))
+
+			require.NoFileExists(t, legacy)
+			require.FileExists(t, ktavSiblingOf(legacy))
+			require.FileExists(t, backupPathFor(legacy))
+			converted, err := readCacheDocument(legacy)
+			require.NoError(t, err)
+			require.JSONEq(t, tc.body, string(converted), "the production reader must decode the converted Ktav to the original JSON document")
+		})
+	}
+}
+
+// TestKtavArtifactExistingKtavConflictLeavesKtavActive proves the conflict
+// contract: when the destination Ktav already exists, both files are left
+// untouched, no backup is created, and the production readers resolve the
+// EXISTING Ktav (readers prefer the Ktav generation — the JSON is ignored).
+func TestKtavArtifactExistingKtavConflictLeavesKtavActive(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+
+	t.Run("journal", func(t *testing.T) {
+		slot, legacy := seedKtavArtifactJournal(t, dir)
+		dest := oauthJournalKtavPath(slot, "openai-codex")
+		existingKtav := testKtavBytes(t, ktavArtifactJournalBody)
+		require.NoError(t, os.WriteFile(dest, existingKtav, 0o600))
+		original, err := os.ReadFile(legacy)
+		require.NoError(t, err)
+
+		require.ErrorIs(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir), errKtavMigrationConflict)
+
+		jsonOnDisk, readErr := os.ReadFile(legacy)
+		require.NoError(t, readErr)
+		require.Equal(t, string(original), string(jsonOnDisk), "the JSON is never rewritten")
+		ktavOnDisk, readErr := os.ReadFile(dest)
+		require.NoError(t, readErr)
+		require.Equal(t, existingKtav, ktavOnDisk, "the pre-existing Ktav is never replaced")
+		require.NoFileExists(t, backupPathFor(legacy))
+		require.Equal(t, dest, selectOAuthJournalPath(slot, "openai-codex", false), "the production selector resolves the pre-existing Ktav")
+		recovered, readErr := readOAuthJournalWithRetry(context.Background(), selectOAuthJournalPath(slot, "openai-codex", false))
+		require.NoError(t, readErr)
+		require.NotNil(t, recovered)
+		require.NotNil(t, recovered.Token)
+		require.Equal(t, ktavArtifactJournalSecret, recovered.Token.RefreshToken, "the active Ktav journal still decodes to the original token")
+	})
+
+	t.Run("cache", func(t *testing.T) {
+		legacy := cachePathFor("providers")
+		writeTestFile(t, legacy, `{"providers":[{"name":"json"}]}`)
+		dest := ktavSiblingOf(legacy)
+		existingBody := `{"providers":[{"name":"existing-ktav"}]}`
+		writeTestFile(t, dest, string(testKtavBytes(t, existingBody)))
+
+		require.ErrorIs(t, migrateKtavArtifact(context.Background(), legacy, dir), errKtavMigrationConflict)
+
+		jsonOnDisk, err := os.ReadFile(legacy)
+		require.NoError(t, err)
+		require.JSONEq(t, `{"providers":[{"name":"json"}]}`, string(jsonOnDisk), "the JSON is never rewritten")
+		converted, err := readCacheDocument(legacy)
+		require.NoError(t, err)
+		require.JSONEq(t, existingBody, string(converted), "the production cache reader resolves the pre-existing Ktav")
+		require.NoFileExists(t, backupPathFor(legacy))
+	})
+}
+
+// TestKtavArtifactChtimesFailureDefersConversion proves mtime preservation is
+// a HARD step: an injected Chtimes failure stops the transaction before the
+// archival (JSON stays active, NO backup), and a later run with a working
+// Chtimes converges to a fully migrated state with the source mtime.
+func TestKtavArtifactChtimesFailureDefersConversion(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	providers := cachePathFor("providers")
+	writeTestFile(t, providers, `{"providers":[{"name":"p"}]}`)
+	old := time.Now().Add(-72 * time.Hour)
+	require.NoError(t, os.Chtimes(providers, old, old))
+
+	savedStat, savedChtimes := ktavArtifactStatFile, ktavArtifactChtimes
+	ktavArtifactChtimes = func(string, time.Time, time.Time) error {
+		return errors.New("injected chtimes failure")
+	}
+	t.Cleanup(func() {
+		ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+	})
+
+	err := migrateKtavArtifact(context.Background(), providers, dir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mtime", "the failure names the mtime step")
+	require.FileExists(t, providers, "the JSON stays active: the failure happens before archival")
+	require.NoFileExists(t, backupPathFor(providers), "no backup is created")
+	require.NoFileExists(t, backupPathFor(providers))
+
+	// The staged Ktav plus its record converge on the next run with a
+	// working Chtimes.
+	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
+	require.NoFileExists(t, providers)
+	require.FileExists(t, ktavSiblingOf(providers))
+	require.FileExists(t, backupPathFor(providers))
+	require.NoFileExists(t, migrationRecordPathFor(providers))
+	info, statErr := os.Stat(ktavSiblingOf(providers))
+	require.NoError(t, statErr)
+	require.WithinDuration(t, old, info.ModTime(), 2*time.Second, "the converging run re-applies the source mtime")
+}
+
+// TestKtavArtifactJournalInvalidatedUnderLock proves the journal is
+// re-validated as an OAuth record UNDER the refresh lock, on the exact bytes
+// the converter would convert: a journal replaced with structurally invalid
+// JSON while the lock was contended is skipped, not converted or archived.
+func TestKtavArtifactJournalInvalidatedUnderLock(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	slot, legacy := seedKtavArtifactJournal(t, dir)
+	invalid := `{"token":{"access_token":"","refresh_token":"","expires_at":0}}`
+
+	previousHook := ktavArtifactMigrationStepHook
+	ktavArtifactMigrationStepHook = func(step string) error {
+		if step == "after-lock" {
+			// Syntactically valid, structurally invalid: fire between lock
+			// acquisition and conversion.
+			writeTestFile(t, legacy, invalid)
+		}
+		return nil
+	}
+	t.Cleanup(func() { ktavArtifactMigrationStepHook = previousHook })
+
+	require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir), "an invalid journal is skipped, not an error")
+
+	onDisk, err := os.ReadFile(legacy)
+	require.NoError(t, err)
+	require.Equal(t, invalid, string(onDisk), "the replaced content is left untouched for quarantine")
+	require.NoFileExists(t, oauthJournalKtavPath(slot, "openai-codex"))
+	require.NoFileExists(t, backupPathFor(legacy))
+	require.NoFileExists(t, migrationRecordPathFor(legacy))
+}
+
+// TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat proves the cache
+// startup step runs OUTSIDE the workspace-config conditional: an
+// already-migrated (rush.ktav) workspace AND a workspace with no config at
+// all both convert a present legacy providers.json cache under Load.
+func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
+	cases := []struct{ name, workspaceFile string }{
+		{name: "workspace already rush.ktav", workspaceFile: "rush.ktav"},
+		{name: "no workspace config at all", workspaceFile: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ktavSetupLoadMigrationTest(t, true)
+			resetBothFormatsWarnings()
+			dir := canonicalArtifactTempDir(t)
+			if tc.workspaceFile != "" {
+				configJSON := `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`
+				require.NoError(t, os.WriteFile(filepath.Join(dir, tc.workspaceFile), testKtavBytes(t, configJSON), 0o600))
+			}
+			providers := cachePathFor("providers")
+			require.NoError(t, os.MkdirAll(filepath.Dir(providers), 0o700))
+			writeTestFile(t, providers, `{"providers":[{"name":"p"}]}`)
+
+			store, err := Load(dir, dir, false)
+			require.NoError(t, err)
+			require.NotNil(t, store)
+			t.Cleanup(func() { store.stopOAuthJournalWorkers() })
+
+			require.FileExists(t, ktavSiblingOf(providers), "the providers cache must be converted after Load")
+			require.NoFileExists(t, providers)
+			require.FileExists(t, backupPathFor(providers))
+			converted, err := readCacheDocument(providers)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"providers":[{"name":"p"}]}`, string(converted))
+		})
+	}
+}
+
+// TestKtavArtifactStartupJournalRecoversPostArchiveCrash proves the startup
+// journal path picks up a leftover POST-ARCHIVE state (Ktav + backup +
+// record, JSON already gone) and converges to a record-retired migration.
+func TestKtavArtifactStartupJournalRecoversPostArchiveCrash(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	resetBothFormatsWarnings()
+	dir := canonicalArtifactTempDir(t)
+	slot, legacy := seedKtavArtifactJournal(t, dir)
+
+	previousHook := ktavMigrationStepHook
+	ktavMigrationStepHook = func(step string) error {
+		if step == "after-backup-rename" {
+			return errKtavMigrationCrashInjected
+		}
+		return nil
+	}
+	t.Cleanup(func() { ktavMigrationStepHook = previousHook })
+	require.ErrorIs(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir), errKtavMigrationCrashInjected)
+
+	// The crash-after-archive state: Ktav + backup + record, no JSON.
+	require.NoFileExists(t, legacy)
+	require.FileExists(t, oauthJournalKtavPath(slot, "openai-codex"))
+	require.FileExists(t, backupPathFor(legacy))
+	require.FileExists(t, migrationRecordPathFor(legacy))
+
+	// The startup journal function converges without losing bytes.
+	ktavMigrateOAuthJournalsAtStartup(context.Background(), []string{slot}, dir)
+	require.NoFileExists(t, migrationRecordPathFor(legacy), "the leftover record must be retired")
+	assertKtavArtifactJournalMigrated(t, dir, slot)
+	require.Equal(t, oauthJournalKtavPath(slot, "openai-codex"), selectOAuthJournalPath(slot, "openai-codex", false))
 }
