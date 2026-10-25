@@ -379,8 +379,8 @@ func TestBackgroundLaunchAckCanonicalization(t *testing.T) {
 			"Background shell started with ID: 001\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.")
 		s2 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`,
 			"Background shell started with ID: 002\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.")
-		h1 := getToolInteractionSignature(s1.Response.Content)
-		h2 := getToolInteractionSignature(s2.Response.Content)
+		h1 := getToolInteractionSignature(s1.Content)
+		h2 := getToolInteractionSignature(s2.Content)
 		if h1 == "" {
 			t.Fatal("expected non-empty signature")
 		}
@@ -392,7 +392,7 @@ func TestBackgroundLaunchAckCanonicalization(t *testing.T) {
 	t.Run("different input → different signature", func(t *testing.T) {
 		s1 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, ackOutput("001"))
 		s2 := makeToolStep("bash", `{"command":"sleep 301","run_in_background":true}`, ackOutput("001"))
-		if getToolInteractionSignature(s1.Response.Content) == getToolInteractionSignature(s2.Response.Content) {
+		if getToolInteractionSignature(s1.Content) == getToolInteractionSignature(s2.Content) {
 			t.Errorf("different commands produced identical signatures; want different")
 		}
 	})
@@ -402,14 +402,14 @@ func TestBackgroundLaunchAckCanonicalization(t *testing.T) {
 		// canonicalized.
 		s1 := makeToolStep("job", `{"i":1}`, "job 001 done")
 		s2 := makeToolStep("job", `{"i":2}`, "job 002 done")
-		if getToolInteractionSignature(s1.Response.Content) == getToolInteractionSignature(s2.Response.Content) {
+		if getToolInteractionSignature(s1.Content) == getToolInteractionSignature(s2.Content) {
 			t.Errorf("non-ack results differing in an ID token produced identical signatures; want different")
 		}
 		// A prefix-truncated ack is not a full match either.
 		trunc := ackOutput("001")
 		s3 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, trunc[:len(trunc)-5])
 		s4 := makeToolStep("bash", `{"command":"sleep 300","run_in_background":true}`, trunc[:len(trunc)-6])
-		if getToolInteractionSignature(s3.Response.Content) == getToolInteractionSignature(s4.Response.Content) {
+		if getToolInteractionSignature(s3.Content) == getToolInteractionSignature(s4.Content) {
 			t.Errorf("truncated acks differing in an ID token produced identical signatures; want different")
 		}
 	})
