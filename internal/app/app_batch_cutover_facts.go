@@ -25,12 +25,6 @@ type batchWorkFacts struct {
 	DescendantsIncomplete bool
 }
 
-// batchCutoverOn reports that the batch authority is the one live reader
-// selection: batch installs are unconditional, so this is always true. It
-// is retained (always-true) only for the residual callers in retained
-// files; new code must not branch on it.
-func batchCutoverOn() bool { return true }
-
 // batchCutoverWriter is the pool the batch debt store opens its read-only
 // transactions on (same pool choice as BatchCLIStore). Nil without a DB.
 func (app *App) batchCutoverWriter() *sql.DB {

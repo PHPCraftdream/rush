@@ -49,11 +49,10 @@ var batchMaintenanceLoops sync.Map // *App -> *batchMaintenanceLoop
 
 // startBatchMaintenance runs the startup maintenance pass synchronously
 // (bounded by batchMaintenancePassBudget) and arms the periodic pass at
-// batchMaintenanceInterval. Flag off, or without a data dir or DB writer,
-// it is a no-op — the flag-OFF App keeps its existing OFF recovery sites
-// untouched. First wins: a second call never starts a second loop.
+// batchMaintenanceInterval. Without a data dir or DB writer,
+// it is a no-op. First wins: a second call never starts a second loop.
 func (app *App) startBatchMaintenance() {
-	if !batchCutoverOn() || app.dataDir == "" || app.batchCutoverWriter() == nil {
+	if app.dataDir == "" || app.batchCutoverWriter() == nil {
 		return
 	}
 	base, cancel := context.WithCancel(context.Background())
