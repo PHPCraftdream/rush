@@ -17,8 +17,10 @@ import (
 )
 
 var (
-	// Automatic migration remains off until KTAV-4 enables compatible writers.
-	ktavAutoMigrate     = false
+	// Automatic rush.json -> rush.ktav migration is ACTIVE: every Rush-owned
+	// reader and writer is Ktav-capable. Tests that need the legacy JSON
+	// behavior set this to false explicitly and restore it.
+	ktavAutoMigrate     = true
 	ktavMigrationBudget = 15 * time.Second
 )
 

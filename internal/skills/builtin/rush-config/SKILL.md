@@ -1,6 +1,6 @@
 ---
 name: rush-config
-description: Use when the user needs help configuring Rush — working with rush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
+description: Use when the user needs help configuring Rush — working with rush.ktav (or legacy rush.json), setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
 ---
 
 # Rush Configuration

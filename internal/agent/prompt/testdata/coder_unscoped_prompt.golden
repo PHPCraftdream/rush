@@ -30,13 +30,13 @@ Cwd: /fixed/workdir | Git: no | Platform: linux | Date: 1/2/2026
   </skill>
   <skill>
     <name>rush-config</name>
-    <description>Use when the user needs help configuring Rush — working with rush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.</description>
+    <description>Use when the user needs help configuring Rush — working with rush.ktav (or legacy rush.json), setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.</description>
     <location>rush://skills/rush-config/SKILL.md</location>
     <type>builtin</type>
   </skill>
   <skill>
     <name>rush-hooks</name>
-    <description>Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.json.</description>
+    <description>Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.ktav (or legacy rush.json).</description>
     <location>rush://skills/rush-hooks/SKILL.md</location>
     <type>builtin</type>
   </skill>
