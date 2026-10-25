@@ -45,7 +45,7 @@ func writeHiddenKtavFixture(t *testing.T, path, modelsJSON string) {
 // the unselected sibling and ConfigStaleness reported Dirty on every call.
 func TestConfigStalenessUnselectedJSONSiblingStaysClean(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
-	writeSignedKtavFixture(t, configPath,
+	writeSignedKtavFixture(t, ktavSiblingOf(configPath),
 		`{"smart":{"provider":"openai","model":"gpt-ktav"}}`)
 	writeSignedModelsFixture(t, configPath,
 		`{"smart":{"provider":"openai","model":"gpt-json"}}`)
@@ -90,7 +90,7 @@ func TestConfigStalenessUnselectedJSONSiblingStaysClean(t *testing.T) {
 // and every subsequent tick re-attempted the reload.
 func TestConfigStalenessIgnoredJSONEditDirtyOnceThenSettles(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
-	writeSignedKtavFixture(t, configPath,
+	writeSignedKtavFixture(t, ktavSiblingOf(configPath),
 		`{"smart":{"provider":"openai","model":"gpt-ktav"}}`)
 	writeSignedModelsFixture(t, configPath,
 		`{"smart":{"provider":"openai","model":"gpt-json"}}`)
@@ -132,7 +132,7 @@ func TestConfigStalenessIgnoredJSONEditDirtyOnceThenSettles(t *testing.T) {
 // SELECTED rush.ktav reloads and the active config changes.
 func TestConfigStalenessKtavEditReloadsAndChangesActiveConfig(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
-	writeSignedKtavFixture(t, configPath,
+	writeSignedKtavFixture(t, ktavSiblingOf(configPath),
 		`{"smart":{"provider":"openai","model":"gpt-ktav"}}`)
 	seedGlobalFixture(t, globalPath)
 
@@ -145,7 +145,7 @@ func TestConfigStalenessKtavEditReloadsAndChangesActiveConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.Reloaded)
 
-	writeSignedKtavFixture(t, configPath,
+	writeSignedKtavFixture(t, ktavSiblingOf(configPath),
 		`{"smart":{"provider":"openai","model":"gpt-ktav-2"}}`)
 	require.True(t, s.ConfigStaleness().Dirty)
 

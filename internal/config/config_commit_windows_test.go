@@ -219,6 +219,8 @@ func TestWindowsCommitExpectedAbsentNoReplaceClosesCheckCommitRace(t *testing.T)
 }
 
 func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
+	// Exercises the legacy rush.json write path; with the gate on the write targets rush.ktav.
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
 	alias := filepath.Join(root, "alias.json")
