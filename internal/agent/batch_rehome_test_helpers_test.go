@@ -5,7 +5,6 @@
 package agent
 
 import (
-	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -64,20 +63,4 @@ func settledGoroutineDelta(base int) int {
 		}
 	}
 	return best
-}
-
-// childQuestionNoticeText builds the child_question notice body: the same
-// "SUB-AGENT QUESTION (session ...)" frame the parent model already knows,
-// followed by the paused-state paragraph with the exact answer and give-up
-// calls. ownJobs is the child's own still-running job count; jobID is the
-// held delegation X the answer's result will arrive with.
-func childQuestionNoticeText(preamble, questionBlock, childID, jobID string, ownJobs int) string {
-	frame := fmt.Sprintf("SUB-AGENT QUESTION (session %s): %s", childID, questionBlock)
-	body := subAgentQuestionWithPreamble(preamble, frame)
-	return fmt.Sprintf(
-		"%s\n\nThe sub-agent is paused on this question. Its own %d background job(s) are still running, so job %s stays open -- waiting will not produce a result.\n"+
-			"Answer: call `agent` with resume_session_id=%q and your answer as prompt; the result then arrives with job %s.\n"+
-			"Give up: stop_agent(child_session_id=%q) -- this also stops its running jobs.",
-		body, ownJobs, jobID, childID, jobID, childID,
-	)
 }

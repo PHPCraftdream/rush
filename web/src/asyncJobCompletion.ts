@@ -40,11 +40,11 @@ const asyncNoticePattern = /^Async job (\S+) \([^)]*\) (finished|failed)\.\n\n([
 // (stage 5b). Same lead-in as asyncNoticePattern by construction (both are
 // FormatAsyncCompletion outputs).
 const asyncStoppedPattern =
-  /^Async job (\S+) \([^)]*\) (timed out after \d+s and was stopped|was stopped \(job_kill\)|was cancelled \(session stopped\))\. Partial output( before the stop)?:\n\n([\s\S]*)$/;
+  /^Async job (\S+) \([^)]*\) (timed out after \d+s and was stopped|was stopped \(batch_stop\)|was cancelled \(session stopped\))\. Partial output( before the stop)?:\n\n([\s\S]*)$/;
 
 function stoppedStatus(cause: string): AsyncJobStatus {
   if (cause.startsWith("timed out")) return "timed_out";
-  if (cause.includes("job_kill")) return "stopped";
+  if (cause.includes("batch_stop")) return "stopped";
   return "cancelled";
 }
 const legacyNoticePattern = /^Background job (\S+) \([^\n]*\) finished: exit (-?\d+), ran [^\n]+\./;

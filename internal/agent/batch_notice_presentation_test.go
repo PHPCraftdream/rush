@@ -56,7 +56,7 @@ func TestBatchNoticeFormatting_CharacterizesCurrentTerminalWording(t *testing.T)
 	// the stopped one; a future reclassification of stop-cause cancellation
 	// flips this literal.
 	cancelled := one(session.BatchNoticeRow{ToolCallID: "w5-c", State: "cancelled", Cause: "stop", OutcomeSummary: "boom"})
-	require.Equal(t, "Async job w5-c () was stopped (job_kill). Partial output before the stop:\n\nboom", cancelled)
+	require.Equal(t, "Async job w5-c () was stopped (batch_stop). Partial output before the stop:\n\nboom", cancelled)
 
 	completed := one(session.BatchNoticeRow{ToolCallID: "w5-x", Kind: "task", State: "completed", OutcomeSummary: "done!"})
 	require.Equal(t, "Async job w5-x () finished.\n\ndone!", completed)

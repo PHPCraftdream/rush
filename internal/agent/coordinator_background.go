@@ -42,7 +42,7 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 			completion.ToolCallID, completion.ToolName, completion.TimeoutSeconds, content)
 	}
 	if completion.Stopped {
-		return fmt.Sprintf("Async job %s (%s) was stopped (job_kill). Partial output before the stop:\n\n%s",
+		return fmt.Sprintf("Async job %s (%s) was stopped (batch_stop). Partial output before the stop:\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
 	}
 	if completion.Cancelled {
@@ -135,7 +135,7 @@ func backgroundJobSummary(id, command string, stdout, stderr string, exitCode in
 // next natural turn/Drain to pull it (its wake=1 still counts then). A child
 // whose delegation row runs is woken regardless (delegatedChildDriven).
 func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
-	// A shell job_kill already cancelled (its row is terminal, the tool result
+	// A shell batch_stop already cancelled (its row is terminal, the tool result
 	// is its answer) produces no wake notice and takes no auto-resume slot: its
 	// exit would otherwise read as "finished: exit 1" and wake the session a
 	// second time. The completion hold still ends and the scope is re-checked.

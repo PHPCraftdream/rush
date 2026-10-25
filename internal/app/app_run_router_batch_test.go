@@ -11,7 +11,7 @@ package app
 //
 // Ground truth the routing relies on (all verified against production):
 //   - completions are model-visible "Async job <id> () finished." /
-//     " failed." / " was stopped (job_kill). ..." texts (FormatAsyncCompletion
+//     " failed." / " was stopped (batch_stop). ..." texts (FormatAsyncCompletion
 //     in coordinator_background.go), and batch notices carry an EMPTY tool
 //     name; cancelled state lives in the batch_nodes DB row, never the text;
 //   - started is persisted twice: as the tool result AND as a user history
@@ -290,7 +290,7 @@ func (r *rbRouter) route(body []byte) (route string, seqErr string) {
 // (FormatAsyncCompletion) with the EMPTY tool name batch notices carry, and
 // returns the batch root's tool call id. The cancelled state is established
 // through the DB, not the text: Stopped is formatted before Cancelled, so a
-// stopped root reads "was stopped (job_kill)".
+// stopped root reads "was stopped (batch_stop)".
 func rbCompletionCallID(text string) string {
 	rest, ok := strings.CutPrefix(text, "Async job ")
 	if !ok {
@@ -302,7 +302,7 @@ func rbCompletionCallID(text string) string {
 	}
 	if strings.HasPrefix(tail, "finished.") ||
 		strings.HasPrefix(tail, "failed.") ||
-		strings.HasPrefix(tail, "was stopped (job_kill).") {
+		strings.HasPrefix(tail, "was stopped (batch_stop).") {
 		return id
 	}
 	return ""
