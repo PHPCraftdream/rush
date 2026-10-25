@@ -1,30 +1,30 @@
 ---
 name: rush-config
-description: Use when the user needs help configuring Rush — working with rush.json, setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
+description: Use when the user needs help configuring Rush — working with rush.ktav (or legacy rush.json), setting up providers, configuring LSPs, adding MCP servers, managing skills or permissions, or changing Rush behavior.
 ---
 
 # Rush Configuration
 
-Rush uses JSON configuration files with the following priority (highest to lowest):
+Rush prefers Ktav configuration files; a legacy JSON file is still read
+when no Ktav file exists (if both are present, the Ktav file wins and
+Rush emits one warning). Priority (highest to lowest):
 
-1. `.rush.json` (project-local, hidden)
-2. `rush.json` (project-local)
-3. `$XDG_CONFIG_HOME/rush/rush.json` or `$HOME/.config/rush/rush.json` (global)
+1. `.rush.ktav` (project-local, hidden; legacy `.rush.json`)
+2. `rush.ktav` (project-local; legacy `rush.json`)
+3. `$XDG_CONFIG_HOME/rush/rush.ktav` or `$HOME/.config/rush/rush.ktav` (global; legacy `rush.json`)
 
 ## Basic Structure
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "models": {},
-  "providers": {},
-  "mcp": {},
-  "lsp": {},
-  "hooks": {},
-  "options": {},
-  "permissions": {},
-  "tools": {}
-}
+```ktav
+"$schema": https://charm.land/crush.json
+models: {}
+providers: {}
+mcp: {}
+lsp: {}
+hooks: {}
+options: {}
+permissions: {}
+tools: {}
 ```
 
 The `$schema` property enables IDE autocomplete but is optional.
@@ -47,8 +47,8 @@ string, no error. A failing `$(command)` is always a hard error. For
 required credentials, use `${VAR:?message}` so a missing variable
 fails loudly at load time with your message.
 
-```json
-{ "api_key": "${CODEBERG_TOKEN:?set CODEBERG_TOKEN}" }
+```ktav
+api_key: ${CODEBERG_TOKEN:?set CODEBERG_TOKEN}
 ```
 
 ### Which fields expand
@@ -76,9 +76,10 @@ var isn't set. Applies to MCP `headers` and provider `extra_headers`.
 
 ### Security note
 
-`rush.json` is trusted code. Any `$(...)` in it runs at load time
+`rush.ktav` (or legacy `rush.json`) is trusted code. Any `$(...)` in it
+runs at load time
 with the invoking user's shell privileges, before the UI appears.
-Don't launch Rush in a directory whose `rush.json` you haven't
+Don't launch Rush in a directory whose `rush.ktav` you haven't
 reviewed.
 
 ## Common Tasks
@@ -89,19 +90,17 @@ reviewed.
 
 ## Model Selection
 
-```json
-{
-  "models": {
-    "smart": {
-      "model": "claude-sonnet-4-20250514",
-      "provider": "anthropic",
-      "max_tokens": 16384
-    },
-    "fast": {
-      "model": "claude-haiku-4-20250514",
-      "provider": "anthropic"
+```ktav
+models: {
+    smart: {
+        model: claude-sonnet-4-20250514
+        provider: anthropic
+        max_tokens: 16384
     }
-  }
+    fast: {
+        model: claude-haiku-4-20250514
+        provider: anthropic
+    }
 }
 ```
 
@@ -111,22 +110,20 @@ reviewed.
 
 ## Custom Providers
 
-```json
-{
-  "providers": {
-    "deepseek": {
-      "type": "openai-compat",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "$DEEPSEEK_API_KEY",
-      "models": [
-        {
-          "id": "deepseek-chat",
-          "name": "Deepseek V3",
-          "context_window": 64000
-        }
-      ]
+```ktav
+providers: {
+    deepseek: {
+        type: openai-compat
+        base_url: https://api.deepseek.com/v1
+        api_key: $DEEPSEEK_API_KEY
+        models: [
+            {
+                id: deepseek-chat
+                name: Deepseek V3
+                context_window: 64000
+            }
+        ]
     }
-  }
 }
 ```
 
@@ -137,18 +134,20 @@ reviewed.
 
 ## LSP Configuration
 
-```json
-{
-  "lsp": {
-    "go": {
-      "command": "gopls",
-      "env": { "GOPATH": "$HOME/go" }
-    },
-    "typescript": {
-      "command": "typescript-language-server",
-      "args": ["--stdio"]
+```ktav
+lsp: {
+    go: {
+        command: gopls
+        env: {
+            GOPATH: $HOME/go
+        }
     }
-  }
+    typescript: {
+        command: typescript-language-server
+        args: [
+            --stdio
+        ]
+    }
 }
 ```
 
@@ -158,22 +157,22 @@ reviewed.
 
 ## MCP Servers
 
-```json
-{
-  "mcp": {
-    "filesystem": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/path/to/mcp-server.js"]
-    },
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": {
-        "Authorization": "Bearer $GH_PAT"
-      }
+```ktav
+mcp: {
+    filesystem: {
+        type: stdio
+        command: node
+        args: [
+            /path/to/mcp-server.js
+        ]
     }
-  }
+    github: {
+        type: http
+        url: https://api.githubcopilot.com/mcp/
+        headers: {
+            Authorization: Bearer $GH_PAT
+        }
+    }
 }
 ```
 
@@ -191,16 +190,16 @@ coding agent, while still paying real startup cost — a `stdio` server
 spawns its own child process on every single invocation whether or not
 the task ever calls it.
 
-```json
-{
-  "mcp": {
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer $GH_PAT" },
-      "enabled_in_cli": true
+```ktav
+mcp: {
+    github: {
+        type: http
+        url: https://api.githubcopilot.com/mcp/
+        headers: {
+            Authorization: Bearer $GH_PAT
+        }
+        enabled_in_cli: true
     }
-  }
 }
 ```
 
@@ -213,25 +212,30 @@ a `CLI` column for the effective value.
 
 ## Options
 
-```json
-{
-  "options": {
-    "skills_paths": ["./skills"],
-    "disabled_tools": ["bash", "sourcegraph"],
-    "disabled_skills": ["rush-config"],
-    "tui": {
-      "compact_mode": false,
-      "diff_mode": "unified",
-      "transparent": false
-    },
-    "auto_lsp": true,
-    "debug": false,
-    "debug_lsp": false,
-    "attribution": {
-      "trailer_style": "assisted-by",
-      "generated_with": true
+```ktav
+options: {
+    skills_paths: [
+        ./skills
+    ]
+    disabled_tools: [
+        bash
+        sourcegraph
+    ]
+    disabled_skills: [
+        rush-config
+    ]
+    tui: {
+        compact_mode: false
+        diff_mode: unified
+        transparent: false
     }
-  }
+    auto_lsp: true
+    debug: false
+    debug_lsp: false
+    attribution: {
+        trailer_style: assisted-by
+        generated_with: true
+    }
 }
 ```
 
@@ -274,22 +278,22 @@ Skills with `disable-model-invocation` won't appear in the model's available ski
 
 ## Hooks
 
-Hooks are user-defined shell commands that fire on agent events. Currently only `PreToolUse` is supported, which runs before a tool is executed.
+Hook configuration lives in `rush.ktav` (or legacy `rush.json`); the hook
+stdin/stdout wire protocol remains JSON. Hooks are user-defined shell
+commands that fire on agent events. Currently only `PreToolUse` is supported, which runs before a tool is executed.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^(edit|write|multiedit)$",
-        "command": ".rush/hooks/protect-files.sh"
-      },
-      {
-        "matcher": "^bash$",
-        "command": ".rush/hooks/no-haskell.sh"
-      }
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            matcher: ^\u0028edit|write|multiedit\u0029$
+            command: .rush/hooks/protect-files.sh
+        }
+        {
+            matcher: ^bash$
+            command: .rush/hooks/no-haskell.sh
+        }
     ]
-  }
 }
 ```
 
@@ -385,11 +389,14 @@ When multiple hooks match, their decisions are aggregated:
 
 ## Tool Permissions
 
-```json
-{
-  "permissions": {
-    "allowed_tools": ["view", "ls", "grep", "edit"]
-  }
+```ktav
+permissions: {
+    allowed_tools: [
+        view
+        ls
+        grep
+        edit
+    ]
 }
 ```
 
@@ -401,20 +408,23 @@ you can flip to a deny-by-default model and carve out exactly what the
 run may do. This only affects `rush run`; interactive TUI / web
 sessions keep the normal permission flow.
 
-```json
-{
-  "permissions": {
-    "allowed_tools": ["view"],
-    "run": {
-      "restrict": true,
-      "allow_tools": ["view", "edit:write"],
-      "allow_bash": [
-        "git diff",
-        "glob:ls *",
-        "regex:^go (test|build)(\\s|$)"
-      ]
+```ktav
+permissions: {
+    allowed_tools: [
+        view
+    ]
+    run: {
+        restrict: true
+        allow_tools: [
+            view
+            edit:write
+        ]
+        allow_bash: [
+            git diff
+            glob:ls *
+            regex:^go \u0028test|build\u0029\u0028\u005Cs|$\u0029
+        ]
     }
-  }
 }
 ```
 

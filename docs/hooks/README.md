@@ -44,28 +44,31 @@ disallow the use of Haskell (but we love you, Simon Peyton Jones).
 ### Config
 
 The first thing we need to do is hook up our hook. Let's add the following to
-our **project-level** `rush.json`. Relative paths like `./no-haskell.sh` work
+our **project-level** `rush.ktav` (Rush prefers `rush.ktav`; a legacy
+`rush.json` is still read when no `rush.ktav` exists). Relative paths like
+`./no-haskell.sh` work
 here because the project root is your working directory. If you're configuring
-a global hook (`~/.config/rush/rush.json`), use an absolute path instead.
+a global hook (`~/.config/rush/rush.ktav`), use an absolute path instead.
 
-```jsonc
-{
-  // As expected, hooks go in a "hooks" object.
-  "hooks": {
-    // PreToolUse is an event that fires before a tool is used.
-    "PreToolUse": [
-      {
-        // What tool do we want to hook into? In this case, Bash, because it
-        // runs the stuff we wanna block.
-        "matcher": "^bash$",
+```ktav
+hooks: {
+    ## As expected, hooks go in a "hooks" object.
+    PreToolUse: [
+        ## PreToolUse is an event that fires before a tool is used.
+        {
+            ## What tool do we want to hook into? In this case, Bash, because it
+            ## runs the stuff we wanna block.
+            matcher: ^bash$
 
-        // The path to our actual hook script.
-        "command": "./no-haskell.sh",
-      },
-    ],
-  },
+            ## The path to our actual hook script.
+            command: ./no-haskell.sh
+        }
+    ]
 }
 ```
+
+Note that hook configuration lives in `rush.ktav` (or legacy `rush.json`),
+while the hook stdin/stdout wire protocol remains JSON.
 
 Now, let's make our `no-haskell.sh` hook script.
 
@@ -131,42 +134,41 @@ What this means in practice:
 
 ## Configuration
 
-Hooks can be added to your `rush.json` (or `.rush.json`) at both the global
-and project-level, with project level hooks taking precedence.
+Hook configuration lives in your `rush.ktav` (project-local hidden
+`.rush.ktav` / legacy `rush.json` / `.rush.json` are also read when no
+`.ktav` file exists) at both the global
+and project-level, with project level hooks taking precedence. Hook
+stdin/stdout remains JSON regardless.
 
-```jsonc
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "bash", // regex tested against the tool name
-        "command": "./hooks/my-hot-hook.sh", // the path to the hook
-        "timeout": 10, // in seconds; default 30
-      },
-    ],
-  },
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            matcher: bash ## regex tested against the tool name
+            command: ./hooks/my-hot-hook.sh ## the path to the hook
+            timeout: 10 ## in seconds; default 30
+        }
+    ]
 }
 ```
 
 > [!IMPORTANT]
 > The `command` is resolved relative to your **current working directory** —
 > not relative to the config file. Relative paths like `./hooks/whatever.sh`
-> work fine in project-level `rush.json` because the project root is also
+> work fine in project-level `rush.ktav` because the project root is also
 > your working directory. For **global** config (`~/.config/rush/`),
 > however, you must use either an absolute path or an inline command:
 >
-> ```jsonc
-> // Global ~/.config/rush/rush.json
-> {
->   "hooks": {
->     "PreToolUse": [
->       {
->         "command": "/home/you/.config/rush/hooks/no-haskell.sh"
->         // or use an inline command:
->         // "command": "echo '{\"decision\":\"allow\"}'"
->       }
+> ```ktav
+> ## Global ~/.config/rush/rush.ktav
+> hooks: {
+>     PreToolUse: [
+>         {
+>             command: /home/you/.config/rush/hooks/no-haskell.sh
+>             ## or use an inline command:
+>             ## command: echo '{"decision":"allow"}'
+>         }
 >     ]
->   }
 > }
 > ```
 
@@ -381,7 +383,7 @@ EOF
 
 Hooks run in parallel, but their results compose in config order. Whichever hook
 finishes first doesn't get to "win" by virtue of timing; composition is
-deterministic based on the order hooks appear in `rush.json`.
+deterministic based on the order hooks appear in `rush.ktav`.
 
 When multiple hooks match the same tool call:
 
@@ -411,16 +413,14 @@ should honor context cancellation or run out-of-process via a shebang.
 
 Prevent the agent from running `rm -rf` in bash:
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^bash$",
-        "command": "./hooks/no-rm-rf.sh"
-      }
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            matcher: ^bash$
+            command: ./hooks/no-rm-rf.sh
+        }
     ]
-  }
 }
 ```
 
@@ -444,16 +444,14 @@ exit 0
 Skip the permission prompt for tools that can't change anything. The hook
 returns `decision: "allow"`, which tells Rush to pre-approve the call:
 
-```jsonc
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^(view|ls|grep|glob)$",
-        "command": "echo '{\"decision\":\"allow\"}'",
-      },
-    ],
-  },
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            matcher: ^\u0028view|ls|grep|glob\u0029$
+            command: echo '{"decision":"allow"}'
+        }
+    ]
 }
 ```
 
@@ -480,16 +478,14 @@ esac
 
 Add a reminder to the model whenever it writes a Go file:
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^(edit|write|multiedit)$",
-        "command": "./hooks/go-context.sh"
-      }
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            matcher: ^\u0028edit|write|multiedit\u0029$
+            command: ./hooks/go-context.sh
+        }
     ]
-  }
 }
 ```
 
@@ -513,8 +509,8 @@ fi
 The `command` can be inline. This one-liner matches all MCP tools and blocks
 them:
 
-```jsonc
-{ "matcher": "^mcp_", "command": "echo 'MCP tools are disabled' >&2; exit 2" }
+```ktav
+{ matcher: ^mcp_, command: echo 'MCP tools are disabled' >&2; exit 2 }
 ```
 
 ### Log every tool call
@@ -522,8 +518,8 @@ them:
 With no `matcher` this fires for every tool. It exits 0 with no stdout so the
 tool call always proceeds.
 
-```jsonc
-{ "command": "echo \"$(date -Iseconds) $RUSH_TOOL_NAME\" >> ./tools.log" }
+```ktav
+{ command: echo "$(date -Iseconds) $RUSH_TOOL_NAME" >> ./tools.log }
 ```
 
 ### A real-world Example:
@@ -539,7 +535,7 @@ Hooks aren't limited to shell scripts: any executable works. Here's the same
 
 #### Lua
 
-`{"matcher": "^bash$", "command": "lua ./hooks/no-rm-rf.lua"}`
+`{ matcher: ^bash$, command: lua ./hooks/no-rm-rf.lua }`
 
 ```lua
 local input = io.read("*a")
@@ -553,7 +549,7 @@ end
 
 #### JavaScript
 
-`{"matcher": "^bash$", "command": "node ./hooks/no-rm-rf.js"}`
+`{ matcher: ^bash$, command: node ./hooks/no-rm-rf.js }`
 
 ```js
 let input = "";
@@ -598,16 +594,14 @@ event doesn't understand a field, it's ignored.
 
 Each entry under a `hooks.<EventName>` array:
 
-```jsonc
+```ktav
 {
-  // string. Optional. Regex tested against the tool name. Omit to match all.
-  "matcher": "^bash$",
-
-  // string. Required. Shell command to run.
-  "command": "./hooks/my-hook.sh",
-
-  // number. Optional. Seconds before the hook is killed. Defaults to 30.
-  "timeout": 10,
+    ## string. Optional. Regex tested against the tool name. Omit to match all.
+    matcher: ^bash$
+    ## string. Required. Shell command to run.
+    command: ./hooks/my-hook.sh
+    ## number. Optional. Seconds before the hook is killed. Defaults to 30.
+    timeout: 10
 }
 ```
 
