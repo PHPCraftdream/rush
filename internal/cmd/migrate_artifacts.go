@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -412,11 +413,17 @@ func migrateGlobalLocation(cmd *cobra.Command, legacyPath, currentPath string, d
 			// Check for inner config in dry-run mode.
 			innerConfigPath := filepath.Join(legacyDir, "crush.json")
 			newInnerConfigPath := filepath.Join(rushDir, "rush.json")
+			// Dry-run only names the target; the real-run path goes through
+			// migrateFile, which derives the produced spelling from the same
+			// gate.
+			if config.KtavAutoMigrateEnabled() {
+				newInnerConfigPath = migrateKtavSibling(newInnerConfigPath)
+			}
 			configPrefix := formatPrefix(prefix, "(config inside migrated directory)")
 			artRenamed, artRefused, artFailed := migrateKnownArtifacts(cmd, legacyDir, rushDir, dryRun, prefix)
 			if _, err := os.Stat(innerConfigPath); !os.IsNotExist(err) {
-				if _, err := os.Stat(newInnerConfigPath); err == nil {
-					cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, innerConfigPath, newInnerConfigPath)
+				if existing := migrateExistingInnerConfig(rushDir); existing != "" {
+					cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, innerConfigPath, existing)
 					return statusRenamed, statusRefused, artRenamed, artRefused, artFailed
 				}
 				cmd.Printf("would rename %s%s  ->  %s\n", configPrefix, innerConfigPath, newInnerConfigPath)
@@ -446,24 +453,46 @@ func migrateGlobalLocation(cmd *cobra.Command, legacyPath, currentPath string, d
 		return statusNone, statusNone, 0, 0, 0
 	}
 
-	// Check if target file exists (conflict).
-	if _, err := os.Stat(currentPath); err == nil {
-		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), legacyPath, currentPath)
+	// Check if target file exists (conflict). Resolve the produced spelling
+	// via the same gate config's writeTargetSlot applies, and detect a
+	// conflict on EITHER spelling of the slot — the conflict message names
+	// the file that is actually there.
+	writePath := currentPath
+	if config.KtavAutoMigrateEnabled() {
+		writePath = migrateKtavSibling(currentPath)
+	}
+	existing := currentPath
+	if _, err := os.Stat(existing); err != nil {
+		if _, err := os.Stat(migrateKtavSibling(currentPath)); err == nil {
+			existing = migrateKtavSibling(currentPath)
+		}
+	}
+	if _, err := os.Stat(existing); err == nil {
+		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), legacyPath, existing)
 		return statusRefused, statusNone, 0, 0, 0
 	}
 
 	// Perform or report the file rename.
 	if dryRun {
-		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, currentPath)
+		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, writePath)
 		return statusRenamed, statusNone, 0, 0, 0
 	}
 
-	if err := os.Rename(legacyPath, currentPath); err != nil {
-		cmd.Printf("failed to rename %s%s  ->  %s: %v\n", formatPrefix(prefix), legacyPath, currentPath, err)
+	// Gate on: convert the legacy JSON document to the Ktav format the
+	// produced slot spelling expects, writing rush.ktav (or the ktav
+	// spelling of currentPath) first and only removing the legacy source
+	// once the converted bytes are on disk - a failure leaves crush.json in
+	// place. Gate off keeps today's plain rename untouched.
+	if config.KtavAutoMigrateEnabled() {
+		if st := migrateToKtavTarget(cmd, legacyPath, writePath, prefix); st != statusRenamed {
+			return st, statusNone, 0, 0, 0
+		}
+	} else if err := os.Rename(legacyPath, writePath); err != nil {
+		cmd.Printf("failed to rename %s%s  ->  %s: %v\n", formatPrefix(prefix), legacyPath, writePath, err)
 		return statusFailed, statusNone, 0, 0, 0
+	} else {
+		cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, writePath)
 	}
-
-	cmd.Printf("renamed %s%s  ->  %s\n", formatPrefix(prefix), legacyPath, currentPath)
 
 	// Check if legacy directory is now empty.
 	entries, err := os.ReadDir(legacyDir)
