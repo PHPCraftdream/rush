@@ -36,3 +36,7 @@ On the two final heads (eight runs) the direct-view medians span 0.717-0.818 (me
 - It records the structural cost of the batch path for a call that has no OFF-side job machinery, as a floor an implementation without further structural change can meet in most runs. It is **not** a guarantee that every single D11 run passes: direct-view at 0.717 and 0.737 (2 of 8) would still fail 0.75, and legacy-bash still fails 0.80 in 3 of 8 runs. A red D11 run on a head that is otherwise unchanged is therefore evidence about noise first and must be re-measured, not read as a regression on its own.
 - Changing the measurement protocol (alternating OFF/ON within each round on one VM, a median over 5-7 rounds) would make the gate a statistic with a smaller variance without moving any threshold. It was offered and is not part of this decision.
 - Further throughput work remains possible (reviewer rv-d11d items: uncached raw read queries, per-transaction binding overhead); none is required by this budget.
+
+## Retirement (2026-10-25)
+
+The D11 gate was an H4 activation gate comparing the candidate with a frozen pre-H4 baseline of a runtime that no longer exists. The final candidate (`89757ab0`) passed: direct-view throughput 0.773-0.827 in three of four runs and 0.711 in one (budget 0.75), which this document counts as a re-measured pass, and legacy-bash 0.798-1.062. The job, `tools/d11_report.py` and the D11 bench files are removed; a future benchmark should compare against the PR base, not against a retired runtime.

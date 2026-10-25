@@ -113,8 +113,9 @@ plan (reviewer consultation #7). These bind the H4 documentation and tests.
 5. **Imported queued work.** Running operator tasks and leased continuations are
    reclaimed and retried; a retry can repeat an external side effect. The importer
    is not exactly-once for external effects. State this in the rollout notes.
-6. **Historical web completion display.** Keep it as read-only compatibility for
-   imported transcripts; do not remove the rendering together with the legacy rows.
+6. **Historical web completion display.** No compatibility rendering for imported
+   transcripts (operator decision 2026-10-25: backward compatibility is not a goal);
+   the web parser accepts only shapes a current producer emits.
 7. **SDK execution fence.** Keep the interim reserved `session_run_queue` row
    through H4 (it is not a legacy execution authority); the move to a
    `sessions.execution_requirement` column is a separate later change.

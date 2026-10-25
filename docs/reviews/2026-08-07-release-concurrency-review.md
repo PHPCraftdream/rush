@@ -285,7 +285,7 @@ hard abort там, где это возможно.
    subscriber не образует очевидного agent mutex cycle
    (`internal/pubsub/broker.go:169-262`).
 10. В CLI-provider и обычном Unix shell cancellation есть явные process cleanup
-    и backstops. Код документирует deliberate angel/process-group escape gaps,
+    и backstops. Код документирует deliberate daemon/process-group escape gaps,
     но обычный grandchild-holds-stdio путь закрыт.
 
 ## Общая оценка кода
