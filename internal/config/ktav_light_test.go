@@ -129,8 +129,16 @@ func TestKtavAutoMigrateEnabled(t *testing.T) {
 	// init() flips the gate off), so the production default can never be
 	// silently changed without this test going red.
 	require.True(t, ktavShippedDefault, "KTAV-4: the shipped default must keep auto-migrate ON")
+	// ktavShippedDefault is the var-init capture of ktavAutoMigrate
+	// (ktav_migration.go declares it true) taken BEFORE any init() in the
+	// package runs, so a true value here pins the declared production
+	// default. The AMBIENT value in this test binary is false (the test-only
+	// init() flips it), so the seam-restore round-trip must be asserted
+	// against the ambient value, not against the shipped default.
+	ambient := KtavAutoMigrateEnabled()
 	on := SetKtavAutoMigrateForTest(false)
 	require.False(t, KtavAutoMigrateEnabled())
 	on()
-	require.Equal(t, ktavShippedDefault, KtavAutoMigrateEnabled())
+	require.Equal(t, ambient, KtavAutoMigrateEnabled(),
+		"restoring the gate must return the ambient value it captured")
 }

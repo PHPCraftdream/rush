@@ -118,6 +118,11 @@ func TestConfigDiskSyncForeignLegacyWriteKeepsKtavContentAndPollerLive(t *testin
 // the Ktav spelling, so the origin must still resolve through
 // matchesLogicalSlot and stay writable; Disable/Enable must succeed.
 func TestMCPGlobalScopeWritableAfterMidSessionKtavMigration(t *testing.T) {
+	// Requires the gate ON: the reload must migrate the global rush.json to
+	// rush.ktav, which only happens under auto-migration. The package test
+	// init() defaults the gate to false. NOT parallel: the helper mutates
+	// the shared ktavAutoMigrate global.
+	enableKtavAutoMigrateForTest(t)
 	store, _ := isolatedMCPConfigStore(t)
 	globalPath := GlobalConfigData()
 	require.NoFileExists(t, globalPath)

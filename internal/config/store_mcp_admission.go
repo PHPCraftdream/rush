@@ -667,7 +667,19 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 			continue
 		}
 		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
-		if !ok || !reloadFingerprintContentEqual(expected.fingerprint, actual) {
+		if !ok {
+			// Slot-sibling expansion tracks BOTH spellings of every logical
+			// slot, including a sibling the MCP evaluation never reads
+			// because it does not exist (an absent rush.ktav beside an
+			// active rush.json). An absent tracked file the evaluation does
+			// not cover cannot make the mutation stale; an EXISTING tracked
+			// file missing from the evaluation stays a staleness signal.
+			if !expected.Exists {
+				continue
+			}
+			return false
+		}
+		if !reloadFingerprintContentEqual(expected.fingerprint, actual) {
 			return false
 		}
 	}
