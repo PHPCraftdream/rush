@@ -108,6 +108,7 @@ func integrityLoadHarness(t *testing.T) (dir, configPath, globalPath string) {
 // TestModelsIntegrity_SignsModelsWrite pins that a models write persists a
 // cache_rev exactly matching the real signature over the canonical models.
 func TestModelsIntegrity_SignsModelsWrite(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir := integrityIsolate(t)
 	p := filepath.Join(dir, "global.json")
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: p})
@@ -121,6 +122,7 @@ func TestModelsIntegrity_SignsModelsWrite(t *testing.T) {
 // not touch models leave the existing cache_rev byte-identical, even when the
 // models under that stale signature were edited directly on disk.
 func TestModelsIntegrity_NonModelsWritesLeaveSignature(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir := integrityIsolate(t)
 	globalPath := GlobalConfigData()
 	require.NoError(t, os.MkdirAll(filepath.Dir(globalPath), 0o755))
@@ -189,6 +191,7 @@ func TestModelsIntegrity_NonModelsWritesLeaveSignature(t *testing.T) {
 // rush signs a models write, a direct hand edit of the model id (keeping the
 // ORIGINAL valid signature) makes the next Load record ErrModelsEditedDirectly.
 func TestModelsIntegrity_DirectEditMismatch(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir, configPath, globalPath := integrityLoadHarness(t)
 	writeIntegrityFixture(t, configPath, "") // workspace: providers only
 
@@ -226,6 +229,7 @@ func TestModelsIntegrity_BogusSignatureMismatch(t *testing.T) {
 // (key reordering + whitespace) of a signed file is NOT a mismatch, because
 // the signature is over canonicalized JSON.
 func TestModelsIntegrity_WhitespaceReformatStillOK(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir, configPath, _ := integrityLoadHarness(t)
 	writeIntegrityFixture(t, configPath, `{"smart":{"provider":"p","model":"m"}}`)
 	signFileOnDisk(t, configPath)
@@ -355,6 +359,7 @@ func TestModelsIntegrity_PresentInvalidSignatureMismatch(t *testing.T) {
 // TestModelsIntegrity_LockSettingsSigns pins that LockSettings (re)signs
 // cache_rev over the file's CURRENT models content in the same write.
 func TestModelsIntegrity_LockSettingsSigns(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir, configPath, globalPath := integrityLoadHarness(t)
 	writeIntegrityFixture(t, configPath, "")
 	store, err := Load(dir, dir, false)
@@ -382,6 +387,7 @@ func TestModelsIntegrity_LockSettingsSigns(t *testing.T) {
 // TestModelsIntegrity_RemoveModelsRemovesKey pins that removing the models
 // object also removes cache_rev (absent models => no signature).
 func TestModelsIntegrity_RemoveModelsRemovesKey(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir := integrityIsolate(t)
 	p := filepath.Join(dir, "global.json")
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: p})
@@ -544,6 +550,7 @@ func TestModelsIntegrity_WorkspaceVerifiedSeparately(t *testing.T) {
 // TestModelsIntegrity_MismatchNeverBlocksLoadOrWrites pins that a mismatch is
 // recorded but never fails Load and never rewrites the file.
 func TestModelsIntegrity_MismatchNeverBlocksLoadOrWrites(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir, configPath, _ := integrityLoadHarness(t)
 	writeIntegrityFixture(t, configPath, `{"smart":{"provider":"p","model":"m"}}`)
 	tampered, err := sjson.Set(string(fileBytes(t, configPath)), "cache_rev", strings.Repeat("a", 64))

@@ -153,6 +153,7 @@ func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
 	for p := range seen {
 		tracked = append(tracked, p)
 	}
+	tracked = expandConfigSlotSiblings(tracked)
 	slices.Sort(tracked)
 
 	next := cur.clone()

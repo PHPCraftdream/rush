@@ -890,6 +890,7 @@ func normalizeReloadPath(path string) string {
 }
 
 func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFingerprint) ([]string, map[string]fileSnapshot) {
+	paths = expandConfigSlotSiblings(paths)
 	trackedSet := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {

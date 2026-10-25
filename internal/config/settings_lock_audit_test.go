@@ -17,6 +17,7 @@ import (
 )
 
 func TestSettingsLock_RefusalMessagesInstructAgent(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
 	require.NoError(t, s.SetConfigField(ScopeGlobal, "seed", 1))
@@ -38,6 +39,7 @@ func TestSettingsLock_RefusalMessagesInstructAgent(t *testing.T) {
 
 // revert-check RC7: restoring lock-specific refusal reasons must fail TestSettingsLock_SlogRedactsEventDetails.
 func TestSettingsLock_AuditEvents(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	dir := t.TempDir()
 	gp := filepath.Join(dir, "global.json")
 	ws := filepath.Join(dir, "workspace.json")

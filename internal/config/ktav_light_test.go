@@ -110,19 +110,19 @@ func TestActiveConfigFileName(t *testing.T) {
 func TestSetKtavAutoMigrateForTest(t *testing.T) {
 	ktavLightIsolateEnv(t)
 	// NOT parallel: mutates the shared ktavAutoMigrate global.
+	require.True(t, ktavAutoMigrate, "KTAV-4: auto-migrate is the default")
+	restore := SetKtavAutoMigrateForTest(false)
 	require.False(t, ktavAutoMigrate)
-	restore := SetKtavAutoMigrateForTest(true)
-	require.True(t, ktavAutoMigrate)
 	restore()
-	require.False(t, ktavAutoMigrate)
+	require.True(t, ktavAutoMigrate)
 }
 
 func TestKtavAutoMigrateEnabled(t *testing.T) {
 	ktavLightIsolateEnv(t)
 	// NOT parallel: the gate is a shared global; the test mutates it via the
 	// test seam rather than assuming a pristine value.
-	on := SetKtavAutoMigrateForTest(true)
-	require.True(t, KtavAutoMigrateEnabled())
-	on()
+	on := SetKtavAutoMigrateForTest(false)
 	require.False(t, KtavAutoMigrateEnabled())
+	on()
+	require.True(t, KtavAutoMigrateEnabled())
 }

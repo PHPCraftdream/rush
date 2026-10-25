@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,29 @@ var (
 // ktavSiblingOf returns the preferred Ktav spelling of a legacy JSON path.
 func ktavSiblingOf(legacyJSON string) string {
 	return strings.TrimSuffix(legacyJSON, ".json") + ktavConfigExt
+}
+
+// expandConfigSlotSiblings appends the alternate spelling of every path
+// that names a Rush-owned logical config slot (rush.json / rush.ktav):
+// the Ktav sibling of each legacy JSON path and the legacy JSON sibling of
+// each Ktav path. This keeps both spellings of a slot in the tracked and
+// candidate path sets, so the disk-sync poller sees a foreign write to
+// either spelling on natural ticks, even when slot selection flips after
+// Load (migration renames rush.json to rush.ktav mid-session).
+func expandConfigSlotSiblings(paths []string) []string {
+	out := slices.Clone(paths)
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		switch filepath.Base(path) {
+		case appName + ".json":
+			out = append(out, ktavSiblingOf(path))
+		case appName + ktavConfigExt:
+			out = append(out, strings.TrimSuffix(path, ktavConfigExt)+".json")
+		}
+	}
+	return out
 }
 
 // backupPathFor returns the retained backup name for a legacy JSON path:

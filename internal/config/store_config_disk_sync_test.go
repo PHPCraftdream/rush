@@ -439,6 +439,7 @@ func TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk(t *testing.T) {
 // held across WG.Wait while a successful in-flight reload takes the same
 // lock in configSyncOnModelsChangedFunc.
 func TestConfigDiskSyncStopJoinsDuringInFlightReload(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	dir, configPath, _ := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)

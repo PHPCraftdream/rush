@@ -309,19 +309,32 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 }
 
 // TestKtavCreationRespectsAutoMigrateGate pins the CURRENT gate value: with
-// NEITHER file present, a write creates the legacy rush.json because
-// ktavAutoMigrate is false in this build. Flipping the gate is KTAV-4's job.
+// NEITHER file present, a gate-on write creates rush.ktav (KTAV-4 made the
+// gate default on), and a gate-off write still creates the legacy rush.json.
 func TestKtavCreationRespectsAutoMigrateGate(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "rush.json")
 	ktavPath := filepath.Join(dir, "rush.ktav")
-	require.False(t, newConfigFileIsKtav(), "the current build must not auto-create rush.ktav (KTAV-4 flips this)")
+	require.True(t, newConfigFileIsKtav(), "the current build defaults to auto-creating rush.ktav (KTAV-4)")
 
 	store := ktavWriteStore(t, jsonPath)
 	require.NoError(t, store.SetConfigField(ScopeGlobal, "options.debug", true))
-	require.FileExists(t, jsonPath, "with neither file present, the legacy JSON slot is created")
-	require.NoFileExists(t, ktavPath)
-	require.Equal(t, "true", gjson.Get(string(fileBytes(t, jsonPath)), "options.debug").String())
+	require.FileExists(t, ktavPath, "with neither file present, the Ktav slot is created")
+	require.NoFileExists(t, jsonPath)
+	require.Equal(t, "true", gjson.Get(string(ktavDecodedJSON(t, ktavPath)), "options.debug").String())
+
+	// Gate off (explicitly): the legacy JSON slot is created instead, and no
+	// Ktav file appears. NOT parallel: mutates the shared gate global.
+	prev := ktavAutoMigrate
+	ktavAutoMigrate = false
+	t.Cleanup(func() { ktavAutoMigrate = prev })
+	jsonPathOff := filepath.Join(t.TempDir(), "rush.json")
+	ktavPathOff := filepath.Join(filepath.Dir(jsonPathOff), "rush.ktav")
+	storeOff := ktavWriteStore(t, jsonPathOff)
+	require.NoError(t, storeOff.SetConfigField(ScopeGlobal, "options.debug", true))
+	require.FileExists(t, jsonPathOff, "with the gate off, the legacy JSON slot is created")
+	require.NoFileExists(t, ktavPathOff)
+	require.Equal(t, "true", gjson.Get(string(fileBytes(t, jsonPathOff)), "options.debug").String())
 }
 
 // TestKtavActiveSlotNeverCreatesLegacyJSON pins writeTargetSlot from the
