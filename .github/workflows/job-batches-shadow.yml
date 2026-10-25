@@ -1,11 +1,8 @@
 # Job-batches shadow workflow — R12 cutover evidence.
 #
-# Purpose: run the FULL test suite with the batch runtime selected (the
-# workflow env sets RUSH_BATCH_RUNTIME=1; since the H4 atomic activation
-# ANY value of that variable — unset, empty, false-like or true-like —
-# selects batch, and the shadow-aw-acceptance job additionally executes a
-# default-environment run and an explicit RUSH_BATCH_RUNTIME=false run to
-# prove it). This is intentionally NOT a gate on normal development: it is
+# Purpose: run the FULL test suite on the batch runtime, which is the only
+# runtime since the H4 atomic activation, and run the AW acceptance tests
+# by name. This is intentionally NOT a gate on normal development: it is
 # trigger-limited to pushes on ci-shadow/** branches plus manual
 # workflow_dispatch, and it MUST NEVER gain a pull_request or schedule/cron
 # trigger (hard repository rule — same rule agent-leak-smoke.yml documents).
@@ -20,11 +17,6 @@ on:
   push:
     branches: ['ci-shadow/**']
   workflow_dispatch:
-    inputs:
-      d11:
-        description: 'Run the D11 per-call-cost benchmark job (ubuntu) and upload its report'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -34,7 +26,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RUSH_BATCH_RUNTIME: '1'
   CGO_ENABLED: '0'
   GOEXPERIMENT: greenteagc
 
@@ -373,17 +364,10 @@ jobs:
           path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore
 
-  # AW selector + batch activation proof (H4): the product has no flag-OFF
-  # mode — every RUSH_BATCH_RUNTIME value selects the batch runtime. The
-  # selector below REQUIREs its selected tests to exist and run: zero
-  # matches ("no tests to run"), a SKIP, or any failure all turn the job
-  # red with an explicit error. TestBatchRuntimeSelectionAllValuesSelectBatch
-  # (internal/app/app_batch_activation_check_test.go) is the guaranteed
-  # anchor; the AWa/AWb acceptance names are selected too and must pass the
-  # moment they exist. Two runs execute: a default-environment run (the
-  # workflow-level RUSH_BATCH_RUNTIME is stripped with `env -u`) and an
-  # explicit RUSH_BATCH_RUNTIME=false run (step env overrides the workflow
-  # env), proving batch is active in both.
+  # AW acceptance: the product has a single (batch) runtime. The selector
+  # below REQUIREs its tests to exist and run: zero matches ("no tests to
+  # run"), a SKIP, or any failure all turn the job red with an explicit
+  # error, and every named AWa/AWb test must have passed by name.
   shadow-aw-acceptance:
     runs-on: ubuntu-latest
     steps:
@@ -400,7 +384,7 @@ jobs:
           echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/rush-config" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg-data" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg-config" >> "$GITHUB_ENV"
-      - name: AW selection + activation proof (default environment, no RUSH_BATCH_RUNTIME)
+      - name: AW acceptance (selection + by-name proof)
         shell: bash
         run: |
           set -o pipefail
@@ -426,64 +410,13 @@ jobs:
             done
           }
           AW_TESTS="TestAWa1ChildSettlementNoWakeNoDebt TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld TestAWa3TopLevelAnyWakesOnlyOnRootDebt TestAWa4AllStaysAsleepWhileOtherRootLive TestAWa5ChildQuestionBreaksSleepQuestionStillPending TestAWa5AgentChildAnswerViaRunnerInject TestAWbStopAdmissionFourBAndDelivery TestAWbDebtFreeVariant"
-          # Activation anchor (internal/app) and the actual-work acceptance
-          # tests (internal/agent) run under the SAME environment.
-          env -u RUSH_BATCH_RUNTIME go test -p 1 -parallel 1 -count=1 -v \
-            -run '^TestBatchRuntimeSelectionAllValuesSelectBatch$' \
-            ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-default-activation.log"
-          rc1=${PIPESTATUS[0]}
-          env -u RUSH_BATCH_RUNTIME go test -p 1 -parallel 1 -count=1 -v \
-            -run '^(TestAWa|TestAWb)' \
-            ./internal/agent/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-default-aw.log"
-          rc2=${PIPESTATUS[0]}
-          require_passed "$RUNNER_TEMP/aw-acceptance-default-activation.log" TestBatchRuntimeSelectionAllValuesSelectBatch
-          require_passed "$RUNNER_TEMP/aw-acceptance-default-aw.log" $AW_TESTS
-          if [ "$rc1" -ne 0 ] || [ "$rc2" -ne 0 ]; then
-            echo "::error::acceptance run failed (activation rc=$rc1, aw rc=$rc2)"
-            exit 1
-          fi
-      - name: AW selection + activation proof (RUSH_BATCH_RUNTIME=false)
-        env:
-          RUSH_BATCH_RUNTIME: 'false'
-        shell: bash
-        run: |
-          set -o pipefail
-          # Every required test must have run and passed BY NAME: a renamed or
-          # deleted test cannot hide behind another passing test, and an empty
-          # selection ("no tests to run") or a SKIP is a failure.
-          require_passed() {
-            logfile="$1"
-            shift
-            if grep -q 'no tests to run' "$logfile"; then
-              echo "::error::selector matched zero tests in $logfile"
-              exit 1
-            fi
-            if grep -q -- '--- SKIP' "$logfile"; then
-              echo "::error::a selected test reported SKIP in $logfile - the acceptance must actually run"
-              exit 1
-            fi
-            for name in "$@"; do
-              if ! grep -q -- "--- PASS: $name " "$logfile"; then
-                echo "::error::required test $name did not run and pass (renamed, deleted or failing) - see $logfile"
-                exit 1
-              fi
-            done
-          }
-          AW_TESTS="TestAWa1ChildSettlementNoWakeNoDebt TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld TestAWa3TopLevelAnyWakesOnlyOnRootDebt TestAWa4AllStaysAsleepWhileOtherRootLive TestAWa5ChildQuestionBreaksSleepQuestionStillPending TestAWa5AgentChildAnswerViaRunnerInject TestAWbStopAdmissionFourBAndDelivery TestAWbDebtFreeVariant"
-          # Activation anchor (internal/app) and the actual-work acceptance
-          # tests (internal/agent) run under the SAME environment.
-          go test -p 1 -parallel 1 -count=1 -v \
-            -run '^TestBatchRuntimeSelectionAllValuesSelectBatch$' \
-            ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-false-activation.log"
-          rc1=${PIPESTATUS[0]}
           go test -p 1 -parallel 1 -count=1 -v \
             -run '^(TestAWa|TestAWb)' \
-            ./internal/agent/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance-false-aw.log"
-          rc2=${PIPESTATUS[0]}
-          require_passed "$RUNNER_TEMP/aw-acceptance-false-activation.log" TestBatchRuntimeSelectionAllValuesSelectBatch
-          require_passed "$RUNNER_TEMP/aw-acceptance-false-aw.log" $AW_TESTS
-          if [ "$rc1" -ne 0 ] || [ "$rc2" -ne 0 ]; then
-            echo "::error::acceptance run failed (activation rc=$rc1, aw rc=$rc2)"
+            ./internal/agent/ 2>&1 | tee "$RUNNER_TEMP/aw-acceptance.log"
+          rc=${PIPESTATUS[0]}
+          require_passed "$RUNNER_TEMP/aw-acceptance.log" $AW_TESTS
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::acceptance run failed (rc=$rc)"
             exit 1
           fi
       - name: Upload test logs
@@ -543,140 +476,4 @@ jobs:
         with:
           name: shadow-web-logs
           path: ${{ runner.temp }}/*.log
-          if-no-files-found: ignore
-
-  # D11 per-call cost: compare both the direct tiny-fixture view workload and
-  # the legacy-wrapped bash workload. Each mode runs from an isolated checkout
-  # with the same benchmark source; per-workload limits are enforced separately.
-  d11-benchmark:
-    if: inputs.d11 == true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          path: candidate
-          persist-credentials: false
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: d5c3b0d9ec8607370e2d97c80503c9d5a7866740
-          path: baseline
-          persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: candidate/go.mod
-      # The pinned baseline (d5c3b0d9) is measured from ITS OWN tree: its own
-      # flag semantics, its own copies of the bench harness files (this
-      # overlay overwrites them with the candidate's versions so both sides
-      # measure the identical workload). The candidate harness therefore uses
-      # only symbols that exist in BOTH trees (batchCutoverOn,
-      # batchCutoverWriter, config.Init, db.Connect/Release); all three bench
-      # files, the observer included, are copied into the baseline and compiled
-      # in BOTH trees, so none of them may use a symbol missing from either.
-      - name: Overlay candidate D11 test source on baseline
-        shell: bash
-        run: |
-          mkdir -p baseline/internal/app
-          cp candidate/internal/app/app_batch_bench_helpers_test.go baseline/internal/app/
-          cp candidate/internal/app/app_batch_bench_test.go baseline/internal/app/
-          cp candidate/internal/app/app_batch_bench_observer_test.go baseline/internal/app/
-      - name: Isolate D11 global dirs
-        shell: bash
-        run: |
-          echo "RUSH_GLOBAL_DATA=$RUNNER_TEMP/d11-gd" >> "$GITHUB_ENV"
-          echo "RUSH_GLOBAL_CONFIG=$RUNNER_TEMP/d11-gc" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/d11-xd" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/d11-xc" >> "$GITHUB_ENV"
-      - name: Run candidate D11 observer regressions
-        if: always() && !cancelled()
-        working-directory: candidate
-        shell: bash
-        run: go test -failfast -p 1 -parallel 1 -count=1 -run '^TestD11Observer' ./internal/app/
-      - name: Run both baseline workloads
-        working-directory: baseline
-        shell: bash
-        env:
-          RUSH_D11_BENCH: '1'
-          RUSH_D11_MODE: baseline
-          RUSH_D11_BASELINE_SHA: d5c3b0d9ec8607370e2d97c80503c9d5a7866740
-          RUSH_D11_CANDIDATE_SHA: ${{ github.sha }}
-        run: |
-          set +e
-          set -o pipefail
-          rc=0
-          for workload in direct-view legacy-bash; do
-            echo "Running baseline workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-baseline-$workload-cpu.pprof" ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-baseline-$workload.log"
-            run_rc=${PIPESTATUS[0]}
-            if [ "$run_rc" -ne 0 ]; then rc=1; fi
-          done
-          exit "$rc"
-      - name: Run both candidate workloads even if baseline failed
-        if: always() && !cancelled()
-        working-directory: candidate
-        shell: bash
-        env:
-          RUSH_D11_BENCH: '1'
-          RUSH_D11_MODE: candidate
-          RUSH_D11_BASELINE_SHA: d5c3b0d9ec8607370e2d97c80503c9d5a7866740
-          RUSH_D11_CANDIDATE_SHA: ${{ github.sha }}
-        run: |
-          set +e
-          set -o pipefail
-          rc=0
-          for workload in direct-view legacy-bash; do
-            echo "Running candidate workload: $workload"
-            RUSH_D11_WORKLOAD="$workload" go test -failfast -p 1 -parallel 1 -v -timeout 40m -run '^TestD11BatchRuntimeBenchmark$' -cpuprofile "$RUNNER_TEMP/d11-candidate-$workload-cpu.pprof" -mutexprofile "$RUNNER_TEMP/d11-candidate-$workload-mutex.pprof" -blockprofile "$RUNNER_TEMP/d11-candidate-$workload-block.pprof" -mutexprofilefraction 1 ./internal/app/ 2>&1 | tee "$RUNNER_TEMP/d11-candidate-$workload.log"
-            run_rc=${PIPESTATUS[0]}
-            if [ "$run_rc" -ne 0 ]; then rc=1; fi
-          done
-          exit "$rc"
-      - name: Compare both workloads and emit report
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          python candidate/tools/d11_report.py \
-            "$RUNNER_TEMP/d11-baseline-direct-view.log" \
-            "$RUNNER_TEMP/d11-candidate-direct-view.log" \
-            "$RUNNER_TEMP/d11-baseline-legacy-bash.log" \
-            "$RUNNER_TEMP/d11-candidate-legacy-bash.log" \
-            --json-out "$RUNNER_TEMP/d11-summary.json" \
-            --summary-out "$RUNNER_TEMP/d11-summary.md" \
-            -o "$RUNNER_TEMP/d11-report.md"
-          rc=$?
-          # The full report embeds the raw samples (~1.4 MiB) and exceeds the
-          # 1 MiB GITHUB_STEP_SUMMARY cap; the summary gets the compact form,
-          # the full report stays an uploaded artifact.
-          if [ -f "$RUNNER_TEMP/d11-summary.md" ]; then cat "$RUNNER_TEMP/d11-summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
-          exit "$rc"
-      - name: Print pprof tops
-        if: always()
-        working-directory: candidate
-        shell: bash
-        run: |
-          set +e
-          shopt -s nullglob
-          for prof in "$RUNNER_TEMP"/d11-*.pprof; do
-            echo "::group::d11 pprof $(basename "$prof") (-top -cum -nodecount=50)"
-            go tool pprof -top -cum -nodecount=50 "$prof" || echo "pprof failed for $prof"
-            echo "::endgroup::"
-            echo "::group::d11 pprof $(basename "$prof") (-top -flat -nodecount=40)"
-            go tool pprof -top -flat -nodecount=40 "$prof" || echo "pprof failed for $prof"
-            echo "::endgroup::"
-          done
-          exit 0
-      - name: Run report unit tests
-        if: always()
-        run: python -I -m unittest discover -s candidate/tools -p test_d11_report.py
-      - name: Upload raw D11 evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: d11-evidence
-          path: |
-            ${{ runner.temp }}/d11-baseline-*.log
-            ${{ runner.temp }}/d11-candidate-*.log
-            ${{ runner.temp }}/d11-summary.json
-            ${{ runner.temp }}/d11-report.md
-            ${{ runner.temp }}/d11-*pprof
           if-no-files-found: ignore
