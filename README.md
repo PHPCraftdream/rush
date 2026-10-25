@@ -1004,11 +1004,11 @@ handle automatically, then follow its final report for anything it can't.
 
 > [!NOTE]
 > Rush-owned config now lives as `rush.ktav` (the preferred spelling);
-> `rush.json` is still read when no `rush.ktav` exists in the same location.
-> `rush migrate` itself keeps producing and renaming the JSON names — after
-> migrating, you can rename a migrated `rush.json` to `rush.ktav` (keeping
-> `rush.json.bak` if you want an easy rollback) or let Rush's automatic
-> migration handle it. See [docs/ktav-config.md](./docs/ktav-config.md).
+> `rush.json` keeps working until Rush's automatic migration converts it. To
+> convert by hand, write the Ktav equivalent of the JSON content into
+> `rush.ktav` — never merely rename a `rush.json` to `rush.ktav` (a `.ktav`
+> file is decoded as Ktav, and JSON bytes under that name are an error with
+> no fallback). See [docs/ktav-config.md](./docs/ktav-config.md).
 
 By default it operates on the current working directory (or `--cwd` if set)
 and always attempts the global/system locations above; `--recursive` walks

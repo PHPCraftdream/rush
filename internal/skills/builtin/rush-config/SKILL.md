@@ -9,14 +9,15 @@ Rush prefers Ktav configuration files; a legacy JSON file is still read
 when no Ktav file exists (if both are present, the Ktav file wins and
 Rush emits one warning). Priority (highest to lowest):
 
-1. `.rush.ktav` (project-local, hidden; legacy `.rush.json`)
-2. `rush.ktav` (project-local; legacy `rush.json`)
-3. `$XDG_CONFIG_HOME/rush/rush.ktav` or `$HOME/.config/rush/rush.ktav` (global; legacy `rush.json`)
+1. Project configs, discovered per directory walking up from the current
+   working directory; at each directory the **visible** `rush.ktav` (or
+   legacy `rush.json`) takes precedence over the hidden `.rush.ktav`
+   (or `.rush.json`) at that same directory.
+2. `$XDG_CONFIG_HOME/rush/rush.ktav` or `$HOME/.config/rush/rush.ktav` (global; legacy `rush.json`)
 
 ## Basic Structure
 
 ```ktav
-"$schema": https://charm.land/crush.json
 models: {}
 providers: {}
 mcp: {}
@@ -27,7 +28,7 @@ permissions: {}
 tools: {}
 ```
 
-The `$schema` property enables IDE autocomplete but is optional.
+Editor/JSON-Schema validation is not available for Ktav config files (see `docs/ktav-config.md`).
 
 ## Shell Expansion
 
@@ -286,7 +287,7 @@ commands that fire on agent events. Currently only `PreToolUse` is supported, wh
 hooks: {
     PreToolUse: [
         {
-            matcher: ^\u0028edit|write|multiedit\u0029$
+            matcher: ^(edit|write|multiedit)$
             command: .rush/hooks/protect-files.sh
         }
         {
@@ -408,23 +409,24 @@ you can flip to a deny-by-default model and carve out exactly what the
 run may do. This only affects `rush run`; interactive TUI / web
 sessions keep the normal permission flow.
 
-```ktav
-permissions: {
-    allowed_tools: [
-        view
-    ]
-    run: {
-        restrict: true
-        allow_tools: [
-            view
-            edit:write
-        ]
-        allow_bash: [
-            git diff
-            glob:ls *
-            regex:^go \u0028test|build\u0029\u0028\u005Cs|$\u0029
-        ]
+Rush-style config can also be written as rush.json-style JSON when a
+`rush.ktav` does not exist — the next example mixes `\`-escapes (a `\s` in a
+regex), so it is shown in JSON to stay unambiguous:
+
+```jsonc
+{
+  "permissions": {
+    "allowed_tools": ["view"],
+    "run": {
+      "restrict": true,
+      "allow_tools": ["view", "edit:write"],
+      "allow_bash": [
+        "git diff",
+        "glob:ls *",
+        "regex:^go (test|build)(\\s|$)"
+      ]
     }
+  }
 }
 ```
 

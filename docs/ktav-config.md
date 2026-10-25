@@ -218,11 +218,3 @@ is the in-memory (or explicitly provided) database.
 - **`schema.json` cannot validate `rush.ktav`.** The repository-root
   `schema.json` is a JSON Schema artifact describing `rush.json`; Ktav is a
   different syntax and is not supported by it.
-- **Some wave-B write paths still refuse Ktav targets.** `rejectUnconvertedKtavWrite`
-  (`ktav_doc.go`) fails with `errKtavWriteNotSupported` ("writing rush.ktav
-  is not supported yet in this build") at write boundaries that have not yet
-  been converted to the settings-document layer; the code identifies the
-  OAuth store (`store_oauth.go`) and MCP store (`store_mcp_transaction.go`)
-  lanes as wave-B call sites. In practice: while those lanes remain
-  unconverted, a Rush operation routed through them onto a `.ktav` target
-  errors out instead of writing. The conversion of these lanes is pending.

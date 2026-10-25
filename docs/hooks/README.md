@@ -144,9 +144,14 @@ stdin/stdout remains JSON regardless.
 hooks: {
     PreToolUse: [
         {
-            matcher: bash ## regex tested against the tool name
-            command: ./hooks/my-hot-hook.sh ## the path to the hook
-            timeout: 10 ## in seconds; default 30
+            ## regex tested against the tool name
+            matcher: bash
+
+            ## the path to the hook
+            command: ./hooks/my-hot-hook.sh
+
+            ## in seconds; default 30
+            timeout: 10
         }
     ]
 }
@@ -448,7 +453,7 @@ returns `decision: "allow"`, which tells Rush to pre-approve the call:
 hooks: {
     PreToolUse: [
         {
-            matcher: ^\u0028view|ls|grep|glob\u0029$
+            matcher: ^(view|ls|grep|glob)$
             command: echo '{"decision":"allow"}'
         }
     ]
@@ -482,7 +487,7 @@ Add a reminder to the model whenever it writes a Go file:
 hooks: {
     PreToolUse: [
         {
-            matcher: ^\u0028edit|write|multiedit\u0029$
+            matcher: ^(edit|write|multiedit)$
             command: ./hooks/go-context.sh
         }
     ]
