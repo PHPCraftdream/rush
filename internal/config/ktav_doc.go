@@ -175,14 +175,18 @@ func readSlotOf(path string) string {
 // writeTargetSlot resolves the physical write target for an already-resolved
 // legacy config path: rush.ktav when it is the selected file of the slot,
 // otherwise the legacy name. A write must never create a legacy rush.json
-// when rush.ktav is the active slot; conversely, when the slot has NEITHER
-// file, the creation decision belongs to newConfigFileIsKtav.
+// when rush.ktav is the active slot. When the slot has NEITHER file, the
+// creation decision belongs to newConfigFileIsKtav: only then is the Ktav
+// spelling created. An existing legacy file — including a symlinked (even
+// dangling) or unreadable rush.json — stays the write target; writes then
+// resolve the physical destination through resolveConfigWriteTarget,
+// preserving the symlink.
 func writeTargetSlot(legacyPath string) string {
 	if legacyPath == "" || isKtavConfigPath(legacyPath) {
 		return legacyPath
 	}
 	selected := selectConfigSlot(legacyPath)
-	if selected == legacyPath && newConfigFileIsKtav() {
+	if selected == legacyPath && newConfigFileIsKtav() && !ktavEntryExists(legacyPath) {
 		return ktavSiblingOf(legacyPath)
 	}
 	return selected
