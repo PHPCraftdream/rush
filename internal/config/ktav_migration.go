@@ -28,7 +28,12 @@ const ktavMigrationRecordVersion = 1
 
 var (
 	errKtavMigrationCrashInjected = errors.New("ktav migration: crash injected at test boundary")
-	ktavMigrationStepHook         func(step string) error
+	// Sentinel for a deferred migration: the legacy config is a symbolic
+	// link, so publishing a Ktav sibling would strand the transaction
+	// (the archival read rejects symlinks via O_NOFOLLOW). Callers must
+	// treat it like any other deferral, never as a hard failure.
+	errKtavSymlinkedSource = errors.New("ktav migration: legacy config is a symbolic link; migration deferred")
+	ktavMigrationStepHook  func(step string) error
 )
 
 func runKtavMigrationStep(step string) error {
@@ -134,6 +139,16 @@ func runKtavMigrationStateLocked(ctx context.Context, legacy, workingDir string)
 	recordPath := migrationRecordPathFor(legacy)
 	state := inspectKtavMigrationEntries(legacy)
 	ktavPath := ktavSiblingOf(legacy)
+	// A symlinked legacy config can never complete a fresh migration: the
+	// publish step would leave rush.ktav plus a record while the archival
+	// read of the link target fails with ELOOP. Defer without side effects
+	// when no transaction artifacts exist; states that already carry a
+	// record, Ktav, or backup keep their normal recovery paths.
+	if state.jsonExists && !state.ktavExists && !state.recordExists && !state.backupExists {
+		if info, err := os.Lstat(legacy); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return errKtavSymlinkedSource
+		}
+	}
 	switch {
 	case !state.ktavExists && !state.jsonExists && !state.recordExists && !state.backupExists:
 		return nil
