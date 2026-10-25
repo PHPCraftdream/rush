@@ -23,7 +23,7 @@ func TestMCPMutationFenceIgnoresAbsentKtavSibling(t *testing.T) {
 	pinKtavAutoMigrateOffForLegacyTest(t)
 	store, root := isolatedMCPConfigStore(t)
 	globalPath := GlobalConfigData()
-	writeMCPDefinition(t, globalPath, "sibling-fence")
+	writeMCPDefinition(t, globalPath, "preexisting")
 
 	// The reload publishes a tracked snapshot that contains the absent
 	// rush.ktav sibling (reloadStalenessState expands slot siblings) with a
