@@ -180,7 +180,11 @@ func readSlotOf(path string) string {
 // spelling created. An existing legacy file — including a symlinked (even
 // dangling) or unreadable rush.json — stays the write target; writes then
 // resolve the physical destination through resolveConfigWriteTarget,
-// preserving the symlink.
+// preserving the symlink. That is true only while the symlinked slot is
+// pending or deferred (dangling link, unreadable target): a VALID
+// symlinked rush.json is migrated to Ktav at Load, after which the active
+// slot is rush.ktav and only the symbolic link — never the physical
+// target — was removed.
 func writeTargetSlot(legacyPath string) string {
 	if legacyPath == "" || isKtavConfigPath(legacyPath) {
 		return legacyPath

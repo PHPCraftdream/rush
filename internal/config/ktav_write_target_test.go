@@ -1,29 +1,29 @@
-// Pinned behavior of writeTargetSlot (ktav_doc.go): when ktavAutoMigrate is
-// ON and the slot's legacy JSON exists, that legacy file — including a
-// symlinked (even dangling) or unreadable rush.json — stays the write
-// target; the Ktav spelling is created only when NEITHER file exists. The
-// gate term `!ktavEntryExists(legacyPath)` in writeTargetSlot is load
-// bearing: removing it (a) makes writeTargetSlot redirect an existing
-// regular rush.json to rush.ktav and fail TestWriteTargetSlotKeepsExistingLegacyJSON
-// case (a), and (b) makes the first deferred-symlink workspace write
-// materialize a near-empty rush.ktav that shadows rush.json, failing
-// TestWriteTargetSlotDeferredSymlinkKeepsLegacyTarget. Hand-trace: T1's
-// first assertion is case (a)'s require.Equal(legacy, writeTargetSlot(legacy))
-// — with the term removed, selectConfigSlot returns legacy, newConfigFileIsKtav
-// is true under the gate, and the function would return ktavSiblingOf(legacy).
-// T2's first interesting assertion is require.NoFileExists(dir/rush.ktav)
-// after SetConfigFields(ScopeWorkspace, {"options.debug": true}) — with the
-// term removed, writeTargetSlot(logical) would return dir/rush.ktav and the
-// write would create it. T3's first assertion after LockSettings is the
-// sync_rev hash landing inside the symlink target rush.json — same predicate
-// keeps the write on the legacy path. The deferred NON-symlink case
-// (unreadable-but-regular rush.json) is covered by the migration tests, not
+// Pinned behavior of writeTargetSlot (ktav_doc.go) when ktavAutoMigrate is
+// ON. T1 pins the slot predicate: existing legacy JSON wins and the Ktav
+// spelling is created only when NEITHER file exists; the gate term
+// `!ktavEntryExists(legacyPath)` in writeTargetSlot is load bearing —
+// removing it (a) makes writeTargetSlot redirect an existing regular
+// rush.json to rush.ktav and fail TestWriteTargetSlotKeepsExistingLegacyJSON
+// case (a). The SYMLINK cases T2/T3 exercise the KTAV-6 behavior: Load
+// MIGRATES a symlinked rush.json (rush.ktav published beside the link path,
+// link removed, physical target untouched as the backup), and subsequent
+// writes land in dir/rush.ktav. Hand-trace: T1's first assertion is case
+// (a)'s require.Equal(legacy, writeTargetSlot(legacy)) — with the term
+// removed, selectConfigSlot returns legacy, newConfigFileIsKtav is true
+// under the gate, and the function would return ktavSiblingOf(legacy). T2's
+// first interesting assertion is require.FileExists(dir/rush.ktav) after
+// Load — migrateKtavSymlinkedConfig publishes it beside the link path —
+// followed by the decoded gjson options.debug check after the write. T3's
+// first assertion after LockSettings is the sync_rev hash landing inside
+// dir/rush.ktav (decoded via decodeKtavFixtureJSON), since the migrated
+// slot is the Ktav file. The deferred NON-symlink case (unreadable-but-
+// regular rush.json) is unchanged and covered by the migration tests, not
 // here. ScopeWorkspace trace (load.go loadOnce): workspacePath is
 // normalizeReloadPath(workspaceConfigPath(cfg.Options.DataDirectory))
-// (load.go:96-97,105-106) = selectConfigSlot(<dataDir>/rush.json), which
-// returns the legacy spelling while rush.json exists, so store_write.go
-// configPath (store_write.go:24-29) hands SetConfigFields exactly the
-// symlink path and writeTargetSlot keeps it.
+// (load.go:96-97,105-106) = selectConfigSlot(<dataDir>/rush.json); after
+// the symlink migration rush.json no longer exists, so the slot resolves to
+// dir/rush.ktav and store_write.go configPath (store_write.go:24-29) hands
+// SetConfigFields exactly the Ktav path.
 package config
 
 import (
@@ -61,14 +61,17 @@ func TestWriteTargetSlotKeepsExistingLegacyJSON(t *testing.T) {
 	require.Equal(t, ktavSiblingOf(legacy), writeTargetSlot(legacy))
 }
 
-// TestWriteTargetSlotDeferredSymlinkKeepsLegacyTarget mirrors
-// TestKtavLoadDefersSymlinkedLegacyConfig but goes through an actual
-// programmatic write: a symlinked rush.json must receive the workspace
-// write through the link — no rush.ktav may materialize on either side.
-func TestWriteTargetSlotDeferredSymlinkKeepsLegacyTarget(t *testing.T) {
+// TestWriteTargetSlotSymlinkMigratedWritesLandInKtav mirrors
+// TestKtavLoadMigratesSymlinkedLegacyConfig but follows the migration with
+// an actual programmatic write: after Load removes the link and publishes
+// dir/rush.ktav, a fresh Load resolves the workspace slot to that Ktav file
+// and SetConfigFields lands options.debug there — the physical target is
+// never written.
+func TestWriteTargetSlotSymlinkMigratedWritesLandInKtav(t *testing.T) {
 	enableKtavAutoMigrateForTest(t)
 	ktavIsolateGlobals(t)
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	physical := filepath.Join(dir, "dotfiles", "t.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(physical), 0o755))
 	original := []byte(`{"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}},"options":{"disable_default_providers":true}}`)
@@ -82,34 +85,44 @@ func TestWriteTargetSlotDeferredSymlinkKeepsLegacyTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, store)
 
-	// Load(dir, dir, ...) resolves the workspace slot to dir/rush.json
-	// (load.go loadOnce: workspacePath = normalizeReloadPath(
-	// workspaceConfigPath(cfg.Options.DataDirectory)); selectConfigSlot
-	// returns the legacy spelling while rush.json Lstat-exists), so this
-	// write targets the symlink itself and no fallback store is needed.
-	require.NoError(t, store.SetConfigFields(ScopeWorkspace, map[string]any{"options.debug": true}))
-
-	require.NoFileExists(t, filepath.Join(dir, "rush.ktav"))
-	require.NoFileExists(t, filepath.Join(dir, "dotfiles", "rush.ktav"))
+	// Load migrated the symlink: rush.ktav exists beside the link path, the
+	// link is gone, and the physical target was never touched.
+	ktavPath := ktavSiblingOf(logical)
+	require.FileExists(t, ktavPath)
+	_, err = os.Lstat(logical)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	persisted, err := os.ReadFile(physical)
 	require.NoError(t, err)
-	require.True(t, gjson.GetBytes(persisted, "options.debug").Bool())
-	require.Equal(t, "https://example.invalid/v1", gjson.GetBytes(persisted, "providers.custom.base_url").String())
-	linkInfo, err := os.Lstat(logical)
-	require.NoError(t, err)
-	require.NotEqual(t, os.FileMode(0), linkInfo.Mode()&os.ModeSymlink)
+	require.Equal(t, original, persisted)
 	require.NoFileExists(t, migrationRecordPathFor(logical))
 	require.NoFileExists(t, backupPathFor(logical))
+
+	// Perform the write through a fresh Load so the slot capture reflects
+	// the migrated state.
+	store2, err := Load(dir, dir, false)
+	require.NoError(t, err)
+	require.NotNil(t, store2)
+	require.NoError(t, store2.SetConfigFields(ScopeWorkspace, map[string]any{"options.debug": true}))
+
+	require.NoFileExists(t, filepath.Join(dir, "dotfiles", "rush.ktav"))
+	jsonBytes := decodeKtavFixtureJSON(t, ktavPath)
+	require.True(t, gjson.GetBytes(jsonBytes, "options.debug").Bool())
+	require.Equal(t, "https://example.invalid/v1", gjson.GetBytes(jsonBytes, "providers.custom.base_url").String())
+	persisted, err = os.ReadFile(physical)
+	require.NoError(t, err)
+	require.Equal(t, original, persisted)
 }
 
-// TestWriteTargetSlotDeferredSymlinkLockAndOAuth pushes a settings lock and
-// an OAuth CAS write through a symlinked rush.json global slot: both must
-// land in the physical target and leave no Ktav sibling, backup, or
-// migration record behind.
-func TestWriteTargetSlotDeferredSymlinkLockAndOAuth(t *testing.T) {
+// TestWriteTargetSlotSymlinkMigratedLockAndOAuth pushes a settings lock and
+// an OAuth CAS write through a symlinked rush.json global slot after the
+// KTAV-6 migration: both must land in dir/rush.ktav (decoded for the
+// assertions) and leave the physical target untouched, with no Ktav sibling
+// in dotfiles/, no backup, and no migration record.
+func TestWriteTargetSlotSymlinkMigratedLockAndOAuth(t *testing.T) {
 	enableKtavAutoMigrateForTest(t)
 	ktavIsolateGlobals(t)
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	physical := filepath.Join(dir, "dotfiles", "t.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(physical), 0o755))
 	tokenA := &oauth.Token{AccessToken: "access-a", RefreshToken: "refresh-a", ExpiresIn: 3600, ExpiresAt: 9999999999}
@@ -130,30 +143,40 @@ func TestWriteTargetSlotDeferredSymlinkLockAndOAuth(t *testing.T) {
 		t.Skipf("logical rush.json symlink unavailable: %v", err)
 	}
 
+	// Run Load first so the KTAV-6 symlink migration happens: the link is
+	// removed and rush.ktav is published beside the link path; the store is
+	// then built directly on the migrated slot.
+	_, err = Load(dir, dir, false)
+	require.NoError(t, err)
+	ktavPath := ktavSiblingOf(logical)
+	require.FileExists(t, ktavPath)
+	_, err = os.Lstat(logical)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	persistedOriginal, err := os.ReadFile(physical)
+	require.NoError(t, err)
+	require.Equal(t, original, persistedOriginal)
+
 	providers := csync.NewMap[string, ProviderConfig]()
 	providers.Set("p1", ProviderConfig{ID: "p1", OAuthToken: tokenA})
-	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: logical})
+	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: ktavPath})
 	t.Cleanup(func() { SetProcessPassword("") })
 	trackOAuthJournalTestStore(t, store)
 
 	require.NoError(t, store.LockSettings(ScopeGlobal, "pw"))
-	locked, err := os.ReadFile(physical)
-	require.NoError(t, err)
+	locked := decodeKtavFixtureJSON(t, ktavPath)
 	require.Equal(t, HashPassword("pw"), gjson.GetBytes(locked, "sync_rev").String())
 
 	tokenC := &oauth.Token{AccessToken: "access-c", RefreshToken: "refresh-c", ExpiresIn: 3600, ExpiresAt: 9999999999}
 	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.NoError(t, err)
 	require.True(t, committed)
-	updated, err := os.ReadFile(physical)
-	require.NoError(t, err)
+	updated := decodeKtavFixtureJSON(t, ktavPath)
 	require.Equal(t, tokenC.RefreshToken, gjson.GetBytes(updated, "providers.p1.oauth.refresh_token").String())
 
-	require.NoFileExists(t, filepath.Join(dir, "rush.ktav"))
 	require.NoFileExists(t, filepath.Join(dir, "dotfiles", "rush.ktav"))
-	linkInfo, err := os.Lstat(logical)
+	persisted, err := os.ReadFile(physical)
 	require.NoError(t, err)
-	require.NotEqual(t, os.FileMode(0), linkInfo.Mode()&os.ModeSymlink)
+	require.Equal(t, original, persisted)
 	require.NoFileExists(t, backupPathFor(logical))
 	require.NoFileExists(t, migrationRecordPathFor(logical))
 }

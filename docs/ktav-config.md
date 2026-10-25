@@ -119,6 +119,26 @@ Implemented in `ktav_migration.go`; call sites: startup in `load.go`
   (`ownerPolicyForMigration`). A foreign-owned source or record is rejected;
   files are preserved, never chowned or copied.
 
+### Symlinked rush.json
+
+Implemented in `ktav_migration_symlink.go` (KTAV-6). Dotfiles managers keep
+`rush.json` as a symbolic link into a versioned repository; such a link is
+**migrated**, not deferred:
+
+- `rush.ktav` is published as a **regular file beside the LINK path** (never
+  next to the physical target).
+- Only the symbolic link is removed. The physical target in the dotfiles
+  repository is left byte-for-byte untouched and **acts as the backup** — no
+  `.bak` is created for a symlinked source.
+- The migration record carries a `symlink` flag; crash recovery
+  (`finishKtavSymlinkMigration`) re-verifies the record's digests and file
+  identities (through the link, while it still exists), removes the link if
+  present, and retires the record — idempotently, whether the crash happened
+  before or after link removal.
+- A **dangling link** or a non-regular/unreadable target stays deferred with
+  zero side effects (`warnMigrationDeferredOnce`; no record, no `.ktav`, no
+  link removal).
+
 ### OAuth journals during migration
 
 The pending-journal file name follows the config slot's disk format for
