@@ -30,7 +30,7 @@ var (
 
 func oauthRefreshLockPath(path, provider string) string {
 	digest := sha256.Sum256([]byte(provider))
-	return fmt.Sprintf("%s.oauth-refresh-%x.lock", normalizeReloadPath(path), digest[:8])
+	return fmt.Sprintf("%s.oauth-refresh-%x.lock", normalizeReloadPath(configWriteLockAnchor(path)), digest[:8])
 }
 
 // Cleanup also cancels and joins the OAuth disk sync worker.
@@ -79,7 +79,7 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 	if err != nil {
 		return nil, nil, err
 	}
-	journalPath := oauthJournalPath(path, provider)
+	journalPath := selectOAuthJournalPath(path, provider, false)
 	if entry := s.oauthOutboxCurrent(path, provider); entry != nil {
 		settled, settleErr := s.settleOAuthOutbox(ctx, path, provider, entry)
 		if settled {
@@ -233,11 +233,12 @@ func (s *ConfigStore) withOAuthJournalRecoveryWriteLock(parent context.Context, 
 	}
 	defer s.diskWriteMu.Unlock()
 	canonical := normalizeReloadPath(path)
-	lock, err := acquireConfigFileLock(ctx, canonical+".lock")
+	lockAnchor := normalizeReloadPath(configWriteLockAnchor(canonical))
+	lock, err := acquireConfigFileLock(ctx, lockAnchor+".lock")
 	if err != nil {
 		return err
 	}
-	defer releaseConfigFileLock(canonical+".lock", lock)
+	defer releaseConfigFileLock(lockAnchor+".lock", lock)
 	if normalizeReloadPath(path) != canonical {
 		return errOAuthJournalDisk
 	}
@@ -255,7 +256,7 @@ func (s *ConfigStore) recoverOAuthJournalsAtLoad() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), codexRefreshLockWait)
-			record, readErr := readOAuthJournalWithRetry(ctx, oauthJournalPath(path, descriptor.id))
+			record, readErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, descriptor.id, false))
 			if readErr == nil && record == nil {
 				cancel()
 				continue
@@ -382,7 +383,7 @@ func (s *ConfigStore) oauthJournalWorkerAttempt(ctx context.Context, scope Scope
 	}
 	var committed bool
 	err = s.withCodexConfigWriteLock(ctx, path, pinned, func(target configWriteTarget) error {
-		latest, journalErr := readOAuthJournalWithRetry(ctx, oauthJournalPath(path, provider))
+		latest, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
 		if journalErr != nil {
 			return journalErr
 		}

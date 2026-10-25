@@ -133,8 +133,13 @@ func readOAuthJournal(path string) (*oauthJournalRecord, error) {
 		logOAuthJournalFailure(path, "read", "Failed to read OAuth journal")
 		return nil, errOAuthJournalRead
 	}
+	jsonBytes, decodeErr := decodeConfigDocument(path, data)
+	if decodeErr != nil {
+		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
+		return nil, errOAuthJournalInvalid
+	}
 	var record oauthJournalRecord
-	if json.Unmarshal(data, &record) != nil || !validOAuthJournal(&record) {
+	if json.Unmarshal(jsonBytes, &record) != nil || !validOAuthJournal(&record) {
 		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
 		return nil, errOAuthJournalInvalid
 	}
@@ -187,6 +192,10 @@ func writeOAuthJournalOnce(path string, record *oauthJournalRecord) error {
 	if err != nil {
 		return errOAuthJournalInvalid
 	}
+	data, encErr := encodeSettingsDocument(data, settingsDocumentFormatOf(path))
+	if encErr != nil {
+		return errOAuthJournalInvalid
+	}
 	err = os.MkdirAll(filepath.Dir(path), 0o700)
 	if err == nil {
 		err = oauthJournalAtomicWrite(path, data, 0o600)
@@ -199,11 +208,11 @@ func writeOAuthJournalOnce(path string, record *oauthJournalRecord) error {
 
 // A successful read of a valid document is required to establish logout.
 func readOAuthJournalDiskToken(path, providerID string) (*oauth.Token, error) {
-	data, err := os.ReadFile(path)
+	doc, err := readSettingsDocument(path)
 	if err != nil {
 		return nil, errOAuthJournalDisk
 	}
-	return decodeOAuthJournalDiskToken(data, providerID)
+	return decodeOAuthJournalDiskToken(doc.jsonBytes, providerID)
 }
 
 func decodeOAuthJournalDiskToken(data []byte, providerID string) (*oauth.Token, error) {
@@ -274,7 +283,8 @@ func arbitrateOAuthJournal(record *oauthJournalRecord, predecessor, disk *oauth.
 
 // Caller holds refresh/config locks; equal bytes alone do not prove durability.
 func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token) error {
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	physical := readSlotOf(path)
+	file, err := os.OpenFile(physical, os.O_RDWR, 0)
 	if err != nil {
 		return errOAuthJournalDisk
 	}
@@ -283,7 +293,11 @@ func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token
 	if err != nil {
 		return errOAuthJournalDisk
 	}
-	disk, err := decodeOAuthJournalDiskToken(data, providerID)
+	jsonBytes, decodeErr := decodeConfigDocument(physical, data)
+	if decodeErr != nil {
+		return errOAuthJournalDisk
+	}
+	disk, err := decodeOAuthJournalDiskToken(jsonBytes, providerID)
 	if err != nil || !reflect.DeepEqual(disk, token) {
 		return errOAuthJournalDisk
 	}
@@ -301,11 +315,11 @@ func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token
 		return errOAuthJournalDisk
 	}
 	// Detect replacement of the synced inode before authorizing journal removal.
-	current, err := os.Stat(path)
+	current, err := os.Stat(physical)
 	if err != nil || !os.SameFile(info, current) {
 		return errOAuthJournalDisk
 	}
-	verified, err := os.ReadFile(path)
+	verified, err := os.ReadFile(physical)
 	if err != nil || !bytes.Equal(data, verified) {
 		return errOAuthJournalDisk
 	}

@@ -363,9 +363,10 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	if err != nil {
 		return false, err
 	}
-	if err := rejectUnconvertedKtavWrite(path); err != nil {
+	if err := checkBackupOnlySlot(legacySlotOf(path)); err != nil {
 		return false, err
 	}
+	path = writeTargetSlot(path)
 	isCodex := rotatingOAuthProvider(providerID)
 	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
 	if !isCodex {
@@ -374,44 +375,53 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	slices.Sort(keys)
 	var committedErr error
 	err = withLock(path, func(target configWriteTarget) error {
-		data, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if readErr != nil {
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
+		doc, decodeErr := decodeSettingsDocument(target.selectedPath, raw, fingerprint)
+		if decodeErr != nil {
+			return decodeErr
+		}
 		var current oauth.Token
-		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(data), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || (!isCodex && gjson.Get(string(data), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken) {
+		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(doc.jsonBytes), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || (!isCodex && gjson.Get(string(doc.jsonBytes), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken) {
 			return errOAuthCredentialCAS
 		}
-		newValue := string(data)
+		newValue := string(doc.jsonBytes)
+		var setValueErr error
 		for _, key := range keys {
 			var value any = token
 			if key == fmt.Sprintf("providers.%s.api_key", providerID) {
 				value = token.AccessToken
 			}
-			newValue, err = sjson.Set(newValue, key, value)
-			if err != nil {
-				return fmt.Errorf("failed to set config field %s: %w", key, err)
+			newValue, setValueErr = sjson.Set(newValue, key, value)
+			if setValueErr != nil {
+				return fmt.Errorf("failed to set config field %s: %w", key, setValueErr)
 			}
 		}
 		if isCodex {
-			newValue, err = sjson.Delete(newValue, fmt.Sprintf("providers.%s.api_key", providerID))
-			if err != nil {
-				return fmt.Errorf("failed to delete stale provider API key: %w", err)
+			newValue, setValueErr = sjson.Delete(newValue, fmt.Sprintf("providers.%s.api_key", providerID))
+			if setValueErr != nil {
+				return fmt.Errorf("failed to delete stale provider API key: %w", setValueErr)
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, []byte(newValue), 0o600, fingerprint, target.owner, target.enforce)
+		written, encErr := encodeSettingsDocument([]byte(newValue), doc.format)
+		if encErr != nil {
+			return encErr
+		}
+		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, doc.rawFingerprint, target.owner, target.enforce)
 		if commitErr != nil {
 			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
-				s.noteInitialLoadWriteLocked(path, []byte(newValue))
+				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil
 			}
 			return fmt.Errorf("failed to write config file: %w", commitErr)
 		}
-		s.noteInitialLoadWriteLocked(path, []byte(newValue))
+		s.noteInitialLoadWriteLocked(path, written)
 		return nil
 	})
 	if errors.Is(err, errOAuthCredentialCAS) {
@@ -496,7 +506,7 @@ func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.
 		return nil, err
 	}
 
-	data, err := os.ReadFile(path)
+	doc, err := readSettingsDocument(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -505,7 +515,7 @@ func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.
 	}
 
 	oauthKey := fmt.Sprintf("providers.%s.oauth", providerID)
-	oauthResult := gjson.Get(string(data), oauthKey)
+	oauthResult := gjson.Get(string(doc.jsonBytes), oauthKey)
 	if !oauthResult.Exists() {
 		return nil, nil
 	}

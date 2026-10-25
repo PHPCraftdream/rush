@@ -128,8 +128,12 @@ func verifyOAuthOutboxJournal(path string, record *oauthJournalRecord) error {
 	}
 	defer file.Close()
 	before, err := os.ReadFile(path)
+	if err != nil {
+		return errOAuthJournalDisk
+	}
+	jsonBytes, decodeErr := decodeConfigDocument(path, before)
 	var actual oauthJournalRecord
-	if err != nil || json.Unmarshal(before, &actual) != nil || !reflect.DeepEqual(&actual, record) {
+	if decodeErr != nil || json.Unmarshal(jsonBytes, &actual) != nil || !reflect.DeepEqual(&actual, record) {
 		return errOAuthJournalDisk
 	}
 	info, err := file.Stat()
@@ -160,7 +164,7 @@ func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider strin
 		}
 		return errOAuthJournalDisk
 	}
-	journalPath := oauthJournalPath(path, provider)
+	journalPath := selectOAuthJournalPath(path, provider, true)
 	latest, err := readOAuthJournal(journalPath)
 	if errors.Is(err, errOAuthJournalInvalid) {
 		// Owned rotation remains writable even if preservation fails.
@@ -169,7 +173,7 @@ func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider strin
 		return err
 	}
 	if latest != nil && !reflect.DeepEqual(latest, &entry.record) && arbitrateOAuthJournal(&entry.record, nil, latest.Token, nil) == oauthJournalDiskLaterOrTie {
-		if err := verifyOAuthOutboxJournal(oauthJournalPath(path, provider), latest); err != nil {
+		if err := verifyOAuthOutboxJournal(journalPath, latest); err != nil {
 			return err
 		}
 		// Preserve the external WAL while honoring verified config authority.
