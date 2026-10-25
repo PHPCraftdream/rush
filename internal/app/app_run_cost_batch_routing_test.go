@@ -61,7 +61,7 @@ func pcfCompletion(text, wanted string) bool {
 	if !ok || id != wanted {
 		return false
 	}
-	for _, suffix := range []string{"finished.", "failed.", "was stopped (job_kill).", "was cancelled (session stopped).", "was interrupted:", "timed out after"} {
+	for _, suffix := range []string{"finished.", "failed.", "was stopped (batch_stop).", "was cancelled (session stopped).", "was interrupted:", "timed out after"} {
 		if strings.HasPrefix(tail, suffix) {
 			return true
 		}
@@ -181,7 +181,7 @@ func TestPcfCostRouterCurrentTail(t *testing.T) {
 	pcfUser := func(s string) wireMessage { return wireMessage{Role: "user", Content: s} }
 	pcfTool := func(id, s string) wireMessage { return wireMessage{Role: "tool", ToolCallID: id, Content: s} }
 	pcfStartedText := "batch root abc started; completions arrive as selected notices."
-	for _, pcfEnd := range []string{"finished.", "failed.", "was stopped (job_kill).", "was cancelled (session stopped).", "was interrupted: reason", "timed out after 1s"} {
+	for _, pcfEnd := range []string{"finished.", "failed.", "was stopped (batch_stop).", "was cancelled (session stopped).", "was interrupted: reason", "timed out after 1s"} {
 		pcfR := pcfNewCostRouter()
 		pcfRoute, pcfErr := pcfR.pcfRoute(pcfBody(pcfRoot, pcfUser("start")))
 		require.Equal(t, "root:delegate", pcfRoute)

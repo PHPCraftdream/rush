@@ -181,7 +181,7 @@ export const ActionRow = memo(function ActionRow({ item, isCurrent, suppressAuto
   const errored = !!result?.IsError || completion?.status === "failed";
   const completed = pendingJob && completion?.status === "finished";
   // Stage 5b: the terminal-cause badges — timed out / stopped by the user
-  // (job_kill) / cancelled (session stop) must be distinguishable from a
+  // (batch_stop) / cancelled (session stop) must be distinguishable from a
   // plain failure, sourced from the completion notice the client already
   // received (asyncStoppedPattern), never synthesized from message text
   // shown as a user reply.

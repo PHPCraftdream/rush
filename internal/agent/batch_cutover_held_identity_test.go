@@ -15,7 +15,6 @@ import (
 
 func TestBatchLiveHeldQuestionsCarryNodeAndChildIdentity(t *testing.T) {
 	conn, dataDir := batchFixtureConn(t)
-	store := session.NewSessionNoticeStore(conn)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(conn), batchFixtureLiveReader(conn, dataDir), conn)
 	ctx := context.Background()
 	const owner = "sess-bq-held-owner"
@@ -31,13 +30,4 @@ func TestBatchLiveHeldQuestionsCarryNodeAndChildIdentity(t *testing.T) {
 	// LiveHeldQuestions to id+kind and both identity assertions fail.
 	require.Equal(t, nodeID, held[0].NodeID)
 	require.Equal(t, child, held[0].ChildSessionID)
-
-	// A legacy-frame, marker-less child_question notice is never counted as a
-	// held batch question, even when it names some other session.
-	require.NoError(t, store.InsertSessionNotice(ctx, owner, session.NoticeKindChildQuestion, "SUB-AGENT QUESTION (session someone-else): q", true, ""))
-	held, err = facts.LiveHeldQuestions(ctx, owner)
-	require.NoError(t, err)
-	// Revert-check: counting marker-less rows breaks the incarnation fence
-	// and the final Len assertion fails.
-	require.Len(t, held, 1)
 }

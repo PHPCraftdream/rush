@@ -376,7 +376,7 @@ ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
 	var sawNotice, sawReaction bool
 	for _, m := range childMsgs {
 		text := m.FullText()
-		if strings.HasPrefix(text, "Async job call-bash () was stopped (job_kill)") {
+		if strings.HasPrefix(text, "Async job call-bash () was stopped (batch_stop)") {
 			sawNotice = true
 		}
 		if strings.Contains(text, "retried reaction completed") {

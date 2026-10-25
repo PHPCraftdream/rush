@@ -74,13 +74,6 @@ func commitMarkerNotice(t *testing.T, conn *sql.DB, owner, nodeID, childID strin
 	}))
 }
 
-// commitLegacyNotice inserts the marker-less (legacy-frame) child_question
-// notice through the retained notice store.
-func commitLegacyNotice(t *testing.T, store *session.SessionNoticeStore, ctx context.Context, owner, childID, callID string) {
-	t.Helper()
-	require.NoError(t, store.InsertSessionNotice(ctx, owner, session.NoticeKindChildQuestion, childQuestionNoticeText("", "which one?", childID, callID, 0), true, callID))
-}
-
 // createSessionRow creates a bare session row with the given id.
 func createSessionRow(t *testing.T, q *db.Queries, ctx context.Context, id string) {
 	t.Helper()
@@ -115,32 +108,6 @@ func TestCLIActiveWorkBatch_MarkerNoticeCommitGate(t *testing.T) {
 	require.False(t, active, "durably announced question alone is not active CLI work")
 }
 
-// TestCLIActiveWorkBatch_LegacyNoticeCommitGate: same gate through the
-// legacy "SUB-AGENT QUESTION (session ...)" frame notice.
-// Revert-check: excluding a paused child without a committed notice releases
-// the CLI before the announcement and the first True assertion fails.
-// Revert-check: deleting batchActiveAfterQuestionPause's committed-notice
-// exclusion (answering true whenever live work exists) makes the post-commit
-// False assertion fail.
-func TestCLIActiveWorkBatch_LegacyNoticeCommitGate(t *testing.T) {
-	coord, store, conn, _, ctx := batchQuestionFixture(t)
-	const owner = "sess-batchq-owner"
-	q := db.New(conn)
-	createSessionRow(t, q, ctx, owner)
-	createSessionRow(t, q, ctx, "sess-batchq-legacy-child")
-	seedDelegation(t, conn, owner, "call-bq-legacy", "sess-batchq-legacy-child", 9)
-	seedQuestionStop(t, coord, "sess-batchq-legacy-child")
-
-	active, err := coord.CLIActiveWork(ctx, owner)
-	require.NoError(t, err)
-	require.True(t, active, "paused child's uncommitted notice keeps the CLI active")
-
-	commitLegacyNotice(t, store, ctx, owner, "sess-batchq-legacy-child", "call-bq-legacy")
-	active, err = coord.CLIActiveWork(ctx, owner)
-	require.NoError(t, err)
-	require.False(t, active, "durably announced question alone is not active CLI work")
-}
-
 // TestCLIActiveWorkBatch_SecondLiveChildKeepsActive: a committed paused
 // child must not release the CLI while a second live delegation child has
 // no question stop. This test covers TWO SEPARATE roots (each Reserve
@@ -149,15 +116,15 @@ func TestCLIActiveWorkBatch_LegacyNoticeCommitGate(t *testing.T) {
 // Revert-check: excluding each root once its own child is committed would
 // still release the second root here and the True assertion fails.
 func TestCLIActiveWorkBatch_SecondLiveChildKeepsActive(t *testing.T) {
-	coord, store, conn, _, ctx := batchQuestionFixture(t)
+	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-batchq-owner"
 	q := db.New(conn)
 	createSessionRow(t, q, ctx, owner)
 	createSessionRow(t, q, ctx, "sess-batchq-paused-child")
 	createSessionRow(t, q, ctx, "sess-batchq-live-child")
-	seedDelegation(t, conn, owner, "call-bq-1", "sess-batchq-paused-child", 11)
+	_, nodeID := seedDelegation(t, conn, owner, "call-bq-1", "sess-batchq-paused-child", 11)
 	seedQuestionStop(t, coord, "sess-batchq-paused-child")
-	commitLegacyNotice(t, store, ctx, owner, "sess-batchq-paused-child", "call-bq-1")
+	commitMarkerNotice(t, conn, owner, nodeID, "sess-batchq-paused-child", 11)
 	seedDelegation(t, conn, owner, "call-bq-2", "sess-batchq-live-child", 12)
 
 	active, err := coord.CLIActiveWork(ctx, owner)
@@ -172,14 +139,14 @@ func TestCLIActiveWorkBatch_SecondLiveChildKeepsActive(t *testing.T) {
 // Revert-check: excluding all live work once any child is committed makes
 // the True assertion fail.
 func TestCLIActiveWorkBatch_OwnRunningCommandKeepsActive(t *testing.T) {
-	coord, store, conn, _, ctx := batchQuestionFixture(t)
+	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-batchq-owner"
 	q := db.New(conn)
 	createSessionRow(t, q, ctx, owner)
 	createSessionRow(t, q, ctx, "sess-batchq-paused-own-child")
-	seedDelegation(t, conn, owner, "call-bq-paused", "sess-batchq-paused-own-child", 13)
+	_, nodeID := seedDelegation(t, conn, owner, "call-bq-paused", "sess-batchq-paused-own-child", 13)
 	seedQuestionStop(t, coord, "sess-batchq-paused-own-child")
-	commitLegacyNotice(t, store, ctx, owner, "sess-batchq-paused-own-child", "call-bq-paused")
+	commitMarkerNotice(t, conn, owner, nodeID, "sess-batchq-paused-own-child", 13)
 	seedBatchDelegation(t, conn, owner, "call-bq-own", "", "command", "running", false)
 
 	active, err := coord.CLIActiveWork(ctx, owner)
@@ -225,16 +192,16 @@ func seedMixedRoot(t *testing.T, conn *sql.DB, owner, callID, childID string, to
 // committed (the round-1 root-granular bug) returns false and this test
 // fails.
 func TestCLIActiveWorkBatch_SharedRootCommandKeepsActive(t *testing.T) {
-	coord, store, conn, _, ctx := batchQuestionFixture(t)
+	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-bq-mixed-owner"
 	const child = "sess-bq-mixed-agent"
 	q := db.New(conn)
 	createSessionRow(t, q, ctx, owner)
 	createSessionRow(t, q, ctx, child)
 	createSessionRow(t, q, ctx, "sess-bq-mixed-command")
-	seedMixedRoot(t, conn, owner, "call-bq-mixed", child, 41, "running")
+	_, agentNode := seedMixedRoot(t, conn, owner, "call-bq-mixed", child, 41, "running")
 	seedQuestionStop(t, coord, child)
-	commitLegacyNotice(t, store, ctx, owner, child, "call-bq-mixed")
+	commitMarkerNotice(t, conn, owner, agentNode, child, 41)
 
 	active, err := coord.CLIActiveWork(ctx, owner)
 	require.NoError(t, err)
@@ -247,15 +214,15 @@ func TestCLIActiveWorkBatch_SharedRootCommandKeepsActive(t *testing.T) {
 // Revert-check: counting only Counts.Active excludes the root once its
 // delegation child is committed and this test fails.
 func TestCLIActiveWorkBatch_SharedRootPendingCommandKeepsActive(t *testing.T) {
-	coord, store, conn, _, ctx := batchQuestionFixture(t)
+	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-bq-pending-owner"
 	const child = "sess-bq-pending-agent"
 	q := db.New(conn)
 	createSessionRow(t, q, ctx, owner)
 	createSessionRow(t, q, ctx, child)
-	seedMixedRoot(t, conn, owner, "call-bq-pending", child, 43, "pending")
+	_, agentNode := seedMixedRoot(t, conn, owner, "call-bq-pending", child, 43, "pending")
 	seedQuestionStop(t, coord, child)
-	commitLegacyNotice(t, store, ctx, owner, child, "call-bq-pending")
+	commitMarkerNotice(t, conn, owner, agentNode, child, 43)
 
 	active, err := coord.CLIActiveWork(ctx, owner)
 	require.NoError(t, err)

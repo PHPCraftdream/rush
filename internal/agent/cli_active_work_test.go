@@ -15,8 +15,7 @@ import (
 // workLedger held-question registry it exercised is gone. The retained
 // user-visible contract -- a question-paused delegation keeps the CLI active
 // until the child_question notice is durably committed, then releases -- is
-// pinned batch-side by TestCLIActiveWorkBatch_MarkerNoticeCommitGate and
-// TestCLIActiveWorkBatch_LegacyNoticeCommitGate
+// pinned batch-side by TestCLIActiveWorkBatch_MarkerNoticeCommitGate
 // (cli_active_work_batch_question_test.go); the ledger-only latches it used
 // (answerHold, questionNoticed, heldQuestionJob) have no batch successor.
 

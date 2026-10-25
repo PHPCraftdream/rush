@@ -47,7 +47,7 @@ func grantRootBatchStop(t *testing.T, application *App) {
 // notices."). The root extracts the advertised root id and issues batch_stop
 // -- whose result is cancellation INTENT (accepted, not terminal) -- and the
 // run may only finish after the selected terminal stopped completion
-// (model-visible "Async job call-bash () was stopped (job_kill)"), with the
+// (model-visible "Async job call-bash () was stopped (batch_stop)"), with the
 // cancelled state confirmed in the DB.
 func TestRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 	command, release := recoveryJobCommand(t)
@@ -66,13 +66,13 @@ func TestRunNonInteractiveRootKillsOwnBatchJobByStop(t *testing.T) {
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Job Kill By ID"), admissionSSEStop("title", "stop")})
 
 		// The selected terminal notice arrives as the real model-visible
-		// "Async job call-bash () was stopped (job_kill)" text
+		// "Async job call-bash () was stopped (batch_stop)" text
 		// (FormatAsyncCompletion; Stopped is formatted before Cancelled, so
 		// cancelled state is established by the DB check below, never by the
 		// text). This is the CONFIRMED terminal event; only now may the run
 		// finish. (Checking the DB row as well makes the ordering
 		// production-proof, not stub-proof.)
-		case strings.HasPrefix(lastUser, "Async job call-bash () was stopped (job_kill)"):
+		case strings.HasPrefix(lastUser, "Async job call-bash () was stopped (batch_stop)"):
 			var state string
 			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, liveSession.Load().(string), extractedRootID.Load().(string)).Scan(&state)
 			if err != nil || state != "cancelled" {
