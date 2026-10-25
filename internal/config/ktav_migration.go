@@ -499,11 +499,18 @@ func ktavMigrateWorkspaceIfNeeded(ctx context.Context, workingDir, dataDir strin
 	}
 	legacy := filepath.Join(dataDir, appName+".json")
 	if ktavEntryExists(migrationRecordPathFor(legacy)) {
-		return runKtavMigrationState(ctx, legacy, workingDir)
+		if err := runKtavMigrationState(ctx, legacy, workingDir); err != nil {
+			return err
+		}
+		ktavMigrateCacheArtifactsAtStartup(ctx, workingDir)
+		return nil
 	}
 	if !ktavAutoMigrate || fileExists(ktavSiblingOf(legacy)) || !fileExists(legacy) {
 		return nil
 	}
+	// KTAV-4b: the data directory also holds the provider/model-catalog
+	// caches; convert them under the SAME shared startup deadline.
+	ktavMigrateCacheArtifactsAtStartup(ctx, workingDir)
 	if err := runKtavMigrationState(ctx, legacy, workingDir); err != nil {
 		state := inspectKtavMigrationEntries(legacy)
 		if !state.recordExists && !state.ktavExists && !state.backupExists && !errors.Is(err, errKtavMigrationConflict) && !errors.Is(err, errKtavBackupOnly) && !errors.Is(err, errKtavMigrationRecord) {
