@@ -9,10 +9,8 @@ import type { SessionLiveWork } from "./store_livework";
 
 // Batch-work store slice (R15a, internal/server/handlers_batch.go): the
 // structured batch_nodes tree for the active session, delivered as full
-// `session_batch_work` snapshots. INERT in practice unless the server runs
-// with RUSH_BATCH_RUNTIME on -- flag off, the event never arrives and this
-// slice stays empty, so the merged live-work view is exactly the old flat
-// rows.
+// `session_batch_work` snapshots. Unconditional since the H4 cutover: batch
+// is the only runtime, so every live session receives these events.
 //
 // Never-disappears rule: the store mutates ONLY on a delivered snapshot. A
 // failed server-side read never sends one at all (the server still replies

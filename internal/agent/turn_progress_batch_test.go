@@ -1,10 +1,9 @@
 // Test-only batch wiring for the in-turn progress guard's held-job fixture
 // (turn_progress_fixture_test.go). T5's held job W is launched through the
-// retained LEGACY asyncTool, which registers it only in the in-memory ledger;
-// under RUSH_BATCH_RUNTIME the guard reads own work from the bound batch
-// cutover facts (ownWorkBatch), so the live row has to exist in the batch
-// store too. guardBatchTool + guardBatchLedger provide that, seed-only, with
-// no production change.
+// retained asyncTool, which registers it only in the in-memory ledger; the
+// guard reads own work from the bound batch cutover facts (ownWorkBatch), so
+// the live row has to exist in the batch store too. guardBatchTool +
+// guardBatchLedger provide that, seed-only, with no production change.
 package agent
 
 import (

@@ -162,7 +162,7 @@ func pcrRunCrashScenario(t *testing.T) {
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(timeoutCancel)
 	cmd := platform.Command(timeoutCtx, os.Args[0], "-test.run=^TestTwoAppScenarioA_CrashThenContinueDeliversOneInterrupted$")
-	cmd.Env = append(os.Environ(), pcrChildEnv+"=1", pcrDataEnv+"="+dataDir, pcrSessionEnv+"="+sess.ID, pcrProviderEnv+"="+srvA.URL, pcrReadyEnv+"="+readyPath, "RUSH_BATCH_RUNTIME=true")
+	cmd.Env = append(os.Environ(), pcrChildEnv+"=1", pcrDataEnv+"="+dataDir, pcrSessionEnv+"="+sess.ID, pcrProviderEnv+"="+srvA.URL, pcrReadyEnv+"="+readyPath)
 	childOut := &pcrTailBuffer{}
 	cmd.Stdout, cmd.Stderr = childOut, childOut
 	require.NoError(t, cmd.Start())

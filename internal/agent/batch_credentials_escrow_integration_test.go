@@ -137,7 +137,6 @@ func escrowAgentSpec(t *testing.T, callID string) jobbatch.Spec {
 }
 
 func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	tool := &escrowTestTool{started: make(chan context.Context, 1), release: make(chan struct{})}
 	t.Cleanup(func() {
 		select {

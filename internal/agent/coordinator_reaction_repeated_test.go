@@ -18,13 +18,9 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 	launch := func(id, cmd string) *drainAttempt {
 		f.seedDebt(ctx, id, true)
 		var result fantasy.ToolResultContent
-		if batchFlagEnabled() {
-			// A batch started result names its launched root and carries no
-			// ClientMetadata: the call id IS the chain identity.
-			result = batchStartedToolResult(id)
-		} else {
-			result = fantasy.ToolResultContent{ToolCallID: id, ClientMetadata: `{"async":true,"claim_id":"` + f.row(ctx, id).ClaimID + `"}`}
-		}
+		// A batch started result names its launched root and carries no
+		// ClientMetadata: the call id IS the chain identity.
+		result = batchStartedToolResult(id)
 		call := fantasy.ToolCallContent{ToolCallID: id, ToolName: "bash", Input: `{"command":` + reactionJSON(cmd) + `}`}
 		ts.att = &drainAttempt{sessionID: f.sessID, outcome: drainAttempted}
 		ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
@@ -41,16 +37,11 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 		att := launch(id, command)
 		require.False(t, att.chainProgress)
 		current := id
-		if batchFlagEnabled() {
-			require.Equal(t, []string{id}, att.chainBatchRoots)
-			// The leg acted on the PREVIOUS launch's completion: the batch
-			// twin of the legacy claim snapshot.
-			att.batchDebtCallIDs = []string{previous}
-			f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{})
-		} else {
-			require.Equal(t, []string{f.row(ctx, id).ClaimID}, att.chainIdleClaims)
-			f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{Owner: f.sessID, Nodes: []session.BatchDebtNodeRef{{RootID: previous}}})
-		}
+		require.Equal(t, []string{id}, att.chainBatchRoots)
+		// The leg acted on the PREVIOUS launch's completion: the batch
+		// twin of the legacy claim snapshot.
+		att.batchDebtCallIDs = []string{previous}
+		f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{})
 		a3MarkRowsReacted(t, ctx, f.env.conn, f.sessID, previous)
 		previous = current
 	}

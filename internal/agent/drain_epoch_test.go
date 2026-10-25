@@ -35,7 +35,7 @@ func (f *countingFenceStore) LoadSessionExecutionRequirement(ctx context.Context
 // wireLostBindingFence installs the restart-state shape on the fixture's
 // coordinator: a fence stored under f.sessID naming a binding the EMPTY
 // manager no longer knows (the process restarted and nothing re-registered
-// the provider). Shared by both flag-off and flag-on subtests.
+// the provider).
 func wireLostBindingFence(t *testing.T, f *attemptFixture) *countingFenceStore {
 	t.Helper()
 	store := &countingFenceStore{}
@@ -94,11 +94,9 @@ func assertFreshWakeRereadsOnce(t *testing.T, f *attemptFixture, store *counting
 	require.Empty(t, f.coord.drainRecheckSet(), "the fresh refusal is terminal again")
 }
 
-// TestWakeSession_BindingLossIsTerminalForEpoch runs the gh#11a routing in
-// BOTH CI modes (the RUSH_BATCH_RUNTIME flag is process-global, so the
-// subtests are sequential and never t.Parallel): flag-off (the launch
-// decision reads async_jobs) and flag-on shadow (the decision reads batch
-// node facts; under flag-on WITHOUT a bound facts source,
+// TestWakeSession_BindingLossIsTerminalForEpoch runs the gh#11a routing with
+// the batch decision reading node facts (batch is unconditional since the H4
+// cutover). WITHOUT a bound facts source,
 // unknownBatchCutoverFacts.SelectedDebtExists returns (true, nil)
 // (batch_cutover_facts.go:122-124), and the failure is the LATER
 // PendingInclusiveDebt read inside readTurnFactsBatch (batch_cutover_facts.go
@@ -110,63 +108,45 @@ func assertFreshWakeRereadsOnce(t *testing.T, f *attemptFixture, store *counting
 func TestWakeSession_BindingLossIsTerminalForEpoch(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("flag-off", func(t *testing.T) {
-		// TestMain/default is off; set explicitly for determinism
-		// (mirrors batch_gate_refusal_test.go:86).
-		t.Setenv("RUSH_BATCH_RUNTIME", "")
-		f := newAttemptFixture(t, "wake-binding-loss-epoch", attemptFixtureOpts{
-			noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
-		})
-		store := wireLostBindingFence(t, f)
-		f.coord.addToRecheckSet(f.sessID)
-		f.seedDebt(ctx, "call-1", false)
-
-		assertBindingLossWake(t, f, store, ctx, 1)
-		assertFreshWakeRereadsOnce(t, f, store, ctx)
+	f := newAttemptFixture(t, "wake-binding-loss-epoch", attemptFixtureOpts{
+		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 	})
+	store := wireLostBindingFence(t, f)
+	f.coord.addToRecheckSet(f.sessID)
+	// The legacy row stays so the Reacted-untouched assertions still
+	// mean something; the batch decision path never reads
+	// async_jobs, so it cannot influence the launch decision.
+	f.seedDebt(ctx, "call-1", false)
 
-	t.Run("flag-on", func(t *testing.T) {
-		t.Setenv("RUSH_BATCH_RUNTIME", "1")
-		f := newAttemptFixture(t, "wake-binding-loss-epoch-on", attemptFixtureOpts{
-			noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
-		})
-		store := wireLostBindingFence(t, f)
-		f.coord.addToRecheckSet(f.sessID)
-		// The legacy row stays so the Reacted-untouched assertions still
-		// mean something; under ON the batch decision path never reads
-		// async_jobs, so it cannot influence the launch decision.
-		f.seedDebt(ctx, "call-1", false)
-
-		// Batch debt owned by f.sessID (the same settled DELIVERED shape the
-		// entry test uses): a countingTool leaf, so the root settles
-		// instantly with no release bookkeeping.
-		fast := &countingTool{name: "view"}
-		env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
-		// batch_nodes.owner_session_id REFERENCES sessions(id), and the
-		// detached delivery's history writes are FK'd to sessions: create
-		// the fixture's session row in the cutover DB first.
-		_, err := env.q.CreateSession(env.ctx, db.CreateSessionParams{ID: f.sessID, Title: f.sessID})
+	// Batch debt owned by f.sessID (the same settled DELIVERED shape the
+	// entry test uses): a countingTool leaf, so the root settles
+	// instantly with no release bookkeeping.
+	fast := &countingTool{name: "view"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, fast)
+	// batch_nodes.owner_session_id REFERENCES sessions(id), and the
+	// detached delivery's history writes are FK'd to sessions: create
+	// the fixture's session row in the cutover DB first.
+	_, err := env.q.CreateSession(env.ctx, db.CreateSessionParams{ID: f.sessID, Title: f.sessID})
+	require.NoError(t, err)
+	invokeDetachedAs(t, env, f.sessID, "call-binding-loss-on", "view", fast)
+	rootID := rootIDFor(t, env, f.sessID, "call-binding-loss-on")
+	require.Equal(t, "completed", rootTerminalFor(t, env, f.sessID, rootID))
+	// Pull with the OWNER so the completion is VISIBLE/selected debt.
+	require.Eventually(t, func() bool {
+		pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, buildBatchNoticeMessageParams)
 		require.NoError(t, err)
-		invokeDetachedAs(t, env, f.sessID, "call-binding-loss-on", "view", fast)
-		rootID := rootIDFor(t, env, f.sessID, "call-binding-loss-on")
-		require.Equal(t, "completed", rootTerminalFor(t, env, f.sessID, rootID))
-		// Pull with the OWNER so the completion is VISIBLE/selected debt.
-		require.Eventually(t, func() bool {
-			pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, buildBatchNoticeMessageParams)
-			require.NoError(t, err)
-			return len(pulled) >= 1
-		}, 5*time.Second, 5*time.Millisecond, "the batch pull never delivered the completion for %s", f.sessID)
+		return len(pulled) >= 1
+	}, 5*time.Second, 5*time.Millisecond, "the batch pull never delivered the completion for %s", f.sessID)
 
-		// Bind the node-backed facts to the FIXTURE's coordinator so
-		// drainDecision's SelectedDebtExists counts the delivered row for
-		// f.sessID instead of unknownBatchCutoverFacts' conservative error.
-		// The binding is process-global: delete it on cleanup.
-		BindCoordinatorBatchCutoverFacts(f.coord, NewBatchCutoverNodeFacts(env.store, env.live, env.conn))
-		t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
+	// Bind the node-backed facts to the FIXTURE's coordinator so
+	// drainDecision's SelectedDebtExists counts the delivered row for
+	// f.sessID instead of unknownBatchCutoverFacts' conservative error.
+	// The binding is process-global: delete it on cleanup.
+	BindCoordinatorBatchCutoverFacts(f.coord, NewBatchCutoverNodeFacts(env.store, env.live, env.conn))
+	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(f.coord) })
 
-		assertBindingLossWake(t, f, store, ctx, 1)
-		assertFreshWakeRereadsOnce(t, f, store, ctx)
-	})
+	assertBindingLossWake(t, f, store, ctx, 1)
+	assertFreshWakeRereadsOnce(t, f, store, ctx)
 }
 
 // sessionRequirementForBinding builds the fence envelope the tests store.

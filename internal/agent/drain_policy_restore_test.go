@@ -303,7 +303,6 @@ func TestRunSessionAgentCall_ReadyGateFailureReleasesTransferredOwner(t *testing
 // the test.
 func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	f := newAttemptFixture(t, "drain-construction-pin-leak", attemptFixtureOpts{
 		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 	})

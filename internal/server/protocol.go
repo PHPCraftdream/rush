@@ -55,9 +55,9 @@ const (
 	EventSessionWakeSchedules = "session_wake_schedules"
 	// EventSessionBatchWork carries a structured batch-node snapshot
 	// (R15a, handlers_batch.go) for one session's delegation tree --
-	// pushed on change and replied to CmdGetSessionBatchWork. INERT unless
-	// RUSH_BATCH_RUNTIME is on; the old session_live_work wire is
-	// untouched either way.
+	// pushed on change and replied to CmdGetSessionBatchWork.
+	// Unconditional since the H4 cutover (batch is the only runtime);
+	// the old session_live_work wire is untouched.
 	EventSessionBatchWork = "session_batch_work"
 )
 
@@ -105,9 +105,8 @@ const (
 	// (handlers_wake_schedules.go) answers it.
 	CmdGetSessionWakeSchedules = "get_session_wake_schedules"
 	// CmdGetSessionBatchWork asks for a fresh EventSessionBatchWork
-	// snapshot for one session (R15a, handlers_batch.go). Registered only
-	// when RUSH_BATCH_RUNTIME is on; flag off the route answers the normal
-	// "unknown command" error.
+	// snapshot for one session (R15a, handlers_batch.go). Registered
+	// unconditionally since the H4 cutover (batch is the only runtime).
 	CmdGetSessionBatchWork = "get_session_batch_work"
 	// CmdCancelWakeSchedule cancels one of the session's own wake schedules
 	// (stage 5b); handleCancelWakeSchedule answers it with a fresh snapshot.

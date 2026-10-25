@@ -138,7 +138,6 @@ func (d shapesDisk) Search(_ context.Context, _ sdk.DiskSearchRequest) (sdk.Disk
 
 func TestSdkProviderRunShapesIsolation(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 
 	const (
 		relPath     = "scoped/shapes.txt"

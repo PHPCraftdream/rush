@@ -74,7 +74,6 @@ func (rateLimitFailedBatchFacts) LiveWorkSummary(context.Context, string) (int, 
 // makes waitRateLimit sleep out the whole wait without consuming, and the
 // errRateLimitBudgetExhausted assertion goes red.
 func TestWaitRateLimit_FailingBatchFactsConsumesBudget(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	setRateLimitBudgetTick(t, 0, time.Millisecond)
 	c := &coordinator{}
 	BindCoordinatorBatchCutoverFacts(c, rateLimitFailedBatchFacts{})

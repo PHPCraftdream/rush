@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- The `RUSH_BATCH_RUNTIME` switch is removed and has no effect: the batch-only runtime is the only runtime since the H4 cutover.
 - The batch-only runtime is now unconditionally selected for every `RUSH_BATCH_RUNTIME` value (including unset, `false`, and garbage); the selector remains temporarily. Startup imports durable history, settings, queues and schedules once from untouched `.rush/rush.db` into active `.rush/rush_store_v1.db` before opening it; old/preparation execution and control state is discarded. Stop old processes and automatic restarts throughout import; drain/stop preparation hosts before upgrade. Requeued work may repeat external side effects. Rollback means stopping new hosts and using the previous binary with untouched `rush.db` (old snapshot only); preserve the new store and sidecars, with no reverse import/merge-back. See [job-batch rollout](docs/jobbatch.md). This note records intended current behavior, not evidence of CI gates passing.
 
 ## [0.2.0-alpha.16] - 2026-10-11

@@ -355,7 +355,6 @@ func TestStampBatchCallCredentialsRequiresCredentialsForMarkedPayload(t *testing
 // Timeout would reach the executor with a zero Timeout even though the model
 // requested 90s (the exact production defect the Round 3 fix removed).
 func TestModelControlRunAgentLeafTimeoutReachesExecutor(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newMarkerModelControlEnv(t)
 	reg, err := env.registries.Resolve(env.registryID)
 	require.NoError(t, err)
@@ -407,7 +406,6 @@ func TestModelControlRunAgentLeafTimeoutReachesExecutor(t *testing.T) {
 // (marker dropped, escrow registration skipped, clone removed) or if the
 // Timeout is dropped in the same breath.
 func TestModelControlRunAgentLeafEscrowAudit(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	env := newMarkerModelControlEnv(t)
 	// The adapter MUST escrow through the install's registry-store escrow
 	// (one instance), not a private one the pinned leaves never see.

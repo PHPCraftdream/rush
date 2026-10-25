@@ -44,7 +44,6 @@ type carryFixture struct {
 }
 
 func newCarryFixture(t *testing.T, answers ...string) *carryFixture {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	c := &carryFixture{
 		attemptFixture: newAttemptFixture(t, "run-owned-carry", attemptFixtureOpts{noIdle: true}),
 		gate:           make(chan struct{}),

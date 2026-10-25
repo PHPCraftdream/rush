@@ -57,7 +57,6 @@ func (m modelControlInventory) InstallBatchModelControls(*BatchLeafRegistry, Bat
 }
 
 func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	c := newBatchRuntimeCoordinator()
 	controls := make([]fantasy.AgentTool, 0, 5)
 	for _, name := range []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"} {

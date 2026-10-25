@@ -12,7 +12,6 @@ import (
 )
 
 func TestCoordinatorBatchStopAnswersPendingAfterNaturalSettlement(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	leaf := &coordinatorStopRunningLeaf{countingTool: countingTool{name: "terminal-stop"}, started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
 	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf)
 	var releaseOnce sync.Once

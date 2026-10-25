@@ -51,7 +51,7 @@ func batchFixtureLiveReader(conn *sql.DB, dataDir string) *session.BatchLiveRead
 }
 
 // bindBatchNodeFacts binds actual node facts using the production shared-writer
-// shape. It never mutates RUSH_BATCH_RUNTIME and cleanup removes only c.
+// shape. It never mutates any environment variable and cleanup removes only c.
 func bindBatchNodeFacts(t *testing.T, c *coordinator, conn *sql.DB, dataDir string) BatchCutoverFacts {
 	t.Helper()
 	live := batchFixtureLiveReader(conn, dataDir)

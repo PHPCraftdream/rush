@@ -171,16 +171,9 @@ func TestAccountDrainAttempt_ForeignLegLeavesTheDebtAlone(t *testing.T) {
 	require.False(t, f.inRecheckSet(), "a foreign workspace is not worth a tick")
 
 	// The debt is untouched, so the owner process still sees it (read through
-	// the flag-selected authority).
-	if batchFlagEnabled() {
-		snap, err := coordinatorBatchCutoverFacts(f.coord).CaptureVisibleDebt(ctx, f.sessID)
-		require.NoError(t, err)
-		require.False(t, snap.Empty(), "a foreign leg must not settle the debt by failure")
-	} else {
-		hasJobDebt, notices, _, err := f.store.PendingInclusiveDebtRows(ctx, f.sessID)
-		require.NoError(t, err)
-		require.True(t, hasJobDebt || len(notices) > 0,
-			"a foreign leg must not settle the debt by failure")
-	}
+	// the batch authority).
+	snap, err := coordinatorBatchCutoverFacts(f.coord).CaptureVisibleDebt(ctx, f.sessID)
+	require.NoError(t, err)
+	require.False(t, snap.Empty(), "a foreign leg must not settle the debt by failure")
 	require.Zero(t, f.markers(ctx), "a foreign leg writes no wake_failed marker")
 }

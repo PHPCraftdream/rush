@@ -1,6 +1,6 @@
 // P4 test-only helper layer for the two-App Phase-4 scenarios, batch-only
 // (H4 atomic activation: the batch runtime is the only authority; the
-// legacy async_jobs arms and the RUSH_BATCH_RUNTIME selector are gone).
+// legacy async_jobs arms are gone).
 // Every identifier carries the pp4 package tag. The helpers read the
 // batch facts: batch_nodes and the App's real HostStore. No helper touches
 // an environment variable. Handlers and goroutines must never call require

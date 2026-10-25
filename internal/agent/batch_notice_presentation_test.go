@@ -5,8 +5,8 @@
 // no legacy idle-child own-jobs line -- while question delivery, node
 // identity, liveness and scope closure are preserved).
 //
-// All tests bind the batch store directly; mode-independent; none read or
-// set RUSH_BATCH_RUNTIME.
+// All tests bind the batch store directly; none read or set any
+// environment variable.
 package agent
 
 import (

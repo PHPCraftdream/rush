@@ -32,7 +32,6 @@ func armOwnWork(t *testing.T, sa *sessionAgent, sessionID string) bool {
 // mutation "drop the batchOwnWorkFactsInstalled gate" makes armProgressGuard
 // arm ownWork from the unknown (unbound) helper and flips it to false.
 func TestOwnWorkBatch_LiveOwnCommandFlagOn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-ownwork-cmd"
 	createSessionRow(t, db.New(conn), ctx, owner)
@@ -56,7 +55,6 @@ func TestOwnWorkBatch_LiveOwnCommandFlagOn(t *testing.T) {
 // the same assertion from the other direction. The CLIActiveWork assertions
 // on lines 64/69 are the parity premise, not the regression catch.
 func TestOwnWorkBatch_HeldQuestionMatchesCLIActiveWork(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-ownwork-q"
 	createSessionRow(t, db.New(conn), ctx, owner)
@@ -85,7 +83,6 @@ func TestOwnWorkBatch_HeldQuestionMatchesCLIActiveWork(t *testing.T) {
 // true unconditionally (e.g. the conservative fail-closed branch leaked into
 // the happy path) fails the terminal and empty assertions.
 func TestOwnWorkBatch_TerminalWorkFalse(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	coord, _, conn, _, ctx := batchQuestionFixture(t)
 	const owner = "sess-ownwork-done"
 	const idle = "sess-ownwork-idle"

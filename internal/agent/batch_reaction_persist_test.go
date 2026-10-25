@@ -71,7 +71,6 @@ func seedBatchCompletionDebt(t *testing.T, f *attemptFixture, callID string) (*s
 }
 
 func TestBatchDrainTurnReactionMarksBatchNodesON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	f := newAttemptFixture(t, "batch-reaction-persist", attemptFixtureOpts{})
 	store, root := seedBatchCompletionDebt(t, f, "call-bf1")
@@ -98,7 +97,6 @@ func TestBatchDrainTurnReactionMarksBatchNodesON(t *testing.T) {
 }
 
 func TestBatchAskQuestionDrainReactionON(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	f := newAttemptFixture(t, "batch-ask-question-reaction", attemptFixtureOpts{
 		noIdle:  true,
@@ -128,7 +126,6 @@ func TestBatchAskQuestionDrainReactionON(t *testing.T) {
 }
 
 func TestBatchGenericProviderErrorSettlesDebtByFailure(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	f := newAttemptFixture(t, "batch-generic-provider-error", attemptFixtureOpts{
 		noIdle: true,
@@ -183,7 +180,6 @@ func TestBatchGenericProviderErrorSettlesDebtByFailure(t *testing.T) {
 // turn and hits the probe provider -- the requests==0 check fails with at
 // least one provider call.
 func TestBatchStopWakeZeroAndRestartNoReactionTurn(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	f := newAttemptFixture(t, "batch-stop-wake-zero", attemptFixtureOpts{noIdle: true})
 	store, root := seedBatchCompletionDebt(t, f, "call-bsz")

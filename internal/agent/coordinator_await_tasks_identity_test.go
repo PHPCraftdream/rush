@@ -22,7 +22,6 @@ func TestAwaitTasksDispatchUsesDurableIdentity(t *testing.T) {
 			name = "ordinary-fork"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("RUSH_BATCH_RUNTIME", "true")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			batchEnv := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64})

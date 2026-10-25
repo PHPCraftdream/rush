@@ -64,19 +64,12 @@ func (f *attemptFixture) expireDrainPause() {
 // maxNoticeAttempts is the highest wake_attempts among the visible debt rows.
 func (f *attemptFixture) maxNoticeAttempts(ctx context.Context) int {
 	f.t.Helper()
-	if batchFlagEnabled() {
-		store := session.NewBatchStore(f.env.conn)
-		snap, err := store.BatchReactionCaptureDebtSnapshot(ctx, f.sessID)
-		require.NoError(f.t, err)
-		maxAttempts, err := store.BatchReactionMaxWakeAttempts(ctx, f.sessID, snap)
-		require.NoError(f.t, err)
-		return maxAttempts
-	}
-	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
+	store := session.NewBatchStore(f.env.conn)
+	snap, err := store.BatchReactionCaptureDebtSnapshot(ctx, f.sessID)
 	require.NoError(f.t, err)
-	n, err := f.store.MaxWakeAttempts(ctx, f.sessID, snap)
+	maxAttempts, err := store.BatchReactionMaxWakeAttempts(ctx, f.sessID, snap)
 	require.NoError(f.t, err)
-	return n
+	return maxAttempts
 }
 
 func (f *attemptFixture) hasDebt(ctx context.Context) bool {
@@ -294,7 +287,6 @@ func (r readObservingFacts) PendingInclusiveDebt(ctx context.Context, owner stri
 //     cancellation came from the read, and require.Error fails when the read
 //     completed before the cancel.
 func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	f, _ := newBGShellCapFixture(t, "cap-gate", attemptFixtureOpts{noIdle: true})
 	bindRealNodeFacts(t, f)
 	ctx := context.Background()
@@ -366,7 +358,6 @@ func TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed(t *testing.T) 
 //     deterministic and may false-pass. The deterministic deletion detector
 //     is TestBGShellCapDeferred_BlockedByAnArrivalInFlightFailsClosed above.
 func TestBGShellCapDeferred_ArrivalAndRowsAreOneConsistentPair(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	f, _ := newBGShellCapFixture(t, "cap-pair", attemptFixtureOpts{noIdle: true})
 	nodeFacts := bindRealNodeFacts(t, f)
 	observedCount := 0

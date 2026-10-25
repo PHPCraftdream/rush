@@ -128,7 +128,6 @@ func TestConstructionScopeBoundary(t *testing.T) {
 	// only then fails in the controls step — the error path must close the
 	// CALL's own build scope (failBuildScope, coordinator_tools.go) so the
 	// pinned construction does not outlive the failed assembly. --
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
 	failing := failingModelControls{err: errors.New("assembly failure: controls install refused")}
 	failedBind := &batchCoordinatorBinding{
 		ingress:      &batchWorkIngress{registries: registries, diskBindings: caps},

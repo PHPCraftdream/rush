@@ -62,8 +62,6 @@ func (workingModelControls) InstallBatchModelControls(*BatchLeafRegistry, BatchI
 }
 
 func TestPinCallToolsReadyGateErrorReleasesConstruction(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-
 	env := testEnv(t)
 	coord := newToolPinningCoordinator(t, env, false)
 
@@ -256,8 +254,6 @@ func (h *round2LiveHarness) countDrop(t *testing.T) map[string]struct{} {
 // construction owner (and its provider-capturing toolset registry) past
 // the run — the owner-count oracle below goes red.
 func TestRunWithReservedOwnershipReleasesConstruction(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-
 	var calls atomic.Int64
 	srv := singleTurnSSEServer(&calls)
 	t.Cleanup(srv.Close)
@@ -317,8 +313,6 @@ func TestRunWithReservedOwnershipReleasesConstruction(t *testing.T) {
 // (its later tool builds refuse against an already-closed scope) — the
 // fail-closed-direction oracles go red.
 func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "true")
-
 	var calls atomic.Int64
 	srv := singleTurnSSEServer(&calls)
 	t.Cleanup(srv.Close)

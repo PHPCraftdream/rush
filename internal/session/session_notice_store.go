@@ -3,7 +3,7 @@
 // list, pending-inclusive debt) re-implemented WITHOUT any async_jobs
 // query. Since the H4 cutover the legacy AsyncJobStore is deleted and this
 // store is the only session-notice machinery. Selection happens by
-// CONSTRUCTION, never by reading RUSH_BATCH_RUNTIME: the store takes its
+// CONSTRUCTION via injected function fields: the store takes its
 // bound-notice check, live-roots read, host id and host-liveness predicate
 // as injected function fields; NewSessionNoticeStore wires the batch
 // implementations (batch_nodes root rows, live-state set

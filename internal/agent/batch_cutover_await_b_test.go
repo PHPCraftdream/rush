@@ -26,7 +26,6 @@ import (
 )
 
 func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	gatedView := newGatedLeaf("view")
 	gatedRun := newGatedLeaf("run_command")
 	fast := &countingTool{name: "grep"}
@@ -196,7 +195,6 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 // the FINAL fence is the unannounced one-task root's inline election WIN
 // plus B's once-only pulled delivery -- explicitly NOT debt-free.
 func TestAWbDebtFreeVariant(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	gatedView := newGatedLeaf("view")
 	gatedRun := newGatedLeaf("run_command")
 	// Same held-Stop gate as the combined variant: the submitted+pending

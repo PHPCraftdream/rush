@@ -11,11 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fixture: RUSH_BATCH_RUNTIME=1, node facts bound, the batch store, and a
-// real message service. No t.Parallel in this file (t.Setenv).
+// Fixture: node facts bound, the batch store, and a real message service.
 func batchQuestionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *sql.DB, string, context.Context) {
 	t.Helper()
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	ctx := context.Background()
 	conn, dataDir := batchFixtureConn(t)
 	q := db.New(conn)

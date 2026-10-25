@@ -15,10 +15,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// batchRuntimeEnabled stays as an always-true batch selector until lane I
-// erases the switch symbol (H4: batch is unconditional).
-func batchRuntimeEnabled() bool { return true }
-
 // ── Wire (v: 1) ──────────────────────────────────────────────────────────────
 
 // BatchCountsWire counts task-kind nodes of one root by state; Active sums

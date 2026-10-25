@@ -2,13 +2,14 @@ package app
 
 import "github.com/PHPCraftdream/rush/internal/agent"
 
-// Ephemeral (dataDir == "") library-mode Apps never install the batch
-// runtime, so with RUSH_BATCH_RUNTIME ON a custom-DiskProvider run has no
-// batchInstall.DiskBindings to bind against. These two helpers give such an
-// App its own App-owned registry, without any filesystem-backed host infra.
-
-// resolveDiskBindings returns the DiskProviderRegistry a flag-ON
-// custom-DiskProvider run binds its per-call Call owner against (R12-H2
+// Ephemeral (dataDir == "") library-mode Apps run with the batch runtime
+// always installed (since H4), but they have no batchInstall.DiskBindings,
+// so a custom-DiskProvider run has nothing to bind against. These two
+// helpers give such an App its own App-owned registry, without any
+// filesystem-backed host infra.
+//
+// resolveDiskBindings returns the DiskProviderRegistry a custom-DiskProvider
+// run binds its per-call Call owner against (R12-H2
 // §1.2, see app_run_setup.go's BindCallDiskProvider site). A persisted App
 // (dataDir != "") uses the batch runtime install's registry, exactly as
 // before this seam existed; an ephemeral library-mode App (dataDir == "")

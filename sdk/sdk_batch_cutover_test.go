@@ -32,7 +32,6 @@ import (
 // provider contents and confirm the real path is absent.
 func TestSDKBatchRuntimeOnCustomDiskProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
@@ -66,7 +65,6 @@ func TestSDKBatchRuntimeOnCustomDiskProviderSupported(t *testing.T) {
 // file succeeds on the scoped real filesystem path.
 func TestSDKBatchRuntimeOnCanonicalOSDiskProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content, marker = "scoped/os-provider.txt", "canonical-os-provider", "BATCH_OS_DISK_OK"
@@ -194,7 +192,6 @@ var _ sdk.DiskProvider = batchSDKSliceDisk{}
 // ingress with a custom provider whose interface dynamic value has a slice.
 func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))
 	const path, content, marker = "scoped/slice-provider.txt", "slice-provider-content", "BATCH_SLICE_DISK_OK"
@@ -227,7 +224,6 @@ func TestSDKBatchRuntimeOnNonComparableProviderSupported(t *testing.T) {
 // each run's read result came from its own call-local provider binding.
 func TestSDKBatchRuntimeTwoClientsIsolateEqualPaths(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 	workA, workB := evalTempDir(t), evalTempDir(t)
 	for _, dir := range []string{workA, workB} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "scoped"), 0o755))
@@ -314,7 +310,6 @@ func TestSDKBatchRuntimeTwoClientsIsolateEqualPaths(t *testing.T) {
 // provider fails closed before a model request rather than selecting OS disk.
 func TestSDKBatchRuntimeTypedNilProviderRejected(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 	workDir := evalTempDir(t)
 	var hits atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +342,6 @@ func TestSDKExternalUnavailableSentinelClassifies(t *testing.T) {
 
 func TestSDKBatchRuntimeOnRunContextCancellation(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	const marker = "BATCH_RUNTIME_CANCEL_RECOVERY_OK"
@@ -538,7 +532,6 @@ func waitForBatchNodes(t *testing.T, conn *sql.DB, sessionID string, budget time
 //     fails with the last observed state distribution.
 func TestSDKBatchRuntimeCancelSettlesAcceptedWork(t *testing.T) {
 	isolateGlobalConfig(t)
-	unsetBatchRuntimeEnvForTest(t)
 
 	workDir := evalTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "scoped"), 0o755))

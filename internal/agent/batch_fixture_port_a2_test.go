@@ -1,8 +1,8 @@
 // Package A2's batch-fixture helpers (pull/compaction/splice lifecycle).
 // Everything here seeds and reads the batch node store (reached through the
 // coordinator's bound BatchCutoverFacts); names carry the a2 prefix so the
-// sibling packages' helpers cannot collide. No helper here mutates
-// RUSH_BATCH_RUNTIME.
+// sibling packages' helpers cannot collide. No helper here mutates any
+// environment variable.
 package agent
 
 import (
