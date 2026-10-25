@@ -262,7 +262,7 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 	}
 	if priorRecord != nil {
 		if fmt.Sprintf("%v", sourceFP.identity) != priorRecord.SourceID || fmt.Sprintf("%v", sourceFP.parentIdentity) != priorRecord.ParentID || hex.EncodeToString(sourceFP.digest[:]) != priorRecord.SourceDigest || hex.EncodeToString(stagedDigest[:]) != priorRecord.StagedDigest {
-			return fmt.Errorf("%w: existing record does not match regenerated transaction", errKtavMigrationConflict, filepath.Base(legacy))
+			return fmt.Errorf("%w: existing record for %s does not match regenerated transaction", errKtavMigrationConflict, filepath.Base(legacy))
 		}
 		record = *priorRecord
 	}
