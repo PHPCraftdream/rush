@@ -1481,7 +1481,7 @@ transition reason and outcome state. Do not print task payloads, injected
 messages, raw details, command arguments, or agent prompts. Task output is
 available through explicit inspection, not copied into completion logs.
 
-Do not build a daemon, RPC transport, or second Rush CLI inside batchlab.
+Do not build an angel, RPC transport, or second Rush CLI inside batchlab.
 All help and examples must describe real supported behavior.
 
 ## 6. Autonomous acceptance matrix
