@@ -42,6 +42,10 @@ func isolateAllGlobalConfigPaths(t *testing.T) (configDir, dataDir string) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
+	// configSyncIsolate-derived fixtures must never consult the real home,
+	// even through resolution layers that read HOME/%USERPROFILE% directly.
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 
 	return configDir, dataDir
 }

@@ -905,7 +905,15 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 
 	snapshots := make(map[string]fileSnapshot, len(tracked))
 	for _, path := range tracked {
-		fingerprint := reloadFingerprintForPath(fingerprints, path)
+		// The fingerprints map only holds SELECTED documents; an unselected
+		// slot sibling that exists on disk (rush.ktav selected, ignored
+		// rush.json present) must still contribute its real on-disk
+		// fingerprint, or the snapshot would publish Exists:false for an
+		// existing file and ConfigStaleness would report Dirty forever.
+		fingerprint, fpErr := trackedSlotFingerprint(path, fingerprints)
+		if fpErr != nil {
+			fingerprint = reloadFileFingerprint{}
+		}
 		snapshots[path] = fileSnapshot{
 			Path:        path,
 			Exists:      fingerprint.exists,
@@ -916,6 +924,20 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 		}
 	}
 	return tracked, snapshots
+}
+
+// trackedSlotFingerprint is the single disk-fingerprint accessor for
+// tracked slot paths: it returns the captured reload fingerprint when one
+// exists for the path (selected documents, plus canonical/normalized
+// aliases via reloadFingerprintForPath), and falls back to a REAL on-disk
+// fingerprint (raw bytes: existence plus identity/digest, no decoding,
+// never applied to the config) for tracked paths the selected set does not
+// cover — an unselected slot sibling that exists must not look absent.
+func trackedSlotFingerprint(path string, fingerprints map[string]reloadFileFingerprint) (reloadFileFingerprint, error) {
+	if fingerprint := reloadFingerprintForPath(fingerprints, path); fingerprint != (reloadFileFingerprint{}) {
+		return fingerprint, nil
+	}
+	return readReloadFingerprint(path)
 }
 
 func reloadFingerprintForPath(fingerprints map[string]reloadFileFingerprint, path string) reloadFileFingerprint {

@@ -368,6 +368,9 @@ func isolatedMCPConfigStore(t *testing.T) (*ConfigStore, string) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
+	// home.Dir()/home.Config() must never fall through to the real home.
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
 	// MCP transaction fixtures must not depend on provider discovery or
 	// mutate a process-wide provider cache while ConfigStore.Init loads.
 	t.Setenv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")

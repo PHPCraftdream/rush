@@ -81,7 +81,7 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 		if err != nil || !configOwnersMatch(owner, dirOwner) {
 			break
 		}
-		for _, base := range []string{appName, "." + appName} {
+		for _, base := range configSlotBaseNames() {
 			// Visible rush.ktav/rush.json keeps its historical priority over
 			// the hidden pair; only one format per slot is ever selected.
 			selected := selectConfigSlot(filepath.Join(dir, base+".json"))
