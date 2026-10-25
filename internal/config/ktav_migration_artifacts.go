@@ -18,8 +18,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 )
@@ -182,6 +184,13 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 		if err := verifyKtavGenerations(record, legacy, dest, owner, enforce, state); err != nil {
 			return err
 		}
+		// Hard mtime step BEFORE archival: the published Ktav is
+		// reader-preferred but the JSON still exists, so a failed timestamp
+		// stop must leave the pending state (Ktav + JSON + record) untouched;
+		// archival never proceeds past a persistent timestamp failure.
+		if err := ktavArtifactPreserveMTime(dest, legacy); err != nil {
+			return err
+		}
 		return ktavArtifactFinishArchival(ctx, legacy, dest, backup, recordPath, record, workingDir)
 	}
 	return runKtavArtifactMigrationTransaction(ctx, legacy, dest, backup, recordPath, workingDir, validateUnderLock)
@@ -311,12 +320,13 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 	if _, err := commitConfigFile(dest, dest, ktavBytes, 0o600, expected, owner, enforce, publishHook); err != nil {
 		return fmt.Errorf("ktav artifact migration: failed to publish %s: %w", filepath.Base(dest), err)
 	}
-	// Provider/hyper cache freshness is mtime-based (cache.Age), so the new
-	// Ktav MUST inherit the source mtime. This is a hard step BEFORE the
-	// archival: on failure the transaction stops with the JSON still active
-	// (the published Ktav plus its record converge through the recovery
-	// rules on the next run, which re-applies the mtime before retiring the
-	// record).
+	// Ktav published, archival pending; the published Ktav is
+	// reader-preferred, the JSON is ignored until resolution. Provider/hyper
+	// cache freshness is mtime-based (cache.Age), so the published Ktav MUST
+	// inherit the source mtime. This is a hard step BEFORE the archival: on
+	// failure the transaction stops with the pending state (published Ktav,
+	// JSON, record) untouched, and the recovery rules converge it on the
+	// next run.
 	if err := ktavArtifactPreserveMTime(dest, legacy); err != nil {
 		return err
 	}
@@ -385,7 +395,11 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 			}
 			legacy := oauthJournalLegacyPath(canonical, descriptor.id)
 			if err := ktavMigrateOAuthJournal(ctx, canonical, descriptor.id, workingDir); err != nil {
-				warnMigrationDeferredOnce(legacy, err.Error())
+				if errors.Is(err, errKtavMigrationConflict) && ktavEntryExists(oauthJournalKtavPath(canonical, descriptor.id)) && ktavEntryExists(legacy) {
+					warnKtavArtifactConflictOnce(oauthJournalKtavPath(canonical, descriptor.id), legacy, err.Error())
+				} else {
+					warnMigrationDeferredOnce(legacy, err.Error())
+				}
 			}
 		}
 	}
@@ -462,6 +476,19 @@ func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workin
 	return nil
 }
 
+// warnKtavArtifactConflictOnce logs an artifact migration that stopped on a
+// conflict beside an EXISTING destination Ktav: the existing Ktav generation
+// stays active and the JSON copy is left untouched. It keys off the shared
+// ktavBothFormatsWarned map (distinct prefix) so tests can reset it, once
+// per destination, paths only.
+func warnKtavArtifactConflictOnce(ktav, legacy, reason string) {
+	if _, dup := ktavBothFormatsWarned.LoadOrStore("conflict:"+ktav, struct{}{}); dup {
+		return
+	}
+	slog.Warn("Ktav artifact migration stopped; an existing Ktav generation stays active and the JSON copy is left untouched",
+		"ktav", ktav, "json", legacy, "reason", reason)
+}
+
 // ktavMigrateCacheArtifactsStartup converts the provider/hyper catalogs and
 // every model-catalog cache in the data directory, and finishes any pending
 // cache transaction. It runs INDEPENDENTLY of the workspace config format:
@@ -477,19 +504,40 @@ func ktavMigrateCacheArtifactsStartup(ctx context.Context, workingDir string) {
 			continue
 		}
 		if err := migrateKtavArtifact(ctx, legacy, workingDir); err != nil {
-			warnMigrationDeferredOnce(legacy, err.Error())
+			if errors.Is(err, errKtavMigrationConflict) && ktavEntryExists(ktavSiblingOf(legacy)) && ktavEntryExists(legacy) {
+				warnKtavArtifactConflictOnce(ktavSiblingOf(legacy), legacy, err.Error())
+			} else {
+				warnMigrationDeferredOnce(legacy, err.Error())
+			}
 		}
 	}
 }
 
 // ktavCacheArtifactPaths lists the Rush-owned cache slots by their legacy
-// JSON paths: providers.json, hyper.json, model-catalog-<id>.json.
+// JSON paths: providers.json, hyper.json, model-catalog-<id>.json. Pending
+// post-archive transactions (record but no JSON) are ALSO discovered through
+// their <name>.json.ktav-migration records, so a catalog whose legacy JSON is
+// already archived is still recovered.
 func ktavCacheArtifactPaths() []string {
 	providers := cachePathFor("providers")
+	cacheDir := filepath.Dir(providers)
 	paths := []string{providers, cachePathFor("hyper")}
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(providers), "model-catalog-*.json"))
-	if err == nil {
-		paths = append(paths, matches...)
+	seen := map[string]bool{}
+	for _, p := range paths {
+		seen[p] = true
+	}
+	for _, pattern := range []string{"model-catalog-*.json", "model-catalog-*.json.ktav-migration"} {
+		matches, err := filepath.Glob(filepath.Join(cacheDir, pattern))
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			legacy := strings.TrimSuffix(match, ".ktav-migration")
+			if !seen[legacy] {
+				seen[legacy] = true
+				paths = append(paths, legacy)
+			}
+		}
 	}
 	return paths
 }

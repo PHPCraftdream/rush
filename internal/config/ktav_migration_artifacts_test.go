@@ -520,10 +520,15 @@ func TestKtavArtifactChtimesFailureDefersConversion(t *testing.T) {
 	require.Contains(t, err.Error(), "mtime", "the failure names the mtime step")
 	require.FileExists(t, providers, "the JSON stays active: the failure happens before archival")
 	require.NoFileExists(t, backupPathFor(providers), "no backup is created")
-	require.NoFileExists(t, backupPathFor(providers))
+	require.FileExists(t, migrationRecordPathFor(providers), "the staged transaction is retained")
+
+	// Restore BOTH seams INSIDE the body so the converging run uses a
+	// working Chtimes (the t.Cleanup is only a safety net).
+	ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
 
 	// The staged Ktav plus its record converge on the next run with a
-	// working Chtimes.
+	// working Chtimes — through the recovery rules, which HARD-apply the
+	// mtime before retiring the record.
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
 	require.NoFileExists(t, providers)
 	require.FileExists(t, ktavSiblingOf(providers))
@@ -579,9 +584,13 @@ func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
 			ktavSetupLoadMigrationTest(t, true)
 			resetBothFormatsWarnings()
 			dir := canonicalArtifactTempDir(t)
+			providerConfig := `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`
 			if tc.workspaceFile != "" {
-				configJSON := `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`
-				require.NoError(t, os.WriteFile(filepath.Join(dir, tc.workspaceFile), testKtavBytes(t, configJSON), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, tc.workspaceFile), testKtavBytes(t, providerConfig), 0o600))
+			} else {
+				// No workspace config at all: Load must still read a valid
+				// provider from the isolated GLOBAL config dir.
+				writeTestFile(t, filepath.Join(os.Getenv("RUSH_GLOBAL_CONFIG"), "rush.json"), providerConfig)
 			}
 			providers := cachePathFor("providers")
 			require.NoError(t, os.MkdirAll(filepath.Dir(providers), 0o700))
@@ -611,6 +620,10 @@ func TestKtavArtifactStartupJournalRecoversPostArchiveCrash(t *testing.T) {
 	dir := canonicalArtifactTempDir(t)
 	slot, legacy := seedKtavArtifactJournal(t, dir)
 
+	savedGate := ktavAutoMigrate
+	ktavAutoMigrate = true
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+
 	previousHook := ktavMigrationStepHook
 	ktavMigrationStepHook = func(step string) error {
 		if step == "after-backup-rename" {
@@ -632,4 +645,150 @@ func TestKtavArtifactStartupJournalRecoversPostArchiveCrash(t *testing.T) {
 	require.NoFileExists(t, migrationRecordPathFor(legacy), "the leftover record must be retired")
 	assertKtavArtifactJournalMigrated(t, dir, slot)
 	require.Equal(t, oauthJournalKtavPath(slot, "openai-codex"), selectOAuthJournalPath(slot, "openai-codex", false))
+}
+
+// TestKtavArtifactPersistentChtimesFailureNeverArchives proves the HARD
+// pre-archive mtime step on the recovery path: with a persistently failing
+// Chtimes, the first attempt (new transaction) and the SECOND attempt (the
+// conflict-archival recovery of the pending Ktav + JSON + record state) both
+// stop before archival, so the migration NEVER archives across attempts.
+// Once the seam is restored, a third attempt converges fully with the
+// source mtime preserved.
+func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	providers := cachePathFor("providers")
+	writeTestFile(t, providers, `{"providers":[{"name":"p"}]}`)
+	old := time.Now().Add(-72 * time.Hour)
+	require.NoError(t, os.Chtimes(providers, old, old))
+
+	savedStat, savedChtimes := ktavArtifactStatFile, ktavArtifactChtimes
+	ktavArtifactChtimes = func(string, time.Time, time.Time) error {
+		return errors.New("injected chtimes failure")
+	}
+	t.Cleanup(func() {
+		ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+	})
+
+	// Attempt 1: the fresh transaction stops at its hard mtime step.
+	err := migrateKtavArtifact(context.Background(), providers, dir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mtime")
+	require.FileExists(t, providers)
+	require.NoFileExists(t, backupPathFor(providers))
+	require.FileExists(t, migrationRecordPathFor(providers))
+
+	// Attempt 2: the pending state (Ktav + JSON + record) goes through the
+	// conflict-archival recovery, whose HARD pre-archive mtime step fails
+	// again — nothing is archived.
+	err = migrateKtavArtifact(context.Background(), providers, dir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mtime")
+	require.FileExists(t, providers, "attempt 2 must NOT archive")
+	require.NoFileExists(t, backupPathFor(providers))
+	require.FileExists(t, migrationRecordPathFor(providers))
+
+	// Attempt 3: with a working Chtimes the recovery converges fully.
+	ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
+	require.NoFileExists(t, providers)
+	require.FileExists(t, ktavSiblingOf(providers))
+	require.FileExists(t, backupPathFor(providers))
+	require.NoFileExists(t, migrationRecordPathFor(providers))
+	info, statErr := os.Stat(ktavSiblingOf(providers))
+	require.NoError(t, statErr)
+	require.WithinDuration(t, old, info.ModTime(), 2*time.Second, "the converging run preserves the source mtime")
+}
+
+// TestKtavCacheStartupRecoversPostArchiveTransactions seeds the post-crash
+// leftover state (Ktav + backup + migration record, legacy JSON already
+// archived) for BOTH a model catalog and providers.json — produced
+// authentically by a hook crash at "after-backup-rename" — and proves
+// ktavMigrateCacheArtifactsStartup discovers and converges BOTH pending
+// transactions, including the catalog whose legacy JSON no longer exists.
+func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	savedGate := ktavAutoMigrate
+	ktavAutoMigrate = true
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+
+	slots := []struct{ name, body string }{
+		{"providers", `{"providers":[{"name":"p"}]}`},
+		{"model-catalog-openai-codex", `{"fingerprint":"fp-1","fetched_at":"2020-01-01T00:00:00Z","models":[{"id":"m"}]}`},
+	}
+	old := time.Now().Add(-72 * time.Hour)
+	legacyPaths := map[string]string{}
+	for _, tc := range slots {
+		legacy := cachePathFor(tc.name)
+		legacyPaths[tc.name] = legacy
+		writeTestFile(t, legacy, tc.body)
+		require.NoError(t, os.Chtimes(legacy, old, old), "the stale source mtime must be inherited by the backup")
+	}
+
+	previousConfigHook := ktavMigrationStepHook
+	ktavMigrationStepHook = func(step string) error {
+		if step == "after-backup-rename" {
+			return errKtavMigrationCrashInjected
+		}
+		return nil
+	}
+	t.Cleanup(func() { ktavMigrationStepHook = previousConfigHook })
+	for _, tc := range slots {
+		err := migrateKtavArtifact(context.Background(), legacyPaths[tc.name], dir)
+		require.ErrorIs(t, err, errKtavMigrationCrashInjected)
+	}
+	// The crash-after-archive state for both artifacts: Ktav + backup +
+	// record, no JSON.
+	for _, tc := range slots {
+		legacy := legacyPaths[tc.name]
+		require.NoFileExists(t, legacy)
+		require.FileExists(t, ktavSiblingOf(legacy))
+		require.FileExists(t, backupPathFor(legacy))
+		require.FileExists(t, migrationRecordPathFor(legacy))
+	}
+
+	// Release the crash hook BEFORE the recovery call.
+	ktavMigrationStepHook = previousConfigHook
+	ktavMigrateCacheArtifactsStartup(context.Background(), dir)
+
+	for _, tc := range slots {
+		legacy := legacyPaths[tc.name]
+		require.NoFileExists(t, migrationRecordPathFor(legacy), tc.name+": the leftover record must be retired")
+		require.FileExists(t, ktavSiblingOf(legacy), tc.name+": the Ktav generation must survive")
+		require.FileExists(t, backupPathFor(legacy), tc.name+": the backup must survive")
+		info, statErr := os.Stat(ktavSiblingOf(legacy))
+		require.NoError(t, statErr)
+		require.WithinDuration(t, old, info.ModTime(), 2*time.Second, tc.name+": the stale mtime must be re-applied from the backup")
+	}
+}
+
+// TestKtavArtifactStartupConflictWarnsExistingKtavActive proves the startup
+// wrappers report a conflict beside an EXISTING destination Ktav with the
+// corrected message: the existing Ktav generation stays active, NOT the
+// misleading "continuing with legacy JSON" wording.
+func TestKtavArtifactStartupConflictWarnsExistingKtavActive(t *testing.T) {
+	ktavArtifactTestEnv(t)
+	dir := canonicalArtifactTempDir(t)
+	slot, legacy := seedKtavArtifactJournal(t, dir)
+	dest := oauthJournalKtavPath(slot, "openai-codex")
+	writeTestFile(t, dest, string(testKtavBytes(t, ktavArtifactJournalBody)))
+
+	savedGate := ktavAutoMigrate
+	ktavAutoMigrate = true
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	resetBothFormatsWarnings()
+
+	logs := captureSlogOutput(t)
+	ktavMigrateOAuthJournalsAtStartup(context.Background(), []string{slot}, dir)
+
+	require.Contains(t, logs.String(), "an existing Ktav generation stays active", "the corrected conflict message must appear")
+	require.Contains(t, logs.String(), dest, "the warning carries the Ktav path")
+	require.Contains(t, logs.String(), legacy, "the warning carries the JSON path")
+	require.NotContains(t, logs.String(), "continuing with legacy JSON", "the misleading wording must NOT appear for this conflict")
+	require.NotContains(t, logs.String(), ktavArtifactJournalSecret, "journal bytes must never reach diagnostics")
+	// The conflict contract still holds on disk.
+	require.FileExists(t, legacy)
+	require.FileExists(t, dest)
+	require.NoFileExists(t, backupPathFor(legacy))
 }
