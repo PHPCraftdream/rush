@@ -96,22 +96,13 @@ func batchMaintenanceNoticeStats(t *testing.T, conn *sql.DB, rootID string) (int
 
 // TestBatchMaintenance_StartupPassRecoversOnceWakeZero pins startBatchMaintenance's
 // synchronous startup pass: one recovery, one selected notice, wake=0 — and
-// no loop at all under flag OFF.
+// no loop at all without a data dir or DB writer.
 func TestBatchMaintenance_StartupPassRecoversOnceWakeZero(t *testing.T) {
 	a, conn, dataDir := newBatchMaintenanceApp(t)
 	root := seedBatchMaintenanceRoot(t, a, conn, "sess-maint", "call-maint", "maint-dead-host", "running")
 	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "maint-dead-host"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
-
-	if !batchCutoverOn() {
-		a.startBatchMaintenance()
-		state, _ := batchMaintenanceRootState(t, conn, root)
-		require.Equal(t, "running", state, "flag off: the startup pass must not recover anything")
-		_, ok := batchMaintenanceLoops.Load(a)
-		require.False(t, ok, "flag off: no maintenance loop may be armed")
-		return
-	}
 
 	a.startBatchMaintenance()
 	t.Cleanup(a.stopBatchMaintenance)
@@ -130,9 +121,6 @@ func TestBatchMaintenance_StartupPassRecoversOnceWakeZero(t *testing.T) {
 // cursor rotation: a budget-exhausted pass parks its keyset cursor, later
 // passes converge to every root, and a fully scanned pass resets it.
 func TestBatchMaintenance_PeriodicPassAdvancesCursorAndConverges(t *testing.T) {
-	if !batchCutoverOn() {
-		t.Skip("flag OFF arms no maintenance loop")
-	}
 	oldRoots := batchMaintenanceMaxRoots
 	batchMaintenanceMaxRoots = 1
 	t.Cleanup(func() { batchMaintenanceMaxRoots = oldRoots })
@@ -207,9 +195,6 @@ func batchMaintenanceScan(t *testing.T, conn *sql.DB, roots []string, predicate 
 // it disarms the loop, is idempotent and nil-safe, and a restart arms a
 // fresh loop.
 func TestBatchMaintenance_StopJoinsAndIsIdempotent(t *testing.T) {
-	if !batchCutoverOn() {
-		t.Skip("flag OFF arms no maintenance loop")
-	}
 	a, _, _ := newBatchMaintenanceApp(t)
 
 	a.startBatchMaintenance()
@@ -246,13 +231,6 @@ func TestBatchMaintenance_StopJoinsAndIsIdempotent(t *testing.T) {
 // no provider/config service is needed until a Runner is actually built.
 // The fixture's REAL Sessions/Messages services (P1-4) complete the picture.
 func TestBatchMaintenance_InstallArmsAndShutdownDisarms(t *testing.T) {
-	if !batchCutoverOn() {
-		// Flag OFF never reaches installBatchRuntime's ON branch: the App
-		// keeps the legacy async host store and never arms the maintenance
-		// loop (startBatchMaintenance's first guard returns early), so there
-		// is nothing to arm or disarm on this path.
-		t.Skip("flag OFF installs no batch runtime and arms no maintenance loop")
-	}
 	a, _, _ := newBatchMaintenanceApp(t)
 	ctx := context.Background()
 
