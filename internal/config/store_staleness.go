@@ -37,7 +37,10 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 	for _, path := range sn.trackedConfigPaths {
 		snapshot, hadSnapshot := sn.snapshots[path]
 
-		fingerprint, err := readReloadFingerprint(path)
+		// Same accessor the snapshot builder uses: when the captured set
+		// has no entry for this tracked path (unselected slot sibling),
+		// both take a real on-disk fingerprint, so builder and check agree.
+		fingerprint, err := trackedSlotFingerprint(path, nil)
 		if err != nil {
 			result.Errors[path] = err
 			result.Dirty = true
@@ -153,6 +156,7 @@ func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
 	for p := range seen {
 		tracked = append(tracked, p)
 	}
+	tracked = expandConfigSlotSiblings(tracked)
 	slices.Sort(tracked)
 
 	next := cur.clone()

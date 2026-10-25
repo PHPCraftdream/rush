@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,6 +26,13 @@ func TestTask1314OAuthDiskCancellationChild(t *testing.T) {
 	if root == "" {
 		t.Skip("subprocess helper")
 	}
+	// The child is a separate process: it inherits nothing from the
+	// parent's package variables, so the gate must be disabled here too.
+	// This is a legacy-JSON fixture: it rewrites rush.json at the literal
+	// GlobalConfigData path and expects the reactive disk watcher to see it.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
+
 	for _, mode := range []string{"before401", "inside-exchange"} {
 		for _, id := range task1314IntegrationIDs {
 			t.Run(id+"/"+mode, func(t *testing.T) {

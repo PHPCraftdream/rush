@@ -289,7 +289,11 @@ func (s *ConfigStore) ConfigDiskSyncRunning() bool {
 func configDiskSyncCandidatePaths(s *ConfigStore, sn *storeSnapshot) []string {
 	paths := lookupConfigCandidates(s.workingDir)
 	paths = append(paths, mcpJSONCandidatePaths(s.workingDir)...)
-	return append(paths, sn.workspacePath, s.globalDataPath)
+	paths = append(paths, sn.workspacePath, s.globalDataPath)
+	// Both spellings of each logical slot, so the tracked set (built the
+	// same way) never drifts spuriously and slot-selection flips stay
+	// visible on natural ticks.
+	return expandConfigSlotSiblings(paths)
 }
 
 // configDiskSyncDigestsMatch compares every tracked path's current content

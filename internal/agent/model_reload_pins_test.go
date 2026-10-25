@@ -18,6 +18,11 @@ import (
 // fork followed by disk adoption, then proves role resolution and agent dispatch
 // still honor the copied literal pins and effort.
 func TestForkedWorkerReviewerPinsSurviveDiskReload(t *testing.T) {
+	// Legacy-JSON fixture test: it writes rush.json at its literal path and
+	// re-reads it after config.Load, so Ktav auto-migration must stay off.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
+
 	configDir := filepath.Join(t.TempDir(), "disk-config")
 	dataDir := filepath.Join(t.TempDir(), "disk-data")
 	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)

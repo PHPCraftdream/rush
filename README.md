@@ -296,7 +296,10 @@ TTL; pressure eviction or process exit may end it sooner). `batch_stop`
 takes a `root_id`, or a `root_id` plus a `node_id` to stop one descendant.
 An accepted `batch_stop` is a cancellation intent, not a termination
 confirmation. The legacy `job_output` / `job_kill` controls are removed in
-the batch-only runtime.
+the batch-only runtime. See
+[batch-runtime-migration.md](docs/batch-runtime-migration.md) for the
+native replacements and how stale names behave in `AllowedTools`,
+`permissions.allowed_tools` and `options.disabled_tools`.
 
 #### Envelope fields worth knowing
 

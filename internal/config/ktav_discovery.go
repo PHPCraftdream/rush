@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,41 @@ var (
 // ktavSiblingOf returns the preferred Ktav spelling of a legacy JSON path.
 func ktavSiblingOf(legacyJSON string) string {
 	return strings.TrimSuffix(legacyJSON, ".json") + ktavConfigExt
+}
+
+// configSlotBaseNames returns the single, authoritative list of config
+// slot base names discovery understands: the visible rush.* pair and the
+// hidden .rush.* pair. Slot-sibling expansion MUST derive its names from
+// this list so the two never drift apart.
+func configSlotBaseNames() []string {
+	return []string{appName, "." + appName}
+}
+
+// expandConfigSlotSiblings appends the alternate spelling of every path
+// that names a Rush-owned logical config slot (rush.json / rush.ktav,
+// including the hidden .rush.* spellings discovery walks):
+// the Ktav sibling of each legacy JSON path and the legacy JSON sibling of
+// each Ktav path. This keeps both spellings of a slot in the tracked and
+// candidate path sets, so the disk-sync poller sees a foreign write to
+// either spelling on natural ticks, even when slot selection flips after
+// Load (migration renames rush.json to rush.ktav mid-session).
+func expandConfigSlotSiblings(paths []string) []string {
+	out := slices.Clone(paths)
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		base := filepath.Base(path)
+		for _, name := range configSlotBaseNames() {
+			if base == name+".json" {
+				out = append(out, strings.TrimSuffix(path, ".json")+ktavConfigExt)
+			}
+			if base == name+ktavConfigExt {
+				out = append(out, strings.TrimSuffix(path, ktavConfigExt)+".json")
+			}
+		}
+	}
+	return out
 }
 
 // backupPathFor returns the retained backup name for a legacy JSON path:
@@ -153,13 +189,16 @@ func workspaceConfigPath(dataDir string) string {
 
 // matchesLogicalSlot reports whether canonical names any serialization of
 // the logical slot anchored at legacyJSON (the legacy JSON or its Ktav
-// sibling). Backup and transaction-record spellings are never write targets.
+// sibling). BOTH operands are normalized through legacySlotOf before the
+// comparison: the anchor itself may already be a .ktav path (load.go
+// selects globalDataPath through selectConfigSlot), so comparing a legacy
+// spelling against a Ktav anchor must still match. Backup and
+// transaction-record spellings are never write targets.
 func matchesLogicalSlot(canonical, legacyJSON string) bool {
 	if legacyJSON == "" {
 		return false
 	}
-	return canonical == normalizeReloadPath(legacyJSON) ||
-		canonical == normalizeReloadPath(ktavSiblingOf(legacyJSON))
+	return normalizeReloadPath(legacySlotOf(canonical)) == normalizeReloadPath(legacySlotOf(legacyJSON))
 }
 
 // checkBackupOnlySlot fails closed for an authoritative config location
@@ -218,7 +257,7 @@ func ktavProjectLegacySlots(workingDir string) []string {
 		if ownerErr != nil || !configOwnersMatch(owner, dirOwner) {
 			break
 		}
-		for _, base := range []string{appName, "." + appName} {
+		for _, base := range configSlotBaseNames() {
 			slots = append(slots, filepath.Join(dir, base+".json"))
 		}
 		if sameDir(dir, boundary) || filepath.Dir(dir) == dir {

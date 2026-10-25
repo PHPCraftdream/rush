@@ -87,6 +87,13 @@ func TestTask1314OAuthDiskReactiveChild(t *testing.T) {
 	if root == "" {
 		t.Skip("subprocess helper")
 	}
+	// The child is a separate process: it inherits nothing from the
+	// parent's package variables, so the gate must be disabled here too.
+	// This is a legacy-JSON fixture: it rewrites rush.json at the literal
+	// GlobalConfigData path and expects the reactive disk watcher to see it.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
+
 	// This helper is serial; t.Setenv executes AFTER agent TestMain and never
 	// changes the parent's environment or the machine's configuration files.
 	for _, mode := range []string{"adopt", "second401", "equal", "logout"} {

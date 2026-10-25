@@ -667,7 +667,7 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == normalizeReloadPath(systemPath) {
 		return systemConfigOwner(), true, nil
 	}
-	if canonical == normalizeReloadPath(GlobalConfig()) || canonical == normalizeReloadPath(s.globalDataPath) {
+	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, s.globalDataPath) {
 		return homeConfigOwner(), true, nil
 	}
 	if canonical == normalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
@@ -701,12 +701,17 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 			continue
 		}
 		origin := MCPOrigin{Kind: MCPOriginProject, Path: path, Scope: ScopeGlobal, Writable: false}
-		switch path {
-		case workspacePath:
+		// matchesLogicalSlot treats the legacy JSON spelling and its Ktav
+		// sibling as one logical slot: a mid-session migration renames
+		// rush.json to rush.ktav while globalDataPath still anchors the
+		// legacy name, and the slot must stay writable through either
+		// spelling.
+		switch {
+		case matchesLogicalSlot(path, workspacePath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
-		case globalPath:
+		case matchesLogicalSlot(path, globalPath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		case systemPath:
+		case matchesLogicalSlot(path, systemPath):
 			origin.Kind = MCPOriginSystem
 		}
 		if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {

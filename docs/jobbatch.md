@@ -27,6 +27,10 @@ merge-back.
 Current model controls are `batch_stop` and `batch_output`; stop is a durable
 cancellation request, not termination confirmation. Do not describe current
 ownership using `job_kill`/`job_output` or invent cross-session controls.
+For migrating configurations and prompts off the removed legacy tools, and the
+semantics of the three tool-name lists (`AllowedTools`,
+`permissions.allowed_tools`, `options.disabled_tools`), see
+[batch-runtime-migration.md](batch-runtime-migration.md).
 Historical transcript display and presentation promises remain; no signoff
 reductions are implied. Detailed rollout is also summarized in the
 [README](../README.md#batch-runtime-rollout-and-data).

@@ -258,6 +258,7 @@ func TestMCPPostCommitFingerprintFailureReturnsUnreconciledOutcome(t *testing.T)
 }
 
 func TestConfigWriteSymlinkAliasesSharePhysicalSidecarLock(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	root := t.TempDir()
 	target := filepath.Join(root, "target.json")
 	alias := filepath.Join(root, "alias.json")
