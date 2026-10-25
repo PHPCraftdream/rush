@@ -1,10 +1,10 @@
 package cmd
 
 // Fork patch: upstream's login wires its REST client (`internal/client`) into
-// the auth flow so the daemon can pick up new credentials over the Unix
+// the auth flow so the angel can pick up new credentials over the Unix
 // socket. This fork has no Go client — the web UI manages credentials
 // directly — so the import is replaced with the local `internal/agent/hyper`
-// catalog and the daemon-sync calls are dropped. See CHANGELOG.fork.md
+// catalog and the angel-sync calls are dropped. See CHANGELOG.fork.md
 // section 2 ("internal/cmd/login.go") and Section 4.M before merging.
 
 import (
@@ -79,8 +79,8 @@ rush login openai-codex --device
 		force, _ := cmd.Flags().GetBool("force")
 		device, _ := cmd.Flags().GetBool("device")
 		// Fork merge note: upstream's signature here is (c *client.Client,
-		// wsID string, force bool) because login talks to the daemon over
-		// the Unix socket. Our binary IS the daemon, so we hand the local
+		// wsID string, force bool) because login talks to the angel over
+		// the Unix socket. Our binary IS the angel, so we hand the local
 		// ConfigStore directly and only forward `force`.
 		switch provider {
 		case "hyper":

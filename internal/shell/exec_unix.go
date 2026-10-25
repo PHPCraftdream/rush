@@ -88,7 +88,7 @@ func isolateProcess(cmd *exec.Cmd) {
 //
 // Known accepted gaps, NOT covered by the above:
 //   - A grandchild that deliberately escapes this process group by
-//     calling setsid() itself (the classic double-fork daemonize
+//     calling setsid() itself (the classic double-fork angelize
 //     pattern, or an explicit `setsid cmd &` shell invocation) is no
 //     longer a member of pgid X and will not receive the negative-PID
 //     kill.
