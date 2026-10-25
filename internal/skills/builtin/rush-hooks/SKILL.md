@@ -1,6 +1,6 @@
 ---
 name: rush-hooks
-description: Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.ktav (or legacy rush.json).
+description: Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.json.
 ---
 
 # Rush Hooks
