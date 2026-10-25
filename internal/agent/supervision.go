@@ -459,8 +459,8 @@ func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID str
 	}
 	if paused {
 		guidance = fmt.Sprintf(
-			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
-			tickNum, guidance)
+			"%s\nSupervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes).",
+			guidance, tickNum)
 	}
 	awaitingClause := ""
 	if awaitingCount > 0 {
