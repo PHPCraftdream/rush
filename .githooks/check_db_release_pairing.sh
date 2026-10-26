@@ -73,7 +73,7 @@ set -uo pipefail
 # Deliberately NOT `set -e`: this script is invoked two ways --
 # directly by .githooks/pre-push (plain `bash
 # .githooks/check_db_release_pairing.sh`, no -e) and by
-# .github/workflows/build.yml's pairing-guard step, whose `run:` block
+# .github/workflows/ci.yml's pairing-guard step, whose `run:` block
 # runs under GitHub Actions' default `bash --noprofile --norc -eo
 # pipefail {0}` -- but that parent -e does not propagate into a fresh
 # `bash <file>` subprocess. This file's own `set` line is the only

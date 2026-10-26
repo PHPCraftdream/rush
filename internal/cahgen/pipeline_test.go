@@ -108,9 +108,10 @@ func TestPipelineRefreshOrder(t *testing.T) {
 	require.Contains(t, g.Before.Hooks, "sh -c 'cd web && npm ci && npm run build'")
 }
 
-// Revert-check: drift checks remain isolated and nonblocking.
+// Revert-check: the shortcode drift check stays an isolated, advisory STEP
+// of the `checks` job in ci.yml (it replaced the former build.yml job).
 func TestPipelineDriftIsIsolated(t *testing.T) {
-	p := readPipeline(t, ".github/workflows/build.yml")
+	p := readPipeline(t, ".github/workflows/ci.yml")
 	checks := 0
 	for _, job := range p.Jobs {
 		goSetup, nodeSetup := false, false
@@ -121,17 +122,14 @@ func TestPipelineDriftIsIsolated(t *testing.T) {
 				continue
 			}
 			checks++
-			require.True(t, job.Continue)
-			require.Nil(t, job.Needs)
+			require.True(t, step.Continue, "the drift check must not fail the job")
+			require.False(t, job.Continue)
 			require.True(t, goSetup && nodeSetup)
 			require.Contains(t, step.Run, "go run ./internal/tools/cahsync -check -strict || {")
 			require.Contains(t, step.Run, "::warning::")
 			require.Contains(t, step.Run, "exit 1")
-			for _, other := range job.Steps {
-				require.NotContains(t, other.Run, "go test ")
-			}
+			require.NotContains(t, step.Run, "go test ")
 		}
-		require.Nil(t, job.Needs)
 	}
 	require.Equal(t, 1, checks)
 }
