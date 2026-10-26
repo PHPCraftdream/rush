@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,7 +172,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 
 	for _, tc := range []struct{ name, owner string }{{"ancestor root", env.sessionID}, {"sibling", "sibling"}, {"unrelated", "stranger"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			root, node := seed(tc.owner, "refused-"+tc.name)
+			root, node := seed(tc.owner, "refused-"+strings.ReplaceAll(tc.name, " ", "-"))
 			awaitStart()
 			_, err := c.Stop(workerScopedStopContext(env.ctx), "worker", string(root), node)
 			require.ErrorContains(t, err, "batch_stop")
