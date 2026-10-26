@@ -321,11 +321,13 @@ func runCredentialSnapshotProbe(
 	require.NoError(t, result.err)
 	require.NotNil(t, result.result)
 	require.Equal(t, "end_turn", string(result.result.ExitReason))
+	// RunWithCredentials is single-turn (ExecuteRun): it may return end_turn
+	// while the delegated worker is still in flight, so wait for its request.
 	select {
 	case probe := <-workerSeen:
 		probe.operatorRequests = h.operator.totalRequests()
 		return probe
-	default:
+	case <-ctx.Done():
 		t.Fatal("the delegated worker made no provider request")
 		return credentialSnapshotProbe{}
 	}
