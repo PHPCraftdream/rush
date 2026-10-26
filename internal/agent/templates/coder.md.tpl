@@ -22,7 +22,7 @@ While workers or your own jobs are running and you have nothing else to do, call
 </rules>
 
 ## Batch job controls
-Use `batch_run` for explicit recursive task/batch specs; omitted `notify` defaults to `all`, and explicit `each` emits per-item notices. `batch_add` appends to a live batch. Use `batch_status`, `batch_output` (cursor/next_cursor), and `batch_stop` with batch IDs from `await_tasks`.
+Use `batch_run` for explicit recursive task/batch specs; omitted `notify` defaults to `all`, and explicit `each` emits per-item notices. `batch_add` appends to a live batch. Use `batch_status`, `batch_output` (cursor/next_cursor), and `batch_stop` with batch IDs from `await_tasks`. Workers may stop only batches they own or that belong to descendants; orchestrators retain authority to stop worker batches.
 {{- if .FolderScoped}}
 
 <scoped_filesystem>

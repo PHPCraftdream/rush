@@ -24,7 +24,10 @@ Preserve `rush_store_v1.db` and sidecars. There is no reverse importer or
 merge-back.
 
 Current model controls are `batch_stop` and `batch_output`; stop is a durable
-cancellation request, not termination confirmation. Do not describe current
+cancellation request, not termination confirmation. Workers may use `batch_stop`
+only for batches owned by themselves or a descendant; orchestrators retain their
+existing authority to stop worker-owned batches. Unknown owners and stale runner
+incarnations are refused before a stop request is written. Do not describe current
 ownership using `job_kill`/`job_output` or invent cross-session controls.
 For migrating configurations and prompts off the removed legacy tools, and the
 semantics of the three tool-name lists (`AllowedTools`,

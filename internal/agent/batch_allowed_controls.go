@@ -19,12 +19,9 @@ import (
 //   - batch_run, batch_add: any batch-admissible work leaf present --
 //     explicit batches of work the pinned role can already run directly;
 //   - batch_status, batch_output, batch_stop: granted BY NAME from allowed,
-//     the build's FINAL AllowedTools after every per-call filter. The native
-//     names carry their own entries in every list that gates them (config
-//     allToolNames under the flag, the flag-on worker layering, the scoped
-//     command-tool set), so each toolset family -- default, worker,
-//     reviewer, scoped, restricted -- decides its own control surface
-//     natively.
+//     the build's final AllowedTools after every per-call filter. Worker stop
+//     scope is additionally pinned into its per-call control and enforced by
+//     Stop.
 func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []string) []string {
 	present := make(map[string]bool, len(filteredTools))
 	for _, tool := range filteredTools {
@@ -56,12 +53,12 @@ func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []strin
 // native batch_status/batch_output read controls -- appended to the supplied
 // names, dedup-safe, independently of any legacy grant list -- so its
 // post-await read surface never depends on the caller's list carrying them.
-// batch_stop stays out exactly as the legacy stop control always was -- a
-// worker layering never granted a stop control.
+// batch_stop is granted to workers only because its per-call control carries
+// a trusted descendant-only scope enforced by Stop.
 func workerToolNamesBatch(names []string) []string {
-	out := make([]string, 0, len(names)+2)
+	out := make([]string, 0, len(names)+3)
 	out = append(out, names...)
-	for _, name := range []string{"batch_status", "batch_output"} {
+	for _, name := range []string{"batch_status", "batch_output", "batch_stop"} {
 		if !slices.Contains(out, name) {
 			out = append(out, name)
 		}

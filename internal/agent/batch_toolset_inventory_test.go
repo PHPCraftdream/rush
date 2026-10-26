@@ -12,8 +12,8 @@ package agent
 //     constructed-presence grant for await_tasks, and the work-leaf grant
 //     for batch_run/batch_add.
 //   - internal/agent/coordinator_tools.go buildToolsAgentConfigForCall +
-//     workerLayeredToolNames: the flag-on worker layering swaps job_output
-//     for batch_status/batch_output (and never adds batch_stop).
+//     workerLayeredToolNames grants batch_stop only with trusted
+//     descendant-only scope enforced by Stop.
 //   - internal/agent/coordinator_tools.go applyCallFolderScope +
 //     folderScopeCommandToolSet: the flag-on command set carries the native
 //     twins so they strip with the command tools.
@@ -146,13 +146,13 @@ func TestBatchToolsetInventoryBothPreparationModes(t *testing.T) {
 		taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
 		require.True(t, ok, "task agent must be configured")
 
-		// The worker layering surfaces batch_status/batch_output; batch_stop
-		// stays out exactly as job_kill always was.
+		// Worker layering grants batch_stop; its actual invocation carries
+		// trusted descendant-only scope enforced by Stop.
 		bindBatchInventoryControls(t, coord)
 		on := batchInventoryBuildNames(t, coord, taskCfg, true, nil)
 		require.Contains(t, on, "batch_status")
 		require.Contains(t, on, "batch_output")
-		require.NotContains(t, on, "batch_stop", "worker layering never granted a stop control")
+		require.Contains(t, on, "batch_stop", "worker stop is granted with enforced descendant-only authorization")
 		require.NotContains(t, on, "job_output", "the removed legacy poll tool is gone from the worker layering")
 		require.Contains(t, on, "batch_run")
 		require.Contains(t, on, "batch_add")
@@ -258,7 +258,9 @@ func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 		"the deleted legacy poll name is absent from the worker layering")
 	require.Contains(t, batched, "batch_status")
 	require.Contains(t, batched, "batch_output")
-	require.NotContains(t, batched, "batch_stop", "worker layering never granted a stop control")
+	// Worker stop is available only with trusted scoped authorization on the
+	// installed per-call tool; the detached worker-name helper grants it.
+	require.Contains(t, batched, "batch_stop", "worker stop is available through the scoped native control")
 
 	// Independence proof: a stripped list that carries NONE of the native
 	// read names still comes out with them appended. Under any derivation
@@ -282,6 +284,62 @@ func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 	// independent of job_output.
 	require.Contains(t, simulated, "await_tasks")
 	require.Contains(t, simulated, "bash")
+}
+
+func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
+	env := testEnv(t)
+	coord := newBatchInventoryCoordinator(t, env, true)
+	taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
+	require.True(t, ok, "task agent must be configured")
+
+	var captured []BatchInvocation
+	controls := make([]fantasy.AgentTool, 0, 1)
+	controls = append(controls, fantasy.NewAgentTool("batch_stop", "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse("ok"), nil
+	}))
+	controlInstaller := modelControlCapture{
+		modelControlInventory: modelControlInventory{tools: controls},
+		capture:               func(inv BatchInvocation) { captured = append(captured, inv) },
+	}
+	bind := &batchCoordinatorBinding{
+		ingress:      &fakeBatchIngress{},
+		controls:     controlInstaller,
+		diskBindings: NewDiskProviderRegistry(),
+	}
+	coordinatorBatchBindings.Store(coord, bind)
+	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+
+	build := func(isSubAgent bool, callID string) {
+		t.Helper()
+		callOpts := &CallOptions{}
+		scope := EnsureCallBuildScope(callOpts)
+		require.NotNil(t, scope)
+		defer scope.close()
+		ctx := WithCallOptions(batchCallCtx(callID), callOpts)
+		cfg := coord.cfg.Config().Agents[config.AgentCoder]
+		if isSubAgent {
+			cfg = taskCfg
+		}
+		built, err := coord.buildTools(ctx, coord.cfg.Config(), cfg, isSubAgent)
+		require.NoError(t, err)
+		require.NotEmpty(t, built)
+	}
+
+	build(true, "trusted-worker")
+	build(false, "trusted-root")
+	require.Len(t, captured, 2)
+	require.True(t, captured[0].WorkerStopScope, "sub-agent build receives trusted worker stop authority")
+	require.False(t, captured[1].WorkerStopScope, "root build does not receive worker stop authority")
+}
+
+type modelControlCapture struct {
+	modelControlInventory
+	capture func(BatchInvocation)
+}
+
+func (m modelControlCapture) InstallBatchModelControls(reg *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+	m.capture(inv)
+	return m.tools, nil
 }
 
 // TestNativeControlsNeverResolveThroughOldNames is the R12-H1 old-name

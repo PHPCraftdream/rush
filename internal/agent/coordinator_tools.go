@@ -903,6 +903,7 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				inv := BatchInvocation{
 					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
 					BackgroundEscape: batchEscapeNever,
+					WorkerStopScope:  isSubAgent && c.workerSubAgentActiveForCall(ctx, cfg),
 					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(filteredTools)},
 				}
 				inv.SessionID = tools.GetSessionFromContext(ctx)

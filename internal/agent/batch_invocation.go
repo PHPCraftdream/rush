@@ -114,6 +114,8 @@ type BatchInvocation struct {
 	// Policy is the trusted restricted-run/policy context the executor
 	// needs to rebuild its run context. Never read from session state.
 	Policy batchLeafPolicyContext `json:"policy"`
+	// WorkerStopScope is trusted tool-build policy; it is never model input.
+	WorkerStopScope bool `json:"-"`
 }
 
 // batchCallIdentity returns the live-attach key of an invocation: the owner
