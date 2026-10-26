@@ -39,15 +39,23 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
+	"strings"
 	"testing"
 
 	"charm.land/fantasy"
-
-	"github.com/stretchr/testify/require"
-
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/stretchr/testify/require"
 )
+
+// R12-H2 construction-boundary acceptance item 15: verify construction owners
+// end with their build scope while the independent Call owner retains the
+// provider binding.
 
 // failingModelControls is a stub BatchModelControl whose install step ALWAYS
 // fails: the shape of an assembly error raised AFTER newBatchWorkToolBuild
@@ -80,8 +88,91 @@ func (f failingModelControls) InstallBatchModelControls(*BatchLeafRegistry, Batc
 	return nil, f.err
 }
 
+type batchCLICustomDisk struct{ tools.DiskProvider }
+
+func (batchCLICustomDisk) Stat(context.Context, string) (fs.FileInfo, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (batchCLICustomDisk) EvalSymlinks(_ context.Context, name string) (string, error) {
+	return name, nil
+}
+
+func (batchCLICustomDisk) Open(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (batchCLICustomDisk) ReadFile(context.Context, string) ([]byte, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (batchCLICustomDisk) MkdirAll(context.Context, string, fs.FileMode) error { return nil }
+
+func (batchCLICustomDisk) WriteFile(context.Context, string, []byte, fs.FileMode) error { return nil }
+
+func (batchCLICustomDisk) Remove(context.Context, string) error { return nil }
+
+func (batchCLICustomDisk) List(context.Context, tools.ListRequest) (tools.ListResult, error) {
+	return tools.ListResult{}, nil
+}
+
+func (batchCLICustomDisk) Find(context.Context, tools.FindRequest) (tools.FindResult, error) {
+	return tools.FindResult{}, nil
+}
+
+func (batchCLICustomDisk) Search(context.Context, tools.SearchRequest) (tools.DiskSearchResult, error) {
+	return tools.DiskSearchResult{}, nil
+}
+
+func TestBatchCLIBindOwnsConstructionScopeUntilRelease(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	coder, ok := coord.cfg.Config().Agents[config.AgentCoder]
+	require.True(t, ok)
+	coder.AllowedTools = []string{"view"}
+	coord.cfg.Config().Agents[config.AgentCoder] = coder
+	caps := NewDiskProviderRegistry()
+	registries := NewBatchLeafRegistryStore()
+	caps.setRegistryDrop(registries.Delete)
+	ingress := &batchWorkIngress{registries: registries, diskBindings: caps}
+	prevProcess := processBatchBinding.Load()
+	t.Cleanup(func() {
+		coordinatorBatchBindings.Delete(coord)
+		processBatchBinding.Store(prevProcess)
+	})
+	require.NoError(t, BindCoordinatorBatchRuntimeBindings(coord, ingress, nil, caps))
+	builder, err := NewBatchCLIBuilder(coord, ingress)
+	require.NoError(t, err)
+	spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel, Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Payload: json.RawMessage(`{"tool":"view","input":{}}`)}}}}}
+
+	_, release, err := builder.TranslateSpec(context.Background(), "owner", "message", spec)
+	require.NoError(t, err)
+	owners, constructions, _ := caps.OwnerDiagnostics()
+	require.Equal(t, 1, owners)
+	require.Equal(t, 1, constructions)
+	release()
+	owners, constructions, _ = caps.OwnerDiagnostics()
+	require.Zero(t, owners)
+	require.Zero(t, constructions)
+
+	invalid := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel, Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Payload: json.RawMessage(`{"tool":"not_available","input":{}}`)}}}}}
+	_, release, err = builder.TranslateSpec(context.Background(), "owner", "message", invalid)
+	require.Error(t, err)
+	require.Nil(t, release)
+	owners, constructions, _ = caps.OwnerDiagnostics()
+	require.Zero(t, owners)
+	require.Zero(t, constructions)
+
+	callOptions := WithCallOptions(context.Background(), &CallOptions{DiskProvider: batchCLICustomDisk{}})
+	_, release, err = builder.TranslateSpec(callOptions, "owner", "message", spec)
+	require.ErrorContains(t, err, "does not support caller-supplied disk providers")
+	require.Nil(t, release)
+	owners, constructions, _ = caps.OwnerDiagnostics()
+	require.Zero(t, owners)
+	require.Zero(t, constructions)
+}
+
 func TestConstructionScopeBoundary(t *testing.T) {
-	// -- Variant A: construct, invoke nothing, close the call/build scope. --
 	caps := NewDiskProviderRegistry()
 	fake := newH2aGatingDisk()
 	opts, releaseCall, err := BindCallDiskProvider(caps, fake, "h2a-construction-call-1", nil)

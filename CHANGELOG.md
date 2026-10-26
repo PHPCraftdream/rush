@@ -9,7 +9,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 - Invalid or legacy settings locks now fail closed with a recovery hint naming the active file; remove `sync_rev` manually and run `rush lock` again.
-
+- `rush batch run` rejects parallel `on_fail` (leaving the omitted default empty) and keeps each owning construction registry through accepted root completion; unsupported caller-supplied disk providers fail explicitly.
 - Workers may use `batch_stop` only on batches they own or that are owned by descendants; orchestrators retain existing worker-stop authority, while unknown owners and stale runner incarnations are refused.
 - The `RUSH_BATCH_RUNTIME` switch is removed and has no effect: the batch-only runtime is the only runtime since the H4 cutover.
 - The batch-only runtime is the only runtime. Startup imports durable history, settings, queues and schedules once from untouched `.rush/rush.db` into active `.rush/rush_store_v1.db` before opening it; old/preparation execution and control state is discarded. Stop old processes and automatic restarts throughout import; drain/stop preparation hosts before upgrade. Requeued work may repeat external side effects. Rollback means stopping new hosts and using the previous binary with untouched `rush.db` (old snapshot only); preserve the new store and sidecars, with no reverse import/merge-back. See [job-batch rollout](docs/jobbatch.md). This note records intended current behavior, not evidence of CI gates passing.

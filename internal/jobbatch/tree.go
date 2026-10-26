@@ -49,7 +49,7 @@ func (e *Engine) build(s Spec, id ID, parent *treeNode, ordinal, depth int, coun
 	}
 	if b.Mode == ModeParallel {
 		if b.OnFail != "" {
-			return bad()
+			return nil, fmt.Errorf("%w: on_fail is only valid for sequential batches", ErrInvalidSpec)
 		}
 	} else {
 		if b.OnFail == "" {

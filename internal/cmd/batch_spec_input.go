@@ -36,13 +36,16 @@ func (x batchSpecInput) spec() (jobbatch.Spec, error) {
 	if x.Mode == "" {
 		x.Mode = string(jobbatch.ModeParallel)
 	}
-	if x.OnFail == "" {
+	if x.OnFail == "" && x.Mode == string(jobbatch.ModeSequential) {
 		x.OnFail = string(jobbatch.OnFailStop)
 	}
 	if x.Notify == "" {
 		x.Notify = string(jobbatch.NotifyAll)
 	}
 	b := &jobbatch.BatchSpec{Mode: jobbatch.Mode(x.Mode), OnFail: jobbatch.OnFail(x.OnFail), Notify: jobbatch.Notify(x.Notify), MaxParallel: x.MaxParallel}
+	if b.Mode == jobbatch.ModeParallel && b.OnFail != "" {
+		return jobbatch.Spec{}, errors.New("on_fail is only valid for sequential batches")
+	}
 	for _, child := range x.Items {
 		item, err := child.spec()
 		if err != nil {

@@ -14,7 +14,10 @@ import (
 
 // SubmitCLI submits an explicitly translated tree through the installed Runner.
 func (i *BatchInstall) SubmitCLI(ctx context.Context, owner string, spec jobbatch.Spec) (*jobbatch.Batch, error) {
-	if i == nil || i.Runner == nil || i.RunnerHandle == nil || i.Runtime == nil || owner == "" || spec.Batch == nil || spec.Task != nil {
+	if i == nil || i.Runner == nil || i.RunnerHandle == nil || i.Runtime == nil || owner == "" {
+		return nil, errors.New("batch CLI: installed runner, owner and batch root are required")
+	}
+	if spec.Batch == nil || spec.Task != nil {
 		return nil, errors.New("batch CLI: installed runner, owner and batch root are required")
 	}
 	if err := validateBatchOwnerPayloads(owner, spec); err != nil {
@@ -134,6 +137,21 @@ func (i *BatchInstall) PumpCLIControls(ctx context.Context, owner string, root j
 	}
 	_, err := i.CLIPump.Pump(ctx, owner, string(root))
 	return err
+}
+
+func (i *BatchInstall) RetainCLIConstruction(root jobbatch.ID, release func()) error {
+	if i == nil || i.RunnerHandle == nil || release == nil {
+		return errors.New("batch CLI: construction retention unavailable")
+	}
+	batch := i.RunnerHandle.batchFor(root)
+	if batch == nil {
+		return errors.New("batch CLI: root is not owned by this installed Runner")
+	}
+	go func() {
+		<-batch.Done()
+		release()
+	}()
+	return nil
 }
 
 func (i *BatchInstall) WaitCLI(ctx context.Context, root jobbatch.ID) (jobbatch.Summary, error) {

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -311,11 +312,54 @@ func TestBatchSpecDefaultsAndNestedValidInput(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, spec.Batch)
 	require.Equal(t, jobbatch.ModeParallel, spec.Batch.Mode)
-	require.Equal(t, jobbatch.OnFailStop, spec.Batch.OnFail)
+	require.Empty(t, spec.Batch.OnFail, "parallel on_fail must stay empty; the engine owns parallel policy")
 	require.Equal(t, jobbatch.NotifyAll, spec.Batch.Notify)
 	require.Len(t, spec.Batch.Items, 2)
 	require.NotNil(t, spec.Batch.Items[1].Batch)
 	require.Equal(t, jobbatch.ModeSequential, spec.Batch.Items[1].Batch.Mode)
+	require.Equal(t, jobbatch.OnFailStop, spec.Batch.Items[1].Batch.OnFail, "sequential on_fail defaults to stop")
+	for i := range spec.Batch.Items {
+		if spec.Batch.Items[i].Task != nil {
+			spec.Batch.Items[i].Task.Kind = "test"
+		}
+		if spec.Batch.Items[i].Batch != nil {
+			for j := range spec.Batch.Items[i].Batch.Items {
+				if spec.Batch.Items[i].Batch.Items[j].Task == nil {
+					t.Fatal("test fixture expected a nested leaf task")
+				}
+				spec.Batch.Items[i].Batch.Items[j].Task.Kind = "test"
+			}
+		}
+	}
+	engine, err := jobbatch.NewEngine(jobbatch.Limits{MaxConcurrent: 2, MaxDepth: 8, MaxNodes: 16})
+	require.NoError(t, err)
+	transition, err := engine.Apply(jobbatch.Event{Type: jobbatch.EventSubmit, Root: "parsed-cli-root", Spec: spec})
+	require.NoError(t, err)
+	require.Len(t, transition.Changed, 4)
+}
+
+func TestBatchSpecRejectsParallelOnFailIncludingNested(t *testing.T) {
+	for _, raw := range []string{
+		`{"mode":"parallel","on_fail":"stop","items":[{"tool":"view","input":{}}]}`,
+		`{"items":[{"mode":"parallel","on_fail":"continue","items":[{"tool":"view","input":{}}]}]}`,
+	} {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("spec", "-", "")
+		cmd.SetIn(strings.NewReader(raw))
+		_, err := parseBatchSpec(cmd)
+		require.ErrorContains(t, err, "on_fail is only valid for sequential batches")
+	}
+}
+
+func TestBatchSpecSequentialExplicitOnFailValues(t *testing.T) {
+	for _, onFail := range []string{"stop", "continue"} {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("spec", "-", "")
+		cmd.SetIn(strings.NewReader(fmt.Sprintf(`{"mode":"sequential","on_fail":%q,"items":[{"tool":"view","input":{}}]}`, onFail)))
+		spec, err := parseBatchSpec(cmd)
+		require.NoError(t, err)
+		require.Equal(t, jobbatch.OnFail(onFail), spec.Batch.OnFail)
+	}
 }
 
 func execErrorAs(err error, target any) bool { return errors.As(err, target) }

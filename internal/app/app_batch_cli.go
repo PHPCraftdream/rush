@@ -53,13 +53,13 @@ func (a *App) BatchCLISession(ctx context.Context, id string) (session.Session, 
 	return a.Sessions.Create(ctx, "rush batch")
 }
 
-func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, error) {
+func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
 	if !a.BatchOwnerRuntime() || a.AgentCoordinator == nil {
-		return jobbatch.Spec{}, errors.New("batch runtime unavailable")
+		return jobbatch.Spec{}, nil, errors.New("batch runtime unavailable")
 	}
 	b, err := agent.NewBatchCLIBuilder(a.AgentCoordinator, a.batchWorkIngress)
 	if err != nil {
-		return jobbatch.Spec{}, err
+		return jobbatch.Spec{}, nil, err
 	}
 	return b.TranslateSpec(ctx, owner, messageID, spec)
 }
@@ -71,12 +71,17 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 	if spec.Batch == nil || spec.Task != nil {
 		return "", errors.New("batch submit requires batch root")
 	}
-	translated, err := a.BatchCLISpec(ctx, owner, uuid.NewString(), spec)
+	translated, release, err := a.BatchCLISpec(ctx, owner, uuid.NewString(), spec)
 	if err != nil {
 		return "", err
 	}
 	batch, err := a.batchInstall.SubmitCLI(ctx, owner, translated)
 	if err != nil {
+		release()
+		return "", err
+	}
+	if err := a.batchInstall.RetainCLIConstruction(batch.ID(), release); err != nil {
+		release()
 		return "", err
 	}
 	return string(batch.ID()), nil
@@ -155,9 +160,17 @@ func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.
 		return err
 	}
 	owner := rootIdentity.Owner
-	translated, err := b.TranslateItems(ctx, owner, uuid.NewString(), items)
+	translated, release, err := b.TranslateItems(ctx, owner, uuid.NewString(), items)
 	if err != nil {
 		return err
 	}
-	return a.batchInstall.AddCLI(ctx, jobbatch.ID(rootID), jobbatch.ID(nodeID), translated)
+	if err := a.batchInstall.AddCLI(ctx, jobbatch.ID(rootID), jobbatch.ID(nodeID), translated); err != nil {
+		release()
+		return err
+	}
+	if err := a.batchInstall.RetainCLIConstruction(jobbatch.ID(rootID), release); err != nil {
+		release()
+		return err
+	}
+	return nil
 }
