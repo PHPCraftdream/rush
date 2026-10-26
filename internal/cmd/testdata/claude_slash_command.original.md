@@ -21,6 +21,31 @@ Refuse, say so in one sentence, and offer to do it directly:
 - **One- or two-line work** — delegation overhead > the change.
 - **Mid-plan with the user** — keep the plan coherent in one head.
 
+## Give `smart` the task, then wait — do not drive it
+
+`rush run --role smart` is an orchestrator, not a tool you steer. It reads
+the repository itself, plans, delegates hands-on work to its workers,
+reviews their output and reports back. Your job is to say **what** is
+needed and **why**; working out **how** is its job.
+
+- **Launch it in the repo (or the worktree) with the task and wait** for
+  the completion notification. That is the whole interaction.
+- **The prompt states the goal, not the method:** the problem or the
+  feature, the observable acceptance criterion, the evidence you already
+  have (error text, a failing test, a reproduction), and hard constraints
+  (scope boundaries, what must not be touched, the operator's rules). Do
+  not write implementation plans, file:line edit lists, "one worker at a
+  time", step-by-step procedures, instructions on how to use its tools,
+  workers or roles, or hints on how to verify its own work.
+- **Do not tune it:** no extra flags beyond `--role`, `--session`,
+  `--json` (and `--restrict-run` when scoping is genuinely needed); do not
+  switch its models, efforts or `--agents` mode to "help" it.
+- **Do not steer it mid-run.** `sessions inject` is for a genuinely new
+  fact or a changed requirement from the operator, not for coaching.
+- **A follow-up round passes facts, not a re-plan:** the reviewer
+  findings, the CI failure output or the operator's new requirement,
+  verbatim, into the same `--session`.
+
 ## Fallback when `rush` hits rate limits
 
 If the operator has armed `/rush-fallback <agent>`, a hard window/quota
