@@ -52,7 +52,6 @@ func TestVerifyPasswordWrongPasswordFails(t *testing.T) {
 func TestLegacyHexHashFailsClosedEndToEnd(t *testing.T) {
 	legacy := "24a5cfa44bee3072cadb1fea7af9a0ed638d118d63e21d8f5d6979e314b5318e"
 	t.Run("direct", func(t *testing.T) {
-		t.Parallel()
 		require.False(t, VerifyPassword("secret", legacy))
 	})
 	t.Run("end-to-end", func(t *testing.T) {
