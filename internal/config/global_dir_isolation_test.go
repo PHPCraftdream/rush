@@ -98,7 +98,10 @@ func TestGlobalDirIsolationNoFallbackImports(t *testing.T) {
 
 	// --- real OAuth journal write through the production disk layer ---
 	journalPath := selectOAuthJournalPath(store.globalDataPath, "anthropic-claude", true)
-	require.Contains(t, journalPath, os.Getenv(GlobalDirEnv),
+	// Canonical forms: Windows temp dirs may come back as 8.3 short names.
+	require.Equal(t,
+		normalizeReloadPath(filepath.Join(os.Getenv(GlobalDirEnv), "data")),
+		normalizeReloadPath(filepath.Dir(journalPath)),
 		"journal must be written inside the isolated root")
 	require.NoError(t, writeOAuthJournalUntilDurable(context.Background(), journalPath,
 		&oauthJournalRecord{Token: &oauth.Token{
