@@ -13,7 +13,6 @@ import (
 )
 
 func TestGlobalDirFlagFromArgs(t *testing.T) {
-
 	tests := []struct {
 		name string
 		args []string
