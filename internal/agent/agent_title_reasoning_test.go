@@ -59,11 +59,9 @@ func TestSanitizeReasoningTitle(t *testing.T) {
 		{"cyrillic prefix stripped", "Заголовок: Прокси через Tor", "Прокси через Tor"},
 		{"dash prefix stripped", "Title - My Great Title", "My Great Title"},
 		{"quotes stripped", "«Wrapped Title»", "Wrapped Title"},
-		{
-			"long line cut at word boundary",
-			"A very long reasoning answer that just keeps going and going well past the eighty character mark and beyond",
-			"A very long reasoning answer that just keeps going and going well past the",
-		},
+		{"overlong reasoning answer rejected, not truncated", strings.Repeat("x", titleMaxReasoningLen+1), ""},
+		{"multiple sentences rejected", "I cannot produce a title. The content is missing.", ""},
+		{"single terminal punctuation accepted", "Fix title generation.", "Fix title generation."},
 		{"empty stays empty", "", ""},
 	}
 	for _, tc := range tests {
@@ -208,6 +206,11 @@ func TestRun_TitleThinkingDisabledForZAI(t *testing.T) {
 	thinking, ok := body["thinking"].(map[string]any)
 	require.True(t, ok, "z.ai title request must carry a thinking option, got body: %v", body)
 	assert.Equal(t, "disabled", thinking["type"])
+}
+
+func TestCleanTitleRejectsModelComplaints(t *testing.T) {
+	assert.Empty(t, cleanTitle("I cannot make a title. The request is empty."))
+	assert.Empty(t, cleanTitle(strings.Repeat("x", titleMaxReasoningLen+1)))
 }
 
 // TestRun_TitleNoThinkingOptionForOtherProvider: a non-z.ai openai-compat

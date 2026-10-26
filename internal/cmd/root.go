@@ -304,6 +304,11 @@ func recoverAndLogPanic() {
 }
 
 func commandErrorHandler(w io.Writer, styles fang.Styles, err error) {
+	var unrecognized *config.ErrSettingsLockUnrecognized
+	if errors.As(err, &unrecognized) {
+		fmt.Fprintf(w, "rush: settings lock at %s was written by an older Rush or is not a valid record; remove sync_rev by hand and run rush lock again\n", unrecognized.Path)
+		return
+	}
 	var timeoutErr *app.RunTimeoutError
 	if !errors.As(err, &timeoutErr) {
 		fang.DefaultErrorHandler(w, styles, err)
