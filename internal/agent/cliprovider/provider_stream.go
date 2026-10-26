@@ -28,6 +28,11 @@ func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.Strea
 	return s.Stream(), nil
 }
 
+func usePromptStdin(spec CLISpec, noPTY bool, prompt string) bool {
+	return spec.AlwaysStdin || noPTY || len(prompt) > effectiveMaxPromptArgLen(spec.Binary) ||
+		strings.ContainsAny(prompt, "\r\n")
+}
+
 func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamSession, error) {
 	binaryPath, resolveErr := resolveLaunchBinary(m.spec.Binary)
 	if resolveErr != nil {
@@ -80,7 +85,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	var resuming bool
 	var cliSessionKey string
 	var prefixHash uint64
-	if m.spec.SupportsResume && sessionID != "" {
+	if m.spec.SupportsResume && sessionID != "" && ctx.Value(TitleGenerationContextKey) != true {
 		cliSessionKey = sessionID + ":" + m.spec.ModelID
 		prefixHash = hashPromptPrefix(call.Prompt)
 		if entry, ok := m.cliSessions.Get(cliSessionKey); ok {
@@ -316,9 +321,12 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	}
 
 	noPTY := m.spec.NoPTY || testDisablePTY
-	useStdin := m.spec.AlwaysStdin || noPTY || len(prompt) > effectiveMaxPromptArgLen(m.spec.Binary)
-	if !useStdin && m.spec.PromptFlag != "" {
+	useStdin := usePromptStdin(m.spec, noPTY, prompt)
+	if m.spec.PromptFlag != "" && !useStdin {
 		args = append(args, m.spec.PromptFlag, prompt)
+	}
+	if useStdin && m.spec.StdinPrintFlag != "" {
+		args = append(args, m.spec.StdinPrintFlag)
 	}
 
 	var proc procHandle
@@ -747,7 +755,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				failure.add(failureName, line)
 
 				// Capture CLI session ID from the system init event for --resume.
-				if m.spec.SupportsResume && cliSessionKey != "" {
+				if m.spec.SupportsResume && cliSessionKey != "" && ctx.Value(TitleGenerationContextKey) != true {
 					var initEv streamEvent
 					if json.Unmarshal(line, &initEv) == nil && initEv.Type == "system" && initEv.Subtype == "init" && initEv.SessionID != "" {
 						m.cliSessions.Set(cliSessionKey, cliSessionEntry{CLISessionID: initEv.SessionID, PrefixHash: prefixHash})

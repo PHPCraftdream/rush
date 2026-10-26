@@ -25,6 +25,27 @@ const syncRevKey = "sync_rev"
 
 var reservedSettingsKeys = []string{syncRevKey, cacheRevKey}
 
+type ErrSettingsLockUnrecognized struct{ Path string }
+
+func (e *ErrSettingsLockUnrecognized) Error() string { return ErrSettingsLocked.Error() }
+func (e *ErrSettingsLockUnrecognized) Unwrap() error { return ErrSettingsLocked }
+
+func newUnrecognizedSettingsLock(path string) *ErrSettingsLockUnrecognized {
+	absolute, err := filepath.Abs(readSlotOf(path))
+	if err != nil {
+		absolute = filepath.Clean(readSlotOf(path))
+	}
+	return &ErrSettingsLockUnrecognized{Path: absolute}
+}
+
+func settingsLockReadError(err error) error {
+	var unrecognized *ErrSettingsLockUnrecognized
+	if errors.As(err, &unrecognized) {
+		return err
+	}
+	return ErrSettingsLocked
+}
+
 var (
 	ErrSettingsLocked          = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
 	ErrWrongPassword           = errors.New("wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
@@ -91,24 +112,32 @@ func HashPassword(password string) string {
 		base64.RawStdEncoding.EncodeToString(key))
 }
 
+func parseSettingsPasswordHash(stored string) (int, []byte, []byte, bool) {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 || parts[0] != settingsPasswordHashPrefix {
+		return 0, nil, nil, false
+	}
+	iterations, err := strconv.Atoi(parts[1])
+	if err != nil || iterations < 1 || iterations > maxSettingsPasswordIterations {
+		return 0, nil, nil, false
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil || len(salt) == 0 {
+		return 0, nil, nil, false
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil || len(want) == 0 {
+		return 0, nil, nil, false
+	}
+	return iterations, salt, want, true
+}
+
 // VerifyPassword reports whether password matches the stored PBKDF2 hash.
 // An unparseable, unrecognized or legacy (plain hex) stored value does NOT
 // match: the lock fails closed.
 func VerifyPassword(password, stored string) bool {
-	parts := strings.Split(stored, "$")
-	if len(parts) != 4 || parts[0] != settingsPasswordHashPrefix {
-		return false
-	}
-	iterations, err := strconv.Atoi(parts[1])
-	if err != nil || iterations < 1 || iterations > maxSettingsPasswordIterations {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
-	if err != nil || len(salt) == 0 {
-		return false
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[3])
-	if err != nil || len(want) == 0 {
+	iterations, salt, want, ok := parseSettingsPasswordHash(stored)
+	if !ok {
 		return false
 	}
 	key, err := pbkdf2.Key(sha256.New, password, salt, iterations, len(want))
@@ -147,6 +176,9 @@ func CheckPasswordAgainstDisk(password string) error {
 	if hash == "" {
 		return nil
 	}
+	if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
+		return newUnrecognizedSettingsLock(doc.path)
+	}
 	if !VerifyPassword(password, hash) {
 		return ErrWrongPassword
 	}
@@ -165,7 +197,7 @@ func SettingsWriteAllowed(workspaceDir string) error {
 		{path: filepath.Join(workspaceDir, "rush.json")},
 	})
 	if err != nil {
-		return ErrSettingsLocked
+		return settingsLockReadError(err)
 	}
 	checks := globals
 	if len(checks) == 0 {
@@ -200,7 +232,7 @@ func (s *ConfigStore) CheckProcessPassword() error {
 	process := processPassword()
 	global, local, err := s.currentLockHashes()
 	if err != nil {
-		return ErrSettingsLocked
+		return settingsLockReadError(err)
 	}
 	if process == "" {
 		return nil
@@ -245,7 +277,13 @@ func freshSettingsHash(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(doc.jsonBytes), nil
+	if hash := settingsHash(doc.jsonBytes); hash != "" {
+		if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
+			return "", newUnrecognizedSettingsLock(doc.path)
+		}
+		return hash, nil
+	}
+	return "", nil
 }
 
 func settingsHash(data []byte) string {
@@ -298,7 +336,13 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	// lockHashesForTarget) and must never read a backup-only slot as
 	// "no lock".
 	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
-		return settingsHash(data), nil
+		hash := settingsHash(data)
+		if hash != "" {
+			if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
+				return "", newUnrecognizedSettingsLock(path)
+			}
+		}
+		return hash, nil
 	}
 	doc, err := readSettingsDocument(candidate)
 	if os.IsNotExist(err) {
@@ -307,7 +351,13 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(doc.jsonBytes), nil
+	hash := settingsHash(doc.jsonBytes)
+	if hash != "" {
+		if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
+			return "", newUnrecognizedSettingsLock(doc.path)
+		}
+	}
+	return hash, nil
 }
 
 func pathWithinDirectory(directory, path string) bool {
@@ -387,11 +437,14 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		globals, locals, hashErr := s.lockHashesForTarget(path, data)
 		if hashErr != nil {
-			return "", ErrSettingsLocked
+			return "", settingsLockReadError(hashErr)
 		}
 		hash := settingsHash(data)
 		if hash == "" {
 			return "", ErrNotLocked
+		}
+		if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
+			return "", newUnrecognizedSettingsLock(path)
 		}
 		if !VerifyPassword(password, hash) {
 			return "", ErrWrongPassword

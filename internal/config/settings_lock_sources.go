@@ -35,24 +35,24 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 	canonical := canonicalGlobalDataPath()
 	processGlobal, err := readSettingsHash(globalDataPath, path, data)
 	if err != nil {
-		return ErrSettingsLocked
+		return settingsLockReadError(err)
 	}
 	var canonicalGlobalHash string
 	if canonical != "" {
 		canonicalGlobalHash, err = readSettingsHash(canonical, path, data)
 		if err != nil {
-			return ErrSettingsLocked
+			return settingsLockReadError(err)
 		}
 	}
 	processLocal, err := readSettingsHash(workspace, path, data)
 	if err != nil {
-		return ErrSettingsLocked
+		return settingsLockReadError(err)
 	}
 	var naturalLocal string
 	if natural != "" {
 		naturalLocal, err = readSettingsHash(natural, path, data)
 		if err != nil {
-			return ErrSettingsLocked
+			return settingsLockReadError(err)
 		}
 	}
 

@@ -22,8 +22,9 @@ type CLISpec struct {
 	// Binary is the executable name resolved via PATH (e.g. "claude", "gemini").
 	Binary string
 	// PromptFlag is the CLI flag used to pass the prompt inline (e.g. "-p").
-	// When the prompt exceeds maxPromptArgLen, it is piped via stdin instead.
 	PromptFlag string
+	// StdinPrintFlag, when set, enables non-interactive prompt mode with stdin.
+	StdinPrintFlag string
 	// BuildArgs returns the CLI arguments for a given yolo flag.
 	// The prompt is NOT included — it is added separately by Stream.
 	BuildArgs func(yolo bool) []string
@@ -193,6 +194,7 @@ func claudeSpec(modelID, modelName, modelArg string, ctxWindow int64) CLISpec {
 		ContextWindow:  ctxWindow,
 		Binary:         "claude",
 		PromptFlag:     "-p",
+		StdinPrintFlag: "-p",
 		BuildArgs:      claudeArgs(modelArg),
 		NewPartParser:  claudePartParser,
 		ParseUsageLine: claudeParseUsageLine,

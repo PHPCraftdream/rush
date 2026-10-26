@@ -17,6 +17,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
 )
 
@@ -90,10 +91,29 @@ var (
 // any (orphan) think tags, and trim. Returns "" when nothing usable remains
 // (e.g. a pure-reasoning response with no actual title text).
 func cleanTitle(raw string) string {
-	t := strings.ReplaceAll(raw, "\n", " ")
-	t = thinkTagRegex.ReplaceAllString(t, "")
+	t := thinkTagRegex.ReplaceAllString(raw, "")
 	t = orphanThinkTagRegex.ReplaceAllString(t, "")
-	return strings.TrimSpace(t)
+	t = strings.ReplaceAll(t, "\r\n", " ")
+	t = strings.ReplaceAll(t, "\r", " ")
+	t = strings.ReplaceAll(t, "\n", " ")
+	t = strings.TrimSpace(t)
+	if len([]rune(t)) > titleMaxReasoningLen || hasMultipleTitleSentences(t) {
+		return ""
+	}
+	return t
+}
+
+func hasMultipleTitleSentences(title string) bool {
+	sentences := 0
+	for _, r := range title {
+		if r == '.' || r == '!' || r == '?' || r == '。' || r == '！' || r == '？' {
+			sentences++
+			if sentences > 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // titleFromReasoning extracts a title candidate from a reasoning-only
@@ -122,6 +142,10 @@ const titleMaxReasoningLen = 80
 // to the last space inside the window so no word is split mid-token.
 func sanitizeReasoningTitle(raw string) string {
 	t := cleanTitle(raw)
+	if t == "" {
+		return ""
+	}
+
 	for _, p := range []string{"Title:", "Заголовок:", "Title -", "Заголовок -"} {
 		if len(t) >= len(p) && strings.EqualFold(t[:len(p)], p) {
 			t = strings.TrimSpace(t[len(p):])
@@ -268,7 +292,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 					fantasy.NewSystemMessage(systemPromptPrefix),
 				}, prepared.Messages...)
 			}
-			return callCtx, prepared, nil
+			return context.WithValue(callCtx, cliprovider.TitleGenerationContextKey, true), prepared, nil
 		},
 	}
 

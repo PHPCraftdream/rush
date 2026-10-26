@@ -28,6 +28,7 @@ const (
 // fingerprint is bound to the RAW bytes as read; it must never be computed
 // from (or compared against) the normalized JSON bytes.
 type settingsDocument struct {
+	path           string
 	jsonBytes      []byte
 	rawBytes       []byte
 	rawFingerprint reloadFileFingerprint
@@ -52,6 +53,7 @@ func decodeSettingsDocument(path string, rawBytes []byte, rawFingerprint reloadF
 		return settingsDocument{}, err
 	}
 	return settingsDocument{
+		path:           path,
 		jsonBytes:      jsonBytes,
 		rawBytes:       rawBytes,
 		rawFingerprint: rawFingerprint,

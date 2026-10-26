@@ -1,17 +1,12 @@
-// Title-normalisation tests: TestCleanTitle pins cleanTitle rules
-// for deciding whether a model title response is usable.
-
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// TestCleanTitle pins the normalisation that decides whether a model's title
-// response is usable: a length-truncated but non-empty response yields a
-// title; a think-only or whitespace-only response yields "" (a real miss).
 func TestCleanTitle(t *testing.T) {
 	tests := []struct {
 		name string
@@ -27,6 +22,8 @@ func TestCleanTitle(t *testing.T) {
 		{"think-only is empty", "<think>just thinking, no answer</think>", ""},
 		{"orphan think tag stripped", "Title here</think>", "Title here"},
 		{"whitespace only is empty", "   \n  \t", ""},
+		{"multiple sentences rejected", "I cannot generate a title. The request is empty.", ""},
+		{"long complaint rejected", strings.Repeat("x", titleMaxReasoningLen+1), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -24,8 +24,13 @@ import (
 type sessionIDContextKey struct{}
 
 // SessionIDContextKey is the context key for the session ID, set by the agent
-// before calling Stream so the MCP todos tool knows which session to update.
+// before calling Stream so MCP tools and CLI resume can identify the session.
 var SessionIDContextKey = sessionIDContextKey{}
+
+type titleGenerationContextKey struct{}
+
+// TitleGenerationContextKey marks a provider request as a cosmetic session-title call.
+var TitleGenerationContextKey = titleGenerationContextKey{}
 
 // reasoningEffortContextKey is a private key type for the reasoning effort value.
 type reasoningEffortContextKey struct{}

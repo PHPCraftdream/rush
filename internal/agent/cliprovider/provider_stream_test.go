@@ -1,7 +1,4 @@
-// Stream behaviour tests: cliModel.Stream end-to-end against stub CLI
-// children - missing-binary lookup, non-zero-exit error surfacing, the
-// happy path, context cancellation, per-parser integration runs, and the
-// fast-exit last-line-loss regression.
+// Stream behavior tests use stub CLI children for process-level checks.
 
 package cliprovider
 
@@ -14,7 +11,122 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/csync"
 )
+
+func TestStreamTitleDoesNotResumeOrClobberCLIIdentity(t *testing.T) {
+	shell := "bash"
+	if _, err := exec.LookPath(shell); err != nil {
+		t.Skipf("shell %q not found", shell)
+	}
+	key := "rush-session:cli-test"
+	cache := csync.NewMap[string, cliSessionEntry]()
+	call := fantasy.Call{Prompt: fantasy.Prompt{
+		fantasy.NewSystemMessage("title system with multiple lines\nsecond system line"),
+		fantasy.NewUserMessage("Generate a concise title for:\n\nactual request <think>consider it</think>"),
+	}}
+	entry := cliSessionEntry{CLISessionID: "old-cli-session", PrefixHash: hashPromptPrefix(call.Prompt)}
+	cache.Set(key, entry)
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	argsPath := strings.ReplaceAll(argsFile, "\\", "/")
+	script := "printf '%s\\n' \"$0\" \"$@\" > '" + argsPath + "'; printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"new-cli-session\"}' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}}'"
+	m := &cliModel{
+		spec: CLISpec{
+			ModelID: "cli-test", ModelName: "CLI Test", Binary: shell, PromptFlag: "-p", StdinPrintFlag: "-p",
+			BuildArgs:     func(bool) []string { return []string{"-c", script} },
+			NewPartParser: claudePartParser, SupportsResume: true,
+		},
+		cliSessions: cache, workingDir: t.TempDir(),
+	}
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "rush-session")
+	ctx = context.WithValue(ctx, TitleGenerationContextKey, true)
+	stream, err := m.Stream(ctx, call)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	var text strings.Builder
+	for part := range stream {
+		if part.Type == fantasy.StreamPartTypeTextDelta {
+			text.WriteString(part.Delta)
+		}
+		if part.Type == fantasy.StreamPartTypeError {
+			t.Fatalf("stream error: %v", part.Error)
+		}
+	}
+	if !strings.Contains(text.String(), "ok") {
+		t.Fatalf("child output = %q", text.String())
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read child args: %v", err)
+	}
+	if strings.Contains(string(args), "--resume") {
+		t.Fatalf("title args unexpectedly resumed: %q", args)
+	}
+	if !strings.Contains(string(args), "-p") {
+		t.Fatalf("Claude print flag absent: %q", args)
+	}
+	if got, ok := cache.Get(key); !ok || got != entry {
+		t.Fatalf("title altered CLI cache: got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestPromptStdinSelectionForMultilinePrompt(t *testing.T) {
+	spec := CLISpec{Binary: "claude"}
+	if !usePromptStdin(spec, false, "<system>\nsystem</system>\n\nUser: ping") {
+		t.Fatal("multiline prompt must use stdin even when PTY is available")
+	}
+	if usePromptStdin(spec, false, "User: ping") {
+		t.Fatal("single-line short prompt should remain eligible for argv")
+	}
+}
+
+func TestStreamPromptTransportNewlines(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt fantasy.Prompt
+		want   string
+	}{
+		{"title", fantasy.Prompt{fantasy.NewSystemMessage("title system\nsecond system"), fantasy.NewUserMessage("Generate a concise title:\n\nactual request <think>consider it</think>")}, "actual request <think>consider it</think>"},
+		{"ping", fantasy.Prompt{fantasy.NewSystemMessage("You are a network liveness probe."), fantasy.NewUserMessage("ping")}, "User: ping"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := CLISpec{
+				ModelID: "test-stdin", ModelName: "Test stdin", Binary: "bash", PromptFlag: "-p", StdinPrintFlag: "-p",
+				BuildArgs: func(bool) []string {
+					return []string{"-c", "printf 'ARGS:%s\\n' \"$0\" \"$@\"; cat"}
+				},
+				NewPartParser: func() func([]byte) (fantasy.StreamPart, bool) {
+					return func(line []byte) (fantasy.StreamPart, bool) {
+						return fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, Delta: string(line)}, true
+					}
+				},
+			}
+			if _, err := exec.LookPath(spec.Binary); err != nil {
+				t.Skipf("shell %q not found", spec.Binary)
+			}
+			m := &cliModel{spec: spec, workingDir: t.TempDir()}
+			stream, err := m.Stream(context.Background(), fantasy.Call{Prompt: tc.prompt})
+			if err != nil {
+				t.Fatalf("Stream(): %v", err)
+			}
+			var output strings.Builder
+			for part := range stream {
+				if part.Type == fantasy.StreamPartTypeTextDelta {
+					output.WriteString(part.Delta)
+				}
+				if part.Type == fantasy.StreamPartTypeError {
+					t.Fatalf("stream error: %v", part.Error)
+				}
+			}
+			got := output.String()
+			if !strings.Contains(got, "ARGS:-p") || !strings.Contains(got, tc.want) {
+				t.Fatalf("child got %q; want print flag and %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestStreamBinaryNotFound(t *testing.T) {
 	spec := CLISpec{
@@ -489,5 +601,14 @@ func TestStreamFastExitNoLastLineLoss(t *testing.T) {
 		if text.String() != "ABC" {
 			t.Errorf("iter %d: text = %q, want %q", i, text.String(), "ABC")
 		}
+	}
+}
+
+// Revert-check: the production Claude spec must keep its stdin print flag,
+// otherwise multiline prompts sent over stdin run without print mode.
+func TestClaudeSpecKeepsStdinPrintFlag(t *testing.T) {
+	spec := claudeSpec("cli-claude-test", "test", "haiku", 1)
+	if spec.StdinPrintFlag != "-p" {
+		t.Fatalf("claude StdinPrintFlag = %q, want -p", spec.StdinPrintFlag)
 	}
 }
